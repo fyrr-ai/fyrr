@@ -42,7 +42,7 @@ tokio = { version = "1.53", default-features = false, features = ["rt-multi-thre
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde", "std"] }
 # Validates golden fixtures (dev) and, in the writer, source settings against
 # connector providers' config schemas.
-jsonschema = { version = "0.58", default-features = false }
+jsonschema = { version = "0.61", default-features = false }
 # Embedded Python for connector providers, full build only.
 # arrow-pyarrow 58 imports pyarrow batches through the Arrow C Data Interface
 # (PyCapsules, zero-copy) and requires PyO3 0.28.
