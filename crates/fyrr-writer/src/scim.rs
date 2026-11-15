@@ -623,6 +623,10 @@ fn apply_mutation(
         .map_err(|_| ScimError::new(400, "invalidSyntax"))?,
     );
     if request.method == "POST" {
+        // Old state may retain receipts for resources deleted before cleanup.
+        state
+            .replays
+            .retain(|_, id| state.users.contains_key(id) || state.groups.contains_key(id));
         if let Some(id) = state.replays.get(&replay) {
             let resources = if request.users {
                 &state.users
@@ -633,9 +637,6 @@ fn apply_mutation(
                 .get(id)
                 .map(|v| MutationResult::Unchanged(response(v, request.users)))
                 .ok_or(ScimError::new(409, "uniqueness"));
-        }
-        if state.replays.len() >= 100_000 {
-            return Err(ScimError::new(503, "temporarilyUnavailable"));
         }
     }
     let resources = if request.users {
@@ -708,6 +709,7 @@ fn apply_mutation(
         resources.insert(id.clone(), value.clone());
     } else {
         resources.remove(&id);
+        state.replays.retain(|_, resource| resource != &id);
         for group in state.groups.values_mut() {
             if let Some(members) = group["members"].as_array_mut() {
                 let prior = members.len();

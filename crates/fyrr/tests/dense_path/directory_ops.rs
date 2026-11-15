@@ -207,6 +207,7 @@ async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_r
             .is_empty()
     );
     let before = state(&commit).await;
+    let original = attacker.clone();
     attacker["userName"] = json!("another@outside.test");
     attacker[EXT]["subjects"][0]["issuer"] = json!("https://issuer.two");
     let refused = service
@@ -221,6 +222,19 @@ async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_r
             &path(&personal, true),
             Value::Null,
             Some(version(&personal)),
+            204,
+        )
+        .await;
+    let recreated = service
+        .request(Method::POST, "/scim/v2/Users", original, None, 201)
+        .await;
+    assert_ne!(recreated["id"], personal["id"]);
+    service
+        .request(
+            Method::DELETE,
+            &path(&recreated, true),
+            Value::Null,
+            Some(version(&recreated)),
             204,
         )
         .await;

@@ -218,6 +218,14 @@ requests get `503 authorization_unavailable`.
   writer's SCIM 2.0 endpoint on the administration listener
   (`[writer.serve.admin]`), with subjects bound under
   `identity.directory.issuer`, which `identity.oidc.issuer` must equal.
+  Clients must send the current ETag (`meta.version`) in `If-Match` for PUT,
+  PATCH and DELETE; a missing precondition returns 428 and a stale one 412.
+  Lists support `startIndex`, `count` (at most 1,000) and `eq` filters on
+  `userName` (users only), `displayName`, `id` or `externalId`. Attribute
+  projections, sorting and bulk operations are unsupported. Subject bindings
+  use `subjects` entries (`issuer`, `subject`) in the custom user extension
+  `urn:fyrr:params:scim:schemas:extension:identity:2.0:User`; clients must map
+  that extension and support the required conditional writes.
 - `provider = "snapshot"`: the writer reads a complete, already hashed
   directory snapshot (`schemas/directory-snapshot.schema.json`) from
   `snapshot_file` on each pull; its subject bindings name their issuers.
