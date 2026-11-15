@@ -1,6 +1,6 @@
 //! Slice 4 directory operations through the CLI, HTTP, MCP, Keycloak and RustFS.
 use super::coordination::{host_command, publication, worker_sync};
-use super::incremental::{fixture, initial, publish};
+use super::incremental::{fixture, publish, publish_initial};
 use super::tools::Mcp;
 use super::*;
 use reqwest::{Client, Method};
@@ -128,28 +128,12 @@ fn hit_count(client: &mut Mcp) -> usize {
 async fn state(config: &Path) -> ServingHead {
     publication(config).await.0
 }
-fn sources(worker: &Path, root: &Path, commit: &Path) {
-    initial(root);
-    worker_sync(
-        worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(commit);
-}
 
 #[tokio::test]
 #[ignore = "owned Keycloak, writer HTTP/MCP and RustFS; scripts/ci"]
 async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_real_s3() {
     let (worker, commit, root) = fixture();
-    sources(&worker, &root, &commit);
+    publish_initial(&worker, &commit, &root);
     let service = Service::start(&commit, &root).await;
     // Readers use the same directory policy, with no operator/provider credentials required.
     let text = std::fs::read_to_string(&worker).unwrap();
@@ -624,7 +608,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
         204
     );
     let (worker, commit, root) = fixture();
-    sources(&worker, &root, &commit);
+    publish_initial(&worker, &commit, &root);
     let directory = format!(
         "\n[identity.directory]\nprovider='keycloak'\nendpoint='{endpoint}'\nrealm='{realm}'\nverified_domains=['example.test']\ncredentials={{env='KEYCLOAK_TOKEN'}}\nsync_interval='15m'\n"
     );
@@ -820,7 +804,7 @@ impl DirectoryClock {
 async fn identity_directory_generic_snapshot_and_independent_sync_frequencies_on_real_s3() {
     use fyrr_core::directory::{DirectorySnapshot, DirectoryUser};
     let (worker, commit, root) = fixture();
-    sources(&worker, &root, &commit);
+    publish_initial(&worker, &commit, &root);
     let loaded = fyrr_core::config::load(&commit).unwrap();
     let key = fyrr_reader::storage::hash_principal(&loaded.config, "key", "fixture@example.test")
         .unwrap();
@@ -1060,6 +1044,6 @@ async fn directory_freshness_requires_a_completed_read_on_real_s3() {
     assert!(directory_command(&commit, None).status.success());
     let proof = state(&commit).await.freshness.directory;
     assert!(proof.is_some_and(|read_at| read_at >= at && read_at <= chrono::Utc::now()));
-    sources(&worker, &root, &commit);
+    publish_initial(&worker, &commit, &root);
     assert_eq!(state(&commit).await.freshness.directory, proof);
 }

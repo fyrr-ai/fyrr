@@ -2,7 +2,8 @@
 use super::coordination::{command, host_command, publication, worker_sync};
 use super::corrections::proxied;
 use super::incremental::{
-    doc, envelopes, fixture, fixture_on, initial, input, publish, rows, source_rows,
+    doc, envelopes, fixture, fixture_on, initial, input, publish, publish_initial, rows,
+    source_rows,
 };
 use super::*;
 use object_store::ObjectStoreExt;
@@ -76,20 +77,7 @@ async fn restore_differing_fragment_roots(
 async fn maintenance_restore_fragment_metadata_premises_on_real_s3() {
     use futures::TryStreamExt;
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let target = publication(&commit).await.1;
     let target_dataset = restore_fragment_dataset(&commit).await;
     input(
@@ -492,20 +480,7 @@ async fn maintenance_bounded_catalog_restart_and_retrieval_on_real_s3() {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Mutex;
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     for config in [&worker, &commit] {
         let text = std::fs::read_to_string(config).unwrap().replace(
             "mirror_max_bytes = 16777216",
@@ -862,20 +837,7 @@ async fn maintenance_bounded_catalog_restart_and_retrieval_on_real_s3() {
 async fn maintenance_restore_recreated_root_and_changed_bodies_on_real_s3() {
     use arrow_array::{Array, StringArray};
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     input(
         &root,
         json!({"epoch":2,"content":[[{"id":"a","delete":true,"revision":"r2","expected_prior_revision":"r1"}]]}),
@@ -1127,20 +1089,7 @@ fn fetch(client: &mut tools::Mcp, root: &str) -> Value {
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn maintenance_pending_revoke_purge_and_verify_on_real_s3() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     std::fs::remove_file(root.join("sources/0.txt")).unwrap();
     worker_sync(&worker, &["allowed"]);
     publish(&commit);
@@ -1309,20 +1258,7 @@ async fn maintenance_pending_revoke_purge_and_verify_on_real_s3() {
 async fn maintenance_reader_modes_and_sighup_on_real_s3() {
     for mode in ["interval", "off", "per-request"] {
         let (worker, commit, root) = fixture();
-        initial(&root);
-        worker_sync(
-            &worker,
-            &[
-                "incremental",
-                "--kind",
-                "content",
-                "--kind",
-                "permissions",
-                "--kind",
-                "members",
-            ],
-        );
-        publish(&commit);
+        publish_initial(&worker, &commit, &root);
         let original = reader_config(&worker, &root, mode);
         let armed = Arc::new(AtomicBool::new(false));
         let entered = Arc::new(AtomicBool::new(false));
@@ -1450,20 +1386,7 @@ async fn maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery
 
 async fn maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery(backend: Backend) {
     let (worker, commit, root) = fixture_on(backend);
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let (_, target) = publication(&commit).await;
     input(
         &root,
@@ -1548,20 +1471,7 @@ async fn maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn maintenance_per_request_waits_two_seconds_then_flagged_on_real_s3() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let (head, old) = publication(&commit).await;
     let blocked = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
@@ -1647,20 +1557,7 @@ async fn maintenance_per_request_waits_two_seconds_then_flagged_on_real_s3() {
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn maintenance_pending_rejected_fragments_survive_seven_day_cleanup_on_real_s3() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     input(
         &root,
         json!({"epoch":2,"content":[[replacement("a","r2","r1","fixture document 2")]]}),
@@ -1838,20 +1735,7 @@ async fn maintenance_restore_crash_boundaries_on_real_s3() {
     ];
     for (restore, boundary, after) in cases {
         let (worker, commit, root) = fixture();
-        initial(&root);
-        worker_sync(
-            &worker,
-            &[
-                "incremental",
-                "--kind",
-                "content",
-                "--kind",
-                "permissions",
-                "--kind",
-                "members",
-            ],
-        );
-        publish(&commit);
+        publish_initial(&worker, &commit, &root);
         let target = publication(&commit).await.1;
         input(
             &root,
@@ -1960,20 +1844,7 @@ async fn maintenance_restore_crash_boundaries_on_real_s3() {
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn maintenance_purge_window_and_restore_horizon_on_real_s3() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let old = publication(&commit).await.1;
     let old_files: Vec<_> = old
         .files
@@ -2097,20 +1968,7 @@ async fn maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror_on_l
 
 async fn maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror(backend: Backend) {
     let (worker, commit, root) = fixture_on(backend);
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let (old_head, old) = publication(&commit).await;
     let config = reader_config(&worker, &root, "off");
     input(
@@ -2216,20 +2074,7 @@ async fn maintenance_partial_unreadable_chunk_purge_on_real_s3() {
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn maintenance_off_aged_pin_reload_and_verify_damage_on_real_s3() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let old = publication(&commit).await.1;
     let old_id = old.publication_id.clone();
     let transform: corrections::ResponseTransform = Arc::new(move |request, response| {
@@ -2399,20 +2244,7 @@ async fn restore_and_rollback_preserve_current_section_revocation() {
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn maintenance_delta_cleanup_step_exceeds_deadline() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     command(&commit, &["writer", "maintain"]);
     input(
         &root,
@@ -2586,20 +2418,7 @@ async fn maintenance_delta_cleanup_step_exceeds_deadline() {
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn maintenance_delta_idle_expired_mirror_survives_failed_preparation() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let old = publication(&commit).await.1;
     let old_id = old.publication_id.clone();
     let transform: corrections::ResponseTransform = Arc::new(move |request, response| {
@@ -2666,20 +2485,7 @@ async fn maintenance_delta_idle_expired_mirror_survives_failed_preparation() {
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn maintenance_delta_status_purge_risk_is_bounded_and_value_free() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     assert_eq!(
         command(&commit, &["writer", "status"])["warnings"],
         json!([])
@@ -2743,20 +2549,7 @@ async fn maintenance_delta_status_purge_risk_is_bounded_and_value_free() {
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn maintenance_shared_mirror_repair_and_crashed_holder_on_real_s3() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let original = publication(&commit).await.1;
     let config = reader_config(&worker, &root, "off");
     std::fs::write(
@@ -2990,20 +2783,7 @@ async fn maintenance_preparation_budget_refusal_preserves_authorization_on_real_
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn maintenance_warming_does_not_block_per_request_version_adoption_on_real_s3() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let original = publication(&commit).await.1;
     let text_uuid = &original
         .indexes
@@ -3102,20 +2882,7 @@ async fn maintenance_warming_does_not_block_per_request_version_adoption_on_real
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn maintenance_small_mirror_stays_serving_without_rewarming_each_interval_on_real_s3() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let immutable = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count = immutable.clone();
     let hook: corrections::BoundaryHook = Arc::new(move |request, _, after| {
@@ -3174,20 +2941,7 @@ async fn maintenance_small_mirror_stays_serving_without_rewarming_each_interval_
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn maintenance_per_request_checks_collect_only_on_the_periodic_interval_on_real_s3() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let config = reader_config(&worker, &root, "per-request");
     std::fs::write(
         &config,
@@ -3248,20 +3002,7 @@ async fn maintenance_per_request_checks_collect_only_on_the_periodic_interval_on
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn maintenance_native_cache_budget_refuses_shortfall_and_preserves_results_on_real_s3() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let config = reader_config(&worker, &root, "interval");
     let loaded = fyrr_core::config::load(&config).unwrap();
     let text = std::fs::read_to_string(&config).unwrap();
@@ -3435,20 +3176,7 @@ async fn retirement_fixture() -> (PathBuf, PathBuf, FixtureRoot) {
 /// The incremental fixture with its two documents published and readable.
 async fn retirement_fixture_on(backend: Backend) -> (PathBuf, PathBuf, FixtureRoot) {
     let (worker, commit, root) = fixture_on(backend);
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     assert_eq!(rows(&worker).await.num_rows(), 2);
     (worker, commit, root)
 }
@@ -4451,20 +4179,7 @@ async fn maintenance_boundary_history_request_counts_on_real_s3() {
         (2064, 8),
     ] {
         let (worker, commit, root) = fixture();
-        initial(&root);
-        worker_sync(
-            &worker,
-            &[
-                "incremental",
-                "--kind",
-                "content",
-                "--kind",
-                "permissions",
-                "--kind",
-                "members",
-            ],
-        );
-        publish(&commit);
+        publish_initial(&worker, &commit, &root);
         // Real append publications create enough small fragments to
         // traverse many boundaries, independently of retained history.
         for revision in 2..=1 + depth * 4 {
@@ -4725,20 +4440,7 @@ async fn maintenance_boundary_discovers_authorization_after_failed_cursor_on_rea
 async fn discovers_authorization_after_failed_cursor(operation: &str) {
     for kind in ["permissions", "members"] {
         let (worker, commit, root) = fixture();
-        initial(&root);
-        worker_sync(
-            &worker,
-            &[
-                "incremental",
-                "--kind",
-                "content",
-                "--kind",
-                "permissions",
-                "--kind",
-                "members",
-            ],
-        );
-        publish(&commit);
+        publish_initial(&worker, &commit, &root);
         let target = publication(&commit).await.1;
         let final_cursor = if kind == "permissions" { "2-0" } else { "2-1" };
         input(
@@ -4897,20 +4599,7 @@ async fn maintenance_restore_rejected_authorization_freezes_freshness_on_real_s3
     use fyrr_core::envelope::EnvelopePayload;
     for kind in [SyncKind::Permissions, SyncKind::Members] {
         let (worker, commit, root) = fixture();
-        initial(&root);
-        worker_sync(
-            &worker,
-            &[
-                "incremental",
-                "--kind",
-                "content",
-                "--kind",
-                "permissions",
-                "--kind",
-                "members",
-            ],
-        );
-        publish(&commit);
+        publish_initial(&worker, &commit, &root);
         input(
             &root,
             json!({"epoch":2,"content":[[doc("a","r2","fixture document 2")]]}),

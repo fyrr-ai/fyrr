@@ -248,7 +248,7 @@ async fn local_storage_reaps_abandoned_uploads_but_protects_live_staging() {
 #[ignore = "real executable and long local publication history; scripts/ci"]
 async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
     use super::coordination::{command, host_command, publication, worker_sync};
-    use super::incremental::{envelopes, initial, input, publish, roots, rows};
+    use super::incremental::{envelopes, input, publish, publish_initial, roots, rows};
     use fyrr_core::connector::SyncKind;
     use object_store::ObjectStoreExt;
 
@@ -258,20 +258,7 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
     }
     let (worker, commit, root) =
         super::incremental::fixture_host_at(1, true, "dense-fixture", setup);
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let (mut head, template) = publication(&commit).await;
     let oldest = template.envelope_ids.first().unwrap().clone();
     let (replay_path, replay) = envelopes(&worker)

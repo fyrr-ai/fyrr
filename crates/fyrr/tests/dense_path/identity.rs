@@ -1,6 +1,6 @@
 //! Canonical identity snapshots through real writer commands, MCP and RustFS.
 use super::coordination::{host_command, publication, worker_sync};
-use super::incremental::{fixture, initial, input, publish};
+use super::incremental::{fixture, initial, input, publish, publish_initial};
 use super::tools::Mcp;
 use super::*;
 use fyrr_core::directory::{AccountLink, DirectoryGroup, DirectorySnapshot, DirectoryUser};
@@ -542,20 +542,7 @@ async fn identity_email_evidence_and_cross_issuer_bindings_on_real_s3() {
 #[ignore = "slow real storage and RustFS; scripts/ci"]
 async fn identity_directory_keeps_lease_alive_during_slow_storage_on_real_s3() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let loaded = fyrr_core::config::load(&commit).unwrap();
     let mut directory = snapshot(&loaded.config, "scim");
     directory

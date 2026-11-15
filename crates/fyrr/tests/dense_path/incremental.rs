@@ -240,13 +240,10 @@ pub(super) fn initial(root: &Path) {
         json!({"epoch":1,"content":[[doc("a","r1","fixture document 0"),doc("b","r1","fixture document 1")]],"permissions":[[{"id":"a","revision":"p1","readers":["grp:group"]},{"id":"b","revision":"p1","readers":["grp:group"]}]],"members":[{"users":[{"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}],"groups":[{"id":"child","members":["usr:u"]},{"id":"group","members":["grp:child"]}]}]}),
     );
 }
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_priority_backpressure_revoke_and_pending_readers_on_real_s3() {
-    let (worker, commit, root) = fixture();
-    initial(&root);
+pub(super) fn publish_initial(worker: &Path, commit: &Path, root: &Path) {
+    initial(root);
     worker_sync(
-        &worker,
+        worker,
         &[
             "incremental",
             "--kind",
@@ -257,7 +254,14 @@ async fn incremental_priority_backpressure_revoke_and_pending_readers_on_real_s3
             "members",
         ],
     );
-    publish(&commit);
+    publish(commit);
+}
+
+#[tokio::test]
+#[ignore = "real CLI and RustFS; scripts/ci"]
+async fn incremental_priority_backpressure_revoke_and_pending_readers_on_real_s3() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
     assert_eq!(roots(&rows(&worker).await), ["a", "b"]);
     let mut reader = super::tools::Mcp::open(&worker);
     let visible = reader.call("fetch", json!({"source_id":"incremental","root_id":"a"}));
@@ -1728,20 +1732,7 @@ async fn incremental_delta_cleanup_preserves_unconsumed_rejection_on_real_s3() {
 
 async fn rejected_authorization(kind: SyncKind) {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let mut late = envelopes(&worker)
         .await
         .into_iter()
@@ -2196,20 +2187,7 @@ async fn incremental_members_alone_never_attest_permissions_on_real_s3() {
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn incremental_delta_expired_source_isolated_on_real_s3() {
     let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
+    publish_initial(&worker, &commit, &root);
     let loaded = fyrr_core::config::load(&worker).unwrap();
     let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
     let (mut head, _) = publication(&worker).await;
@@ -2462,20 +2440,7 @@ async fn incremental_caught_revision_failure_never_attests_on_real_s3() {
     for kind in [SyncKind::Permissions, SyncKind::Members] {
         for callback in ["lookup", "next"] {
             let (worker, commit, root) = fixture();
-            initial(&root);
-            worker_sync(
-                &worker,
-                &[
-                    "incremental",
-                    "--kind",
-                    "content",
-                    "--kind",
-                    "permissions",
-                    "--kind",
-                    "members",
-                ],
-            );
-            publish(&commit);
+            publish_initial(&worker, &commit, &root);
             let before = publication(&worker)
                 .await
                 .0
