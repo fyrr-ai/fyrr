@@ -1,14 +1,16 @@
 //! All tools through independent stdio requests over the writer's real S3 publication.
 use super::*;
 use std::collections::BTreeSet;
+use std::os::unix::fs::OpenOptionsExt;
 use std::process::Child;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) struct Mcp {
     child: Child,
     input: std::process::ChildStdin,
     output: std::sync::mpsc::Receiver<std::io::Result<String>>,
     next: u64,
-    stderr_log: Option<PathBuf>,
+    stderr_log: PathBuf,
 }
 impl Mcp {
     pub(super) fn open(config: &Path) -> Self {
@@ -31,6 +33,21 @@ impl Mcp {
         env: &[(&str, &Path)],
         log: Option<&Path>,
     ) -> Self {
+        static NEXT_LOG: AtomicU64 = AtomicU64::new(0);
+        let stderr_log = log.map(Path::to_owned).unwrap_or_else(|| {
+            Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+                "mcp-{}-{}.stderr",
+                std::process::id(),
+                NEXT_LOG.fetch_add(1, Ordering::Relaxed)
+            ))
+        });
+        let stderr = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&stderr_log)
+            .unwrap();
         let mut child = Command::new(binary)
             .arg("--config")
             .arg(config)
@@ -38,9 +55,7 @@ impl Mcp {
             .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(log.map_or_else(Stdio::piped, |path| {
-                Stdio::from(std::fs::File::create(path).unwrap())
-            }))
+            .stderr(Stdio::from(stderr))
             .spawn()
             .unwrap();
         let input = child.stdin.take().unwrap();
@@ -61,7 +76,7 @@ impl Mcp {
             input,
             output,
             next: 0,
-            stderr_log: log.map(Path::to_owned),
+            stderr_log,
         };
         client.send(json!({"jsonrpc":"2.0","id":"ready","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"fyrr-tests","version":"1"}}}));
         assert_eq!(client.read()["id"], "ready");
@@ -76,20 +91,17 @@ impl Mcp {
         let line = self
             .output
             .recv_timeout(std::time::Duration::from_secs(120))
-            .expect("MCP response watchdog")
+            .unwrap_or_else(|error| {
+                panic!(
+                    "MCP response watchdog: {error}; stderr: {}",
+                    std::fs::read_to_string(&self.stderr_log).unwrap_or_default()
+                )
+            })
             .expect("MCP response read");
         if line.is_empty() {
-            use std::io::Read;
             let _ = self.child.kill();
             let _ = self.child.wait();
-            let mut diagnostics = self
-                .stderr_log
-                .as_ref()
-                .map(|p| std::fs::read_to_string(p).unwrap())
-                .unwrap_or_default();
-            if let Some(mut stderr) = self.child.stderr.take() {
-                stderr.read_to_string(&mut diagnostics).unwrap();
-            }
+            let diagnostics = std::fs::read_to_string(&self.stderr_log).unwrap_or_default();
             panic!("MCP ended: {diagnostics}");
         }
         serde_json::from_str(&line).unwrap()

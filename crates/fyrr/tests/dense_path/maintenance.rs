@@ -1318,7 +1318,10 @@ async fn maintenance_restore_batched_authorization_boundaries_on_real_s3() {
             .env("FYRR_TEST_RESTORE_INPUT", root.join("input.json"))
             .env("FYRR_TEST_RESTORE_MEMBERS", &members_path)
             .env("FYRR_TEST_RESTORE_TARGET", &target.publication_id)
-            .env("FYRR_TEST_RESTORE_BINARY", env!("CARGO_BIN_EXE_fyrr"))
+            .env(
+                "FYRR_TEST_RESTORE_BINARY",
+                host_command(&commit).get_program(),
+            )
             // Nested real writer commands need the same provider environment
             // as worker_command; recorded CI does not export it globally.
             .env(
