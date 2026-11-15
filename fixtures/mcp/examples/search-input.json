@@ -1,0 +1,32 @@
+{
+  "query": "unknown contract major",
+  "limit": 20,
+  "output": "excerpt",
+  "order": "relevance",
+  "sources": [
+    "jira-eng"
+  ],
+  "source_types": null,
+  "projects": [
+    "ENG"
+  ],
+  "authors": null,
+  "updated_after": "2026-09-01T00:00:00Z",
+  "updated_before": null,
+  "attributes": [
+    {
+      "key": "jira.priority",
+      "values": [
+        "High",
+        "Highest"
+      ]
+    }
+  ],
+  "exclude": [
+    {
+      "source_id": "jira-eng",
+      "root_id": "ENG-977"
+    }
+  ],
+  "deadline_ms": 5000
+}

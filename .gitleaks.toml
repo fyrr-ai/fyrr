@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic identity contract artifact"
+paths = ['''(^|/)fixtures/contracts/identity-artifact/artifact\.json$''']

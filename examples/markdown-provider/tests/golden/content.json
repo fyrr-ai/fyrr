@@ -1,0 +1,86 @@
+[
+  {
+    "schema_version": "1.3",
+    "source_id": "testkit-source",
+    "kind": "content",
+    "cursor": {
+      "start": null,
+      "end": "1759225060000000000:onboarding.md"
+    },
+    "body": {
+      "type": "document_changes",
+      "changes": [
+        {
+          "op": "upsert",
+          "root_id": "guides/restore.md",
+          "source_revision": "sha256:d33e31a1ac3b7f272dcb50f87e49fb71983f99e73a7211d797999589788fbea6",
+          "readers": [],
+          "containers": [],
+          "metadata": {
+            "source_uri": "file:///docs/guides/restore.md",
+            "source_type": "markdown.file",
+            "title": "Restoring a namespace",
+            "labels": [],
+            "updated_at": "2025-09-30T09:36:40Z"
+          },
+          "attributes": [
+            "markdown.directory=guides"
+          ],
+          "sections": [
+            {
+              "text": "Restore commits a new publication from an earlier retained version.",
+              "location": {
+                "kind": "heading",
+                "label": "Restoring a namespace"
+              }
+            },
+            {
+              "text": "Run allowed and denied probes before serving.",
+              "location": {
+                "kind": "heading",
+                "label": "Checks"
+              }
+            }
+          ]
+        },
+        {
+          "op": "upsert",
+          "root_id": "onboarding.md",
+          "source_revision": "sha256:0d1617aa3eafc12f7313e96be81abb4ef3627b756e1bab814dbbf89164a485ac",
+          "readers": [],
+          "containers": [],
+          "metadata": {
+            "source_uri": "file:///docs/onboarding.md",
+            "source_type": "markdown.file",
+            "title": "Onboarding handbook",
+            "author": "Ada Novak",
+            "labels": [
+              "handbook",
+              "people"
+            ],
+            "updated_at": "2025-09-30T09:37:40Z"
+          },
+          "attributes": [
+            "markdown.directory=."
+          ],
+          "sections": [
+            {
+              "text": "New engineers start with the platform tour.",
+              "location": {
+                "kind": "heading",
+                "label": "Welcome"
+              }
+            },
+            {
+              "text": "Pair with your buddy and ship one small change.",
+              "location": {
+                "kind": "heading",
+                "label": "First week"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

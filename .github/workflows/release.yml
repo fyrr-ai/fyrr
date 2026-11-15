@@ -1,0 +1,90 @@
+# Release: on a `v*` tag, runs ci.yml (`scripts/ci --images`) and, only if it
+# passes, assembles the artifacts with scripts/release (both
+# binaries, the connector SDK wheel, the contracts, both images and
+# SHA256SUMS), publishes them as a GitHub release and pushes both images to
+# GHCR. The tag must match the workspace version in Cargo.toml.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  ci:
+    # The documented local form; actionlint rejects the `$/` form.
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
+
+  release:
+    name: build and publish
+    needs: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the tag against the workspace version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          [[ "$TAG" == "v$version" ]] || { echo "tag $TAG does not match Cargo.toml version $version" >&2; exit 1; }
+
+      - name: Free disk space for the Lance and image builds
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal --component rustfmt,clippy
+          rustup default "$channel"
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Install the pinned cargo-deny (scripts/doctor requires it)
+        run: |
+          source scripts/pins.env
+          cargo install --locked "cargo-deny@$CARGO_DENY_VERSION"
+
+      - name: scripts/release
+        env:
+          TAG: ${{ github.ref_name }}
+        run: scripts/release --version "${TAG#v}" --out dist
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          dir="dist/fyrr-${TAG#v}"
+          gh release create "$TAG" --verify-tag --title "fyrr ${TAG#v}" \
+            --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md). Verify downloads with \`sha256sum --check --ignore-missing SHA256SUMS\`." \
+            "$dir"/fyrr-* "$dir"/*.whl "$dir"/LICENSE "$dir"/NOTICE "$dir"/SHA256SUMS "$dir"/manifest.txt
+
+      - name: Push both images to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          version="${TAG#v}"
+          dir="dist/fyrr-$version"
+          registry="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+          for image in fyrr fyrr-reader; do
+            gunzip -c "$dir/$image-image-$version.tar.gz" | docker image load
+            docker image tag "$image:$version" "$registry/$image:$version"
+            docker image push "$registry/$image:$version"
+          done
+          docker logout ghcr.io

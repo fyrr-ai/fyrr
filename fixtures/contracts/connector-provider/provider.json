@@ -1,0 +1,56 @@
+{
+  "schema_version": "2.0",
+  "name": "markdown-dir",
+  "description": "Markdown files in a local directory (example provider)",
+  "min_sdk_version": "0.1.0",
+  "connection_types": [
+    "fixed"
+  ],
+  "sync_kinds": [
+    "content",
+    "reconcile"
+  ],
+  "connector": "fyrr_provider_markdown.connector:MarkdownConnector",
+  "config_schema": {
+    "settings": {
+      "type": "object",
+      "properties": {
+        "max_file_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1048576,
+          "description": "Files larger than this are skipped."
+        },
+        "webhook_token": {
+          "x-fyrr-secret": true,
+          "type": "object",
+          "properties": {
+            "env": {
+              "type": "string",
+              "pattern": "^[A-Z_][A-Z0-9_]*$"
+            }
+          },
+          "required": [
+            "env"
+          ],
+          "additionalProperties": false,
+          "description": "A secret, as an environment reference."
+        }
+      },
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string",
+          "description": "Directory to read."
+        }
+      },
+      "required": [
+        "root"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

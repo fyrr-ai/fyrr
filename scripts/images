@@ -1,0 +1,321 @@
+#!/usr/bin/env bash
+# Builds, tests and measures the two images and both
+# provider install paths. Slow (a clean build compiles Lance in
+# release mode) and needs the network for base images, so it runs as
+# `scripts/ci --images`, not in every ci run.
+#
+#   scripts/images             build, test, check the image-size budgets
+#   scripts/images --record    ... and record the measured sizes in budgets.toml
+#   scripts/images --no-cache  build without the layer cache (cargo's cache
+#                              mounts stay; the first build on a host is clean)
+#
+# Images are tagged per worktree (fyrr:<tag>, fyrr-reader:<tag>, where <tag>
+# is derived from a hash of the worktree path) and labelled with that tag,
+# never with the path itself. The script removes only images it labelled
+# (superseded builds, the temporary derived image) and only its own compose
+# project; it never prunes. Logs, timings and sizes go to target/images/.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+cd "$ROOT"
+# These generated fixtures contain synthetic data and are bind-mounted into
+# non-root containers. Their access must not depend on the caller's umask.
+umask 022
+
+RECORD=0
+NO_CACHE=()
+for arg in "$@"; do
+  case "$arg" in
+    --record) RECORD=1 ;;
+    --no-cache) NO_CACHE=(--no-cache) ;;
+    *) die "unknown argument $arg (use --record or --no-cache)" ;;
+  esac
+done
+
+TAG="wt-$(printf '%s' "$ROOT" | sha256sum | cut -c1-12)"
+LABEL="org.fyrr.worktree=$TAG"
+FULL="fyrr:$TAG"
+READER="fyrr-reader:$TAG"
+DERIVED="fyrr-derived-test:$TAG"
+PROJECT="fyrr-images-$TAG"
+OUT="$ROOT/target/images"
+WHEELS="$ROOT/target/example-wheels"
+DOCS="$ROOT/examples/markdown-provider/tests/data"
+ours() { [[ "$(docker image inspect -f '{{index .Config.Labels "org.fyrr.worktree"}}' "$1" 2>/dev/null)" == "$TAG" ]]; }
+image_id() { docker image inspect -f '{{.Id}}' "$1" 2>/dev/null || true; }
+
+# Rootless image UIDs own the private cache files. Remove only this script's
+# synthetic cache through its labelled image, including after a failed check.
+clear_mirror() {
+  if [[ -d "$OUT/compose/dense-mirror" ]] && ours "$FULL"; then
+    docker run --rm --user 0:0 --entrypoint /bin/sh \
+      -v "$OUT/compose/dense-mirror:/mirror" "$FULL" \
+      -c 'rm -rf /mirror/sha256:* /mirror/private-full' >/dev/null 2>&1 || return 1
+  fi
+}
+clear_mirror || die "cannot clean this image fixture's cache"
+rm -rf "$OUT"
+mkdir -p "$OUT/compose"
+
+# Removes an image this worktree built when a rebuild superseded it.
+drop_superseded() {
+  local old="$1" new="$2"
+  if [[ -n "$old" && "$old" != "$new" ]] && ours "$old"; then
+    docker image rm "$old" >/dev/null 2>&1 || log "kept superseded image $old (still in use)"
+  fi
+}
+
+build() {
+  local target="$1" tag="$2" old started
+  old="$(image_id "$tag")"
+  started=$SECONDS
+  log "building $tag (--target $target)"
+  docker build "${NO_CACHE[@]}" --file docker/Dockerfile --target "$target" \
+    --label "$LABEL" --tag "$tag" . >"$OUT/build-$target.log" 2>&1 ||
+    { tail -n 40 "$OUT/build-$target.log"; die "building $tag failed (log: target/images/build-$target.log)"; }
+  echo "$target $((SECONDS - started))" >>"$OUT/build-seconds.txt"
+  drop_superseded "$old" "$(image_id "$tag")"
+}
+
+# expect <exit code> <grep pattern> <description> <docker run args…>
+expect() {
+  local code="$1" pattern="$2" what="$3" actual output
+  shift 3
+  output="$(docker run --rm "$@" 2>&1)" && actual=0 || actual=$?
+  printf '%s\n' "--- $what (exit $actual)" "$output" >>"$OUT/checks.log"
+  [[ "$actual" == "$code" ]] || { echo "$output"; die "$what: exit $actual, expected $code"; }
+  grep -qE -- "$pattern" <<<"$output" || { echo "$output"; die "$what: output lacks /$pattern/"; }
+  echo "ok   $what"
+}
+
+embedding_pid=""
+cleanup() {
+  if [[ -n "$embedding_pid" ]]; then
+    kill "$embedding_pid" 2>/dev/null || true
+    wait "$embedding_pid" 2>/dev/null || true
+  fi
+  clear_mirror || log "kept this image fixture's cache (cleanup failed)"
+  FYRR_IMAGE="$FULL" FYRR_READER_IMAGE="$READER" FYRR_COMPOSE_DIR="$OUT/compose" \
+    docker compose --file docker/compose.yaml --project-name "$PROJECT" down --remove-orphans \
+    >/dev/null 2>&1 || true
+  if ours "$DERIVED"; then docker image rm "$DERIVED" >/dev/null 2>&1 || true; fi
+}
+trap cleanup EXIT
+
+# --- build -----------------------------------------------------------------
+started=$SECONDS
+build fyrr-reader "$READER"
+build fyrr "$FULL"
+log "both images built in $((SECONDS - started))s"
+
+log "building the example provider wheel outside the workspace"
+rm -rf "$WHEELS"
+uv build --wheel --quiet --out-dir "$WHEELS" examples/markdown-provider || die "building examples/markdown-provider failed"
+
+# --- the reader-only image ---------------------------------------------------
+config="$OUT/compose/fyrr.toml"
+cat >"$config" <<'EOF'
+# Both images on one machine (scripts/images); the identity key is generated per run.
+[namespace]
+name = "dev"
+[storage]
+uri = "s3://fyrr-dev/dev"
+[identity]
+hashing_key = { env = "FYRR_IDENTITY_KEY" }
+[embedding]
+endpoint = "https://embeddings.invalid/v1"
+
+[[sources]]
+id = "handbook"
+type = "markdown-dir"
+permissions = "fixed"
+readers = ["grp:engineering"]
+[sources.scope]
+root = "/srv/docs"
+EOF
+FYRR_IDENTITY_KEY="$(openssl rand -hex 32)"
+export FYRR_IDENTITY_KEY
+mounts=(-e FYRR_IDENTITY_KEY -v "$config:/etc/fyrr/fyrr.toml:ro" -v "$DOCS:/srv/docs:ro" -v "$WHEELS:/wheels:ro")
+chmod 0644 "$config"
+
+expect 0 'reader-only build' "reader image: --version" "$READER" --version
+expect 69 'reader-only fyrr build.*no writer' "reader image: fyrr writer explains the writer is absent" "$READER" writer sync
+expect 0 'config OK' "reader image: config check" "${mounts[@]}" "$READER" --config /etc/fyrr/fyrr.toml config check
+[[ "$(docker image inspect -f '{{.Config.User}}' "$READER")" == 65532:65532 ]] || die "reader image does not run as non-root"
+echo "ok   reader image runs as uid 65532"
+container="$(docker create "$READER")"
+python_files="$(docker export "$container" | tar -t | grep -E '(^|/)(libpython[^/]*|python3[^/]*)$' || true)"
+docker rm "$container" >/dev/null
+[[ -z "$python_files" ]] || die "reader image contains Python: $python_files"
+echo "ok   reader image file system has no libpython or python executable"
+
+# --- the full image ----------------------------------------------------------
+expect 0 'full build' "full image: --version" "$FULL" --version
+expect 0 'local-files .*ok' "full image: bundled providers" "$FULL" writer providers
+expect 0 'google-drive .*ok' "full image: the Google Drive provider's extra is installed" "$FULL" writer providers
+expect 78 'configuration_invalid' "full image: reader requires configuration" "$FULL" reader check
+expect 0 'Usage: fyrr reader' "full image: fyrr reader --help" "$FULL" reader --help
+[[ "$(docker image inspect -f '{{.Config.User}}' "$FULL")" == 10001:10001 ]] || die "full image does not run as non-root"
+echo "ok   full image runs as uid 10001"
+
+scripts/s3-fixture start >"$OUT/dense-fixture-start.log" 2>&1
+eval "$(scripts/s3-fixture env)"
+# Exercise the release embedding path with an owned, synthetic HTTP provider.
+exec {embedding_output}< <(exec "$ROOT/connectors/.venv/bin/python" -u - <<'PY'
+import json
+import math
+import os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_args):
+        pass
+
+    def reply(self, value):
+        assert self.headers.get("Authorization") == (
+            "Bearer " + os.environ["FYRR_TEST_S3_SECRET_ACCESS_KEY"]
+        )
+        body = json.dumps(value).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        assert self.path == "/v1/embeddings/models"
+        self.reply({"data": [{"id": "BAAI/bge-m3"}]})
+
+    def do_POST(self):
+        assert self.path == "/v1/embeddings"
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        assert request["model"] == "BAAI/bge-m3"
+        assert all(text in ("fixture document 0", "fixture query") for text in request["input"])
+        vector = [math.sin(d + 7) for d in range(1024)]
+        self.reply({"model": "BAAI/bge-m3", "data": [
+            {"index": index, "embedding": vector}
+            for index, _text in enumerate(request["input"])
+        ]})
+
+
+server = HTTPServer(("127.0.0.1", 0), Handler)
+print(f"http://127.0.0.1:{server.server_port}/v1", flush=True)
+server.serve_forever()
+PY
+)
+embedding_pid=$!
+IFS= read -r -t 30 -u "$embedding_output" embedding_endpoint || die "embedding fixture failed to start"
+exec {embedding_output}<&-
+mkdir -p "$OUT/compose/dense-docs" "$OUT/compose/dense-mirror"
+chmod 0777 "$OUT/compose/dense-mirror"
+printf '%s' 'fixture document 0' >"$OUT/compose/dense-docs/0.txt"
+# Keep retained fixtures intact; namespace-bound HMAC tokens require a fresh corpus.
+dense_config="$OUT/compose/dense.toml"
+cat >"$dense_config" <<EOF
+[namespace]
+name = "image-dense-r1"
+[storage]
+uri = "s3://$FYRR_TEST_S3_BUCKET/images-$TAG-$(date -u +%s%N)"
+endpoint = "$FYRR_TEST_S3_ENDPOINT"
+allow_http = true
+access_key_id = { env = "FYRR_TEST_S3_ACCESS_KEY_ID" }
+secret_access_key = { env = "FYRR_TEST_S3_SECRET_ACCESS_KEY" }
+[embedding]
+endpoint = "$embedding_endpoint"
+reader_live = true
+api_key = { env = "FYRR_TEST_S3_SECRET_ACCESS_KEY" }
+[embedding.spend]
+limit_microusd = 100
+max_call_microusd = 1
+[identity]
+stdio_user = "image-subject"
+stdio_readers = ["grp:allow"]
+hashing_key = { env = "FYRR_TEST_S3_SECRET_ACCESS_KEY" }
+validity_deadline = "1h"
+[reader]
+mirror_path = "/mirror/private-full"
+mirror_max_bytes = 16777216
+[[sources]]
+id = "image-local"
+type = "local-files"
+permissions = "fixed"
+readers = ["grp:allow"]
+[sources.scope]
+paths = ["/srv/dense-docs"]
+EOF
+dense_mounts=(--network host -e FYRR_TEST_S3_ACCESS_KEY_ID -e FYRR_TEST_S3_SECRET_ACCESS_KEY
+  -v "$dense_config:/etc/fyrr/fyrr.toml:ro" -v "$OUT/compose/dense-docs:/srv/dense-docs:ro"
+  -v "$OUT/compose/dense-mirror:/mirror")
+expect 0 '"created":true' "full image: namespace create on RustFS" "${dense_mounts[@]}" "$FULL" --config /etc/fyrr/fyrr.toml writer namespace create
+expect 0 '"paid_calls":1' "full image: real local-file sync with the HTTP fixture" "${dense_mounts[@]}" "$FULL" --config /etc/fyrr/fyrr.toml writer sync
+expect 0 '"lance_version"' "full image: indexed commit on RustFS" "${dense_mounts[@]}" "$FULL" --config /etc/fyrr/fyrr.toml writer commit
+reader_config="$OUT/compose/dense-reader.toml"
+sed 's|mirror_path = "/mirror/private-full"|mirror_path = "/tmp/fyrr-mirror"|' "$dense_config" >"$reader_config"
+docker run --rm --entrypoint /bin/sh "${dense_mounts[@]}" "$FULL" \
+  -c 'umask 022; mkdir -m 700 /mirror/private-full'
+expect 1 'storage_unavailable' "reader image: foreign-owned private mirror refused" "${dense_mounts[@]}" \
+  "$READER" --config /etc/fyrr/fyrr.toml reader check
+# The two runtime images have different UIDs; their private mirrors are separate.
+expect 0 '"ready":true' "reader image: pinned dense publication" "${dense_mounts[@]}" \
+  -v "$reader_config:/etc/fyrr/reader.toml:ro" "$READER" --config /etc/fyrr/reader.toml reader check
+coproc DENSE_READER { docker run --rm -i "${dense_mounts[@]}" "$FULL" --config /etc/fyrr/fyrr.toml reader serve 2>"$OUT/dense-mcp-stderr.log"; }
+dense_pid="$DENSE_READER_PID"
+dense_input="${DENSE_READER[1]}"
+dense_output="${DENSE_READER[0]}"
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"images","version":"1"}}}' >&"$dense_input"
+IFS= read -r -t 300 -u "$dense_output" response || die "full image MCP initialization failed"
+printf '%s\n' "$response" >"$OUT/dense-mcp.log"
+grep -q '"name":"fyrr"' <<<"$response" || die "full image MCP initialization response is invalid"
+printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}' >&"$dense_input"
+# The full reader stays alive next to a writer job on the same machine.
+expect 0 '"upserts":0' "full image: no-op writer job alongside MCP reader" "${dense_mounts[@]}" "$FULL" --config /etc/fyrr/fyrr.toml writer sync
+expect 0 '"lance_version"' "full image: no-op commit alongside MCP reader" "${dense_mounts[@]}" "$FULL" --config /etc/fyrr/fyrr.toml writer commit
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search","arguments":{"query":"fixture query","limit":75}}}' >&"$dense_input"
+IFS= read -r -t 300 -u "$dense_output" response || die "full image MCP search failed"
+printf '%s\n' "$response" >>"$OUT/dense-mcp.log"
+grep -q '"isError":false' <<<"$response" || die "full image MCP search was refused"
+grep -q '"source_id":"image-local"' <<<"$response" || die "full image MCP did not hydrate its local document"
+[[ "$(grep -o '"source_id":"image-local"' <<<"$response" | wc -l)" == 1 ]] || die "full image MCP did not return exactly min(k, eligible)"
+exec {dense_input}>&-
+wait "$dense_pid" || die "full image MCP reader failed"
+echo "ok   full image: MCP stdio search and writer jobs together on RustFS"
+
+# --- providers without rebuilding fyrr: derived image -------------------------
+log "building the derived image $DERIVED (FROM $FULL + pip install of the wheel)"
+docker build --file examples/derived-image/Dockerfile --build-arg "FYRR_IMAGE=$FULL" \
+  --label "$LABEL" --tag "$DERIVED" "$WHEELS" >"$OUT/build-derived.log" 2>&1 ||
+  { tail -n 30 "$OUT/build-derived.log"; die "building the derived image failed"; }
+expect 0 'markdown-dir +fyrr-provider-markdown +0\.1\.0 .* ok' "derived image: markdown-dir listed and compatible" "$DERIVED" writer providers
+expect 0 'source handbook \(provider markdown-dir 0\.1\.0\): ok' "derived image: dry-run sync of local Markdown" "${mounts[@]}" "$DERIVED" --config /etc/fyrr/fyrr.toml writer sync --dry-run
+
+# --- providers without rebuilding fyrr: mounted wheel directory ---------------
+expect 0 'markdown-dir .* ok' "mounted wheels: markdown-dir listed and compatible" -e FYRR_PROVIDER_WHEELS=/wheels "${mounts[@]}" "$FULL" writer providers
+expect 0 'upserts=2 .*' "mounted wheels: dry-run sync of local Markdown" -e FYRR_PROVIDER_WHEELS=/wheels "${mounts[@]}" "$FULL" --config /etc/fyrr/fyrr.toml writer sync --dry-run
+
+# --- both images together on one machine --------------------------------------
+cp -r "$WHEELS" "$OUT/compose/wheels"
+cp -r "$DOCS" "$OUT/compose/docs"
+export FYRR_IMAGE="$FULL" FYRR_READER_IMAGE="$READER" FYRR_COMPOSE_DIR="$OUT/compose"
+docker compose --file docker/compose.yaml --project-name "$PROJECT" up --no-color >"$OUT/compose.log" 2>&1 ||
+  { tail -n 40 "$OUT/compose.log"; die "docker compose up failed"; }
+for service in reader writer dev-reader; do
+  code="$(docker compose --file docker/compose.yaml --project-name "$PROJECT" ps --all --format '{{.ExitCode}}' "$service")"
+  [[ "$code" == 0 ]] || { tail -n 40 "$OUT/compose.log"; die "compose service $service exited $code"; }
+  echo "ok   compose: $service exited 0"
+done
+
+# --- sizes and budgets ---------------------------------------------------------
+declare -A size
+size[full]="$(docker image inspect -f '{{.Size}}' "$FULL")"
+size[reader_only]="$(docker image inspect -f '{{.Size}}' "$READER")"
+{
+  echo "full $FULL ${size[full]}"
+  echo "reader_only $READER ${size[reader_only]}"
+} >"$OUT/sizes.txt"
+cat "$OUT/build-seconds.txt"
+if ((RECORD)); then
+  for key in full reader_only; do set_budget image_size "$key" "${size[$key]}"; done
+  log "recorded the image sizes in budgets.toml"
+fi
+status=0
+for key in full reader_only; do compare_budget image_size "$key" "${size[$key]}" || status=1; done
+exit "$status"

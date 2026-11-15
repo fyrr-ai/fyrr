@@ -1,0 +1,37 @@
+{
+  "schema_version": "2.2",
+  "namespace": "acme",
+  "content": {
+    "publication_id": "pub-000042",
+    "sequence": 42,
+    "lance_version": 121,
+    "manifest": "publications/pub-000042.json",
+    "committed_at": "2026-09-30T10:01:30Z"
+  },
+  "policy": {
+    "generation": 9,
+    "object": "policy/generation-9.json",
+    "digest": "sha256:117d7833628e2a22ebb3c36afaab0ecebc20d3383b3c3ff33109605c1436d0f7"
+  },
+  "identity": {
+    "generation": 27,
+    "object": "identity/generation-27.json",
+    "digest": "sha256:e98ebb5d4453a02a1afafdb5aba80c49519a5970736363bb0b13e373106ceb72"
+  },
+  "freshness": {
+    "directory": "2026-09-30T10:00:00Z",
+    "sources": [
+      {
+        "source_id": "gdrive-main",
+        "permissions_read_at": "2026-09-30T09:59:58Z"
+      }
+    ]
+  },
+  "lease": {
+    "holder": "writer-host-a/pid-4242",
+    "epoch": 5,
+    "expires_at": "2026-09-30T10:02:30Z"
+  },
+  "updated_at": "2026-09-30T10:01:31Z",
+  "incarnation": "5f0e3a9c2b7d4e1f8a6c0d3b9e2f7a41"
+}

@@ -1,0 +1,530 @@
+use super::*;
+
+type LexicalQuery = Result<(Vec<Candidate>, u64, u64)>;
+type DenseQuery = Result<(Vec<Candidate>, Option<Vec<f32>>)>;
+impl PreparedReader {
+    /// Runs one search, as `fyrr reader search` and the MCP `search` tool do.
+    pub async fn search(&mut self, args: &SearchInput) -> Result<SearchOutput> {
+        self.search_input(args, None, None).await
+    }
+    /// Records the stage keys of the next search for `take_stages`: the
+    /// dense and lexical candidates (`[source, root, record, score]`) and
+    /// the composed order (`[source, root, record]`). For quality
+    /// measurement and tests; never part of a search response.
+    pub fn record_stages(&mut self) {
+        self.stage_trace = Some(serde_json::Value::Null);
+    }
+    /// The stage keys recorded since `record_stages`; stops recording.
+    pub fn take_stages(&mut self) -> Option<serde_json::Value> {
+        self.stage_trace.take()
+    }
+    fn trace_stages(&mut self, trace: impl FnOnce(&mut serde_json::Value)) {
+        if let Some(stages) = &mut self.stage_trace {
+            trace(stages);
+        }
+    }
+    pub(crate) fn selected_rows(&self) -> &RowAddrMask {
+        self.filter_selection
+            .as_ref()
+            .map_or(&self.eligible, |filter| &filter.eligible)
+    }
+    pub(crate) fn request_predicate(&self) -> Result<String> {
+        let authorization = self.admission_predicate()?;
+        Ok(self
+            .filter_selection
+            .as_ref()
+            .map_or(authorization.clone(), |filter| {
+                format!("({authorization}) AND ({})", filter.predicate)
+            }))
+    }
+    pub(crate) async fn search_input(
+        &mut self,
+        args: &SearchInput,
+        completion: Option<(&mut Option<DenseCompletion>, usize)>,
+        deadline: Option<Instant>,
+    ) -> Result<SearchOutput> {
+        args.validate().map_err(|_| InvalidArgument)?;
+        let queries: Vec<&str> = args.queries.as_ref().map_or_else(
+            || vec![args.query.as_deref().unwrap_or("")],
+            |queries| queries.iter().map(String::as_str).collect(),
+        );
+        let (total, before, telemetry, _pin) = self.request_prologue().await?;
+        let deadline = deadline.unwrap_or_else(|| {
+            total
+                + std::time::Duration::from_millis(u64::from(
+                    args.deadline_ms
+                        .unwrap_or(fyrr_core::limits::mcp::DEFAULT_DEADLINE_MS),
+                ))
+        });
+        // Leave some request time for lexical fusion, hydration and the final
+        // authorization check after a provider timeout. The request's absolute
+        // deadline remains authoritative, including time spent in its queue.
+        let embedding_deadline = deadline
+            - std::time::Duration::from_millis(50)
+                .min(deadline.saturating_duration_since(Instant::now()) / 10);
+        self.response_claim = None;
+        let outcome = self
+            .search_admitted(args, &queries, embedding_deadline, telemetry, completion)
+            .await;
+        let stage = Instant::now();
+        let counters = self.mirror.counters();
+        #[cfg(test)]
+        {
+            self.test_hooks.observe_admission(self, true);
+            self.test_hooks.authorization_output.wait_once().await;
+        }
+        if self.interrupted().await? {
+            return Err(AuthorizationUnavailable);
+        }
+        let mut result = outcome?;
+        self.stage(
+            &mut result.metadata.telemetry,
+            "output_authorization",
+            stage,
+            counters,
+        );
+        self.finish_metadata(&mut result.metadata, total, before);
+        if args.order == Some(SearchOrder::UpdatedAt) {
+            result.hits.sort_by(|a, b| {
+                b.updated_at.cmp(&a.updated_at).then(
+                    (&a.source_id, &a.root_id, &a.record_id).cmp(&(
+                        &b.source_id,
+                        &b.root_id,
+                        &b.record_id,
+                    )),
+                )
+            });
+        }
+        Ok(result)
+    }
+
+    async fn search_admitted(
+        &mut self,
+        args: &SearchInput,
+        queries: &[&str],
+        embedding_deadline: Instant,
+        mut telemetry: Telemetry,
+        mut completion: Option<(&mut Option<DenseCompletion>, usize)>,
+    ) -> Result<SearchOutput> {
+        let k = args.effective_limit() as usize;
+
+        let stage = Instant::now();
+        let filter_counters = self.mirror.counters();
+        self.apply_filters(args).await?;
+        let predicate = self.request_predicate()?;
+        let lexical_predicate = Self::fts_requires_sql_prefilter(&self.dataset, &self.indexes)
+            .then_some(predicate.as_str());
+        self.stage(&mut telemetry, "predicate", stage, filter_counters);
+        if args.query.is_none() && args.queries.is_none() {
+            return self.listing(args, telemetry).await;
+        }
+        // Reserve added batch scratch from the same pool as serving generations.
+        // Default requests retain their existing claims and executable path.
+        self.response_claim =
+            if args.queries.is_some() && self.selected_rows().max_len().unwrap_or(0) != 0 {
+                let cfg = &self.config.namespace.retrieval;
+                let candidate_bytes =
+                    (std::mem::size_of::<Candidate>() + 3 * fyrr_core::limits::MAX_ID_BYTES) as u64;
+                // Expanded tie sets, decoded vectors and distance-kernel scratch.
+                let bytes = queries.len() as u64
+                        * (cfg.rescore_depth.maximum(cfg.dense_candidates) as u64
+                            * (candidate_bytes + u64::from(self.config.embedding.dimensions) * 8)
+                            + cfg.lexical_candidates as u64 * 1024u64.div_ceil(50)
+                                * candidate_bytes)
+                        // Includes hydrated metadata/text, typed/JSON copies and escaped
+                        // structured + textual MCP output through transport buffering.
+                        + (queries.len() * k).min(cfg.max_documents) as u64 * 1024 * 1024;
+                Some(Arc::new(
+                    self.preparation_budget.try_claim(bytes).ok_or(Busy)?,
+                ))
+            } else {
+                None
+            };
+        let start = Instant::now();
+        let runtime = self.query_embeddings.clone();
+        let mut vectors = runtime.prepare(queries)?;
+        telemetry
+            .stage_us
+            .insert("embedding".into(), micros(start.elapsed()));
+        let fallback_needed = self.execution_slot.is_some()
+            && self.config.embedding.reader_live
+            && self.selected_rows().max_len().unwrap_or(0) != 0
+            && vectors.vectors.iter().any(Result::is_err);
+        let max_documents = if args.queries.is_some() {
+            self.config.namespace.retrieval.max_documents
+        } else {
+            k
+        };
+        // Extra retained output and candidate copies share the serving budget.
+        // Cache-only and process-cache hits keep their original path and claims.
+        let _fallback_claim = if fallback_needed {
+            let bytes = (max_documents.min(queries.len() * k)) as u64 * 1024 * 1024
+                + queries.len() as u64
+                    * self.config.namespace.retrieval.lexical_candidates as u64
+                    * (std::mem::size_of::<Candidate>() + 3 * fyrr_core::limits::MAX_ID_BYTES)
+                        as u64;
+            Some(self.preparation_budget.try_claim(bytes).ok_or(Busy)?)
+        } else {
+            None
+        };
+        let fallback_telemetry = telemetry.clone();
+        let start = Instant::now();
+        let counters = self.mirror.counters();
+        let ((lexical, lexical_us, lexical_arm_us, fallback), dense) = tokio::join!(
+            self.lexical_batch(
+                args,
+                queries,
+                lexical_predicate,
+                fallback_needed,
+                fallback_telemetry
+            ),
+            self.dense_batch(
+                queries,
+                embedding_deadline,
+                &runtime,
+                &mut vectors,
+                &mut telemetry
+            ),
+        );
+        let (dense, embedding_failed) = dense?;
+        *telemetry.stage_us.entry("lexical".into()).or_default() += lexical_us;
+        // Shared mirror counters cannot attribute overlapping reads to a lane.
+        // Keep lane timers, but charge concurrent I/O exactly once to this stage.
+        telemetry
+            .stage_s3_requests
+            .retain(|name, _| !name.starts_with("dense_") && name != "float16_rescore");
+        telemetry
+            .stage_s3_bytes
+            .retain(|name, _| !name.starts_with("dense_") && name != "float16_rescore");
+        self.stage(&mut telemetry, "retrieval_concurrent", start, counters);
+        if vectors.provider_us != 0 {
+            // Only subtract waiting that did not overlap native lexical
+            // work. Storage counters keep their single shared charge.
+            let wait_only = vectors.provider_us.saturating_sub(lexical_arm_us);
+            let concurrent = telemetry
+                .stage_us
+                .get_mut("retrieval_concurrent")
+                .ok_or(StorageUnavailable)?;
+            *concurrent = concurrent.saturating_sub(wait_only);
+        }
+        let ranked_queries = self.compose_queries(
+            args,
+            &predicate,
+            lexical,
+            dense,
+            &mut completion,
+            &mut telemetry,
+        )?;
+        telemetry.embedding_memory_hits = vectors.memory_hits;
+        telemetry.embedding_provider_calls = vectors.provider.calls;
+        if vectors.provider_us != 0 {
+            telemetry
+                .stage_us
+                .insert("embedding_provider".into(), vectors.provider_us);
+        }
+        self.finish_search_batch(
+            args,
+            queries,
+            ranked_queries,
+            embedding_failed,
+            fallback,
+            telemetry,
+        )
+        .await
+    }
+
+    async fn lexical_batch(
+        &self,
+        args: &SearchInput,
+        queries: &[&str],
+        lexical_predicate: Option<&str>,
+        fallback_needed: bool,
+        fallback_telemetry: Telemetry,
+    ) -> (Vec<LexicalQuery>, u64, u64, Option<Result<SearchOutput>>) {
+        let arm_started = Instant::now();
+        let k = args.effective_limit() as usize;
+        let output = args.output.unwrap_or(OutputMode::Excerpt);
+        let max_documents = if args.queries.is_some() {
+            self.config.namespace.retrieval.max_documents
+        } else {
+            k
+        };
+        let mut results = Vec::with_capacity(queries.len());
+        let mut elapsed = 0;
+        for query in queries {
+            let start = Instant::now();
+            let result = Self::lexical(
+                &self.dataset,
+                self.selected_rows(),
+                lexical_predicate,
+                query,
+                self.config.namespace.retrieval.lexical_candidates,
+            )
+            .await;
+            #[cfg(test)]
+            {
+                self.test_hooks
+                    .lexical_queries_completed
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.test_hooks.lexical_complete.notify_one();
+            }
+            elapsed += micros(start.elapsed());
+            results.push(result);
+        }
+        let fallback = if fallback_needed {
+            Some(
+                async {
+                    let mut ranked = Vec::with_capacity(results.len());
+                    for result in &results {
+                        let (rows, _, _) = result.as_ref().map_err(|code| *code)?;
+                        ranked.push(compose(
+                            Vec::new(),
+                            rows.clone(),
+                            &self.config.namespace.composition,
+                            k,
+                            &self.config.namespace.retrieval,
+                        )?);
+                    }
+                    let selected = select_hits(ranked, queries, args, output, k, max_documents);
+                    self.hydrate_selected(
+                        selected,
+                        vec![Lane::Dense],
+                        fallback_telemetry,
+                        args.text_hits
+                            .filter(|_| args.order == Some(SearchOrder::UpdatedAt))
+                            .map(|count| (count, output)),
+                    )
+                    .await
+                }
+                .await,
+            )
+        } else {
+            None
+        };
+        if let Some(slot) = &self.execution_slot {
+            slot.lexical_finished();
+            #[cfg(test)]
+            if !slot.held() {
+                self.test_hooks.embedding_parked.notify_one();
+            }
+        }
+        (results, elapsed, micros(arm_started.elapsed()), fallback)
+    }
+
+    async fn dense_batch(
+        &self,
+        queries: &[&str],
+        embedding_deadline: Instant,
+        runtime: &embedding::QueryEmbeddings,
+        vectors: &mut embedding::QueryWork,
+        telemetry: &mut Telemetry,
+    ) -> Result<(Vec<DenseQuery>, bool)> {
+        self.authorization()?;
+        let waiting = self.config.embedding.reader_live
+            && self.selected_rows().max_len().unwrap_or(0) != 0
+            && vectors.vectors.iter().any(Result::is_err);
+        if waiting && let Some(slot) = &self.execution_slot {
+            slot.begin_provider_wait();
+        }
+        runtime
+            .complete(
+                vectors,
+                queries,
+                self.selected_rows().max_len().unwrap_or(0) != 0,
+                embedding_deadline,
+            )
+            .await;
+        let mut failed = vectors.vectors.iter().any(Result::is_err);
+        if waiting && let Some(slot) = &self.execution_slot {
+            if failed {
+                // A failed provider never queues away the lexical answer.
+                slot.try_resume();
+            } else {
+                #[cfg(test)]
+                self.test_hooks.embedding_reacquiring.notify_one();
+                match tokio::time::timeout_at(
+                    tokio::time::Instant::from_std(embedding_deadline),
+                    slot.resume(),
+                )
+                .await
+                {
+                    Ok(result) => result?,
+                    Err(_) => failed = true,
+                }
+            }
+        }
+        let mut results = Vec::with_capacity(queries.len());
+        for vector in &mut vectors.vectors {
+            let vector = if failed {
+                Err(EmbeddingUnavailable)
+            } else {
+                std::mem::replace(vector, Err(EmbeddingUnavailable))
+            };
+            let result = match vector {
+                Ok(vector) => self
+                    .dense(
+                        &vector,
+                        self.config.namespace.retrieval.dense_candidates,
+                        telemetry,
+                    )
+                    .await
+                    .map(|rows| (rows, Some(vector))),
+                Err(_) => Ok((Vec::new(), None)),
+            };
+            results.push(result);
+        }
+        Ok::<_, ReaderError>((results, failed))
+    }
+
+    fn compose_queries(
+        &mut self,
+        args: &SearchInput,
+        predicate: &str,
+        lexical: Vec<LexicalQuery>,
+        dense: Vec<DenseQuery>,
+        completion: &mut Option<(&mut Option<DenseCompletion>, usize)>,
+        telemetry: &mut Telemetry,
+    ) -> Result<Vec<Vec<Candidate>>> {
+        let k = args.effective_limit() as usize;
+        let mut ranked_queries = Vec::new();
+        for (query_index, (lexical, dense)) in lexical.into_iter().zip(dense).enumerate() {
+            let (dense, vector) = dense?;
+            let stage = Instant::now();
+            let (lexical, fetched, bound_hits) = lexical?;
+            telemetry.lexical_candidates_fetched += fetched;
+            telemetry.lexical_tie_bound_hits += bound_hits;
+            self.trace_stages(|stages| {
+                let keys = |rows: &[Candidate]| {
+                    rows.iter()
+                        .map(|row| serde_json::json!([row.source, row.root, row.record, row.score]))
+                        .collect::<Vec<_>>()
+                };
+                *stages = serde_json::json!({"dense":keys(&dense),"lexical":keys(&lexical)});
+            });
+            if let (Some((completion, completion_query)), Some(vector)) =
+                (completion.as_mut(), vector)
+                && query_index == *completion_query
+                && completion.is_none()
+            {
+                let mut rows = [0; fyrr_core::limits::mcp::MAX_SEARCH_LIMIT as usize];
+                for (id, candidate) in rows.iter_mut().zip(&dense) {
+                    *id = candidate.row_id;
+                }
+                **completion = Some((
+                    vector,
+                    rows,
+                    dense
+                        .len()
+                        .min(fyrr_core::limits::mcp::MAX_SEARCH_LIMIT as usize),
+                    predicate.to_owned(),
+                ));
+            }
+            let selected = compose(
+                dense,
+                lexical,
+                &self.config.namespace.composition,
+                self.config
+                    .namespace
+                    .rerank
+                    .as_ref()
+                    .map_or(k, |rerank| k.max(rerank.candidates)),
+                &self.config.namespace.retrieval,
+            )?;
+            self.trace_stages(|stages| {
+                stages["composition"] = serde_json::json!(
+                    selected
+                        .iter()
+                        .map(|row| serde_json::json!([row.source, row.root, row.record]))
+                        .collect::<Vec<_>>()
+                );
+            });
+            self.stage(telemetry, "fusion", stage, self.mirror.counters());
+            ranked_queries.push(selected);
+        }
+
+        Ok(ranked_queries)
+    }
+
+    async fn finish_search_batch(
+        &mut self,
+        args: &SearchInput,
+        queries: &[&str],
+        mut ranked_queries: Vec<Vec<Candidate>>,
+        embedding_failed: bool,
+        mut fallback: Option<Result<SearchOutput>>,
+        mut telemetry: Telemetry,
+    ) -> Result<SearchOutput> {
+        let k = args.effective_limit() as usize;
+        let output = args.output.unwrap_or(OutputMode::Excerpt);
+        let max_documents = if args.queries.is_some() {
+            self.config.namespace.retrieval.max_documents
+        } else {
+            k
+        };
+        let mut degraded = if embedding_failed {
+            vec![Lane::Dense]
+        } else {
+            vec![]
+        };
+        if self
+            .execution_slot
+            .as_ref()
+            .is_some_and(|slot| !slot.held())
+        {
+            let mut result = fallback.take().ok_or(StorageUnavailable)??;
+            for (stage, micros) in result.metadata.telemetry.stage_us {
+                if matches!(stage.as_str(), "metadata" | "excerpts") {
+                    telemetry.stage_us.insert(stage, micros);
+                }
+            }
+            // No native hydration or rerank preparation may run on a parked slot.
+            // Optional reranking fails open to the prepared composition in this
+            // contended deadline path; normal reranking retains its existing path.
+            if self.config.namespace.rerank.is_some() && !result.hits.is_empty() {
+                degraded.push(Lane::Rerank);
+            }
+            result.metadata.degraded = degraded;
+            result.metadata.telemetry = telemetry;
+            return Ok(result);
+        }
+        drop(fallback);
+        if crate::rerank::rerank(self, queries, &mut ranked_queries, &mut telemetry).await? {
+            degraded.push(Lane::Rerank);
+        }
+        let selected = select_hits(ranked_queries, queries, args, output, k, max_documents);
+        self.hydrate_selected(
+            selected,
+            degraded,
+            telemetry,
+            args.text_hits
+                .filter(|_| args.order == Some(SearchOrder::UpdatedAt))
+                .map(|count| (count, output)),
+        )
+        .await
+    }
+
+    pub(crate) fn stage(
+        &self,
+        telemetry: &mut Telemetry,
+        name: &str,
+        start: Instant,
+        before: crate::mirror::IoSnapshot,
+    ) {
+        let after = self.mirror.counters();
+        telemetry
+            .stage_us
+            .entry(name.into())
+            .and_modify(|us| *us += micros(start.elapsed()))
+            .or_insert_with(|| micros(start.elapsed()));
+        telemetry
+            .stage_s3_requests
+            .entry(name.into())
+            .and_modify(|count| *count += after.requests - before.requests)
+            .or_insert(after.requests - before.requests);
+        telemetry
+            .stage_s3_bytes
+            .entry(name.into())
+            .and_modify(|bytes| *bytes += after.bytes - before.bytes)
+            .or_insert(after.bytes - before.bytes);
+    }
+}

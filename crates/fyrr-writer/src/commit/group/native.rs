@@ -1,0 +1,218 @@
+use super::*;
+
+#[derive(Debug)]
+pub(super) struct ContentWork<'a> {
+    pub(super) config: &'a Config,
+    pub(super) lease: &'a LeaseGuard,
+    pub(super) dataset: Option<Dataset>,
+    pub(super) lineage: CommitLineage,
+    pub(super) acl_changed: bool,
+}
+impl<'a> ContentWork<'a> {
+    pub(super) async fn open(
+        config: &'a Config,
+        lease: &'a LeaseGuard,
+        head: &ServingHead,
+        acl_changed: bool,
+    ) -> Result<Self> {
+        let mut lineage = crate::maintenance::lineage(lease, head);
+        let dataset = if let Some(pointer) = &head.content {
+            let mut pinned = fyrr_reader::storage::pinned(config, head).await?;
+            // Discard unpublished intermediate versions from an interrupted commit.
+            let latest = pinned.latest_version_id().await?;
+            if latest != pointer.lance_version {
+                native_step(lease, pinned.restore(), WriterError::StorageUnavailable).await?;
+                record_transaction(&pinned, &mut lineage, latest).await?;
+                lineage.recovery_version = Some(pinned.version().version);
+            }
+            Some(pinned)
+        } else {
+            None
+        };
+        Ok(Self {
+            config,
+            lease,
+            dataset,
+            lineage,
+            acl_changed,
+        })
+    }
+    pub(super) async fn fts_merge_needed(&self) -> Result<bool> {
+        let config = self.config;
+        let dataset = &self.dataset;
+        let needed = if config.writer.commit.merge_fts_segments {
+            if let Some(dataset) = dataset {
+                dataset
+                    .load_indices()
+                    .await?
+                    .iter()
+                    .filter(|i| i.name == "fts_idx")
+                    .count()
+                    > 1
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        Ok(needed)
+    }
+
+    pub(super) async fn apply_groups(
+        &mut self,
+        non_content: &[&PreparedEnvelope],
+        groups: Vec<Vec<&PreparedEnvelope>>,
+        sequence: u64,
+    ) -> Result<()> {
+        let config = self.config;
+        let lease = self.lease;
+        // Permissions before content whenever a serving version already exists.
+        if let Some(ds) = &mut self.dataset {
+            for envelope in non_content {
+                if matches!(envelope.payload, EnvelopePayload::Permissions(_)) {
+                    let (keys, fragments) = crate::apply::permissions(config, ds, envelope).await?;
+                    apply_staged(config, ds, lease, &mut self.lineage, keys, fragments).await?;
+                }
+            }
+        }
+        for group in groups {
+            if group.is_empty() {
+                continue;
+            }
+            if let Some(ds) = &mut self.dataset {
+                for envelope in group {
+                    let (keys, fragments, narrowed) =
+                        crate::apply::content(config, ds, envelope, sequence).await?;
+                    self.acl_changed |= narrowed;
+                    apply_staged(config, ds, lease, &mut self.lineage, keys, fragments).await?;
+                }
+                continue;
+            }
+
+            let uri = dataset_uri(config);
+            let mut fragments = Vec::new();
+            for envelope in group {
+                let EnvelopePayload::Content(payload) = &envelope.payload else {
+                    unreachable!()
+                };
+                for fragment in crate::apply::initial_deletes(config, envelope, sequence).await? {
+                    fragments.push(
+                        serde_json::from_value(fragment)
+                            .map_err(|_| WriterError::PreparedFragmentInvalid)?,
+                    );
+                }
+                for fragment in &payload.fragments {
+                    fragments.push(
+                        serde_json::from_value(fragment.lance_fragment.clone())
+                            .map_err(|_| WriterError::PreparedFragmentInvalid)?,
+                    );
+                }
+            }
+            if !fragments.is_empty() {
+                lease.head().await?;
+                // A failed first bulk has no serving version to Restore. Overwrite
+                // from its latest version explicitly discards all unpublished rows.
+                let before = {
+                    match lance::dataset::builder::DatasetBuilder::from_uri(&uri)
+                        .with_storage_options(
+                            config
+                                .storage
+                                .object_store_options(&ProcessEnvironment)
+                                .map_err(|_| WriterError::StorageConfigurationInvalid)?
+                                .into_map()
+                                .into_iter()
+                                .collect(),
+                        )
+                        .load()
+                        .await
+                    {
+                        Ok(orphan) => orphan.latest_version_id().await?,
+                        Err(lance::Error::DatasetNotFound { .. }) => 0,
+                        Err(_) => return Err(WriterError::StorageUnavailable),
+                    }
+                };
+                self.lineage.base_version = before;
+                let operation = {
+                    Operation::Overwrite {
+                        fragments,
+                        schema: lance::datatypes::Schema::try_from(
+                            crate::prepare::schema(config.embedding.dimensions).as_ref(),
+                        )
+                        .map_err(|_| WriterError::PreparedSchemaInvalid)?,
+                        config_upsert_values: Some(HashMap::new()),
+                        initial_bases: None,
+                    }
+                };
+                let dataset = self.dataset.insert(
+                    native_step(
+                        lease,
+                        Dataset::commit(
+                            uri.as_str(),
+                            operation,
+                            Some(before),
+                            Some(store_params(config)?),
+                            None,
+                            Arc::new(lance::session::Session::default()),
+                            false,
+                        ),
+                        WriterError::StorageUnavailable,
+                    )
+                    .await?,
+                );
+                record_transaction(dataset, &mut self.lineage, before).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn apply_non_content(
+        &mut self,
+        head: &mut ServingHead,
+        blocked: &BTreeSet<String>,
+        non_content: Vec<&PreparedEnvelope>,
+        receipts: &mut Vec<String>,
+        sequence: u64,
+    ) -> Result<()> {
+        let config = self.config;
+        let lease = self.lease;
+        for envelope in non_content {
+            match &envelope.payload {
+                EnvelopePayload::Permissions(p) => {
+                    if head.content.is_none()
+                        && let Some(ds) = &mut self.dataset
+                    {
+                        let (keys, fragments) =
+                            crate::apply::permissions(config, ds, envelope).await?;
+                        apply_staged(config, ds, lease, &mut self.lineage, keys, fragments).await?;
+                    }
+                    if p.complete_read && !blocked.contains(&envelope.source_id) {
+                        let f = source_freshness(head, &envelope.source_id);
+                        f.permissions_read_at = f.permissions_read_at.max(p.read_at);
+                    }
+                }
+                EnvelopePayload::Members(p) => {
+                    if p.complete_read && !blocked.contains(&envelope.source_id) {
+                        let f = source_freshness(head, &envelope.source_id);
+                        f.members_read_at = Some(
+                            f.members_read_at
+                                .map_or(p.read_at, |old| old.max(p.read_at)),
+                        );
+                    }
+                }
+                EnvelopePayload::Reconcile(_) => {
+                    if let Some(ds) = &mut self.dataset {
+                        let (keys, fragments, finished) =
+                            crate::apply::reconcile(config, ds, envelope, sequence, head).await?;
+                        self.acl_changed |= !keys.is_empty();
+                        apply_staged(config, ds, lease, &mut self.lineage, keys, fragments).await?;
+                        if !finished {
+                            receipts.retain(|id| id != &envelope.envelope_id);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}

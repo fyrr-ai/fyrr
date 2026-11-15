@@ -1,0 +1,322 @@
+//! The content publication manifest and the serving head.
+//!
+//! The manifest binds one published content version: namespace, exact Lance
+//! version (FTS included), embedding, chunking and FTS settings, the
+//! retrieval-policy digest, index and file identities, and the envelope IDs it
+//! published (the commit point of their receipts). The serving head points at
+//! the content publication and, separately, at the policy and identity
+//! generations and the per-source freshness instants, so those can move
+//! without a new content publication. Head CAS is the only visibility point;
+//! readers compare publication IDs, generations and instants, never ETags.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::envelope::{ChunkProfileIdentity, EmbeddingIdentity, FileRef};
+use crate::limits::{check_digest, check_id};
+use crate::version::{Contract, SchemaVersion};
+
+/// The publication contract version (manifest and head) written by this build.
+pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(2, 2);
+
+/// Immutable policy generation used by the reader's admission path.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PolicyArtifact {
+    pub schema_version: SchemaVersion,
+    pub namespace: String,
+    pub generation: u64,
+    pub retrieval_policy_digest: String,
+    /// Source-wide fixed grants: the hashed reader tokens of every source with
+    /// `permissions = "fixed"`. Rows of other sources carry their own readers.
+    pub fixed_grants: BTreeMap<String, Vec<String>>,
+    /// Old pins predating a row-ACL change cannot authorize with their old rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_acl_sequence: Option<u64>,
+    /// Retired sources: readers deny them at once, the committer
+    /// rejects their envelopes, and a restore cannot bring them back. An
+    /// entry is never removed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub retired_sources: BTreeMap<String, RetiredSource>,
+}
+
+/// At most this many sources of a namespace can ever be retired.
+pub const MAX_RETIRED_SOURCES: usize = 1024;
+
+/// When a source was retired and, once its data was removed, purged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RetiredSource {
+    pub retired_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purged_at: Option<DateTime<Utc>>,
+}
+
+impl Contract for PolicyArtifact {
+    const NAME: &'static str = "policy-artifact";
+    const VERSION: SchemaVersion = SchemaVersion::new(2, 2);
+    fn validate(&self) -> Result<(), String> {
+        check_id("namespace", &self.namespace)?;
+        if self.retired_sources.len() > MAX_RETIRED_SOURCES {
+            return Err("retired_sources holds too many sources".into());
+        }
+        for (source, retired) in &self.retired_sources {
+            check_id("retired_sources.source", source)?;
+            if retired.purged_at.is_some_and(|at| at < retired.retired_at) {
+                return Err("retired_sources: purged before retired".into());
+            }
+        }
+        check_digest("retrieval_policy_digest", &self.retrieval_policy_digest)?;
+        for (source, tokens) in &self.fixed_grants {
+            check_id("fixed_grants.source", source)?;
+            if tokens
+                .iter()
+                .any(|t| !crate::limits::prefixed_hex(t, "tok:", 64))
+            {
+                return Err("fixed_grants contains an unhashed token".into());
+            }
+        }
+        if self.row_acl_sequence == Some(0) {
+            return Err("row_acl_sequence must be positive".into());
+        }
+        Ok(())
+    }
+}
+
+/// A content publication manifest.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ContentManifest {
+    pub schema_version: SchemaVersion,
+    pub namespace: String,
+    pub publication_id: String,
+    /// Monotonic content publication sequence (listing watermarks use it).
+    pub sequence: u64,
+    pub previous_publication_id: Option<String>,
+    /// Exact Lance version, including its FTS index.
+    pub lance_version: u64,
+    pub committed_at: DateTime<Utc>,
+    /// Last completed maintenance, inherited by ordinary publications.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintenance_completed_at: Option<DateTime<Utc>>,
+    pub embedding: EmbeddingIdentity,
+    pub chunk_profile: ChunkProfileIdentity,
+    pub fts: FtsSettings,
+    /// Digest of the retrieval policy, including the result composition.
+    pub retrieval_policy_digest: String,
+    pub indexes: Vec<IndexIdentity>,
+    /// Immutable files of this version, relative to the dataset root.
+    pub files: Vec<FileRef>,
+    /// Envelopes this publication committed.
+    pub envelope_ids: Vec<String>,
+    /// Exact Lance transactions made by the leased holder.
+    pub lineage: CommitLineage,
+    /// Pins immutable membership/container inputs through the identity artifact.
+    pub identity: GenerationPointer,
+    pub policy: GenerationPointer,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rejected_envelope_ids: Vec<String>,
+    /// Immutable restore rewind marker paths; visible only through this publication.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cursor_rewinds: Vec<String>,
+    /// The incarnation of the namespace that published this version, copied
+    /// from the serving head.
+    pub incarnation: String,
+}
+
+/// Publication-local fencing evidence, immutable with the content manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CommitLineage {
+    pub holder: String,
+    pub epoch: u64,
+    pub base_version: u64,
+    /// A recovery Restore supersedes unpublished history before this boundary.
+    pub recovery_version: Option<u64>,
+    pub transactions: Vec<LineageTransaction>,
+}
+
+/// Identity of one actual Lance transaction, never an inferred version range.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LineageTransaction {
+    pub version: u64,
+    pub transaction_id: String,
+}
+
+/// FTS analyzer settings, part of the publication identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FtsSettings {
+    pub tokenizer: String,
+    pub max_token_length: u32,
+    pub lowercase: bool,
+    pub stem: bool,
+    pub remove_stop_words: bool,
+    pub ascii_folding: bool,
+    /// Positional postings; false while there is no phrase scoring.
+    pub with_position: bool,
+}
+
+/// One index of the published version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct IndexIdentity {
+    pub name: String,
+    /// `ivf_rq`, `fts`, `btree`, `bitmap` or `label_list`.
+    pub kind: String,
+    pub column: String,
+    pub uuid: String,
+}
+
+/// The serving head: the single mutable object per namespace (CAS-updated).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ServingHead {
+    pub schema_version: SchemaVersion,
+    pub namespace: String,
+    /// `null` until the first content publication.
+    pub content: Option<ContentPointer>,
+    pub policy: GenerationPointer,
+    pub identity: GenerationPointer,
+    pub freshness: FreshnessPointers,
+    /// The single committer's lease; renewals change the ETag, not what is served.
+    pub lease: Option<Lease>,
+    pub updated_at: DateTime<Utc>,
+    /// Rejection references before the first content publication exists.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rejected_envelope_ids: Vec<String>,
+    /// A random identifier written once by `namespace create`. A namespace
+    /// deleted and created again at the same storage URI restarts its
+    /// sequence; the incarnation tells its publications apart from the old
+    /// ones.
+    pub incarnation: String,
+}
+
+/// Points at a content publication manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ContentPointer {
+    pub publication_id: String,
+    pub sequence: u64,
+    pub lance_version: u64,
+    /// Manifest object key, relative to the namespace root.
+    pub manifest: String,
+    pub committed_at: DateTime<Utc>,
+}
+
+/// Points at one immutable generation of a policy or identity artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GenerationPointer {
+    pub generation: u64,
+    /// Object key, relative to the namespace root.
+    pub object: String,
+    pub digest: String,
+}
+
+/// Published freshness instants.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FreshnessPointers {
+    /// Last directory freshness attestation; the identity validity deadline
+    /// counts from it.
+    pub directory: Option<DateTime<Utc>>,
+    /// Last successful permission read per source with synced permissions.
+    pub sources: Vec<SourceFreshness>,
+}
+
+/// Last successful permission read of one source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SourceFreshness {
+    pub source_id: String,
+    pub permissions_read_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub members_read_at: Option<DateTime<Utc>>,
+}
+
+/// The namespace committer lease.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Lease {
+    /// Opaque holder identity (host and process), never a user identity.
+    pub holder: String,
+    /// Incremented on every takeover; fences a former holder.
+    pub epoch: u64,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl Contract for ContentManifest {
+    const NAME: &'static str = "content-manifest";
+    const VERSION: SchemaVersion = PUBLICATION_CONTRACT_VERSION;
+
+    fn validate(&self) -> Result<(), String> {
+        check_id("namespace", &self.namespace)?;
+        check_id("publication_id", &self.publication_id)?;
+        check_id("incarnation", &self.incarnation)?;
+        check_digest("embedding.fingerprint", &self.embedding.fingerprint)?;
+        self.embedding.validate_profile()?;
+        check_digest("chunk_profile.digest", &self.chunk_profile.digest)?;
+        check_digest("retrieval_policy_digest", &self.retrieval_policy_digest)?;
+        if !self.indexes.iter().any(|index| index.column == "readers") {
+            // A publication lacking the readers index is refused.
+            return Err("the readers index is missing".into());
+        }
+        let mut seen = BTreeSet::new();
+        if !self.envelope_ids.iter().all(|id| seen.insert(id)) {
+            return Err("envelope_ids has duplicates".into());
+        }
+        let mut rewind_paths = BTreeSet::new();
+        for path in &self.cursor_rewinds {
+            let hash = path
+                .strip_prefix("rejections/restore-")
+                .and_then(|p| p.strip_suffix(".json"))
+                .ok_or("cursor rewind path invalid")?;
+            if hash.len() != 64
+                || !hash
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                || !rewind_paths.insert(path)
+            {
+                return Err("cursor rewind path invalid".into());
+            }
+        }
+        let lineage = &self.lineage;
+        check_id("lineage.holder", &lineage.holder)?;
+        if lineage.epoch == 0 {
+            return Err("lineage epoch must be positive".into());
+        }
+        let mut previous = lineage.base_version;
+        for (position, transaction) in lineage.transactions.iter().enumerate() {
+            check_id("lineage.transaction_id", &transaction.transaction_id)?;
+            let recovery = position == 0 && lineage.recovery_version == Some(transaction.version);
+            if transaction.version <= previous
+                || (!recovery && previous.checked_add(1) != Some(transaction.version))
+            {
+                return Err("lineage versions are not contiguous".into());
+            }
+            previous = transaction.version;
+        }
+        if previous != self.lance_version
+            || lineage
+                .recovery_version
+                .is_some_and(|v| lineage.transactions.first().is_none_or(|t| t.version != v))
+        {
+            return Err("lineage does not end at the publication".into());
+        }
+        Ok(())
+    }
+}
+
+impl Contract for ServingHead {
+    const NAME: &'static str = "serving-head";
+    const VERSION: SchemaVersion = PUBLICATION_CONTRACT_VERSION;
+
+    fn validate(&self) -> Result<(), String> {
+        check_id("namespace", &self.namespace)?;
+        check_digest("policy.digest", &self.policy.digest)?;
+        check_digest("identity.digest", &self.identity.digest)?;
+        check_id("incarnation", &self.incarnation)?;
+        let mut sources = BTreeSet::new();
+        if !self
+            .freshness
+            .sources
+            .iter()
+            .all(|source| sources.insert(&source.source_id))
+        {
+            return Err("freshness.sources has duplicate sources".into());
+        }
+        Ok(())
+    }
+}

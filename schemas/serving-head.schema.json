@@ -1,0 +1,208 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "content": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContentPointer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`null` until the first content publication."
+    },
+    "policy": {
+      "$ref": "#/$defs/GenerationPointer"
+    },
+    "identity": {
+      "$ref": "#/$defs/GenerationPointer"
+    },
+    "freshness": {
+      "$ref": "#/$defs/FreshnessPointers"
+    },
+    "lease": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Lease"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The single committer's lease; renewals change the ETag, not what is served."
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "rejected_envelope_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Rejection references before the first content publication exists."
+    },
+    "incarnation": {
+      "type": "string",
+      "description": "A random identifier written once by `namespace create`. A namespace\ndeleted and created again at the same storage URI restarts its\nsequence; the incarnation tells its publications apart from the old\nones."
+    }
+  },
+  "required": [
+    "schema_version",
+    "namespace",
+    "policy",
+    "identity",
+    "freshness",
+    "updated_at",
+    "incarnation"
+  ],
+  "description": "The serving head: the single mutable object per namespace (CAS-updated).",
+  "title": "ServingHead",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SchemaVersion": {
+      "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "ContentPointer": {
+      "type": "object",
+      "properties": {
+        "publication_id": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "lance_version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "manifest": {
+          "type": "string",
+          "description": "Manifest object key, relative to the namespace root."
+        },
+        "committed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "publication_id",
+        "sequence",
+        "lance_version",
+        "manifest",
+        "committed_at"
+      ],
+      "description": "Points at a content publication manifest."
+    },
+    "GenerationPointer": {
+      "type": "object",
+      "properties": {
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "object": {
+          "type": "string",
+          "description": "Object key, relative to the namespace root."
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "object",
+        "digest"
+      ],
+      "description": "Points at one immutable generation of a policy or identity artifact."
+    },
+    "FreshnessPointers": {
+      "type": "object",
+      "properties": {
+        "directory": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "description": "Last directory freshness attestation; the identity validity deadline\ncounts from it."
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceFreshness"
+          },
+          "description": "Last successful permission read per source with synced permissions."
+        }
+      },
+      "required": [
+        "sources"
+      ],
+      "description": "Published freshness instants."
+    },
+    "SourceFreshness": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "permissions_read_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "members_read_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "source_id",
+        "permissions_read_at"
+      ],
+      "description": "Last successful permission read of one source."
+    },
+    "Lease": {
+      "type": "object",
+      "properties": {
+        "holder": {
+          "type": "string",
+          "description": "Opaque holder identity (host and process), never a user identity."
+        },
+        "epoch": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Incremented on every takeover; fences a former holder."
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "holder",
+        "epoch",
+        "expires_at"
+      ],
+      "description": "The namespace committer lease."
+    }
+  },
+  "x-fyrr-contract": "serving-head",
+  "x-fyrr-schema-version": "2.2"
+}

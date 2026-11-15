@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Own only this worktree's pinned, loopback Keycloak. Never prune or touch other fixtures.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+HASH="$(printf '%s' "$ROOT" | sha256sum | cut -c1-12)"
+NAME="fyrr-keycloak-$HASH"
+OUT="${FYRR_EVAL_ROOT:-$ROOT/target}/keycloak-fixture"
+mkdir -p "$OUT"
+owned() {
+  local label
+  label="$(docker container inspect -f '{{index .Config.Labels "fyrr.worktree"}}' "$NAME" 2>/dev/null)" || return 1
+  [[ "$label" == "$ROOT" ]] || die "Keycloak container belongs to another worktree"
+}
+port() { docker container inspect -f '{{(index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort}}' "$NAME"; }
+case "${1:-}" in
+  start)
+    if ! owned; then
+      (umask 077; if [[ ! -f "$OUT/bootstrap.env" ]]; then
+        password="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+        printf 'KC_BOOTSTRAP_ADMIN_USERNAME=fixture-admin\nKC_BOOTSTRAP_ADMIN_PASSWORD=%s\n' "$password" > "$OUT/bootstrap.env"
+      fi)
+      docker run -d --name "$NAME" --label "fyrr.worktree=$ROOT" \
+        --memory 4g --memory-swap 4g -p 127.0.0.1::8080 --env-file "$OUT/bootstrap.env" \
+        -e KC_LOG_LEVEL=error "$KEYCLOAK_IMAGE" start-dev >/dev/null
+    elif [[ "$(docker inspect -f '{{.State.Running}}' "$NAME")" != true ]]; then
+      docker start "$NAME" >/dev/null
+    fi
+    for _ in $(seq 1 90); do
+      if curl -fsS -o /dev/null "http://127.0.0.1:$(port)/realms/master/.well-known/openid-configuration"; then
+        log "owned Keycloak ready on loopback"
+        exit 0
+      fi
+      sleep 1
+    done
+    die "Keycloak fixture did not become ready"
+    ;;
+  env)
+    owned || die "Keycloak fixture not started"
+    [[ -f "$OUT/bootstrap.env" ]] || die "fixture credential file missing"
+    echo "export FYRR_TEST_KEYCLOAK_ENDPOINT=http://127.0.0.1:$(port)"
+    echo "export FYRR_TEST_KEYCLOAK_USERNAME=fixture-admin"
+    echo "export FYRR_TEST_KEYCLOAK_PASSWORD=$(sed -n 's/^KC_BOOTSTRAP_ADMIN_PASSWORD=//p' "$OUT/bootstrap.env")"
+    ;;
+  status)
+    owned && [[ "$(docker inspect -f '{{.State.Running}}' "$NAME")" == true ]] || die "Keycloak fixture not running"
+    log "owned Keycloak running"
+    ;;
+  stop)
+    if owned; then docker rm -f "$NAME" >/dev/null; log "removed owned Keycloak"; fi
+    ;;
+  *) die "usage: scripts/keycloak-fixture start|env|status|stop" ;;
+esac

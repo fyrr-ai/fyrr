@@ -1,0 +1,696 @@
+//! Versioned contracts: golden fixtures round-trip in canonical
+//! form and match the generated JSON Schemas; an unknown major version is
+//! refused before the body is read (fail closed); a minor-version addition is
+//! accepted.
+
+mod common;
+
+use std::sync::Arc;
+
+use arrow_schema::{DataType, Field, Schema};
+use fyrr_core::connector::{
+    ARROW_VERSION_KEY, ConnectorBatch, CursorState, check_document_changes_schema,
+    document_changes_arrow_schema,
+};
+use fyrr_core::directory::DirectorySnapshot;
+use fyrr_core::envelope::PreparedEnvelope;
+use fyrr_core::identity::IdentityArtifact;
+use fyrr_core::provider::ProviderInfo;
+use fyrr_core::publication::{ContentManifest, PolicyArtifact, ServingHead};
+use fyrr_core::{Contract, ContractError, SchemaVersion, parse_contract, write_contract};
+use serde_json::{Value, json};
+
+const FIXTURES: &str = "fixtures/contracts";
+
+#[test]
+fn publication_lineage_refuses_gaps_and_wrong_endpoints() {
+    let mut value = common::read_json("fixtures/contracts/content-manifest/manifest.json");
+    value["lineage"] = json!({"holder":"holder-test","epoch":7,"base_version":118,"recovery_version":120,
+        "transactions":[{"version":120,"transaction_id":"tx-restore"},{"version":121,"transaction_id":"tx-index"}]});
+    assert!(parse::<ContentManifest>(&value).is_ok());
+    for (field, changed) in [
+        ("epoch", json!(0)),
+        ("recovery_version", json!(119)),
+        ("base_version", json!(121)),
+    ] {
+        let mut invalid = value.clone();
+        invalid["lineage"][field] = changed;
+        assert!(
+            parse::<ContentManifest>(&invalid).is_err(),
+            "invalid lineage {field}"
+        );
+    }
+    let mut gap = value.clone();
+    gap["lineage"]["recovery_version"] = Value::Null;
+    assert!(parse::<ContentManifest>(&gap).is_err());
+    let mut endpoint = value;
+    endpoint["lance_version"] = json!(122);
+    assert!(parse::<ContentManifest>(&endpoint).is_err());
+    // A manifest of another major is refused before its body is read.
+    let mut other = common::read_json("fixtures/contracts/content-manifest/manifest.json");
+    other["schema_version"] = json!("1.0");
+    assert!(matches!(
+        parse::<ContentManifest>(&other),
+        Err(ContractError::UnsupportedMajor { .. })
+    ));
+}
+
+/// Runs `check` once per contract type with its fixture directory and schema.
+macro_rules! for_each_contract {
+    ($check:ident) => {{
+        let mut fixtures = 0;
+        fixtures += $check::<ConnectorBatch>("connector-batch");
+        fixtures += $check::<CursorState>("connector-cursor");
+        fixtures += $check::<PreparedEnvelope>("prepared-envelope");
+        fixtures += $check::<ContentManifest>("content-manifest");
+        fixtures += $check::<ServingHead>("serving-head");
+        fixtures += $check::<PolicyArtifact>("policy-artifact");
+        fixtures += $check::<IdentityArtifact>("identity-artifact");
+        fixtures += $check::<DirectorySnapshot>("directory-snapshot");
+        fixtures += $check::<fyrr_core::secret::EncryptedSecret>("encrypted-secret");
+        fixtures += $check::<ProviderInfo>("connector-provider");
+        fixtures
+    }};
+}
+
+fn fixture_files(name: &str) -> Vec<String> {
+    let files = common::json_files(&format!("{FIXTURES}/{name}"));
+    assert!(!files.is_empty(), "no golden fixtures for {name}");
+    files
+}
+
+fn parse<T: Contract>(value: &Value) -> Result<T, ContractError> {
+    parse_contract(&serde_json::to_vec(value).expect("serialize"))
+}
+
+fn round_trip<T: Contract + PartialEq + std::fmt::Debug>(name: &str) -> usize {
+    assert_eq!(T::NAME, name, "fixture directory follows the contract name");
+    let files = fixture_files(name);
+    for file in &files {
+        let text = common::read(file);
+        let document: T = parse_contract(text.as_bytes())
+            .unwrap_or_else(|error| panic!("{file}: golden fixture refused: {error}"));
+        assert_eq!(
+            serde_json::to_value(&document).unwrap()["schema_version"],
+            serde_json::json!(T::VERSION),
+            "{file}"
+        );
+        let written = write_contract(&document);
+        let original: Value = serde_json::from_str(&text).expect("fixture JSON");
+        let rewritten: Value = serde_json::from_slice(&written).expect("written JSON");
+        assert_eq!(
+            rewritten, original,
+            "{file}: a field was dropped, renamed or defaulted"
+        );
+        assert_eq!(
+            String::from_utf8(written).expect("UTF-8"),
+            text,
+            "{file}: not in canonical form"
+        );
+        common::assert_valid(&format!("schemas/{name}.schema.json"), &original, file);
+    }
+    files.len()
+}
+
+fn with_version(value: &Value, version: &str) -> Value {
+    let mut value = value.clone();
+    value["schema_version"] = json!(version);
+    value
+}
+
+/// Adds an unknown field to every struct-shaped object, as a newer minor
+/// version would; opaque maps (connector maps, fragments, provider config
+/// schemas) keep their content.
+fn add_future_fields(value: &mut Value) {
+    if let Value::Object(object) = value {
+        for (key, inner) in object.iter_mut() {
+            // Maps keyed by data (sources, connector keys) take no new fields.
+            if ![
+                "connector_map",
+                "lance_fragment",
+                "config_schema",
+                "fixed_grants",
+            ]
+            .contains(&key.as_str())
+            {
+                add_future_fields(inner);
+            }
+        }
+        object.insert("added_in_a_minor".into(), json!({ "nested": [1, 2, 3] }));
+    } else if let Value::Array(items) = value {
+        items.iter_mut().for_each(add_future_fields);
+    }
+}
+
+fn unknown_major_rejected<T: Contract + std::fmt::Debug>(name: &str) -> usize {
+    let files = fixture_files(name);
+    for file in &files {
+        let fixture = common::read_json(file);
+        let next_major = format!("{}.0", T::VERSION.major + 1);
+        for version in [next_major.as_str(), "0.9", "65535.0"] {
+            let error = parse::<T>(&with_version(&fixture, version)).expect_err(file);
+            let found: SchemaVersion = version.parse().expect("version");
+            assert_eq!(
+                error,
+                ContractError::UnsupportedMajor {
+                    contract: T::NAME,
+                    found,
+                    supported: T::VERSION.major,
+                },
+                "{file} at {version}"
+            );
+        }
+    }
+    // The major is checked before the body: an unreadable body with an
+    // unknown major still reports the version, never a body error.
+    let error =
+        parse::<T>(&json!({ "schema_version": format!("{}.0", T::VERSION.major + 1), "body": 17 }))
+            .expect_err(name);
+    assert!(
+        matches!(error, ContractError::UnsupportedMajor { .. }),
+        "{name}: {error}"
+    );
+    let error = parse::<T>(&json!({ "body": 17 })).expect_err(name);
+    assert_eq!(error, ContractError::MissingVersion { contract: T::NAME });
+    for malformed in [json!("1"), json!("1.0.0"), json!(1.0), json!(null)] {
+        let error = parse::<T>(&json!({ "schema_version": malformed })).expect_err(name);
+        assert_eq!(error, ContractError::MalformedVersion { contract: T::NAME });
+    }
+    files.len()
+}
+
+fn minor_addition_accepted<T: Contract + PartialEq + std::fmt::Debug>(name: &str) -> usize {
+    let files = fixture_files(name);
+    for file in &files {
+        let fixture = common::read_json(file);
+        let current: T = parse(&fixture).expect(file);
+        let mut newer = with_version(&fixture, &format!("{}.7", T::VERSION.major));
+        add_future_fields(&mut newer);
+        let parsed: T =
+            parse(&newer).unwrap_or_else(|error| panic!("{file}: minor addition refused: {error}"));
+        assert_eq!(
+            serde_json::to_value(&parsed).unwrap()["schema_version"],
+            serde_json::json!(SchemaVersion::new(T::VERSION.major, 7))
+        );
+        let mut read = serde_json::to_value(&parsed).expect("serialize");
+        read["schema_version"] = json!(T::VERSION.to_string());
+        assert_eq!(
+            read,
+            serde_json::to_value(&current).expect("serialize"),
+            "{file}: a newer minor changed the data this build reads"
+        );
+    }
+    files.len()
+}
+
+#[test]
+fn golden_fixtures_round_trip_and_match_schemas() {
+    let checked = for_each_contract!(round_trip);
+    assert!(checked >= 12, "only {checked} golden fixtures");
+}
+
+#[test]
+fn unknown_major_versions_are_refused_fail_closed() {
+    assert!(for_each_contract!(unknown_major_rejected) > 0);
+}
+
+#[test]
+fn minor_version_additions_are_accepted() {
+    assert!(for_each_contract!(minor_addition_accepted) > 0);
+}
+
+#[test]
+fn committed_compat_fixtures_behave() {
+    let unknown = common::read("fixtures/contracts/compat/connector-batch-unknown-major.json");
+    let error = parse_contract::<ConnectorBatch>(unknown.as_bytes()).expect_err("unknown major");
+    assert!(
+        matches!(error, ContractError::UnsupportedMajor { .. }),
+        "{error}"
+    );
+
+    let minor = common::read("fixtures/contracts/compat/connector-batch-minor-addition.json");
+    let parsed = parse_contract::<ConnectorBatch>(minor.as_bytes()).expect("minor addition");
+    let base: ConnectorBatch = parse_contract(
+        common::read("fixtures/contracts/connector-batch/document-changes.json").as_bytes(),
+    )
+    .expect("base fixture");
+    assert_eq!(parsed.body, base.body);
+    assert_eq!(parsed.schema_version, SchemaVersion::new(1, 1));
+}
+
+#[test]
+fn arrow_document_changes_schema_is_checked_before_rows() {
+    let schema = document_changes_arrow_schema();
+    assert_eq!(
+        check_document_changes_schema(&schema),
+        Ok(fyrr_core::connector::CONNECTOR_CONTRACT_VERSION)
+    );
+
+    let with_metadata = |schema: &Schema, version: &str| {
+        let mut metadata = schema.metadata().clone();
+        metadata.insert(ARROW_VERSION_KEY.into(), version.into());
+        Schema::new(schema.fields().clone()).with_metadata(metadata)
+    };
+    for version in ["2.0", "0.1"] {
+        let error =
+            check_document_changes_schema(&with_metadata(&schema, version)).expect_err(version);
+        assert!(
+            matches!(error, ContractError::UnsupportedMajor { .. }),
+            "{error}"
+        );
+    }
+
+    // A newer minor adds a field: accepted, the extra column is ignored.
+    let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
+    fields.push(Arc::new(Field::new("attachment_of", DataType::Utf8, true)));
+    let newer = with_metadata(
+        &Schema::new(fields).with_metadata(schema.metadata().clone()),
+        "1.3",
+    );
+    assert_eq!(
+        check_document_changes_schema(&newer),
+        Ok(SchemaVersion::new(1, 3))
+    );
+
+    // Removed, retyped or weakened fields are refused.
+    let modify = |name: &str, change: &dyn Fn(&Field) -> Option<Field>| {
+        let fields: Vec<Field> = schema
+            .fields()
+            .iter()
+            .filter_map(|field| {
+                if field.name() == name {
+                    change(field)
+                } else {
+                    Some(field.as_ref().clone())
+                }
+            })
+            .collect();
+        Schema::new(fields).with_metadata(schema.metadata().clone())
+    };
+    let removed = modify("root_id", &|_| None);
+    let retyped = modify("revision_order", &|field| {
+        Some(field.clone().with_data_type(DataType::Utf8))
+    });
+    let nullable = modify("op", &|field| Some(field.clone().with_nullable(true)));
+    for (case, broken) in [
+        ("removed", removed),
+        ("retyped", retyped),
+        ("nullable", nullable),
+    ] {
+        let error = check_document_changes_schema(&broken).expect_err(case);
+        assert!(
+            matches!(error, ContractError::Invalid { .. }),
+            "{case}: {error}"
+        );
+    }
+    let unnamed = Schema::new(schema.fields().clone());
+    assert!(check_document_changes_schema(&unnamed).is_err());
+}
+
+/// At any nesting: a newer minor may add nullable fields inside the
+/// `sections` struct, like the JSON form accepts; non-nullable additions and
+/// weakened list items are refused.
+#[test]
+fn arrow_nested_additions_follow_the_minor_rule() {
+    let schema = document_changes_arrow_schema();
+    let with_section_field = |extra: Field| {
+        let fields: Vec<Field> = schema
+            .fields()
+            .iter()
+            .map(|field| {
+                if field.name() != "sections" {
+                    return field.as_ref().clone();
+                }
+                let DataType::List(item) = field.data_type() else {
+                    panic!("sections is a list")
+                };
+                let DataType::Struct(children) = item.data_type() else {
+                    panic!("section is a struct")
+                };
+                let mut children: Vec<Field> = children
+                    .iter()
+                    .map(|child| child.as_ref().clone())
+                    .collect();
+                children.push(extra.clone());
+                let item = item
+                    .as_ref()
+                    .clone()
+                    .with_data_type(DataType::Struct(children.into()));
+                field
+                    .as_ref()
+                    .clone()
+                    .with_data_type(DataType::List(Arc::new(item)))
+            })
+            .collect();
+        let mut metadata = schema.metadata().clone();
+        metadata.insert(ARROW_VERSION_KEY.into(), "1.2".into());
+        Schema::new(fields).with_metadata(metadata)
+    };
+    let nullable = with_section_field(Field::new("page_number", DataType::UInt32, true));
+    assert_eq!(
+        check_document_changes_schema(&nullable),
+        Ok(SchemaVersion::new(1, 2))
+    );
+    let required = with_section_field(Field::new("page_number", DataType::UInt32, false));
+    let error = check_document_changes_schema(&required).expect_err("non-nullable nested addition");
+    assert!(error.to_string().contains("sections[][5]"), "{error}");
+
+    let mut fields: Vec<Field> = schema
+        .fields()
+        .iter()
+        .map(|field| field.as_ref().clone())
+        .collect();
+    fields.push(Field::new("required_later", DataType::Utf8, false));
+    let top = Schema::new(fields).with_metadata(schema.metadata().clone());
+    assert!(
+        check_document_changes_schema(&top).is_err(),
+        "non-nullable top-level addition"
+    );
+
+    let weakened: Vec<Field> = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            if field.name() == "readers" {
+                field
+                    .as_ref()
+                    .clone()
+                    .with_data_type(DataType::List(Arc::new(Field::new(
+                        "element",
+                        DataType::Utf8,
+                        true,
+                    ))))
+            } else {
+                field.as_ref().clone()
+            }
+        })
+        .collect();
+    let weakened = Schema::new(weakened).with_metadata(schema.metadata().clone());
+    let error = check_document_changes_schema(&weakened).expect_err("nullable list items");
+    assert!(error.to_string().contains("readers[]"), "{error}");
+
+    // List item names do not matter (pyarrow may call them "item" or "element").
+    let renamed: Vec<Field> = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            if field.name() == "labels" {
+                field
+                    .as_ref()
+                    .clone()
+                    .with_data_type(DataType::List(Arc::new(Field::new(
+                        "element",
+                        DataType::Utf8,
+                        false,
+                    ))))
+            } else {
+                field.as_ref().clone()
+            }
+        })
+        .collect();
+    let renamed = Schema::new(renamed).with_metadata(schema.metadata().clone());
+    assert!(check_document_changes_schema(&renamed).is_ok());
+}
+
+/// A change applied to a fixture document.
+type Mutation = Box<dyn Fn(&mut Value)>;
+
+/// Semantic validation refuses bad documents without echoing their values.
+#[test]
+fn semantic_violations_are_refused_without_echoing_values() {
+    let base = common::read_json("fixtures/contracts/connector-batch/document-changes.json");
+    let sentinel = "SENTINEL-c0ffee";
+    let cases: Vec<(&str, Mutation)> = vec![
+        (
+            "upsert without revision",
+            Box::new(|v| {
+                v["body"]["changes"][0]
+                    .as_object_mut()
+                    .expect("object")
+                    .remove("source_revision");
+            }),
+        ),
+        (
+            "reader without prefix",
+            Box::new(move |v| {
+                v["body"]["changes"][0]["readers"] = json!([sentinel]);
+            }),
+        ),
+        (
+            "attribute without equals sign",
+            Box::new(move |v| {
+                v["body"]["changes"][0]["attributes"] = json!([sentinel]);
+            }),
+        ),
+        (
+            "duplicate document",
+            Box::new(|v| {
+                let first = v["body"]["changes"][0].clone();
+                v["body"]["changes"]
+                    .as_array_mut()
+                    .expect("array")
+                    .push(first);
+            }),
+        ),
+        (
+            "kind does not match body",
+            Box::new(|v| v["kind"] = json!("members")),
+        ),
+        (
+            "too many labels",
+            Box::new(|v| {
+                v["body"]["changes"][0]["metadata"]["labels"] = json!(vec!["x"; 33]);
+            }),
+        ),
+        (
+            "oversized connector map",
+            Box::new(move |v| {
+                v["body"]["changes"][0]["metadata"]["connector_map"] =
+                    json!({ "blob": sentinel.repeat(2000) });
+            }),
+        ),
+        (
+            "delete with sections",
+            Box::new(|v| {
+                v["body"]["changes"][1]["sections"] = json!([{ "text": "x" }]);
+            }),
+        ),
+    ];
+    for (case, mutate) in cases {
+        let mut document = base.clone();
+        mutate(&mut document);
+        let error = parse::<ConnectorBatch>(&document).expect_err(case);
+        assert!(
+            matches!(error, ContractError::Invalid { .. }),
+            "{case}: {error}"
+        );
+        assert!(
+            !error.to_string().contains(sentinel),
+            "{case}: error echoes a value: {error}"
+        );
+    }
+
+    let mut listing = common::read_json("fixtures/contracts/connector-batch/listing.json");
+    listing["body"]["last"] = json!(false);
+    assert!(
+        parse::<ConnectorBatch>(&listing).is_err(),
+        "complete listing on a non-final part"
+    );
+
+    let mut envelope = common::read_json("fixtures/contracts/prepared-envelope/content.json");
+    envelope["sequence"] = json!(43);
+    assert!(
+        parse::<PreparedEnvelope>(&envelope).is_err(),
+        "envelope ID must follow its derivation"
+    );
+
+    let base_artifact = common::read_json("fixtures/contracts/identity-artifact/artifact.json");
+    let mut artifact = base_artifact.clone();
+    artifact["principals"][0]["tokens"] = json!([0, 99]);
+    assert!(
+        parse::<IdentityArtifact>(&artifact).is_err(),
+        "token index out of range"
+    );
+    // Only hashed keys and tokens: raw identities are refused without echo.
+    for (field, raw) in [
+        ("/tokens/0", "usr:ada.novak"),
+        ("/tokens/1", "grp:security"),
+        ("/tokens/2", "tok:0123abcd"),
+        ("/principals/0/key", "ada.novak@acme.example"),
+        ("/principals/1/key", "usr:bo"),
+    ] {
+        let mut artifact = base_artifact.clone();
+        *artifact.pointer_mut(field).expect("fixture field") = json!(raw);
+        let error = parse::<IdentityArtifact>(&artifact).expect_err(raw);
+        assert!(
+            matches!(error, ContractError::Invalid { .. }),
+            "{field}: {error}"
+        );
+        assert!(
+            !error.to_string().contains(raw),
+            "{field}: error echoes the raw value: {error}"
+        );
+    }
+
+    let mut manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
+    manifest["indexes"]
+        .as_array_mut()
+        .expect("array")
+        .retain(|index| index["column"] != "readers");
+    assert!(
+        parse::<ContentManifest>(&manifest).is_err(),
+        "publication without a readers index"
+    );
+
+    // Type errors report a position and category only.
+    let mut typed = base.clone();
+    typed["body"]["changes"][0]["root_id"] = json!({ "nested": sentinel });
+    let error = parse::<ConnectorBatch>(&typed).expect_err("type error");
+    assert!(matches!(error, ContractError::Malformed { .. }), "{error}");
+    assert!(!error.to_string().contains(sentinel), "{error}");
+}
+
+#[test]
+fn unknown_arrow_field_names_are_not_diagnostics() {
+    use arrow_schema::{DataType, Field, Schema};
+    use fyrr_core::connector::{check_document_changes_schema, document_changes_arrow_schema};
+    let original = document_changes_arrow_schema();
+    let mut fields: Vec<_> = original.fields().iter().cloned().collect();
+    fields.push(std::sync::Arc::new(Field::new(
+        "PRIVATE-extra-field",
+        DataType::Utf8,
+        false,
+    )));
+    let schema = Schema::new_with_metadata(fields, original.metadata().clone());
+    let error = check_document_changes_schema(&schema)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains(&format!("[{}]", original.fields().len())),
+        "{error}"
+    );
+    assert!(error.contains("must be nullable"), "{error}");
+    assert!(!error.contains("PRIVATE-extra-field"), "{error}");
+}
+
+#[test]
+fn identity_groups_and_subject_bindings_fail_closed() {
+    let mut value = common::read_json("fixtures/contracts/identity-artifact/artifact.json");
+    let artifact = parse::<IdentityArtifact>(&value).unwrap();
+    value["principals"][0]["groups"] = json!([0]);
+    value["subjects"] = json!([{"subject":format!("key:{}", "a".repeat(64)),
+        "principal":artifact.principals[0].key}]);
+    assert!(parse::<IdentityArtifact>(&value).is_ok());
+    for groups in [json!([999]), json!([0, 0])] {
+        let mut invalid = value.clone();
+        invalid["principals"][0]["groups"] = groups;
+        assert!(parse::<IdentityArtifact>(&invalid).is_err());
+    }
+    let mut invalid = value.clone();
+    invalid["subjects"][0]["principal"] = json!(format!("key:{}", "f".repeat(64)));
+    assert!(parse::<IdentityArtifact>(&invalid).is_err());
+    let duplicate = value["subjects"][0].clone();
+    value["subjects"].as_array_mut().unwrap().push(duplicate);
+    assert!(parse::<IdentityArtifact>(&value).is_err());
+}
+
+#[test]
+fn source_email_without_evidence_is_unverified_and_written_without_it() {
+    use fyrr_core::connector::{EmailVerification, SourceUser};
+    let unverified = json!({"id":"source-user", "email":"user@example.test", "active":true});
+    let user: SourceUser = serde_json::from_value(unverified.clone()).unwrap();
+    assert_eq!(user.email_verification, EmailVerification::Unverified);
+    assert_eq!(serde_json::to_value(user).unwrap(), unverified);
+    for evidence in ["verified_corporate", "verified_personal"] {
+        let mut value = unverified.clone();
+        value["email_verification"] = json!(evidence);
+        let parsed: SourceUser = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+    }
+    let mut invalid = unverified;
+    invalid["email_verification"] = json!("assumed");
+    assert!(serde_json::from_value::<SourceUser>(invalid).is_err());
+}
+
+#[test]
+fn provider_version_cases() {
+    use fyrr_core::provider::{SDK_SERIES, SdkIncompatibility, SdkSeries, SdkVersion, check_sdk};
+    let version = |text: &str| text.parse::<SdkVersion>().unwrap();
+    for (text, installed, expected) in [
+        ("1.20.3", false, Some("1.20.3")),
+        ("1.0", false, None),
+        ("1.0.0.0", false, None),
+        ("01.0.0", false, None),
+        ("1.a.0", false, None),
+        ("", false, None),
+        ("1..0", false, None),
+        ("v1.0.0", false, None),
+        ("1.2", true, Some("1.2.0")),
+        ("1.2.3", true, Some("1.2.3")),
+        ("1.2.3rc1", true, Some("1.2.3")),
+        ("1.2.3.post1", true, Some("1.2.3")),
+        ("2.0.0.dev3", true, Some("2.0.0")),
+        ("dev", true, None),
+        ("1", true, None),
+    ] {
+        let actual = if installed {
+            SdkVersion::parse_installed(text)
+        } else {
+            text.parse()
+        };
+        assert_eq!(
+            actual.ok().map(|v| v.to_string()).as_deref(),
+            expected,
+            "{text}, installed={installed}"
+        );
+    }
+    for (text, series) in [
+        ("0.1.0", SdkSeries::Initial { minor: 1 }),
+        ("0.1.7", SdkSeries::Initial { minor: 1 }),
+        ("0.2.0", SdkSeries::Initial { minor: 2 }),
+        ("0.0.3", SdkSeries::Initial { minor: 0 }),
+        ("1.0.0", SdkSeries::Stable { major: 1 }),
+        ("1.4.2", SdkSeries::Stable { major: 1 }),
+        ("2.0.0", SdkSeries::Stable { major: 2 }),
+    ] {
+        assert_eq!(version(text).series(), series, "{text}");
+    }
+    assert_eq!(SdkSeries::Initial { minor: 1 }.to_string(), "0.1");
+    assert_eq!(SdkSeries::Stable { major: 3 }.to_string(), "3");
+    assert_eq!(SDK_SERIES, SdkSeries::Initial { minor: 1 });
+    let other = |minimum: &str| {
+        Err(SdkIncompatibility::OtherSeries {
+            required: version(minimum).series(),
+            minimum: version(minimum),
+        })
+    };
+    for (minimum, installed, expected) in [
+        ("0.1.0", "0.1.0", Ok(())),
+        ("0.1.0", "0.1.3", Ok(())),
+        ("0.1.2", "0.1.3", Ok(())),
+        ("0.2.0", "0.1.3", other("0.2.0")),
+        ("0.0.9", "0.1.3", other("0.0.9")),
+        ("1.0.0", "0.1.3", other("1.0.0")),
+        (
+            "0.1.4",
+            "0.1.3",
+            Err(SdkIncompatibility::TooOld {
+                minimum: version("0.1.4"),
+                installed: version("0.1.3"),
+            }),
+        ),
+    ] {
+        assert_eq!(
+            check_sdk(version(minimum), version(installed)),
+            expected,
+            "{minimum}, {installed}"
+        );
+    }
+    // Provider metadata of another major is refused.
+    let mut other = common::read_json("fixtures/contracts/connector-provider/provider.json");
+    other["schema_version"] = json!("1.0");
+    assert!(matches!(
+        parse::<ProviderInfo>(&other),
+        Err(ContractError::UnsupportedMajor { .. })
+    ));
+}

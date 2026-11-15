@@ -1,0 +1,593 @@
+//! Rust preparation inside a source's worker; envelope durability precedes cursor advancement.
+
+use crate::{Result, WriterError};
+mod page;
+use page::content_page;
+
+use crate::embedding::WriterEmbedding;
+use arrow_array::builder::{ListBuilder, StringBuilder};
+use arrow_array::types::Float16Type;
+use arrow_array::{
+    ArrayRef, FixedSizeListArray, RecordBatch, RecordBatchIterator, StringArray,
+    TimestampMicrosecondArray, UInt64Array,
+};
+use arrow_schema::{DataType, Field, Schema};
+use chrono::Utc;
+use fyrr_core::config::{Config, PermissionsMode, ProcessEnvironment};
+use fyrr_core::connector::{
+    CONNECTOR_CONTRACT_VERSION, ChangeOp, ConnectorBatch, CursorState, DocumentChange, SyncKind,
+};
+use fyrr_core::envelope::*;
+use fyrr_core::{Contract, SchemaVersion, write_contract};
+use fyrr_reader::embedding::{digest, identity};
+use fyrr_reader::storage::{dataset_uri, namespace_store};
+use lance::dataset::WriteParams;
+use lance::dataset::fragment::write::FragmentCreateBuilder;
+use lance::io::{ObjectStoreParams, StorageOptionsAccessor};
+use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, path::Path};
+use std::sync::Arc;
+
+pub fn schema(dimensions: u32) -> Arc<Schema> {
+    let strings = DataType::List(Arc::new(Field::new("item", DataType::Utf8, false)));
+    Arc::new(Schema::new(vec![
+        Field::new("source_id", DataType::Utf8, false),
+        Field::new("root_id", DataType::Utf8, false),
+        Field::new("record_id", DataType::Utf8, false),
+        Field::new("source_revision", DataType::Utf8, false),
+        Field::new("readers", strings.clone(), false),
+        Field::new(
+            "vector",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float16, true)),
+                dimensions as i32,
+            ),
+            false,
+        ),
+        Field::new("searchable_text", DataType::Utf8, false),
+        Field::new("metadata_json", DataType::Utf8, false),
+        Field::new("record_order", DataType::UInt64, true),
+        Field::new("connector_map_ref", DataType::Utf8, true),
+        Field::new("source_uri", DataType::Utf8, true),
+        Field::new("source_type", DataType::Utf8, true),
+        Field::new("project", DataType::Utf8, true),
+        Field::new("author", DataType::Utf8, true),
+        Field::new(
+            "updated_at",
+            DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        ),
+        Field::new("attributes", strings, true),
+    ]))
+}
+
+pub fn store_params(config: &Config) -> Result<ObjectStoreParams> {
+    Ok(ObjectStoreParams {
+        #[cfg(test)]
+        object_store_wrapper: fyrr_reader::storage::test_store::native(
+            &fyrr_reader::storage::dataset_uri(config),
+        ),
+        storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
+            config
+                .storage
+                .object_store_options(&ProcessEnvironment)
+                .map_err(|_| WriterError::StorageConfigurationInvalid)?
+                .into_map()
+                .into_iter()
+                .collect(),
+        ))),
+        ..Default::default()
+    })
+}
+
+pub fn chunk_identity() -> ChunkProfileIdentity {
+    ChunkProfileIdentity {
+        name: "whole-unit-v5".into(),
+        max_unit_bytes: 16384,
+        overlap_bytes: 0,
+        digest: digest(b"whole-unit-v5:utf8:16384:no-overlap:structural-boundaries:stable-section-location-record-identities"),
+    }
+}
+
+pub async fn put_immutable<T: Contract>(
+    store: &dyn ObjectStore,
+    path: &Path,
+    value: &T,
+) -> Result<()> {
+    value
+        .validate()
+        .map_err(|_| WriterError::PublicationInvalid)?;
+    let bytes = write_contract(value);
+    match store
+        .put_opts(
+            path,
+            bytes.clone().into(),
+            PutOptions {
+                mode: PutMode::Create,
+                ..Default::default()
+            },
+        )
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(object_store::Error::AlreadyExists { .. })
+        | Err(object_store::Error::Precondition { .. }) => {
+            let existing = store.get(path).await?.bytes().await?;
+            if existing.as_ref() == bytes {
+                Ok(())
+            } else {
+                Err(WriterError::ImmutableObjectConflict)
+            }
+        }
+        Err(_) => Err(WriterError::StorageUnavailable),
+    }
+}
+
+/// The durable envelope log is authoritative; repair its cached cursor before acquisition.
+pub async fn recover_cursor(
+    lease: &crate::sync_lease::CursorLease,
+    state: &mut CursorState,
+    durable_cursors: &[(u64, Option<String>)],
+) -> Result<()> {
+    let mut sequences = std::collections::BTreeSet::new();
+    if durable_cursors
+        .iter()
+        .any(|(sequence, _)| !sequences.insert(*sequence))
+    {
+        return Err(WriterError::ImmutableObjectConflict);
+    }
+    loop {
+        let sequence = state
+            .sequence
+            .checked_add(1)
+            .ok_or(WriterError::CursorSequenceOverflow)?;
+        let Some((sequence, end)) = durable_cursors
+            .iter()
+            .filter(|(s, _)| *s >= sequence)
+            .min_by_key(|(s, _)| s)
+        else {
+            return Ok(());
+        };
+        state.sequence = *sequence;
+        // A durable --full envelope starts at None even if S3 retained the
+        // preceding nonempty cursor. Sequence, rather than start, is authoritative.
+        state.cursor.clone_from(end);
+        state.updated_at = Utc::now();
+        lease.write(state.clone()).await?;
+    }
+}
+
+/// One document-level decision shared by quota admission and fragment preparation.
+pub fn quarantine_reason(
+    config: &Config,
+    source: &fyrr_core::config::SourceConfig,
+    change: &DocumentChange,
+) -> Option<&'static str> {
+    let text_bytes = change
+        .sections
+        .iter()
+        .map(|s| s.text.len() as u64)
+        .sum::<u64>();
+    let work = if change.op == ChangeOp::Delete {
+        1
+    } else {
+        change
+            .sections
+            .iter()
+            .map(|s| crate::chunk::chunks(&s.text).len() as u64)
+            .sum()
+    };
+    let Ok(bytes) = serde_json::to_vec(change) else {
+        return Some(WriterError::DocumentInvalid.as_str());
+    };
+    let bytes = bytes.len() as u64;
+    if work > config.writer.commit.group_max_rows
+        || bytes
+            .saturating_add(work.saturating_mul(2048 + u64::from(config.embedding.dimensions) * 2))
+            .saturating_add(16384)
+            > config.writer.commit.group_max_bytes.as_u64()
+        || text_bytes
+            > source
+                .document_max_bytes
+                .unwrap_or(config.writer.document_max_bytes)
+                .as_u64()
+    {
+        return Some("document_oversized");
+    }
+    let sections = change
+        .sections
+        .iter()
+        .map(|s| {
+            s.location.as_ref().map_or_else(
+                || change.root_id.clone(),
+                |location| serde_json::to_string(location).unwrap_or_default(),
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    if change.validate().is_err()
+        || sections.len() != change.sections.len()
+        || change
+            .sections
+            .iter()
+            .any(|s| s.text.is_empty() || s.text.contains('\0'))
+    {
+        return Some(WriterError::DocumentInvalid.as_str());
+    }
+    None
+}
+
+/// An unchanged observation carries no text or fragments, but keeps the same
+/// pending presence of a replacement without rewriting the same revision.
+pub enum ContentChange {
+    Write(Box<DocumentChange>),
+    Present(EnvelopeDocument),
+}
+impl std::fmt::Debug for ContentChange {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Write(_) => "ContentChange::Write",
+            Self::Present(_) => "ContentChange::Present",
+        })
+    }
+}
+
+/// Split provider batches by actual inserted-record/delete-intent work, without
+/// advancing the opaque provider cursor until the final durable sub-envelope.
+#[allow(clippy::too_many_arguments)]
+pub async fn content(
+    config: &Config,
+    source: &fyrr_core::config::SourceConfig,
+    batch: &ConnectorBatch,
+    changes: Vec<ContentChange>,
+    state: &mut CursorState,
+    lease: &crate::sync_lease::CursorLease,
+    base_head: Option<BaseHead>,
+    cache: &mut WriterEmbedding,
+    permission_stream: bool,
+) -> Result<u64> {
+    let mut pages = Vec::new();
+    let mut page = Vec::new();
+    let mut rows = 0u64;
+    let mut bytes = 16384u64;
+    for change in changes {
+        let work = match &change {
+            ContentChange::Present(_) => 1,
+            ContentChange::Write(change) if change.op == ChangeOp::Delete => 1,
+            ContentChange::Write(change) => change
+                .sections
+                .iter()
+                .map(|s| crate::chunk::chunks(&s.text).len() as u64)
+                .sum::<u64>(),
+        };
+        let encoded = match &change {
+            ContentChange::Write(change) => serde_json::to_vec(change),
+            ContentChange::Present(document) => serde_json::to_vec(document),
+        };
+        let estimate = encoded.map_err(|_| WriterError::DocumentInvalid)?.len() as u64
+            + work.saturating_mul(2048 + u64::from(config.embedding.dimensions) * 2);
+        if !page.is_empty()
+            && (rows.saturating_add(work) > config.writer.commit.group_max_rows
+                || bytes.saturating_add(estimate) > config.writer.commit.group_max_bytes.as_u64())
+        {
+            pages.push(std::mem::take(&mut page));
+            rows = 0;
+            bytes = 16384;
+        }
+        rows = rows.saturating_add(work);
+        bytes = bytes.saturating_add(estimate);
+        page.push(change);
+    }
+    if !page.is_empty() || pages.is_empty() {
+        pages.push(page);
+    }
+    let count = pages.len();
+    let mut quarantined = 0;
+    for (index, page) in pages.into_iter().enumerate() {
+        let last = index + 1 == count;
+        let mut part = batch.clone();
+        part.cursor.start = state.cursor.clone();
+        if !last {
+            part.cursor.end = state.cursor.clone().unwrap_or_default();
+        }
+        quarantined += content_page(
+            config,
+            source,
+            &part,
+            page,
+            state,
+            lease,
+            base_head.clone(),
+            cache,
+            last,
+            permission_stream,
+        )
+        .await?;
+    }
+    Ok(quarantined)
+}
+
+pub fn initial_cursor(config: &Config, source: &str, kind: SyncKind) -> CursorState {
+    CursorState {
+        schema_version: CONNECTOR_CONTRACT_VERSION,
+        namespace: config.namespace.name.clone(),
+        source_id: source.into(),
+        kind,
+        cursor: None,
+        sequence: 0,
+        rejection_generation: 0,
+        restore_sequence: 0,
+        updated_at: Utc::now(),
+        lease: None,
+    }
+}
+
+pub async fn non_content(
+    config: &Config,
+    source: &str,
+    batch: &ConnectorBatch,
+    state: &mut CursorState,
+    lease: &crate::sync_lease::CursorLease,
+    base: Option<BaseHead>,
+    complete_read: bool,
+) -> Result<()> {
+    use fyrr_core::connector::BatchBody;
+    // A permission intent replaces every chunk of its root. Keep roots whole, and
+    // let the committer charge their current published row counts before grouping.
+    if let BatchBody::PermissionChanges {
+        documents,
+        container_grants,
+    } = &batch.body
+        && documents.len() + container_grants.len() > 1
+    {
+        let mut parts = documents
+            .iter()
+            .map(|document| BatchBody::PermissionChanges {
+                documents: vec![document.clone()],
+                container_grants: Vec::new(),
+            })
+            .chain(
+                container_grants
+                    .iter()
+                    .map(|grant| BatchBody::PermissionChanges {
+                        documents: Vec::new(),
+                        container_grants: vec![grant.clone()],
+                    }),
+            )
+            .peekable();
+        while let Some(body) = parts.next() {
+            let mut part = batch.clone();
+            part.body = body;
+            part.cursor.start = state.cursor.clone();
+            let advances = parts.peek().is_none();
+            if !advances {
+                part.cursor.end = state.cursor.clone().unwrap_or_default();
+            }
+            non_content_page(
+                config,
+                source,
+                &part,
+                state,
+                lease,
+                base.clone(),
+                complete_read,
+                advances && !complete_read,
+            )
+            .await?;
+        }
+        return Ok(());
+    }
+    non_content_page(
+        config,
+        source,
+        batch,
+        state,
+        lease,
+        base,
+        complete_read,
+        !complete_read,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn non_content_page(
+    config: &Config,
+    source: &str,
+    batch: &ConnectorBatch,
+    state: &mut CursorState,
+    lease: &crate::sync_lease::CursorLease,
+    base: Option<BaseHead>,
+    complete_read: bool,
+    advances_cursor: bool,
+) -> Result<()> {
+    use fyrr_core::connector::BatchBody;
+    let (store, root) = namespace_store(config)?;
+    let sequence = state
+        .sequence
+        .checked_add(1)
+        .ok_or(WriterError::CursorSequenceOverflow)?;
+    let id = envelope_id(
+        &config.namespace.name,
+        source,
+        batch.kind,
+        sequence,
+        state.rejection_generation,
+        state.cursor.as_deref(),
+    );
+    let payload = match &batch.body {
+        BatchBody::PermissionChanges {
+            documents,
+            container_grants,
+        } => {
+            let mut documents = documents.clone();
+            let mut container_grants = container_grants.clone();
+            for readers in documents
+                .iter_mut()
+                .map(|d| &mut d.readers)
+                .chain(container_grants.iter_mut().map(|g| &mut g.readers))
+            {
+                *readers = readers
+                    .iter()
+                    .map(|t| crate::apply::reader_token(config, source, t))
+                    .collect::<Result<_, _>>()?;
+            }
+            EnvelopePayload::Permissions(PermissionsPayload {
+                read_at: Utc::now(),
+                complete_read,
+                documents,
+                container_grants,
+            })
+        }
+        BatchBody::PrincipalSnapshot(part) => {
+            let bytes = write_contract(batch);
+            let hash = digest(&bytes);
+            let object = format!("members/{}.json", &hash[7..]);
+            crate::secrets::put(
+                config,
+                store.as_ref(),
+                &object_store::path::Path::from(format!("{root}/{object}")),
+                batch,
+            )
+            .await?;
+            EnvelopePayload::Members(MembersPayload {
+                read_at: Utc::now(),
+                complete_read,
+                snapshot_id: part.snapshot_id.clone(),
+                snapshot_object: object,
+                snapshot_digest: hash,
+                part: part.part,
+                last: part.last,
+                principals: (part.users.len() + part.groups.len()) as u64,
+            })
+        }
+        BatchBody::Listing(part) => EnvelopePayload::Reconcile(ReconcilePayload {
+            listing_id: part.listing_id.clone(),
+            part: part.part,
+            last: part.last,
+            complete: part.complete,
+            watermark: base.as_ref().map_or(0, |b| b.content_sequence),
+            root_ids: part.root_ids.clone(),
+        }),
+        _ => return Err(WriterError::EnvelopeInvalid),
+    };
+    let envelope = PreparedEnvelope {
+        schema_version: ENVELOPE_CONTRACT_VERSION,
+        envelope_id: id.clone(),
+        namespace: config.namespace.name.clone(),
+        source_id: source.into(),
+        kind: batch.kind,
+        sequence,
+        rejection_generation: state.rejection_generation,
+        restore_sequence: state.restore_sequence,
+        cursor: batch.cursor.clone(),
+        advances_cursor,
+        base_head: base,
+        created_at: Utc::now(),
+        payload,
+    };
+    lease.state().await?;
+    put_immutable(
+        store.as_ref(),
+        &root.join("envelopes").join(format!("{id}.json")),
+        &envelope,
+    )
+    .await?;
+    state.sequence = sequence;
+    if advances_cursor {
+        state.cursor = Some(batch.cursor.end.clone());
+    }
+    state.updated_at = Utc::now();
+    lease.write(state.clone()).await
+}
+
+pub(crate) async fn put_generation<T: Contract>(
+    store: &dyn ObjectStore,
+    root: &Path,
+    kind: &str,
+    generation: u64,
+    value: &T,
+) -> Result<fyrr_core::publication::GenerationPointer> {
+    let digest = digest(&write_contract(value));
+    let object = format!("{kind}/{generation}-{}.json", &digest[7..]);
+    put_immutable(store, &Path::from(format!("{root}/{object}")), value).await?;
+    Ok(fyrr_core::publication::GenerationPointer {
+        generation,
+        object,
+        digest,
+    })
+}
+
+pub(crate) fn string_lists<'a>(
+    lists: impl IntoIterator<Item = &'a [String]>,
+) -> arrow_array::ListArray {
+    let mut builder = ListBuilder::new(StringBuilder::new()).with_field(Field::new(
+        "item",
+        DataType::Utf8,
+        false,
+    ));
+    for values in lists {
+        for value in values {
+            builder.values().append_value(value);
+        }
+        builder.append(true);
+    }
+    builder.finish()
+}
+
+pub(crate) async fn bind_files(
+    store: &dyn ObjectStore,
+    root: &Path,
+    paths: &[String],
+) -> Result<(Vec<FileRef>, String)> {
+    let mut files = Vec::new();
+    let mut bound = Vec::new();
+    for path in paths {
+        let bytes = store
+            .get(&Path::from(format!("{root}/dataset.lance/{path}")))
+            .await?
+            .bytes()
+            .await?;
+        bound.extend_from_slice(digest(&bytes).as_bytes());
+        files.push(FileRef {
+            path: path.clone(),
+            size_bytes: bytes.len() as u64,
+        });
+    }
+    Ok((files, digest(&bound)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn generation_pointer_reads_the_immutable_object_and_checks_its_digest() {
+        let store = object_store::memory::InMemory::new();
+        let root = Path::from("namespace");
+        let policy: fyrr_core::publication::PolicyArtifact = fyrr_core::parse_contract(
+            include_bytes!("../../../fixtures/contracts/policy-artifact/valid.json"),
+        )
+        .unwrap();
+        let pointer = put_generation(&store, &root, "policy", policy.generation, &policy)
+            .await
+            .unwrap();
+        let read: fyrr_core::publication::PolicyArtifact =
+            fyrr_reader::storage::artifact(&store, &root, &pointer)
+                .await
+                .unwrap();
+        assert_eq!(read, policy);
+        store
+            .put(
+                &Path::from(format!("{root}/{}", pointer.object)),
+                b"{}".to_vec().into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fyrr_reader::storage::artifact::<fyrr_core::publication::PolicyArtifact>(
+                &store, &root, &pointer
+            )
+            .await
+            .unwrap_err(),
+            fyrr_reader::storage::StorageError::AuthorizationUnavailable
+        );
+    }
+}

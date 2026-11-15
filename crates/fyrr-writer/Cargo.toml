@@ -1,0 +1,49 @@
+[package]
+name = "fyrr-writer"
+description = "fyrr writer: sync, commit, maintenance and administration (full build only)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+arrow-array.workspace = true
+arrow-pyarrow.workspace = true
+arrow-schema.workspace = true
+chrono.workspace = true
+clap.workspace = true
+fyrr-core.workspace = true
+jsonschema.workspace = true
+pyo3.workspace = true
+regex.workspace = true
+rustix.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+fyrr-reader.workspace = true
+lance.workspace = true
+lance-index.workspace = true
+lance-linalg.workspace = true
+object_store.workspace = true
+tokio.workspace = true
+futures.workspace = true
+hex.workspace = true
+half.workspace = true
+
+axum.workspace = true
+reqwest.workspace = true
+ring.workspace = true
+
+[dev-dependencies]
+syn = { version = "=2.0.119", features = ["full", "visit"] }
+proc-macro2 = "1"
+arrow-buffer.workspace = true
+async-trait.workspace = true
+fyrr-reader = { workspace = true, features = ["test-store"] }
+
+[build-dependencies]
+pyo3-build-config.workspace = true
+
+[lints]
+workspace = true

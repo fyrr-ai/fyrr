@@ -1,0 +1,65 @@
+# Example fyrr deployment configuration.
+# Editors: validate against schemas/config.schema.json.
+# Check with: fyrr --config config/fyrr.example.toml config check
+# Secrets are never written here: a secret field names an environment variable.
+
+[namespace]
+name = "acme"
+
+[storage]
+uri = "s3://fyrr-data/acme"
+region = "eu-central-1"
+access_key_id = { env = "FYRR_S3_ACCESS_KEY_ID" }
+secret_access_key = { env = "FYRR_S3_SECRET_ACCESS_KEY" }
+
+[embedding]
+endpoint = "https://embeddings.internal.example/v1"
+api_key = { env = "FYRR_EMBEDDING_API_KEY" }
+
+[identity]
+stdio_user = "ada.novak@acme.example"
+hashing_key = { env = "FYRR_IDENTITY_KEY" }
+encryption_key = { env = "FYRR_ENCRYPTION_KEY" }
+
+[identity.directory]
+provider = "none"
+
+[reader]
+version_check = "interval"
+version_check_interval = "30s"
+
+[writer]
+purge_window = "24h"
+
+[[sources]]
+id = "local-docs"
+type = "local-files"
+permissions = "fixed"
+readers = ["grp:engineering"]
+
+[sources.intervals]
+content = "10m"
+
+[sources.scope]
+paths = ["/srv/docs"]
+include = ["**/*.md", "**/*.rst", "**/*.txt"]
+
+[[sources]]
+id = "jira-eng"
+type = "jira"
+permissions = "sync"
+
+[sources.intervals]
+content = "5m"
+permissions = "30m"
+members = "30m"
+reconcile = "24h"
+
+[sources.scope]
+# Stable project IDs from Jira Cloud; names and keys can change.
+projects = [10001, 10002]
+
+[sources.settings]
+site_url = "https://acme.atlassian.net"
+cloud_id = "11111111-1111-4111-8111-111111111111"
+api_token = { env = "FYRR_JIRA_API_TOKEN" }

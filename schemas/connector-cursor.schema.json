@@ -1,0 +1,113 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "source_id": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/SyncKind"
+    },
+    "cursor": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Opaque connector cursor; `null` restarts with a full scan."
+    },
+    "sequence": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "description": "Sequence number of the last durable envelope of this source and kind."
+    },
+    "rejection_generation": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "description": "Incremented when a rejected envelope rewinds the cursor."
+    },
+    "restore_sequence": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "description": "Latest manifest-authorized restore reset consumed by this log/cache entry."
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "lease": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Lease"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "namespace",
+    "source_id",
+    "kind",
+    "sequence",
+    "rejection_generation",
+    "restore_sequence",
+    "updated_at"
+  ],
+  "description": "The durable per-source, per-kind cursor the worker keeps on S3.",
+  "title": "CursorState",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SchemaVersion": {
+      "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "SyncKind": {
+      "type": "string",
+      "enum": [
+        "content",
+        "permissions",
+        "members",
+        "reconcile"
+      ],
+      "description": "Which of a source's independent syncs produced a batch."
+    },
+    "Lease": {
+      "type": "object",
+      "properties": {
+        "holder": {
+          "type": "string",
+          "description": "Opaque holder identity (host and process), never a user identity."
+        },
+        "epoch": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Incremented on every takeover; fences a former holder."
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "holder",
+        "epoch",
+        "expires_at"
+      ],
+      "description": "The namespace committer lease."
+    }
+  },
+  "x-fyrr-contract": "connector-cursor",
+  "x-fyrr-schema-version": "1.3"
+}

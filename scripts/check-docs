@@ -1,0 +1,555 @@
+#!/usr/bin/env python3
+"""Fail when the reference docs disagree with the code.
+
+  scripts/check-docs                       build both binaries, then check
+  scripts/check-docs FULL_BIN READER_BIN   check against prebuilt binaries
+
+docs/cli.md: every command and subcommand of both builds, their flags,
+positional arguments and defaults match `--help`; documented flag ranges
+are probed (the bounds parse, one past them is a usage error).
+docs/configuration.md, docs/identity.md, docs/tuning.md and
+docs/reader-writer.md: every key of schemas/config.schema.json is
+documented once, in one of them, with its default, `required` or `absent`,
+and its schema range;
+config/fyrr.example.toml passes `config check --no-env`.
+docs/mcp-tools.md: every tool argument of fixtures/mcp/tools-list.json is
+documented with its schema ranges; the error table equals
+fixtures/mcp/error-codes.json.
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+DASH = "\u2013"  # en dash, as the docs write ranges
+RANGE = re.compile(rf"(?<![\w.])(\d[\d,]*){DASH}(\d[\d,]*)(?![\w.])")
+CODE = re.compile(r"`([^`]+)`")
+# Keys the schema leaves optional but validation requires whenever their
+# section is present.
+REQUIRED_BY_VALIDATION = {
+    "identity.hashing_key",
+    "identity.oidc.issuer",
+    "identity.oidc.jwks_url",
+}
+# The pages that together document the configuration file.
+CONFIG_DOCS = [
+    "docs/configuration.md",
+    "docs/identity.md",
+    "docs/tuning.md",
+    "docs/reader-writer.md",
+]
+
+errors = []
+
+
+def fail(where, message):
+    errors.append(f"{where}: {message}")
+
+
+def sections(path, level):
+    """Splits a Markdown file into {heading: body} at the given heading level."""
+    result, heading = {}, ""
+    for line in path.read_text().splitlines():
+        if re.match(rf"#{{{level}}} ", line):
+            heading = line[level + 1 :].strip()
+            result[heading] = []
+        else:
+            result.setdefault(heading, []).append(line)
+    return {key: "\n".join(lines) for key, lines in result.items()}
+
+
+def table(text):
+    """Rows of the first Markdown table in text as dicts keyed by header."""
+    block = re.search(r"^\|.*(?:\n\|.*)*", text, re.M)
+    if not block:
+        return []
+    rows = [
+        [cell.strip().replace("\\|", "|") for cell in re.split(r"(?<!\\)\|", line.strip())[1:-1]]
+        for line in block.group(0).splitlines()
+    ]
+    return [dict(zip(rows[0], row, strict=True)) for row in rows[2:]]
+
+
+def ranges(text):
+    return {f"{a.replace(',', '')}{DASH}{b.replace(',', '')}" for a, b in RANGE.findall(text)}
+
+
+def number(value):
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+# --- CLI ------------------------------------------------------------------
+
+
+def run(binary, *args, env=None):
+    return subprocess.run(
+        [binary, *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+        check=False,
+    )
+
+
+def parse_help(text):
+    """Commands, options {flag: default or None} and positional names of `--help`."""
+    commands, options, values, positionals, part, current = [], {}, {}, [], None, None
+    for line in text.splitlines():
+        if re.match(r"^[A-Z][a-z]+:$", line):
+            part = line[:-1]
+            continue
+        if part == "Commands" and (m := re.match(r"^  (\S+)", line)):
+            commands.append(m.group(1))
+        elif part == "Arguments" and (m := re.match(r"^  [\[<]([A-Z_]+)[\]>]", line)):
+            positionals.append(m.group(1))
+        elif part == "Options":
+            if m := re.match(r"^\s+(?:-\w, )?--([\w-]+)", line):
+                current = m.group(1)
+                options[current] = None
+            if current and (m := re.search(r"\[default: ([^\]]+)\]", line)):
+                options[current] = m.group(1)
+            if current and (m := re.search(r"\[possible values: ([^\]]+)\]", line)):
+                values[current] = m.group(1).split(", ")
+    return commands, (options, values), positionals
+
+
+def help_tree(binary, path=(), skip=()):
+    """{command path: parsed help} for every visible command below path but skip."""
+    result = run(binary, *path, "--help")
+    if result.returncode != 0:
+        fail(f"{binary} {' '.join(path)} --help", f"exit {result.returncode}")
+        return {}
+    commands, options, positionals = parse_help(result.stdout)
+    tree = {path: (commands, options, positionals)}
+    for command in commands:
+        if command != "help" and (*path, command) not in skip:
+            tree.update(help_tree(binary, (*path, command), skip))
+    return tree
+
+
+def documented_commands(cli_doc):
+    """{command path: [row text]} from the command tables of docs/cli.md."""
+    rows = {}
+    for heading, body in sections(cli_doc, 2).items():
+        if not (m := re.fullmatch(r"`fyrr (\w+)`", heading)):
+            continue
+        for row in table(body):
+            cell = CODE.match(row["Command"]).group(1)
+            words = [w for w in cell.split() if re.fullmatch(r"[a-z][a-z-]*", w)]
+            if words[0] != m.group(1):
+                fail("docs/cli.md", f"`{cell}` is not under `fyrr {m.group(1)}`")
+            rows.setdefault(tuple(words), []).append((cell, row["Effect"]))
+    return rows
+
+
+def check_cli(full, reader):
+    cli_doc = ROOT / "docs/cli.md"
+    where = "docs/cli.md"
+    text = cli_doc.read_text()
+    # The reader-only build's `writer` is a stub that only exits 69.
+    trees = {
+        "full": help_tree(full),
+        "reader-only": help_tree(reader, skip={("writer",)}),
+    }
+    doc = documented_commands(cli_doc)
+    config_option = trees["full"][()][1][0].get("config")
+    top = run(full, "--help").stdout
+    synopsis = re.search(r"```\n(fyrr .*)\n```", text).group(1)
+    usage = re.search(r"^Usage: (.*)$", top, re.M).group(1)
+    if synopsis != usage:
+        fail(where, f"synopsis `{synopsis}` != `{usage}`")
+    if "[env: FYRR_CONFIG=]" not in top or f"`{config_option}`" not in text:
+        fail(where, f"`--config` default `{config_option}` or FYRR_CONFIG not documented")
+    hidden = {"help", "__worker"}
+    leaves = {}
+    for build, tree in trees.items():
+        for path, (commands, options, positionals) in tree.items():
+            if path and not set(commands) - hidden:
+                leaves.setdefault(path, {})[build] = (options, positionals)
+    reader_top = set(trees["reader-only"][()][0]) - hidden
+    if reader_top != {"reader", "config", "writer"}:
+        fail(where, f"reader-only top-level commands are {sorted(reader_top)}")
+    if not re.search(r"reader-only build has `reader` and `config` only", text):
+        fail(where, "the reader-only command set is not stated")
+    unavailable = run(reader, "writer", "status")
+    if unavailable.returncode != 69:
+        fail(
+            where,
+            f"reader-only `fyrr writer status` exits {unavailable.returncode}, not 69",
+        )
+    for path in sorted(set(leaves) | set(doc)):
+        name = " ".join(path)
+        builds = leaves.get(path, {})
+        if path not in doc:
+            fail(where, f"`{name}` is not documented")
+            continue
+        if not builds:
+            fail(where, f"`{name}` is documented but no build has it")
+            continue
+        if path[0] in ("reader", "config") and set(builds) != {"full", "reader-only"}:
+            fail(where, f"`{name}` is not in both builds: {sorted(builds)}")
+        for build, other in builds.items():
+            if other != builds["full"]:
+                fail(where, f"`{name}` differs between full and {build} builds")
+        (options, values), positionals = builds["full"]
+        options = {k: v for k, v in options.items() if k not in ("help", "config", "version")}
+        cells = " ".join(cell for cell, _ in doc[path])
+        joined = " ".join(f"{cell} {effect}" for cell, effect in doc[path])
+        for flag, accepted in values.items():
+            if not re.search(rf"--{flag} " + re.escape("|".join(accepted)) + r"\b", cells):
+                fail(where, f"`{name} --{flag}`: values {accepted} not documented")
+        flags = set(re.findall(r"--([a-z][\w-]*)", cells))
+        if flags != set(options):
+            fail(
+                where,
+                f"`{name}` flags: documented {sorted(flags)}, help {sorted(options)}",
+            )
+        # Positional arguments are the upper-case words not preceded by a flag.
+        words = cells.split()
+        names = {
+            word.strip("[]…")
+            for before, word in zip(["", *words], words, strict=False)
+            if re.fullmatch(r"\[?[A-Z][A-Z_]+…?\]?…?", word) and "--" not in before
+        }
+        if names != set(positionals):
+            fail(
+                where,
+                f"`{name}` arguments: documented {sorted(names)}, help {positionals}",
+            )
+        for flag, default in options.items():
+            if default is None:
+                continue
+            pattern = (
+                rf"`--{flag}`[^|]*?\(default `?{re.escape(default)}`?(?:, (\d+){DASH}(\d+))?\)"
+            )
+            m = re.search(pattern, joined)
+            if not m:
+                fail(where, f"`{name} --{flag}`: default `{default}` not documented")
+                continue
+            if m.group(1):
+                probe_range(full, path, flag, int(m.group(1)), int(m.group(2)))
+
+
+def probe_range(binary, path, flag, low, high):
+    """The documented bounds parse; one past each bound is a usage error (2)."""
+    missing = str(ROOT / "target/check-docs-no-such-config.toml")
+    for value, usage in [
+        (low, False),
+        (high, False),
+        (low - 1, True),
+        (high + 1, True),
+    ]:
+        code = run(binary, "--config", missing, *path, f"--{flag}", str(value)).returncode
+        if (code == 2) != usage:
+            fail(
+                "docs/cli.md",
+                f"`{' '.join(path)} --{flag} {value}` exits {code}; "
+                f"documented range {low}{DASH}{high}",
+            )
+
+
+# --- configuration ----------------------------------------------------------
+
+
+class Schema:
+    def __init__(self, path):
+        self.root = json.loads(path.read_text())
+
+    def resolve(self, node):
+        """(node, nullable) with $ref and anyOf [X, null] unwrapped."""
+        nullable = False
+        while True:
+            if "$ref" in node:
+                node = {**self.root["$defs"][node["$ref"].split("/")[-1]], **node}
+                del node["$ref"]
+            elif "anyOf" in node and {"type": "null"} in node["anyOf"]:
+                nullable = True
+                (node,) = [n for n in node["anyOf"] if n != {"type": "null"}]
+            else:
+                types = node.get("type")
+                return node, nullable or (isinstance(types, list) and "null" in types)
+
+    def child(self, node, key):
+        node, _ = self.resolve(node)
+        if key.endswith("[]"):
+            return self.resolve(node["properties"][key[:-2]])[0]["items"]
+        return node.get("properties", {}).get(key)
+
+
+def expected_range(node):
+    """The schema range as `low<en dash>high`, or `at least N` for a positive lower bound."""
+    for low, high in [
+        ("minimum", "maximum"),
+        ("minLength", "maxLength"),
+        ("minItems", "maxItems"),
+    ]:
+        if high in node:
+            return f"{number(node.get(low, 0))}{DASH}{number(node[high])}"
+        if node.get(low, 0) > 0 and low == "minimum":
+            return f"at least {number(node[low])}"
+    return None
+
+
+def toml_value(text):
+    try:
+        return tomllib.loads(f"v = {text}")["v"]
+    except tomllib.TOMLDecodeError:
+        return text
+
+
+def config_sections(doc):
+    """[(path, table rows)] for every table under a `[section]` heading of one page."""
+    result = []
+    for level in (2, 3):
+        for heading, body in sections(doc, level).items():
+            spans = [s.strip("[]") for s in CODE.findall(heading) if s.startswith("[")]
+            if not spans:
+                continue
+            parts = [s.replace("sources", "sources[]").split(".") for s in spans]
+            base = parts[0] if len(parts) == 1 else parts[0][:-1]
+            body = body.split("\n### ", 1)[0]
+            result.append((tuple(base), table(body)))
+    return result
+
+
+def check_configuration(full):
+    where = ", ".join(CONFIG_DOCS)
+    schema = Schema(ROOT / "schemas/config.schema.json")
+    documented = {}  # dotted path -> row text
+    pages = {}  # dotted path -> the page that documents it
+    tables = [
+        (page, base, rows) for page in CONFIG_DOCS for base, rows in config_sections(ROOT / page)
+    ]
+    section_paths = {base for _, base, _ in tables}
+    for page, base, rows in tables:
+        for row in rows:
+            text = " ".join(row.values())
+            for key in CODE.findall(row["Key"]):
+                path = (*base, *key.split("."))
+                if path in pages:
+                    fail(
+                        page,
+                        f"`{'.'.join(path)}` is already documented in {pages[path]}",
+                    )
+                documented[path] = text
+                pages[path] = page
+                check_config_row(page, schema, path, row, text, section_paths)
+
+    def walk(path, node):
+        """Every schema key below path has a row, or is named in its parent's row."""
+        for key, child in schema.resolve(node)[0].get("properties", {}).items():
+            sub = (*path, key)
+            if schema.resolve(child)[0].get("type") == "array" and (
+                *path,
+                f"{key}[]",
+            ) in (section_paths):
+                sub, child = (*path, f"{key}[]"), schema.child(node, f"{key}[]")
+            dotted = ".".join(sub).replace("[]", "")
+            nested = any(p[: len(sub)] == sub and p != sub for p in documented)
+            if sub in section_paths or (nested and sub not in documented):
+                walk(sub, child)
+            elif sub in documented:
+                properties = schema.resolve(child)[0].get("properties", {})
+                # A secret reference `{ env = "VAR" }` is described under Secrets.
+                for name in set(properties) - {"env"}:
+                    row = documented[sub]
+                    if (*sub, name) not in documented and not re.search(rf"\b{name}\b", row):
+                        fail(pages[sub], f"`{dotted}.{name}` is not documented")
+            else:
+                fail(where, f"`{dotted}` is not documented")
+
+    walk((), schema.root)
+    for path in documented:
+        node = schema.root
+        for key in path:
+            node = node and schema.child(node, key)
+        if node is None:
+            fail(pages[path], f"`{'.'.join(path)}` is documented but not in the schema")
+
+    example = ROOT / "config/fyrr.example.toml"
+    check = run(
+        full,
+        "--config",
+        str(example),
+        "config",
+        "check",
+        "--no-env",
+        env={**os.environ, "VIRTUAL_ENV": str(ROOT / "connectors/.venv")},
+    )
+    if check.returncode != 0:
+        fail(
+            "config/fyrr.example.toml",
+            f"config check --no-env exits {check.returncode}",
+        )
+        print(check.stdout + check.stderr, file=sys.stderr)
+
+
+def check_config_row(where, schema, path, row, text, section_paths):
+    dotted = ".".join(path).replace("[]", "")
+    parent = schema.root
+    for key in path[:-1]:
+        parent = schema.child(parent, key)
+    node = schema.child(parent, path[-1]) if parent else None
+    if node is None:
+        return
+    parent, _ = schema.resolve(parent)
+    resolved, nullable = schema.resolve(node)
+    if "Default" in row:
+        default = row["Default"]
+        required = path[-1] in parent.get("required", []) or dotted in REQUIRED_BY_VALIDATION
+        if (default == "required") != required:
+            fail(where, f"`{dotted}`: documented `{default}`, schema required={required}")
+        elif not required:
+            if "default" in node:
+                code = CODE.fullmatch(default)
+                if default == "see below" and path in section_paths:
+                    pass
+                elif not code or toml_value(code.group(1)) != node["default"]:
+                    fail(
+                        where,
+                        f"`{dotted}`: default {default}, schema `{node['default']}`",
+                    )
+            elif nullable and not default.startswith("absent"):
+                fail(
+                    where,
+                    f"`{dotted}`: default {default}, but it is optional without one",
+                )
+            elif not nullable and not CODE.match(default):
+                fail(where, f"`{dotted}`: default {default} has no value")
+    want = expected_range(resolved)
+    found = ranges(text)
+    accepted = {want, re.sub(rf"^0{DASH}", "at most ", want)} if want else set()
+    if want and not any(phrase in text.replace(",", "").lower() for phrase in accepted):
+        fail(where, f"`{dotted}`: range {want} not documented")
+    if found - {want}:
+        fail(where, f"`{dotted}`: documented range {sorted(found)}, schema {want}")
+
+
+# --- MCP tools ------------------------------------------------------------------
+
+
+def property_ranges(node):
+    """Ranges of a tool argument: its own and its scalar items'."""
+    found = {expected_range(node)}
+    items = node.get("items", {})
+    if items.get("type") == "string":
+        found.add(expected_range(items))
+    return found - {None}
+
+
+def nested_ranges(node):
+    found = set()
+    if isinstance(node, dict):
+        found |= property_ranges(node) - {r for r in property_ranges(node) if "at least" in r}
+        for value in node.values():
+            found |= nested_ranges(value)
+    elif isinstance(node, list):
+        for value in node:
+            found |= nested_ranges(value)
+    return found
+
+
+def check_mcp_tools():
+    where = "docs/mcp-tools.md"
+    tools = json.loads((ROOT / "fixtures/mcp/tools-list.json").read_text())["tools"]
+    codes = json.loads((ROOT / "fixtures/mcp/error-codes.json").read_text())
+    docs = sections(ROOT / where, 2)
+    versions = {tool["_meta"]["fyrr/schema_version"] for tool in tools}
+    preamble = " ".join(docs[""].split())
+    if not any(f"(currently `{v}`)" in preamble for v in versions) or len(versions) != 1:
+        fail(where, f"schema version is not documented as {sorted(versions)}")
+    titles = {CODE.fullmatch(h).group(1) for h in docs if CODE.fullmatch(h)}
+    if titles != {tool["name"] for tool in tools}:
+        fail(
+            where,
+            f"tool sections {sorted(titles)} != {sorted(t['name'] for t in tools)}",
+        )
+    for tool in tools:
+        name = tool["name"]
+        body = docs.get(f"`{name}`", "")
+        rows = table(body)
+        properties = tool["inputSchema"]["properties"]
+        texts = {}
+        for row in rows:
+            for key in CODE.findall(row["Argument"]):
+                texts[key] = " ".join(row.values())
+        for key, node in properties.items():
+            text = texts.get(key, body if f"`{key}`" in body else None)
+            if text is None:
+                fail(where, f"`{name}.{key}` is not documented")
+                continue
+            for want in property_ranges(node):
+                if want not in text:
+                    fail(where, f"`{name}.{key}`: range {want} not documented")
+            allowed = nested_ranges(node) if key in texts else nested_ranges(properties)
+            if stray := ranges(text) - allowed:
+                fail(
+                    where,
+                    f"`{name}.{key}`: documented range {sorted(stray)} not in the schema",
+                )
+        for key in set(texts) - set(properties):
+            fail(where, f"`{name}.{key}` is documented but not in the schema")
+    documented = [
+        (CODE.fullmatch(r["Code"]).group(1), r["Retryable"], r["Meaning"].rstrip("."))
+        for r in table(docs["Errors"])
+    ]
+    expected = [
+        (
+            c["code"],
+            "yes" if c["retryable"] else "no",
+            c["meaning"][0].upper() + c["meaning"][1:],
+        )
+        for c in codes
+    ]
+    for got, want in zip(documented, expected, strict=False):
+        if got != want:
+            fail(where, f"error row {got} != {want}")
+    if len(documented) != len(expected):
+        fail(where, f"{len(documented)} error codes documented, {len(expected)} exist")
+
+
+# --- binaries -------------------------------------------------------------------
+
+
+def build():
+    """Builds both variants and returns copies of their binaries."""
+    cargo_bin = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo")) / "bin"
+    env = {**os.environ, "PATH": f"{cargo_bin}{os.pathsep}{os.environ['PATH']}"}
+    out = ROOT / "target/check-docs"
+    binaries = []
+    for variant, args in [("full", []), ("reader-only", ["--no-default-features"])]:
+        subprocess.run(
+            ["cargo", "build", "--locked", "-p", "fyrr", *args],
+            cwd=ROOT,
+            env=env,
+            check=True,
+        )
+        # Keep the name `fyrr`: clap prints the invoked name in usage lines.
+        (out / variant).mkdir(parents=True, exist_ok=True)
+        binaries.append(shutil.copy2(ROOT / "target/debug/fyrr", out / variant / "fyrr"))
+    return binaries
+
+
+def main():
+    full, reader = sys.argv[1:3] if len(sys.argv) == 3 else build()
+    check_cli(str(full), str(reader))
+    check_configuration(str(full))
+    check_mcp_tools()
+    for error in errors:
+        print(f"FAIL {error}")
+    if errors:
+        print(f"{len(errors)} documentation mismatch(es)")
+        return 1
+    print(f"ok: docs/cli.md, {', '.join(CONFIG_DOCS)} and docs/mcp-tools.md match the code")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

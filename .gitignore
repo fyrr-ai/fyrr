@@ -1,0 +1,13 @@
+/target/
+__pycache__/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.env
+.env.*
+!.env.example
+!.env.sample
+/fyrr.toml
+/connectors/dist/
+/examples/*/dist/
+/fixtures/providers/*/dist/

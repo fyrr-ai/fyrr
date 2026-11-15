@@ -1,0 +1,84 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "generation": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "retrieval_policy_digest": {
+      "type": "string"
+    },
+    "fixed_grants": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "description": "Source-wide fixed grants: the hashed reader tokens of every source with\n`permissions = \"fixed\"`. Rows of other sources carry their own readers."
+    },
+    "row_acl_sequence": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0,
+      "description": "Old pins predating a row-ACL change cannot authorize with their old rows."
+    },
+    "retired_sources": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/RetiredSource"
+      },
+      "description": "Retired sources: readers deny them at once, the committer\nrejects their envelopes, and a restore cannot bring them back. An\nentry is never removed."
+    }
+  },
+  "required": [
+    "schema_version",
+    "namespace",
+    "generation",
+    "retrieval_policy_digest",
+    "fixed_grants"
+  ],
+  "description": "Immutable policy generation used by the reader's admission path.",
+  "title": "PolicyArtifact",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SchemaVersion": {
+      "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "RetiredSource": {
+      "type": "object",
+      "properties": {
+        "retired_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "purged_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "retired_at"
+      ],
+      "description": "When a source was retired and, once its data was removed, purged."
+    }
+  },
+  "x-fyrr-contract": "policy-artifact",
+  "x-fyrr-schema-version": "2.2"
+}

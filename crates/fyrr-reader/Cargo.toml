@@ -1,0 +1,52 @@
+[package]
+name = "fyrr-reader"
+description = "fyrr reader: read-only serving over published Lance versions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[features]
+test-store = []
+
+[dependencies]
+clap.workspace = true
+fyrr-core.workspace = true
+lance.workspace = true
+arrow-array.workspace = true
+arrow-select.workspace = true
+arrow-schema.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+base64.workspace = true
+half.workspace = true
+object_store.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+lance-index.workspace = true
+lance-core.workspace = true
+lance-table.workspace = true
+lance-io.workspace = true
+lance-linalg.workspace = true
+hmac.workspace = true
+constant_time_eq.workspace = true
+tokio.workspace = true
+rustix.workspace = true
+url.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+rmcp.workspace = true
+axum.workspace = true
+reqwest.workspace = true
+jsonwebtoken.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
+
+[lints]
+workspace = true

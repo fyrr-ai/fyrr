@@ -1,0 +1,581 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "source_id": {
+      "type": "string",
+      "description": "Configured source ID (`[[sources]] id`)."
+    },
+    "kind": {
+      "$ref": "#/$defs/SyncKind"
+    },
+    "cursor": {
+      "$ref": "#/$defs/CursorStep"
+    },
+    "body": {
+      "$ref": "#/$defs/BatchBody"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_id",
+    "kind",
+    "cursor",
+    "body"
+  ],
+  "description": "A hand-off from a connector to the worker.",
+  "title": "ConnectorBatch",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SchemaVersion": {
+      "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "SyncKind": {
+      "type": "string",
+      "enum": [
+        "content",
+        "permissions",
+        "members",
+        "reconcile"
+      ],
+      "description": "Which of a source's independent syncs produced a batch."
+    },
+    "CursorStep": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Cursor before this batch; `null` for a first or reset sync."
+        },
+        "end": {
+          "type": "string",
+          "description": "Opaque cursor after this batch, at most 16 KiB."
+        }
+      },
+      "required": [
+        "end"
+      ],
+      "description": "One cursor step: the cursor the batch started from and the cursor after it."
+    },
+    "BatchBody": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "changes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DocumentChange"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "document_changes"
+            }
+          },
+          "required": [
+            "type",
+            "changes"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "documents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DocumentPermission"
+              },
+              "default": []
+            },
+            "container_grants": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ContainerGrant"
+              },
+              "default": []
+            },
+            "type": {
+              "type": "string",
+              "const": "permission_changes"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "$ref": "#/$defs/PrincipalSnapshotPart",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "principal_snapshot"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "$ref": "#/$defs/ListingPart",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "listing"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ],
+      "description": "The kind-specific batch content, tagged by `type`."
+    },
+    "DocumentChange": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "$ref": "#/$defs/ChangeOp"
+        },
+        "root_id": {
+          "type": "string",
+          "description": "Document identity inside the source; with `source_id` it is the logical\nkey of every record of the document."
+        },
+        "source_revision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Source revision of this change; required for upserts."
+        },
+        "revision_order": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "Connector-defined total order of revisions, when the source has one.\nWithout it the committer relies on `expected_prior_revision`."
+        },
+        "expected_prior_revision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The revision this change replaces, for sources without revision order."
+        },
+        "permission_revision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Revision of the permission state carried in `readers`, when the source\nversions permissions separately from content."
+        },
+        "readers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Source-scoped reader references (`usr:<id>` or `grp:<id>`).",
+          "default": []
+        },
+        "containers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Containers (folder, channel, project) whose grants also apply.",
+          "default": []
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DocumentMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Source metadata; required for upserts."
+        },
+        "attributes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Filterable `key=value` attributes; untrusted, never grant access.",
+          "default": []
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Section"
+          },
+          "description": "Text sections in document order; required (non-empty) for upserts.",
+          "default": []
+        }
+      },
+      "required": [
+        "op",
+        "root_id"
+      ],
+      "description": "A complete document change. A document never spans batches."
+    },
+    "ChangeOp": {
+      "type": "string",
+      "enum": [
+        "upsert",
+        "delete"
+      ],
+      "description": "Upsert replaces all of a document's records; delete removes them."
+    },
+    "DocumentMetadata": {
+      "type": "object",
+      "properties": {
+        "source_uri": {
+          "type": "string",
+          "description": "Canonical source URI (exact-match `fetch` key)."
+        },
+        "source_type": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "author": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "team": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "description": "Source instant (RFC 3339), never the ingest time."
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "connector_map": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "description": "Bounded connector-owned map (at most 16 KiB of JSON), read only by\n`fetch`."
+        }
+      },
+      "required": [
+        "source_uri",
+        "source_type"
+      ],
+      "description": "Source metadata. Unknown values stay null, never inferred."
+    },
+    "Section": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Location"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "readers": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Narrower readers for a restricted part (e.g. a Jira comment under a\nsecurity level); `null` means the document's readers. Sections with\ndifferent readers never share a record."
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "description": "A section of document text with its location (heading, sheet, slide, page)."
+    },
+    "Location": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "`heading`, `sheet`, `slide`, `page`, `message` or another\nconnector-defined kind."
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Human label: heading text, sheet name."
+        },
+        "index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Ordinal: slide or page number, first sheet row."
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "description": "Where a section sits in its source document."
+    },
+    "DocumentPermission": {
+      "type": "object",
+      "properties": {
+        "root_id": {
+          "type": "string"
+        },
+        "permission_revision": {
+          "type": "string"
+        },
+        "readers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "containers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "required": [
+        "root_id",
+        "permission_revision",
+        "readers"
+      ],
+      "description": "The readers of one document from a permission sync."
+    },
+    "ContainerGrant": {
+      "type": "object",
+      "properties": {
+        "container_id": {
+          "type": "string"
+        },
+        "container_kind": {
+          "type": "string",
+          "description": "`folder`, `channel`, `project`, `connection` or another container kind."
+        },
+        "permission_revision": {
+          "type": "string"
+        },
+        "readers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "container_id",
+        "container_kind",
+        "permission_revision",
+        "readers"
+      ],
+      "description": "Readers granted on a container, resolved like a source grant."
+    },
+    "SourceUser": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "email": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "E-mail when the source exposes it."
+        },
+        "email_verification": {
+          "$ref": "#/$defs/EmailVerification"
+        },
+        "active": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "active"
+      ],
+      "description": "A source user, linked to a canonical user by the writer."
+    },
+    "EmailVerification": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "unverified"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "verified_corporate",
+          "description": "The source verified an organization-managed address."
+        },
+        {
+          "type": "string",
+          "const": "verified_personal",
+          "description": "Even verified personal addresses require an explicit account link."
+        }
+      ],
+      "description": "Source evidence for an address; personal addresses never auto-link."
+    },
+    "SourceGroup": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "members"
+      ],
+      "description": "A source group with its direct members (`usr:<id>` or `grp:<id>`)."
+    },
+    "PrincipalSnapshotPart": {
+      "type": "object",
+      "properties": {
+        "snapshot_id": {
+          "type": "string",
+          "description": "Same ID on every part of one snapshot."
+        },
+        "part": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Part number, starting at 0."
+        },
+        "last": {
+          "type": "boolean",
+          "description": "True on the final part; a snapshot without it is never applied."
+        },
+        "users": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceUser"
+          },
+          "default": []
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceGroup"
+          },
+          "default": []
+        }
+      },
+      "required": [
+        "snapshot_id",
+        "part",
+        "last"
+      ],
+      "description": "One part of a full principal snapshot of the source."
+    },
+    "ListingPart": {
+      "type": "object",
+      "properties": {
+        "listing_id": {
+          "type": "string",
+          "description": "Same ID on every part of one listing."
+        },
+        "part": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Part number, starting at 0."
+        },
+        "last": {
+          "type": "boolean",
+          "description": "True on the final part."
+        },
+        "complete": {
+          "type": "boolean",
+          "description": "True only on a final part when the listing saw every document in scope.\nAn incomplete listing never deletes anything."
+        },
+        "root_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "listing_id",
+        "part",
+        "last",
+        "complete",
+        "root_ids"
+      ],
+      "description": "One part of a full-ID listing (reconcile)."
+    }
+  },
+  "x-fyrr-contract": "connector-batch",
+  "x-fyrr-schema-version": "1.3"
+}

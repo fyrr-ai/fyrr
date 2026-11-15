@@ -1,0 +1,1492 @@
+//! Configuration: typed TOML with unknown fields
+//! rejected, cross-field validation, secrets only as environment references
+//! (never echoed), the generated JSON Schema, and value origins.
+
+mod common;
+
+use std::collections::HashMap;
+
+use fyrr_core::config::{Environment, LoadedConfig, Origin, Severity, parse};
+
+const EXAMPLE: &str = "config/fyrr.example.toml";
+const SENTINEL: &str = "SENTINEL-5ecr3t-9f1c";
+
+const RERANK: &str = "\n[namespace.rerank]\nendpoint='http://127.0.0.1:1234/rerank'\nmodel='fixture-rerank'\ncandidates=50\nweight=0.5\ndeadline='1s'\nspend_limit_microusd=100\nmax_call_cost_microusd=10\n";
+
+#[test]
+fn rerank_is_optional_capped_validated_and_bound_into_policy() {
+    let base = parse(MINIMAL).unwrap();
+    assert!(base.config.namespace.rerank.is_none());
+    let legacy = base.config.namespace.retrieval_digest();
+    assert_eq!(legacy, fyrr_core::limits::digest(serde_json::json!([
+        "slice2:cosine:ivf-rq1:f16:550:training256:logistic-z:population:lex.75:dense.25:source2-soft-per-bucket:lex50:dense75:p1:1200:phrase0",
+        base.config.namespace.fts_settings(), base.config.namespace.composition
+    ]).to_string().as_bytes()));
+    let configured = parse(&format!("{MINIMAL}{RERANK}")).unwrap();
+    assert!(errors(&configured).is_empty());
+    let digest = configured.config.namespace.retrieval_digest();
+    assert_ne!(legacy, digest);
+    for (from, to, field) in [
+        ("127.0.0.1", "localhost", "endpoint"),
+        ("fixture-rerank", "", "model"),
+        ("candidates=50", "candidates=76", "candidates"),
+        ("weight=0.5", "weight=nan", "weight"),
+        ("weight=0.5", "weight=-0.1", "weight"),
+        ("deadline='1s'", "deadline='0ms'", "deadline"),
+        ("deadline='1s'", "deadline='301s'", "deadline"),
+        (
+            "max_call_cost_microusd=10",
+            "max_call_cost_microusd=0",
+            "max_call_cost_microusd",
+        ),
+        (
+            "max_call_cost_microusd=10\n",
+            "max_call_cost_microusd=10\ntext_chars=199\n",
+            "text_chars",
+        ),
+        (
+            "max_call_cost_microusd=10\n",
+            "max_call_cost_microusd=10\ntext_chars=32769\n",
+            "text_chars",
+        ),
+    ] {
+        assert_error(
+            &RERANK.replace(from, to),
+            &format!("namespace.rerank.{field}"),
+        );
+    }
+    assert!(
+        parse(&format!(
+            "{MINIMAL}{}",
+            RERANK.replace("spend_limit_microusd=100\n", "")
+        ))
+        .is_err()
+    );
+    for (from, to) in [
+        ("fixture-rerank", "another-model"),
+        ("candidates=50", "candidates=30"),
+        ("weight=0.5", "weight=1"),
+        ("deadline='1s'", "deadline='2s'"),
+        ("spend_limit_microusd=100", "spend_limit_microusd=99"),
+        ("max_call_cost_microusd=10", "max_call_cost_microusd=11"),
+        ("1234", "1235"),
+        (
+            "max_call_cost_microusd=10\n",
+            "max_call_cost_microusd=10\ntext_chars=2000\n",
+        ),
+    ] {
+        assert_ne!(
+            digest,
+            parse(&format!("{MINIMAL}{}", RERANK.replace(from, to)))
+                .unwrap()
+                .config
+                .namespace
+                .retrieval_digest()
+        );
+    }
+    let with_secret = format!("{MINIMAL}{RERANK}api_key={{env='RERANK_TEST_KEY'}}\n");
+    let secret = parse(&with_secret).unwrap();
+    assert_ne!(digest, secret.config.namespace.retrieval_digest());
+    assert!(
+        secret
+            .missing_secrets(&|_: &str| None)
+            .iter()
+            .any(|issue| issue.path == "namespace.rerank.api_key")
+    );
+    let issue = parse(&with_secret.replace("{env='RERANK_TEST_KEY'}", &format!("'{SENTINEL}'")))
+        .unwrap_err();
+    assert!(!issue.to_string().contains(SENTINEL));
+}
+
+/// The smallest valid file; every other section takes its defaults.
+const MINIMAL: &str = r#"
+[namespace]
+name = "acme"
+[storage]
+uri = "s3://fyrr-data/acme"
+[identity]
+hashing_key = { env = "FYRR_IDENTITY_KEY" }
+[embedding]
+endpoint = "https://embeddings.example/v1"
+"#;
+
+/// MINIMAL with `keys` added to its `[identity]` table.
+fn with_identity(keys: &str) -> String {
+    MINIMAL.replace("[identity]\n", &format!("[identity]\n{keys}\n"))
+}
+
+/// MINIMAL with an encryption key, as every `permissions = "sync"` source needs.
+fn encrypted() -> String {
+    with_identity("encryption_key = { env = \"FYRR_ENCRYPTION_KEY\" }")
+}
+
+fn env(pairs: &[(&str, &str)]) -> impl Environment {
+    let map: HashMap<String, String> = pairs
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect();
+    move |name: &str| map.get(name).cloned()
+}
+
+#[test]
+fn live_embeddings_require_explicit_bounded_spending_and_private_cache() {
+    let defaults = parse(MINIMAL).unwrap();
+    assert!(!defaults.config.embedding.reader_live);
+    assert!(defaults.config.embedding.spend.is_none());
+    let loaded = parse(&format!("{MINIMAL}\nreader_live=true\n")).unwrap();
+    assert!(
+        loaded
+            .validate()
+            .iter()
+            .any(|issue| issue.path == "embedding.spend"
+                && issue.message == "embedding_spend_limit_required")
+    );
+    let valid = format!(
+        "{MINIMAL}\nmodel='test/embed'\ndimensions=512\nreader_live=true\nsend_dimensions=true\nspend={{limit_microusd=100,max_call_microusd=2}}\n[embedding.roles.query]\nprefix='query: '\ninput_type='query'\n"
+    );
+    assert!(errors(&parse(&valid).unwrap()).is_empty());
+    for invalid in [
+        valid.replace("max_call_microusd=2", "max_call_microusd=0"),
+        valid.replace("max_call_microusd=2", "max_call_microusd=101"),
+        valid.replace("input_type='query'", "input_type=''"),
+    ] {
+        assert!(!errors(&parse(&invalid).unwrap()).is_empty());
+    }
+}
+
+fn errors(loaded: &LoadedConfig) -> Vec<String> {
+    loaded
+        .validate()
+        .into_iter()
+        .filter(|issue| issue.severity == Severity::Error)
+        .map(|issue| issue.to_string())
+        .collect()
+}
+
+/// Appends TOML to the minimal file and returns the validation errors.
+fn errors_with(extra: &str) -> Vec<String> {
+    let loaded =
+        parse(&format!("{MINIMAL}\n{extra}")).unwrap_or_else(|issue| panic!("parse: {issue}"));
+    errors(&loaded)
+}
+
+fn assert_error(extra: &str, path: &str) {
+    let errors = errors_with(extra);
+    assert!(
+        errors.iter().any(|error| error.contains(path)),
+        "expected an error at {path} for:\n{extra}\ngot {errors:#?}"
+    );
+}
+
+#[test]
+fn service_http_urls_require_loopback_ip_literals() {
+    let base = format!(
+        "{MINIMAL}\n[identity.oidc]\nissuer='https://issuer.example'\naudience='fyrr'\njwks_url='https://keys.example/jwks'\n[identity.directory]\nendpoint='https://directory.example'\n[reader.http]\nlisten='127.0.0.1:8080'\npublic_url='https://reader.example/mcp'\noperator_credential={{env='FYRR_OPERATOR'}}\n"
+    );
+    assert!(errors(&parse(&base).unwrap()).is_empty());
+    for (original, suffix, field) in [
+        ("https://issuer.example", "", "identity.oidc"),
+        ("https://keys.example/jwks", "/jwks", "identity.oidc"),
+        (
+            "https://directory.example",
+            "",
+            "identity.directory.endpoint",
+        ),
+        (
+            "https://reader.example/mcp",
+            "/mcp",
+            "reader.http.public_url",
+        ),
+    ] {
+        for (host, accepted) in [("localhost", false), ("127.0.0.1", true), ("[::1]", true)] {
+            let text = base.replace(original, &format!("http://{host}:8080{suffix}"));
+            let issues = errors(&parse(&text).unwrap());
+            if accepted {
+                assert!(issues.is_empty(), "{field} at {host}: {issues:?}");
+            } else {
+                assert!(
+                    issues.iter().any(|e| e.contains(field)),
+                    "{field} at {host}: {issues:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn example_and_minimal_files_are_valid() {
+    let example = parse(&common::read(EXAMPLE)).expect("example parses");
+    assert_eq!(errors(&example), Vec::<String>::new());
+    let warnings = example.validate();
+    assert!(
+        warnings
+            .iter()
+            .any(|issue| issue.path == "sources[0].permissions"),
+        "fixed connections are marked: {warnings:?}"
+    );
+    let minimal = parse(MINIMAL).expect("minimal parses");
+    assert_eq!(errors(&minimal), Vec::<String>::new());
+    assert_eq!(minimal.config.writer.purge_window.to_string(), "1d");
+    assert_eq!(
+        minimal.config.reader.version_check_interval.to_string(),
+        "30s"
+    );
+    assert_eq!(minimal.config.identity.validity_deadline.to_string(), "1h");
+}
+
+#[test]
+fn routing_has_one_exact_default_and_two_opt_in_values() {
+    use fyrr_core::config::RoutingStrategy;
+    assert_eq!(
+        parse(MINIMAL).unwrap().config.reader.routing,
+        RoutingStrategy::Exact
+    );
+    for (value, expected) in [
+        ("exact", RoutingStrategy::Exact),
+        ("rabitq", RoutingStrategy::Rabitq),
+        ("auto", RoutingStrategy::Auto),
+    ] {
+        let loaded = parse(&format!("{MINIMAL}\n[reader]\nrouting='{value}'")).unwrap();
+        assert!(errors(&loaded).is_empty());
+        assert_eq!(loaded.config.reader.routing, expected);
+    }
+    assert!(parse(&format!("{MINIMAL}\n[reader]\nrouting='tree'")).is_err());
+}
+
+#[test]
+fn search_response_budget_is_optional_and_bounded() {
+    assert_eq!(
+        parse(MINIMAL).unwrap().config.reader.max_response_bytes,
+        None
+    );
+    let loaded = parse(&format!("{MINIMAL}\n[reader]\nmax_response_bytes=48000")).unwrap();
+    assert!(errors(&loaded).is_empty());
+    assert_eq!(loaded.config.reader.max_response_bytes, Some(48_000));
+    for bytes in [4095, 16_777_217] {
+        assert_error(
+            &format!("[reader]\nmax_response_bytes={bytes}"),
+            "reader.max_response_bytes",
+        );
+    }
+}
+
+#[test]
+fn example_matches_the_generated_json_schema() {
+    for text in [common::read(EXAMPLE), MINIMAL.to_owned()] {
+        let value: serde_json::Value = toml::from_str(&text).expect("TOML");
+        common::assert_valid("schemas/config.schema.json", &value, "config");
+    }
+}
+
+#[test]
+fn unknown_fields_are_rejected() {
+    for (extra, line) in [
+        ("[bogus]\nx = 1", 11),
+        ("[reader]\nversion_check_intervall = \"30s\"", 12),
+        ("[writer.commit]\ntimer = \"60s\"", 12),
+        (
+            "[[sources]]\nid = \"a\"\ntype = \"jira\"\ncolor = \"blue\"",
+            14,
+        ),
+        (
+            "[[sources]]\nid = \"a\"\ntype = \"jira\"\n[sources.intervals]\nhourly = \"1h\"",
+            15,
+        ),
+    ] {
+        let issue = parse(&format!("{MINIMAL}\n{extra}")).expect_err(extra);
+        assert!(issue.message.contains("unknown field"), "{extra}: {issue}");
+        assert!(
+            issue.path.starts_with(&format!("{line}:")),
+            "{extra}: position {}",
+            issue.path
+        );
+    }
+    let issue = parse("[namespace]\nname = \"acme\"\nbucket = \"x\"").expect_err("nested unknown");
+    assert!(issue.message.contains("unknown field `bucket`"), "{issue}");
+}
+
+#[test]
+fn secrets_in_the_file_are_refused_without_echo() {
+    for literal in [
+        format!("\"{SENTINEL}\""),
+        "12345".to_owned(),
+        format!("[\"{SENTINEL}\"]"),
+        format!("{{ env = \"{SENTINEL}\" }}"),
+        format!("{{ env = \"FYRR_OK\", value = \"{SENTINEL}\" }}"),
+        format!("{{ value = \"{SENTINEL}\" }}"),
+    ] {
+        let text = MINIMAL.replace(
+            "uri = \"s3://fyrr-data/acme\"",
+            &format!("uri = \"s3://fyrr-data/acme\"\nsecret_access_key = {literal}\naccess_key_id = {{ env = \"K\" }}"),
+        );
+        let issue = parse(&text).expect_err(&literal);
+        let shown = issue.to_string();
+        assert!(!shown.contains(SENTINEL), "secret echoed: {shown}");
+        assert!(!shown.contains("12345"), "secret echoed: {shown}");
+    }
+
+    // Opaque provider tables: secret-like keys must be references too.
+    for settings in [
+        format!("api_token = \"{SENTINEL}\""),
+        format!("[sources.settings.auth]\npassword = \"{SENTINEL}\""),
+        format!("client_secrets = [\"{SENTINEL}\"]"),
+    ] {
+        let extra = format!(
+            "[[sources]]\nid = \"j\"\ntype = \"jira\"\n[sources.intervals]\npermissions = \"30m\"\n[sources.settings]\n{settings}"
+        );
+        let errors = errors_with(&extra);
+        assert!(!errors.is_empty(), "inline secret accepted: {settings}");
+        assert!(
+            errors.iter().all(|error| !error.contains(SENTINEL)),
+            "{errors:?}"
+        );
+    }
+    let referenced = "[[sources]]\nid = \"j\"\ntype = \"jira\"\n[sources.intervals]\npermissions = \"30m\"\n[sources.settings]\napi_token = { env = \"FYRR_JIRA_TOKEN\" }";
+    assert_eq!(
+        errors(&parse(&format!("{}\n{referenced}", encrypted())).unwrap()),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn cross_field_rules_are_enforced() {
+    assert_error(
+        "[writer]\npurge_window = \"1h\"\nversion_grace = \"1h\"",
+        "writer.purge_window",
+    );
+    assert_error("[writer]\nversion_grace = \"5m\"", "writer.version_grace");
+    assert_error(
+        "[writer]\nmax_envelope_age = \"7d\"",
+        "writer.max_envelope_age",
+    );
+    assert_error(
+        "[writer]\ndocument_max_bytes = \"256MiB\"",
+        "writer.envelope_max_bytes",
+    );
+    assert_error(
+        "[writer.commit]\ngroup_max_bytes = \"1MiB\"",
+        "writer.commit",
+    );
+    assert_error(
+        "[writer.commit]\nlease_ttl = \"0s\"",
+        "writer.commit.lease_ttl",
+    );
+    assert_error(
+        "[[sources]]\nid = \"a\"\ntype = \"jira\"\ndocument_max_bytes = \"1GiB\"\n[sources.intervals]\npermissions = \"1h\"",
+        "sources[0].document_max_bytes",
+    );
+    assert_error(
+        "[[sources]]\nid = \"a\"\ntype = \"local-files\"\npermissions = \"fixed\"",
+        "sources[0].readers",
+    );
+    assert_error(
+        "[[sources]]\nid = \"a\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"engineering\"]",
+        "sources[0].readers",
+    );
+    assert_error(
+        "[[sources]]\nid = \"a\"\ntype = \"notion\"\npermissions = \"fixed\"\nreaders = [\"grp:x\"]\n[sources.intervals]\nmembers = \"1h\"",
+        "sources[0].intervals",
+    );
+    assert_error(
+        "[[sources]]\nid = \"a\"\ntype = \"local-files\"\n[sources.intervals]\npermissions = \"1h\"",
+        "sources[0].permissions",
+    );
+    assert_error(
+        "[[sources]]\nid = \"a\"\ntype = \"jira\"",
+        "sources[0].intervals.permissions",
+    );
+    assert_error(
+        "[[sources]]\nid = \"a\"\ntype = \"jira\"\nreaders = [\"grp:x\"]\n[sources.intervals]\npermissions = \"1h\"",
+        "sources[0].readers",
+    );
+    assert_error(
+        "[[sources]]\nid = \"a\"\ntype = \"jira\"\n[sources.intervals]\npermissions = \"30m\"\n[[sources]]\nid = \"a\"\ntype = \"jira\"\n[sources.intervals]\npermissions = \"30m\"",
+        "sources[1].id",
+    );
+    assert_error(
+        "[[sources]]\nid = \"a\"\ntype = \"jira\"\nrow_warning = 10\nrow_error = 10\n[sources.intervals]\npermissions = \"30m\"",
+        "sources[0].row_warning",
+    );
+    // deadline > longest permission/member interval + commit timer + version check + margin.
+    assert_error(
+        "[[sources]]\nid = \"a\"\ntype = \"jira\"\n[sources.intervals]\npermissions = \"1h\"",
+        "identity.validity_deadline",
+    );
+    assert!(
+        errors(&parse(&with_identity("validity_deadline = \"10m\"")).unwrap())
+            .iter()
+            .any(|error| error.contains("identity.validity_deadline"))
+    );
+    let synced = with_identity(
+        "validity_deadline = \"2h\"\nencryption_key = { env = \"FYRR_ENCRYPTION_KEY\" }",
+    );
+    assert_eq!(
+        errors(
+            &parse(&format!(
+                "{synced}\n[[sources]]\nid = \"a\"\ntype = \"jira\"\n[sources.intervals]\npermissions = \"1h\""
+            ))
+            .unwrap()
+        ),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn storage_rules_and_options() {
+    let text = MINIMAL.replace(
+        "uri = \"s3://fyrr-data/acme\"",
+        "uri = \"s3://fyrr-data/acme\"\nendpoint = \"http://127.0.0.1:9000\"",
+    );
+    let loaded = parse(&text).expect("parse");
+    assert!(
+        errors(&loaded)
+            .iter()
+            .any(|error| error.contains("storage.endpoint"))
+    );
+
+    let text = MINIMAL.replace(
+        "uri = \"s3://fyrr-data/acme\"",
+        "uri = \"s3://fyrr-data/acme\"\nendpoint = \"http://127.0.0.1:9000\"\nallow_http = true\naccess_key_id = { env = \"FYRR_TEST_KEY\" }",
+    );
+    let loaded = parse(&text).expect("parse");
+    assert!(
+        errors(&loaded)
+            .iter()
+            .any(|error| error.contains("storage.access_key_id"))
+    );
+
+    let text = MINIMAL.replace(
+        "uri = \"s3://fyrr-data/acme\"",
+        "uri = \"s3://fyrr-data/acme\"\nendpoint = \"http://127.0.0.1:9000\"\nallow_http = true\naccess_key_id = { env = \"FYRR_TEST_KEY\" }\nsecret_access_key = { env = \"FYRR_TEST_SECRET\" }",
+    );
+    let loaded = parse(&text).expect("parse");
+    assert_eq!(errors(&loaded), Vec::<String>::new());
+    let missing = loaded
+        .config
+        .storage
+        .object_store_options(&env(&[]))
+        .expect_err("unset");
+    assert!(missing.to_string().contains("FYRR_TEST_KEY"), "{missing}");
+    let options = loaded
+        .config
+        .storage
+        .object_store_options(&env(&[
+            ("FYRR_TEST_KEY", "key-id"),
+            ("FYRR_TEST_SECRET", SENTINEL),
+        ]))
+        .expect("resolved");
+    assert!(
+        !format!("{options:?}").contains(SENTINEL),
+        "Debug redacts values"
+    );
+    let map = options.into_map();
+    assert_eq!(map["aws_secret_access_key"], SENTINEL);
+    assert_eq!(map["aws_endpoint"], "http://127.0.0.1:9000");
+    assert_eq!(map["allow_http"], "true");
+}
+
+#[test]
+fn local_storage_takes_a_canonical_file_uri_and_no_s3_keys() {
+    use fyrr_core::config::StorageBackend;
+    let local = |uri: &str| MINIMAL.replace("s3://fyrr-data/acme", uri);
+    for (uri, root) in [
+        ("file:///var/lib/fyrr", "/var/lib/fyrr"),
+        ("file:///var/lib/fyrr/", "/var/lib/fyrr"),
+        ("file:///srv/my%20data", "/srv/my data"),
+    ] {
+        let loaded = parse(&local(uri)).expect("parse");
+        assert_eq!(errors(&loaded), Vec::<String>::new(), "{uri}");
+        assert_eq!(
+            loaded.config.storage.backend(),
+            Some(StorageBackend::Local { root: root.into() })
+        );
+        let options = loaded.config.storage.object_store_options(&env(&[]));
+        assert!(options.expect("no secrets").into_map().is_empty());
+    }
+    for uri in [
+        "file:///",
+        "file:/var/lib/fyrr",
+        "file://host/var/lib/fyrr",
+        "file://localhost/var/lib/fyrr",
+        "file:///var/../lib",
+        "file:///var/./lib",
+        "file:///var//lib",
+        "file:///srv/my data",
+        "file:///srv/a%2Fb",
+        "file:///srv/%GG",
+        "file:///srv/%00",
+        "file:///srv/%2E%2E/etc",
+        "file:///srv/data?x=1",
+        "file:///srv/data#x",
+        "/var/lib/fyrr",
+        "relative/path",
+    ] {
+        let loaded = parse(&local(uri)).expect("parse");
+        let errors = errors(&loaded);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.starts_with("error: storage.uri")),
+            "{uri}: {errors:?}"
+        );
+        assert!(loaded.config.storage.backend().is_none(), "{uri}");
+    }
+    assert_eq!(
+        parse(MINIMAL).unwrap().config.storage.backend(),
+        Some(StorageBackend::S3 {
+            bucket: "fyrr-data",
+            prefix: "acme"
+        })
+    );
+    // Every S3 access key is refused for a file URI, named but not quoted,
+    // also when it repeats a default.
+    for (key, value) in [
+        ("region", "\"eu-west-9\""),
+        ("endpoint", "\"https://s3.example\""),
+        ("allow_http", "false"),
+        ("virtual_hosted_style", "true"),
+        ("access_key_id", "{ env = \"FYRR_TEST_KEY\" }"),
+        ("secret_access_key", "{ env = \"FYRR_TEST_SECRET\" }"),
+        ("session_token", "{ env = \"FYRR_TEST_TOKEN\" }"),
+    ] {
+        let text = local("file:///var/lib/fyrr").replace(
+            "uri = \"file:///var/lib/fyrr\"",
+            &format!("uri = \"file:///var/lib/fyrr\"\n{key} = {value}"),
+        );
+        let errors = errors(&parse(&text).expect("parse"));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.starts_with(&format!("error: storage.{key}:"))),
+            "{key}: {errors:?}"
+        );
+        assert!(errors.iter().all(|error| !error.contains("eu-west-9")));
+    }
+}
+
+#[test]
+fn missing_secrets_are_reported_by_variable_name() {
+    let example = parse(&common::read(EXAMPLE)).expect("parse");
+    let missing: Vec<String> = example
+        .missing_secrets(&env(&[]))
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    for name in [
+        "FYRR_S3_ACCESS_KEY_ID",
+        "FYRR_S3_SECRET_ACCESS_KEY",
+        "FYRR_EMBEDDING_API_KEY",
+        "FYRR_JIRA_API_TOKEN",
+    ] {
+        assert!(
+            missing.iter().any(|issue| issue.contains(name)),
+            "{name} not reported: {missing:#?}"
+        );
+    }
+    let all_set = env(&[
+        ("FYRR_S3_ACCESS_KEY_ID", SENTINEL),
+        ("FYRR_S3_SECRET_ACCESS_KEY", SENTINEL),
+        ("FYRR_EMBEDDING_API_KEY", SENTINEL),
+        ("FYRR_JIRA_API_TOKEN", SENTINEL),
+        ("FYRR_IDENTITY_KEY", SENTINEL),
+        ("FYRR_ENCRYPTION_KEY", SENTINEL),
+    ]);
+    assert!(example.missing_secrets(&all_set).is_empty());
+}
+
+#[test]
+fn effective_values_carry_origins_and_never_secret_values() {
+    let example = parse(&common::read(EXAMPLE)).expect("parse");
+    let environment = env(&[("FYRR_S3_SECRET_ACCESS_KEY", SENTINEL)]);
+    let values = example.effective_values(&environment);
+    let find = |path: &str| {
+        values
+            .iter()
+            .find(|value| value.path == path)
+            .unwrap_or_else(|| panic!("{path} missing from effective values"))
+    };
+    assert_eq!(find("namespace.name").origin, Origin::File);
+    assert_eq!(find("namespace.name").value, "\"acme\"");
+    assert_eq!(find("storage.allow_http").origin, Origin::Default);
+    assert_eq!(find("writer.version_grace").origin, Origin::Default);
+    assert_eq!(find("writer.version_grace").value, "\"1h\"");
+    assert_eq!(find("writer.purge_window").origin, Origin::File);
+    assert_eq!(
+        find("sources[1].intervals.permissions").origin,
+        Origin::File
+    );
+    assert_eq!(
+        find("sources[0].intervals.reconcile").origin,
+        Origin::Default
+    );
+    let secret = find("storage.secret_access_key");
+    assert_eq!(secret.origin, Origin::Env);
+    assert_eq!(secret.value, "env:FYRR_S3_SECRET_ACCESS_KEY (set)");
+    assert_eq!(
+        find("storage.access_key_id").value,
+        "env:FYRR_S3_ACCESS_KEY_ID (unset)"
+    );
+    assert_eq!(find("sources[1].settings.api_token").origin, Origin::Env);
+    assert!(values.iter().all(|value| !value.value.contains(SENTINEL)));
+    assert!(values.len() > 60, "only {} effective values", values.len());
+}
+
+/// One step of a path into the configuration.
+#[derive(Debug, Clone)]
+enum Step {
+    Key(String),
+    Index(usize),
+}
+
+fn render(path: &[Step]) -> String {
+    let mut text = String::new();
+    for step in path {
+        match step {
+            Step::Key(key) if text.is_empty() => text.push_str(key),
+            Step::Key(key) => {
+                text.push('.');
+                text.push_str(key);
+            }
+            Step::Index(index) => text.push_str(&format!("[{index}]")),
+        }
+    }
+    text
+}
+
+/// Collects every (path, keyword, bound) constraint of the schema, following
+/// `$ref`, `anyOf`/`oneOf`, object properties and array items.
+fn collect_constraints(
+    root: &serde_json::Value,
+    node: &serde_json::Value,
+    path: &mut Vec<Step>,
+    found: &mut Vec<(Vec<Step>, &'static str, serde_json::Value)>,
+) {
+    if let Some(reference) = node.get("$ref").and_then(serde_json::Value::as_str) {
+        let target = root
+            .pointer(reference.trim_start_matches('#'))
+            .unwrap_or_else(|| panic!("unresolved {reference}"));
+        collect_constraints(root, target, path, found);
+    }
+    for keyword in [
+        "pattern",
+        "minimum",
+        "maximum",
+        "minLength",
+        "maxLength",
+        "enum",
+    ] {
+        if let Some(bound) = node.get(keyword) {
+            found.push((path.clone(), keyword, bound.clone()));
+        }
+    }
+    for combinator in ["anyOf", "oneOf", "allOf"] {
+        for branch in node
+            .get(combinator)
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            collect_constraints(root, branch, path, found);
+        }
+    }
+    if let Some(properties) = node
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    {
+        for (key, property) in properties {
+            path.push(Step::Key(key.clone()));
+            collect_constraints(root, property, path, found);
+            path.pop();
+        }
+    }
+    if let Some(items) = node.get("items") {
+        path.push(Step::Index(0));
+        collect_constraints(root, items, path, found);
+        path.pop();
+    }
+}
+
+/// An ASCII string `offset` bytes longer than a length bound.
+fn text(bound: &serde_json::Value, offset: i64) -> toml::Value {
+    let length = bound.as_i64().expect("integer bound") + offset;
+    toml::Value::String("a".repeat(usize::try_from(length).expect("nonnegative length")))
+}
+
+/// Sets `value` at `path` in a TOML document, creating tables as needed.
+fn set(table: &mut toml::Table, path: &[Step], value: toml::Value) {
+    let (first, rest) = path.split_first().expect("non-empty path");
+    let Step::Key(key) = first else {
+        panic!("paths start with a key")
+    };
+    if rest.is_empty() {
+        table.insert(key.clone(), value);
+        return;
+    }
+    let slot = table
+        .entry(key.clone())
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    let next = match (rest.first(), slot) {
+        (Some(Step::Index(index)), toml::Value::Array(items)) => {
+            let item = items
+                .get_mut(*index)
+                .expect("example has the indexed table");
+            let toml::Value::Table(inner) = item else {
+                panic!("array of tables")
+            };
+            return set(inner, &rest[1..], value);
+        }
+        (_, toml::Value::Table(inner)) => inner,
+        (_, other) => panic!("cannot descend into {other}"),
+    };
+    set(next, rest, value)
+}
+
+/// Parse and validate errors as text, or nothing.
+fn check(table: &toml::Table) -> Vec<String> {
+    match parse(&toml::to_string(table).expect("TOML")) {
+        Err(issue) => vec![issue.to_string()],
+        Ok(loaded) => errors(&loaded),
+    }
+}
+
+#[test]
+fn every_schema_constraint_is_enforced() {
+    let schema = common::read_json("schemas/config.schema.json");
+    let mut constraints = Vec::new();
+    collect_constraints(&schema, &schema, &mut Vec::new(), &mut constraints);
+    let rendered: Vec<String> = constraints
+        .iter()
+        .map(|(path, keyword, _)| format!("{} {keyword}", render(path)))
+        .collect();
+    for expected in [
+        "namespace.name pattern",
+        "storage.uri pattern",
+        "embedding.dimensions minimum",
+        "embedding.dimensions maximum",
+        "embedding.batch_size minimum",
+        "sources[0].id pattern",
+        "sources[0].type pattern",
+        "sources[0].retention_days minimum",
+        "storage.secret_access_key.env pattern",
+        "writer.purge_window pattern",
+        "reader.version_check enum",
+        "embedding.model minLength",
+        "embedding.model maxLength",
+        "embedding.prefix maxLength",
+        "embedding.roles.document.prefix maxLength",
+        "embedding.roles.query.input_type minLength",
+        "reader.http.public_url maxLength",
+    ] {
+        assert!(
+            rendered.iter().any(|found| found == expected),
+            "schema walk missed {expected}: {rendered:#?}"
+        );
+    }
+
+    let base: toml::Table = toml::from_str(&common::read(EXAMPLE)).expect("example TOML");
+    const BAD: &str = "!bad value!";
+    for (path, keyword, bound) in &constraints {
+        let at = render(path);
+        let mut outside = base.clone();
+        let violation = match *keyword {
+            "pattern" | "enum" => toml::Value::String(BAD.to_owned()),
+            "minimum" => toml::Value::Integer(bound.as_i64().expect("integer bound") - 1),
+            "maximum" => toml::Value::Integer(bound.as_i64().expect("integer bound") + 1),
+            "minLength" => text(bound, -1),
+            "maxLength" => text(bound, 1),
+            other => unreachable!("{other}"),
+        };
+        set(&mut outside, path, violation.clone());
+        let errors = check(&outside);
+        assert!(
+            !errors.is_empty(),
+            "{at} {keyword} {bound}: {violation} passed config check"
+        );
+        for error in &errors {
+            assert!(
+                !error.contains(BAD),
+                "{at}: the error echoes the value: {error}"
+            );
+        }
+
+        let inside = match *keyword {
+            "minimum" | "maximum" => {
+                Some(toml::Value::Integer(bound.as_i64().expect("integer bound")))
+            }
+            "minLength" | "maxLength" => Some(text(bound, 0)),
+            _ => None,
+        };
+        if let Some(inside) = inside {
+            let mut boundary = base.clone();
+            set(&mut boundary, path, inside);
+            let errors = check(&boundary);
+            assert!(
+                errors
+                    .iter()
+                    .all(|error| !error.contains(&format!(" {at}:"))),
+                "{at} = {bound} is inside the schema but failed: {errors:?}"
+            );
+        }
+    }
+    assert!(
+        constraints.len() >= 40,
+        "only {} constraints found",
+        constraints.len()
+    );
+}
+
+#[test]
+fn reported_invalid_values_fail_config_check() {
+    for (field, replacement) in [
+        ("name = \"acme\"", "name = \"../Other Tenant\""),
+        (
+            "uri = \"s3://fyrr-data/acme\"",
+            "uri = \"file:///tmp/not-s3\"",
+        ),
+        ("[embedding]\n", "[embedding]\ndimensions = 0\n"),
+        ("[embedding]\n", "[embedding]\nbatch_size = 0\n"),
+        ("id = \"local-docs\"", "id = \"../../escape\""),
+    ] {
+        let text = common::read(EXAMPLE).replacen(field, replacement, 1);
+        assert_ne!(text, common::read(EXAMPLE), "{replacement}");
+        let loaded = parse(&text).unwrap_or_else(|issue| panic!("{replacement}: {issue}"));
+        assert!(
+            !errors(&loaded).is_empty(),
+            "{replacement} passed config check"
+        );
+    }
+}
+
+#[test]
+fn type_errors_never_echo_values() {
+    for (field, replacement) in [
+        (
+            "[embedding]\n",
+            format!("[embedding]\ndimensions = \"{SENTINEL}\"\n"),
+        ),
+        (
+            "version_check = \"interval\"",
+            format!("version_check = \"{SENTINEL}\""),
+        ),
+        (
+            "permissions = \"fixed\"",
+            format!("permissions = \"{SENTINEL}\""),
+        ),
+        (
+            "[writer]\n",
+            format!("[writer]\nserve = {{ committer = \"{SENTINEL}\" }}\n"),
+        ),
+        (
+            "[writer]\n",
+            format!("[writer]\nenvelope_max_rows = [\"{SENTINEL}\"]\n"),
+        ),
+        // Values that contain a quote, a backtick or the `, expected `
+        // separator must not escape the redaction.
+        (
+            "[embedding]\n",
+            format!("[embedding]\ndimensions = \"a\\\"{SENTINEL} tail\"\n"),
+        ),
+        (
+            "[embedding]\n",
+            format!("[embedding]\ndimensions = \"a`{SENTINEL}` tail\"\n"),
+        ),
+        (
+            "[embedding]\n",
+            format!("[embedding]\ndimensions = \"a, expected {SENTINEL}\"\n"),
+        ),
+        (
+            "version_check = \"interval\"",
+            format!("version_check = \"x`, expected \\\"{SENTINEL}\""),
+        ),
+        (
+            "version_check = \"interval\"",
+            format!("version_check = \"it's {SENTINEL}\""),
+        ),
+    ] {
+        let text = common::read(EXAMPLE).replacen(field, &replacement, 1);
+        let issue = parse(&text).expect_err(&replacement);
+        assert!(
+            !issue.to_string().contains(SENTINEL),
+            "value echoed: {issue}"
+        );
+        assert!(
+            issue.message.contains("expected"),
+            "keeps the expectation: {issue}"
+        );
+    }
+}
+
+#[test]
+fn redacted_messages_keep_their_hints() {
+    for (field, replacement, shown) in [
+        (
+            "[embedding]\n",
+            format!("[embedding]\ndimensions = \"a\\\"{SENTINEL}\"\n"),
+            "invalid type: string …, expected u32",
+        ),
+        (
+            "version_check = \"interval\"",
+            format!("version_check = \"{SENTINEL}\""),
+            "unknown variant …, expected one of `interval`, `off`, `per-request`",
+        ),
+        (
+            "[reader]\n",
+            format!("[reader]\nmax_preparation = \"{SENTINEL}\"\n"),
+            "expected a duration such as 250ms, 30s, 5m, 1h or 7d",
+        ),
+        (
+            "[reader]\n",
+            format!("[reader]\nmax_preparation = \"{SENTINEL}\n"),
+            "invalid basic string, expected `\"`",
+        ),
+    ] {
+        let text = common::read(EXAMPLE).replacen(field, &replacement, 1);
+        let issue = parse(&text).expect_err(&replacement);
+        assert_eq!(issue.message, shown, "{replacement}");
+    }
+}
+
+#[test]
+fn version_grace_covers_deadline_and_reader_preparation() {
+    assert_error("[reader]\nmax_preparation = \"1h\"", "writer.version_grace");
+    assert_error(
+        "[reader]\nmax_preparation = \"0s\"",
+        "reader.max_preparation",
+    );
+    assert_eq!(
+        errors_with("[reader]\nmax_preparation = \"50m\""),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn config_show_redacts_inline_secrets() {
+    for settings in [
+        format!("api_token = \"{SENTINEL}\""),
+        format!("[sources.settings.oauth_token]\nvalue = \"{SENTINEL}\""),
+        format!("client_secrets = [\"{SENTINEL}\"]"),
+        // Arrays that mix tables and scalars, or nest tables in arrays, are
+        // walked element by element.
+        format!("list = [{{ api_token = \"{SENTINEL}\" }}, 1]"),
+        format!("list = [[{{ api_token = \"{SENTINEL}\" }}], \"x\"]"),
+        format!("list = [[[{{ nested = {{ password = \"{SENTINEL}\" }} }}]]]"),
+    ] {
+        let text = format!(
+            "{MINIMAL}\n[[sources]]\nid = \"j\"\ntype = \"jira\"\n[sources.intervals]\npermissions = \"30m\"\n[sources.settings]\n{settings}"
+        );
+        let loaded = parse(&text).expect("parse");
+        assert!(
+            !errors(&loaded).is_empty(),
+            "inline secret accepted: {settings}"
+        );
+        let values = loaded.effective_values(&env(&[]));
+        assert!(
+            values.iter().all(|value| !value.value.contains(SENTINEL)),
+            "{values:#?}"
+        );
+        assert!(
+            values
+                .iter()
+                .any(|value| value.value == fyrr_core::config::REDACTED),
+            "{values:#?}"
+        );
+    }
+    // Non-secret settings and secret references stay visible.
+    let text = format!(
+        "{MINIMAL}\n[[sources]]\nid = \"j\"\ntype = \"jira\"\n[sources.intervals]\npermissions = \"30m\"\n[sources.settings]\nbase_url = \"https://jira.example\"\napi_token = {{ env = \"FYRR_JIRA\" }}"
+    );
+    let values = parse(&text).expect("parse").effective_values(&env(&[]));
+    let shown = |path: &str| {
+        values
+            .iter()
+            .find(|value| value.path == path)
+            .map(|value| value.value.clone())
+    };
+    assert_eq!(
+        shown("sources[0].settings.base_url").as_deref(),
+        Some("\"https://jira.example\"")
+    );
+    assert_eq!(
+        shown("sources[0].settings.api_token").as_deref(),
+        Some("env:FYRR_JIRA (unset)")
+    );
+}
+
+#[test]
+fn composition_is_bounded_defaulted_and_bound_into_policy_identity() {
+    let base = parse(MINIMAL).unwrap();
+    assert_eq!(base.config.namespace.composition.fusion, 50);
+    let changed = parse(&MINIMAL.replace(
+        "name = \"acme\"",
+        "name = \"acme\"\ncomposition = { fusion = 50, dense = 25 }",
+    ))
+    .unwrap();
+    assert!(errors(&changed).is_empty());
+    assert_ne!(
+        base.config.namespace.retrieval_digest(),
+        changed.config.namespace.retrieval_digest()
+    );
+    for composition in [
+        "{ fusion = 0 }",
+        "{ fusion = 75, dense = 1 }",
+        "{ fusion = 1, lexical = 75 }",
+    ] {
+        let input = MINIMAL.replace(
+            "name = \"acme\"",
+            &format!("name = \"acme\"\ncomposition = {composition}"),
+        );
+        assert!(
+            errors(&parse(&input).unwrap())
+                .iter()
+                .any(|e| e.contains("namespace.composition"))
+        );
+    }
+}
+
+#[test]
+fn reader_preparation_budget_keeps_headroom_below_memory_limit() {
+    for extra in [
+        "[reader]\nmemory_max_bytes='0B'\n",
+        "[reader]\nmemory_max_bytes='128MiB'\nmemory_headroom_bytes='128MiB'\n",
+        "[reader]\nmemory_max_bytes='128MiB'\nmemory_headroom_bytes='129MiB'\n",
+    ] {
+        assert!(
+            errors_with(extra)
+                .iter()
+                .any(|e| e.contains("reader.memory_headroom_bytes"))
+        );
+    }
+    assert!(
+        errors_with("[reader]\nmemory_max_bytes='512MiB'\nmemory_headroom_bytes='64MiB'\n")
+            .is_empty()
+    );
+}
+
+#[test]
+fn retrieval_config_bounds_and_legacy_digest() {
+    let base = parse(MINIMAL).unwrap();
+    let legacy = serde_json::json!([
+        "slice2:cosine:ivf-rq1:f16:550:training256:logistic-z:population:lex.75:dense.25:source2-soft-per-bucket:lex50:dense75:p1:1200:phrase0",
+        base.config.namespace.fts_settings(),
+        base.config.namespace.composition
+    ]);
+    assert_eq!(
+        base.config.namespace.retrieval_digest(),
+        fyrr_core::limits::digest(legacy.to_string().as_bytes())
+    );
+    let explicit = parse(&format!("{MINIMAL}\n[namespace.retrieval]\ndense_weight=0.25\ndense_candidates=75\nlexical_candidates=50\nsource_cap=2\nmax_documents=75\n")).unwrap();
+    assert!(errors(&explicit).is_empty());
+    assert_eq!(
+        base.config.namespace.retrieval_digest(),
+        explicit.config.namespace.retrieval_digest()
+    );
+    for (field, good, bad) in [
+        ("dense_weight", "0.5", "1.01"),
+        ("dense_candidates", "1", "76"),
+        ("lexical_candidates", "200", "201"),
+        ("source_cap", "0", "76"),
+        ("max_documents", "320", "321"),
+    ] {
+        let extra = format!("[namespace.retrieval]\n{field}={good}");
+        let config = parse(&format!("{MINIMAL}\n{extra}")).unwrap();
+        assert!(errors(&config).is_empty());
+        assert_ne!(
+            config.config.namespace.retrieval_digest(),
+            base.config.namespace.retrieval_digest()
+        );
+        assert_error(
+            &format!("[namespace.retrieval]\n{field}={bad}"),
+            &format!("namespace.retrieval.{field}"),
+        );
+    }
+    for (field, bad) in [
+        ("dense_weight", "-0.01"),
+        ("dense_weight", "nan"),
+        ("dense_candidates", "0"),
+        ("lexical_candidates", "0"),
+        ("max_documents", "0"),
+    ] {
+        assert_error(
+            &format!("[namespace.retrieval]\n{field}={bad}"),
+            &format!("namespace.retrieval.{field}"),
+        );
+    }
+}
+#[test]
+fn analyzer_flags_are_publication_settings_with_legacy_defaults() {
+    let legacy = parse(MINIMAL).unwrap().config.namespace;
+    let explicit = parse(&MINIMAL.replace(
+        "[namespace]",
+        "[namespace]\nfts_stem=false\nfts_remove_stop_words=false\nfts_ascii_folding=false",
+    ))
+    .unwrap()
+    .config
+    .namespace;
+    assert_eq!(legacy.retrieval_digest(), explicit.retrieval_digest());
+    assert!(!legacy.fts_settings().stem && !legacy.fts_settings().remove_stop_words);
+    for flag in ["fts_stem", "fts_remove_stop_words", "fts_ascii_folding"] {
+        let configured =
+            parse(&MINIMAL.replace("[namespace]", &format!("[namespace]\n{flag}=true")))
+                .unwrap()
+                .config
+                .namespace;
+        assert_ne!(legacy.retrieval_digest(), configured.retrieval_digest());
+        let fts = configured.fts_settings();
+        assert_eq!(fts.stem, flag == "fts_stem");
+        assert_eq!(fts.remove_stop_words, flag == "fts_remove_stop_words");
+        assert_eq!(fts.ascii_folding, flag == "fts_ascii_folding");
+    }
+}
+#[test]
+fn rescore_depth_keeps_legacy_digest_and_expands_only_at_small_gaps() {
+    use fyrr_core::config::RescoreDepth;
+    let baseline = parse(MINIMAL).unwrap().config.namespace;
+    let legacy = parse(&format!(
+        "{MINIMAL}\n[namespace.retrieval]\nrescore_depth={{mode='legacy'}}"
+    ))
+    .unwrap()
+    .config
+    .namespace;
+    assert_eq!(baseline.retrieval_digest(), legacy.retrieval_digest());
+    assert_eq!(RescoreDepth::Legacy.initial(75), 300);
+    let fixed = RescoreDepth::Fixed { candidates: 100 };
+    assert_eq!(fixed.initial(75), 100);
+    assert_eq!(fixed.initial(150), 151);
+    assert_eq!(RescoreDepth::Fixed { candidates: 75 }.initial(75), 76);
+    assert_eq!(RescoreDepth::Fixed { candidates: 1200 }.maximum(1), 1200);
+    assert_eq!(RescoreDepth::Legacy.maximum(75), 1200);
+    assert_eq!(fixed.expand(100, 75, 0.0), None);
+    let adaptive = RescoreDepth::Adaptive {
+        min_candidates: 75,
+        max_candidates: 300,
+        min_gap: 0.02,
+    };
+    assert_eq!(adaptive.expand(75, 75, 0.001), Some(150));
+    assert_eq!(adaptive.expand(150, 75, 0.001), Some(300));
+    assert_eq!(adaptive.expand(300, 75, 0.001), None);
+    assert_eq!(adaptive.expand(75, 75, 0.03), None);
+    for value in [
+        "{mode='fixed',candidates=0}",
+        "{mode='adaptive',min_candidates=300,max_candidates=75,min_gap=0.02}",
+        "{mode='adaptive',min_candidates=75,max_candidates=300,min_gap=-1}",
+    ] {
+        let loaded = parse(&format!(
+            "{MINIMAL}\n[namespace.retrieval]\nrescore_depth={value}"
+        ))
+        .unwrap();
+        assert!(
+            loaded
+                .validate()
+                .iter()
+                .any(|i| i.path == "namespace.retrieval.rescore_depth")
+        );
+    }
+}
+#[test]
+fn sparse_read_backend_is_explicit_and_does_not_change_policy() {
+    use fyrr_core::config::SparseRead;
+    let baseline = parse(MINIMAL).unwrap().config;
+    assert_eq!(baseline.reader.sparse_read, SparseRead::MaskedScan);
+    let take = parse(&format!("{MINIMAL}\n[reader]\nsparse_read='take_rows'"))
+        .unwrap()
+        .config;
+    assert_eq!(take.reader.sparse_read, SparseRead::TakeRows);
+    assert_eq!(
+        baseline.namespace.retrieval_digest(),
+        take.namespace.retrieval_digest()
+    );
+    assert!(parse(&format!("{MINIMAL}\n[reader]\nsparse_read='unknown'")).is_err());
+}
+#[test]
+fn fts_merge_is_an_opt_in_writer_cost_not_a_retrieval_policy_change() {
+    let baseline = parse(MINIMAL).unwrap().config;
+    assert!(!baseline.writer.commit.merge_fts_segments);
+    let merged = parse(&format!(
+        "{MINIMAL}\n[writer.commit]\nmerge_fts_segments=true"
+    ))
+    .unwrap()
+    .config;
+    assert!(merged.writer.commit.merge_fts_segments);
+    assert_eq!(
+        baseline.namespace.retrieval_digest(),
+        merged.namespace.retrieval_digest()
+    );
+}
+
+#[test]
+fn config_unit_roundtrip_cases() {
+    use fyrr_core::units::{ByteSize, ConfigDuration};
+    for (text, expected, canonical) in [
+        ("30s", ConfigDuration::from_secs(30), "30s"),
+        ("250ms", ConfigDuration::from_millis(250), "250ms"),
+        ("7d", ConfigDuration::from_days(7), "7d"),
+        ("3600s", ConfigDuration::from_secs(3600), "1h"),
+        ("90s", ConfigDuration::from_secs(90), "90s"),
+        ("0ms", ConfigDuration::from_millis(0), "0ms"),
+    ] {
+        assert_eq!(text.parse(), Ok(expected), "{text}");
+        assert_eq!(expected.to_string(), canonical, "{text}");
+        assert_eq!(canonical.parse(), Ok(expected), "{canonical}");
+    }
+    for bad in [
+        "",
+        "30",
+        "s",
+        "1.5h",
+        "-1s",
+        "01s",
+        "1 s",
+        "1H",
+        "99999999999999999999d",
+    ] {
+        assert!(bad.parse::<ConfigDuration>().is_err(), "{bad}");
+    }
+    for (text, expected, canonical) in [
+        ("4096", ByteSize::bytes(4096), "4KiB"),
+        ("64KiB", ByteSize::kib(64), "64KiB"),
+        ("1536MiB", ByteSize::mib(1536), "1536MiB"),
+        ("1000", ByteSize::bytes(1000), "1000B"),
+    ] {
+        assert_eq!(text.parse(), Ok(expected), "{text}");
+        assert_eq!(expected.to_string(), canonical, "{text}");
+        assert_eq!(canonical.parse(), Ok(expected), "{canonical}");
+    }
+    for bad in ["", "MiB", "1.5MiB", "1MB", "1 MiB", "-1"] {
+        assert!(bad.parse::<ByteSize>().is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn directory_defaults_to_none_and_rejects_unimplemented_providers() {
+    let loaded = parse(MINIMAL).unwrap();
+    assert_eq!(
+        loaded.config.identity.directory.provider,
+        fyrr_core::config::DirectoryProvider::None
+    );
+    assert!(
+        loaded
+            .missing_secrets(&env(&[("FYRR_IDENTITY_KEY", SENTINEL)]))
+            .is_empty()
+    );
+    assert!(
+        parse(&format!(
+            "{MINIMAL}\n[identity.directory]\nprovider='google-workspace'\n"
+        ))
+        .is_err()
+    );
+    let example = parse(&common::read(EXAMPLE)).unwrap();
+    assert!(example.config.identity.directory.credentials.is_none());
+}
+
+#[test]
+fn unused_identity_selectors_are_rejected_and_absent_from_effective_config() {
+    let issue = parse(&with_identity("user_key='email'")).unwrap_err();
+    assert!(issue.to_string().contains("user_key"), "{issue}");
+    for (extra, field) in [
+        (
+            "[identity.oidc]\nissuer='https://issuer.invalid'\naudience='fixture'\nsubject_claim='sub'\n",
+            "subject_claim",
+        ),
+        (
+            "[identity.oidc]\nissuer='https://issuer.invalid'\naudience='fixture'\nsubject_claim='email'\n",
+            "subject_claim",
+        ),
+    ] {
+        let issue = parse(&format!("{MINIMAL}\n{extra}")).unwrap_err();
+        assert!(issue.to_string().contains(field), "{issue}");
+    }
+    let loaded = parse(&format!(
+        "{MINIMAL}\n[identity.oidc]\nissuer='https://issuer.invalid'\naudience='fixture'\n"
+    ))
+    .unwrap();
+    let values = loaded.effective_values(&env(&[]));
+    assert!(!values.iter().any(|value| matches!(
+        value.path.as_str(),
+        "identity.user_key" | "identity.oidc.subject_claim"
+    )));
+}
+
+#[test]
+fn identity_keys_are_required_before_runtime() {
+    let without = MINIMAL.replace("hashing_key = { env = \"FYRR_IDENTITY_KEY\" }\n", "");
+    assert!(
+        errors(&parse(&without).unwrap())
+            .iter()
+            .any(|error| error.contains("identity.hashing_key"))
+    );
+    let synced =
+        "[[sources]]\nid = \"j\"\ntype = \"jira\"\n[sources.intervals]\npermissions = \"30m\"";
+    assert!(
+        errors_with(synced)
+            .iter()
+            .any(|error| error.contains("identity.encryption_key") && error.contains("sources[0]"))
+    );
+    assert_eq!(
+        errors(&parse(&format!("{}\n{synced}", encrypted())).unwrap()),
+        Vec::<String>::new()
+    );
+    let fixed = "[[sources]]\nid = \"f\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:a\"]";
+    assert_eq!(errors_with(fixed), Vec::<String>::new());
+}
+
+const KEYCLOAK_DIRECTORY: &str = "[identity.directory]\nprovider = \"keycloak\"\nendpoint = \"https://sso.example\"\nrealm = \"acme\"\nclient_id = \"fyrr-directory\"\ncredentials = { env = \"FYRR_DIRECTORY_SECRET\" }\nverified_domains = [\"example.com\"]\n";
+
+#[test]
+fn keycloak_directory_derives_oidc_issuer_profile_and_keys() {
+    let base = encrypted();
+    let derived = parse(&format!(
+        "{base}\n{KEYCLOAK_DIRECTORY}[identity.oidc]\naudience = \"fyrr\"\n"
+    ))
+    .unwrap();
+    assert_eq!(errors(&derived), Vec::<String>::new());
+    let oidc = derived.config.identity.oidc.as_ref().unwrap();
+    assert_eq!(oidc.issuer, "https://sso.example/realms/acme");
+    assert!(oidc.keycloak);
+    assert_eq!(
+        oidc.jwks_url,
+        "https://sso.example/realms/acme/protocol/openid-connect/certs"
+    );
+    // Explicit values win, including keycloak = false and a pinned key URL.
+    let explicit = parse(&format!(
+        "{base}\n{KEYCLOAK_DIRECTORY}[identity.oidc]\naudience = \"fyrr\"\nkeycloak = false\njwks_url = \"https://keys.example/jwks\"\n"
+    ))
+    .unwrap();
+    let oidc = explicit.config.identity.oidc.as_ref().unwrap();
+    assert_eq!(oidc.issuer, "https://sso.example/realms/acme");
+    assert!(!oidc.keycloak);
+    assert_eq!(oidc.jwks_url, "https://keys.example/jwks");
+    // A configured directory issuer replaces the realm URL.
+    let issued = parse(&format!(
+        "{base}\n{KEYCLOAK_DIRECTORY}issuer = \"https://login.example/realms/acme\"\n[identity.oidc]\naudience = \"fyrr\"\n"
+    ))
+    .unwrap();
+    assert_eq!(
+        issued.config.identity.oidc.as_ref().unwrap().issuer,
+        "https://login.example/realms/acme"
+    );
+    // keycloak = true without a directory derives the key URL from the issuer.
+    let profile = parse(&format!(
+        "{MINIMAL}\n[identity.oidc]\nissuer = \"https://sso.example/realms/acme/\"\naudience = \"fyrr\"\nkeycloak = true\n"
+    ))
+    .unwrap();
+    assert_eq!(errors(&profile), Vec::<String>::new());
+    assert_eq!(
+        profile.config.identity.oidc.as_ref().unwrap().jwks_url,
+        "https://sso.example/realms/acme/protocol/openid-connect/certs"
+    );
+    // Without either, issuer and jwks_url stay required.
+    let bare = errors(
+        &parse(&format!(
+            "{MINIMAL}\n[identity.oidc]\naudience = \"fyrr\"\n"
+        ))
+        .unwrap(),
+    );
+    for path in ["identity.oidc.issuer", "identity.oidc.jwks_url"] {
+        assert!(
+            bare.iter().any(|error| error.contains(path)),
+            "{path}: {bare:?}"
+        );
+    }
+}
+
+#[test]
+fn oidc_issuer_must_match_the_directory_issuer() {
+    let base = encrypted();
+    for directory in [
+        KEYCLOAK_DIRECTORY,
+        "[identity.directory]\nprovider = \"scim\"\nissuer = \"https://sso.example/realms/acme\"\nverified_domains = [\"example.com\"]\n",
+    ] {
+        let oidc = |issuer: &str| {
+            errors(&parse(&format!(
+                "{base}\n{directory}[identity.oidc]\nissuer = \"{issuer}\"\naudience = \"fyrr\"\njwks_url = \"https://sso.example/keys\"\n"
+            ))
+            .unwrap())
+        };
+        assert_eq!(
+            oidc("https://sso.example/realms/acme"),
+            Vec::<String>::new()
+        );
+        let other = oidc("https://sso.example/realms/other");
+        assert!(
+            other
+                .iter()
+                .any(|error| error.contains("identity.oidc.issuer")),
+            "{other:?}"
+        );
+    }
+}
+
+#[test]
+fn chat_sources_default_corporate_domains_to_verified_domains() {
+    let text = format!(
+        "{}\n{KEYCLOAK_DIRECTORY}[[sources]]\nid = \"s\"\ntype = \"slack\"\n[sources.intervals]\npermissions = \"30m\"\n[[sources]]\nid = \"j\"\ntype = \"jira\"\n[sources.intervals]\npermissions = \"30m\"\n[sources.settings]\ncorporate_domains = [\"corp.example\"]\n[[sources]]\nid = \"f\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:a\"]\n",
+        encrypted()
+    );
+    let loaded = parse(&text).unwrap();
+    let sources = &loaded.config.sources;
+    assert_eq!(
+        sources[0].settings["corporate_domains"],
+        serde_json::json!(["example.com"])
+    );
+    assert_eq!(
+        sources[1].settings["corporate_domains"],
+        serde_json::json!(["corp.example"]),
+        "an explicit value wins"
+    );
+    assert!(!sources[2].settings.contains_key("corporate_domains"));
+    let unset = parse(&format!(
+        "{}\n[[sources]]\nid = \"s\"\ntype = \"slack\"\n[sources.intervals]\npermissions = \"30m\"\n",
+        encrypted()
+    ))
+    .unwrap();
+    assert!(
+        !unset.config.sources[0]
+            .settings
+            .contains_key("corporate_domains")
+    );
+}
+
+#[test]
+fn mirror_directory_defaults_to_the_user_cache_per_namespace() {
+    let loaded = parse(MINIMAL).unwrap();
+    assert!(loaded.config.reader.mirror_path.is_none());
+    let path = |pairs: &[(&str, &str)]| loaded.config.mirror_directory(&env(pairs));
+    assert_eq!(
+        path(&[("XDG_CACHE_HOME", "/xdg"), ("HOME", "/home/u")]),
+        Some("/xdg/fyrr/acme".into())
+    );
+    assert_eq!(
+        path(&[("XDG_CACHE_HOME", "relative"), ("HOME", "/home/u")]),
+        Some("/home/u/.cache/fyrr/acme".into()),
+        "a relative XDG_CACHE_HOME is ignored"
+    );
+    assert_eq!(path(&[]), None);
+    let configured = parse(&format!(
+        "{MINIMAL}\n[reader]\nmirror_path = \"/srv/mirror\"\n"
+    ))
+    .unwrap();
+    assert_eq!(
+        configured.config.mirror_directory(&env(&[])),
+        Some("/srv/mirror".into())
+    );
+    assert_error("[reader]\nmirror_path = \"\"", "reader.mirror_path");
+}
+
+#[test]
+fn http_operator_credential_is_optional() {
+    let loaded = parse(&format!(
+        "{MINIMAL}\n[identity.oidc]\nissuer='https://issuer.example'\naudience='fyrr'\njwks_url='https://keys.example/jwks'\n[reader.http]\nlisten='127.0.0.1:8080'\npublic_url='https://reader.example/mcp'\n"
+    ))
+    .unwrap();
+    assert_eq!(errors(&loaded), Vec::<String>::new());
+    assert!(
+        loaded
+            .config
+            .reader
+            .http
+            .as_ref()
+            .unwrap()
+            .operator_credential
+            .is_none()
+    );
+}

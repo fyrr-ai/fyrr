@@ -1,0 +1,174 @@
+# Configuration
+
+> **In short**
+>
+> - One TOML file holds the whole deployment; this page covers the file,
+>   secrets, `[storage]`, `[embedding]` and `[[sources]]`.
+> - Most deployments set only these tables and `[identity]`, which has
+>   [its own page](identity.md).
+> - `[namespace]` is in [tuning](tuning.md); `[reader]` and `[writer]` are in
+>   [reader and writer settings](reader-writer.md).
+
+One TOML file holds the whole deployment. `fyrr` reads `fyrr.toml` in the
+working directory, `--config PATH` or `FYRR_CONFIG`. Unknown keys are
+rejected, and error messages name the key path without quoting a value.
+`schemas/config.schema.json` is the generated JSON Schema for editors;
+`fyrr config check`, `config show` and `config schema` are described in the
+[CLI reference](cli.md#fyrr-config). Most deployments set only `[storage]`,
+`[embedding]`, `[identity]` and `[[sources]]`; the keys under
+[Advanced tuning](tuning.md#advanced-tuning) are best left at their defaults.
+
+## Secrets
+
+A secret is always a reference to an environment variable:
+
+```toml
+secret_access_key = { env = "FYRR_S3_SECRET_ACCESS_KEY" }
+```
+
+A literal in a secret field is refused. So is a string under a secret-like
+key (`token`, `password`, `secret`, `api_key`, `credential`, …) anywhere in
+a source's `settings` or `scope`, including inside arrays. Provider schemas
+mark their own secret fields (`x-fyrr-secret`); those accept only an
+environment reference too. Variable names match `^[A-Z_][A-Z0-9_]*$`.
+
+Durations and byte sizes are TOML strings. A duration is an integer with a
+unit: `"500ms"`, `"30s"`, `"15m"`, `"1h"`, `"1d"`. A byte size is an integer
+with `B`, `KiB`, `MiB`, `GiB` or `TiB`, or without a unit for bytes
+(`"4096"`); a bare TOML integer is refused. Keys documented as an integer,
+such as `query_cache_max_bytes`, take a TOML integer instead.
+
+## `[storage]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `uri` | required | `s3://bucket[/prefix]` for S3 or an S3-compatible service, or `file:///absolute/path` for a directory on this host ([local storage](#local-storage)). |
+| `region` | `us-east-1` | |
+| `endpoint` | absent | Endpoint of an S3-compatible service; absent uses `AWS_ENDPOINT_URL` when set, otherwise AWS S3. |
+| `allow_http` | `false` | Allow a plain-HTTP endpoint (development only). |
+| `virtual_hosted_style` | `false` | Virtual-hosted-style requests instead of path-style. |
+| `access_key_id`, `secret_access_key`, `session_token` | absent | Static credentials as environment references; absent uses the default AWS credential chain. |
+
+All keys but `uri` configure S3 access; with a `file://` URI, `config check`
+refuses each of them, also one that repeats its default.
+
+### Local storage
+
+```toml
+[storage]
+uri = "file:///var/lib/fyrr"
+```
+
+A `file://` root keeps the namespace, the same objects and Lance dataset as
+on S3, in a directory, for trying fyrr out or personal use without S3 or
+Docker. It is for a single host:
+
+- The writer and every reader run on that host as the same user. fyrr
+  creates the root with mode 0700; an existing root must be a directory
+  owned by that user with no group or other access, and not a symlink.
+  Only the root is forced private; Lance files beneath it follow the umask.
+- Writers coordinate through an exclusive `flock` on the root's
+  `.fyrr-storage.lock` and atomic renames, which hold only within one
+  kernel. A durable counter stored in extended attributes gives each
+  control-object write a fresh version, including identical rewrites; the
+  local file system must support user extended attributes and `fsync`.
+  A control object with missing or damaged version metadata is refused.
+  Namespace creation and writes also refuse to recreate a missing
+  `.fyrr-storage.lock` beside existing `namespaces/`: restore the whole root,
+  including that file and its extended attributes, from a consistent backup.
+  The next mutation removes any temporary control object left by a crashed
+  writer, including before purge. Use local file systems only, never NFS,
+  SMB or FUSE. A root detected as
+  NFS, SMB/CIFS, Ceph or 9p is refused with `storage_unavailable`. Detection
+  is partial: AFS, FUSE, virtiofs and Lustre are not detected and
+  remain unsupported, as do other remote or synchronized file systems.
+- The URI is canonical: absolute, without host, query, `.`, `..` or empty
+  segments, with reserved characters such as spaces percent-encoded
+  (`file:///srv/my%20data`).
+- Lance commits local dataset versions with an atomic create-exclusive
+  link protocol.
+  Publishing the serving head flushes the local file system first.
+- Maintenance and confirmed source purge also reap abandoned local multipart
+  uploads (`name#digits`) that native listings hide. Files younger than ten
+  minutes and namespaces with live source cursor leases stay protected. Purge
+  plans count eligible files as `namespace_staging_files`; these files cannot
+  be attributed to a single source.
+- The reader's mirror (`reader.mirror_path`) still holds the immutable files
+  of the publication it serves, so in-flight requests keep their pin across
+  a purge as on S3; it copies those files on the same disk, up to
+  `reader.mirror_max_bytes`.
+
+The generated configuration schema is revision `2.0`; existing S3
+configurations keep working.
+
+Keep the root and its extended attributes together when making a filesystem
+backup; do not edit its objects or remove its coordination file. There is no
+migration between local storage and S3: sync the sources into a
+namespace on the other storage instead.
+
+## `[embedding]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `profile` | `openai-compatible` | The only supported provider protocol. |
+| `endpoint` | required | Base URL of the embeddings API (`…/v1`). |
+| `model` | `BAAI/bge-m3` | 1–512 characters. |
+| `dimensions` | `1024` | 1–8192; must match the model. |
+| `send_dimensions` | `false` | Send `dimensions` in the request. |
+| `prefix` | `""` | At most 4096 characters, applied to documents and queries alike. |
+| `roles.document.prefix`, `roles.query.prefix` | absent | Role-specific prefix of at most 4096 characters, after the shared one. |
+| `roles.document.input_type`, `roles.query.input_type` | absent | 1–128 characters, sent as `input_type` only when configured. |
+| `api_key` | absent | `{ env = "VAR" }`. |
+| `batch_size` | `32` | 1–2048 documents per request. |
+| `timeout` | `30s` | Per request; must be greater than zero. |
+| `max_retries` | `3` | 0–10. |
+| `reader_live` | `false` | Permit readers to embed queries after authorization. Off, the dense lane is degraded for every query. |
+| `spend` | absent | Required for live calls: `limit_microusd` and `max_call_microusd`, in millionths of a US dollar. The scope is one reader process, one `writer sync` invocation (split evenly across its sources) or one source run under `writer serve`, including retries; it is not an account-wide cap. |
+| `local_cache` | absent (`$XDG_CACHE_HOME/fyrr/writer-embeddings`) | Writer document-vector cache directory. |
+| `query_cache_max_bytes` | `16777216` | 0–134217728 (128 MiB): bounded in-process query vector cache per reader process, in bytes. An integer; unit suffixes are refused. |
+
+The writer declares its spend before every call and reserves
+`max_call_microusd` even for an ambiguous timeout. The embedding profile,
+model, dimensions, prefixes, roles and `send_dimensions` bind the namespace:
+a change needs a fresh namespace ([upgrades](operations.md#upgrades)).
+
+## `[[sources]]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `id` | required | Stable for the life of the source: lowercase letters, digits, `_` and `-`, at most 63 bytes. |
+| `type` | required | Provider name, for example `local-files`, `google-drive`, `notion`, `github`, `slack`, `jira`. |
+| `permissions` | `sync` | `sync` maps the source's own permissions; `fixed` grants the listed `readers` to every document. |
+| `readers` | `[]` | Reader tokens of a fixed connection; at least one. Refused under `sync`. |
+| `intervals.content` | `15m` | |
+| `intervals.permissions` | absent | Required for `sync`, refused for `fixed`. |
+| `intervals.members` | absent | Membership snapshot interval; refused for `fixed`. |
+| `intervals.reconcile` | `1d` | Full-ID listing interval. |
+| `document_max_bytes` | absent (`writer.document_max_bytes`) | Per-source override. |
+| `row_warning`, `row_error` | absent | Row-count thresholds per sync; `row_warning` must be below `row_error`. |
+| `retention_days` | absent | At least 1: retention of incoming documents. |
+| `settings` | `{}` | Provider connection settings, validated by the provider's schema. |
+| `scope` | `{}` | What to sync, validated by the provider's schema. |
+
+A fixed connection makes no permission or member reads; `config check` warns
+that every listed reader may read every document. Providers that support
+only one mode (Notion and local files are always `fixed`) refuse the other.
+The [connector pages](connectors/README.md) list each provider's `settings`
+and `scope`.
+
+## Example
+
+`config/fyrr.example.toml` is a configuration-validation example: it shows
+the shape of a deployment with a fixed and a synced source, and the test
+suite checks that it passes `config check --no-env`. It omits keys a running
+deployment may need, such as `[embedding.spend]`;
+[minimal production setup](deployment.md#minimal-production-setup) shows a
+configuration that runs.
+
+`config check` refuses a file that would fail only at run time: without
+`identity.hashing_key`, or without `identity.encryption_key` while a
+`permissions = "sync"` source exists ([identity](identity.md#identity)).
+
+```sh
+fyrr --config config/fyrr.example.toml config check --no-env
+```

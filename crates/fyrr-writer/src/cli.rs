@@ -1,0 +1,389 @@
+//! The `fyrr writer` subcommands, full build only.
+
+use crate::{Result, WriterError};
+use std::path::Path;
+use std::process::ExitCode;
+
+use clap::Subcommand;
+use fyrr_core::config::{self, LoadedConfig};
+use fyrr_core::connector::SyncKind;
+use fyrr_core::exit;
+use fyrr_core::units::ConfigDuration;
+
+use crate::python;
+use crate::sync::{self, SyncOptions};
+
+/// Writing and administration commands.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum WriterCommand {
+    /// Sync all configured sources, or the named ones, into prepared envelopes.
+    Sync {
+        /// Pull the configured canonical directory instead of connector sources.
+        #[arg(long, conflicts_with_all = ["sources", "kinds", "dry_run"])]
+        directory: bool,
+        /// Source IDs; all configured sources when omitted.
+        sources: Vec<String>,
+        /// Prepare envelopes for whole sources (bulk load).
+        #[arg(long, conflicts_with = "dry_run")]
+        full: bool,
+        /// Run each source's provider in its own worker and validate its
+        /// output against the connector contract; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// A sync kind to run (repeatable): content, permissions, members or
+        /// reconcile. Default: every kind the provider implements and the
+        /// source's connection type uses.
+        #[arg(long = "kind", value_parser = parse_kind)]
+        kinds: Vec<SyncKind>,
+        /// Time limit per source; its worker is killed when it passes.
+        #[arg(long, default_value = "10m")]
+        timeout: ConfigDuration,
+        /// Run only sync kinds whose configured interval is due.
+        #[arg(long)]
+        due: bool,
+        /// Sources run at the same time.
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=256))]
+        jobs: u16,
+    },
+    /// Publish pending envelopes. One commit process at a time.
+    ///
+    /// Returns the latest publication, which may be recovery-only with no envelope IDs.
+    /// Look up an earlier publication's receipt with --receipt ENVELOPE_ID.
+    Commit {
+        /// Emit bounded writer-stage timing diagnostics to stderr.
+        #[arg(long)]
+        stage_timings: bool,
+        /// Look up the original published receipt by envelope ID, including after recovery-only publications. Writes nothing.
+        #[arg(long, conflicts_with = "stage_timings")]
+        receipt: Option<String>,
+    },
+    /// Publish a complete hashed directory snapshot under the namespace lease.
+    /// Does not attest directory freshness.
+    Directory {
+        #[arg(long)]
+        snapshot: std::path::PathBuf,
+    },
+    /// Persist a credential from an environment variable, never a CLI value.
+    Credential {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        from_env: String,
+    },
+    /// Run maintenance in bounded, lease-held steps.
+    Maintain,
+    /// Schedule due source workers and publish on the coalescing timer (60s by default).
+    Serve {
+        /// Maximum simultaneously running source workers.
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=256))]
+        jobs: u16,
+        /// Time limit per isolated source worker.
+        #[arg(long, default_value = "10m")]
+        timeout: ConfigDuration,
+    },
+    /// Show publications, envelopes, quarantine, backpressure and freshness.
+    /// Counts are relative to the printed, pinned content_sequence and exact in
+    /// a quiescent namespace. Concurrent commits and arrivals can overcount pending work.
+    Status,
+    /// Commit a new publication from an earlier retained content version.
+    Restore {
+        /// Retained publication ID to restore through a new fenced Lance commit.
+        publication: String,
+    },
+    /// Restore the preceding retained publication with current authorization.
+    Rollback,
+    /// Verify the full published content on demand.
+    Verify,
+    /// Create or delete the namespace.
+    Namespace {
+        #[command(subcommand)]
+        action: NamespaceAction,
+    },
+    /// Retire or purge a source.
+    Source {
+        #[command(subcommand)]
+        action: SourceAction,
+    },
+    /// List installed connector providers and check SDK compatibility; exits
+    /// 1 when any installed provider is refused.
+    Providers,
+    /// Internal: the worker process that runs the embedded Python.
+    #[command(name = "__worker", hide = true, subcommand)]
+    Worker(WorkerJob),
+}
+
+/// Namespace administration.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum NamespaceAction {
+    /// Create the namespace.
+    Create,
+    /// Delete the namespace after a dry-run plan and a verified export.
+    Delete {
+        /// Verified namespace export directory; omit to print the dry-run plan.
+        #[arg(long)]
+        export: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SourceAction {
+    /// Deny the source to every reader at once and reject its further
+    /// commits; final, and kept by restore.
+    Retire {
+        /// Source ID.
+        source: String,
+    },
+    /// Retire the source and delete its rows, envelopes and cursors.
+    Purge {
+        /// Source ID.
+        source: String,
+        /// Delete; omit to print the dry-run plan.
+        #[arg(long)]
+        confirm: bool,
+    },
+}
+
+/// What a worker process does.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum WorkerJob {
+    /// Enumerate installed entry points as JSON without executing metadata.
+    Discover,
+    /// Internal: execute only one provider metadata callable.
+    Metadata {
+        #[arg(long)]
+        provider: String,
+    },
+    /// Run sync kinds of one source and send a structured report.
+    Sync {
+        #[arg(long)]
+        source: String,
+        #[arg(long = "kind", value_parser = parse_kind)]
+        kinds: Vec<SyncKind>,
+        #[arg(long)]
+        prepare: bool,
+        #[arg(long)]
+        full: bool,
+        #[arg(long)]
+        due: bool,
+    },
+}
+
+fn parse_kind(text: &str) -> Result<SyncKind, String> {
+    [
+        SyncKind::Content,
+        SyncKind::Permissions,
+        SyncKind::Members,
+        SyncKind::Reconcile,
+    ]
+    .into_iter()
+    .find(|kind| kind.as_str() == text)
+    .ok_or_else(|| "expected content, permissions, members or reconcile".to_owned())
+}
+
+/// Runs a writer command; `config` is the configuration file path.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
+    match command {
+        WriterCommand::Providers => return providers(),
+        WriterCommand::Worker(job) => return worker(job, path),
+        _ => {}
+    }
+    with_config(path, |loaded| {
+        let config = &loaded.config;
+        match command {
+            WriterCommand::Providers | WriterCommand::Worker(_) => {
+                unreachable!("handled before config")
+            }
+            WriterCommand::Sync {
+                sources,
+                full,
+                dry_run,
+                kinds,
+                timeout,
+                jobs,
+                due,
+                directory,
+            } => {
+                if *directory {
+                    return runtime_command(crate::directory_pull::pull(
+                        config,
+                        *due,
+                        timeout.as_duration(),
+                    ));
+                }
+                let options = SyncOptions {
+                    config_path: path,
+                    sources,
+                    kinds,
+                    timeout: timeout.as_duration(),
+                    jobs: usize::from(*jobs),
+                    memory: config.writer.worker_memory_max_bytes.as_u64(),
+                };
+                if *dry_run {
+                    sync::dry_run(loaded, &options)
+                } else {
+                    sync::prepared(loaded, &options, *full, *due)
+                }
+            }
+            WriterCommand::Directory { snapshot } => runtime_command(async {
+                let file = std::fs::File::open(snapshot)
+                    .map_err(|_| WriterError::DirectorySnapshotUnavailable)?;
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(
+                    &mut std::io::Read::take(file, 16 * 1024 * 1024 + 1),
+                    &mut bytes,
+                )
+                .map_err(|_| WriterError::DirectorySnapshotUnavailable)?;
+                if bytes.len() > 16 * 1024 * 1024 {
+                    return Err(WriterError::DirectorySnapshotInvalid);
+                }
+                let snapshot = fyrr_core::parse_contract(&bytes)
+                    .map_err(|_| WriterError::DirectorySnapshotInvalid)?;
+                crate::directory::publish(config, &snapshot).await
+            }),
+            WriterCommand::Credential { name, from_env } => {
+                runtime_command(crate::secrets::credential_put(config, name, from_env))
+            }
+            WriterCommand::Commit {
+                stage_timings,
+                receipt,
+            } => runtime_command(async {
+                let result = if let Some(id) = receipt {
+                    crate::commit::receipt(config, id).await
+                } else {
+                    crate::commit::commit_until_stopped(config, *stage_timings, None).await
+                };
+                result.map(|receipt| serde_json::json!(receipt))
+            }),
+            WriterCommand::Namespace {
+                action: NamespaceAction::Create,
+            } => runtime_command(async {
+                crate::commit::create(config)
+                    .await
+                    .map(|()| serde_json::json!({"created":true}))
+            }),
+            WriterCommand::Namespace {
+                action: NamespaceAction::Delete { export },
+            } => runtime_command(crate::commit::delete(config, export.as_deref())),
+            WriterCommand::Maintain => runtime_command(crate::maintenance::maintain(config)),
+            WriterCommand::Serve { jobs, timeout } => runtime_command(crate::serve::run(
+                loaded,
+                path,
+                usize::from(*jobs),
+                timeout.as_duration(),
+            )),
+            WriterCommand::Status => runtime_command(crate::envelopes::status(config)),
+            WriterCommand::Restore { publication } => {
+                runtime_command(crate::maintenance::restore(config, Some(publication)))
+            }
+            WriterCommand::Rollback => runtime_command(crate::maintenance::restore(config, None)),
+            WriterCommand::Source {
+                action: SourceAction::Retire { source },
+            } => runtime_command(crate::source::retire(config, source)),
+            WriterCommand::Source {
+                action: SourceAction::Purge { source, confirm },
+            } => runtime_command(crate::source::purge(config, source, *confirm)),
+            WriterCommand::Verify => runtime_command(crate::maintenance::verify(config)),
+        }
+    })
+}
+
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+fn runtime_command(
+    future: impl std::future::Future<Output = Result<serde_json::Value>>,
+) -> ExitCode {
+    let Ok(runtime) = tokio::runtime::Runtime::new() else {
+        return ExitCode::from(exit::FAILURE);
+    };
+    match runtime.block_on(future) {
+        Ok(report) => {
+            println!("{report}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(if error == WriterError::CommitterBusy {
+                exit::BUSY
+            } else {
+                exit::FAILURE
+            })
+        }
+    }
+}
+
+#[allow(clippy::print_stderr)]
+fn with_config(path: &Path, body: impl FnOnce(&LoadedConfig) -> ExitCode) -> ExitCode {
+    match config::load(path) {
+        Ok(loaded) => {
+            let issues = loaded.validate();
+            for issue in &issues {
+                eprintln!("{issue}");
+            }
+            if issues.iter().any(|i| i.severity == config::Severity::Error) {
+                ExitCode::from(exit::CONFIG)
+            } else {
+                body(&loaded)
+            }
+        }
+        Err(issue) => {
+            eprintln!("{issue}");
+            ExitCode::from(exit::CONFIG)
+        }
+    }
+}
+
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+fn providers() -> ExitCode {
+    match sync::discover(crate::worker::DEFAULT_MEMORY) {
+        Ok(discovery) => {
+            print!("{}", discovery.render());
+            if discovery.refused() > 0 {
+                ExitCode::from(exit::FAILURE)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(exit::FAILURE)
+        }
+    }
+}
+
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+fn worker(job: &WorkerJob, config: &Path) -> ExitCode {
+    if crate::worker::initialize().is_err() {
+        return ExitCode::from(exit::FAILURE);
+    }
+    match job {
+        WorkerJob::Discover | WorkerJob::Metadata { .. } => {
+            let result = python::with_runtime(|py, runtime| match job {
+                WorkerJob::Discover => python::inventory(py, runtime),
+                WorkerJob::Metadata { provider } => {
+                    python::discover_provider(py, runtime, provider)
+                }
+                WorkerJob::Sync { .. } => unreachable!(),
+            });
+            match result {
+                Ok(json) if crate::worker::send(json.as_bytes()).is_ok() => ExitCode::SUCCESS,
+                _ => ExitCode::from(exit::FAILURE),
+            }
+        }
+        WorkerJob::Sync {
+            source,
+            kinds,
+            prepare,
+            full,
+            due,
+        } => with_config(config, |loaded| {
+            if crate::secrets::install_worker_credentials(&loaded.config, source).is_err() {
+                return ExitCode::from(exit::FAILURE);
+            }
+            if *prepare {
+                crate::python::prepared_sync(loaded, source, kinds, *full, *due)
+            } else {
+                sync::worker_sync(loaded, source, kinds)
+            }
+        }),
+    }
+}

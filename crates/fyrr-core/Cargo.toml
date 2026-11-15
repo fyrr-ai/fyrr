@@ -1,0 +1,28 @@
+[package]
+name = "fyrr-core"
+description = "Storage-independent fyrr contracts, configuration and MCP tool schemas"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+arrow-schema.workspace = true
+clap.workspace = true
+chrono.workspace = true
+hex.workspace = true
+regex.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+jsonschema.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned for reproducible builds and stable rustfmt/clippy output. Lance
+# 14.0.3 requires Rust >= 1.94.
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

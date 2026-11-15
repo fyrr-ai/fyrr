@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.3",
+  "source_id": "gdrive-main",
+  "kind": "permissions",
+  "cursor": {
+    "start": null,
+    "end": "perm-page-token-0002"
+  },
+  "body": {
+    "type": "permission_changes",
+    "documents": [
+      {
+        "root_id": "1AbCdEfGhIjKlMnOpQrStUv",
+        "permission_revision": "84",
+        "readers": [
+          "usr:107823456789012345678",
+          "grp:eng@acme.example"
+        ],
+        "containers": [
+          "folder:0ABCdefFolderId"
+        ]
+      }
+    ],
+    "container_grants": [
+      {
+        "container_id": "folder:0ABCdefFolderId",
+        "container_kind": "folder",
+        "permission_revision": "12",
+        "readers": [
+          "grp:domain:acme.example"
+        ]
+      }
+    ]
+  }
+}

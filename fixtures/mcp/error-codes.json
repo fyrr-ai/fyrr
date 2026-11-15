@@ -1,0 +1,47 @@
+[
+  {
+    "code": "invalid_argument",
+    "retryable": false,
+    "meaning": "input outside the schema or its limits; never clamped"
+  },
+  {
+    "code": "authorization_unavailable",
+    "retryable": true,
+    "meaning": "policy or identity missing, expired or malformed, or the caller exceeds the per-user token limit"
+  },
+  {
+    "code": "storage_unavailable",
+    "retryable": true,
+    "meaning": "storage could not be read"
+  },
+  {
+    "code": "incompatible_index",
+    "retryable": false,
+    "meaning": "the published index does not match this reader"
+  },
+  {
+    "code": "deadline_exceeded",
+    "retryable": false,
+    "meaning": "the request deadline passed"
+  },
+  {
+    "code": "cancelled",
+    "retryable": false,
+    "meaning": "the request was cancelled"
+  },
+  {
+    "code": "stale_cursor",
+    "retryable": false,
+    "meaning": "the cursor is expired, belongs to another subject or its content version changed"
+  },
+  {
+    "code": "busy",
+    "retryable": true,
+    "meaning": "the namespace concurrency cap, queue or per-call work budget is exhausted"
+  },
+  {
+    "code": "rate_limited",
+    "retryable": true,
+    "meaning": "a per-user or per-group request limit was reached"
+  }
+]

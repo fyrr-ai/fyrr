@@ -1,0 +1,55 @@
+[project]
+name = "fyrr-connectors"
+version = "0.1.0"
+description = "fyrr connector SDK and bundled connector providers"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = "==3.13.*"
+# The SDK hands document batches to the Rust worker as Arrow;
+# pyarrow 17 is the supported minimum for the Arrow PyCapsule interface.
+dependencies = ["pyarrow>=17,<100"]
+
+[project.optional-dependencies]
+# The provider test kit (fyrr_connectors.testkit) validates metadata and
+# config schemas with a JSON Schema validator.
+testkit = ["jsonschema>=4.23,<5"]
+# The bundled Google Drive provider: delegated REST sessions and the
+# xlsx reader for exported Sheets. Other providers and the SDK do not need it.
+google-drive = ["google-auth>=2.40,<3", "requests>=2.32,<3", "openpyxl>=3.1,<4"]
+# Notion uses REST only; requests is already locked for Google Drive.
+notion = ["requests>=2.32,<3"]
+# App installation signing and REST; cryptography is already present for Drive.
+github = ["requests>=2.32,<3", "PyJWT[crypto]>=2.10,<3"]
+slack = ["requests>=2.32,<3"]
+jira = ["requests>=2.32,<3"]
+
+# Bundled connectors register like any external provider.
+[project.entry-points."fyrr.connectors"]
+local-files = "fyrr_connectors.bundled:local_files"
+jira = "fyrr_connectors.bundled:jira"
+slack = "fyrr_connectors.bundled:slack"
+google-drive = "fyrr_connectors.bundled:google_drive"
+github = "fyrr_connectors.bundled:github"
+notion = "fyrr_connectors.bundled:notion"
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "ruff==0.16.10", "jsonschema>=4.23,<5", "fyrr-connectors[google-drive,github]"]
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv]
+python-preference = "only-managed"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers -ra"

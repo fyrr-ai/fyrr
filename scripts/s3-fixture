@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# Real-S3 test fixture: one RustFS container per worktree, pinned by image
+# digest (scripts/pins.env), loopback-only, memory-limited, with its data under
+# this worktree's target/s3-fixture by default. FYRR_S3_FIXTURE_DATA can name
+# an external data directory for protected evaluation; stop retains external
+# data. It only ever touches the container it
+# labelled for this worktree.
+#
+#   scripts/s3-fixture start    start (or reuse) the fixture and create the bucket
+#   scripts/s3-fixture env      print FYRR_TEST_S3_* exports for the tests
+#   scripts/s3-fixture status   show the container state
+#   scripts/s3-fixture stop     remove the container and its data directory
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+HASH="$(printf '%s' "$ROOT" | sha256sum | cut -c1-12)"
+NAME="fyrr-s3-$HASH"
+LABEL="fyrr.worktree"
+DATA="${FYRR_S3_FIXTURE_DATA:-$ROOT/target/s3-fixture/data}"
+if [[ -n "${FYRR_S3_FIXTURE_DATA:-}" ]]; then
+  DATA="$(realpath -m -- "$DATA")"
+  [[ "$DATA" != "$ROOT" && "$DATA" != "$ROOT/"* ]] || die "external fixture data must be outside the checkout"
+fi
+MEMORY="${FYRR_S3_FIXTURE_MEMORY:-4g}"
+BUCKET="fyrr-test"
+# Fixed development credentials of a disposable loopback fixture; not secrets.
+ACCESS_KEY="fyrr-test"
+SECRET_KEY="fyrr-test-secret"
+
+owned() {
+  local label
+  label="$(docker container inspect --format "{{index .Config.Labels \"$LABEL\"}}" "$NAME" 2>/dev/null)" || return 1
+  [[ "$label" == "$ROOT" ]] || die "container $NAME exists but is not owned by $ROOT; refusing to touch it"
+}
+
+port() {
+  docker container inspect --format '{{(index (index .NetworkSettings.Ports "9000/tcp") 0).HostPort}}' "$NAME"
+}
+
+s3() {
+  curl -fsS -o /dev/null --aws-sigv4 "aws:amz:us-east-1:s3" --user "$ACCESS_KEY:$SECRET_KEY" "$@"
+}
+
+fixture_key() {
+  local mounted
+  mounted="$(docker container inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$NAME")"
+  [[ -n "$mounted" ]] || die "owned fixture data mount missing"
+  if [[ ! -f "$mounted/.fyrr-encryption-key" ]]; then
+    (umask 077; od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$mounted/.fyrr-encryption-key")
+  fi
+  cat "$mounted/.fyrr-encryption-key"
+}
+
+start() {
+  command -v docker >/dev/null || die "docker is required for the real-S3 fixture"
+  if owned; then
+    if [[ -n "${FYRR_S3_FIXTURE_DATA:-}" ]]; then
+      local mounted
+      mounted="$(docker container inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$NAME")"
+      [[ "$mounted" == "$DATA" ]] || die "owned fixture uses a different data directory; refusing relocation"
+    fi
+    if [[ -n "${FYRR_S3_FIXTURE_MEMORY:-}" ]]; then
+      docker update --memory "$MEMORY" --memory-swap "$MEMORY" "$NAME" >/dev/null
+    fi
+    if [[ "$(docker container inspect --format '{{.State.Running}}' "$NAME")" != true ]]; then
+      docker start "$NAME" >/dev/null
+    fi
+  else
+    mkdir -p "$DATA"
+    # Rootless Docker maps container root to the host user; rootful Docker
+    # needs the host user directly. Either way the data stays ours.
+    local user
+    if docker info --format '{{.SecurityOptions}}' | grep -q rootless; then
+      user="0:0"
+    else
+      user="$(id -u):$(id -g)"
+    fi
+    # Docker allocates and binds the port; a connect probe misses outbound sockets.
+    docker run -d --name "$NAME" --label "$LABEL=$ROOT" --user "$user" \
+      --memory "$MEMORY" --memory-swap "$MEMORY" \
+      -p "127.0.0.1::9000" \
+      -e RUSTFS_ACCESS_KEY="$ACCESS_KEY" -e RUSTFS_SECRET_KEY="$SECRET_KEY" \
+      -e RUSTFS_OBS_LOG_DIRECTORY= -e RUSTFS_OBS_LOGGER_LEVEL=warn \
+      -v "$DATA:/data" "$RUSTFS_IMAGE" >/dev/null
+  fi
+  local endpoint="http://127.0.0.1:$(port)"
+  for _ in $(seq 1 60); do
+    if curl -fsS -o /dev/null "$endpoint/minio/health/ready" 2>/dev/null; then
+      s3 -X PUT "$endpoint/$BUCKET"
+      log "RustFS fixture $NAME ready at $endpoint (bucket $BUCKET, memory $MEMORY)"
+      return 0
+    fi
+    sleep 1
+  done
+  docker logs --tail 20 "$NAME" >&2 || true
+  die "RustFS fixture $NAME did not become ready"
+}
+
+case "${1:-}" in
+  start) start ;;
+  env)
+    owned || die "fixture not running; run scripts/s3-fixture start"
+    [[ "$(docker container inspect --format '{{.State.Running}}' "$NAME")" == true ]] || die "fixture not running; run scripts/s3-fixture start"
+    echo "export FYRR_TEST_S3_ENDPOINT=http://127.0.0.1:$(port)"
+    echo "export FYRR_TEST_S3_BUCKET=$BUCKET"
+    echo "export FYRR_TEST_S3_ACCESS_KEY_ID=$ACCESS_KEY"
+    echo "export FYRR_TEST_S3_SECRET_ACCESS_KEY=$SECRET_KEY"
+    echo "export FYRR_TEST_ENCRYPTION_KEY=$(fixture_key)"
+    ;;
+  status)
+    if owned; then
+      if [[ "$(docker container inspect --format '{{.State.Running}}' "$NAME")" == true ]]; then
+        docker container inspect --format "$NAME {{.State.Status}} port {{(index (index .NetworkSettings.Ports \"9000/tcp\") 0).HostPort}} image {{.Config.Image}}" "$NAME"
+      else
+        docker container inspect --format "$NAME {{.State.Status}} oom={{.State.OOMKilled}} exit={{.State.ExitCode}}" "$NAME"
+      fi
+    else
+      echo "$NAME not running"
+    fi
+    ;;
+  stop)
+    if owned; then
+      docker rm -f "$NAME" >/dev/null
+      log "removed $NAME"
+    fi
+    # Disposable default data owned by this worktree only. External data is retained.
+    rm -rf "$ROOT/target/s3-fixture"
+    ;;
+  *) die "usage: scripts/s3-fixture start|env|status|stop" ;;
+esac

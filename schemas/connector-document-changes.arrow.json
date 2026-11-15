@@ -1,0 +1,283 @@
+{
+  "fields": [
+    {
+      "data_type": "Utf8",
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "op",
+      "nullable": false
+    },
+    {
+      "data_type": "Utf8",
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "root_id",
+      "nullable": false
+    },
+    {
+      "data_type": "Utf8",
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "source_revision",
+      "nullable": true
+    },
+    {
+      "data_type": "Int64",
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "revision_order",
+      "nullable": true
+    },
+    {
+      "data_type": "Utf8",
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "expected_prior_revision",
+      "nullable": true
+    },
+    {
+      "data_type": "Utf8",
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "permission_revision",
+      "nullable": true
+    },
+    {
+      "data_type": {
+        "List": {
+          "data_type": "Utf8",
+          "dict_id": 0,
+          "dict_is_ordered": false,
+          "metadata": {},
+          "name": "item",
+          "nullable": false
+        }
+      },
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "readers",
+      "nullable": false
+    },
+    {
+      "data_type": {
+        "List": {
+          "data_type": "Utf8",
+          "dict_id": 0,
+          "dict_is_ordered": false,
+          "metadata": {},
+          "name": "item",
+          "nullable": false
+        }
+      },
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "containers",
+      "nullable": false
+    },
+    {
+      "data_type": "Utf8",
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "source_uri",
+      "nullable": true
+    },
+    {
+      "data_type": "Utf8",
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "source_type",
+      "nullable": true
+    },
+    {
+      "data_type": "Utf8",
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "title",
+      "nullable": true
+    },
+    {
+      "data_type": "Utf8",
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "author",
+      "nullable": true
+    },
+    {
+      "data_type": "Utf8",
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "team",
+      "nullable": true
+    },
+    {
+      "data_type": "Utf8",
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "project",
+      "nullable": true
+    },
+    {
+      "data_type": "Utf8",
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "status",
+      "nullable": true
+    },
+    {
+      "data_type": {
+        "List": {
+          "data_type": "Utf8",
+          "dict_id": 0,
+          "dict_is_ordered": false,
+          "metadata": {},
+          "name": "item",
+          "nullable": false
+        }
+      },
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "labels",
+      "nullable": false
+    },
+    {
+      "data_type": {
+        "Timestamp": [
+          "Microsecond",
+          "UTC"
+        ]
+      },
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "created_at",
+      "nullable": true
+    },
+    {
+      "data_type": {
+        "Timestamp": [
+          "Microsecond",
+          "UTC"
+        ]
+      },
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "updated_at",
+      "nullable": true
+    },
+    {
+      "data_type": "Utf8",
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "connector_map",
+      "nullable": true
+    },
+    {
+      "data_type": {
+        "List": {
+          "data_type": "Utf8",
+          "dict_id": 0,
+          "dict_is_ordered": false,
+          "metadata": {},
+          "name": "item",
+          "nullable": false
+        }
+      },
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "attributes",
+      "nullable": false
+    },
+    {
+      "data_type": {
+        "List": {
+          "data_type": {
+            "Struct": [
+              {
+                "data_type": "Utf8",
+                "dict_id": 0,
+                "dict_is_ordered": false,
+                "metadata": {},
+                "name": "text",
+                "nullable": false
+              },
+              {
+                "data_type": "Utf8",
+                "dict_id": 0,
+                "dict_is_ordered": false,
+                "metadata": {},
+                "name": "location_kind",
+                "nullable": true
+              },
+              {
+                "data_type": "Utf8",
+                "dict_id": 0,
+                "dict_is_ordered": false,
+                "metadata": {},
+                "name": "location_label",
+                "nullable": true
+              },
+              {
+                "data_type": "UInt32",
+                "dict_id": 0,
+                "dict_is_ordered": false,
+                "metadata": {},
+                "name": "location_index",
+                "nullable": true
+              },
+              {
+                "data_type": {
+                  "List": {
+                    "data_type": "Utf8",
+                    "dict_id": 0,
+                    "dict_is_ordered": false,
+                    "metadata": {},
+                    "name": "item",
+                    "nullable": false
+                  }
+                },
+                "dict_id": 0,
+                "dict_is_ordered": false,
+                "metadata": {},
+                "name": "readers",
+                "nullable": true
+              }
+            ]
+          },
+          "dict_id": 0,
+          "dict_is_ordered": false,
+          "metadata": {},
+          "name": "item",
+          "nullable": false
+        }
+      },
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {},
+      "name": "sections",
+      "nullable": false
+    }
+  ],
+  "metadata": {
+    "fyrr.contract": "connector.document_changes",
+    "fyrr.schema_version": "1.3"
+  }
+}

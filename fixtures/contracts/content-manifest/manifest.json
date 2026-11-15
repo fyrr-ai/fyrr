@@ -1,0 +1,86 @@
+{
+  "schema_version": "2.2",
+  "namespace": "acme",
+  "publication_id": "pub-000042",
+  "sequence": 42,
+  "previous_publication_id": "pub-000041",
+  "lance_version": 121,
+  "committed_at": "2026-09-30T10:01:30Z",
+  "embedding": {
+    "model": "BAAI/bge-m3",
+    "dimensions": 1024,
+    "fingerprint": "sha256:6e344f82fb4dcaf18c9088486df6acb47676ced4cb1749a991249781afb5d8c8"
+  },
+  "chunk_profile": {
+    "name": "v5-whole-unit",
+    "max_unit_bytes": 16384,
+    "overlap_bytes": 0,
+    "digest": "sha256:daf02912c6aa996b6aaf1d74e9d62b7714dd2291e379f1d826341c090a3271a9"
+  },
+  "fts": {
+    "tokenizer": "simple",
+    "max_token_length": 40,
+    "lowercase": true,
+    "stem": true,
+    "remove_stop_words": false,
+    "ascii_folding": true,
+    "with_position": false
+  },
+  "retrieval_policy_digest": "sha256:17fba65c79e337ef6c14fca1ce3a800a69e8812aacee1261bb4283c1102a716b",
+  "indexes": [
+    {
+      "name": "vector_idx",
+      "kind": "ivf_rq",
+      "column": "vector",
+      "uuid": "3f0c1d2e-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+    },
+    {
+      "name": "text_fts",
+      "kind": "fts",
+      "column": "text",
+      "uuid": "11111111-2222-4333-8444-555555555555"
+    },
+    {
+      "name": "readers_idx",
+      "kind": "label_list",
+      "column": "readers",
+      "uuid": "66666666-7777-4888-9999-aaaaaaaaaaaa"
+    }
+  ],
+  "files": [
+    {
+      "path": "_versions/121.manifest",
+      "size_bytes": 4096
+    },
+    {
+      "path": "data/7d1e4c2a-0b3f-4f8e-9a51-2c6d8e0f1a23.lance",
+      "size_bytes": 18734
+    }
+  ],
+  "envelope_ids": [
+    "env-ab0dc87cb67ccdbb62a36a806c0cd6c5"
+  ],
+  "lineage": {
+    "holder": "holder-0f3c9a2b",
+    "epoch": 5,
+    "base_version": 120,
+    "recovery_version": null,
+    "transactions": [
+      {
+        "version": 121,
+        "transaction_id": "tx-index"
+      }
+    ]
+  },
+  "identity": {
+    "generation": 27,
+    "object": "identity/generation-27.json",
+    "digest": "sha256:e98ebb5d4453a02a1afafdb5aba80c49519a5970736363bb0b13e373106ceb72"
+  },
+  "policy": {
+    "generation": 9,
+    "object": "policy/generation-9.json",
+    "digest": "sha256:117d7833628e2a22ebb3c36afaab0ecebc20d3383b3c3ff33109605c1436d0f7"
+  },
+  "incarnation": "5f0e3a9c2b7d4e1f8a6c0d3b9e2f7a41"
+}

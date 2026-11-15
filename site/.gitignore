@@ -1,0 +1,11 @@
+dist/
+shots/
+node_modules/
+.next/
+.source/
+.content/
+public/
+out/
+next-env.d.ts
+*.tsbuildinfo
+.wrangler/

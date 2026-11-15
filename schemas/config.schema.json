@@ -1,0 +1,1336 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "namespace": {
+      "$ref": "#/$defs/NamespaceConfig"
+    },
+    "storage": {
+      "$ref": "#/$defs/StorageConfig"
+    },
+    "embedding": {
+      "$ref": "#/$defs/EmbeddingConfig"
+    },
+    "identity": {
+      "$ref": "#/$defs/IdentityConfig",
+      "default": {
+        "stdio_readers": [],
+        "validity_deadline": "1h",
+        "max_tokens_per_user": 5000,
+        "directory": {
+          "provider": "none",
+          "sync_interval": "15m",
+          "verified_domains": []
+        }
+      }
+    },
+    "reader": {
+      "$ref": "#/$defs/ReaderConfig",
+      "default": {
+        "sparse_read": "masked_scan",
+        "concurrency": 2,
+        "filter_count_max_rows": 1000000,
+        "nprobes": 256,
+        "routing": "exact",
+        "mirror_max_bytes": 8589934592,
+        "memory_max_bytes": "2304MiB",
+        "memory_headroom_bytes": "128MiB",
+        "version_check": "interval",
+        "version_check_interval": "30s",
+        "per_request_wait": "2s",
+        "max_preparation": "15m"
+      }
+    },
+    "writer": {
+      "$ref": "#/$defs/WriterConfig",
+      "default": {
+        "credentials": {},
+        "worker_memory_max_bytes": "2GiB",
+        "purge_window": "1d",
+        "version_grace": "1h",
+        "max_envelope_age": "3d",
+        "document_max_bytes": "8MiB",
+        "envelope_max_rows": 50000,
+        "envelope_max_bytes": "256MiB",
+        "commit": {
+          "merge_fts_segments": false,
+          "group_max_rows": 1000000,
+          "group_max_bytes": "4GiB",
+          "coalescing_timer": "1m",
+          "lease_ttl": "1m"
+        },
+        "maintenance": {
+          "step_max_duration": "5m"
+        },
+        "backpressure": {
+          "max_pending_content_envelopes": 1000,
+          "max_pending_content_bytes": "16GiB"
+        },
+        "serve": {
+          "committer": true
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SourceConfig"
+      },
+      "description": "Connector sources (`[[sources]]`).",
+      "default": []
+    }
+  },
+  "required": [
+    "namespace",
+    "storage",
+    "embedding"
+  ],
+  "title": "fyrr configuration",
+  "description": "The whole configuration file.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "NamespaceConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rerank": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RerankConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional hosted reranker. Its calls occupy a reader concurrency slot."
+        },
+        "retrieval": {
+          "$ref": "#/$defs/RetrievalConfig",
+          "description": "Candidate depths, fusion weight and batched output bounds.",
+          "default": {
+            "dense_weight": 0.25,
+            "dense_candidates": 75,
+            "lexical_candidates": 50,
+            "source_cap": 2,
+            "max_documents": 75
+          }
+        },
+        "composition": {
+          "$ref": "#/$defs/Composition",
+          "description": "Document slots: fusion first, then further unique dense and lexical hits.",
+          "default": {
+            "fusion": 50,
+            "dense": 0,
+            "lexical": 0
+          }
+        },
+        "name": {
+          "type": "string",
+          "description": "Namespace ID: lowercase letters, digits and `-`, at most 63 bytes.",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+        },
+        "fts_max_token_length": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "description": "Native FTS `max_token_length`; part of the publication identity.",
+          "maximum": 1024,
+          "default": 40
+        },
+        "fts_stem": {
+          "type": "boolean",
+          "description": "Publication-level English stemming; changing it rebuilds the FTS index.",
+          "default": false
+        },
+        "fts_remove_stop_words": {
+          "type": "boolean",
+          "description": "Publication-level stop-word removal; changing it rebuilds the FTS index.",
+          "default": false
+        },
+        "fts_ascii_folding": {
+          "type": "boolean",
+          "description": "Publication-level ASCII folding; changing it rebuilds the FTS index.",
+          "default": false
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "description": "The namespace this deployment serves and writes: one Lance dataset."
+    },
+    "RerankConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "description": "Complete HTTPS endpoint (loopback HTTP is allowed for a local provider)."
+        },
+        "model": {
+          "type": "string"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidates": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "description": "Authorized composed documents to rerank before the request limit.",
+          "maximum": 75
+        },
+        "weight": {
+          "type": "number",
+          "format": "double",
+          "description": "Logistic population-z score blend; 1 uses raw reranker order, 0 fusion order.",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "deadline": {
+          "$ref": "#/$defs/Duration",
+          "description": "One deadline for preparation and every provider call in a search batch."
+        },
+        "spend_limit_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Shared process-lifetime namespace cap, in millionths of a US dollar.\nReservations are not refunded after dispatch, even on failure."
+        },
+        "max_call_cost_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1,
+          "description": "Operator-attested upper cost bound for any request up to 1 MiB of text.\nMust cover the chosen model's billing, including repeated query tokens.\nThis amount is reserved before each dispatch; no provider invoice is trusted."
+        },
+        "text_chars": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 200,
+          "description": "Optional per-candidate text bound in characters: send the window with the\nmost distinct query terms instead of the whole record. Absent sends the\nwhole record (and keeps the policy digest unchanged).",
+          "maximum": 32768
+        }
+      },
+      "required": [
+        "endpoint",
+        "model",
+        "candidates",
+        "weight",
+        "deadline",
+        "spend_limit_microusd",
+        "max_call_cost_microusd"
+      ],
+      "description": "Optional reranking after fusion; absent configuration makes no provider calls.\nBatch calls run at most four at once and occupy one reader concurrency slot\nuntil all finish or the shared deadline expires. No retries or redirects.\nAuthorization is checked after connecting, immediately before emitting the\nbody. A revocation between that check and the provider receiving the bytes\nremains possible, as with any read that returns data."
+    },
+    "SecretRef": {
+      "description": "A secret taken from the environment variable `env`; never the secret itself.",
+      "type": "object",
+      "properties": {
+        "env": {
+          "type": "string",
+          "pattern": "^[A-Z_][A-Z0-9_]*$"
+        }
+      },
+      "required": [
+        "env"
+      ],
+      "additionalProperties": false
+    },
+    "Duration": {
+      "description": "Duration: an integer followed by ms, s, m, h or d.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)(ms|s|m|h|d)$"
+    },
+    "RetrievalConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rescore_depth": {
+          "$ref": "#/$defs/RescoreDepth",
+          "description": "Float16 candidate refinement; legacy keeps the original fourfold depth."
+        },
+        "dense_weight": {
+          "type": "number",
+          "format": "double",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.25
+        },
+        "dense_candidates": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "maximum": 75,
+          "default": 75
+        },
+        "lexical_candidates": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 50
+        },
+        "source_cap": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "Soft cap per composition bucket; zero disables it.",
+          "maximum": 75,
+          "default": 2
+        },
+        "max_documents": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "description": "Total unique documents in a multi-query response.",
+          "maximum": 320,
+          "default": 75
+        }
+      },
+      "description": "Retrieval policy; explicit defaults retain the legacy policy digest."
+    },
+    "RescoreDepth": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "legacy"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "candidates": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "mode": {
+              "type": "string",
+              "const": "fixed"
+            }
+          },
+          "required": [
+            "mode",
+            "candidates"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "min_candidates": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "max_candidates": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "min_gap": {
+              "type": "number",
+              "format": "double"
+            },
+            "mode": {
+              "type": "string",
+              "const": "adaptive"
+            }
+          },
+          "required": [
+            "mode",
+            "min_candidates",
+            "max_candidates",
+            "min_gap"
+          ],
+          "description": "Expand when the exact cosine gap at the retained boundary is small."
+        }
+      ]
+    },
+    "Composition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fusion": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "maximum": 75,
+          "default": 50
+        },
+        "dense": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "maximum": 74,
+          "default": 0
+        },
+        "lexical": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "maximum": 74,
+          "default": 0
+        }
+      },
+      "description": "Operator composition; its values are bound into the retrieval policy identity."
+    },
+    "StorageConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "uri": {
+          "type": "string",
+          "description": "Root URI, `s3://bucket[/prefix]` or `file:///absolute/path`.",
+          "pattern": "^(s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](/.*)?|file:///[^?#]+)$"
+        },
+        "region": {
+          "type": "string",
+          "default": "us-east-1"
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Endpoint of an S3-compatible service; absent for AWS S3."
+        },
+        "allow_http": {
+          "type": "boolean",
+          "description": "Allow a plain-HTTP endpoint (development only).",
+          "default": false
+        },
+        "virtual_hosted_style": {
+          "type": "boolean",
+          "description": "Use virtual-hosted-style requests instead of path-style.",
+          "default": false
+        },
+        "access_key_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Static credentials; absent means the default AWS credential chain."
+        },
+        "secret_access_key": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_token": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "uri"
+      ],
+      "description": "The durable truth: S3 (or S3-compatible) storage, or a local directory\nfor single-host use. The other keys configure S3 access only."
+    },
+    "EmbeddingConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "$ref": "#/$defs/EmbeddingProfile",
+          "default": "openai-compatible"
+        },
+        "endpoint": {
+          "type": "string",
+          "description": "Base URL of the OpenAI-compatible embeddings API."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "default": "BAAI/bge-m3",
+          "x-maxUtf8Bytes": 512
+        },
+        "dimensions": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "maximum": 8192,
+          "default": 1024
+        },
+        "prefix": {
+          "type": "string",
+          "description": "Prefix applied to both documents and queries (same rules for both).",
+          "maxLength": 4096,
+          "default": "",
+          "x-maxUtf8Bytes": 4096
+        },
+        "roles": {
+          "$ref": "#/$defs/EmbeddingRoles",
+          "description": "Optional document/query transformations; exact UTF-8 is preserved.",
+          "default": {
+            "document": {},
+            "query": {}
+          }
+        },
+        "send_dimensions": {
+          "type": "boolean",
+          "description": "Send the configured dimension as the standard API `dimensions` field.",
+          "default": false
+        },
+        "reader_live": {
+          "type": "boolean",
+          "description": "Permit live query embeddings after reader authorization (off by default).",
+          "default": false
+        },
+        "local_cache": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Writer document-vector cache directory; default\n`$XDG_CACHE_HOME/fyrr/writer-embeddings`."
+        },
+        "query_cache_max_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Maximum query-cache bytes, including keys and vectors, per reader process.",
+          "maximum": 134217728,
+          "default": 16777216
+        },
+        "spend": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpendConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Required for live calls. Scope: one reader process or writer sync\ninvocation, including retries; this is not an account-wide spending cap."
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "batch_size": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "maximum": 2048,
+          "default": 32
+        },
+        "timeout": {
+          "$ref": "#/$defs/Duration",
+          "default": "30s"
+        },
+        "max_retries": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "maximum": 10,
+          "default": 3
+        }
+      },
+      "required": [
+        "endpoint"
+      ],
+      "description": "Embedding identity, role transformations and bounded provider access."
+    },
+    "EmbeddingProfile": {
+      "type": "string",
+      "enum": [
+        "openai-compatible"
+      ],
+      "description": "Supported embedding provider protocols."
+    },
+    "EmbeddingRoles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "document": {
+          "$ref": "#/$defs/EmbeddingRole",
+          "default": {}
+        },
+        "query": {
+          "$ref": "#/$defs/EmbeddingRole",
+          "default": {}
+        }
+      }
+    },
+    "EmbeddingRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prefix": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Added after the shared prefix, before the unchanged input text.",
+          "maxLength": 4096,
+          "x-maxUtf8Bytes": 4096
+        },
+        "input_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Sent as `input_type` only when configured.",
+          "minLength": 1,
+          "maxLength": 128,
+          "x-maxUtf8Bytes": 128
+        }
+      }
+    },
+    "SpendConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "limit_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "max_call_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1,
+          "description": "Upper bound on one call's cost; reserved even for an ambiguous timeout."
+        }
+      },
+      "required": [
+        "limit_microusd",
+        "max_call_microusd"
+      ],
+      "description": "Conservative reservation before every attempt, including identity probes."
+    },
+    "IdentityConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "encryption_key": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "32-byte hex AEAD key, supplied only through an environment reference.\nRequired with a `permissions = \"sync\"` source, a `snapshot` or\n`keycloak` directory, or writer administration."
+        },
+        "stdio_readers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tokens assigned to the configured stdio subject.",
+          "default": []
+        },
+        "hashing_key": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Namespace HMAC key, required; only an environment reference is accepted."
+        },
+        "validity_deadline": {
+          "$ref": "#/$defs/Duration",
+          "description": "Identity artifact validity, counted from the directory freshness instant.",
+          "default": "1h"
+        },
+        "max_tokens_per_user": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "description": "A subject with more reader tokens gets `authorization_unavailable`.",
+          "default": 5000
+        },
+        "stdio_user": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The subject of the stdio transport (one process identity)."
+        },
+        "directory": {
+          "$ref": "#/$defs/DirectoryConfig",
+          "default": {
+            "provider": "none",
+            "sync_interval": "15m",
+            "verified_domains": []
+          }
+        },
+        "oidc": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OidcConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "OIDC login for HTTP MCP."
+        }
+      },
+      "description": "Identity mapping and the identity artifact."
+    },
+    "DirectoryConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/DirectoryProvider",
+          "default": "none"
+        },
+        "sync_interval": {
+          "$ref": "#/$defs/Duration",
+          "description": "Pull interval, or the attestation interval of SCIM push.",
+          "default": "15m"
+        },
+        "credentials": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Keycloak base URL; HTTPS except explicitly allowed loopback fixtures."
+        },
+        "realm": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "issuer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Optional Keycloak service-account client; credentials then reference its secret."
+        },
+        "verified_domains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Corporate domains accepted for Keycloak canonical e-mail keys.",
+          "default": []
+        },
+        "snapshot_file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A complete generic DirectorySnapshot file, read at the writer boundary."
+        }
+      },
+      "description": "Where canonical users and groups come from."
+    },
+    "DirectoryProvider": {
+      "type": "string",
+      "enum": [
+        "scim",
+        "keycloak",
+        "snapshot",
+        "none"
+      ],
+      "description": "Directory provider."
+    },
+    "OidcConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jwks_url": {
+          "type": "string",
+          "description": "Operator-pinned key endpoint; token headers never choose a URL. With\n`keycloak = true` it defaults to `<issuer>/protocol/openid-connect/certs`.",
+          "default": ""
+        },
+        "jwks_validity": {
+          "$ref": "#/$defs/Duration",
+          "default": "5m"
+        },
+        "jwks_refresh_interval": {
+          "$ref": "#/$defs/Duration",
+          "default": "5s"
+        },
+        "scope": {
+          "type": "string",
+          "default": "fyrr:read"
+        },
+        "keycloak": {
+          "type": "boolean",
+          "description": "Accept Keycloak's `JWT`/`Bearer` access-token profile. Defaults to\ntrue when the issuer is taken from a Keycloak directory.",
+          "default": false
+        },
+        "issuer": {
+          "type": "string",
+          "description": "Exact issuer. With a Keycloak directory it defaults to the directory's\nissuer; with a Keycloak or SCIM directory it must equal it.",
+          "default": ""
+        },
+        "audience": {
+          "type": "string",
+          "description": "Required audience: the token's `aud`, a string or an array, contains it."
+        }
+      },
+      "required": [
+        "audience"
+      ],
+      "description": "OIDC resource-server settings for HTTP MCP."
+    },
+    "ReaderConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sparse_read": {
+          "$ref": "#/$defs/SparseRead",
+          "description": "Float16 refinement read backend; both paths read only admitted rows.",
+          "default": "masked_scan"
+        },
+        "http": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HttpConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "concurrency": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "description": "Independent stdio requests executing at once; the waiting queue has the same bound.",
+          "maximum": 16,
+          "default": 2
+        },
+        "filter_count_max_rows": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "description": "Maximum authorized rows inspected by one list_filters call; no partial counts.",
+          "maximum": 10000000,
+          "default": 1000000
+        },
+        "nprobes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "description": "Nearest permission-bearing IVF partitions searched per index segment.",
+          "maximum": 65536,
+          "default": 256
+        },
+        "routing": {
+          "$ref": "#/$defs/RoutingStrategy",
+          "description": "IVF centroid routing; exact stays the default until scale calibration.",
+          "default": "exact"
+        },
+        "mirror_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Local immutable-file mirror directory; default\n`$XDG_CACHE_HOME/fyrr/<namespace>`, else `$HOME/.cache/fyrr/<namespace>`."
+        },
+        "mirror_max_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Disk limit for the read-through mirror.",
+          "default": 8589934592
+        },
+        "memory_max_bytes": {
+          "$ref": "#/$defs/ByteSize",
+          "description": "Reader memory envelope used for native caches and generation reservations.",
+          "default": "2304MiB"
+        },
+        "memory_headroom_bytes": {
+          "$ref": "#/$defs/ByteSize",
+          "description": "Space left unused by generation preparation for requests and allocator overhead.",
+          "default": "128MiB"
+        },
+        "version_check": {
+          "$ref": "#/$defs/VersionCheck",
+          "description": "Serving-head version check mode.",
+          "default": "interval"
+        },
+        "version_check_interval": {
+          "$ref": "#/$defs/Duration",
+          "default": "30s"
+        },
+        "per_request_wait": {
+          "$ref": "#/$defs/Duration",
+          "description": "`per-request` mode: wait this long for a newer version, then serve flagged.",
+          "default": "2s"
+        },
+        "max_preparation": {
+          "$ref": "#/$defs/Duration",
+          "description": "Upper bound on preparing a new generation (mirror sync, maps, prewarm);\n`writer.version_grace` must exceed it plus the maximum request deadline.",
+          "default": "15m"
+        },
+        "max_response_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 4096,
+          "description": "Optional search response budget, in bytes of the serialized MCP tool result\nincluding its structured JSON and text copies, for MCP\nclients that refuse large tool results. Over budget, whole hits are dropped\nfrom the end of the rank order (each query keeps at least 4 while another\nstill has tail hits); only then do the lowest-ranked hits lose their excerpt\nor content. `truncated` reports both counts and the removed bytes count as\n`omitted_bytes`. Absent returns every selected hit.",
+          "maximum": 16777216
+        }
+      },
+      "description": "Reader settings."
+    },
+    "SparseRead": {
+      "type": "string",
+      "enum": [
+        "masked_scan",
+        "take_rows"
+      ]
+    },
+    "HttpConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "listen": {
+          "type": "string"
+        },
+        "public_url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "operator_credential": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Bearer credential of `POST /admin/refresh`; absent, the route is not served."
+        },
+        "authorization_cache_subjects": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "maximum": 1024,
+          "default": 64
+        },
+        "user_requests_per_minute": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "default": 120
+        },
+        "group_requests_per_minute": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "default": 120
+        }
+      },
+      "required": [
+        "listen",
+        "public_url"
+      ],
+      "description": "Operator-controlled HTTP boundary and bounded authorized-state retention."
+    },
+    "RoutingStrategy": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "rabitq",
+        "auto"
+      ],
+      "description": "Partition routing; auto is not a measured crossover."
+    },
+    "ByteSize": {
+      "description": "Byte size: an integer followed by B, KiB, MiB, GiB or TiB (bytes when omitted).",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)(B|KiB|MiB|GiB|TiB)?$"
+    },
+    "VersionCheck": {
+      "type": "string",
+      "enum": [
+        "interval",
+        "off",
+        "per-request"
+      ],
+      "description": "Version check modes."
+    },
+    "WriterConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "credentials": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment references resolved from encrypted credential records by workers.",
+          "default": {}
+        },
+        "worker_memory_max_bytes": {
+          "$ref": "#/$defs/ByteSize",
+          "description": "Per-worker committed-memory ceiling (RLIMIT_DATA); virtual address reservations are unrestricted.",
+          "default": "2GiB"
+        },
+        "purge_window": {
+          "$ref": "#/$defs/Duration",
+          "description": "Deleted or revoked content leaves old versions and the mirror within it.",
+          "default": "1d"
+        },
+        "version_grace": {
+          "$ref": "#/$defs/Duration",
+          "description": "Minimum time a version is kept after it stopped serving.",
+          "default": "1h"
+        },
+        "max_envelope_age": {
+          "$ref": "#/$defs/Duration",
+          "description": "Older pending envelopes are rejected (forcing a re-scan).",
+          "default": "3d"
+        },
+        "document_max_bytes": {
+          "$ref": "#/$defs/ByteSize",
+          "description": "Default per-document size limit; larger documents are quarantined.",
+          "default": "8MiB"
+        },
+        "envelope_max_rows": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1,
+          "default": 50000
+        },
+        "envelope_max_bytes": {
+          "$ref": "#/$defs/ByteSize",
+          "default": "256MiB"
+        },
+        "commit": {
+          "$ref": "#/$defs/CommitConfig",
+          "default": {
+            "merge_fts_segments": false,
+            "group_max_rows": 1000000,
+            "group_max_bytes": "4GiB",
+            "coalescing_timer": "1m",
+            "lease_ttl": "1m"
+          }
+        },
+        "maintenance": {
+          "$ref": "#/$defs/MaintenanceConfig",
+          "default": {
+            "step_max_duration": "5m"
+          }
+        },
+        "backpressure": {
+          "$ref": "#/$defs/BackpressureConfig",
+          "default": {
+            "max_pending_content_envelopes": 1000,
+            "max_pending_content_bytes": "16GiB"
+          }
+        },
+        "serve": {
+          "$ref": "#/$defs/WriterServeConfig",
+          "default": {
+            "committer": true
+          }
+        }
+      },
+      "description": "Writer settings: envelopes, commit, maintenance, retention."
+    },
+    "CommitConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "merge_fts_segments": {
+          "type": "boolean",
+          "description": "Merge lexical deltas before publication; off preserves incremental cost.",
+          "default": false
+        },
+        "group_max_rows": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1,
+          "default": 1000000
+        },
+        "group_max_bytes": {
+          "$ref": "#/$defs/ByteSize",
+          "default": "4GiB"
+        },
+        "coalescing_timer": {
+          "$ref": "#/$defs/Duration",
+          "description": "`fyrr writer serve` closes a group after this long.",
+          "default": "1m"
+        },
+        "lease_ttl": {
+          "$ref": "#/$defs/Duration",
+          "default": "1m"
+        }
+      },
+      "description": "Commit groups and the namespace lease."
+    },
+    "MaintenanceConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "step_max_duration": {
+          "$ref": "#/$defs/Duration",
+          "default": "5m"
+        }
+      },
+      "description": "Maintenance in bounded steps."
+    },
+    "BackpressureConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_pending_content_envelopes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1,
+          "default": 1000
+        },
+        "max_pending_content_bytes": {
+          "$ref": "#/$defs/ByteSize",
+          "default": "16GiB"
+        }
+      },
+      "description": "Content backpressure; permission, member and freshness work always passes."
+    },
+    "WriterServeConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "committer": {
+          "type": "boolean",
+          "description": "Run the committer role; switch off to keep batch `commit` jobs.",
+          "default": true
+        },
+        "admin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WriterAdminConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "The optional standing writer service."
+    },
+    "WriterAdminConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "listen": {
+          "type": "string"
+        },
+        "operator_token": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "tls_terminated": {
+          "type": "boolean",
+          "description": "Required for non-loopback listeners, which must sit behind a TLS proxy.",
+          "default": false
+        }
+      },
+      "required": [
+        "listen",
+        "operator_token"
+      ],
+      "description": "Optional writer administration; production uses a TLS-terminating proxy."
+    },
+    "SourceConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Source ID, stable for the life of the source.",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"
+        },
+        "type": {
+          "type": "string",
+          "description": "Connector provider name, e.g. `local-files`.",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+        },
+        "permissions": {
+          "$ref": "#/$defs/PermissionsMode",
+          "description": "`sync` maps the source's permissions; `fixed` uses `readers`.",
+          "default": "sync"
+        },
+        "readers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Reader tokens (`usr:<id>`, `grp:<id>`) of a fixed connection.",
+          "default": []
+        },
+        "intervals": {
+          "$ref": "#/$defs/SourceIntervals",
+          "default": {
+            "content": "15m",
+            "reconcile": "1d"
+          }
+        },
+        "document_max_bytes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ByteSize"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Overrides `writer.document_max_bytes`."
+        },
+        "row_warning": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "row_error": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "retention_days": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 1
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Sync scope; validated by the provider's schema.",
+          "default": {}
+        },
+        "settings": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Provider connection settings; secrets as `{ env = \"VAR\" }`.",
+          "default": {}
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "description": "One connector source (`[[sources]]`)."
+    },
+    "PermissionsMode": {
+      "type": "string",
+      "enum": [
+        "sync",
+        "fixed"
+      ],
+      "description": "Permissions mode of a connection."
+    },
+    "SourceIntervals": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "$ref": "#/$defs/Duration",
+          "default": "15m"
+        },
+        "permissions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Required for `sync` permissions, absent for `fixed`."
+        },
+        "members": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Membership snapshot interval; absent for `fixed`."
+        },
+        "reconcile": {
+          "$ref": "#/$defs/Duration",
+          "description": "Full-ID listing interval.",
+          "default": "1d"
+        }
+      },
+      "description": "When each of a source's syncs is due."
+    }
+  },
+  "x-fyrr-schema-version": "2.0"
+}

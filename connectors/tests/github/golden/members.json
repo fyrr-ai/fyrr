@@ -1,0 +1,24 @@
+[
+  {
+    "schema_version": "1.3",
+    "source_id": "testkit-source",
+    "kind": "members",
+    "cursor": {
+      "start": null,
+      "end": "{\"observed\":[1],\"repos\":{},\"scope\":\"a1c416fd91ed218fa0a083e1c3001675a97be567020cd434b1464903d48a8cfa\",\"v\":1}"
+    },
+    "body": {
+      "type": "principal_snapshot",
+      "snapshot_id": "4b935db2fe9c336d8d2e97fca9e7e351486714a7c8fafb721f0c1f3f3ce4ee33",
+      "part": 0,
+      "last": true,
+      "users": [
+        {
+          "id": "github.com:7",
+          "active": true
+        }
+      ],
+      "groups": []
+    }
+  }
+]

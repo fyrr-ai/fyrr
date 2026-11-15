@@ -1,0 +1,19 @@
+{
+  "query": null,
+  "limit": 50,
+  "output": "metadata",
+  "order": "updated_at",
+  "sources": null,
+  "source_types": [
+    "jira.issue"
+  ],
+  "projects": null,
+  "authors": [
+    "Ada Novak"
+  ],
+  "updated_after": null,
+  "updated_before": null,
+  "attributes": null,
+  "exclude": null,
+  "deadline_ms": null
+}

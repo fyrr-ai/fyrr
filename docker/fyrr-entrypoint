@@ -1,0 +1,16 @@
+#!/bin/sh
+# Entry point of the full fyrr image. With FYRR_PROVIDER_WHEELS naming a
+# mounted directory of wheels, installs them (offline, into the user site of
+# the non-root user, so the image's SDK satisfies their requirement) before
+# running fyrr; repeated starts are no-ops. Providers are trusted operator
+# code. A derived image (FROM fyrr, pip install) needs none of this.
+set -eu
+if [ -n "${FYRR_PROVIDER_WHEELS:-}" ]; then
+  python3 -m pip install --quiet --user --no-index --disable-pip-version-check \
+    --no-warn-script-location --find-links "$FYRR_PROVIDER_WHEELS" \
+    "$FYRR_PROVIDER_WHEELS"/*.whl >&2 || {
+    echo "fyrr-entrypoint: installing the provider wheels in $FYRR_PROVIDER_WHEELS failed" >&2
+    exit 1
+  }
+fi
+exec /usr/local/bin/fyrr "$@"

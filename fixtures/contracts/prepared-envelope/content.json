@@ -1,0 +1,78 @@
+{
+  "schema_version": "3.1",
+  "envelope_id": "env-ab0dc87cb67ccdbb62a36a806c0cd6c5",
+  "namespace": "acme",
+  "source_id": "jira-eng",
+  "kind": "content",
+  "sequence": 42,
+  "rejection_generation": 1,
+  "restore_sequence": 0,
+  "cursor": {
+    "start": "2026-09-30T09:00:00Z#page=3",
+    "end": "2026-09-30T10:00:00Z#page=1"
+  },
+  "advances_cursor": true,
+  "base_head": {
+    "content_publication_id": "pub-000041",
+    "content_sequence": 41,
+    "lance_version": 118
+  },
+  "created_at": "2026-09-30T10:00:03Z",
+  "payload": {
+    "type": "content",
+    "embedding": {
+      "model": "BAAI/bge-m3",
+      "dimensions": 1024,
+      "fingerprint": "sha256:6e344f82fb4dcaf18c9088486df6acb47676ced4cb1749a991249781afb5d8c8"
+    },
+    "chunk_profile": {
+      "name": "v5-whole-unit",
+      "max_unit_bytes": 16384,
+      "overlap_bytes": 0,
+      "digest": "sha256:daf02912c6aa996b6aaf1d74e9d62b7714dd2291e379f1d826341c090a3271a9"
+    },
+    "table_schema_version": "1.0",
+    "documents": [
+      {
+        "root_id": "ENG-1042",
+        "intent": "replace",
+        "source_revision": "2026-09-30T09:41:12.512Z",
+        "revision_order": 1759225272512,
+        "permission_revision": "scheme-17@2026-09-29",
+        "records": 2
+      },
+      {
+        "root_id": "ENG-977",
+        "intent": "delete",
+        "source_revision": "2026-09-30T09:50:00Z",
+        "records": 0
+      }
+    ],
+    "fragments": [
+      {
+        "rows": 2,
+        "files": [
+          {
+            "path": "data/7d1e4c2a-0b3f-4f8e-9a51-2c6d8e0f1a23.lance",
+            "size_bytes": 18734
+          }
+        ],
+        "lance_fragment": {
+          "id": 0,
+          "files": [
+            {
+              "path": "7d1e4c2a-0b3f-4f8e-9a51-2c6d8e0f1a23.lance",
+              "fields": [
+                0,
+                1,
+                2
+              ]
+            }
+          ],
+          "physical_rows": 2
+        },
+        "digest": "sha256:bc853d36e2f27c124554dd2ccd34ebadcd65f2cacd006483036ce9cec4b61d58"
+      }
+    ]
+  }
+}

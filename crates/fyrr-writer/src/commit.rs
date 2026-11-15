@@ -1,0 +1,780 @@
+//! Single-writer publication. The serving-head CAS is the sole visibility point.
+
+use crate::lease::LeaseGuard;
+use crate::prepare::{chunk_identity, put_immutable, store_params};
+use crate::{Result, WriterError};
+use chrono::Utc;
+use futures::TryStreamExt;
+use fyrr_core::config::{Config, ProcessEnvironment};
+use fyrr_core::envelope::*;
+use fyrr_core::identity::*;
+use fyrr_core::publication::*;
+use fyrr_core::write_contract;
+use fyrr_reader::embedding::{digest, identity};
+use fyrr_reader::storage::{dataset_uri, hash_principal, namespace_store};
+use lance::Dataset;
+use lance::dataset::transaction::Operation;
+use lance::index::DatasetIndexExt;
+use lance::index::vector::VectorIndexParams;
+use lance_index::optimize::OptimizeOptions;
+use lance_index::vector::{bq::RQBuildParams, ivf::builder::IvfBuildParams};
+use lance_index::{IndexType, scalar::ScalarIndexParams};
+use lance_linalg::distance::DistanceType;
+use object_store::path::Path;
+use object_store::{ObjectStore, ObjectStoreExt};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
+
+mod group;
+mod history;
+mod namespace;
+mod publication;
+
+pub(crate) use group::commit_one;
+pub(crate) use history::RestoreHistory;
+pub(crate) use namespace::configured_identity;
+pub use namespace::create;
+pub(crate) use publication::publish;
+
+pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<PreparedEnvelope>> {
+    let mut result = Vec::new();
+    let (paths, applied) = envelope_paths(config, head).await?;
+    let paths: Vec<_> = paths
+        .into_iter()
+        .filter(|path| {
+            !path
+                .filename()
+                .and_then(|n| n.strip_suffix(".json"))
+                .is_some_and(|id| applied.contains(id))
+        })
+        .collect();
+    for (_, envelope) in read_envelopes(config, &paths).await? {
+        if envelope.namespace != config.namespace.name {
+            return Err(WriterError::EnvelopeNamespaceInvalid);
+        }
+        result.push(envelope);
+    }
+    result.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
+    Ok(result)
+}
+
+pub async fn envelope_paths(
+    config: &Config,
+    head: &ServingHead,
+) -> Result<(Vec<Path>, BTreeSet<String>)> {
+    let (store, root) = namespace_store(config)?;
+    let (mut applied, rejected) = published_ids(config, head).await?;
+    applied.extend(rejected);
+    let paths: Vec<_> = store
+        .list(Some(&root.clone().join("envelopes")))
+        .try_collect()
+        .await?;
+    Ok((paths.into_iter().map(|p| p.location).collect(), applied))
+}
+
+pub async fn published_ids(
+    config: &Config,
+    head: &ServingHead,
+) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+    let (store, root) = namespace_store(config)?;
+    let mut applied = BTreeSet::new();
+    let mut rejected: BTreeSet<_> = head.rejected_envelope_ids.iter().cloned().collect();
+    // Every ancestor's receipts remain authoritative after subsequent publications.
+    let mut chain = fyrr_reader::storage::manifest_chain(
+        store,
+        root,
+        head.content.as_ref().map(|p| p.manifest.clone()),
+    );
+    while let Some(publication) = chain.try_next().await? {
+        applied.extend(publication.envelope_ids);
+        rejected.extend(publication.rejected_envelope_ids);
+    }
+    Ok((applied, rejected))
+}
+
+pub(crate) async fn rejection_markers(
+    config: &Config,
+    head: &ServingHead,
+) -> Result<Vec<RejectionMarker>> {
+    let (store, root) = namespace_store(config)?;
+    let (_, rejected) = published_ids(config, head).await?;
+    let mut markers = Vec::new();
+    for id in rejected {
+        markers.push(
+            fyrr_reader::storage::read_contract(
+                store.as_ref(),
+                &root.clone().join("rejections").join(format!("{id}.json")),
+            )
+            .await?,
+        );
+    }
+    if let Some(pointer) = &head.content {
+        let manifest: ContentManifest = fyrr_reader::storage::read_contract(
+            store.as_ref(),
+            &Path::from(format!("{root}/{}", pointer.manifest)),
+        )
+        .await?;
+        for path in &manifest.cursor_rewinds {
+            markers.push(
+                fyrr_reader::storage::read_contract(
+                    store.as_ref(),
+                    &Path::from(format!("{root}/{path}")),
+                )
+                .await?,
+            );
+        }
+    }
+    Ok(markers)
+}
+
+/// Consumption is proved by a published replacement read, never a cursor cache update.
+/// Cleanup keeps the latest applied complete read so this proof survives log cleanup.
+pub async fn unconsumed_rejections(
+    config: &Config,
+    head: &ServingHead,
+    applying: &[PreparedEnvelope],
+) -> Result<Vec<RejectionMarker>> {
+    let (store, root) = namespace_store(config)?;
+    let (applied, rejected) = published_ids(config, head).await?;
+    let mut reads = applying.to_vec();
+    let paths: Vec<_> = store
+        .list(Some(&root.clone().join("envelopes")))
+        .try_collect()
+        .await?;
+    for path in paths {
+        if path
+            .location
+            .filename()
+            .and_then(|n| n.strip_suffix(".json"))
+            .is_some_and(|id| applied.contains(id) && !rejected.contains(id))
+        {
+            reads.push(fyrr_reader::storage::read_contract(store.as_ref(), &path.location).await?);
+        }
+    }
+    let mut unresolved = Vec::new();
+    for marker in rejection_markers(config, head).await? {
+        if !reads.iter().any(|e| {
+            history::replacement_matches(
+                &marker,
+                &e.source_id,
+                e.kind,
+                e.rejection_generation,
+                e.restore_sequence,
+            ) && crate::apply::complete_read(e)
+        }) {
+            unresolved.push(marker);
+        }
+    }
+    Ok(unresolved)
+}
+
+/// A receipt is a projection of a published manifest, never a stored artifact.
+#[derive(Debug, serde::Serialize)]
+pub struct CommitReceipt {
+    pub lance_version: u64,
+    pub publication_id: Option<String>,
+    pub envelope_ids: Vec<String>,
+}
+
+/// Recover a lost receipt even after a subsequent publication moved the head.
+pub async fn receipt(config: &Config, envelope_id: &str) -> Result<CommitReceipt> {
+    if !fyrr_core::limits::prefixed_hex(envelope_id, "env-", 32) {
+        return Err(WriterError::EnvelopeIdInvalid);
+    }
+    let (store, root) = namespace_store(config)?;
+    let head: ServingHead =
+        fyrr_reader::storage::read_contract(store.as_ref(), &root.clone().join("head.json"))
+            .await?;
+    if head.namespace != config.namespace.name {
+        return Err(WriterError::PublicationNamespaceInvalid);
+    }
+    let mut chain =
+        fyrr_reader::storage::manifest_chain(store, root, head.content.map(|p| p.manifest));
+    while let Some(manifest) = chain.try_next().await? {
+        if manifest.namespace != config.namespace.name {
+            return Err(WriterError::PublicationNamespaceInvalid);
+        }
+        if manifest.envelope_ids.iter().any(|id| id == envelope_id) {
+            return Ok(CommitReceipt {
+                lance_version: manifest.lance_version,
+                publication_id: Some(manifest.publication_id),
+                envelope_ids: manifest.envelope_ids,
+            });
+        }
+    }
+    Err(WriterError::ReceiptUnpublished)
+}
+
+/// A service stops only between fully published groups, then releases its lease.
+pub async fn commit_until_stopped(
+    config: &Config,
+    stage_timings: bool,
+    stop: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<CommitReceipt> {
+    crate::lease::LeaseGuard::with(config, |lease| async move {
+        drain(config, stage_timings, &lease, stop).await
+    })
+    .await
+}
+
+/// Maintenance services authorization at every boundary without draining content backlog.
+/// Share bounded history evidence without changing either drain policy:
+/// restore snapshots initial arrivals; maintenance drains until quiet.
+pub(crate) async fn drain_cached_authorization(
+    config: &Config,
+    lease: &LeaseGuard,
+    history: &mut RestoreHistory,
+    pending: Vec<PreparedEnvelope>,
+    snapshot: bool,
+) -> Result<usize> {
+    Box::pin(drain_authorization_held(
+        config,
+        lease,
+        snapshot,
+        Some(history),
+        Some(pending),
+    ))
+    .await
+}
+
+async fn drain_authorization_held(
+    config: &Config,
+    lease: &LeaseGuard,
+    snapshot: bool,
+    mut history: Option<&mut RestoreHistory>,
+    initial: Option<Vec<PreparedEnvelope>>,
+) -> Result<usize> {
+    let mut groups = 0;
+    crate::envelopes::discard_purged(config, lease).await?;
+    let mut head = lease.head().await?;
+    if head.content.is_none() {
+        return Ok(groups);
+    }
+    let mut remaining = match initial {
+        Some(pending) => pending,
+        None => pending(config, &head)
+            .await?
+            .into_iter()
+            .filter(|e| e.kind.is_authorization())
+            .collect(),
+    };
+    let mut snapshot_ids: BTreeSet<_> = remaining.iter().map(|e| e.envelope_id.clone()).collect();
+    loop {
+        let group = if let Some(h) = history.as_deref_mut() {
+            h.refresh(config, &head).await?;
+            let markers = h.rejection_markers(config).await?;
+            commit_group_with_rejections(config, remaining, &head, h.unconsumed(&markers, &[]))
+                .await?
+        } else {
+            commit_group(config, remaining, &head).await?
+        };
+        if group.is_empty() {
+            return Ok(groups);
+        }
+        let selected: BTreeSet<_> = group.iter().map(|e| e.envelope_id.clone()).collect();
+        commit_one(config, false, lease, group, history.as_deref_mut()).await?;
+        #[cfg(test)]
+        crate::maintenance::restore_test_drain();
+        groups += 1;
+        crate::envelopes::discard_purged(config, lease).await?;
+        head = lease.head().await?;
+        if let Some(h) = history.as_deref_mut() {
+            h.refresh(config, &head).await?;
+        }
+        if snapshot {
+            snapshot_ids.retain(|id| !selected.contains(id));
+            if snapshot_ids.is_empty() {
+                return Ok(groups);
+            }
+        }
+        remaining = match history.as_deref_mut() {
+            Some(h) => h.pending(config, true).await?,
+            None => pending(config, &head).await?,
+        }
+        .into_iter()
+        .filter(|e| {
+            e.kind.is_authorization() && (!snapshot || snapshot_ids.contains(&e.envelope_id))
+        })
+        .collect();
+    }
+}
+
+async fn drain(
+    config: &Config,
+    stage_timings: bool,
+    lease: &LeaseGuard,
+    stop: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<CommitReceipt> {
+    let mut next = None;
+    loop {
+        crate::envelopes::discard_purged(config, lease).await?;
+        let head = lease.head().await?;
+        let stopped = stop.is_some_and(|s| s.load(std::sync::atomic::Ordering::Acquire));
+        let group = if stopped {
+            Vec::new()
+        } else {
+            let envelopes = match next.take() {
+                Some(envelopes) => envelopes,
+                None => pending(config, &head).await?,
+            };
+            commit_group(config, envelopes, &head).await?
+        };
+        let empty = group.is_empty();
+        if !stopped {
+            commit_one(config, stage_timings, lease, group, None).await?;
+        }
+        if stopped
+            || stop.is_some_and(|s| s.load(std::sync::atomic::Ordering::Acquire))
+            || empty
+            || lease.head().await?.content.is_none()
+            || {
+                next = Some(pending(config, &lease.head().await?).await?);
+                next.as_ref().is_some_and(Vec::is_empty)
+            }
+        {
+            let head = lease.head().await?;
+            let Some(pointer) = head.content else {
+                return Ok(CommitReceipt {
+                    lance_version: 0,
+                    publication_id: None,
+                    envelope_ids: Vec::new(),
+                });
+            };
+            let (store, root) = namespace_store(config)?;
+            let manifest: ContentManifest = fyrr_reader::storage::read_contract(
+                store.as_ref(),
+                &Path::from(format!("{root}/{}", pointer.manifest)),
+            )
+            .await?;
+            return Ok(CommitReceipt {
+                lance_version: manifest.lance_version,
+                publication_id: Some(manifest.publication_id),
+                envelope_ids: manifest.envelope_ids,
+            });
+        }
+    }
+}
+
+pub(crate) async fn commit_group(
+    config: &Config,
+    pending: Vec<PreparedEnvelope>,
+    head: &ServingHead,
+) -> Result<Vec<PreparedEnvelope>> {
+    let unresolved = unconsumed_rejections(config, head, &[]).await?;
+    commit_group_with_rejections(config, pending, head, unresolved).await
+}
+async fn commit_group_with_rejections(
+    config: &Config,
+    mut pending: Vec<PreparedEnvelope>,
+    head: &ServingHead,
+    unresolved: Vec<RejectionMarker>,
+) -> Result<Vec<PreparedEnvelope>> {
+    let blocked = blocked_sources(&unresolved);
+    pending.retain(|e| {
+        e.kind != fyrr_core::connector::SyncKind::Content || !blocked.contains(&e.source_id)
+    });
+    let first = head.content.is_none()
+        && pending
+            .iter()
+            .any(|e| matches!(&e.payload, EnvelopePayload::Content(p) if !p.fragments.is_empty()));
+    let rotation = head.content.as_ref().map_or(0, |p| p.sequence);
+    // Rotate source order using the published sequence; no separate fairness state.
+    let order: std::collections::BTreeMap<_, _> = pending
+        .iter()
+        .map(|e| e.source_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| (s, i))
+        .collect();
+    let count = order.len().max(1);
+    // Reject expired authorization inputs before later attestations of either kind.
+    // Otherwise a permission heartbeat can advance freshness before a queued member
+    // rejection becomes visible. Valid authorization reads still precede content.
+    // Source fairness applies after priority; valid sequences stay ordered within a kind.
+    // Keep age priorities fixed while the sorter compares envelopes.
+    let now = Utc::now();
+    pending.sort_by_key(|e| {
+        (
+            if e.kind.is_authorization()
+                && (now - e.created_at)
+                    .to_std()
+                    .is_ok_and(|age| age > config.writer.max_envelope_age.as_duration())
+            {
+                0
+            } else if unresolved.iter().any(|m| {
+                m.source_id == e.source_id
+                    && m.kind == e.kind
+                    && e.rejection_generation > m.rejection_generation
+            }) {
+                1
+            } else {
+                match e.kind {
+                    fyrr_core::connector::SyncKind::Permissions => 2,
+                    fyrr_core::connector::SyncKind::Members => 3,
+                    fyrr_core::connector::SyncKind::Reconcile => 4,
+                    fyrr_core::connector::SyncKind::Content => 5,
+                }
+            },
+            (order[&e.source_id] + count - (crate::narrow_usize(rotation) % count)) % count,
+            e.sequence,
+        )
+    });
+    if first {
+        return Ok(pending);
+    } // Only the empty namespace's first IVF training.
+    let mut group: Vec<PreparedEnvelope> = Vec::new();
+    let mut rows = 0u64;
+    let mut bytes = 0u64;
+    let mut sources = BTreeSet::new();
+    // Select at most one envelope per source per round. A document stays whole.
+    while !pending.is_empty() {
+        let kind = pending[0].kind;
+        let position = pending
+            .iter()
+            .position(|e| e.kind == kind && !sources.contains(&e.source_id));
+        let Some(position) = position else {
+            sources.clear();
+            continue;
+        };
+        if !group.is_empty() && pending[position].kind != group[0].kind {
+            break;
+        }
+        let envelope = &pending[position];
+        let (next_rows, next_bytes) = envelope_work(config, head, envelope).await?;
+        if next_rows > config.writer.commit.group_max_rows
+            || next_bytes > config.writer.commit.group_max_bytes.as_u64()
+        {
+            // An envelope prepared under larger configured bounds is committed alone and
+            // rejected (envelope_bounds_exceeded); its source re-fetches it through the
+            // current bounded preparer. The group applies no content; CAS publishes the rejection.
+            if group.is_empty() {
+                return Ok(vec![pending.remove(position)]);
+            }
+            break;
+        }
+        if rows
+            .checked_add(next_rows)
+            .is_none_or(|n| n > config.writer.commit.group_max_rows)
+            || bytes
+                .checked_add(next_bytes)
+                .is_none_or(|n| n > config.writer.commit.group_max_bytes.as_u64())
+        {
+            break;
+        }
+        rows += next_rows;
+        bytes += next_bytes;
+        sources.insert(envelope.source_id.clone());
+        group.push(pending.remove(position));
+        // A final listing can derive a full bounded group of deletes.
+        if kind == fyrr_core::connector::SyncKind::Reconcile {
+            break;
+        }
+    }
+    Ok(group)
+}
+
+pub(crate) async fn apply_staged(
+    config: &Config,
+    dataset: &mut Dataset,
+    lease: &LeaseGuard,
+    lineage: &mut CommitLineage,
+    keys: Vec<String>,
+    fragments: Vec<serde_json::Value>,
+) -> Result<()> {
+    if keys.is_empty() && fragments.is_empty() {
+        return Ok(());
+    }
+    lease.head().await?;
+    let before = dataset.version().version;
+    let (updated_fragments, removed_fragment_ids) = if keys.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        let staged =
+            lance::dataset::DeleteBuilder::new(Arc::new(dataset.clone()), keys.join(" OR "))
+                .execute_uncommitted()
+                .await
+                .map_err(|_| WriterError::DeleteStageFailed)?;
+        let Operation::Delete {
+            updated_fragments,
+            deleted_fragment_ids,
+            ..
+        } = staged.transaction.operation
+        else {
+            return Err(WriterError::TransactionInvalid);
+        };
+        (updated_fragments, deleted_fragment_ids)
+    };
+    let new_fragments = fragments
+        .into_iter()
+        .map(serde_json::from_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| WriterError::PreparedFragmentInvalid)?;
+    // Vertical Update: existing physical fields are unchanged; only delete vectors move.
+    // New row values live in new_fragments, whose indexes are built as deltas.
+    let fields_modified = Vec::new();
+    let operation = Operation::Update {
+        removed_fragment_ids,
+        updated_fragments,
+        new_fragments,
+        fields_modified,
+        compacted_sstables: Vec::new(),
+        fields_for_preserving_frag_bitmap: Vec::new(),
+        update_mode: None,
+        inserted_rows_filter: None,
+        updated_fragment_offsets: None,
+    };
+    *dataset = native_step(
+        lease,
+        Dataset::commit(
+            fyrr_reader::storage::dataset_uri(config).as_str(),
+            operation,
+            Some(before),
+            Some(store_params(config)?),
+            None,
+            Arc::new(lance::session::Session::default()),
+            false,
+        ),
+        WriterError::NativeUpdateFailed,
+    )
+    .await?;
+    record_transaction(dataset, lineage, before).await
+}
+
+pub(crate) async fn record_transaction(
+    dataset: &Dataset,
+    lineage: &mut CommitLineage,
+    before: u64,
+) -> Result<()> {
+    let version = dataset.version().version;
+    if version == before {
+        return Ok(());
+    }
+    if version != before.checked_add(1).ok_or(WriterError::LineageInvalid)? {
+        return Err(WriterError::ForeignLineage);
+    }
+    let tx = dataset
+        .read_version_transaction(version)
+        .await?
+        .transaction
+        .ok_or(WriterError::LineageInvalid)?;
+    if tx.read_version != before {
+        return Err(WriterError::ForeignLineage);
+    }
+    lineage.transactions.push(LineageTransaction {
+        version,
+        transaction_id: tx.uuid,
+    });
+    Ok(())
+}
+
+async fn verify_lineage(dataset: &Dataset, lineage: &CommitLineage) -> Result<()> {
+    if dataset.latest_version_id().await? != dataset.version().version {
+        return Err(WriterError::ForeignLineage);
+    }
+    let mut previous = lineage
+        .recovery_version
+        .map_or(lineage.base_version, |v| v - 1);
+    for (position, recorded) in lineage.transactions.iter().enumerate() {
+        let tx = dataset
+            .read_version_transaction(recorded.version)
+            .await?
+            .transaction
+            .ok_or(WriterError::LineageInvalid)?;
+        if tx.uuid != recorded.transaction_id || tx.read_version != previous {
+            return Err(WriterError::ForeignLineage);
+        }
+        if position == 0
+            && lineage.recovery_version.is_some()
+            && !matches!(tx.operation, Operation::Restore { version } if version == lineage.base_version)
+        {
+            return Err(WriterError::ForeignLineage);
+        }
+        previous = recorded.version;
+    }
+    Ok(())
+}
+
+pub async fn delete(
+    config: &Config,
+    export: Option<&std::path::Path>,
+) -> Result<serde_json::Value> {
+    let (store, root) = namespace_store(config)?;
+    let head = fyrr_reader::storage::optional_head(config).await?;
+    if head.is_none() {
+        return Ok(serde_json::json!({"deleted":true}));
+    }
+    let objects: Vec<_> = store.list(Some(&root)).try_collect().await?;
+    let Some(export) = export else {
+        return Ok(
+            serde_json::json!({"dry_run":true,"objects":objects.len(),"bytes":objects.iter().map(|o|o.size).sum::<u64>(),"requires_verified_export":true}),
+        );
+    };
+    for object in objects {
+        let relative = object
+            .location
+            .prefix_match(&root)
+            .ok_or(WriterError::ExportInvalid)?
+            .map(|p| p.as_ref().to_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        let local = export.join(relative);
+        let bytes = store.get(&object.location).await?.bytes().await?;
+        let saved = std::fs::read(local).map_err(|_| WriterError::ExportInvalid)?;
+        if digest(&saved) != digest(&bytes) {
+            return Err(WriterError::ExportInvalid);
+        }
+    }
+    store.delete(&root.join("head.json")).await?;
+    Ok(serde_json::json!({"deleted":true,"retained_data":true}))
+}
+
+fn fixed_grants(config: &Config) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
+    config
+        .sources
+        .iter()
+        .filter(|s| s.permissions == fyrr_core::config::PermissionsMode::Fixed)
+        .map(|s| {
+            Ok((
+                s.id.clone(),
+                s.readers
+                    .iter()
+                    .map(|r| hash_principal(config, "tok", r))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        })
+        .collect()
+}
+
+async fn envelope_work(
+    config: &Config,
+    head: &ServingHead,
+    envelope: &PreparedEnvelope,
+) -> Result<(u64, u64)> {
+    Ok(match &envelope.payload {
+        EnvelopePayload::Content(p) => {
+            let rows = p.fragments.iter().try_fold(0u64, |sum, f| {
+                sum.checked_add(f.rows)
+                    .ok_or(WriterError::EnvelopeBoundsInvalid)
+            })?;
+            let bytes = p.fragments.iter().flat_map(|f| &f.files).try_fold(
+                write_contract(envelope).len() as u64,
+                |sum, f| {
+                    sum.checked_add(f.size_bytes)
+                        .ok_or(WriterError::EnvelopeBoundsInvalid)
+                },
+            )?;
+            let deletes = p
+                .documents
+                .iter()
+                .filter(|d| d.intent == DocumentIntent::Delete)
+                .count() as u64;
+            (
+                rows.checked_add(deletes)
+                    .ok_or(WriterError::EnvelopeBoundsInvalid)?,
+                bytes,
+            )
+        }
+        EnvelopePayload::Permissions(p) => (
+            crate::apply::permission_work(config, head, &envelope.source_id, p).await?,
+            write_contract(envelope).len() as u64,
+        ),
+        EnvelopePayload::Members(p) => (p.principals, write_contract(envelope).len() as u64),
+        EnvelopePayload::Reconcile(p) => (
+            p.root_ids.len() as u64,
+            write_contract(envelope).len() as u64,
+        ),
+    })
+}
+
+#[allow(clippy::print_stderr)]
+fn stage(enabled: bool, name: &str, start: std::time::Instant) {
+    if enabled {
+        eprintln!(
+            "writer_stage stage={name} elapsed_us={} end_us={}",
+            start.elapsed().as_micros(),
+            Utc::now().timestamp_micros()
+        );
+    }
+}
+
+pub(crate) async fn native_step<T>(
+    lease: &LeaseGuard,
+    work: impl std::future::Future<Output = lance::Result<T>>,
+    error: WriterError,
+) -> Result<T> {
+    lease.head().await?;
+    let result = work.await;
+    lease.head().await?;
+    result.map_err(|_| error)
+}
+
+const INDEXES: &[(&str, &str, IndexType, &str)] = &[
+    ("vector", "vector_idx", IndexType::Vector, "ivf_rq"),
+    ("readers", "readers_idx", IndexType::LabelList, "label_list"),
+    ("record_id", "record_id_idx", IndexType::BTree, "btree"),
+    ("root_id", "root_id_idx", IndexType::BTree, "btree"),
+    ("source_id", "source_id_idx", IndexType::Bitmap, "bitmap"),
+    ("source_uri", "source_uri_idx", IndexType::BTree, "btree"),
+    (
+        "source_type",
+        "source_type_idx",
+        IndexType::Bitmap,
+        "bitmap",
+    ),
+    ("project", "project_idx", IndexType::Bitmap, "bitmap"),
+    ("author", "author_idx", IndexType::Bitmap, "bitmap"),
+    ("updated_at", "updated_at_idx", IndexType::BTree, "btree"),
+    (
+        "attributes",
+        "attributes_idx",
+        IndexType::LabelList,
+        "label_list",
+    ),
+    (
+        "searchable_text",
+        "fts_idx",
+        IndexType::Inverted,
+        "inverted",
+    ),
+];
+
+fn source_freshness<'a>(head: &'a mut ServingHead, source: &str) -> &'a mut SourceFreshness {
+    let index = head
+        .freshness
+        .sources
+        .iter()
+        .position(|f| f.source_id == source)
+        .unwrap_or_else(|| {
+            head.freshness.sources.push(SourceFreshness {
+                source_id: source.into(),
+                permissions_read_at: chrono::DateTime::UNIX_EPOCH,
+                members_read_at: None,
+            });
+            head.freshness.sources.len() - 1
+        });
+    &mut head.freshness.sources[index]
+}
+
+pub(crate) async fn read_envelopes(
+    config: &Config,
+    paths: &[Path],
+) -> Result<Vec<(Path, PreparedEnvelope)>> {
+    let (store, _) = namespace_store(config)?;
+    let mut envelopes = Vec::new();
+    for path in paths {
+        envelopes.push((
+            path.clone(),
+            fyrr_reader::storage::read_contract(store.as_ref(), path).await?,
+        ));
+    }
+    Ok(envelopes)
+}
+
+fn blocked_sources(rejections: &[RejectionMarker]) -> BTreeSet<String> {
+    rejections
+        .iter()
+        .filter(|marker| marker.kind.is_authorization())
+        .map(|marker| marker.source_id.clone())
+        .collect()
+}

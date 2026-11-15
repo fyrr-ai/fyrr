@@ -1,0 +1,434 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "publication_id": {
+      "type": "string"
+    },
+    "sequence": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "description": "Monotonic content publication sequence (listing watermarks use it)."
+    },
+    "previous_publication_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lance_version": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "description": "Exact Lance version, including its FTS index."
+    },
+    "committed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "maintenance_completed_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "Last completed maintenance, inherited by ordinary publications."
+    },
+    "embedding": {
+      "$ref": "#/$defs/EmbeddingIdentity"
+    },
+    "chunk_profile": {
+      "$ref": "#/$defs/ChunkProfileIdentity"
+    },
+    "fts": {
+      "$ref": "#/$defs/FtsSettings"
+    },
+    "retrieval_policy_digest": {
+      "type": "string",
+      "description": "Digest of the retrieval policy, including the result composition."
+    },
+    "indexes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/IndexIdentity"
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/FileRef"
+      },
+      "description": "Immutable files of this version, relative to the dataset root."
+    },
+    "envelope_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Envelopes this publication committed."
+    },
+    "lineage": {
+      "$ref": "#/$defs/CommitLineage",
+      "description": "Exact Lance transactions made by the leased holder."
+    },
+    "identity": {
+      "$ref": "#/$defs/GenerationPointer",
+      "description": "Pins immutable membership/container inputs through the identity artifact."
+    },
+    "policy": {
+      "$ref": "#/$defs/GenerationPointer"
+    },
+    "rejected_envelope_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "cursor_rewinds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Immutable restore rewind marker paths; visible only through this publication."
+    },
+    "incarnation": {
+      "type": "string",
+      "description": "The incarnation of the namespace that published this version, copied\nfrom the serving head."
+    }
+  },
+  "required": [
+    "schema_version",
+    "namespace",
+    "publication_id",
+    "sequence",
+    "lance_version",
+    "committed_at",
+    "embedding",
+    "chunk_profile",
+    "fts",
+    "retrieval_policy_digest",
+    "indexes",
+    "files",
+    "envelope_ids",
+    "lineage",
+    "identity",
+    "policy",
+    "incarnation"
+  ],
+  "description": "A content publication manifest.",
+  "title": "ContentManifest",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SchemaVersion": {
+      "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "EmbeddingIdentity": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "dimensions": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "fingerprint": {
+          "type": "string",
+          "description": "Digest of the model settings and text transformation (prefix,\nnormalization) that keys the embedding cache."
+        },
+        "settings": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EmbeddingSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Absent in legacy publications: OpenAI-compatible, shared prefix only.\nDefault BGE-M3 identities retain their original serialized bytes."
+        }
+      },
+      "required": [
+        "model",
+        "dimensions",
+        "fingerprint"
+      ],
+      "description": "The embedding identity bound into envelopes and publications."
+    },
+    "EmbeddingSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_style": {
+          "$ref": "#/$defs/EmbeddingProfile"
+        },
+        "prefix": {
+          "type": "string",
+          "maxLength": 4096,
+          "x-maxUtf8Bytes": 4096
+        },
+        "roles": {
+          "$ref": "#/$defs/EmbeddingRoles"
+        },
+        "send_dimensions": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "api_style",
+        "prefix",
+        "roles",
+        "send_dimensions"
+      ],
+      "description": "Vector-affecting settings recorded with a publication's model/dimensions."
+    },
+    "EmbeddingProfile": {
+      "type": "string",
+      "enum": [
+        "openai-compatible"
+      ],
+      "description": "Supported embedding provider protocols."
+    },
+    "EmbeddingRoles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "document": {
+          "$ref": "#/$defs/EmbeddingRole",
+          "default": {}
+        },
+        "query": {
+          "$ref": "#/$defs/EmbeddingRole",
+          "default": {}
+        }
+      }
+    },
+    "EmbeddingRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prefix": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Added after the shared prefix, before the unchanged input text.",
+          "maxLength": 4096,
+          "x-maxUtf8Bytes": 4096
+        },
+        "input_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Sent as `input_type` only when configured.",
+          "minLength": 1,
+          "maxLength": 128,
+          "x-maxUtf8Bytes": 128
+        }
+      }
+    },
+    "ChunkProfileIdentity": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "max_unit_bytes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "overlap_bytes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "max_unit_bytes",
+        "overlap_bytes",
+        "digest"
+      ],
+      "description": "The chunk profile identity."
+    },
+    "FtsSettings": {
+      "type": "object",
+      "properties": {
+        "tokenizer": {
+          "type": "string"
+        },
+        "max_token_length": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "lowercase": {
+          "type": "boolean"
+        },
+        "stem": {
+          "type": "boolean"
+        },
+        "remove_stop_words": {
+          "type": "boolean"
+        },
+        "ascii_folding": {
+          "type": "boolean"
+        },
+        "with_position": {
+          "type": "boolean",
+          "description": "Positional postings; false while there is no phrase scoring."
+        }
+      },
+      "required": [
+        "tokenizer",
+        "max_token_length",
+        "lowercase",
+        "stem",
+        "remove_stop_words",
+        "ascii_folding",
+        "with_position"
+      ],
+      "description": "FTS analyzer settings, part of the publication identity."
+    },
+    "IndexIdentity": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "description": "`ivf_rq`, `fts`, `btree`, `bitmap` or `label_list`."
+        },
+        "column": {
+          "type": "string"
+        },
+        "uuid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "column",
+        "uuid"
+      ],
+      "description": "One index of the published version."
+    },
+    "FileRef": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "path",
+        "size_bytes"
+      ],
+      "description": "A file with its size, for accounting and the mirror."
+    },
+    "CommitLineage": {
+      "type": "object",
+      "properties": {
+        "holder": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "base_version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "recovery_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "A recovery Restore supersedes unpublished history before this boundary."
+        },
+        "transactions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LineageTransaction"
+          }
+        }
+      },
+      "required": [
+        "holder",
+        "epoch",
+        "base_version",
+        "transactions"
+      ],
+      "description": "Publication-local fencing evidence, immutable with the content manifest."
+    },
+    "LineageTransaction": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "transaction_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "transaction_id"
+      ],
+      "description": "Identity of one actual Lance transaction, never an inferred version range."
+    },
+    "GenerationPointer": {
+      "type": "object",
+      "properties": {
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "object": {
+          "type": "string",
+          "description": "Object key, relative to the namespace root."
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "object",
+        "digest"
+      ],
+      "description": "Points at one immutable generation of a policy or identity artifact."
+    }
+  },
+  "x-fyrr-contract": "content-manifest",
+  "x-fyrr-schema-version": "2.2"
+}

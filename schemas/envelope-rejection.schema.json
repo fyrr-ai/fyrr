@@ -1,0 +1,74 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "envelope_id": {
+      "type": "string"
+    },
+    "source_id": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/SyncKind"
+    },
+    "sequence": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "rejection_generation": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "restore_sequence": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "description": "Latest manifest-authorized restore reset consumed by this log/cache entry."
+    },
+    "start_cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "envelope_id",
+    "source_id",
+    "kind",
+    "sequence",
+    "rejection_generation",
+    "restore_sequence",
+    "reason"
+  ],
+  "description": "Immutable envelope-log rejection; a later generation consumes it.",
+  "title": "RejectionMarker",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SchemaVersion": {
+      "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "SyncKind": {
+      "type": "string",
+      "enum": [
+        "content",
+        "permissions",
+        "members",
+        "reconcile"
+      ],
+      "description": "Which of a source's independent syncs produced a batch."
+    }
+  },
+  "x-fyrr-contract": "envelope-rejection",
+  "x-fyrr-schema-version": "3.1"
+}

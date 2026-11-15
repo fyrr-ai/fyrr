@@ -1,0 +1,913 @@
+//! Real executable + real S3 or local storage: namespace, ingest, pinned
+//! serving and failure boundaries.
+#![cfg(feature = "writer")]
+
+mod common;
+
+#[path = "dense_path/block4.rs"]
+mod block4;
+#[path = "dense_path/coordination.rs"]
+mod coordination;
+#[path = "dense_path/corrections.rs"]
+mod corrections;
+#[path = "dense_path/cutoff.rs"]
+mod cutoff;
+#[path = "dense_path/directory_ops.rs"]
+mod directory_ops;
+#[path = "dense_path/embedding.rs"]
+mod embedding;
+#[path = "dense_path/github.rs"]
+mod github;
+#[path = "dense_path/google_drive.rs"]
+mod google_drive;
+#[path = "dense_path/head_diagnostics.rs"]
+mod head_diagnostics;
+#[path = "dense_path/history_integrity.rs"]
+mod history_integrity;
+#[path = "dense_path/http_mcp.rs"]
+mod http_mcp;
+#[path = "dense_path/identity.rs"]
+mod identity;
+#[path = "dense_path/incremental.rs"]
+mod incremental;
+#[path = "dense_path/index_errors.rs"]
+mod index_errors;
+#[path = "dense_path/jira.rs"]
+mod jira;
+#[path = "dense_path/local_storage.rs"]
+mod local_storage;
+#[path = "dense_path/maintenance.rs"]
+mod maintenance;
+#[path = "dense_path/mirror_identity.rs"]
+mod mirror_identity;
+#[path = "dense_path/notion.rs"]
+mod notion;
+#[path = "dense_path/rerank.rs"]
+mod rerank;
+#[path = "dense_path/retrieval.rs"]
+mod retrieval;
+#[path = "dense_path/slack.rs"]
+mod slack;
+#[path = "dense_path/tools.rs"]
+mod tools;
+
+use common::embedding::{FixtureRoot, configure as configure_embedding};
+use fyrr_core::publication::{ContentManifest, PolicyArtifact, ServingHead};
+use fyrr_core::{Contract, parse_contract, write_contract};
+use fyrr_reader::embedding::digest;
+use object_store::ObjectStoreExt;
+use serde_json::{Value, json};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+
+fn run(config: &Path, args: &[&str]) -> Output {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    Command::new("bash")
+        .args([
+            "-c",
+            "umask 022; exec \"$@\"",
+            "fyrr-test",
+            env!("CARGO_BIN_EXE_fyrr"),
+        ])
+        .arg("--config")
+        .arg(config)
+        .args(args)
+        .env("VIRTUAL_ENV", root.join("connectors/.venv"))
+        .env("PYTHONPATH", root.join("crates/fyrr/tests/providers"))
+        .output()
+        .expect("execute fyrr")
+}
+fn success(config: &Path, args: &[&str]) -> Value {
+    let output = run(config, args);
+    assert!(
+        output.status.success(),
+        "{args:?}: status={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("JSON output")
+}
+
+fn initialize_stdio(input: &mut impl Write, output: &mut impl BufRead) {
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":"initialize","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"fyrr-tests","version":"1"}}})).unwrap();
+    input.flush().unwrap();
+    let mut line = String::new();
+    output.read_line(&mut line).unwrap();
+    assert!(serde_json::from_str::<Value>(&line).unwrap()["result"].is_object());
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )
+    .unwrap();
+    input.flush().unwrap();
+}
+
+/// The storage a fixture publishes to; scenarios that hold for both take it
+/// as a parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Backend {
+    /// The RustFS fixture of `scripts/s3-fixture`.
+    S3,
+    /// A `file://` directory next to the fixture root, created by fyrr.
+    Local,
+}
+
+fn setup() -> (PathBuf, FixtureRoot) {
+    setup_on(Backend::S3)
+}
+
+fn setup_on(backend: Backend) -> (PathBuf, FixtureRoot) {
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "dense-{}-{}-{:?}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_micros(),
+        std::thread::current().id()
+    ));
+    setup_at_on(root, backend)
+}
+
+fn setup_at_on(root: PathBuf, backend: Backend) -> (PathBuf, FixtureRoot) {
+    let root = FixtureRoot::new(root);
+    let sources = root.join("sources");
+    std::fs::create_dir_all(&sources).expect("fixture directory");
+    for row in 0..768 {
+        let text = format!("fixture document {row}");
+        std::fs::write(sources.join(format!("{row}.txt")), &text).expect("fixture text");
+        let vector: Vec<f32> = (0..1024)
+            .map(|d| (((row + 1) * (d + 7)) as f32).sin())
+            .collect();
+        root.embedding.insert_both(&text, vector.clone());
+        if row == 0 {
+            root.embedding.insert_both("fixture query", vector.clone());
+            root.embedding.insert_both("dense-only query", vector);
+        }
+    }
+    let run_id = root.file_name().expect("run id").to_string_lossy();
+    // Local storage lives outside the root, so the per-host copies of the
+    // configuration, which move paths under the root, share it.
+    let (storage, secret) = match backend {
+        Backend::S3 => {
+            let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").expect("scripts/s3-fixture env");
+            let bucket = std::env::var("FYRR_TEST_S3_BUCKET").expect("scripts/s3-fixture env");
+            (
+                format!(
+                    "uri = \"s3://{bucket}/dense-{run_id}\"\nendpoint = \"{endpoint}\"\n\
+                     allow_http = true\n\
+                     access_key_id = {{ env = \"FYRR_TEST_S3_ACCESS_KEY_ID\" }}\n\
+                     secret_access_key = {{ env = \"FYRR_TEST_S3_SECRET_ACCESS_KEY\" }}"
+                ),
+                "FYRR_TEST_S3_SECRET_ACCESS_KEY",
+            )
+        }
+        Backend::Local => (
+            format!(
+                "uri = \"file://{}\"",
+                root.with_file_name(format!("storage-{run_id}")).display()
+            ),
+            "FYRR_TEST_LOCAL_SECRET",
+        ),
+    };
+    let config = root.join("fyrr.toml");
+    let text = format!(
+        r#"
+[namespace]
+name = "dense-fixture"
+[storage]
+{storage}
+[embedding]
+endpoint = "{}"
+reader_live = true
+api_key = {{ env = "{secret}" }}
+local_cache = "{}"
+max_retries = 0
+spend = {{ limit_microusd = 1000000, max_call_microusd = 10 }}
+[identity]
+stdio_user = "fixture-subject"
+stdio_readers = ["grp:allow"]
+hashing_key = {{ env = "{secret}" }}
+encryption_key = {{ env = "FYRR_TEST_ENCRYPTION_KEY" }}
+[reader]
+nprobes = 1
+mirror_path = "{}"
+mirror_max_bytes = 16777216
+[[sources]]
+id = "allowed"
+type = "local-files"
+permissions = "fixed"
+readers = ["grp:allow"]
+[sources.scope]
+paths = ["{}"]
+[[sources]]
+id = "denied"
+type = "local-files"
+permissions = "fixed"
+readers = ["grp:deny"]
+[sources.scope]
+paths = ["{}"]
+"#,
+        root.embedding.endpoint,
+        root.join("fixture-writer-cache").display(),
+        root.join("mirror").display(),
+        sources.display(),
+        sources.display()
+    );
+    std::fs::write(&config, &text).expect("config");
+    (config, root)
+}
+
+#[tokio::test]
+#[ignore = "real executable and RustFS fixture; scripts/ci"]
+async fn dense_path_and_namespace_contracts_on_real_s3() {
+    let (config, root) = setup();
+    success(&config, &["writer", "namespace", "create"]);
+    // Creation's policy and head must pass the same parser as reader admission.
+    let loaded = fyrr_core::config::load(&config).expect("config");
+    let (store, path) = fyrr_reader::storage::namespace_store(&loaded.config).expect("storage");
+    let head: ServingHead =
+        fyrr_reader::storage::read_contract(store.as_ref(), &path.clone().join("head.json"))
+            .await
+            .expect("created head validates");
+    let policy: PolicyArtifact = fyrr_reader::storage::read_contract(
+        store.as_ref(),
+        &object_store::path::Path::from(format!("{path}/{}", head.policy.object)),
+    )
+    .await
+    .expect("created policy validates");
+    head.validate().expect("head");
+    policy.validate().expect("policy");
+    let sync = run(&config, &["writer", "sync"]);
+    assert!(
+        sync.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&sync.stdout),
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&sync.stdout).lines().count(), 2);
+    success(&config, &["writer", "commit"]);
+    let head: ServingHead =
+        fyrr_reader::storage::read_contract(store.as_ref(), &path.clone().join("head.json"))
+            .await
+            .expect("published head");
+    let pointer = head.content.as_ref().expect("content");
+    let manifest: ContentManifest = fyrr_reader::storage::read_contract(
+        store.as_ref(),
+        &object_store::path::Path::from(format!("{path}/{}", pointer.manifest)),
+    )
+    .await
+    .expect("created manifest validates");
+    manifest.validate().expect("manifest");
+    head.validate().expect("published head");
+    success(&config, &["reader", "check"]);
+    let search = success(
+        &config,
+        &["reader", "search", "fixture query", "--limit", "75"],
+    );
+    let hits = search["hits"].as_array().expect("hits");
+    assert_eq!(
+        hits.len(),
+        50,
+        "the soft source cap refills the fusion bucket"
+    );
+    assert!(
+        hits.iter()
+            .all(|h| h["content"].is_null() && h["excerpt"]["text"].is_string())
+    );
+    assert!(
+        search["metadata"]["degraded"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        manifest
+            .indexes
+            .iter()
+            .any(|i| i.name == "fts_idx" && i.kind == "inverted")
+    );
+    assert!(!manifest.fts.with_position);
+    assert!(hits.iter().all(|h| h["source_id"] == "allowed"));
+    let binary = Command::new(env!("CARGO_BIN_EXE_fyrr"))
+        .arg("--config")
+        .arg(&config)
+        .args(["reader", "serve"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("MCP");
+    let mut binary = binary;
+    let mut stdin = binary.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(binary.stdout.take().expect("stdout"));
+    initialize_stdio(&mut stdin, &mut stdout);
+    for id in 1..=2 {
+        writeln!(stdin,"{}",json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"search","arguments":{"query":"fixture query","limit":75}}})).expect("request");
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("response");
+        let response: Value = serde_json::from_str(&line).expect("MCP JSON");
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        assert_eq!(
+            response["result"]["structuredContent"]["hits"],
+            search["hits"]
+        );
+        if id == 2 {
+            assert_eq!(
+                response["result"]["structuredContent"]["metadata"]["telemetry"]["s3_requests"],
+                2
+            );
+        }
+    }
+    drop(stdin);
+    assert!(binary.wait().expect("MCP exit").success());
+    let mirror_directory = root.join("mirror").join(digest(
+        format!(
+            "{}:{}",
+            loaded.config.storage.endpoint.as_deref().unwrap_or(""),
+            fyrr_reader::storage::dataset_uri(&loaded.config)
+        )
+        .as_bytes(),
+    ));
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(root.join("mirror"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    assert_eq!(
+        std::fs::metadata(&mirror_directory)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    let mirror_bytes: u64 = std::fs::read_dir(&mirror_directory)
+        .expect("mirror directory")
+        .map(|entry| {
+            let meta = entry
+                .expect("mirror entry")
+                .metadata()
+                .expect("mirror metadata");
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+            meta.len()
+        })
+        .sum();
+    assert!(
+        mirror_bytes > 0 && mirror_bytes <= 16_777_216,
+        "read-through mirror remains within its configured byte bound"
+    );
+    let lexical_only = success(
+        &config,
+        &["reader", "search", "document", "--output", "metadata"],
+    );
+    assert_eq!(lexical_only["metadata"]["degraded"], json!(["dense"]));
+    assert_eq!(lexical_only["hits"].as_array().unwrap().len(), 50);
+    assert!(
+        lexical_only["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["source_id"] == "allowed"
+                && h["excerpt"].is_null()
+                && h["content"].is_null())
+    );
+    let no_tokens = success(&config, &["reader", "search", &"x".repeat(40)]);
+    assert!(no_tokens["hits"].as_array().unwrap().is_empty());
+    let config_text = std::fs::read_to_string(&config).expect("config");
+    // Equal roots/record IDs in two sources survive publication independently.
+    let both = root.join("both.toml");
+    std::fs::write(
+        &both,
+        config_text.replace(
+            "stdio_readers = [\"grp:allow\"]",
+            "stdio_readers = [\"grp:allow\",\"grp:deny\"]",
+        ),
+    )
+    .expect("both-token identity config");
+    assert_eq!(
+        success(&both, &["writer", "commit"])["lance_version"],
+        manifest.lance_version
+    );
+    let collisions = success(
+        &both,
+        &["reader", "search", "dense-only query", "--limit", "2"],
+    );
+    let hits = collisions["hits"].as_array().expect("colliding hits");
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0]["source_id"], "allowed");
+    assert_eq!(hits[1]["source_id"], "denied");
+    assert_eq!(hits[0]["root_id"], hits[1]["root_id"]);
+    assert_eq!(hits[0]["record_id"], hits[1]["record_id"]);
+    let lexical_collisions = success(&both, &["reader", "search", "document 0", "--limit", "2"]);
+    assert_eq!(lexical_collisions["hits"][0]["source_id"], "allowed");
+    assert_eq!(lexical_collisions["hits"][1]["source_id"], "denied");
+    assert_eq!(
+        lexical_collisions["hits"][0]["root_id"],
+        lexical_collisions["hits"][1]["root_id"]
+    );
+    assert_eq!(
+        success(&config, &["writer", "commit"])["lance_version"],
+        manifest.lance_version
+    );
+    let denied = root.join("denied.toml");
+    std::fs::write(
+        &denied,
+        config_text.replace(
+            "stdio_user = \"fixture-subject\"",
+            "stdio_user = \"unknown-subject\"",
+        ),
+    )
+    .expect("denied config");
+    for query in ["fixture query", "cache miss"] {
+        let output = run(&denied, &["reader", "search", query]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("authorization_unavailable"));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("embedding_unavailable"));
+    }
+    let isolated = root.join("isolated.toml");
+    std::fs::write(
+        &isolated,
+        config_text.replace("name = \"dense-fixture\"", "name = \"isolated-fixture\""),
+    )
+    .expect("isolated");
+    assert!(!run(&isolated, &["reader", "check"]).status.success());
+    // No-op and reset rescan publish no new rows or versions.
+    for args in [&["writer", "sync"][..], &["writer", "sync", "--full"]] {
+        let output = run(&config, args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let report: Value = serde_json::from_str(line).expect("report");
+            assert_eq!(report["stats"]["upserts"], 0);
+            assert_eq!(report["cache_misses"], 0);
+        }
+        assert_eq!(
+            success(&config, &["writer", "commit"])["lance_version"],
+            manifest.lance_version
+        );
+    }
+    // The next worker has a new host directory and only the durable S3 cursor/revisions.
+    let copied = root.join("fresh-host");
+    std::fs::create_dir_all(&copied).expect("fresh host");
+    for entry in std::fs::read_dir(root.join("sources")).expect("sources") {
+        let entry = entry.expect("entry");
+        std::fs::copy(entry.path(), copied.join(entry.file_name())).expect("copy owned source");
+    }
+    let fresh = root.join("fresh.toml");
+    std::fs::write(
+        &fresh,
+        config_text.replace(
+            root.join("sources").to_str().expect("path"),
+            copied.to_str().expect("path"),
+        ),
+    )
+    .expect("fresh config");
+    let resumed = run(&fresh, &["writer", "sync", "allowed"]);
+    assert!(resumed.status.success());
+    let resumed: Value = serde_json::from_slice(&resumed.stdout).expect("resumed report");
+    assert_eq!(resumed["stats"]["upserts"], 0);
+    std::fs::write(copied.join("0.txt"), "fixture document 1").expect("edit");
+    std::fs::write(copied.join("added.txt"), "fixture document 2").expect("add");
+    std::fs::remove_file(copied.join("3.txt")).expect("delete owned source");
+    let changed = run(&fresh, &["writer", "sync", "allowed"]);
+    assert!(
+        changed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&changed.stdout)
+    );
+    let changed: Value = serde_json::from_slice(&changed.stdout).expect("changed report");
+    assert_eq!(changed["stats"]["upserts"], 2);
+    assert_eq!(changed["stats"]["deletes"], 1);
+    assert_eq!(changed["cache_misses"], 0);
+    success(&fresh, &["writer", "commit"]);
+    success(&fresh, &["reader", "check"]);
+    let repeated = run(&fresh, &["writer", "sync", "allowed"]);
+    assert!(repeated.status.success());
+    let repeated: Value = serde_json::from_slice(&repeated.stdout).expect("no-op report");
+    assert_eq!(repeated["stats"]["upserts"], 0);
+    assert_eq!(repeated["stats"]["deletes"], 0);
+    // Contract-valid bad content is quarantined; uncached live work requires a spend cap.
+    std::fs::write(root.join("sources/bad.txt"), [255]).expect("bad document");
+    let sync = run(&config, &["writer", "sync", "allowed"]);
+    assert!(
+        sync.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sync.stdout)
+    );
+    let continued: Value = serde_json::from_slice(&sync.stdout).expect("quarantine sync report");
+    // The original source restores 0.txt and recreates 3.txt after the fresh
+    // host's publication. Only those two changed documents need embeddings.
+    assert_eq!(continued["cache_hits"], 2);
+    assert_eq!(continued["cache_misses"], 0);
+    assert_eq!(continued["stats"]["quarantined"], 1);
+    let envelope_objects = store
+        .list_with_delimiter(Some(&path.clone().join("envelopes")))
+        .await
+        .expect("envelopes");
+    let mut diagnostics = Vec::new();
+    for object in envelope_objects.objects {
+        let envelope: fyrr_core::envelope::PreparedEnvelope =
+            fyrr_reader::storage::read_contract(store.as_ref(), &object.location)
+                .await
+                .expect("envelope");
+        if envelope.source_id == "allowed"
+            && let fyrr_core::envelope::EnvelopePayload::Content(payload) = envelope.payload
+        {
+            diagnostics.extend(payload.quarantined);
+        }
+    }
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].root_digest, digest(b"bad.txt"));
+    assert_eq!(diagnostics[0].reason, "document_invalid");
+    std::fs::remove_file(root.join("sources/bad.txt")).expect("own fixture cleanup");
+    std::fs::write(root.join("sources/miss.txt"), "novel fixture input").unwrap();
+    let uncapped = root.join("uncapped-writer.toml");
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("reader_live = true", "reader_live = false")
+        .replace(
+            "spend = { limit_microusd = 1000000, max_call_microusd = 10 }",
+            "",
+        );
+    std::fs::write(&uncapped, text).unwrap();
+    let calls = root.embedding.calls();
+    let miss = run(&uncapped, &["writer", "sync", "allowed"]);
+    assert!(!miss.status.success());
+    let miss: Value = serde_json::from_slice(&miss.stdout).expect("cache-miss diagnostic");
+    assert_eq!(miss["error"], "embedding_spend_limit_required");
+    assert_eq!(miss["paid_calls"], 0);
+    assert_eq!(
+        root.embedding.calls(),
+        calls,
+        "uncapped work makes no HTTP call"
+    );
+    std::fs::remove_file(root.join("sources/miss.txt")).expect("own fixture cleanup");
+    // A fresh policy generation without a readers index cannot become ready.
+    let mut missing = manifest.clone();
+    missing.indexes.retain(|index| index.column != "readers");
+    assert!(parse_contract::<ContentManifest>(&write_contract(&missing)).is_err());
+    let rejected = path
+        .clone()
+        .join("publications")
+        .join("missing-readers.json");
+    assert_eq!(
+        fyrr_writer::prepare::put_immutable(store.as_ref(), &rejected, &missing)
+            .await
+            .map_err(fyrr_writer::WriterError::as_str),
+        Err("publication_invalid")
+    );
+    assert!(matches!(
+        store.get(&rejected).await,
+        Err(object_store::Error::NotFound { .. })
+    ));
+    success(&config, &["writer", "commit"]);
+    let continued = success(
+        &config,
+        &["reader", "search", "fixture document 3", "--limit", "1"],
+    );
+    assert_eq!(continued["hits"][0]["source_id"], "allowed");
+    assert_eq!(continued["hits"][0]["root_id"], "3.txt");
+    let head: ServingHead =
+        fyrr_reader::storage::read_contract(store.as_ref(), &path.clone().join("head.json"))
+            .await
+            .expect("current head");
+    let original_head = write_contract(&head);
+    assert!(head.freshness.directory.is_none());
+    let directory_file = root.join("unread-directory.json");
+    let mut directory = identity::snapshot(&loaded.config, "snapshot");
+    directory.users.push(identity::user(
+        &loaded.config,
+        loaded.config.identity.stdio_user.as_deref().unwrap(),
+    ));
+    std::fs::write(&directory_file, write_contract(&directory)).unwrap();
+    let directory_checks = root.join("directory-required.toml");
+    std::fs::write(
+        &directory_checks,
+        format!(
+            "{config_text}\n[identity.directory]\nprovider='snapshot'\nsnapshot_file='{}'\n",
+            directory_file.display()
+        ),
+    )
+    .unwrap();
+    let unread = run(&directory_checks, &["reader", "check"]);
+    assert!(!unread.status.success());
+    assert!(String::from_utf8_lossy(&unread.stderr).contains("authorization_unavailable"));
+    let mut expired = head.clone();
+    expired.freshness.directory = Some(chrono::Utc::now() - chrono::Duration::days(2));
+    write_head(store.as_ref(), &path, &expired).await;
+    let static_result = success(&config, &["reader", "search", "fixture query"]);
+    assert!(!static_result["hits"].as_array().unwrap().is_empty());
+    let output = run(&directory_checks, &["reader", "search", "fixture query"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("authorization_unavailable"));
+    store
+        .put(
+            &path.clone().join("head.json"),
+            original_head.clone().into(),
+        )
+        .await
+        .expect("restore own head");
+    let identity_path = object_store::path::Path::from(format!("{path}/{}", head.identity.object));
+    let identity: fyrr_core::identity::IdentityArtifact =
+        fyrr_reader::storage::read_contract(store.as_ref(), &identity_path)
+            .await
+            .expect("identity");
+    let mut expired_identity = identity.clone();
+    expired_identity.built_at = chrono::Utc::now() + chrono::Duration::days(2);
+    let mut expired_head = head.clone();
+    expired_head.identity.digest = digest(&write_contract(&expired_identity));
+    store
+        .put(&identity_path, write_contract(&expired_identity).into())
+        .await
+        .expect("expired identity injection");
+    // A valid artifact with altered bytes must also fail closed in the writer.
+    let output = run(&config, &["writer", "status"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("authorization_unavailable"));
+    write_head(store.as_ref(), &path, &expired_head).await;
+    let output = run(&config, &["reader", "search", "fixture query"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("authorization_unavailable"));
+    store
+        .put(&identity_path, write_contract(&identity).into())
+        .await
+        .expect("restore identity");
+    write_head(store.as_ref(), &path, &head).await;
+    // Identity-only commits move only the identity pointer; the content pin stays exact.
+    let revoked = root.join("revoked.toml");
+    std::fs::write(
+        &revoked,
+        config_text.replace("stdio_readers = [\"grp:allow\"]", "stdio_readers = []"),
+    )
+    .expect("revoked config");
+    success(&revoked, &["writer", "commit"]);
+    let revoked_head: ServingHead =
+        fyrr_reader::storage::read_contract(store.as_ref(), &path.clone().join("head.json"))
+            .await
+            .expect("identity-only head");
+    assert_eq!(revoked_head.content, head.content);
+    assert_ne!(revoked_head.identity, head.identity);
+    for query in ["fixture query", "cache miss"] {
+        let output = run(&revoked, &["reader", "search", query]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("authorization_unavailable"));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("embedding_unavailable"));
+    }
+    success(&config, &["writer", "commit"]);
+    let binary = Command::new(env!("CARGO_BIN_EXE_fyrr"))
+        .arg("--config")
+        .arg(&config)
+        .args(["reader", "serve"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("warm MCP");
+    let mut binary = binary;
+    let mut stdin = binary.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(binary.stdout.take().expect("stdout"));
+    initialize_stdio(&mut stdin, &mut stdout);
+    let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"fixture query","limit":75}}});
+    writeln!(stdin, "{request}").expect("warm request");
+    let mut line = String::new();
+    stdout.read_line(&mut line).expect("warm response");
+    assert_eq!(
+        serde_json::from_str::<Value>(&line).expect("warm JSON")["result"]["isError"],
+        false
+    );
+    // A no-op commit refreshes authorization without changing the pinned content.
+    success(&config, &["writer", "commit"]);
+    writeln!(stdin, "{request}").unwrap();
+    line.clear();
+    stdout.read_line(&mut line).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&line).unwrap()["result"]["isError"],
+        false
+    );
+    // The same process adopts a new token set and rebuilds row/partition admission.
+    let deny_only = root.join("deny-only.toml");
+    std::fs::write(
+        &deny_only,
+        config_text.replace(
+            "stdio_readers = [\"grp:allow\"]",
+            "stdio_readers = [\"grp:deny\"]",
+        ),
+    )
+    .unwrap();
+    success(&deny_only, &["writer", "commit"]);
+    writeln!(stdin, "{request}").unwrap();
+    line.clear();
+    stdout.read_line(&mut line).unwrap();
+    let response: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(response["result"]["isError"], false);
+    assert!(
+        response["result"]["structuredContent"]["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|hit| hit["source_id"] == "denied")
+    );
+    success(&revoked, &["writer", "commit"]);
+    for query in ["fixture query", "cache miss"] {
+        writeln!(stdin, "{}", json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search","arguments":{"query":query}}})).unwrap();
+        line.clear();
+        stdout.read_line(&mut line).unwrap();
+        assert!(line.contains("authorization_unavailable"));
+        assert!(!line.contains("embedding_unavailable"));
+    }
+    success(&config, &["writer", "commit"]);
+    let head: ServingHead =
+        fyrr_reader::storage::read_contract(store.as_ref(), &path.clone().join("head.json"))
+            .await
+            .unwrap();
+    let mut expired = head.clone();
+    expired.freshness.directory = Some(chrono::Utc::now() - chrono::Duration::hours(2));
+    store
+        .put(
+            &path.clone().join("head.json"),
+            write_contract(&expired).into(),
+        )
+        .await
+        .unwrap();
+    writeln!(stdin, "{request}").unwrap();
+    line.clear();
+    stdout.read_line(&mut line).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&line).unwrap()["result"]["isError"],
+        false,
+        "a disabled directory has no live freshness deadline"
+    );
+    let expired_directory = run(&directory_checks, &["reader", "search", "fixture query"]);
+    assert!(!expired_directory.status.success());
+    assert!(
+        String::from_utf8_lossy(&expired_directory.stderr).contains("authorization_unavailable")
+    );
+    // Static identity remains authorized; a commit cannot invent a directory read.
+    success(&config, &["writer", "commit"]);
+    let static_head: ServingHead =
+        fyrr_reader::storage::read_contract(store.as_ref(), &path.clone().join("head.json"))
+            .await
+            .unwrap();
+    assert!(static_head.freshness.directory.is_none());
+    writeln!(stdin, "{request}").unwrap();
+    line.clear();
+    stdout.read_line(&mut line).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&line).unwrap()["result"]["isError"],
+        false
+    );
+    // Valid policy-generation replacement is adopted by this live reader too.
+    let mut head: ServingHead =
+        fyrr_reader::storage::read_contract(store.as_ref(), &path.clone().join("head.json"))
+            .await
+            .unwrap();
+    let mut policy: PolicyArtifact = fyrr_reader::storage::read_contract(
+        store.as_ref(),
+        &object_store::path::Path::from(format!("{path}/{}", head.policy.object)),
+    )
+    .await
+    .unwrap();
+    policy.generation += 1;
+    let object = format!(
+        "policy/{}-{}.json",
+        policy.generation,
+        &digest(&write_contract(&policy))[7..]
+    );
+    fyrr_writer::prepare::put_immutable(
+        store.as_ref(),
+        &object_store::path::Path::from(format!("{path}/{object}")),
+        &policy,
+    )
+    .await
+    .unwrap();
+    head.policy = fyrr_core::publication::GenerationPointer {
+        generation: policy.generation,
+        object,
+        digest: digest(&write_contract(&policy)),
+    };
+    store
+        .put(
+            &path.clone().join("head.json"),
+            write_contract(&head).into(),
+        )
+        .await
+        .unwrap();
+    writeln!(stdin, "{request}").unwrap();
+    line.clear();
+    stdout.read_line(&mut line).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&line).unwrap()["result"]["isError"],
+        false
+    );
+    let mut stale = head.clone();
+    stale.policy.generation += 1;
+    write_head(store.as_ref(), &path, &stale).await;
+    writeln!(stdin, "{request}").expect("stale request");
+    line.clear();
+    stdout.read_line(&mut line).expect("stale response");
+    assert!(line.contains("authorization_unavailable"));
+    assert!(!line.contains("fixture document"));
+    store
+        .delete(&path.clone().join("head.json"))
+        .await
+        .expect("storage loss injection");
+    writeln!(stdin, "{request}").expect("storage-loss request");
+    line.clear();
+    stdout.read_line(&mut line).expect("storage-loss response");
+    assert!(line.contains("storage_unavailable"));
+    assert!(!line.contains("fixture document"));
+    write_head(store.as_ref(), &path, &head).await;
+    drop(stdin);
+    assert!(binary.wait().expect("MCP exit").success());
+    let plan = success(&config, &["writer", "namespace", "delete"]);
+    assert_eq!(plan["dry_run"], true);
+    assert!(plan["objects"].as_u64().expect("object count") > 0);
+    let export = root.join("verified-export");
+    use futures::TryStreamExt;
+    let mut objects = store.list(Some(&path));
+    while let Some(object) = objects.try_next().await.expect("export inventory") {
+        let relative = object
+            .location
+            .prefix_match(&path)
+            .expect("namespace prefix")
+            .map(|part| part.as_ref().to_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        let file = export.join(relative);
+        std::fs::create_dir_all(file.parent().expect("export parent")).expect("export directory");
+        let bytes = store
+            .get(&object.location)
+            .await
+            .expect("export object")
+            .bytes()
+            .await
+            .expect("export bytes");
+        std::fs::write(file, bytes).expect("export file");
+    }
+    let deleted = success(
+        &config,
+        &[
+            "writer",
+            "namespace",
+            "delete",
+            "--export",
+            export.to_str().expect("export path"),
+        ],
+    );
+    assert_eq!(deleted["deleted"], true);
+    assert_eq!(deleted["retained_data"], true);
+    assert!(!run(&config, &["reader", "check"]).status.success());
+    assert_eq!(
+        success(&config, &["writer", "namespace", "delete"])["deleted"],
+        true
+    );
+}
+
+fn principal_hash(config: &fyrr_core::config::Config, kind: &str, value: &str) -> String {
+    fyrr_reader::storage::hash_principal(config, kind, value).unwrap()
+}
+
+fn fixture_hits(client: &mut tools::Mcp) -> Value {
+    client.call(
+        "search",
+        json!({"query":"fixture query","sources":["incremental"],"limit":5}),
+    )
+}
+
+fn free_address() -> std::net::SocketAddr {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+}
+
+async fn write_head(
+    store: &dyn object_store::ObjectStore,
+    root: &object_store::path::Path,
+    head: &ServingHead,
+) {
+    store
+        .put(&root.clone().join("head.json"), write_contract(head).into())
+        .await
+        .expect("write fixture head");
+}
+
+async fn ready_request(
+    child: &mut std::process::Child,
+    stderr: &Path,
+    request: reqwest::RequestBuilder,
+) -> Option<reqwest::StatusCode> {
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "{}",
+        std::fs::read_to_string(stderr).unwrap()
+    );
+    request.send().await.ok().map(|response| response.status())
+}

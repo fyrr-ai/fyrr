@@ -1,0 +1,36 @@
+name: Bug report
+description: Report a reproducible defect. Report vulnerabilities and authorization bypasses privately through SECURITY.md.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Describe what you ran and what happened. Remove secrets, tokens, user identities and document content.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: The smallest configuration (with `{ env = "VAR" }` references, never values) and the commands that reproduce the problem.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: build
+    attributes:
+      label: Build
+      options:
+        - Full build (writer and reader)
+        - Reader-only build
+        - Docker image
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Output of `fyrr --version`, the connector provider and its version if relevant, the S3 implementation, and sanitized error output.
+    validations:
+      required: true

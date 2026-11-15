@@ -1,0 +1,689 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "envelope_id": {
+      "type": "string",
+      "description": "Deterministic ID from [`envelope_id`]; a repeated sync is a no-op."
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "source_id": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/SyncKind"
+    },
+    "sequence": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "description": "Per-source, per-kind sequence number."
+    },
+    "rejection_generation": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "description": "Rejection generation of this source and kind; part of the ID so\nre-fetched changes after a rejection form a new envelope."
+    },
+    "restore_sequence": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "description": "Latest manifest-authorized restore reset consumed by this log/cache entry."
+    },
+    "cursor": {
+      "$ref": "#/$defs/CursorStep",
+      "description": "Connector cursors before and after the envelope's changes."
+    },
+    "advances_cursor": {
+      "type": "boolean",
+      "description": "A freshness-only envelope preserves an absent cursor as well as an opaque one."
+    },
+    "base_head": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BaseHead"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The serving head the worker prepared against; `null` on a namespace\nwithout a publication."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "$ref": "#/$defs/EnvelopePayload"
+    }
+  },
+  "required": [
+    "schema_version",
+    "envelope_id",
+    "namespace",
+    "source_id",
+    "kind",
+    "sequence",
+    "rejection_generation",
+    "restore_sequence",
+    "cursor",
+    "advances_cursor",
+    "created_at",
+    "payload"
+  ],
+  "description": "A prepared envelope.",
+  "title": "PreparedEnvelope",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SchemaVersion": {
+      "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "SyncKind": {
+      "type": "string",
+      "enum": [
+        "content",
+        "permissions",
+        "members",
+        "reconcile"
+      ],
+      "description": "Which of a source's independent syncs produced a batch."
+    },
+    "CursorStep": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Cursor before this batch; `null` for a first or reset sync."
+        },
+        "end": {
+          "type": "string",
+          "description": "Opaque cursor after this batch, at most 16 KiB."
+        }
+      },
+      "required": [
+        "end"
+      ],
+      "description": "One cursor step: the cursor the batch started from and the cursor after it."
+    },
+    "BaseHead": {
+      "type": "object",
+      "properties": {
+        "content_publication_id": {
+          "type": "string"
+        },
+        "content_sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "lance_version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "content_publication_id",
+        "content_sequence",
+        "lance_version"
+      ],
+      "description": "The head an envelope was prepared against."
+    },
+    "EnvelopePayload": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ContentPayload",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "content"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "$ref": "#/$defs/PermissionsPayload",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "permissions"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "$ref": "#/$defs/MembersPayload",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "members"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "$ref": "#/$defs/ReconcilePayload",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "reconcile"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ],
+      "description": "Kind-specific envelope content, tagged by `type`."
+    },
+    "EmbeddingIdentity": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "dimensions": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "fingerprint": {
+          "type": "string",
+          "description": "Digest of the model settings and text transformation (prefix,\nnormalization) that keys the embedding cache."
+        },
+        "settings": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EmbeddingSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Absent in legacy publications: OpenAI-compatible, shared prefix only.\nDefault BGE-M3 identities retain their original serialized bytes."
+        }
+      },
+      "required": [
+        "model",
+        "dimensions",
+        "fingerprint"
+      ],
+      "description": "The embedding identity bound into envelopes and publications."
+    },
+    "EmbeddingSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_style": {
+          "$ref": "#/$defs/EmbeddingProfile"
+        },
+        "prefix": {
+          "type": "string",
+          "maxLength": 4096,
+          "x-maxUtf8Bytes": 4096
+        },
+        "roles": {
+          "$ref": "#/$defs/EmbeddingRoles"
+        },
+        "send_dimensions": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "api_style",
+        "prefix",
+        "roles",
+        "send_dimensions"
+      ],
+      "description": "Vector-affecting settings recorded with a publication's model/dimensions."
+    },
+    "EmbeddingProfile": {
+      "type": "string",
+      "enum": [
+        "openai-compatible"
+      ],
+      "description": "Supported embedding provider protocols."
+    },
+    "EmbeddingRoles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "document": {
+          "$ref": "#/$defs/EmbeddingRole",
+          "default": {}
+        },
+        "query": {
+          "$ref": "#/$defs/EmbeddingRole",
+          "default": {}
+        }
+      }
+    },
+    "EmbeddingRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prefix": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Added after the shared prefix, before the unchanged input text.",
+          "maxLength": 4096,
+          "x-maxUtf8Bytes": 4096
+        },
+        "input_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Sent as `input_type` only when configured.",
+          "minLength": 1,
+          "maxLength": 128,
+          "x-maxUtf8Bytes": 128
+        }
+      }
+    },
+    "ChunkProfileIdentity": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "max_unit_bytes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "overlap_bytes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "max_unit_bytes",
+        "overlap_bytes",
+        "digest"
+      ],
+      "description": "The chunk profile identity."
+    },
+    "EnvelopeDocument": {
+      "type": "object",
+      "properties": {
+        "root_id": {
+          "type": "string"
+        },
+        "intent": {
+          "$ref": "#/$defs/DocumentIntent"
+        },
+        "source_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revision_order": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "expected_prior_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permission_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "records": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Records written for this document (0 for a delete)."
+        }
+      },
+      "required": [
+        "root_id",
+        "intent",
+        "records"
+      ],
+      "description": "Replacement or delete intent for one document."
+    },
+    "DocumentIntent": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "replace",
+          "description": "Atomically replace every record of the document."
+        },
+        {
+          "type": "string",
+          "const": "delete",
+          "description": "Remove every record of the document."
+        }
+      ],
+      "description": "What the committer does with a document."
+    },
+    "PreparedFragment": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileRef"
+          },
+          "description": "Data files, relative to the namespace dataset root."
+        },
+        "lance_fragment": {
+          "description": "Lance's own fragment description, opaque to fyrr."
+        },
+        "digest": {
+          "type": "string",
+          "description": "SHA-256 of the ordered file bytes."
+        }
+      },
+      "required": [
+        "rows",
+        "files",
+        "lance_fragment",
+        "digest"
+      ],
+      "description": "A Lance fragment written by the worker but not yet committed."
+    },
+    "FileRef": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "path",
+        "size_bytes"
+      ],
+      "description": "A file with its size, for accounting and the mirror."
+    },
+    "QuarantineEntry": {
+      "type": "object",
+      "properties": {
+        "root_digest": {
+          "type": "string"
+        },
+        "revision_digest": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "root_digest",
+        "revision_digest",
+        "reason"
+      ],
+      "description": "Value-free diagnostic carried by an immutable envelope, never mutable state."
+    },
+    "ContentPayload": {
+      "type": "object",
+      "properties": {
+        "embedding": {
+          "$ref": "#/$defs/EmbeddingIdentity",
+          "description": "Embedding model identity used for the fragments."
+        },
+        "chunk_profile": {
+          "$ref": "#/$defs/ChunkProfileIdentity",
+          "description": "Chunk profile identity used for the fragments."
+        },
+        "table_schema_version": {
+          "$ref": "#/$defs/SchemaVersion",
+          "description": "Version of the namespace table schema the fragments were written in."
+        },
+        "documents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EnvelopeDocument"
+          }
+        },
+        "fragments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PreparedFragment"
+          }
+        },
+        "quarantined": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QuarantineEntry"
+          }
+        }
+      },
+      "required": [
+        "embedding",
+        "chunk_profile",
+        "table_schema_version",
+        "documents",
+        "fragments"
+      ],
+      "description": "Prepared content: per-document intent and the unreferenced Lance fragments\nthat hold the new records."
+    },
+    "DocumentPermission": {
+      "type": "object",
+      "properties": {
+        "root_id": {
+          "type": "string"
+        },
+        "permission_revision": {
+          "type": "string"
+        },
+        "readers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "containers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "required": [
+        "root_id",
+        "permission_revision",
+        "readers"
+      ],
+      "description": "The readers of one document from a permission sync."
+    },
+    "ContainerGrant": {
+      "type": "object",
+      "properties": {
+        "container_id": {
+          "type": "string"
+        },
+        "container_kind": {
+          "type": "string",
+          "description": "`folder`, `channel`, `project`, `connection` or another container kind."
+        },
+        "permission_revision": {
+          "type": "string"
+        },
+        "readers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "container_id",
+        "container_kind",
+        "permission_revision",
+        "readers"
+      ],
+      "description": "Readers granted on a container, resolved like a source grant."
+    },
+    "PermissionsPayload": {
+      "type": "object",
+      "properties": {
+        "read_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Freshness attestation: when the source's permissions were read."
+        },
+        "complete_read": {
+          "type": "boolean"
+        },
+        "documents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocumentPermission"
+          }
+        },
+        "container_grants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContainerGrant"
+          }
+        }
+      },
+      "required": [
+        "read_at",
+        "complete_read",
+        "documents",
+        "container_grants"
+      ],
+      "description": "A permission sync's per-document readers and container grants."
+    },
+    "MembersPayload": {
+      "type": "object",
+      "properties": {
+        "read_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Freshness attestation: when the source's members were read."
+        },
+        "complete_read": {
+          "type": "boolean"
+        },
+        "snapshot_id": {
+          "type": "string"
+        },
+        "snapshot_object": {
+          "type": "string",
+          "description": "Object key of the snapshot, relative to the namespace root."
+        },
+        "snapshot_digest": {
+          "type": "string"
+        },
+        "part": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "last": {
+          "type": "boolean"
+        },
+        "principals": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "read_at",
+        "complete_read",
+        "snapshot_id",
+        "snapshot_object",
+        "snapshot_digest",
+        "part",
+        "last",
+        "principals"
+      ],
+      "description": "A membership sync's immutable principal snapshot on S3."
+    },
+    "ReconcilePayload": {
+      "type": "object",
+      "properties": {
+        "listing_id": {
+          "type": "string"
+        },
+        "part": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "last": {
+          "type": "boolean"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "watermark": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The head's content publication sequence when the listing started;\nderived deletes cover only documents published at or before it."
+        },
+        "root_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "listing_id",
+        "part",
+        "last",
+        "complete",
+        "watermark",
+        "root_ids"
+      ],
+      "description": "One part of a full-ID listing."
+    }
+  },
+  "x-fyrr-contract": "prepared-envelope",
+  "x-fyrr-schema-version": "3.1"
+}

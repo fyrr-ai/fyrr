@@ -1,0 +1,52 @@
+[
+  {
+    "schema_version": "1.3",
+    "source_id": "testkit-source",
+    "kind": "content",
+    "cursor": {
+      "start": null,
+      "end": "{\"observed\":[1],\"repos\":{\"1\":{\"commit\":\"2cf2887d2aa96ccfead49950afb47141d9bcdf0e\",\"refresh_step\":1767225810,\"rotate\":[0,0],\"rotation_start\":1767225810,\"since\":\"2026-01-01T00:03:30+00:00\"}},\"scope\":\"a1c416fd91ed218fa0a083e1c3001675a97be567020cd434b1464903d48a8cfa\",\"v\":1}"
+    },
+    "body": {
+      "type": "document_changes",
+      "changes": [
+        {
+          "op": "upsert",
+          "root_id": "github:repo:1:issue:101:1",
+          "source_revision": "ccafd13a20b20086645d40cea5d068199efc01e46f9f683e3f6006a13c315a66",
+          "readers": [
+            "grp:testkit"
+          ],
+          "containers": [],
+          "metadata": {
+            "source_uri": "https://github.com/synthetic/repo-1/issues/1",
+            "source_type": "github-issue",
+            "title": "Synthetic issue 1",
+            "author": "synthetic-author",
+            "project": "synthetic/repo-1",
+            "status": "open",
+            "labels": [],
+            "created_at": "2026-01-01T00:02:00Z",
+            "updated_at": "2026-01-01T00:03:00Z",
+            "connector_map": {
+              "repository_id": 1,
+              "object_id": 101,
+              "number": 1
+            }
+          },
+          "attributes": [],
+          "sections": [
+            {
+              "text": "Golden body.",
+              "location": {
+                "kind": "heading",
+                "label": "Synthetic issue 1",
+                "index": 0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

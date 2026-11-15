@@ -1,0 +1,93 @@
+# Hosted CI: runs the repository's own `scripts/ci` unchanged on an x86-64
+# Ubuntu runner with Docker for the S3 (RustFS) and identity (Keycloak)
+# fixtures. `scripts/ci` keeps going after a failure, writes
+# target/ci-logs/<stamp>/summary.txt and lists any check it did not run as
+# `n/e` (not evaluated), never as passed; the summary is uploaded whether the
+# run passed or failed. One job runs the full check and image selection.
+# release.yml calls this workflow before it publishes anything.
+name: ci
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  ci:
+    name: scripts/ci --images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free disk space for the Lance and image builds
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal --component rustfmt,clippy
+          rustup default "$channel"
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Cache cargo registry, git checkouts and cargo-deny
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.cargo/bin/cargo-deny
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'scripts/pins.env') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Install the pinned cargo-deny
+        run: |
+          source scripts/pins.env
+          if ! cargo deny --version 2>/dev/null | grep -qx "cargo-deny $CARGO_DENY_VERSION"; then
+            cargo install --locked "cargo-deny@$CARGO_DENY_VERSION"
+          fi
+
+      - name: Cache the build directory
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/debug
+            target/release
+            target/tools
+          key: target-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: target-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+
+      - name: scripts/ci --images
+        env:
+          FYRR_CI_REVISION: ${{ github.sha }}
+          RUST_TEST_THREADS: "1"
+        run: scripts/ci --images
+
+      - name: Show the summary
+        if: always()
+        run: cat target/ci-logs/*/summary.txt
+
+      - name: Upload the logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-logs-${{ github.sha }}
+          path: |
+            target/ci-logs/
+            target/images/*.log
+            target/images/*.txt
+          if-no-files-found: error

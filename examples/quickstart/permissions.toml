@@ -1,0 +1,46 @@
+# The quickstart permission demo: two folders with different readers. Run
+# fyrr from the repository root: the local-files paths below are relative to
+# the working directory.
+#
+# Copy this file and replace /home/you with your home directory. The storage
+# root is private and must be on a local file system, shared by no other host.
+
+[namespace]
+name = "quickstart"
+
+[storage]
+uri = "file:///home/you/.local/share/fyrr/quickstart"
+
+# The toy service from toy-embeddings.py. A namespace is bound to its
+# embedding model: publish into a fresh namespace when you switch models.
+[embedding]
+endpoint = "http://127.0.0.1:8089/v1"
+model = "toy-hash-1024"
+dimensions = 1024
+reader_live = true
+
+[embedding.spend]
+limit_microusd = 1000
+max_call_microusd = 1
+
+# The stdio MCP subject: ada reads the handbook, not payroll.
+[identity]
+stdio_user = "ada"
+stdio_readers = ["grp:engineering"]
+hashing_key = { env = "FYRR_IDENTITY_KEY" }
+
+[[sources]]
+id = "handbook"
+type = "local-files"
+permissions = "fixed"
+readers = ["grp:engineering", "grp:leadership"]   # any number of reader tokens
+[sources.scope]
+paths = ["examples/quickstart/handbook"]
+
+[[sources]]
+id = "payroll"
+type = "local-files"
+permissions = "fixed"
+readers = ["grp:finance"]
+[sources.scope]
+paths = ["examples/quickstart/payroll"]

@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.3",
+  "source_id": "local-docs",
+  "kind": "reconcile",
+  "cursor": {
+    "start": null,
+    "end": "listing-7f3a:part-1"
+  },
+  "body": {
+    "type": "listing",
+    "listing_id": "listing-7f3a",
+    "part": 1,
+    "last": true,
+    "complete": true,
+    "root_ids": [
+      "handbook/onboarding.md",
+      "runbooks/restore.rst"
+    ]
+  }
+}

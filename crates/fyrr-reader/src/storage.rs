@@ -1,0 +1,405 @@
+//! Opening published Lance datasets on S3 or a local directory with options
+//! from the configuration.
+
+use crate::embedding::digest;
+use fyrr_core::config::StorageOptions;
+use fyrr_core::config::{Config, ProcessEnvironment, StorageBackend};
+use fyrr_core::publication::GenerationPointer;
+use fyrr_core::{Contract, parse_contract};
+use lance::dataset::builder::DatasetBuilder;
+use object_store::{ObjectStore, ObjectStoreExt, aws::AmazonS3Builder, path::Path};
+use std::sync::Arc;
+
+pub use lance::Dataset;
+
+/// Fixed diagnostics shared by reader and writer storage operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageError {
+    StorageConfigurationInvalid,
+    StorageUnavailable,
+    PublicationInvalid,
+    AuthorizationUnavailable,
+    StaleCursor,
+    PublicationUnavailable,
+}
+impl StorageError {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StorageConfigurationInvalid => "storage_configuration_invalid",
+            Self::StorageUnavailable => "storage_unavailable",
+            Self::PublicationInvalid => "publication_invalid",
+            Self::AuthorizationUnavailable => "authorization_unavailable",
+            Self::StaleCursor => "stale_cursor",
+            Self::PublicationUnavailable => "publication_unavailable",
+        }
+    }
+}
+impl std::fmt::Display for StorageError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+impl std::error::Error for StorageError {}
+
+/// Namespace-scoped storage access. Only the writer calls mutating store methods.
+pub fn namespace_store(config: &Config) -> Result<(Arc<dyn ObjectStore>, Path), StorageError> {
+    let namespace = |prefix: &str| {
+        Path::from(prefix)
+            .join("namespaces")
+            .join(config.namespace.name.as_str())
+    };
+    let (bucket, prefix) = match config.storage.backend() {
+        Some(StorageBackend::S3 { bucket, prefix }) => (bucket, prefix),
+        Some(StorageBackend::Local { root }) => {
+            let store =
+                local::LocalStore::open(&root).map_err(|_| StorageError::StorageUnavailable)?;
+            let root = namespace(store.root().as_ref());
+            return Ok((Arc::new(store), root));
+        }
+        None => return Err(StorageError::StorageConfigurationInvalid),
+    };
+    let mut builder = AmazonS3Builder::from_env().with_bucket_name(bucket);
+    let options = config
+        .storage
+        .object_store_options(&ProcessEnvironment)
+        .map_err(|_| StorageError::StorageConfigurationInvalid)?;
+    for (key, value) in options.into_map() {
+        builder = builder.with_config(
+            key.parse()
+                .map_err(|_| StorageError::StorageConfigurationInvalid)?,
+            value,
+        );
+    }
+    let store = builder
+        .build()
+        .map_err(|_| StorageError::StorageConfigurationInvalid)?;
+    let root = namespace(prefix);
+    #[cfg(feature = "test-store")]
+    if let Some(factory) = test_store::factory(config) {
+        return Ok((factory(Arc::new(store)), root));
+    }
+    Ok((Arc::new(store), root))
+}
+
+/// Namespace-local injection enabled only by writer libtests' dev dependency.
+#[cfg(feature = "test-store")]
+pub mod test_store {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::{Mutex, OnceLock};
+    pub type Factory =
+        Arc<dyn Fn(Arc<object_store::aws::AmazonS3>) -> Arc<dyn ObjectStore> + Send + Sync>;
+    pub type NativeWrapper = Arc<dyn lance_io::object_store::WrappingObjectStore>;
+    static STORES: OnceLock<Mutex<BTreeMap<String, Factory>>> = OnceLock::new();
+    static NATIVE: OnceLock<Mutex<BTreeMap<String, NativeWrapper>>> = OnceLock::new();
+    #[derive(Debug)]
+    pub struct Registration(String);
+    pub fn register(config: &Config, factory: Factory) -> Registration {
+        let key = dataset_uri(config);
+        assert!(
+            crate::sync::lock(STORES.get_or_init(Default::default))
+                .insert(key.clone(), factory)
+                .is_none()
+        );
+        Registration(key)
+    }
+    pub(super) fn factory(config: &Config) -> Option<Factory> {
+        crate::sync::lock(STORES.get_or_init(Default::default))
+            .get(&dataset_uri(config))
+            .cloned()
+    }
+    pub fn register_native(config: &Config, wrapper: NativeWrapper) {
+        assert!(
+            crate::sync::lock(NATIVE.get_or_init(Default::default))
+                .insert(dataset_uri(config), wrapper)
+                .is_none()
+        );
+    }
+    pub fn native(uri: &str) -> Option<NativeWrapper> {
+        crate::sync::lock(NATIVE.get_or_init(Default::default))
+            .get(uri)
+            .cloned()
+    }
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            crate::sync::lock(STORES.get_or_init(Default::default)).remove(&self.0);
+            crate::sync::lock(NATIVE.get_or_init(Default::default)).remove(&self.0);
+        }
+    }
+}
+
+/// The Lance URI of the namespace's dataset. A local dataset uses Lance's
+/// `file-object-store` scheme: unlike `file`, it sends every read and write
+/// through `object_store`, so the reader's mirror sees each request as on S3.
+pub fn dataset_uri(config: &Config) -> String {
+    let uri = fyrr_core::layout::NamespaceLayout::new(&config.storage.uri, &config.namespace.name)
+        .dataset_uri();
+    match uri.strip_prefix("file://") {
+        Some(path) => format!("file-object-store://{path}"),
+        None => uri,
+    }
+}
+
+pub async fn read_contract<T: Contract>(
+    store: &dyn ObjectStore,
+    path: &Path,
+) -> Result<T, StorageError> {
+    let bytes = store
+        .get(path)
+        .await
+        .map_err(|_| StorageError::StorageUnavailable)?
+        .bytes()
+        .await
+        .map_err(|_| StorageError::StorageUnavailable)?;
+    parse_contract(&bytes).map_err(|_| StorageError::PublicationInvalid)
+}
+
+pub async fn optional_head(
+    config: &Config,
+) -> Result<Option<fyrr_core::publication::ServingHead>, StorageError> {
+    let (store, root) = namespace_store(config)?;
+    let bytes = match store.get(&root.clone().join("head.json")).await {
+        Ok(result) => result
+            .bytes()
+            .await
+            .map_err(|_| StorageError::StorageUnavailable)?,
+        Err(object_store::Error::NotFound { .. }) => return Ok(None),
+        Err(_) => return Err(StorageError::StorageUnavailable),
+    };
+    parse_contract(&bytes)
+        .map(Some)
+        .map_err(|_| StorageError::PublicationInvalid)
+}
+
+fn namespace_mac(
+    config: &Config,
+    kind: &str,
+    value: &str,
+) -> Result<hmac::Hmac<sha2::Sha256>, StorageError> {
+    use hmac::{KeyInit, Mac};
+    let key = config
+        .identity
+        .hashing_key
+        .as_ref()
+        .ok_or(StorageError::AuthorizationUnavailable)?
+        .resolve(&ProcessEnvironment)
+        .map_err(|_| StorageError::AuthorizationUnavailable)?;
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(key.expose().as_bytes())
+        .map_err(|_| StorageError::AuthorizationUnavailable)?;
+    for part in ["fyrr-hmac-2", config.namespace.name.as_str(), kind, value] {
+        mac.update(&(part.len() as u64).to_be_bytes());
+        mac.update(part.as_bytes());
+    }
+    Ok(mac)
+}
+
+pub fn hash_principal(config: &Config, prefix: &str, value: &str) -> Result<String, StorageError> {
+    use hmac::Mac;
+    Ok(format!(
+        "{prefix}:{}",
+        hex::encode(
+            namespace_mac(config, prefix, value)?
+                .finalize()
+                .into_bytes()
+        )
+    ))
+}
+
+pub(crate) fn verify_hash(
+    config: &Config,
+    kind: &str,
+    value: &str,
+    signature: &[u8],
+) -> Result<(), StorageError> {
+    use hmac::Mac;
+    namespace_mac(config, kind, value)?
+        .verify_slice(signature)
+        .map_err(|_| StorageError::StaleCursor)
+}
+
+/// SQL string literal escaping shared by writer keys and reader predicates.
+pub fn sql(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Opens the dataset at `uri` pinned to exactly `version`.
+pub async fn open_version(
+    uri: &str,
+    options: StorageOptions,
+    version: u64,
+    shared: Option<(
+        Arc<lance::session::Session>,
+        Arc<crate::mirror::MirrorStore>,
+    )>,
+) -> lance::Result<Dataset> {
+    let wrapper = shared
+        .as_ref()
+        .map(|(_, mirror)| mirror.clone() as Arc<dyn lance_io::object_store::WrappingObjectStore>);
+    #[cfg(feature = "test-store")]
+    let wrapper = test_store::native(uri).or(wrapper);
+    let mut builder = DatasetBuilder::from_uri(uri)
+        .with_store_params(lance_io::object_store::ObjectStoreParams {
+            object_store_wrapper: wrapper,
+            ..Default::default()
+        })
+        .with_storage_options(options.into_map().into_iter().collect())
+        .with_version(version);
+    if let Some((session, _)) = &shared {
+        builder = builder.with_session(session.clone());
+    }
+    builder.load().await
+}
+
+pub async fn artifact<T: fyrr_core::Contract>(
+    store: &dyn object_store::ObjectStore,
+    root: &Path,
+    pointer: &GenerationPointer,
+) -> Result<T, StorageError> {
+    let bytes = store
+        .get(&object_store::path::Path::from(format!(
+            "{root}/{}",
+            pointer.object
+        )))
+        .await
+        .map_err(|_| StorageError::StorageUnavailable)?
+        .bytes()
+        .await
+        .map_err(|_| StorageError::StorageUnavailable)?;
+    if digest(&bytes) != pointer.digest {
+        return Err(StorageError::AuthorizationUnavailable);
+    }
+    parse_contract(&bytes).map_err(|_| StorageError::AuthorizationUnavailable)
+}
+
+/// Directory proof is valid strictly before its deadline, never in the future.
+/// Disabled providers use immutable operator-managed identity and need no live proof.
+pub fn directory_fresh(
+    config: &Config,
+    freshness: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    if config.identity.directory.provider == fyrr_core::config::DirectoryProvider::None {
+        return true;
+    }
+    freshness.is_some_and(|at| {
+        at <= now
+            && (now - at)
+                .to_std()
+                .is_ok_and(|age| age < config.identity.validity_deadline.as_duration())
+    })
+}
+
+pub async fn pinned(
+    config: &Config,
+    head: &fyrr_core::publication::ServingHead,
+) -> Result<Dataset, StorageError> {
+    open_version(
+        &dataset_uri(config),
+        config
+            .storage
+            .object_store_options(&ProcessEnvironment)
+            .map_err(|_| StorageError::StorageConfigurationInvalid)?,
+        head.content
+            .as_ref()
+            .ok_or(StorageError::PublicationUnavailable)?
+            .lance_version,
+        None,
+    )
+    .await
+    .map_err(|_| StorageError::StorageUnavailable)
+}
+
+pub fn roots_filter(source: &str, roots: &[String]) -> String {
+    format!(
+        "source_id={} AND root_id IN ({})",
+        sql(source),
+        roots.iter().map(|r| sql(r)).collect::<Vec<_>>().join(",")
+    )
+}
+pub async fn read_manifest(
+    store: &dyn ObjectStore,
+    root: &Path,
+    relative: &str,
+) -> Result<fyrr_core::publication::ContentManifest, StorageError> {
+    read_contract(store, &Path::from(format!("{root}/{relative}"))).await
+}
+pub fn manifest_chain(
+    store: Arc<dyn ObjectStore>,
+    root: Path,
+    first: Option<String>,
+) -> futures::stream::BoxStream<
+    'static,
+    Result<fyrr_core::publication::ContentManifest, StorageError>,
+> {
+    use futures::StreamExt;
+    futures::stream::try_unfold((first, None), move |(path, newer_sequence)| {
+        let store = store.clone();
+        let root = root.clone();
+        async move {
+            let Some(path) = path else {
+                return Ok(None);
+            };
+            let manifest = read_manifest(store.as_ref(), &root, &path).await?;
+            // Every publication advances sequence. A backward walk must decrease,
+            // so corrupt cycles terminate without retaining paths or capping history.
+            if newer_sequence.is_some_and(|sequence| manifest.sequence >= sequence) {
+                return Err(StorageError::PublicationInvalid);
+            }
+            let sequence = manifest.sequence;
+            let previous = manifest
+                .previous_publication_id
+                .as_ref()
+                .map(|id| format!("publications/{id}.json"));
+            Ok(Some((manifest, (previous, Some(sequence)))))
+        }
+    })
+    .boxed()
+}
+
+pub fn data_paths(dataset: &Dataset) -> std::collections::BTreeSet<String> {
+    let mut paths = std::collections::BTreeSet::new();
+    for fragment in dataset.manifest().fragments.iter() {
+        for file in &fragment.files {
+            paths.insert(format!("data/{}", file.path));
+        }
+        if let Some(deletion) = &fragment.deletion_file {
+            paths.insert(format!(
+                "_deletions/{}-{}-{}.{}",
+                fragment.id,
+                deletion.read_version,
+                deletion.id,
+                deletion.file_type.suffix()
+            ));
+        }
+    }
+    paths
+}
+pub fn relative_path(path: &Path, root: &Path) -> String {
+    path.prefix_match(root).map_or_else(
+        || path.to_string(),
+        |parts| {
+            parts
+                .map(|part| part.as_ref().to_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+        },
+    )
+}
+
+pub fn coverage(
+    indexes: &[lance_table::format::IndexMetadata],
+    name: &str,
+) -> std::collections::BTreeSet<u32> {
+    indexes
+        .iter()
+        .filter(|i| i.name == name)
+        .flat_map(|i| i.fragment_bitmap.iter().flat_map(|bitmap| bitmap.iter()))
+        .collect()
+}
+
+#[path = "storage/local.rs"]
+mod local;
+
+#[cfg(test)]
+#[path = "storage/tests.rs"]
+mod tests;

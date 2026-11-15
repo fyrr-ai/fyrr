@@ -1,0 +1,26 @@
+[package]
+name = "fyrr-eval"
+description = "Internal quality-measurement tool over the fyrr reader's search path"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+clap.workspace = true
+fyrr-core.workspace = true
+fyrr-reader.workspace = true
+hex.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["net"] }
+
+[dev-dependencies]
+reqwest.workspace = true
+
+[lints]
+workspace = true

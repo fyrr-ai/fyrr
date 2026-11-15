@@ -1,0 +1,178 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "generation": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "built_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "hashing": {
+      "$ref": "#/$defs/HashingScheme",
+      "description": "How principal keys and tokens were hashed."
+    },
+    "tokens": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Hashed reader tokens (`tok:<64 lowercase hex>`, the HMAC-SHA256 of the\nraw token); principals refer to them by index."
+    },
+    "principals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Principal"
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/IdentityInput"
+      },
+      "description": "The immutable inputs this generation was built from."
+    },
+    "subjects": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SubjectBinding"
+      },
+      "description": "Hashed issuer/subject bindings; never taken from unverified token claims."
+    }
+  },
+  "required": [
+    "schema_version",
+    "namespace",
+    "generation",
+    "built_at",
+    "hashing",
+    "tokens",
+    "principals",
+    "inputs"
+  ],
+  "description": "One identity artifact generation.",
+  "title": "IdentityArtifact",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SchemaVersion": {
+      "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "HashingScheme": {
+      "type": "object",
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "description": "`hmac-sha256`."
+        },
+        "key_id": {
+          "type": "string",
+          "description": "Identifier of the namespace hashing key (never the key itself)."
+        }
+      },
+      "required": [
+        "algorithm",
+        "key_id"
+      ],
+      "description": "Keyed hashing of principal keys and tokens."
+    },
+    "Principal": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "Hashed canonical user key (`key:<64 lowercase hex>`, the HMAC-SHA256 of\ne.g. the corporate e-mail)."
+        },
+        "tokens": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "description": "Group memberships, as indexes into the same token dictionary."
+        }
+      },
+      "required": [
+        "key",
+        "tokens"
+      ],
+      "description": "A canonical user and the indexes of its tokens in `tokens`."
+    },
+    "IdentityInput": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/IdentityInputKind",
+          "description": "`source` (a connector principal snapshot) or `directory`."
+        },
+        "id": {
+          "type": "string",
+          "description": "Source ID, or the directory provider name."
+        },
+        "object": {
+          "type": "string",
+          "description": "Object key of the immutable snapshot, relative to the namespace root."
+        },
+        "digest": {
+          "type": "string"
+        },
+        "read_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "object",
+        "digest",
+        "read_at"
+      ],
+      "description": "One input snapshot of the build."
+    },
+    "IdentityInputKind": {
+      "type": "string",
+      "enum": [
+        "source",
+        "directory"
+      ],
+      "description": "The origin of an identity input."
+    },
+    "SubjectBinding": {
+      "type": "object",
+      "properties": {
+        "subject": {
+          "type": "string"
+        },
+        "principal": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject",
+        "principal"
+      ],
+      "description": "A hashed issuer-scoped OIDC subject mapped to a canonical principal."
+    }
+  },
+  "x-fyrr-contract": "identity-artifact",
+  "x-fyrr-schema-version": "1.1"
+}

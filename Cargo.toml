@@ -1,0 +1,107 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/fyrr-core",
+    "crates/fyrr-reader",
+    "crates/fyrr-writer",
+    "crates/fyrr",
+    "eval",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+license = "Apache-2.0"
+repository = "https://github.com/fyrr-ai/fyrr"
+
+[workspace.dependencies]
+lance-table = { version = "=14.0.3", default-features = false }
+fyrr-core = { path = "crates/fyrr-core" }
+fyrr-reader = { path = "crates/fyrr-reader" }
+fyrr-writer = { path = "crates/fyrr-writer" }
+
+# Exact stable crates.io pins keep all native Lance crates on one release.
+# Lance 14.0.3 uses Arrow 58 and DataFusion 54; no LanceDB crate is used.
+# Only the `aws` object-store backend is enabled.
+lance = { version = "=14.0.3", default-features = false, features = ["aws"] }
+# Arrow major must match Lance's (58 for 14.0.3).
+arrow-array = "58"
+arrow-select = "58"
+arrow-buffer = "58"
+arrow-schema = { version = "58", features = ["serde"] }
+
+chrono = { version = "0.4.45", default-features = false, features = ["std", "serde"] }
+clap = { version = "4.6", default-features = false, features = ["std", "help", "usage", "error-context", "derive", "env"] }
+schemars = { version = "1.2", default-features = false, features = ["std", "derive", "chrono04"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+thiserror = "2.0.21"
+tokio = { version = "1.53", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde", "std"] }
+# Validates golden fixtures (dev) and, in the writer, source settings against
+# connector providers' config schemas.
+jsonschema = { version = "0.58", default-features = false }
+# Embedded Python for connector providers, full build only.
+# arrow-pyarrow 58 imports pyarrow batches through the Arrow C Data Interface
+# (PyCapsules, zero-copy) and requires PyO3 0.28.
+pyo3 = { version = "0.28", default-features = false }
+pyo3-build-config = "0.28"
+arrow-pyarrow = "58"
+futures = { version = "0.3", default-features = false, features = ["std"] }
+# Already in the graph through Lance; used for deterministic IDs and digests.
+base64 = { version = "=0.22.1", default-features = false, features = ["std"] }
+hex = "0.4.3"
+regex = { version = "1.13", default-features = false, features = ["std"] }
+sha2 = "0.11"
+# Safe Unix process-group signals and committed-memory limits for workers.
+rustix = { version = "1.1", features = ["process", "stdio", "fs"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
+half = "2"
+object_store = { version = "0.14", features = ["aws"] }
+async-trait = "0.1"
+lance-index = { version = "=14.0.3", default-features = false }
+lance-core = { version = "=14.0.3", default-features = false }
+lance-io = { version = "=14.0.3", default-features = false }
+lance-linalg = { version = "=14.0.3", default-features = false }
+hmac = "0.13"
+constant_time_eq = "=0.4.2"
+url = "=2.5.8"
+# HTTP serving and authenticated encryption.
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
+reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls", "stream"] }
+hyper = { version = "=1.11.1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "=0.1.21", default-features = false, features = ["tokio", "service"] }
+rmcp = { version = "=3.10.0", default-features = false, features = ["server", "transport-io", "transport-streamable-http-server"] }
+jsonwebtoken = { version = "=11.1.0", default-features = false, features = ["aws_lc_rs"] }
+tokio-util = { version = "=0.7.18", default-features = false, features = ["codec", "rt"] }
+ring = { version = "=0.17.14", default-features = false, features = ["std", "alloc"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+todo = "warn"
+
+[profile.dev]
+# Keep the worktree target small: line tables for our crates, none for deps.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+# Optimize dependencies only for test runtime; workspace crates stay unoptimized.
+opt-level = 2
+
+[profile.release]
+# The binary-size budget (budgets.toml) is measured on this profile.
+strip = "symbols"
+debug = false
+# Portable fat LTO for the same native, image and recorded-CI release build.
+lto = "fat"
+codegen-units = 1

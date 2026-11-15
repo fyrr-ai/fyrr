@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Enumerate executable cases and run the committed, disjoint CI ownership rows."""
+
+import collections
+import json
+import os
+import re
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+MANIFEST = ROOT / "scripts/ci-cases.json"
+
+
+def output(command, cwd=ROOT):
+    return subprocess.check_output(command, cwd=cwd, text=True)
+
+
+def rust_inventory(args, build):
+    artifacts = output(["cargo", "test", "--locked", *args, "--no-run", "--message-format=json"])
+    cases = {}
+    for line in artifacts.splitlines():
+        item = json.loads(line)
+        if (
+            item.get("reason") != "compiler-artifact"
+            or not item["profile"]["test"]
+            or not item.get("executable")
+        ):
+            continue
+        target = item["target"]
+        package = tomllib.loads(Path(item["manifest_path"]).read_text())["package"]["name"]
+        kind = target["kind"][0]
+        group = f"{build}:{package}:{kind}:{target['name']}"
+        binary = item["executable"]
+        ignored = {
+            s.removesuffix(": test")
+            for s in output([binary, "--list", "--ignored"]).splitlines()
+            if s.endswith(": test")
+        }
+        for line in output([binary, "--list"]).splitlines():
+            if line.endswith(": test"):
+                name = line.removesuffix(": test")
+                cases[f"{group}/{name}"] = name in ignored
+    return cases
+
+
+def fyrr_binary():
+    """Builds the full fyrr binary and returns its path."""
+    messages = output(["cargo", "build", "--locked", "-p", "fyrr", "--message-format=json"])
+    for line in messages.splitlines():
+        item = json.loads(line)
+        if (
+            item.get("reason") == "compiler-artifact"
+            and item["target"]["name"] == "fyrr"
+            and item.get("executable")
+        ):
+            return item["executable"]
+    raise RuntimeError("cargo build -p fyrr produced no fyrr executable")
+
+
+def inventory():
+    cases = rust_inventory(["--workspace", "--lib", "--bins", "--tests"], "full")
+    cases.update(
+        rust_inventory(
+            ["-p", "fyrr", "--no-default-features", "--test", "cli", "--test", "privacy"], "reader"
+        )
+    )
+    for directory, args in [("connectors", ["--all-extras"]), ("examples/markdown-provider", [])]:
+        output(["uv", "sync", "--locked", *args], ROOT / directory)
+        listing = output(
+            ["uv", "run", "--locked", *args, "pytest", "--collect-only", "-q"], ROOT / directory
+        )
+        for line in listing.splitlines():
+            if "::" in line and not line.startswith(" "):
+                cases[f"python:{directory}/{line}"] = False
+    return cases
+
+
+def validate(manifest, actual):
+    owners = {}
+    for row, spec in manifest.items():
+        if spec.get("external") and spec.get("children"):
+            raise ValueError(f"external campaign cannot own public child cases: {row}")
+        if not spec["cases"]:
+            raise ValueError(f"zero-case row: {row}")
+        for case in spec["cases"]:
+            if case in owners:
+                raise ValueError(f"duplicate owner: {case}: {owners[case]} and {row}")
+            owners[case] = row
+        for child, parents in spec.get("children", {}).items():
+            if child in owners:
+                raise ValueError(f"duplicate child owner: {child}")
+            if not parents or any(parent not in spec["cases"] for parent in parents):
+                raise ValueError(f"child parent is not executed by {row}: {parents}")
+            owners[child] = row
+    missing = actual.keys() - owners.keys()
+    stale = owners.keys() - actual.keys()
+    if missing or stale:
+        raise ValueError(f"unowned cases: {sorted(missing)}\nstale cases: {sorted(stale)}")
+    for row, spec in manifest.items():
+        print(f"{row}: {len(spec['cases'])} cases, {len(spec.get('children', {}))} named children")
+    print(f"ownership: {len(owners)} executable cases, each with exactly one owner")
+
+
+def run(spec):
+    if spec.get("external"):
+        raise ValueError("external campaign requires its own configured runner")
+    groups = collections.defaultdict(list)
+    for case in spec["cases"]:
+        group, name = case.split("/", 1) if not case.startswith("python:") else (None, None)
+        if group is None:
+            directory = (
+                "connectors"
+                if case.startswith("python:connectors/")
+                else "examples/markdown-provider"
+            )
+            name = case.removeprefix(f"python:{directory}/")
+            # Exact selectors preload conftests; isolate directories whose tests
+            # import their local conftest module by name.
+            parent = Path(name.split("::", 1)[0]).parent
+            groups[f"python:{directory}:{parent}"].append(name)
+        else:
+            groups[group].append(name)
+    for group, names in groups.items():
+        if group.startswith("python:"):
+            directory = group.split(":")[1]
+            extras = ["--all-extras"] if directory == "connectors" else []
+            command = ["uv", "run", "--locked", *extras, "pytest", *names]
+            cwd = ROOT / directory
+        else:
+            build, package, kind, target = group.split(":")
+            command = ["cargo", "test", "--locked", "-p", package]
+            if build == "reader":
+                command.append("--no-default-features")
+            command += ["--lib"] if kind == "lib" else [f"--{kind}", target]
+            command += ["--", "--include-ignored", "--exact", *names]
+            cwd = ROOT
+        env = dict(os.environ)
+        if group.startswith("full:fyrr-eval:"):
+            # The tool's real-S3 cases drive the full fyrr binary.
+            env["FYRR_BINARY"] = fyrr_binary()
+        process = subprocess.Popen(
+            command, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        )
+        lines = []
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            lines.append(line)
+        if process.wait():
+            raise RuntimeError(
+                f"{group}: {len(names)} selected cases, process exited {process.returncode}"
+            )
+        transcript = "".join(lines)
+        if group.startswith("python:"):
+            counts = re.findall(r"(\d+) passed", transcript)
+        else:
+            counts = re.findall(r"test result: ok\. (\d+) passed;", transcript)
+        if not counts or int(counts[-1]) != len(names):
+            raise ValueError(f"{group}: expected {len(names)} passed cases, got {counts}")
+
+
+def main():
+    os.chdir(ROOT)
+    mode = sys.argv[1]
+    if mode == "inventory":
+        print(json.dumps(inventory(), indent=2, sort_keys=True))
+        return
+    manifest = json.loads(MANIFEST.read_text())
+    if mode == "check":
+        validate(manifest, inventory())
+    elif mode == "rows":
+        for row in manifest:
+            if row.startswith(sys.argv[2] + "-"):
+                print(row)
+    elif mode == "run":
+        spec = manifest[sys.argv[2]]
+        if not spec["cases"]:
+            raise ValueError("zero-case row")
+        run(spec)
+    else:
+        raise ValueError(f"unknown mode: {mode}")
+
+
+if __name__ == "__main__":
+    main()

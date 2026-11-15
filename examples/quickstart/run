@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# Runs the quickstart end to end from the repository root and checks it:
+#
+# 1. fyrr.toml indexes the repository's docs/ folder for one stdio user; a
+#    search and a fetch work over the CLI and over an MCP stdio session that
+#    starts in another working directory, as an MCP client would start it.
+# 2. permissions.toml publishes two folders with different readers: ada
+#    (grp:engineering) gets the handbook and never payroll, over the CLI and
+#    MCP; a finance reader does see payroll. The handbook source lists two
+#    reader tokens, so a multi-reader local-files source is synced too.
+#
+# Uses local storage by default, with no Docker commands. --s3 starts the
+# S3 fixture when needed and stops only what it started. Every run uses fresh
+# storage and private reader mirrors. Exits nonzero on any failure.
+#
+#   examples/quickstart/run [--s3]
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/lib.sh"
+cd "$ROOT"
+
+MODE=local
+case "${1:-}" in
+  "") ;;
+  --s3) MODE=s3 ;;
+  *) die "usage: examples/quickstart/run [--s3]" ;;
+esac
+(($# <= 1)) || die "usage: examples/quickstart/run [--s3]"
+EXAMPLE="$ROOT/examples/quickstart"
+WORK="$(mktemp -d)"
+FIXTURE_STARTED=0
+EMBEDDINGS_PID=
+cleanup() {
+  [[ -z "${MCP_PID:-}" ]] || kill "$MCP_PID" 2>/dev/null || true
+  [[ -z "$EMBEDDINGS_PID" ]] || kill "$EMBEDDINGS_PID" 2>/dev/null || true
+  if ((FIXTURE_STARTED)); then
+    scripts/s3-fixture stop || true
+  fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+fail() { die "quickstart: $*"; }
+
+cargo build --locked -p fyrr
+export PATH="$ROOT/target/debug:$PATH" VIRTUAL_ENV="$ROOT/connectors/.venv"
+FYRR_IDENTITY_KEY="$(openssl rand -hex 32)"
+# The default mirror is $XDG_CACHE_HOME/fyrr/<namespace>; keep it in WORK.
+export FYRR_IDENTITY_KEY XDG_CACHE_HOME="$WORK/cache"
+
+if [[ "$MODE" == s3 ]]; then
+  if ! scripts/s3-fixture status | grep -q ' running '; then
+    FIXTURE_STARTED=1
+    scripts/s3-fixture start
+  fi
+  eval "$(scripts/s3-fixture env)"
+  export AWS_ENDPOINT_URL="$FYRR_TEST_S3_ENDPOINT"
+fi
+
+# Replace only the storage boundary; both variants exercise the same sources,
+# permissions, embeddings and discover-then-initialize MCP handshake.
+fresh() {
+  local name="$1" copy="$WORK/$1" namespace="${1%.toml}"
+  python3 - "$EXAMPLE/$name" "$copy" "$MODE" "$WORK/$namespace" <<'CONFIG'
+from pathlib import Path
+import json
+import sys
+source, destination, mode, root = sys.argv[1:]
+text = Path(source).read_text()
+uri = Path(root).as_uri() if mode == "local" else "s3://fyrr-test/" + Path(root).parent.name + "-" + Path(root).name
+storage = "[storage]\nuri = " + json.dumps(uri) + "\n"
+if mode == "s3":
+    storage += 'allow_http = true\naccess_key_id = { env = "FYRR_TEST_S3_ACCESS_KEY_ID" }\nsecret_access_key = { env = "FYRR_TEST_S3_SECRET_ACCESS_KEY" }\n'
+start = text.index("[storage]")
+end = text.index("\n# The toy", start)
+Path(destination).write_text(text[:start] + storage + text[end:])
+CONFIG
+  printf '%s\n' "$copy"
+}
+
+python3 "$EXAMPLE/toy-embeddings.py" &
+EMBEDDINGS_PID=$!
+for _ in $(seq 1 50); do
+  curl -fsS -o /dev/null http://127.0.0.1:8089/v1/models 2>/dev/null && break
+  sleep 0.2
+done
+kill -0 "$EMBEDDINGS_PID" 2>/dev/null || fail "the toy embeddings service did not start (port 8089 in use?)"
+
+publish() {
+  fyrr config check
+  fyrr writer namespace create
+  fyrr writer sync >/dev/null
+  fyrr writer commit
+  fyrr reader check >/dev/null || fail "reader check: not ready"
+}
+
+# The documents of a search result as one "source/root" per line.
+hits() { jq -r '.hits[] | "\(.source_id)/\(.root_id)"'; }
+expect() {
+  printf '%-34s %s\n' "$1:" "$(paste -sd ' ' <<<"$3")"
+  [[ "$3" == "$2" ]] || fail "$1: expected $(paste -sd ' ' <<<"$2")"
+}
+
+# One MCP stdio session, one request at a time, started in directory $1.
+open_mcp() {
+  coproc MCP { cd "$1" && exec fyrr reader serve 2>"$WORK/serve.log"; }
+  # Coprocess descriptors do not reach subshells; duplicates do.
+  MCP_IN="${MCP[1]}"
+  exec {TO_MCP}>&"$MCP_IN" {FROM_MCP}<&"${MCP[0]}"
+  # Like Claude Code, probe the stateless protocol first: the refusal must
+  # leave the session free to fall back to initialize.
+  local line
+  printf '%s\n' '{"jsonrpc":"2.0","id":0,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"quickstart","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}' >&"$TO_MCP"
+  IFS= read -r -t 60 line <&"$FROM_MCP" || fail "server/discover: no response; server log: $(cat "$WORK/serve.log")"
+  jq -e '.id == 0 and .error != null' >/dev/null <<<"$line" || fail "server/discover: expected a refusal, got $line"
+  request 1 '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"quickstart","version":"1"}}}' >/dev/null
+  printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}' >&"$TO_MCP"
+  [[ "$(request 9 '{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{}}' | jq -c '[.tools[].name]')" == '["search","fetch","list_filters"]' ]] ||
+    fail "tools/list after the discover fallback"
+}
+close_mcp() {
+  exec {TO_MCP}>&- {MCP_IN}>&-
+  wait "$MCP_PID" || fail "fyrr reader serve exited with an error: $(cat "$WORK/serve.log")"
+  MCP_PID=
+}
+# Sends a request and prints the result of its response.
+request() {
+  local line
+  printf '%s\n' "$2" >&"$TO_MCP"
+  while IFS= read -r -t 60 line <&"$FROM_MCP"; do
+    jq -e --argjson id "$1" '.id == $id' >/dev/null <<<"$line" || continue
+    jq -e '.error == null and .result.isError != true' >/dev/null <<<"$line" ||
+      fail "MCP request $1 failed: $line"
+    jq -c '.result' <<<"$line"
+    return 0
+  done
+  fail "MCP request $1: no response; server log: $(cat "$WORK/serve.log")"
+}
+tool() {
+  request "$1" '{"jsonrpc":"2.0","id":'"$1"',"method":"tools/call","params":{"name":"'"$2"'","arguments":'"$3"'}}' |
+    jq -c '.structuredContent'
+}
+
+log "quickstart ($MODE): the docs/ folder"
+FYRR_CONFIG="$(fresh fyrr.toml)"
+export FYRR_CONFIG
+publish
+first="$(fyrr reader search per_request_wait --limit 3 | hits | head -n 1)"
+[[ "$first" == notes/*.md ]] || fail "docs search: no Markdown hit (got '$first')"
+expect "docs, reader search" "notes/reader-writer.md" "$first"
+mkdir -p "$WORK/elsewhere"
+open_mcp "$WORK/elsewhere"
+expect "docs, MCP search" "notes/reader-writer.md" \
+  "$(tool 2 search '{"query":"per_request_wait","limit":3}' | hits | head -n 1)"
+expect "docs, MCP fetch reader-writer.md" "1 documents" \
+  "$(tool 3 fetch '{"source_id":"notes","root_id":"reader-writer.md"}' | jq -r '"\(.documents | length) documents"')"
+close_mcp
+[[ -d "$XDG_CACHE_HOME/fyrr/notes" ]] || fail "the reader mirror is not in \$XDG_CACHE_HOME/fyrr/notes"
+[[ "$(stat -c %a "$XDG_CACHE_HOME/fyrr/notes")" == 700 ]] || fail "the reader mirror is not private"
+
+log "quickstart: see permissions in action"
+FYRR_CONFIG="$(fresh permissions.toml)"
+publish
+handbook=$'handbook/backup.md\nhandbook/deploys.md'
+expect "ada, reader search" "$handbook" "$(fyrr reader search backup --limit 5 | hits)"
+
+open_mcp "$ROOT"
+expect "ada, MCP search" "$handbook" "$(tool 2 search '{"query":"backup","limit":5}' | hits)"
+expect "ada, MCP fetch handbook/backup.md" "To restore a backup, run the restore job and verify the checksum." \
+  "$(tool 3 fetch '{"source_id":"handbook","root_id":"backup.md"}' | jq -r '.documents[].records[].text')"
+expect "ada, MCP fetch payroll/salaries.md" "0 documents" \
+  "$(tool 4 fetch '{"source_id":"payroll","root_id":"salaries.md"}' | jq -r '"\(.documents | length) documents"')"
+close_mcp
+
+# Control: with a finance subject published as the stdio identity, the same
+# search does return payroll.
+sed 's/^stdio_user = .*/stdio_user = "grace"/; s/^stdio_readers = .*/stdio_readers = ["grp:finance"]/' \
+  "$FYRR_CONFIG" >"$WORK/finance.toml"
+grep -q '^stdio_readers = \["grp:finance"\]$' "$WORK/finance.toml" || fail "identity.stdio_readers not found in permissions.toml"
+FYRR_CONFIG="$WORK/finance.toml" fyrr writer commit
+expect "grace (grp:finance), reader search" "payroll/salaries.md" \
+  "$(FYRR_CONFIG="$WORK/finance.toml" fyrr reader search backup --limit 5 | hits)"
+
+log "quickstart ($MODE) passed"

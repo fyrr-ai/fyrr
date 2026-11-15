@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+# The one local CI command. Runs every check in order, keeps going after a
+# failure, and keeps full logs under target/ci-logs/<UTC timestamp>/:
+# ci.log (everything), one log per step, and summary.txt. A test step that
+# selects zero tests fails: a green run with nothing selected proves nothing.
+#
+# Steps: doctor, rustfmt, clippy (full workspace and reader-only builds), test-target
+# case ownership guard, unit tests, contract fixtures, configuration, schema drift,
+# tools/list golden, CLI and privacy sentinel (full and reader-only builds),
+# reference docs against both builds' --help, the config schema and the MCP fixtures,
+# the internal fyrr-eval tool, reader-only link check (dependency graph and linked binary), licenses and
+# advisories (cargo-deny), Python connector SDK, example provider (test kit),
+# example wheels installed without rebuilding fyrr, budgets, optional images,
+# the README quickstart (local storage by default, --s3 on its own fixture),
+# the real-executable rows on local storage,
+# independent real-S3 selections (RustFS fixture).
+#
+#   scripts/ci            the checks above
+#   scripts/ci --debug-only   exclude release link/size checks (reported n/e)
+#   scripts/ci --step=NAME    run named steps only (repeatable; others n/e)
+#   scripts/ci --images   also scripts/images: build both images, test the
+#                         derived image, mounted wheels and compose, check the
+#                         image-size budgets (slow; otherwise "not evaluated")
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+cd "$ROOT"
+
+IMAGES=0
+DEBUG_ONLY=0
+ONLY_STEPS=0
+declare -A REQUESTED_STEPS=() SEEN_STEPS=()
+for arg in "$@"; do
+  case "$arg" in
+    --images) IMAGES=1 ;;
+    --debug-only) DEBUG_ONLY=1 ;;
+    --step=*)
+      name="${arg#--step=}"
+      [[ -n "$name" ]] || die "--step requires an exact step name"
+      ONLY_STEPS=1
+      REQUESTED_STEPS["$name"]=1
+      ;;
+    *) die "unknown argument $arg (use --images, --debug-only or --step=NAME)" ;;
+  esac
+done
+if ((DEBUG_ONLY && IMAGES)); then
+  die "--debug-only cannot be combined with --images"
+fi
+# The drift test rewrites goldens when this is set; CI must only compare.
+unset FYRR_UPDATE_GOLDEN
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+LOGS="$ROOT/target/ci-logs/$STAMP"
+mkdir -p "$LOGS"
+exec > >(tee "$LOGS/ci.log") 2>&1
+
+declare -a ROWS
+STEP=0
+FAILED=0
+
+# step <name> <counts: cargo|pytest|none> <command...>
+step() {
+  local name="$1" kind="$2"
+  shift 2
+  SEEN_STEPS["$name"]=1
+  if ((ONLY_STEPS)) && [[ ! ${REQUESTED_STEPS["$name"]+selected} ]]; then
+    not_evaluated "$name" "not selected by --step"
+    return
+  fi
+  STEP=$((STEP + 1))
+  local log
+  log="$LOGS/$(printf '%02d' "$STEP")-$(tr -c 'a-z0-9\n' '-' <<<"${name,,}" | tr -s '-' | sed 's/^-//; s/-$//').log"
+  log "step $STEP: $name"
+  local started=$SECONDS status=pass passed=- failed=- ignored=-
+  "$@" >"$log" 2>&1 || status=FAIL
+  case "$kind" in
+    cargo)
+      read -r passed failed ignored < <(
+        sed -nE 's/^test result: [A-Za-z]+\. ([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored;.*/\1 \2 \3/p' "$log" |
+          awk '{p += $1; f += $2; i += $3} END {print p + 0, f + 0, i + 0}'
+      )
+      ;;
+    pytest)
+      read -r passed failed ignored < <(
+        awk '/^=+ .* =+$/ {
+          for (i = 2; i <= NF; i++) {
+            if ($i ~ /^passed,?$/) p += $(i - 1)
+            if ($i ~ /^failed,?$/) f += $(i - 1)
+            if ($i ~ /^skipped,?$/) s += $(i - 1)
+          }
+        } END {print p + 0, f + 0, s + 0}' "$log"
+      )
+      ;;
+  esac
+  if [[ "$kind" != none && "$status" == pass && "$passed" == 0 ]]; then
+    status="FAIL"
+    echo "zero tests selected" >>"$log"
+  fi
+  [[ "$status" == pass ]] || FAILED=$((FAILED + 1))
+  ROWS+=("$(printf '%-38s %-5s %7s %7s %8s %6ss  %s' "$name" "$status" "$passed" "$failed" "$ignored" "$((SECONDS - started))" "${log#"$ROOT"/}")")
+  if [[ "$status" != pass ]]; then
+    log "step $STEP FAILED: $name (log: ${log#"$ROOT"/})"
+    tail -n 30 "$log"
+  fi
+}
+
+case_step() {
+  step "$1" cargo "$ROOT/scripts/ci-cases" run "$2"
+}
+
+FIXTURE_STARTED=0
+KEYCLOAK_STARTED=0
+cleanup_fixture() {
+  if ((KEYCLOAK_STARTED)); then
+    "$ROOT/scripts/keycloak-fixture" stop || true
+  fi
+  if ((FIXTURE_STARTED)); then
+    "$ROOT/scripts/s3-fixture" stop || true
+  fi
+}
+trap cleanup_fixture EXIT
+
+# Functions run by `step` sit in a `||` context where `set -e` is off, so
+# every command is chained explicitly.
+real_s3_setup() {
+  if ! "$ROOT/scripts/s3-fixture" status | grep -q ' running '; then
+    FIXTURE_STARTED=1
+    "$ROOT/scripts/s3-fixture" start || {
+      "$ROOT/scripts/s3-fixture" stop && "$ROOT/scripts/s3-fixture" start
+    } || return 1
+  fi
+  if ! "$ROOT/scripts/keycloak-fixture" status >/dev/null 2>&1; then
+    KEYCLOAK_STARTED=1
+    "$ROOT/scripts/keycloak-fixture" start || {
+      "$ROOT/scripts/keycloak-fixture" stop && "$ROOT/scripts/keycloak-fixture" start
+    } || return 1
+  fi
+  local exports
+  FYRR_SCIM_HEALTH_TEST_BINARY="$(cargo test --locked -p fyrr-writer --lib --no-run --message-format=json | jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable')" || return 1
+  FYRR_ROUTING_TEST_BINARY="$(cargo test --locked -p fyrr-reader --lib --no-run --message-format=json | jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable')" || return 1
+  "$ROOT/scripts/s3-fixture" status &&
+    exports="$("$ROOT/scripts/s3-fixture" env)" &&
+    eval "$exports" &&
+    exports="$("$ROOT/scripts/keycloak-fixture" env)" &&
+    eval "$exports"
+}
+
+real_s3_selection() {
+  local ready="$1"
+  shift
+  if (( !ready )); then
+    echo "real-S3 fixture setup failed; see ci.log"
+    return 1
+  fi
+  "$@"
+}
+
+real_s3() {
+  # Independent cases share a 4 GiB fixture. Keep them serial; concurrency
+  # remains inside each case, with its real worker and lease deadlines intact.
+  local -x RUST_TEST_THREADS=1 FYRR_SCIM_HEALTH_TEST_BINARY FYRR_ROUTING_TEST_BINARY
+  local ready=1 required=0 name
+  for name in "${!REQUESTED_STEPS[@]}"; do
+    [[ "$name" != "real S3: "* ]] || required=1
+  done
+  if ((!ONLY_STEPS || required)); then
+    real_s3_setup || ready=0
+  fi
+  local row
+  while IFS= read -r row; do
+    step "real S3: ${row#s3-}" cargo real_s3_selection "$ready" "$ROOT/scripts/ci-cases" run "$row"
+  done < <("$ROOT/scripts/ci-cases" rows s3)
+}
+
+# The real-executable rows on `file://` storage need no fixture, only the
+# fixed development secrets their configurations reference.
+local_storage() {
+  local -x RUST_TEST_THREADS=1 FYRR_ROUTING_TEST_BINARY FYRR_TEST_LOCAL_SECRET=fyrr-local-test-secret
+  local -x FYRR_TEST_ENCRYPTION_KEY
+  FYRR_TEST_ENCRYPTION_KEY="$(printf fyrr-local-test | sha256sum | cut -c1-64)" || return 1
+  FYRR_ROUTING_TEST_BINARY="$(cargo test --locked -p fyrr-reader --lib --no-run --message-format=json | jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable')" || return 1
+  "$ROOT/scripts/ci-cases" run local-storage
+}
+
+python_checks() {
+  (cd "$ROOT/connectors" &&
+    unset PYTHONPATH &&
+    uv sync --locked --all-extras &&
+    uv run --locked --all-extras ruff check . ../crates/fyrr/tests/providers ../scripts/ci-cases ../scripts/check-docs &&
+    uv run --locked --all-extras ruff format --check . ../crates/fyrr/tests/providers ../scripts/ci-cases ../scripts/check-docs &&
+    "$ROOT/scripts/ci-cases" run python-sdk)
+}
+
+# The example provider's own tests, with the SDK's provider test kit.
+example_provider() {
+  (cd "$ROOT/examples/markdown-provider" &&
+    uv sync --locked &&
+    uv run --locked ruff check &&
+    uv run --locked ruff format --check &&
+    "$ROOT/scripts/ci-cases" run python-example)
+}
+
+# The example wheel, built outside the workspace, installed into its own
+# directory and used by the already-built full binary: provider listed and
+# the Markdown source synced (dry run).
+example_wheels() {
+  local wheels="$ROOT/target/example-wheels" site="$ROOT/target/example-site" config output
+  rm -rf "$wheels" "$site"
+  uv build --wheel --quiet --out-dir "$wheels" "$ROOT/examples/markdown-provider" || return 1
+  uv pip install --quiet --no-deps --python "$ROOT/connectors/.venv/bin/python" \
+    --target "$site" "$wheels"/*.whl || return 1
+  cargo build --locked -p fyrr || return 1
+  config="$site/fyrr.toml"
+  printf '%s\n' '[namespace]' 'name = "dev"' '[storage]' 'uri = "s3://fyrr-dev/dev"' \
+    '[identity]' 'hashing_key = { env = "FYRR_EXAMPLE_HASHING_KEY" }' \
+    '[embedding]' 'endpoint = "https://embeddings.invalid/v1"' '[[sources]]' 'id = "handbook"' \
+    'type = "markdown-dir"' 'permissions = "fixed"' 'readers = ["grp:engineering"]' \
+    '[sources.scope]' "root = \"$ROOT/examples/markdown-provider/tests/data\"" >"$config"
+  run_fyrr() {
+    VIRTUAL_ENV="$ROOT/connectors/.venv" PYTHONPATH="$site" PYTHONDONTWRITEBYTECODE=1 \
+      FYRR_EXAMPLE_HASHING_KEY=example-wheels-key \
+      "$ROOT/target/debug/fyrr" "$@"
+  }
+  output="$(run_fyrr writer providers)"
+  echo "$output"
+  grep -qE '^markdown-dir +fyrr-provider-markdown +0\.1\.0 .* ok$' <<<"$output" &&
+    output="$(run_fyrr --config "$config" writer sync --dry-run)" &&
+    printf '%s\n' "$output" &&
+    grep -q 'upserts=2' <<<"$output" &&
+    grep -q 'dry run: 1 source(s) passed, 0 failed' <<<"$output"
+}
+
+# A check this run did not perform: listed as n/e (not evaluated), never as
+# passed.
+not_evaluated() {
+  SEEN_STEPS["$1"]=1
+  STEP=$((STEP + 1))
+  ROWS+=("$(printf '%-38s %-5s %7s %7s %8s %6ss  %s' "$1" "n/e" - - - 0 "$2")")
+  log "step $STEP: $1 not evaluated ($2)"
+}
+
+log "fyrr ci: logs in ${LOGS#"$ROOT"/}"
+step "doctor" none "$ROOT/scripts/doctor"
+step "rustfmt" none cargo fmt --all --check
+step "Rust source line length (reader)" none "$ROOT/scripts/check-line-length" \
+  "$ROOT/crates/fyrr-reader/src" "$ROOT/crates/fyrr-core/src/layout.rs" \
+  "$ROOT/crates/fyrr-core/src/layout"
+step "clippy (full workspace)" none cargo clippy --locked --workspace --all-targets -- -D warnings
+step "clippy (reader-only build)" none cargo clippy --locked -p fyrr -p fyrr-reader --no-default-features --all-targets -- -D warnings
+step "test-case ownership guard" none "$ROOT/scripts/ci-cases" check
+case_step "unit tests" units
+case_step "native Lance pin checks" lance-pin
+case_step "contract fixtures" contracts
+case_step "configuration" config
+case_step "schema drift" generated
+case_step "tools/list golden" mcp
+case_step "cli (full build)" cli-full
+case_step "cli (reader-only build)" cli-reader
+case_step "privacy sentinel (full build)" privacy-full
+case_step "privacy sentinel (reader-only build)" privacy-reader
+step "reference docs" none "$ROOT/scripts/check-docs"
+case_step "fyrr-eval (internal tool)" eval
+if ((DEBUG_ONLY)); then
+  not_evaluated "reader-only link check" "release builds excluded by --debug-only"
+else
+  step "reader-only link check" none "$ROOT/scripts/check-reader-only"
+fi
+step "licenses and advisories" none cargo deny --locked check
+step "python connector SDK" pytest python_checks
+step "example provider (test kit)" pytest example_provider
+step "example wheels without rebuild" none example_wheels
+if ((DEBUG_ONLY)); then
+  not_evaluated "budgets" "release builds excluded by --debug-only"
+else
+  step "budgets" none "$ROOT/scripts/check-budgets"
+fi
+if ((IMAGES)); then
+  step "images (build, derived, compose)" none "$ROOT/scripts/images"
+else
+  not_evaluated "images (build, derived, compose)" "run scripts/ci --images"
+fi
+# Before real_s3: the quickstart starts and stops its own fixture.
+step "quickstart example (local storage)" none "$ROOT/examples/quickstart/run"
+step "quickstart example (S3)" none "$ROOT/examples/quickstart/run" --s3
+step "local storage" cargo local_storage
+real_s3
+
+for name in "${!REQUESTED_STEPS[@]}"; do
+  if [[ ! ${SEEN_STEPS["$name"]+known} ]]; then
+    log "unknown CI step: $name"
+    FAILED=$((FAILED + 1))
+  fi
+done
+
+{
+  echo "fyrr ci $STAMP  commit ${FYRR_CI_REVISION:-$(git rev-parse --short HEAD 2>/dev/null || echo unavailable)}  $(rustc --version)"
+  printf '%-38s %-5s %7s %7s %8s %7s  %s\n' step status passed failed ignored time log
+  printf '%s\n' "${ROWS[@]}"
+  echo "steps: $STEP, failed: $FAILED"
+} | tee "$LOGS/summary.txt"
+
+if ((FAILED > 0)); then
+  log "ci FAILED ($FAILED step(s)); full logs in ${LOGS#"$ROOT"/}"
+  exit 1
+fi
+log "ci passed; full logs in ${LOGS#"$ROOT"/}"

@@ -1,0 +1,188 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "built_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "hashing": {
+      "$ref": "#/$defs/HashingScheme"
+    },
+    "users": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DirectoryUser"
+      },
+      "maxItems": 100000
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DirectoryGroup"
+      },
+      "description": "Provider and operator groups use the same membership expansion.",
+      "maxItems": 100000
+    },
+    "links": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AccountLink"
+      },
+      "maxItems": 100000,
+      "default": []
+    },
+    "state": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DirectoryStatePointer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Encrypted provisioning resources, published atomically with this snapshot."
+    }
+  },
+  "required": [
+    "schema_version",
+    "namespace",
+    "provider",
+    "built_at",
+    "hashing",
+    "users",
+    "groups"
+  ],
+  "description": "Full canonical input, independently versioned from the serving artifact.",
+  "title": "DirectorySnapshot",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SchemaVersion": {
+      "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "HashingScheme": {
+      "type": "object",
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "description": "`hmac-sha256`."
+        },
+        "key_id": {
+          "type": "string",
+          "description": "Identifier of the namespace hashing key (never the key itself)."
+        }
+      },
+      "required": [
+        "algorithm",
+        "key_id"
+      ],
+      "description": "Keyed hashing of principal keys and tokens."
+    },
+    "DirectoryUser": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string",
+          "description": "Hashed canonical user reader token."
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "default": []
+        },
+        "subjects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "default": []
+        }
+      },
+      "required": [
+        "key",
+        "token",
+        "active"
+      ],
+      "description": "Canonical principal, its normalized e-mail aliases and issuer-scoped subjects."
+    },
+    "DirectoryGroup": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100000
+        }
+      },
+      "required": [
+        "token",
+        "members"
+      ],
+      "description": "A hashed group token and direct canonical-user/group members."
+    },
+    "AccountLink": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "user": {
+          "type": "string",
+          "description": "HMAC of the source's stable user ID, not its e-mail."
+        },
+        "principal": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "user",
+        "principal"
+      ],
+      "description": "Explicit source account link; ambiguous links never grant access."
+    },
+    "DirectoryStatePointer": {
+      "type": "object",
+      "properties": {
+        "object": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "object",
+        "digest"
+      ],
+      "description": "Immutable encrypted resource state needed by the SCIM writer, never the reader."
+    }
+  },
+  "x-fyrr-contract": "directory-snapshot",
+  "x-fyrr-schema-version": "1.1"
+}

@@ -1,0 +1,42 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+@import '../src/base.css';
+@import './docs.css';
+
+:root, .dark {
+  --font: var(--font-geist-sans), system-ui, sans-serif;
+  --mono: var(--font-geist-mono), ui-monospace, monospace;
+  --font-sans: var(--font);
+  --font-mono: var(--mono);
+  --color-fd-background: #000;
+  --color-fd-foreground: #ededed;
+  --color-fd-primary: #ffea5d;
+  --color-fd-primary-foreground: #000;
+  --color-fd-card: #0a0a0a;
+  --color-fd-muted-foreground: #a1a1a1;
+  --color-fd-border: #262626;
+}
+.prose blockquote p::before, .prose blockquote p::after { content: none; }
+.prose figure.shiki { border-radius: 0; background: var(--panel); }
+.prose figure.shiki pre { border: 0; margin: 0; background: none; }
+.prose figure.shiki code { font-family: var(--mono); }
+.prose figure.shiki button { border-radius: 0; }
+.prose :is(h2, h3, h4) a { color: inherit; text-decoration: none; }
+.docs-search { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 10px 12px; margin-bottom: 28px; border: 1px solid var(--line); color: var(--fg-muted); font-size: 13px; text-align: left; cursor: pointer; }
+.docs-search:hover { border-color: var(--yellow); color: var(--fg); }
+.docs-search kbd { color: var(--fg-dim); font-size: 11px; }
+.toc a[data-active="true"] { color: var(--yellow); }
+@media (max-width: 991px) { .docs-search { margin-top: 12px; } }
+.side__toggle { display: none; }
+@media (max-width: 991px) {
+  .side__toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 14px 0; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; cursor: pointer; }
+  .side__toggle span { color: var(--yellow); font-size: 16px; }
+  .side__body { display: none; }
+  .side__body.is-open { display: block; max-height: 60vh; overflow: auto; padding-bottom: 16px; }
+}
+.prose blockquote { font-style: normal; font-weight: 400; }
+
+.prose thead { background: transparent; }
+.prose th { color: var(--fg-muted); }
+[role="dialog"] { border-radius: 0; }

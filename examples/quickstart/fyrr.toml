@@ -1,0 +1,38 @@
+# The quickstart: one folder of Markdown, searchable by you from an MCP
+# client. Change `paths` to your own notes; a relative path is resolved
+# against the directory you run `fyrr writer sync` in.
+#
+# Copy this file and replace /home/you with your home directory. The storage
+# root is private and must be on a local file system, shared by no other host.
+
+[namespace]
+name = "notes"
+
+[storage]
+uri = "file:///home/you/.local/share/fyrr/notes"
+
+# The toy service from toy-embeddings.py: word matching, not a semantic model.
+[embedding]
+endpoint = "http://127.0.0.1:8089/v1"
+model = "toy-hash-1024"
+dimensions = 1024
+reader_live = true
+
+[embedding.spend]
+limit_microusd = 100000
+max_call_microusd = 1
+
+# You, as the one stdio MCP user.
+[identity]
+stdio_user = "me"
+stdio_readers = ["usr:me"]
+hashing_key = { env = "FYRR_IDENTITY_KEY" }
+
+[[sources]]
+id = "notes"
+type = "local-files"
+permissions = "fixed"
+readers = ["usr:me"]
+[sources.scope]
+paths = ["docs"]
+include = ["**/*.md"]

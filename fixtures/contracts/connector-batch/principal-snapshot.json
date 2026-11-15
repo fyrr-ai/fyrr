@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.3",
+  "source_id": "slack-acme",
+  "kind": "members",
+  "cursor": {
+    "start": "members-2026-09-30T08:00:00Z",
+    "end": "members-2026-09-30T09:00:00Z"
+  },
+  "body": {
+    "type": "principal_snapshot",
+    "snapshot_id": "snap-2026-09-30T09:00:00Z",
+    "part": 0,
+    "last": true,
+    "users": [
+      {
+        "id": "U024BE7LH",
+        "email": "ada.novak@acme.example",
+        "active": true
+      },
+      {
+        "id": "U0G9QF9C6",
+        "active": false
+      }
+    ],
+    "groups": [
+      {
+        "id": "C0123PRIV",
+        "members": [
+          "usr:U024BE7LH"
+        ]
+      },
+      {
+        "id": "workspace-public",
+        "members": [
+          "usr:U024BE7LH",
+          "grp:C0123PRIV"
+        ]
+      }
+    ]
+  }
+}

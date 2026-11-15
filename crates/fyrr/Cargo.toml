@@ -1,0 +1,41 @@
+[package]
+name = "fyrr"
+description = "The fyrr binary: reader, writer and config subcommands"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[features]
+default = ["writer"]
+# The full build. The reader-only build (`--no-default-features`) must not link
+# fyrr-writer, Python or PyO3; scripts/check-reader-only proves it.
+writer = ["dep:fyrr-writer", "dep:pyo3-build-config"]
+
+[dependencies]
+clap.workspace = true
+fyrr-core.workspace = true
+fyrr-reader.workspace = true
+fyrr-writer = { workspace = true, optional = true }
+serde_json.workspace = true
+
+[build-dependencies]
+pyo3-build-config = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde.workspace = true
+toml.workspace = true
+axum.workspace = true
+base64.workspace = true
+reqwest.workspace = true
+lance-index.workspace = true
+lance.workspace = true
+tokio.workspace = true
+object_store.workspace = true
+chrono.workspace = true
+arrow-array.workspace = true
+futures.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,21 @@
+# Dependency-count, binary-size and image-size budgets, checked by
+# scripts/check-budgets (part of scripts/ci) and scripts/images
+# (`scripts/ci --images`). Growth fails until this file records the new
+# measured value in the same change; raise a value only by its measured delta
+# (`--record`). No line-count budgets.
+
+[dependencies]
+# Unique packages in the non-dev dependency graph of the fyrr binary.
+full = 526
+reader_only = 492
+
+[binary_size]
+# Bytes of the stripped release binary (cargo build --release -p fyrr).
+full = 142613160
+reader_only = 122021752
+
+[image_size]
+# Bytes of the images as `docker image inspect -f '{{.Size}}'` reports them
+# (containerd image store): fyrr (full build, Python, SDK) and fyrr-reader.
+full = 647554081
+reader_only = 214314794

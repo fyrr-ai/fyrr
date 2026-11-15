@@ -1,0 +1,59 @@
+# License and advisory verdicts for every dependency (new
+# dependencies get a license and advisory verdict). Run by scripts/ci.
+
+# Website build (site/bun.lock): Fumadocs, Next and React are MIT;
+# TypeScript is Apache-2.0 and Geist fonts use OFL-1.1.
+# These build dependencies are separate from the Rust graph and never enter
+# the CLI or container images. Check advisories with `cd site && bun audit`.
+
+[graph]
+# Both builds share one dependency graph apart from fyrr-writer.
+all-features = true
+
+[advisories]
+# Every ignore needs a reason and is revisited when Lance moves.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, not vulnerable; transitive through lance-index 14.0.3 with no safe upgrade" },
+    # PyO3 0.28 (full build only): the fix is PyO3 0.29, but arrow-pyarrow for
+    # Lance's Arrow major (58) requires PyO3 0.28. Revisit when Lance moves
+    # Arrow; arrow-pyarrow 60 uses a newer PyO3.
+    { id = "RUSTSEC-2026-0176", reason = "PyO3 0.28 PyList/PyTuple iterator nth/nth_back overflow: neither fyrr-writer nor arrow-pyarrow 58.4 calls nth, nth_back, skip or step_by on those iterators; fixed in PyO3 0.29, blocked by arrow-pyarrow 58" },
+    { id = "RUSTSEC-2026-0177", reason = "PyO3 0.28 PyCFunction::new_closure lacks a Sync bound: fyrr-writer's two revision callbacks explicitly enforce Sync on their closure types before new_closure; arrow-pyarrow 58.4 creates none; fixed in PyO3 0.29, blocked by arrow-pyarrow 58" },
+]
+
+[licenses]
+# aws-smithy-schema 1.2: Apache-2.0; no advisory (cargo deny check).
+# Lance 14 additions: approx, lance-jsonb, nalgebra and simba are Apache-2.0;
+# safe_arch and wide offer Zlib OR Apache-2.0 OR MIT. The added zstd 0.14
+# and zstd-safe 8 versions are BSD-3-Clause. All pass license/advisory checks.
+confidence-threshold = 0.9
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+[licenses.private]
+# fyrr's own crates are unpublished (publish = false).
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+# Workspace path dependencies of unpublished crates carry no version.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = []

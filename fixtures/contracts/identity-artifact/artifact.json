@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.1",
+  "namespace": "acme",
+  "generation": 27,
+  "built_at": "2026-09-30T10:00:10Z",
+  "hashing": {
+    "algorithm": "hmac-sha256",
+    "key_id": "acme-identity-key-2026-09"
+  },
+  "tokens": [
+    "tok:f544316b35bbdb982692922702c541a9ca96433dcbb5cc1b89443c7d8ca00c51",
+    "tok:76313c06be9a0c82e58b5f431c3a2ab17b2209b73aaadbeb714444506b19764f",
+    "tok:da237ef2d01fc26e969b86ec44ba2670c33453bf43ba9eff7efe49f2afe12fc6",
+    "tok:e82a2581aa9421fd0eafbaa94c32cb6631613e98f2f2a4a1f201ef7337354102"
+  ],
+  "principals": [
+    {
+      "key": "key:ecc32707a296a7fde094dd0e5f5e052bf011711f7d465a9aa9795bd86bc166d1",
+      "tokens": [
+        0,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "key": "key:b2101bde7d6fe59c5f254b41a90aca4aa8323803bce494e18b05464d6f6c699f",
+      "tokens": [
+        0,
+        3
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "kind": "directory",
+      "id": "google-workspace",
+      "object": "identity/inputs/directory/2026-09-30T10:00:00Z.json",
+      "digest": "sha256:4abff86ab5f134a6316f1fa00942e82969d1c8703ef86508579a5eca6dfa66dd",
+      "read_at": "2026-09-30T10:00:00Z"
+    },
+    {
+      "kind": "source",
+      "id": "slack-acme",
+      "object": "identity/inputs/slack-acme/snap-2026-09-30T09:00:00Z.json",
+      "digest": "sha256:28cb1d362aef52f7c19727c8deed79ea8bea9717dc638d13dc1dfd3a53ff9227",
+      "read_at": "2026-09-30T09:00:00Z"
+    }
+  ]
+}

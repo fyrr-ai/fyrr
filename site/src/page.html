@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>fyrr — permission-aware search for AI agents</title>
+<meta name="description" content="Open-source, serverless search for AI agents. fyrr publishes your company's documents and who may read them to an S3 bucket and serves them over MCP, filtered by permission before ranking.">
+<meta property="og:title" content="fyrr — permission-aware search for AI agents">
+<meta property="og:description" content="No database. Just a bucket. Open-source search over MCP that only returns what the caller may read.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2016%2016%27%20shape-rendering%3D%27crispEdges%27%3E%3Crect%20width%3D%2716%27%20height%3D%2716%27%20fill%3D%27%23000%27%2F%3E%3Cg%20transform%3D%27translate%280%203%29%27%20fill%3D%27%23ffea5d%27%3E%3Crect%20x%3D%2710%27%20y%3D%270%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%271%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%271%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2711%27%20y%3D%271%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%272%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%272%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%272%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2711%27%20y%3D%272%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2712%27%20y%3D%272%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%276%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2711%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2712%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2713%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%276%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%277%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2711%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2712%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2713%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2714%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%276%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%277%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%278%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%276%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%276%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%272%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%273%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%276%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%277%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%278%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%279%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2711%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2712%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2713%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2714%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%273%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%276%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%277%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%278%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%279%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2711%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2712%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2713%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%276%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%277%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%278%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%279%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2711%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2712%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&display=swap" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&display=swap"></noscript>
+<style>
+/*BASE*/
+
+  /* ===== hero ===== */
+  .hero-wrapper { position: relative; overflow: hidden; }
+  .under { position: absolute; inset: 0; overflow: hidden; background: var(--paper); }
+  .under canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; image-rendering: crisp-edges; }
+  .map-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .chart-label { position: absolute; transform: translate(-50%, -50%); padding: 2px 4px; background: var(--paper); color: var(--fg); font-size: 11px; line-height: 1.15; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+  .chart-label--big { font-size: 14px; }
+  .hero { position: relative; z-index: 2; height: max(380px, 100vh); height: max(380px, 100svh); display: flex; flex-flow: column; justify-content: flex-end; padding: clamp(16px, 2.8vw, 40px); pointer-events: none; }
+  .hero-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; }
+  .hero-text { max-width: 50%; padding: 8px 12px; background: var(--paper); animation: rise 1s .9s cubic-bezier(.2, .7, .2, 1) both; }
+  .caption { font-size: clamp(32px, 1.78vw, 48px); line-height: 1.19; font-weight: 400; letter-spacing: -.04em; text-wrap: balance; }
+  .scale { flex: none; display: flex; flex-flow: column; gap: 6px; min-width: 132px; padding: 10px 12px 8px; background: var(--paper); }
+  .scale-bar { display: flex; height: 4px; border: 1px solid var(--fg); }
+  .scale-bar i { flex: 1; }
+  .scale-bar i:nth-child(odd) { background: var(--fg); }
+  .scale-labels { display: flex; justify-content: space-between; font-size: 11px; line-height: 1; letter-spacing: .02em; }
+  .scale-title { font-size: 11px; line-height: 1; text-transform: uppercase; letter-spacing: .08em; }
+
+  /* ===== claim ===== */
+  .claim { padding: 48px var(--gutter) 64px; }
+  .claim p { max-width: 56ch; font-size: 24px; line-height: 32px; letter-spacing: -.03em; text-wrap: balance; }
+  /* link: your AI app, fyrr, your company, in one row */
+
+  /* ===== sections ===== */
+  .section { padding: 96px var(--gutter); }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  .eyebrow { margin-bottom: 20px; font-size: 12px; line-height: 1; letter-spacing: .08em; text-transform: uppercase; color: var(--yellow); }
+  .title { font-size: clamp(32px, 4.4vw, 56px); line-height: 1.04; font-weight: 400; letter-spacing: -.05em; text-wrap: balance; }
+  .sub { max-width: 54ch; margin-top: 20px; font-size: 20px; line-height: 28px; letter-spacing: -.02em; color: var(--fg-muted); }
+  .head { margin-bottom: 48px; }
+  .head--row { display: flex; justify-content: space-between; align-items: flex-end; gap: 32px; flex-wrap: wrap; }
+
+  /* stage: a quiet frame with dithered fog behind a panel */
+  .stage { position: relative; display: grid; place-items: center; padding: 64px; overflow: hidden; }
+  .stage__fog { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; image-rendering: crisp-edges; }
+  .stage > :not(canvas) { position: relative; min-width: 0; }
+  .cards > * { min-width: 0; }
+
+  .panel { width: 100%; background: var(--panel); border: 1px solid #2e2e2e; }
+  .panel__bar { display: flex; justify-content: space-between; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 16px; letter-spacing: .08em; text-transform: uppercase; }
+  .panel__bar span:last-child { color: var(--fg-dim); text-align: right; }
+  .panel__body { padding: 24px 20px; }
+
+
+
+
+  .start__note { margin-top: 16px; font-size: 13px; line-height: 20px; color: var(--fg-dim); }
+  .start__note a, .sub a { text-decoration: underline; text-underline-offset: 2px; }
+  .legal { position: absolute; left: var(--gutter); right: var(--gutter); bottom: 24px; display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 12px; line-height: 16px; color: var(--fg-dim); }
+  .legal a:hover { color: var(--fg); }
+
+
+  .btn--paper { background: var(--paper); }
+
+  /* sources */
+  .sources { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 28px; }
+  .sources li { padding: 7px 12px; border: 1px solid #2e2e2e; font-size: 13px; line-height: 16px; letter-spacing: .04em; color: var(--fg-muted); }
+  .sources__own { border-style: dashed !important; }
+  .sources__own a:hover { color: var(--yellow); }
+
+  /* pillars: four panels on the fog */
+  .stage--wide { padding: 56px 48px; }
+  .pillars { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; width: 100%; }
+  .pillars .panel__bar span:last-child { color: var(--yellow); }
+  .pillars .panel__body { display: flex; flex-direction: column; min-height: 200px; }
+  .pillars b { display: block; font-weight: 400; font-size: 22px; line-height: 28px; letter-spacing: -.02em; color: var(--fg); }
+  .pillars .panel__body > span { display: block; margin-top: 14px; font-size: 15px; line-height: 22px; color: var(--fg-muted); }
+
+  /* performance: a search that answers in 16 ms, and the leaderboard as anonymous columns */
+  .perf2 { align-items: stretch; }
+  .cost3 { grid-column: 1 / -1; }
+  .lat2 .rows { row-gap: 18px; margin-top: 8px; }
+  .lat2 .bar { height: 16px; }
+  .cost3 .panel__body { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 24px 72px; }
+  .cost3__text { display: flex; flex-direction: column; justify-content: space-between; gap: 16px; }
+  .cost3__facts { margin: 0; }
+  .cost3__facts div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 16px; padding: 6px 0; font-size: 15px; line-height: 22px; }
+  .cost3__facts dt { color: var(--fg); }
+  .cost3__facts dd { margin: 0; color: var(--fg-muted); }
+  .cost3__text .ranks2__head { margin-bottom: 0; max-width: 18em; text-wrap: balance; }
+  .cost3__chart { align-self: end; }
+  .cost3__cols { --lab: 16px; position: relative; display: flex; align-items: flex-end; gap: 24px; }
+  .cost3__cols::after { content: ""; position: absolute; left: 0; right: 0; bottom: calc(var(--lab) + 10px); height: 1px; background: var(--line); }
+  .cost3__col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .cost3__col b { margin-bottom: 8px; font-weight: 400; font-size: 20px; line-height: 24px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--fg-muted); }
+  .cost3__col.is-fyrr b { color: var(--yellow); }
+  .cost3__col i { display: block; height: calc(var(--n) * 8px); background: repeating-conic-gradient(#4a4a4a 0 25%, transparent 0 50%) 0 100% / 4px 4px; -webkit-mask: repeating-linear-gradient(0deg, #000 0 5px, transparent 5px 8px); mask: repeating-linear-gradient(0deg, #000 0 5px, transparent 5px 8px); }
+  .cost3__col.is-fyrr i { background: linear-gradient(90deg, var(--yellow) 55%, transparent 100%), repeating-conic-gradient(var(--yellow) 0 25%, transparent 0 50%) 0 100% / 4px 4px; }
+  .cost3__col span { height: var(--lab); margin-top: 10px; font-size: 12px; line-height: 16px; letter-spacing: .04em; color: var(--fg-dim); }
+  .cost3__col.is-fyrr span { color: var(--fg); }
+  .cost3__col span br { display: none; }
+  .cost3__unit { margin-top: 20px; font-size: 10px; line-height: 14px; letter-spacing: .08em; text-transform: uppercase; color: var(--fg-dim); }
+  .js .rv .cost3__col i { clip-path: inset(100% 0 0 0); }
+  .js .rv.is-in .cost3__col i { clip-path: inset(0); transition: clip-path calc(var(--n) * 60ms) steps(var(--n), end) .3s; }
+  @media (max-width: 991px) {
+    .cost3 .panel__body { grid-template-columns: minmax(0, 1fr); gap: 36px; }
+    .cost3__cols { --lab: 32px; gap: 12px; }
+    .cost3__col span br { display: inline; }
+    .cost3__col span { letter-spacing: 0; }
+    .cost3__text { display: contents; }
+    .cost3__facts { order: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .js .rv .cost3__col i { clip-path: none; transition: none; }
+  }
+  .ranks2__head { margin-bottom: 24px; font-size: 20px; line-height: 28px; letter-spacing: -.02em; color: var(--fg); }
+  .ranks2__head b { font-weight: 400; color: var(--yellow); }
+  .ranks2__cols { display: flex; align-items: flex-end; gap: 2px; height: 110px; }
+  .ranks2__cols i { position: relative; flex: 1; height: var(--h); background: repeating-conic-gradient(#3d3d3d 0 25%, transparent 0 50%) 0 0 / 4px 4px; }
+  .ranks2__cols i.is-fyrr { background: linear-gradient(0deg, var(--yellow) 70%, transparent 100%), repeating-conic-gradient(var(--yellow) 0 25%, transparent 0 50%) 0 0 / 4px 4px; }
+  .ranks2__cols i.is-fyrr span { position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); padding: 2px 6px; background: var(--yellow); color: #000; font-size: 10px; line-height: 14px; font-style: normal; letter-spacing: .08em; text-transform: uppercase; }
+  .ranks2__axis { display: flex; justify-content: space-between; margin-top: 8px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--fg-dim); }
+  .js .rv .ranks2__cols i { transform: scaleY(0); transform-origin: 50% 100%; }
+  .js .rv.is-in .ranks2__cols i { transform: none; transition: transform .8s cubic-bezier(.2, .7, .2, 1); }
+
+  /* deploy your way */
+  .ways b { display: block; font-weight: 400; font-size: 15px; line-height: 22px; color: var(--fg-muted); }
+  .ways4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; width: 100%; }
+  .ways .panel__bar span { color: var(--fg) !important; }
+  .mini { display: block; width: 100%; max-width: 220px; height: auto; margin: 4px auto 18px; }
+  .ways .panel__body { text-align: center; }
+  .mp-rd { fill: var(--panel); stroke: var(--fg-muted); }
+  .mini text { font-family: var(--font); }
+  .mp-ix { stroke: var(--yellow); fill-opacity: .55; }
+  .mp-srv { fill: var(--panel); stroke: var(--yellow); }
+  .mp-p { fill: var(--fg-muted); }
+  .mp-l { fill: none; stroke: #6a6a6a; stroke-dasharray: 2 2; }
+  .mp-t { font-size: 8px; letter-spacing: .1em; fill: var(--fg-dim); }
+  .mp-k { fill: var(--fg); }
+  /* serverless */
+  .sub--side { margin-top: 0; max-width: 44ch; }
+  .sub--small { margin-top: 24px; font-size: 15px; }
+  .pxflow { position: relative; padding: 40px 0; }
+  .pxflow .stage__fog { opacity: .35; }
+  .pxd { position: relative; display: none; width: 100%; height: auto; overflow: visible; }
+  .pxd--wide { display: block; }
+  .pxd--tall { max-width: 420px; margin: 0 auto; }
+  .pxd text { font-family: var(--font); fill: var(--fg); }
+  .px-chip { fill: #000; stroke: #3a3a3a; }
+  .px-box { fill: var(--panel); stroke: #4a4a4a; }
+  .px-zone { fill: none; stroke: #5a5a5a; stroke-dasharray: 2 4; }
+  .px-line { fill: none; stroke: #6a6a6a; stroke-dasharray: 2 2; }
+  .px-dash { fill: none; stroke: #4a4a4a; stroke-dasharray: 2 4; }
+  .px-packet { fill: var(--yellow); }
+  .px-cap { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+  .px-dim { fill: var(--fg-muted) !important; }
+  .px-title { font-size: 14px; }
+  .px-big { font-size: 20px; letter-spacing: -.02em; }
+  .px-n { fill: var(--yellow) !important; font-size: 13px; }
+  .px-sub { fill: #8a8a8a !important; font-size: 11px; }
+
+
+
+  /* numbers */
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; width: 100%; }
+  .rows { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 14px 16px; align-items: center; font-size: 14px; line-height: 20px; color: var(--fg-muted); }
+  .rows .is-fyrr { color: var(--fg); }
+  .rows b { font-weight: 400; font-variant-numeric: tabular-nums; text-align: right; }
+  .bar { height: 12px; background: #171717; }
+  .bar i { display: block; height: 100%; width: var(--w); background: #4a4a4a; transform-origin: 0 50%; }
+  .bar--fyrr i { background: linear-gradient(90deg, var(--yellow) 55%, transparent 100%), repeating-conic-gradient(var(--yellow) 0 25%, transparent 0 50%) 0 0 / 4px 4px; }
+  .js .rv .bar i { transform: scaleX(0); }
+  .js .rv.is-in .bar i { transform: none; transition: transform 1.1s cubic-bezier(.2, .7, .2, 1) .2s; }
+  .big { display: flex; align-items: baseline; gap: 12px; margin-bottom: 28px; }
+  .big strong { font-size: 56px; line-height: 1; font-weight: 400; letter-spacing: -.05em; }
+  .big span { font-size: 14px; color: var(--fg-muted); }
+  .note { margin-top: 16px; font-size: 12px; line-height: 18px; color: var(--fg-dim); }
+  .note a { text-decoration: underline; text-underline-offset: 2px; }
+
+  /* two columns: a statement on one side, the evidence on the other */
+
+
+
+  /* the end: open water, a few ships, the lighthouse */
+  .end { position: relative; padding: 96px var(--gutter) 0; overflow: hidden; }
+  .sea { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; image-rendering: pixelated; image-rendering: crisp-edges; }
+  .end > :not(canvas) { position: relative; }
+  .start { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: end; }
+  .start > * { min-width: 0; }
+  .end .code, .end .btn:not(.btn--primary) { background-color: var(--paper); }
+  .end .btn:not(.btn--primary):hover { background-color: var(--fg); }
+  .code { margin: 0; padding: 20px 24px; background: var(--panel); border: 1px solid #2e2e2e; font: 14px/26px ui-monospace, "SFMono-Regular", Menlo, monospace; overflow-x: auto; }
+  .code span { color: var(--fg-dim); user-select: none; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
+  .btn { display: inline-block; white-space: nowrap; padding: 12px 16px; border: 1px solid var(--fg); font-size: 13px; line-height: 1; letter-spacing: .06em; text-transform: uppercase; transition: background-color .2s, color .2s, border-color .2s; }
+  .btn--primary { background: var(--yellow); border-color: var(--yellow); color: #000; }
+  .btn:hover { background: var(--fg); border-color: var(--fg); color: #000; }
+
+  .site-footer { display: flex; justify-content: center; padding: 160px 0 0; }
+  .site-footer canvas { display: block; image-rendering: pixelated; image-rendering: crisp-edges; }
+
+  /* reveal */
+  .js .rv { opacity: 0; transform: translateY(16px); }
+  .js .rv.is-in { opacity: 1; transform: none; transition: opacity .7s ease, transform .7s cubic-bezier(.2, .7, .2, 1); }
+
+  /* ===== responsive ===== */
+  @media (max-width: 991px) {
+    .hero-text { max-width: 70%; }
+    .section { padding: 80px var(--gutter); }
+    .stage { padding: 32px; }
+    .cards, .start { grid-template-columns: 1fr; }
+    .ways4 { grid-template-columns: 1fr 1fr; }
+    .pillars { grid-template-columns: 1fr 1fr; }
+    .stage--wide { padding: 32px; }
+    .end { padding-top: 80px; }
+    .site-footer { padding-top: 120px; }
+  }
+  @media (max-width: 640px) {
+    :root { --gutter: 20px; }
+    .header { padding-left: 20px; padding-right: 20px; }
+    .hero-text { max-width: 100%; }
+    .scale { display: none; }
+    .caption { font-size: 24px; }
+    .claim { padding: 32px var(--gutter) 48px; }
+    .claim p { font-size: 19px; line-height: 27px; }
+    .section { padding: 64px var(--gutter); }
+    .head { margin-bottom: 32px; }
+    .sub, .ranks2__head { font-size: 17px; line-height: 25px; }
+    .stage { padding: 16px; }
+    .big strong { font-size: 44px; }
+    .pxd--wide { display: none; }
+    .pxd--tall { display: block; }
+    .pxflow { padding: 24px 0; }
+    .pillars { grid-template-columns: 1fr; }
+    .stage--wide { padding: 16px; }
+    .ways4 { grid-template-columns: 1fr; }
+    .legal { position: static; justify-content: center; padding: 24px 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .header, .hero-text { animation: none; }
+    .js .rv, .js .rv .bar i { opacity: 1; transform: none; transition: none; }
+  }
+</style>
+</head>
+<body>
+
+
+
+<!--HEADER-->
+
+<div class="hero-wrapper" id="hero-wrapper">
+  <div class="under" id="under" aria-hidden="true"><canvas id="map"></canvas><div class="map-labels" id="map-labels"></div></div>
+  <section class="hero">
+    <div class="hero-row">
+      <div class="hero-text" id="hero-text">
+        <h1 class="caption">Navigate your islands of knowledge.</h1>
+      </div>
+      <div class="scale" id="scale" aria-label="Scale: tokens">
+        <div class="scale-bar"><i></i><i></i><i></i><i></i></div>
+        <div class="scale-labels"><span>0</span><span>5K</span><span>10K</span></div>
+        <div class="scale-title">Tokens</div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<main>
+<section class="claim">
+  <p>Open-source search for AI agents. Fast, permission-aware, serverless.</p>
+</section>
+
+<section class="section" id="why">
+  <div class="wrap">
+    <div class="head rv">
+      <p class="eyebrow">Why fyrr</p>
+      <h2 class="title">Ask the whole company.<br>Without asking the whole company.</h2>
+    </div>
+    <div class="stage stage--wide rv">
+      <canvas class="stage__fog" data-seed="7" aria-hidden="true"></canvas>
+      <ol class="pillars">
+        <li class="panel"><p class="panel__bar"><span>Find</span><span>01</span></p><div class="panel__body"><b>Works in the AI you already use</b><span>Plug fyrr into Claude, Cursor or any MCP app. Ask there, and it searches your docs, chats, tickets and code.</span></div></li>
+        <li class="panel"><p class="panel__bar"><span>Protect</span><span>02</span></p><div class="panel__body"><b>Only what each person may read</b><span>It follows each document&rsquo;s access rules, taken from the app or set by you. Nobody finds what they could not open themselves.</span></div></li>
+        <li class="panel"><p class="panel__bar"><span>Scale</span><span>03</span></p><div class="panel__body"><b>As many readers as you need</b><span>Readers only read from the bucket and never coordinate, so you add more as you grow. No database or search cluster to outgrow.</span></div></li>
+        <li class="panel"><p class="panel__bar"><span>Own</span><span>04</span></p><div class="panel__body"><b>Your data stays yours</b><span>It runs in your own cloud. Text leaves it only for the AI model you choose to understand it.</span></div></li>
+      </ol>
+    </div>
+    <p class="note">Also indexes local files. A Python SDK lets you <a href="docs/connectors/authoring">write your own connector</a>.</p>
+  </div>
+</section>
+
+<section class="section" id="numbers">
+  <div class="wrap">
+    <div class="head rv">
+      <p class="eyebrow">Performance</p>
+      <h2 class="title">16 milliseconds.<br>Among the best results.</h2>
+      <p class="sub">Fast enough for an agent to search at every step. Accurate enough to trust what comes back.</p>
+    </div>
+    <div class="stage stage--wide rv">
+      <canvas class="stage__fog" data-seed="4" aria-hidden="true"></canvas>
+      <div class="cards perf2">
+        <figure class="panel lat2">
+          <figcaption class="panel__bar"><span>Search latency</span><span>lower is better</span></figcaption>
+          <div class="panel__body">
+            <p class="ranks2__head"><b>16 ms</b> median. Six searches in a blink.</p>
+            <div class="rows">
+              <span class="is-fyrr">fyrr median</span><div class="bar bar--fyrr"><i style="--w:16%"></i></div><b class="is-fyrr">16 ms</b>
+              <span class="is-fyrr">fyrr p95</span><div class="bar bar--fyrr"><i style="--w:25%"></i></div><b class="is-fyrr">25 ms</b>
+              <span>A blink of an eye</span><div class="bar"><i style="--w:100%"></i></div><b>100 ms</b>
+            </div>
+          </div>
+        </figure>
+        <figure class="panel ranks2">
+          <figcaption class="panel__bar"><span>EnterpriseRAG-Bench</span><span>vs 43 systems</span></figcaption>
+          <div class="panel__body">
+            <p class="ranks2__head"><b>90+</b> score. Among the best tested.</p>
+            <div class="ranks2__cols" aria-label="Overall scores of 44 search systems, highest first; fyrr is near the top."><i style="--h:93.24%"></i><i style="--h:92.74%"></i><i class="is-fyrr" style="--h:92.7%" data-placeholder="quality"><span>fyrr</span></i><i style="--h:92.64%"></i><i style="--h:91.48%"></i><i style="--h:90.91%"></i><i style="--h:88.53%"></i><i style="--h:88.26%"></i><i style="--h:87.16%"></i><i style="--h:86.58%"></i><i style="--h:81.5%"></i><i style="--h:80.46%"></i><i style="--h:80.34%"></i><i style="--h:80.26%"></i><i style="--h:80.13%"></i><i style="--h:78.48%"></i><i style="--h:77.19%"></i><i style="--h:76.79%"></i><i style="--h:76.73%"></i><i style="--h:75.92%"></i><i style="--h:73.11%"></i><i style="--h:71.9%"></i><i style="--h:70.31%"></i><i style="--h:68.22%"></i><i style="--h:65.61%"></i><i style="--h:63.27%"></i><i style="--h:61.03%"></i><i style="--h:52.63%"></i><i style="--h:50.6%"></i><i style="--h:50.24%"></i><i style="--h:48.96%"></i><i style="--h:48.42%"></i><i style="--h:44.74%"></i><i style="--h:42.04%"></i><i style="--h:41.87%"></i><i style="--h:40.01%"></i><i style="--h:37.73%"></i><i style="--h:37.72%"></i><i style="--h:35.58%"></i><i style="--h:34.48%"></i><i style="--h:33.93%"></i><i style="--h:27.2%"></i><i style="--h:24.98%"></i><i style="--h:24.89%"></i></div>
+            <div class="ranks2__axis"><span>best</span><span>worst</span></div>
+          </div>
+        </figure>
+        <figure class="panel cost3">
+          <figcaption class="panel__bar"><span>Running cost</span><span>lower is better</span></figcaption>
+          <div class="panel__body">
+            <div class="cost3__text">
+              <p class="ranks2__head"><b>Minimal cost.</b> Nothing to keep running while nobody searches.</p>
+              <dl class="cost3__facts">
+                <div><dt>Personal</dt><dd>fyrr runs as an MCP server on your laptop. No login.</dd></div>
+                <div><dt>Team</dt><dd>The same on each teammate&rsquo;s laptop, one shared index. No login.</dd></div>
+                <div><dt>Company</dt><dd>One shared fyrr server with company login.</dd></div>
+                <div><dt>Others</dt><dd>Two popular self-hosted alternatives, as they ship.</dd></div>
+              </dl>
+            </div>
+            <div class="cost3__chart">
+              <div class="cost3__cols" aria-label="Always-on services besides storage: fyrr for one person 0, for a team 0, for a company 1; two popular self-hosted alternatives 10 and 15.">
+                <div class="cost3__col is-fyrr"><b>0</b><span>fyrr <br>personal</span></div>
+                <div class="cost3__col is-fyrr"><b>0</b><span>fyrr <br>team</span></div>
+                <div class="cost3__col is-fyrr"><b>1</b><i style="--n:1"></i><span>fyrr <br>company</span></div>
+                <div class="cost3__col"><b>10</b><i style="--n:10"></i><span>Other <br>A</span></div>
+                <div class="cost3__col"><b>15</b><i style="--n:15"></i><span>Other <br>B</span></div>
+              </div>
+              <p class="cost3__unit">Always-on services besides storage</p>
+            </div>
+          </div>
+        </figure>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="serverless">
+  <div class="wrap">
+    <div class="head head--row rv">
+      <div>
+        <p class="eyebrow">Serverless</p>
+        <h2 class="title">No database.<br>Just a bucket.</h2>
+      </div>
+      <p class="sub sub--side">Everything fyrr knows lives as files in one S3 bucket. Small teams run nothing around the clock; a whole company adds one small service.</p>
+    </div>
+    <div class="pxflow rv">
+      <canvas class="stage__fog" data-seed="3" aria-hidden="true"></canvas>
+      <svg class="pxd pxd--wide" data-mode="base" viewBox="0 0 1120 300" shape-rendering="crispEdges" role="img" aria-label="Your tools feed any number of writers; they publish to one S3 bucket that holds the whole index; any number of readers serve agents over MCP. Writers and readers call an embeddings API. No database, cluster or queue."><defs><pattern id="wbase-dy" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="2" height="2" fill="#ffea5d"/><rect x="2" y="2" width="2" height="2" fill="#ffea5d"/></pattern><pattern id="wbase-dg" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="2" height="2" fill="#3a3a3a"/><rect x="2" y="2" width="2" height="2" fill="#3a3a3a"/></pattern></defs><rect x="12" y="100" width="150" height="58" fill="url(#wbase-dg)"/><rect x="6" y="106" width="150" height="58" fill="url(#wbase-dg)"/><rect class="px-box" x="0" y="112" width="150" height="58"/><text class="px-title" x="14" y="136">Your company data</text><text class="px-sub" x="14" y="154">via connectors</text><path class="px-line" d="M150 141H196"/><rect class="px-zone" x="176" y="60" width="768" height="160"/><rect x="190" y="54" width="96" height="14" fill="#000"/><text class="px-cap px-dim" x="197" y="65">YOUR CLOUD</text><rect x="210" y="100" width="170" height="58" fill="url(#wbase-dg)"/><rect x="204" y="106" width="170" height="58" fill="url(#wbase-dg)"/><rect class="px-box" x="198" y="112" width="170" height="58"/><text class="px-title" x="212" y="136">Writer</text><text class="px-sub" x="212" y="154">reads your apps</text><text class="px-n" x="356" y="136" text-anchor="end">×N</text><path class="px-line" d="M368 141H420"/><rect x="422" y="86" width="274" height="110" fill="url(#wbase-dy)"/><rect x="422" y="86" width="274" height="110" fill="none" stroke="#ffea5d" stroke-width="2"/><rect x="438" y="104" width="134" height="34" fill="#000"/><text class="px-big" x="448" y="128">S3 bucket</text><rect x="438" y="146" width="242" height="40" fill="#000"/><text class="px-sub" x="448" y="162">content · vectors · full-text index</text><text class="px-sub" x="448" y="178">permissions · every version</text><path class="px-line" d="M696 141H748"/><rect x="762" y="100" width="170" height="58" fill="url(#wbase-dg)"/><rect x="756" y="106" width="170" height="58" fill="url(#wbase-dg)"/><rect class="px-box" x="750" y="112" width="170" height="58"/><text class="px-title" x="764" y="136">Reader</text><text class="px-sub" x="764" y="154">answers searches</text><text class="px-n" x="908" y="136" text-anchor="end">×N</text><path class="px-line" d="M920 141H970"/><rect class="px-box" x="970" y="112" width="150" height="58"/><text class="px-title" x="984" y="136">Agents</text><text class="px-sub" x="984" y="154">any AI agent</text><path class="px-dash" d="M283 170V268H470M835 170V268H650"/><rect class="px-chip" x="470" y="250" width="180" height="36"/><text class="px-cap" x="560" y="266" text-anchor="middle">Embedding model</text><text class="px-sub" x="560" y="280" text-anchor="middle">the AI model you choose</text><rect class="px-packet" x="-2" y="-2" width="4" height="4"><animateMotion path="M150 141H196" dur="1.0s" begin="0s" repeatCount="indefinite" calcMode="linear"/></rect><rect class="px-packet" x="-2" y="-2" width="4" height="4"><animateMotion path="M150 141H196" dur="1.0s" begin="0.5s" repeatCount="indefinite" calcMode="linear"/></rect><rect class="px-packet" x="-2" y="-2" width="4" height="4"><animateMotion path="M368 141H420" dur="1.2s" begin="0.3s" repeatCount="indefinite" calcMode="linear"/></rect><rect class="px-packet" x="-2" y="-2" width="4" height="4"><animateMotion path="M368 141H420" dur="1.2s" begin="0.9s" repeatCount="indefinite" calcMode="linear"/></rect><rect class="px-packet" x="-2" y="-2" width="4" height="4"><animateMotion path="M696 141H748" dur="1.2s" begin="0.6s" repeatCount="indefinite" calcMode="linear"/></rect><rect class="px-packet" x="-2" y="-2" width="4" height="4"><animateMotion path="M696 141H748" dur="1.2s" begin="1.2s" repeatCount="indefinite" calcMode="linear"/></rect><rect class="px-packet" x="-2" y="-2" width="4" height="4"><animateMotion path="M920 141H970" dur="1.0s" begin="0.2s" repeatCount="indefinite" calcMode="linear"/></rect><rect class="px-packet" x="-2" y="-2" width="4" height="4"><animateMotion path="M970 141H920" dur="1.0s" begin="0.7s" repeatCount="indefinite" calcMode="linear"/></rect></svg>
+      <svg class="pxd pxd--tall" data-mode="base" viewBox="0 0 360 620" shape-rendering="crispEdges" role="img" aria-label="Your tools feed any number of writers; they publish to one S3 bucket that holds the whole index; any number of readers serve agents over MCP. Writers and readers call an embeddings API. No database, cluster or queue."><defs><pattern id="tbase-dy" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="2" height="2" fill="#ffea5d"/><rect x="2" y="2" width="2" height="2" fill="#ffea5d"/></pattern><pattern id="tbase-dg" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="2" height="2" fill="#3a3a3a"/><rect x="2" y="2" width="2" height="2" fill="#3a3a3a"/></pattern></defs><rect x="72" y="8" width="240" height="58" fill="url(#tbase-dg)"/><rect x="66" y="14" width="240" height="58" fill="url(#tbase-dg)"/><rect class="px-box" x="60" y="20" width="240" height="58"/><text class="px-title" x="74" y="44">Your company data</text><text class="px-sub" x="74" y="62">any source, any connector</text><path class="px-line" d="M180 78V118"/><rect x="72" y="120" width="240" height="58" fill="url(#tbase-dg)"/><rect x="66" y="126" width="240" height="58" fill="url(#tbase-dg)"/><rect class="px-box" x="60" y="132" width="240" height="58"/><text class="px-title" x="74" y="156">Writer</text><text class="px-sub" x="74" y="174">reads your apps</text><text class="px-n" x="288" y="156" text-anchor="end">×N</text><path class="px-line" d="M180 190V226"/><rect x="20" y="228" width="320" height="112" fill="url(#tbase-dy)"/><rect x="20" y="228" width="320" height="112" fill="none" stroke="#ffea5d" stroke-width="2"/><rect x="36" y="246" width="134" height="34" fill="#000"/><text class="px-big" x="46" y="270">S3 bucket</text><rect x="36" y="288" width="288" height="40" fill="#000"/><text class="px-sub" x="46" y="304">content · vectors · full-text index</text><text class="px-sub" x="46" y="320">permissions · every version</text><path class="px-line" d="M180 340V386"/><rect x="72" y="388" width="240" height="58" fill="url(#tbase-dg)"/><rect x="66" y="394" width="240" height="58" fill="url(#tbase-dg)"/><rect class="px-box" x="60" y="400" width="240" height="58"/><text class="px-title" x="74" y="424">Reader</text><text class="px-sub" x="74" y="442">answers searches</text><text class="px-n" x="288" y="424" text-anchor="end">×N</text><path class="px-line" d="M180 458V494"/><rect class="px-box" x="60" y="494" width="240" height="58"/><text class="px-title" x="74" y="518">Agents</text><text class="px-sub" x="74" y="536">any AI agent</text><rect class="px-chip" x="60" y="574" width="240" height="40"/><text class="px-cap" x="180" y="591" text-anchor="middle">Embedding model</text><text class="px-sub" x="180" y="606" text-anchor="middle">the AI model you choose</text><rect class="px-packet" x="-2" y="-2" width="4" height="4"><animateMotion path="M180 78V118" dur="1.0s" begin="0s" repeatCount="indefinite" calcMode="linear"/></rect><rect class="px-packet" x="-2" y="-2" width="4" height="4"><animateMotion path="M180 190V218" dur="0.9s" begin="0.4s" repeatCount="indefinite" calcMode="linear"/></rect><rect class="px-packet" x="-2" y="-2" width="4" height="4"><animateMotion path="M180 350V386" dur="0.9s" begin="0.2s" repeatCount="indefinite" calcMode="linear"/></rect><rect class="px-packet" x="-2" y="-2" width="4" height="4"><animateMotion path="M180 458V494" dur="0.8s" begin="0.6s" repeatCount="indefinite" calcMode="linear"/></rect><rect class="px-packet" x="-2" y="-2" width="4" height="4"><animateMotion path="M180 494V458" dur="0.8s" begin="0.1s" repeatCount="indefinite" calcMode="linear"/></rect></svg>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="teams">
+  <div class="wrap">
+    <div class="head rv">
+      <p class="eyebrow">Deploy your way</p>
+      <h2 class="title">From one laptop<br>to the whole company.</h2>
+    </div>
+    <div class="stage stage--wide rv">
+      <canvas class="stage__fog" data-seed="9" aria-hidden="true"></canvas>
+      <div class="ways4">
+        <figure class="panel ways">
+          <figcaption class="panel__bar"><span>Just you</span></figcaption>
+          <div class="panel__body">
+            <svg class="mini" viewBox="0 0 200 112" shape-rendering="crispEdges" role="img" aria-label="One person with their own index; no server."><defs><pattern id="mp1" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="2" height="2" fill="#ffea5d"/><rect x="2" y="2" width="2" height="2" fill="#ffea5d"/></pattern></defs><rect class="mp-ix" style="fill:url(#mp1)" x="78" y="10" width="44" height="26"/><path class="mp-l" d="M100 36V84"/><rect class="mp-p" x="97" y="86" width="6" height="6"/><text class="mp-t" x="100" y="108" text-anchor="middle">NO SERVER</text></svg>
+            <b>Your files, notes and repos, searched by your coding agent.</b>
+          </div>
+        </figure>
+        <figure class="panel ways">
+          <figcaption class="panel__bar"><span>A team</span></figcaption>
+          <div class="panel__body">
+            <svg class="mini" viewBox="0 0 200 112" shape-rendering="crispEdges" role="img" aria-label="A team sharing one index; each agent runs its own reader; no server."><defs><pattern id="mp2" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="2" height="2" fill="#ffea5d"/><rect x="2" y="2" width="2" height="2" fill="#ffea5d"/></pattern></defs><rect class="mp-ix" style="fill:url(#mp2)" x="78" y="10" width="44" height="26"/><path class="mp-l" d="M100 36V72M76 72H124"/><path class="mp-l" d="M76 72V84"/><path class="mp-l" d="M100 72V84"/><path class="mp-l" d="M124 72V84"/><rect class="mp-p" x="73" y="86" width="6" height="6"/><rect class="mp-p" x="97" y="86" width="6" height="6"/><rect class="mp-p" x="121" y="86" width="6" height="6"/><text class="mp-t" x="100" y="108" text-anchor="middle">NO SERVER</text></svg>
+            <b>One shared index, no server. Each teammate&rsquo;s agent searches it directly.</b>
+          </div>
+        </figure>
+        <figure class="panel ways">
+          <figcaption class="panel__bar"><span>The company</span></figcaption>
+          <div class="panel__body">
+            <svg class="mini" viewBox="0 0 200 112" shape-rendering="crispEdges" role="img" aria-label="One index and one server for the whole company."><defs><pattern id="mp3" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="2" height="2" fill="#ffea5d"/><rect x="2" y="2" width="2" height="2" fill="#ffea5d"/></pattern></defs><rect class="mp-ix" style="fill:url(#mp3)" x="52" y="10" width="96" height="26"/><path class="mp-l" d="M100 36V46"/><rect class="mp-srv" x="78" y="46" width="44" height="16"/><text class="mp-t mp-k" x="100" y="57" text-anchor="middle">SERVER</text><path class="mp-l" d="M100 62V72M28 72H172"/><path class="mp-l" d="M28 72V84"/><path class="mp-l" d="M46 72V84"/><path class="mp-l" d="M64 72V84"/><path class="mp-l" d="M82 72V84"/><path class="mp-l" d="M100 72V84"/><path class="mp-l" d="M118 72V84"/><path class="mp-l" d="M136 72V84"/><path class="mp-l" d="M154 72V84"/><path class="mp-l" d="M172 72V84"/><rect class="mp-p" x="25" y="86" width="6" height="6"/><rect class="mp-p" x="43" y="86" width="6" height="6"/><rect class="mp-p" x="61" y="86" width="6" height="6"/><rect class="mp-p" x="79" y="86" width="6" height="6"/><rect class="mp-p" x="97" y="86" width="6" height="6"/><rect class="mp-p" x="115" y="86" width="6" height="6"/><rect class="mp-p" x="133" y="86" width="6" height="6"/><rect class="mp-p" x="151" y="86" width="6" height="6"/><rect class="mp-p" x="169" y="86" width="6" height="6"/><text class="mp-t" x="100" y="108" text-anchor="middle">ONE SERVER</text></svg>
+            <b>One index and one server, behind your company login.</b>
+          </div>
+        </figure>
+        <figure class="panel ways">
+          <figcaption class="panel__bar"><span>Training &amp; evals</span></figcaption>
+          <div class="panel__body">
+            <svg class="mini" viewBox="0 0 200 112" shape-rendering="crispEdges" role="img" aria-label="One fixed index read by many parallel readers."><defs><pattern id="mp4" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="2" height="2" fill="#ffea5d"/><rect x="2" y="2" width="2" height="2" fill="#ffea5d"/></pattern></defs><rect class="mp-ix" style="fill:url(#mp4)" x="52" y="10" width="96" height="26"/><path class="mp-l" d="M25 36V74"/><rect class="mp-rd" x="15" y="74" width="20" height="18"/><path class="mp-l" d="M55 36V74"/><rect class="mp-rd" x="45" y="74" width="20" height="18"/><path class="mp-l" d="M85 36V74"/><rect class="mp-rd" x="75" y="74" width="20" height="18"/><path class="mp-l" d="M115 36V74"/><rect class="mp-rd" x="105" y="74" width="20" height="18"/><path class="mp-l" d="M145 36V74"/><rect class="mp-rd" x="135" y="74" width="20" height="18"/><path class="mp-l" d="M175 36V74"/><rect class="mp-rd" x="165" y="74" width="20" height="18"/><text class="mp-t" x="100" y="108" text-anchor="middle">READERS ×N</text></svg>
+            <b>A fixed index that changes only when you update it. Search it in parallel.</b>
+          </div>
+        </figure>
+      </div>
+    </div>
+    <p class="note">Every way: no database. <a href="docs/deployment">How to deploy</a></p>
+  </div>
+</section>
+
+<section class="end" id="start">
+  <canvas class="sea" id="sea" aria-hidden="true"></canvas>
+  <div class="wrap start">
+    <div class="rv">
+      <p class="eyebrow">Get started</p>
+      <h2 class="title">Chart your<br>own islands.</h2>
+    </div>
+    <div class="rv">
+      <pre class="code"><span>$ </span>git clone https://github.com/fyrr-ai/fyrr &amp;&amp; cd fyrr
+<span>$ </span>scripts/doctor --local
+<span>$ </span>examples/quickstart/run</pre>
+      <p class="start__note">Pre-release: builds from source on Linux; the build prerequisites (including openssl and jq) are listed in <a href="https://github.com/fyrr-ai/fyrr/blob/main/CONTRIBUTING.md#build-host">CONTRIBUTING</a>. Cloud connectors are tested against synthetic APIs so far.</p>
+      <div class="buttons">
+        <a href="docs/quickstart" class="btn btn--primary">Run the quickstart</a>
+        <a href="https://github.com/fyrr-ai/fyrr" class="btn">View on GitHub</a>
+      </div>
+    </div>
+  </div>
+  <footer class="site-footer">
+    <canvas id="lighthouse" aria-hidden="true"></canvas>
+  </footer>
+  <p class="legal"><span>Apache-2.0</span><a href="https://github.com/fyrr-ai/fyrr/blob/main/SECURITY.md">Security</a><a href="https://github.com/fyrr-ai/fyrr/blob/main/CONTRIBUTING.md">Contributing</a><a href="https://github.com/fyrr-ai/fyrr/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></p>
+</section>
+</main>
+
+<!--SCRIPTS-->
+</body>
+</html>

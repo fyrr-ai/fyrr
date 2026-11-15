@@ -1,0 +1,4 @@
+Metadata-Version: 2.1
+Name: fyrr-test-providers
+Version: 1.0.0
+Summary: Connector providers for fyrr's CLI and privacy tests (not built, not published)

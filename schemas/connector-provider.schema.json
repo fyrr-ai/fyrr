@@ -1,0 +1,105 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "name": {
+      "type": "string",
+      "description": "Provider name: the value of a source's `type`. Equals the entry point\nname.",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "One line about the provider."
+    },
+    "min_sdk_version": {
+      "type": "string",
+      "description": "Oldest `fyrr-connectors` SDK version (`major.minor.patch`) the provider\nworks with; fyrr refuses the provider when its series is not the one\nfyrr loads or the installed SDK is older.",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "connection_types": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PermissionsMode"
+      },
+      "description": "Connection types the provider supports: the permissions modes a\nsource may configure (`sync` maps the source's permissions, `fixed`\nuses the source's configured readers)."
+    },
+    "sync_kinds": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SyncKind"
+      },
+      "description": "The sync kinds the connector implements; always includes `content`."
+    },
+    "connector": {
+      "type": "string",
+      "description": "The connector class as `module.path:Class`.",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+    },
+    "config_schema": {
+      "$ref": "#/$defs/ProviderConfigSchema"
+    }
+  },
+  "required": [
+    "schema_version",
+    "name",
+    "min_sdk_version",
+    "connection_types",
+    "sync_kinds",
+    "connector",
+    "config_schema"
+  ],
+  "title": "fyrr connector provider metadata",
+  "description": "What a provider's metadata callable returns.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SchemaVersion": {
+      "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "PermissionsMode": {
+      "type": "string",
+      "enum": [
+        "sync",
+        "fixed"
+      ],
+      "description": "Permissions mode of a connection."
+    },
+    "SyncKind": {
+      "type": "string",
+      "enum": [
+        "content",
+        "permissions",
+        "members",
+        "reconcile"
+      ],
+      "description": "Which of a source's independent syncs produced a batch."
+    },
+    "ProviderConfigSchema": {
+      "type": "object",
+      "properties": {
+        "settings": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "settings",
+        "scope"
+      ],
+      "description": "JSON Schemas (draft 2020-12) of a source's `settings` and `scope` tables.\nThey join fyrr's generated configuration schema, and `fyrr config check`\nvalidates sources against them. A property marked `\"x-fyrr-secret\": true`\nmust hold `{ env = \"VAR\" }`, never the secret itself."
+    }
+  },
+  "x-fyrr-contract": "connector-provider",
+  "x-fyrr-schema-version": "2.0",
+  "x-fyrr-sdk-series": "0.1"
+}

@@ -1,0 +1,276 @@
+use super::*;
+
+/// Publish native work through the same immutable manifest and fenced head CAS.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn publish(
+    config: &Config,
+    lease: &LeaseGuard,
+    dataset: &Dataset,
+    mut head: ServingHead,
+    lineage: CommitLineage,
+    receipts: Vec<String>,
+    acl_changed: bool,
+    mut cursor_rewinds: Vec<String>,
+    maintenance_completed: bool,
+) -> Result<u64> {
+    let (store, root) = namespace_store(config)?;
+    let previous_manifest = previous_manifest(config, store.as_ref(), &root, &head).await?;
+    if cursor_rewinds.is_empty() {
+        cursor_rewinds = previous_manifest
+            .as_ref()
+            .map(|m| m.cursor_rewinds.clone())
+            .unwrap_or_default();
+    }
+    let actual = dataset.load_indices().await?;
+    let mut indexes = Vec::new();
+    for index in actual.iter() {
+        let Some(&(column, _, _, kind)) =
+            INDEXES.iter().find(|(_, name, _, _)| *name == index.name)
+        else {
+            continue;
+        };
+        indexes.push(IndexIdentity {
+            name: index.name.clone(),
+            column: column.into(),
+            kind: kind.into(),
+            uuid: index.uuid.to_string(),
+        });
+    }
+    let reader_coverage = fyrr_reader::storage::coverage(&actual, "readers_idx");
+    if dataset
+        .manifest()
+        .fragments
+        .iter()
+        .any(|f| !reader_coverage.contains(&(crate::narrow_u32(f.id))))
+    {
+        return Err(WriterError::ReadersIndexMissing);
+    }
+    let files = file_inventory(
+        store.as_ref(),
+        &root,
+        dataset,
+        previous_manifest.as_ref(),
+        &indexes,
+    )
+    .await?;
+    let sequence = head.content.as_ref().map_or(Ok(1), |p| {
+        p.sequence
+            .checked_add(1)
+            .ok_or(WriterError::PublicationSequenceOverflow)
+    })?;
+    let publication_id = format!(
+        "pub-{}",
+        &digest(
+            serde_json::json!([
+                config.namespace.name,
+                sequence,
+                dataset.version().version,
+                receipts,
+                lineage
+            ])
+            .to_string()
+            .as_bytes()
+        )[7..39]
+    );
+    if acl_changed {
+        let mut policy: PolicyArtifact =
+            fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+        policy.schema_version = <PolicyArtifact as fyrr_core::Contract>::VERSION;
+        policy.generation = head
+            .policy
+            .generation
+            .checked_add(1)
+            .ok_or(WriterError::PolicyGenerationOverflow)?;
+        policy.row_acl_sequence = Some(sequence);
+        head.policy = crate::prepare::put_generation(
+            store.as_ref(),
+            &root,
+            "policy",
+            policy.generation,
+            &policy,
+        )
+        .await?;
+    }
+    let manifest = ContentManifest {
+        schema_version: PUBLICATION_CONTRACT_VERSION,
+        namespace: config.namespace.name.clone(),
+        publication_id: publication_id.clone(),
+        sequence,
+        previous_publication_id: head.content.as_ref().map(|p| p.publication_id.clone()),
+        lance_version: dataset.version().version,
+        committed_at: Utc::now(),
+        maintenance_completed_at: if maintenance_completed {
+            Some(Utc::now())
+        } else {
+            previous_manifest
+                .as_ref()
+                .and_then(|m| m.maintenance_completed_at)
+        },
+        embedding: identity(&config.embedding),
+        chunk_profile: chunk_identity(),
+        fts: config.namespace.fts_settings(),
+        retrieval_policy_digest: config.namespace.retrieval_digest(),
+        indexes,
+        files,
+        envelope_ids: receipts,
+        lineage: lineage.clone(),
+        identity: head.identity.clone(),
+        policy: head.policy.clone(),
+        rejected_envelope_ids: head.rejected_envelope_ids.clone(),
+        cursor_rewinds,
+        incarnation: head.incarnation.clone(),
+    };
+    let manifest_path = format!("publications/{publication_id}.json");
+    put_immutable(
+        store.as_ref(),
+        &Path::from(format!("{root}/{manifest_path}")),
+        &manifest,
+    )
+    .await?;
+    head.rejected_envelope_ids.clear();
+    head.content = Some(ContentPointer {
+        publication_id,
+        sequence,
+        lance_version: manifest.lance_version,
+        manifest: manifest_path,
+        committed_at: manifest.committed_at,
+    });
+    head.updated_at = Utc::now();
+    verify_lineage(dataset, &lineage).await?;
+    #[cfg(test)]
+    crate::maintenance::restore_test_publication();
+    lease.publish(head).await?;
+    Ok(manifest.lance_version)
+}
+
+pub(super) async fn previous_manifest(
+    config: &Config,
+    store: &dyn ObjectStore,
+    root: &Path,
+    head: &ServingHead,
+) -> Result<Option<ContentManifest>> {
+    let previous_manifest = if let Some(pointer) = &head.content {
+        Some(
+            fyrr_reader::storage::read_contract::<ContentManifest>(
+                store,
+                &Path::from(format!("{root}/{}", pointer.manifest)),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if previous_manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.embedding != identity(&config.embedding))
+    {
+        return Err(WriterError::EmbeddingProfileMismatch);
+    }
+    if previous_manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.chunk_profile != chunk_identity())
+    {
+        return Err(WriterError::ChunkProfileMismatch);
+    }
+    Ok(previous_manifest)
+}
+
+async fn file_inventory(
+    store: &dyn ObjectStore,
+    root: &Path,
+    dataset: &Dataset,
+    previous_manifest: Option<&ContentManifest>,
+    indexes: &[IndexIdentity],
+) -> Result<Vec<FileRef>> {
+    // Carry immutable file sizes forward. Incremental publications inspect only
+    // new data/deletion files and new native index UUIDs, not the whole S3 corpus.
+    let dataset_root = root.clone().join("dataset.lance");
+    let mut inventory: std::collections::BTreeMap<String, u64> = previous_manifest
+        .map(|m| {
+            m.files
+                .iter()
+                .map(|f| (f.path.clone(), f.size_bytes))
+                .collect()
+        })
+        .unwrap_or_default();
+    if previous_manifest.is_none() {
+        let objects: Vec<_> = store
+            .list(Some(&dataset_root))
+            .try_collect()
+            .await
+            .map_err(|_| WriterError::FileInventoryUnavailable)?;
+        for object in objects {
+            if object.location.prefix_match(&dataset_root).is_some() {
+                inventory.insert(
+                    fyrr_reader::storage::relative_path(&object.location, &dataset_root),
+                    object.size,
+                );
+            }
+        }
+    } else {
+        let mut paths = fyrr_reader::storage::data_paths(dataset);
+        let manifest_path = &dataset.manifest_location().path;
+        let relative = fyrr_reader::storage::relative_path(manifest_path, &dataset_root);
+        paths.insert(relative);
+        if let Some(transaction) = &dataset.manifest().transaction_file {
+            paths.insert(format!("_transactions/{transaction}"));
+        }
+        for path in paths {
+            if let std::collections::btree_map::Entry::Vacant(entry) = inventory.entry(path.clone())
+            {
+                let metadata = store
+                    .head(&Path::from(format!("{dataset_root}/{path}")))
+                    .await
+                    .map_err(|_| WriterError::FileInventoryUnavailable)?;
+                entry.insert(metadata.size);
+            }
+        }
+        let old_uuids: BTreeSet<_> = previous_manifest
+            .iter()
+            .flat_map(|m| &m.indexes)
+            .map(|i| i.uuid.as_str())
+            .collect();
+        for index in indexes {
+            if !old_uuids.contains(index.uuid.as_str()) {
+                let prefix = dataset_root
+                    .clone()
+                    .join("_indices")
+                    .join(index.uuid.as_str());
+                let objects: Vec<_> = store
+                    .list(Some(&prefix))
+                    .try_collect()
+                    .await
+                    .map_err(|_| WriterError::FileInventoryUnavailable)?;
+                for object in objects {
+                    if object.location.prefix_match(&dataset_root).is_some() {
+                        inventory.insert(
+                            fyrr_reader::storage::relative_path(&object.location, &dataset_root),
+                            object.size,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    let referenced = fyrr_reader::storage::data_paths(dataset);
+    let manifest_path = dataset.manifest_location().path.to_string();
+    let index_uuids: HashSet<_> = indexes.iter().map(|index| index.uuid.as_str()).collect();
+    inventory.retain(|path, _| {
+        referenced.contains(path)
+            || manifest_path.ends_with(&format!("/{path}"))
+            || dataset
+                .manifest()
+                .transaction_file
+                .as_ref()
+                .is_some_and(|tx| path == &format!("_transactions/{tx}"))
+            || path
+                .strip_prefix("_indices/")
+                .and_then(|path| path.split_once('/'))
+                .is_some_and(|(uuid, _)| index_uuids.contains(uuid))
+    });
+    let files = inventory
+        .into_iter()
+        .map(|(path, size_bytes)| FileRef { path, size_bytes })
+        .collect();
+    Ok(files)
+}

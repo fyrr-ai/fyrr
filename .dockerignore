@@ -1,0 +1,23 @@
+# Only what docker/Dockerfile copies; examples are built and installed as
+# independent wheels, never in the image build.
+*
+!Cargo.toml
+!LICENSE
+!NOTICE
+!Cargo.lock
+!rust-toolchain.toml
+!.cargo/
+!crates/
+!eval/
+!connectors/
+!scripts/lib.sh
+!scripts/pins.env
+!docker/fyrr-entrypoint
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+crates/fyrr/tests/providers/
+**/.env
+**/.env.*
+connectors/dist/

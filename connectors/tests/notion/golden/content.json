@@ -1,0 +1,210 @@
+[
+  {
+    "schema_version": "1.3",
+    "source_id": "testkit-source",
+    "kind": "content",
+    "cursor": {
+      "start": null,
+      "end": "{\"path\":[],\"root_revisions\":{\"7c26efed-680e-5524-a21f-39014aecde94\":\"7aeed9452297e94754d2550337c063ae\"},\"roots\":[\"7c26efed-680e-5524-a21f-39014aecde94\"],\"since\":\"2026-01-01T00:21:00.000Z\",\"v\":1,\"walks\":[]}"
+    },
+    "body": {
+      "type": "document_changes",
+      "changes": [
+        {
+          "op": "upsert",
+          "root_id": "b51cee89-34a7-5af0-81a2-084b8b232784",
+          "source_revision": "a20b3af816b33cc6f066d9e919d0a5d1",
+          "readers": [
+            "grp:staff"
+          ],
+          "containers": [],
+          "metadata": {
+            "source_uri": "https://www.notion.so/plan-b51cee8934a75af081a2084b8b232784",
+            "source_type": "notion-page",
+            "title": "Plan 2026",
+            "author": "Ada Example",
+            "project": "Handbook",
+            "labels": [],
+            "created_at": "2026-01-01T00:03:00Z",
+            "updated_at": "2026-01-01T00:07:00Z",
+            "connector_map": {
+              "page_id": "b51cee89-34a7-5af0-81a2-084b8b232784",
+              "root_page_id": "7c26efed-680e-5524-a21f-39014aecde94",
+              "database_id": null
+            }
+          },
+          "attributes": [],
+          "sections": [
+            {
+              "text": "Draft.",
+              "location": {
+                "kind": "heading",
+                "index": 0
+              }
+            },
+            {
+              "text": "# Goals\n\n- Ship the connector\n  - [x] Tests\n1. First\n2. Second\n\nDetails\n  Inside the toggle.",
+              "location": {
+                "kind": "heading",
+                "label": "Goals",
+                "index": 1
+              }
+            },
+            {
+              "text": "## Numbers\n\nitem | eur\nrent | 1200\n\nLeft.\n\n```python\nx = 1\n```\n\nReference https://example.com/spec\n\nArchitecture sketch",
+              "location": {
+                "kind": "heading",
+                "label": "Numbers",
+                "index": 2
+              }
+            }
+          ]
+        },
+        {
+          "op": "upsert",
+          "root_id": "078037db-feab-5710-ba83-8661249c7b8c",
+          "source_revision": "09bbf8df4a434a2ee9fdec7461dfd357",
+          "readers": [
+            "grp:staff"
+          ],
+          "containers": [],
+          "metadata": {
+            "source_uri": "https://www.notion.so/risks-078037dbfeab5710ba838661249c7b8c",
+            "source_type": "notion-page",
+            "title": "Risks",
+            "author": "Ada Example",
+            "project": "Handbook",
+            "labels": [],
+            "created_at": "2026-01-01T00:06:00Z",
+            "updated_at": "2026-01-01T00:08:00Z",
+            "connector_map": {
+              "page_id": "078037db-feab-5710-ba83-8661249c7b8c",
+              "root_page_id": "7c26efed-680e-5524-a21f-39014aecde94",
+              "database_id": null
+            }
+          },
+          "attributes": [],
+          "sections": [
+            {
+              "text": "> Few.",
+              "location": {
+                "kind": "heading",
+                "index": 0
+              }
+            }
+          ]
+        },
+        {
+          "op": "upsert",
+          "root_id": "50d5f48c-133d-5540-99a1-0ffae87b59c4",
+          "source_revision": "7d085617595c8c946585c818f875bc61",
+          "readers": [
+            "grp:staff"
+          ],
+          "containers": [],
+          "metadata": {
+            "source_uri": "https://www.notion.so/task-login-50d5f48c133d554099a10ffae87b59c4",
+            "source_type": "notion-row",
+            "title": "Fix the login",
+            "author": "Ada Example",
+            "project": "Handbook",
+            "labels": [],
+            "created_at": "2026-01-01T00:11:00Z",
+            "updated_at": "2026-01-01T00:18:00Z",
+            "connector_map": {
+              "page_id": "50d5f48c-133d-5540-99a1-0ffae87b59c4",
+              "root_page_id": "7c26efed-680e-5524-a21f-39014aecde94",
+              "database_id": "400e3216-cda0-5d9c-ace5-817dff1a58b7"
+            }
+          },
+          "attributes": [],
+          "sections": [
+            {
+              "text": "Name: Fix the login\nStage: Doing\nTags: auth",
+              "location": {
+                "kind": "properties",
+                "index": 0
+              }
+            },
+            {
+              "text": "# Steps\n\nReproduce, then fix.",
+              "location": {
+                "kind": "heading",
+                "label": "Steps",
+                "index": 1
+              }
+            }
+          ]
+        },
+        {
+          "op": "upsert",
+          "root_id": "8161cc8e-ff9c-5cba-82a3-8619c6e3cf7a",
+          "source_revision": "7c1338c9713448e4cf3933f037316a88",
+          "readers": [
+            "grp:staff"
+          ],
+          "containers": [],
+          "metadata": {
+            "source_uri": "https://www.notion.so/notes-8161cc8eff9c5cba82a38619c6e3cf7a",
+            "source_type": "notion-page",
+            "title": "Notes",
+            "author": "Ada Example",
+            "project": "Handbook",
+            "labels": [],
+            "created_at": "2026-01-01T00:17:00Z",
+            "updated_at": "2026-01-01T00:19:00Z",
+            "connector_map": {
+              "page_id": "8161cc8e-ff9c-5cba-82a3-8619c6e3cf7a",
+              "root_page_id": "7c26efed-680e-5524-a21f-39014aecde94",
+              "database_id": null
+            }
+          },
+          "attributes": [],
+          "sections": [
+            {
+              "text": "Row sub-page.",
+              "location": {
+                "kind": "heading",
+                "index": 0
+              }
+            }
+          ]
+        },
+        {
+          "op": "upsert",
+          "root_id": "f71ba8b2-d39f-517d-8b3e-1e6e6b2aea3c",
+          "source_revision": "d242ff17c5303216d8b362f3b8c7ebdb",
+          "readers": [
+            "grp:staff"
+          ],
+          "containers": [],
+          "metadata": {
+            "source_uri": "https://www.notion.so/task-empty-f71ba8b2d39f517d8b3e1e6e6b2aea3c",
+            "source_type": "notion-row",
+            "title": "Write the docs",
+            "author": "Ada Example",
+            "project": "Handbook",
+            "labels": [],
+            "created_at": "2026-01-01T00:14:00Z",
+            "updated_at": "2026-01-01T00:16:00Z",
+            "connector_map": {
+              "page_id": "f71ba8b2-d39f-517d-8b3e-1e6e6b2aea3c",
+              "root_page_id": "7c26efed-680e-5524-a21f-39014aecde94",
+              "database_id": "400e3216-cda0-5d9c-ace5-817dff1a58b7"
+            }
+          },
+          "attributes": [],
+          "sections": [
+            {
+              "text": "Name: Write the docs",
+              "location": {
+                "kind": "properties",
+                "index": 0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

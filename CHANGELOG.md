@@ -1,0 +1,49 @@
+# Changelog
+
+All notable changes to fyrr are recorded here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The binaries follow
+[Semantic Versioning](https://semver.org/); published contracts carry their
+own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+
+## [Unreleased]
+
+### Fixed
+
+- Maintenance and source purge remove abandoned local Lance multipart uploads
+  that native object listings hide, while protecting recent and active uploads.
+
+### Added
+
+- MCP tools `search`, `fetch` and `list_filters`, served over stdio for one
+  user or over Streamable HTTP with per-user OIDC tokens.
+- Permission-aware hybrid retrieval: full-text and vector candidates are
+  generated only from rows the caller may read, fused, grouped per document
+  and optionally reranked.
+- Fail-closed authorization: missing or malformed policy or identity refuses
+  the request with `authorization_unavailable`, sources whose permission
+  reads stop succeeding are hidden at their freshness deadline, and the
+  reader rechecks live authorization before returning any result or error.
+- Publication on S3: per-source sync into durable prepared batches, a single
+  committer, immutable Lance publications switched atomically, restore and
+  rollback that never revive revoked grants, retention and purge.
+- Local storage for a single host: `storage.uri = "file:///absolute/path"`
+  keeps the namespace in a private directory, with the same conditional
+  writes, leases and publications as on S3, and runs the quickstart without
+  Docker (`examples/quickstart/fyrr.toml`).
+- Two builds of one binary: the full build (writer and reader, embedded
+  Python for connectors) and the reader-only build (no Python).
+- Python connector SDK `fyrr-connectors` 0.1.0 with bundled providers for
+  local files, Google Drive, Notion, GitHub, Slack and Jira, and an example
+  third-party provider.
+- Directory sync from Keycloak, SCIM or a snapshot file, or operator-managed
+  identities without a directory (`provider = "none"`).
+- Container images for both builds, generated JSON Schemas and contract
+  fixtures, and `scripts/ci`, which checks the reference documentation
+  against the binaries.
+
+### Changed
+
+- Native Lance storage and retrieval use the stable 14.0.3 release from
+  crates.io, with exact pins. Arrow remains on major 58 and new datasets
+  retain the default Lance 2.2 data-file format. Native index training and
+  search kernels can change retrieval ranking when publications are rebuilt.

@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Assembles versioned release artifacts locally, from the same steps the
+# repository already uses: the pinned release builds of both binaries
+# (scripts/check-budgets measures these), the connector SDK wheel
+# (docker/Dockerfile builds it the same way), and the two images as
+# scripts/images builds and tests them. This script uploads, pushes and tags
+# nothing; on a `v*` tag, .github/workflows/release.yml runs CI and then
+# publishes this script's output.
+#
+#   scripts/release [--version V] [--out DIR] [--no-images]
+#
+# --version V   artifact version (default: `git describe --tags --always`;
+#               a dirty tree is refused)
+# --out DIR     output directory (default: target/release-artifacts)
+# --no-images   skip the images (their row in manifest.txt is then n/e)
+#
+# Output: DIR/fyrr-V/ with LICENSE and NOTICE, the full and reader-only
+# binaries, the SDK wheel, the generated schemas and MCP fixtures (with
+# LICENSE and NOTICE), the image archives, manifest.txt and SHA256SUMS.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+cd "$ROOT"
+
+VERSION=""
+OUT="$ROOT/target/release-artifacts"
+IMAGES=1
+while (($#)); do
+  case "$1" in
+    --version) VERSION="$2"; shift 2 ;;
+    --out) OUT="$(realpath -m -- "$2")"; shift 2 ;;
+    --no-images) IMAGES=0; shift ;;
+    *) die "unknown argument $1 (use --version V, --out DIR, --no-images)" ;;
+  esac
+done
+
+if [[ -z "$VERSION" ]]; then
+  git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not a git checkout; pass --version"
+  [[ -z "$(git -C "$ROOT" status --porcelain)" ]] || die "the tree has uncommitted changes; commit them or pass --version"
+  VERSION="$(git -C "$ROOT" describe --tags --always)"
+fi
+[[ "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$ ]] || die "version must be a bounded identifier"
+COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unavailable)"
+PLATFORM="linux-x86_64"
+DIR="$OUT/fyrr-$VERSION"
+
+[[ "$(uname -s)-$(uname -m)" == "Linux-x86_64" ]] || die "release artifacts are built on Linux x86-64 only"
+rm -rf "$DIR"
+mkdir -p "$DIR"
+log "assembling fyrr $VERSION in ${DIR#"$ROOT"/}"
+
+"$ROOT/scripts/doctor" >"$DIR/doctor.log" 2>&1 || { tail -n 20 "$DIR/doctor.log"; die "scripts/doctor failed"; }
+
+# --- binaries (the pinned release profile of budgets.toml) ------------------
+log "building the full release binary"
+build_release -p fyrr
+cp "$ROOT/target/release/fyrr" "$DIR/fyrr-$VERSION-$PLATFORM"
+log "building the reader-only release binary"
+build_release -p fyrr --no-default-features
+cp "$ROOT/target/release/fyrr" "$DIR/fyrr-reader-$VERSION-$PLATFORM"
+chmod 0755 "$DIR/fyrr-$VERSION-$PLATFORM" "$DIR/fyrr-reader-$VERSION-$PLATFORM"
+"$DIR/fyrr-$VERSION-$PLATFORM" --version | grep -q 'full build' || die "the full binary does not report the full build"
+"$DIR/fyrr-reader-$VERSION-$PLATFORM" --version | grep -q 'reader-only build' || die "the reader binary does not report the reader-only build"
+
+# --- the connector SDK wheel ------------------------------------------------
+log "building the connector SDK wheel"
+rm -rf "$DIR/wheel-build"
+uv build --wheel --quiet --out-dir "$DIR/wheel-build" "$ROOT/connectors"
+wheel="$(ls "$DIR"/wheel-build/fyrr_connectors-*.whl)"
+mv "$wheel" "$DIR/"
+rm -rf "$DIR/wheel-build"
+wheel="$DIR/$(basename "$wheel")"
+
+# --- license and contracts --------------------------------------------------
+cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$DIR/"
+tar -czf "$DIR/fyrr-contracts-$VERSION.tar.gz" -C "$ROOT" LICENSE NOTICE schemas fixtures/contracts fixtures/mcp
+
+# --- images (built and tested by scripts/images) ------------------------------
+image_row="images  n/e  (--no-images)"
+if ((IMAGES)); then
+  log "building and testing both images with scripts/images"
+  "$ROOT/scripts/images" >"$DIR/images.log" 2>&1 || { tail -n 30 "$DIR/images.log"; die "scripts/images failed (log: ${DIR#"$ROOT"/}/images.log)"; }
+  tag="wt-$(printf '%s' "$ROOT" | sha256sum | cut -c1-12)"
+  docker image tag "fyrr:$tag" "fyrr:$VERSION"
+  docker image tag "fyrr-reader:$tag" "fyrr-reader:$VERSION"
+  docker image save "fyrr:$VERSION" | gzip >"$DIR/fyrr-image-$VERSION.tar.gz"
+  docker image save "fyrr-reader:$VERSION" | gzip >"$DIR/fyrr-reader-image-$VERSION.tar.gz"
+  docker image rm "fyrr:$VERSION" "fyrr-reader:$VERSION" >/dev/null
+  image_row="images  pass  fyrr-image-$VERSION.tar.gz fyrr-reader-image-$VERSION.tar.gz ($(cat "$ROOT/target/images/sizes.txt" | tr '\n' ';'))"
+fi
+
+# --- manifest and sums --------------------------------------------------------
+{
+  echo "fyrr $VERSION"
+  echo "commit $COMMIT"
+  echo "platform $PLATFORM"
+  echo "built_at $(date -u +%FT%TZ)"
+  echo "rustc $(rustc --version)"
+  echo "sdk $(basename "$wheel")"
+  echo "$image_row"
+  echo
+  echo "size  file"
+  for file in "$DIR"/*; do
+    [[ -f "$file" && "$(basename "$file")" != manifest.txt ]] || continue
+    printf '%d  %s\n' "$(stat -c %s "$file")" "$(basename "$file")"
+  done
+} >"$DIR/manifest.txt"
+(cd "$DIR" && sha256sum -- * >SHA256SUMS && sha256sum --check --quiet SHA256SUMS)
+log "done: ${DIR#"$ROOT"/} ($(grep -c . "$DIR/SHA256SUMS") files, SHA256SUMS verified); nothing was published"
+cat "$DIR/manifest.txt"

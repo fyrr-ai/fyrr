@@ -1,0 +1,70 @@
+[
+  {
+    "schema_version": "1.3",
+    "source_id": "testkit-source",
+    "kind": "permissions",
+    "cursor": {
+      "start": null,
+      "end": "eNoVyzEOgCAMRuG7_LMmraIRbiNpa0gIgyKL8e7K9obvPTBVuRCed8Bx7qX2hpyp6ajlQICnGIl4W2c2nsz56HajTRYn4lUX_GdOV01dlzvnAQ2B3w8t1RxY"
+    },
+    "body": {
+      "type": "permission_changes",
+      "documents": [],
+      "container_grants": [
+        {
+          "container_id": "drive-eng",
+          "container_kind": "drive",
+          "permission_revision": "90bb0018631f12f49b4af08d54dd9ee5",
+          "readers": [
+            "grp:eng@example.com",
+            "usr:alice@example.com"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "schema_version": "1.3",
+    "source_id": "testkit-source",
+    "kind": "permissions",
+    "cursor": {
+      "start": "eNoVyzEOgCAMRuG7_LMmraIRbiNpa0gIgyKL8e7K9obvPTBVuRCed8Bx7qX2hpyp6ajlQICnGIl4W2c2nsz56HajTRYn4lUX_GdOV01dlzvnAQ2B3w8t1RxY",
+      "end": "eNpNjEsOwyAMBe_idSrZKSDMbUJsR0iIRX6bKHdvSjfdvnkzF5iqbJAukCRrOfWlbYEEIwxwJG8WA2YjYvQc5gf4Dp5dOBLbjEpjtg7uAZZ1avsv9xdjzBmRYniT0WiOs5sMo3gnwqrdrGXby_fdjloHOCHR_QEpFy4U"
+    },
+    "body": {
+      "type": "permission_changes",
+      "documents": [
+        {
+          "root_id": "doc-plan",
+          "permission_revision": "17e5fd319f007f208641a7d3c6e1eb0b",
+          "readers": [
+            "grp:domain:example.com",
+            "grp:eng@example.com",
+            "usr:alice@example.com",
+            "usr:bob@example.com"
+          ],
+          "containers": []
+        },
+        {
+          "root_id": "doc-private",
+          "permission_revision": "0666ba2941f3d5acccde5148a2b2a72e",
+          "readers": [
+            "usr:bob@example.com"
+          ],
+          "containers": []
+        },
+        {
+          "root_id": "deck-roadmap",
+          "permission_revision": "94dc19100fbf3b1f8e5fc63483ba5b19",
+          "readers": [
+            "usr:carol@example.com"
+          ],
+          "containers": [
+            "drive-eng"
+          ]
+        }
+      ],
+      "container_grants": []
+    }
+  }
+]

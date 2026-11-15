@@ -1,0 +1,25 @@
+name: Connector request
+description: Ask for a source that fyrr should sync, or for a change to a bundled connector.
+labels: ["connector"]
+body:
+  - type: input
+    id: source
+    attributes:
+      label: Source
+      description: The system to sync, for example Confluence or SharePoint.
+    validations:
+      required: true
+  - type: textarea
+    id: permissions
+    attributes:
+      label: Permissions
+      description: How the source grants access (users, groups, sharing links) and which API exposes it. fyrr only serves what it can authorize.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Content and scale
+      description: Which content types matter and roughly how many documents.
+    validations:
+      required: false

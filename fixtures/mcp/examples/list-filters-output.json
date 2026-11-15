@@ -1,0 +1,36 @@
+{
+  "projects": {
+    "status": "values",
+    "values": [
+      {
+        "value": "ENG",
+        "count": 412
+      }
+    ]
+  },
+  "source_types": {
+    "status": "values",
+    "values": []
+  },
+  "authors": {
+    "status": "too_many",
+    "values": []
+  },
+  "metadata": {
+    "schema_version": "2.0",
+    "publication_id": "pub-000042",
+    "content_version": 121,
+    "committed_at": "2026-09-30T10:01:30Z",
+    "degraded": [],
+    "hidden_sources": [],
+    "stale_version": false,
+    "omitted_bytes": 0,
+    "telemetry": {
+      "cache": "warm",
+      "queue_wait_ms": 0,
+      "unindexed_rows_scanned": 128,
+      "s3_requests": 3,
+      "s3_bytes": 40960
+    }
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "properties": {
+    "code": {
+      "$ref": "#/$defs/ErrorCode"
+    },
+    "message": {
+      "type": "string"
+    },
+    "retryable": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "code",
+    "message",
+    "retryable"
+  ],
+  "description": "The structured body of a tool error. Messages never reveal identities,\ngrants or the existence of denied documents.",
+  "title": "ToolError",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "invalid_argument",
+        "authorization_unavailable",
+        "storage_unavailable",
+        "incompatible_index",
+        "deadline_exceeded",
+        "cancelled",
+        "stale_cursor",
+        "busy",
+        "rate_limited"
+      ],
+      "description": "Bounded tool error codes. Authorization denial is an\nempty success, `document_changed` is a result, and a failed query embedding\nis a degradation flag; none of them is an error."
+    }
+  }
+}

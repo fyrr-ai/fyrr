@@ -1,0 +1,29 @@
+# Both images on one machine, as development runs them; started by
+# scripts/images, which sets the image tags and prepares FYRR_COMPOSE_DIR
+# (fyrr.toml, docs/, wheels/). Every service below runs once and exits 0;
+# scripts/images also holds a full-image MCP reader open alongside writer jobs.
+services:
+  # The reader-only image: validates the shared configuration.
+  reader:
+    image: ${FYRR_READER_IMAGE:?set by scripts/images}
+    environment:
+      FYRR_IDENTITY_KEY: ${FYRR_IDENTITY_KEY:-}
+    command: ["--config", "/etc/fyrr/fyrr.toml", "config", "check"]
+    volumes:
+      - ${FYRR_COMPOSE_DIR:?}/fyrr.toml:/etc/fyrr/fyrr.toml:ro
+  # The full image as a writer job: installs the mounted provider wheels and
+  # runs the dry-run sync of local Markdown.
+  writer:
+    image: ${FYRR_IMAGE:?set by scripts/images}
+    environment:
+      FYRR_IDENTITY_KEY: ${FYRR_IDENTITY_KEY:-}
+      FYRR_PROVIDER_WHEELS: /wheels
+    command: ["--config", "/etc/fyrr/fyrr.toml", "writer", "sync", "--dry-run"]
+    volumes:
+      - ${FYRR_COMPOSE_DIR:?}/fyrr.toml:/etc/fyrr/fyrr.toml:ro
+      - ${FYRR_COMPOSE_DIR:?}/wheels:/wheels:ro
+      - ${FYRR_COMPOSE_DIR:?}/docs:/srv/docs:ro
+  # The full image's reader subcommands, as used in development.
+  dev-reader:
+    image: ${FYRR_IMAGE:?set by scripts/images}
+    command: ["reader", "--help"]
