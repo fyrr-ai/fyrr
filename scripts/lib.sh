@@ -16,6 +16,9 @@ export UV_PYTHON_PREFERENCE=only-managed
 
 PROTOC_DIR="$ROOT/target/tools/protoc"
 
+# Image builds and release archives share this checkout-owned tag.
+worktree_image_tag() { printf 'wt-%s\n' "$(printf '%s' "$ROOT" | sha256sum | cut -c1-12)"; }
+
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 

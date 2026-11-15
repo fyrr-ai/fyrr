@@ -30,7 +30,7 @@ for arg in "$@"; do
   esac
 done
 
-TAG="wt-$(printf '%s' "$ROOT" | sha256sum | cut -c1-12)"
+TAG="$(worktree_image_tag)"
 LABEL="org.fyrr.worktree=$TAG"
 FULL="fyrr:$TAG"
 READER="fyrr-reader:$TAG"

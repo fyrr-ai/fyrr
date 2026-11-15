@@ -51,7 +51,7 @@ providers`. The Python SDK has its own tests:
 | `crates/fyrr-writer` | Full build only: provider discovery, Python workers, batch validation, committer, maintenance, directory and SCIM. |
 | `crates/fyrr` | The `fyrr` binary; feature `writer` (default) is the full build. |
 | `connectors/` | Python package `fyrr-connectors`: provider API, test kit and the bundled providers. |
-| `eval/` | `fyrr-eval`, an internal quality-measurement tool; never released. |
+| `eval/` | `fyrr-eval`, a maintainer quality-measurement tool; never released. |
 | `examples/` | The quickstart (configuration, documents and `run`), an independently built provider wheel and a derived-image Dockerfile. |
 | `schemas/`, `fixtures/` | Generated JSON Schemas, golden contract documents and MCP goldens. |
 | `docker/` | `Dockerfile` (targets `fyrr-reader` and `fyrr`), entry point, `compose.yaml`. |
@@ -157,6 +157,21 @@ not create.
 
 `scripts/release` uploads nothing. Pushing a `v*` tag that matches the
 workspace version in `Cargo.toml` starts `.github/workflows/release.yml`: it
-runs CI (`scripts/ci --images`) and, only if CI passes, publishes the output
-of `scripts/release` as a GitHub release and pushes both images to GHCR.
+runs CI (`scripts/ci --images`) and, only if CI passes, uploads the output
+of `scripts/release` to a draft GitHub release. It publishes the release
+after pushing both images to GHCR; reruns resume the draft or leave an
+already published release unchanged. Release logs stay under
+`target/release-logs/<version>/`, outside the downloadable artifacts. Image
+archives retain checkout-owned tags, recorded as `image_tag` in
+`manifest.txt`. After downloading the artifacts, verify and load the full
+image with:
+
+```sh
+sha256sum --check SHA256SUMS
+image_tag="$(awk '$1 == "image_tag" {print $2}' manifest.txt)"
+docker image load --input fyrr-image-0.1.0.tar.gz
+docker run --rm "fyrr:$image_tag" --version
+```
+
+The reader archive uses the same tag under `fyrr-reader`.
 When tagging, rename `[Unreleased]` in `CHANGELOG.md` to `[X.Y.Z] - YYYY-MM-DD`.
