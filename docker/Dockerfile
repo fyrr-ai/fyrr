@@ -53,7 +53,9 @@ RUN --mount=type=cache,id=fyrr-cargo-registry,sharing=locked,target=/usr/local/c
 # (google-drive, notion, github, slack and jira extras). The testkit extra and dev tools stay out.
 FROM ${PYTHON_BUILD_IMAGE} AS sdk
 COPY --from=uv /uv /usr/local/bin/uv
-ENV UV_PYTHON_PREFERENCE=only-system UV_PYTHON_DOWNLOADS=never
+# The image pins Python independently of the development interpreter.
+ENV UV_PYTHON_PREFERENCE=only-system UV_PYTHON_DOWNLOADS=never \
+    UV_PYTHON=/usr/local/bin/python3.13
 COPY connectors /src/connectors
 RUN uv build --wheel --out-dir /dist /src/connectors \
     && uv export --project /src/connectors --frozen --no-dev --no-emit-project \

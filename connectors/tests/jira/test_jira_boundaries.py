@@ -35,7 +35,10 @@ def test_jira_rotation_budget(elapsed, expected):
     assert len(selected) == expected
 
 
-@pytest.mark.parametrize("value", ["{}", "[]", "\0", '{"scope":42}', "x" * 16385])
+@pytest.mark.parametrize(
+    "value",
+    ["{}", "[]", "\0", '{"scope":42}', pytest.param("x" * 16385, id="oversized")],
+)
 def test_jira_bad_cursor_rejected(value):
     with pytest.raises(ValueError, match="cursor"):
         Cursor.decode(value, "scope")
