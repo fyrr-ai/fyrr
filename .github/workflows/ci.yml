@@ -22,7 +22,7 @@ env:
 
 jobs:
   ci:
-    name: scripts/ci --images
+    name: scripts/ci
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
@@ -71,11 +71,15 @@ jobs:
           key: target-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
           restore-keys: target-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
 
-      - name: scripts/ci --images
+      # A fat-LTO release link needs about 9 GB of memory. Runners of private
+      # repositories have less, so there the release link, size and image
+      # checks are skipped and reported as not evaluated.
+      - name: scripts/ci
         env:
           FYRR_CI_REVISION: ${{ github.sha }}
           RUST_TEST_THREADS: "1"
-        run: scripts/ci --images
+          CI_MODE: ${{ github.event.repository.private && '--debug-only' || '--images' }}
+        run: scripts/ci "$CI_MODE"
 
       - name: Show the summary
         if: always()
