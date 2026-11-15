@@ -106,9 +106,11 @@ exactly `scope.owners`.
 ## Limits
 
 - JSON success and error bodies are streamed with a 16 MiB limit. Each
-  paginated list or changes read allows at most 10,000 pages and 100,000
-  entries; repeated or malformed page tokens fail the read. These limits
-  refuse an incomplete read rather than reporting it as complete.
+  paginated list or changes read allows at most 10,000 pages as a backstop
+  against a nonterminating upstream read. File listings request 100 files
+  per page, allowing up to 1,000,000 files per feed when pages are full.
+  Repeated or malformed page tokens fail the read. These limits refuse an
+  incomplete read rather than reporting it as complete.
 - 429, rate-limit 403s, 5xx and transport errors back off with jitter and
   `Retry-After` for six tries, then the sync fails; a file that keeps
   failing stalls its feed rather than being skipped. Other 403 and 404

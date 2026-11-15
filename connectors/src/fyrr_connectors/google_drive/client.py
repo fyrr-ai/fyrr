@@ -31,7 +31,6 @@ TIMEOUT_SECONDS = 120
 EXPORT_MAX_BYTES = 16 << 20
 MAX_RESPONSE_BYTES = 16 << 20
 MAX_PAGES = 10_000
-MAX_ENTRIES = 100_000
 
 
 class ApiError(_http.ApiError):
@@ -139,7 +138,6 @@ class Client:
         """Every page of a list call, or an error: never a short list. `fields`
         must include `nextPageToken`."""
         seen: set[bytes] = set()
-        count = 0
         for _ in range(MAX_PAGES):
             token = params.get("pageToken")
             if token is not None:
@@ -150,9 +148,6 @@ class Client:
                     raise ApiError(0, "pagination_cycle")
                 seen.add(fingerprint)
             body = self._request(subject, path, params, _json, api=api)
-            count += sum(len(value) for value in body.values() if isinstance(value, list))
-            if count > MAX_ENTRIES:
-                raise ApiError(0, "pagination_limit")
             following = body.get("nextPageToken")
             if following is not None and (not isinstance(following, str) or not following):
                 raise ApiError(0, "pagination_invalid")

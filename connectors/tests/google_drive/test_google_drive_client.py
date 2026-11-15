@@ -194,12 +194,26 @@ def test_page_token_cycle_is_rejected(drive, monkeypatch):
             next(pages)
 
 
-def test_entry_limit_refuses_an_incomplete_listing(drive, monkeypatch):
-    for number in range(3):
-        drive.put(f"doc-{number}", owner=ALICE)
-    monkeypatch.setattr(client, "MAX_ENTRIES", 2)
-    with pytest.raises(ApiError, match="pagination_limit"):
-        list(_client().pages(ALICE, "files", corpora="user", fields="nextPageToken,files(id)"))
+def test_large_listing_completes_reconciliation(drive, index, monkeypatch):
+    real = drive._answer
+    total = 100_001
+
+    def answer(subject, path, params):
+        if path.endswith("/files"):
+            start = int(params.get("pageToken", "0"))
+            end = min(start + 100, total)
+            body = {
+                "files": [
+                    {"id": f"doc-{number}", "ownedByMe": True} for number in range(start, end)
+                ]
+            }
+            if end < total:
+                body["nextPageToken"] = str(end)
+            return 200, body
+        return real(subject, path, params)
+
+    monkeypatch.setattr(drive, "_answer", answer)
+    assert set(index.listing(owners=[ALICE])) == {f"doc-{number}" for number in range(total)}
 
 
 @pytest.mark.parametrize("kind", ["content", "permissions", "reconcile"])

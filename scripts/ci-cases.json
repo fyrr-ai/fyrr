@@ -1380,7 +1380,7 @@
       "python:connectors/tests/google_drive/test_google_drive_client.py::test_json_response_body_is_bounded_and_closed[403]",
       "python:connectors/tests/google_drive/test_google_drive_client.py::test_page_limit_refuses_an_incomplete_listing",
       "python:connectors/tests/google_drive/test_google_drive_client.py::test_page_token_cycle_is_rejected",
-      "python:connectors/tests/google_drive/test_google_drive_client.py::test_entry_limit_refuses_an_incomplete_listing",
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_large_listing_completes_reconciliation",
       "python:connectors/tests/google_drive/test_google_drive_client.py::test_non_json_server_errors_keep_the_retry_policy",
       "python:connectors/tests/google_drive/test_google_drive_client.py::test_sync_paths_propagate_pagination_failure[content]",
       "python:connectors/tests/google_drive/test_google_drive_client.py::test_sync_paths_propagate_pagination_failure[permissions]",
