@@ -48,7 +48,7 @@ jsonschema = { version = "0.58", default-features = false }
 # (PyCapsules, zero-copy) and requires PyO3 0.28.
 pyo3 = { version = "0.28", default-features = false }
 pyo3-build-config = "0.28"
-arrow-pyarrow = "58"
+arrow-pyarrow = "59"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 # Already in the graph through Lance; used for deterministic IDs and digests.
 base64 = { version = "=0.22.1", default-features = false, features = ["std"] }
