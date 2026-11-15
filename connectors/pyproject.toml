@@ -37,7 +37,7 @@ notion = "fyrr_connectors.bundled:notion"
 dev = ["pytest==9.1.1", "ruff==0.16.10", "jsonschema>=4.23,<5", "fyrr-connectors[google-drive,github]"]
 
 [build-system]
-requires = ["uv_build>=0.12.21,<0.13"]
+requires = ["uv_build>=0.12.21,<0.14"]
 build-backend = "uv_build"
 
 [tool.uv]
