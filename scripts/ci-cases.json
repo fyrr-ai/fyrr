@@ -1359,7 +1359,18 @@
       "python:connectors/tests/test_sdk_contracts.py::test_testkit_requires_a_minimum_in_the_installed_series[next-series]",
       "python:connectors/tests/test_sdk_contracts.py::test_testkit_requires_a_minimum_in_the_installed_series[oldest]",
       "python:connectors/tests/test_sdk_contracts.py::test_testkit_requires_a_minimum_in_the_installed_series[stable-series]",
-      "python:connectors/tests/test_sdk_contracts.py::test_testkit_validation_stays_active_with_optimized_python"
+      "python:connectors/tests/test_sdk_contracts.py::test_testkit_validation_stays_active_with_optimized_python",
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_json_response_body_is_bounded_and_closed[200]",
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_json_response_body_is_bounded_and_closed[403]",
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_page_limit_refuses_an_incomplete_listing",
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_page_token_cycle_is_rejected",
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_entry_limit_refuses_an_incomplete_listing",
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_non_json_server_errors_keep_the_retry_policy",
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_sync_paths_propagate_pagination_failure[content]",
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_sync_paths_propagate_pagination_failure[permissions]",
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_sync_paths_propagate_pagination_failure[reconcile]",
+      "python:connectors/tests/google_drive/test_google_drive_http.py::test_body_disconnects_retry_without_advancing_pagination[200]",
+      "python:connectors/tests/google_drive/test_google_drive_http.py::test_body_disconnects_retry_without_advancing_pagination[503]"
     ]
   },
   "python-example": {

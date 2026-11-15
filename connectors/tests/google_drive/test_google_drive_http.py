@@ -147,3 +147,55 @@ def test_a_parked_request_waits_for_its_release(server: FakeServer, index: Index
     sync.join(30)
     assert sorted(done[0]) == ["later", "plan"] and _call(server, "parked") == 0
     assert index.sync(owners=[ALICE]) == {}
+
+
+@pytest.mark.parametrize("status", [200, 503])
+def test_body_disconnects_retry_without_advancing_pagination(monkeypatch, status):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import parse_qs, urlsplit
+
+    calls, opened = [], []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            params = parse_qs(urlsplit(self.path).query)
+            calls.append(params)
+            body = {"files": []}
+            if "pageToken" not in params:
+                body["nextPageToken"] = "next"
+            data = json.dumps(body).encode()
+            self.send_response(status if len(calls) == 1 else 200)
+            self.send_header("Content-Length", str(len(data) + (8 if len(calls) == 1 else 0)))
+            self.end_headers()
+            self.wfile.write(data)
+            self.close_connection = True
+
+        def log_message(self, *_):
+            pass
+
+    session = requests.Session()
+    real = session.get
+
+    def get(*args, **kwargs):
+        response = real(*args, **kwargs)
+        opened.append(response)
+        return response
+
+    session.get = get
+    monkeypatch.setattr(client, "authorized_session", lambda *_: session)
+    sleeps = []
+    monkeypatch.setattr(client.time, "sleep", sleeps.append)
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as served:
+        thread = threading.Thread(target=served.serve_forever, daemon=True)
+        thread.start()
+        try:
+            endpoint = f"http://127.0.0.1:{served.server_port}"
+            pages = list(client.Client("{}", endpoint).pages("user", "files"))
+        finally:
+            served.shutdown()
+            thread.join()
+            session.close()
+    assert pages == [{"files": [], "nextPageToken": "next"}, {"files": []}]
+    assert calls == [{}, {}, {"pageToken": ["next"]}]
+    assert len(sleeps) == 1
+    assert len(opened) == 3 and all(response.raw.closed for response in opened)

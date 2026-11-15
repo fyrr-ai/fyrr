@@ -165,7 +165,9 @@ def _query(feed: Feed, mime_types: Iterable[str], parent: str | None = None) -> 
     return " and ".join(clauses)
 
 
-def _list(client: Client, feed: Feed, query: str, fields: str, page: str | None) -> dict[str, Any]:
+def _listing(
+    client: Client, feed: Feed, query: str, fields: str, page: str | None = None
+) -> Iterator[dict[str, Any]]:
     params = feed.corpus() | {
         "q": query,
         "pageSize": PAGE_SIZE,
@@ -173,7 +175,7 @@ def _list(client: Client, feed: Feed, query: str, fields: str, page: str | None)
     }
     if page is not None:
         params["pageToken"] = page
-    return client.get(feed.subject, "files", **params)
+    return client.pages(feed.subject, "files", **params)
 
 
 def _invalid_page(error: ApiError) -> bool:
@@ -185,13 +187,8 @@ def listed(
 ) -> Iterator[list[dict[str, Any]]]:
     """Every page of the feed's files of `mime_types`, or an error: never a
     short listing."""
-    query, page = _query(feed, mime_types), None
-    while True:
-        body = _list(client, feed, query, fields, page)
+    for body in _listing(client, feed, _query(feed, mime_types), fields):
         yield body.get("files", [])
-        page = body.get("nextPageToken")
-        if not page:
-            return
 
 
 def beneath(
@@ -200,18 +197,14 @@ def beneath(
     """The files of `mime_types` under `folder`, at any depth, page by page."""
     wanted, queue, seen = set(mime_types), [folder], {folder}
     while queue:
-        query, page = _query(feed, wanted | {FOLDER}, parent=queue.pop()), None
-        while True:
-            body = _list(client, feed, query, fields, page)
+        query = _query(feed, wanted | {FOLDER}, parent=queue.pop())
+        for body in _listing(client, feed, query, fields):
             files = body.get("files", [])
             for file in files:
                 if file.get("mimeType") == FOLDER and file["id"] not in seen:
                     seen.add(file["id"])
                     queue.append(file["id"])
             yield [file for file in files if file.get("mimeType") in wanted]
-            page = body.get("nextPageToken")
-            if not page:
-                break
 
 
 def start_token(client: Client, feed: Feed) -> str:
@@ -239,18 +232,18 @@ def _first_listing(
             cursor.listing = None
             cursor.feeds[feed.key] = start
 
+    relisted = False
     while True:
         try:
-            body = _list(client, feed, query, fields, page)
+            for body in _listing(client, feed, query, fields, page):
+                page = body.get("nextPageToken")
+                yield body.get("files", []), partial(step, page)
+            return
         except ApiError as error:
-            if page is None or not _invalid_page(error):
+            if page is None or relisted or not _invalid_page(error):
                 raise
             page = None  # An expired list page: list again, keep the start token.
-            continue
-        page = body.get("nextPageToken")
-        yield body.get("files", []), partial(step, page)
-        if not page:
-            return
+            relisted = True
 
 
 def pages(
@@ -273,7 +266,7 @@ def pages(
         if feed.key not in cursor.feeds:
             yield from _first_listing(client, feed, cursor, mime_types, fields)
         try:
-            body = client.get(
+            for body in client.pages(
                 feed.subject,
                 "changes",
                 pageToken=cursor.feeds[feed.key],
@@ -284,7 +277,20 @@ def pages(
                 fields="nextPageToken,newStartPageToken,"
                 f"changes(removed,changeType,fileId,file({fields}))",
                 **({"driveId": feed.drive_id} if feed.drive_id else {}),
-            )
+            ):
+                following = body.get("nextPageToken")
+                files = [
+                    change["file"]
+                    for change in body.get("changes", [])
+                    if change.get("changeType", "file") == "file" and "file" in change
+                ]
+                yield (
+                    files,
+                    partial(
+                        cursor.feeds.__setitem__, feed.key, following or body["newStartPageToken"]
+                    ),
+                )
+            return
         except ApiError as error:
             if not recover_invalid or relisted or not _invalid_page(error):
                 raise
@@ -292,18 +298,6 @@ def pages(
             del cursor.feeds[feed.key]
             relisted = True
             continue
-        following = body.get("nextPageToken")
-        files = [
-            change["file"]
-            for change in body.get("changes", [])
-            if change.get("changeType", "file") == "file" and "file" in change
-        ]
-        yield (
-            files,
-            partial(cursor.feeds.__setitem__, feed.key, following or body["newStartPageToken"]),
-        )
-        if not following:
-            return
 
 
 class Folders:

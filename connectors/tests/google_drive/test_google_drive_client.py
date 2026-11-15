@@ -146,3 +146,87 @@ def test_a_missing_extra_fails_only_this_provider_with_a_clear_reason(
     providers = {p["entry_point"]: p for p in json.loads(runtime.discover())["providers"]}
     assert providers["google-drive"]["error"] == {"type": "provider_failure"}
     assert all("info" in p for name, p in providers.items() if name != "google-drive")
+
+
+@pytest.mark.parametrize("status", [200, 403])
+def test_json_response_body_is_bounded_and_closed(drive, monkeypatch, status):
+    session = drive.session(ALICE)
+    opened = []
+    real = session.get
+
+    def get(*args, **kwargs):
+        response = real(*args, **kwargs)
+        opened.append(response)
+        return response
+
+    session.get = get
+    monkeypatch.setattr(client, "authorized_session", lambda *_: session)
+    monkeypatch.setattr(client, "MAX_RESPONSE_BYTES", 8, raising=False)
+    if status != 200:
+        drive.fail(_files, status, "insufficientFilePermissions")
+    with pytest.raises(ApiError, match="response_limit"):
+        _client().get(ALICE, "files", corpora="user")
+    assert len(opened) == 1
+    assert opened[0].raw.closed
+
+
+def test_page_limit_refuses_an_incomplete_listing(drive, monkeypatch):
+    for number in range(5):
+        drive.put(f"doc-{number}", owner=ALICE)
+    monkeypatch.setattr(client, "MAX_PAGES", 1, raising=False)
+    with pytest.raises(ApiError, match="pagination_limit"):
+        list(_client().pages(ALICE, "files", corpora="user", fields="nextPageToken,files(id)"))
+
+
+def test_page_token_cycle_is_rejected(drive, monkeypatch):
+    real = drive._answer
+
+    def answer(subject, path, params):
+        if path.endswith("/files"):
+            return 200, {"files": [], "nextPageToken": "repeated"}
+        return real(subject, path, params)
+
+    monkeypatch.setattr(drive, "_answer", answer)
+    pages = _client().pages(ALICE, "files", corpora="user", fields="nextPageToken,files(id)")
+    with pytest.raises(ApiError, match="pagination_cycle"):
+        # Limit the pre-fix run rather than letting an unbounded generator hang.
+        for _ in range(3):
+            next(pages)
+
+
+def test_entry_limit_refuses_an_incomplete_listing(drive, monkeypatch):
+    for number in range(3):
+        drive.put(f"doc-{number}", owner=ALICE)
+    monkeypatch.setattr(client, "MAX_ENTRIES", 2)
+    with pytest.raises(ApiError, match="pagination_limit"):
+        list(_client().pages(ALICE, "files", corpora="user", fields="nextPageToken,files(id)"))
+
+
+@pytest.mark.parametrize("kind", ["content", "permissions", "reconcile"])
+def test_sync_paths_propagate_pagination_failure(drive, index, monkeypatch, kind):
+    for number in range(5):
+        drive.put(f"doc-{number}", owner=ALICE)
+    monkeypatch.setattr(client, "MAX_PAGES", 1)
+    batches = []
+    with pytest.raises(ApiError, match="pagination_limit"):
+        for batch in index.run(kind, "sync", owners=[ALICE]):
+            batches.append(batch)
+    # Partial work must not be reported as a successful full read.
+    assert all(not getattr(batch, "complete", False) for batch in batches)
+
+
+def test_non_json_server_errors_keep_the_retry_policy(drive, monkeypatch):
+    real = drive._answer
+    calls = []
+
+    def answer(subject, path, params):
+        if path.endswith("/files"):
+            calls.append(path)
+            if len(calls) < 3:
+                return 503, b"<html>upstream unavailable</html>"
+        return real(subject, path, params)
+
+    monkeypatch.setattr(drive, "_answer", answer)
+    assert _client().get(ALICE, "files", corpora="user") == {"files": []}
+    assert len(calls) == 3
+    assert len(drive.sleeps) == 2
