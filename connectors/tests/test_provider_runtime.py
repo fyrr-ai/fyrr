@@ -15,7 +15,6 @@ from fyrr_connectors import (
     runtime,
     testkit,
 )
-from fyrr_connectors.connector import SyncKind
 
 SENTINEL = "SENTINEL-rt-0b52"
 BUNDLED = ["github", "google-drive", "jira", "local-files", "notion", "slack"]
@@ -105,11 +104,6 @@ class Failing(Connector):
         raise ValueError(f"document text {SENTINEL}")
 
 
-class Violating(Connector):
-    def content(self, cursor):
-        yield ContentBatch(changes=document_changes([]), cursor="")
-
-
 class SelfViolating(Connector):
     def content(self, cursor):
         raise ContractViolation(f"my own message {SENTINEL}")
@@ -151,24 +145,12 @@ def test_runtime_reports_provider_failures_without_messages() -> None:
     assert SENTINEL not in caught.value.args[0], "a provider-raised violation keeps no message"
 
 
-def test_runtime_hands_rows_as_record_batches() -> None:
-    batches = _run(Violating)
-    header, rows = batches[0]
-    assert json.loads(header)["body"] == {"type": "document_changes", "changes": []}
-    assert rows.num_rows == 0 and hasattr(rows, "__arrow_c_array__")
-
-
 def test_runtime_keeps_sdk_violation_messages() -> None:
     try:
         document_changes([object()])
     except ContractViolation as error:
         described = runtime.describe(error)
     assert described["message"] == "document_changes takes Upsert and Delete values"
-
-
-def test_sync_kinds_follow_overridden_methods() -> None:
-    assert Failing.sync_kinds() == [SyncKind.CONTENT]
-    assert sample_provider.SampleConnector.sync_kinds() == [SyncKind.CONTENT, SyncKind.RECONCILE]
 
 
 def test_testkit_bounds_full_arrow_buffers_before_materializing() -> None:

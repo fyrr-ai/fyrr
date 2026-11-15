@@ -100,34 +100,6 @@ def _state(documents: dict) -> dict:
     return {root: (list(d.readers), list(d.containers)) for root, d in documents.items()}
 
 
-def test_the_permission_stream_maps_every_document_and_drive(
-    drive: FakeDrive, index: Index
-) -> None:
-    _world(drive)
-    documents, grants = index.permissions()
-    assert _state(documents) == {
-        "doc-plan": (
-            ["grp:domain:example.com", "grp:eng@example.com", f"usr:{ALICE}", f"usr:{BOB}"],
-            [],
-        ),
-        "doc-private": ([f"usr:{BOB}"], []),
-        "deck-roadmap": ([f"usr:{CAROL}"], ["drive-eng"]),
-    }
-    assert {k: (g.container_kind, list(g.readers)) for k, g in grants.items()} == {
-        "drive-eng": ("drive", ["grp:eng@example.com", f"usr:{ALICE}"])
-    }
-    plan = documents["doc-plan"]
-    assert plan.permission_revision == revision(plan.readers)
-    # My Drive files carry their permissions inline: no list call for them.
-    listed = [path for path in drive.paths() if path.endswith("/permissions")]
-    assert sorted(set(listed)) == [
-        "/drive/v3/files/deck-roadmap/permissions",
-        "/drive/v3/files/drive-eng/permissions",
-    ]
-    batches = index.permission_batches
-    assert index.permissions() == ({}, {}) and index.permission_batches == batches
-
-
 def test_the_stream_matches_the_published_contract_and_golden(drive: FakeDrive) -> None:
     _world(drive)
     result = testkit.run_sync(

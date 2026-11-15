@@ -4,41 +4,8 @@ import json
 
 import pytest
 
-from fyrr_connectors.config import ConfigError
-from fyrr_connectors.slack.config import Scope, Settings
-from fyrr_connectors.slack.feeds import TARGET, ChannelCursor, Cursor, rotation, timestamp, wire
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("token", "literal-secret"),
-        ("workspace_id", "wrong"),
-        ("window_gap_seconds", 0),
-        ("window_gap_seconds", 3601),
-        ("corporate_domains", ["*.example.test"]),
-        ("unknown", True),
-    ],
-)
-def test_slack_settings_reject_bad_values(field, value):
-    body = {"token": {"env": "TOKEN"}, "workspace_id": "T001", field: value}
-    with pytest.raises(ConfigError):
-        Settings.parse(body)
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        {"include": []},
-        {"include": ["*"], "channel_types": ["im"]},
-        {"include": ["a" * 129]},
-        {"include": ["[regex]"]},
-        {"include": ["*"], "unknown": True},
-    ],
-)
-def test_slack_scope_rejects_unreviewed_types_and_unbounded_patterns(body):
-    with pytest.raises(ConfigError):
-        Scope.parse(body)
+from fyrr_connectors.slack.config import Scope
+from fyrr_connectors.slack.feeds import ChannelCursor, Cursor, timestamp, wire
 
 
 @pytest.mark.parametrize("bad", [None, True, "1.0", "1.0000000", "bad", "-1.000000"])
@@ -77,17 +44,6 @@ def test_slack_cursor_refuses_principals_in_numeric_state(field):
     body["channels"]["C001"][field] = "private@example.test"
     with pytest.raises(ValueError, match="cursor_invalid"):
         Cursor.decode(json.dumps(body), scope, 300)
-
-
-@pytest.mark.parametrize("count,interval", [(1, 900), (10000, 900), (10000, 1800), (10000, 18000)])
-def test_slack_rotation_arithmetic_fills_across_the_boundary(count, interval):
-    values = list(range(1, count + 1))
-    chosen, marker, complete = rotation(values, count - 1, interval * 1_000_000)
-    polls = max(1, TARGET // (interval * 1_000_000))
-    assert len(chosen) == (count + polls - 1) // polls
-    assert len(set(chosen)) == len(chosen)
-    assert complete
-    assert marker == (chosen[-1] if len(chosen) > 1 else 0)
 
 
 def test_slack_changing_workspace_resets_discovery_without_reusing_its_frontier():

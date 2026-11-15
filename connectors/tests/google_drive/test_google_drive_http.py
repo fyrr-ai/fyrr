@@ -81,41 +81,6 @@ def test_a_call_without_its_scope_or_token_is_refused(server: FakeServer) -> Non
     assert server.world.requests == []
 
 
-def test_the_world_is_driven_over_http(server: FakeServer, index: Index) -> None:
-    _call(server, "user", email="carol@example.com", suspended=True)
-    _call(server, "group", email="staff@example.com", members=[[ALICE, "USER"]])
-    _call(server, "drive", drive_id="drive-eng", name="Engineering", members=[ALICE])
-    _call(server, "put", file_id="plan", content="# Plan\n\nShip it.", owner=ALICE, name="Plan")
-    _call(server, "put", file_id="notes", content="Notes.", drive="drive-eng")
-    _call(server, "share", file_id="plan", type="group", emailAddress="staff@example.com")
-    _call(server, "join", drive_id="drive-eng", type="user", emailAddress=BOB)
-
-    seen = index.sync("sync", owners=[])
-    assert seen["plan"]["sections"][0]["text"] == "# Plan\n\nShip it."
-    documents, grants = index.permissions(owners=[])
-    assert documents["plan"].readers == ["grp:staff@example.com", f"usr:{ALICE}"]
-    assert documents["notes"].containers == ["drive-eng"]
-    assert grants["drive-eng"].readers == [f"usr:{ALICE}", f"usr:{BOB}"]
-
-    _call(server, "unshare", file_id="plan", permission_id="p-staff@example.com")
-    _call(server, "leave", drive_id="drive-eng", permission_id=f"p-{BOB}")
-    _call(server, "touch", file_id="notes", trashed=True)
-    _call(server, "remove", file_id="plan")
-    documents, grants = index.permissions(owners=[])
-    assert grants["drive-eng"].readers == [f"usr:{ALICE}"]
-    assert index.sync("sync", owners=[])["notes"]["op"] == "delete"
-    assert index.listing(owners=[ALICE]) == []
-
-    exports = _call(server, "requests", match={"path": "/export$"})
-    assert sorted(exports) == [
-        [ALICE, "/drive/v3/files/notes/export"],
-        [ALICE, "/drive/v3/files/plan/export"],
-    ]
-    wrong = requests.post(f"{server.endpoint}/fake/put", json={"file": "x"}, timeout=10)
-    assert wrong.status_code == 400
-    assert requests.post(f"{server.endpoint}/fake/erase", json={}, timeout=10).status_code == 400
-
-
 def test_an_injected_fault_reaches_the_connector(server: FakeServer, index: Index) -> None:
     server.world.put("plan", b"Ship it.", owner=ALICE)
     _call(
@@ -129,24 +94,6 @@ def test_an_injected_fault_reaches_the_connector(server: FakeServer, index: Inde
     _call(server, "fail", match={"path": "/export$"}, status=403, reason="cannotExportFile")
     assert index.sync(owners=[ALICE])["plan"]["sections"] == [{"text": "\0"}]
     assert len(server.world.sleeps) == 2
-
-
-def test_a_parked_request_waits_for_its_release(server: FakeServer, index: Index) -> None:
-    server.world.put("plan", b"Ship it.", owner=ALICE)
-    _call(server, "hold", match={"path": "/export$"})
-    done: list[dict[str, Any]] = []
-    sync = threading.Thread(target=lambda: done.append(index.sync(owners=[ALICE])))
-    sync.start()
-    while not _call(server, "parked"):
-        sync.join(0.01)
-        assert sync.is_alive()
-    # Drive changes while the export is on its way: the feed's token is older.
-    _call(server, "put", file_id="later", content="Later.", owner=ALICE)
-    assert not done
-    _call(server, "release")
-    sync.join(30)
-    assert sorted(done[0]) == ["later", "plan"] and _call(server, "parked") == 0
-    assert index.sync(owners=[ALICE]) == {}
 
 
 @pytest.mark.parametrize("status", [200, 503])

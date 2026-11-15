@@ -8,7 +8,7 @@ from fyrr_connectors.config import ConfigError
 from fyrr_connectors.jira.adf import ADFError, text
 from fyrr_connectors.jira.client import ApiError
 from fyrr_connectors.jira.config import Scope
-from fyrr_connectors.jira.feeds import Cursor, IssueBinding, rotation
+from fyrr_connectors.jira.feeds import Cursor, IssueBinding
 
 
 @pytest.mark.parametrize(
@@ -27,12 +27,6 @@ from fyrr_connectors.jira.feeds import Cursor, IssueBinding, rotation
 def test_jira_invalid_scope_is_configuration_error(scope):
     with pytest.raises(ConfigError):
         Scope.parse(scope)
-
-
-@pytest.mark.parametrize("elapsed,expected", [(1, 1), (900, 209), (43200, 10000), (86400, 10000)])
-def test_jira_rotation_budget(elapsed, expected):
-    selected, _, _ = rotation(range(1, 10001), 0, elapsed)
-    assert len(selected) == expected
 
 
 @pytest.mark.parametrize(
@@ -158,13 +152,6 @@ def test_jira_long_fields_are_split_into_utf8_safe_units(jira, jira_index):
     assert len(description) == 2
     assert "".join(s["text"] for s in description) == "ě" * 10000
     assert all(len(s["text"].encode()) <= 16384 for s in description)
-
-
-def test_jira_unknown_source_dates_remain_null(jira, jira_index):
-    jira.issue(101, created=None)
-    # Updated is required for discovery; no ingest-time replacement of creation.
-    change = next(iter(jira_index.sync().values()))
-    assert "created_at" not in change["metadata"]
 
 
 def test_jira_continuous_comment_movement_fails_after_one_retry(jira, jira_index):

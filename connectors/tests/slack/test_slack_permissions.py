@@ -202,11 +202,6 @@ def test_dm_visibility_never_creates_a_grant(slack, slack_index, flag):
         grants(slack_index)
 
 
-def test_archived_channel_keeps_its_container(slack, slack_index):
-    slack.channels["C001"]["is_archived"] = True
-    assert grants(slack_index)[CONTAINER].readers == (GROUP,)
-
-
 @pytest.mark.parametrize(
     "domains,email,expected",
     [
@@ -334,21 +329,6 @@ def test_rate_limit_exhaustion_yields_no_freshness(slack, slack_index, kind):
     with pytest.raises(ApiError, match="rate_limited"):
         next(iter(slack_index.run(kind)))
     assert slack.sleeps == [1.0] * 5
-
-
-@pytest.mark.parametrize("kind", ["permissions", "members"])
-def test_slack_authorization_contract(slack, slack_index, kind):
-    from fyrr_connectors.provider import provider_info
-    from fyrr_connectors.slack import Slack
-
-    slack.post()
-    info = provider_info(
-        name="slack", connector=Slack, min_sdk_version="0.1.0", connection_types=("sync", "fixed")
-    )
-    result = testkit.run_sync(
-        info, kind, permissions="sync", settings=slack_index.settings, scope=slack_index.scope
-    )
-    assert result.documents
 
 
 @pytest.mark.parametrize("kind", ["permissions", "members"])

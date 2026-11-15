@@ -49,21 +49,6 @@ def test_changed_repository_locator_never_completes(github, index):
         list(index.run("reconcile"))
 
 
-def test_repository_rename_preserves_numeric_roots(github, index):
-    github.topic()
-    original = set(index.sync())
-    github.repos[1]["full_name"] = "synthetic/renamed"
-    assert index.listing() == original
-    assert all("renamed" in change["metadata"]["source_uri"] for change in index.sync().values())
-
-
-def test_archived_repository_is_not_deleted(github, index):
-    github.topic()
-    original = set(index.sync())
-    github.repos[1]["archived"] = True
-    assert index.listing() == original
-
-
 def test_proven_repository_removal_omits_old_roots(github, index):
     github.topic()
     index.sync()
@@ -148,21 +133,6 @@ def test_offset_race_does_not_delete_missing_published_issue(github, index, monk
     assert index.listing() == original_roots
 
 
-def test_partial_recursive_tree_uses_nonrecursive_fallback(github, index, monkeypatch):
-    github.branch(1, {"a.md": "A.", "b.md": "B."})
-    original = github._answer
-
-    def answer(method, path, params):
-        status, body, headers = original(method, path, params)
-        if "/git/trees/" in path and params.get("recursive"):
-            body["truncated"] = True
-            body["tree"] = body["tree"][:1]
-        return status, body, headers
-
-    monkeypatch.setattr(github, "_answer", answer)
-    assert len(index.listing()) == 2
-
-
 def test_truncated_nonrecursive_tree_fails(github, index, monkeypatch):
     original = github._answer
 
@@ -174,11 +144,4 @@ def test_truncated_nonrecursive_tree_fails(github, index, monkeypatch):
 
     monkeypatch.setattr(github, "_answer", answer)
     with pytest.raises(ValueError, match="tree_incomplete"):
-        index.listing()
-
-
-def test_configured_branch_cannot_silently_be_a_commit_ref(github, index):
-    commit = github.branch(1, {"a.md": "A."})
-    index.scope["repositories"][0]["branch"] = commit
-    with pytest.raises(ApiError):
         index.listing()

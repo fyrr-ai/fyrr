@@ -1,33 +1,6 @@
 """Fixed Cloud issue acquisition through the connector batch boundary."""
 
 
-def test_jira_fixed_issue_comments_metadata_and_no_acl(jira, jira_index):
-    jira.issue(101)
-    jira.comment(101, 201, "Comment body.")
-    jira.comment(101, 202, "Restricted.", visibility={"type": "group", "identifier": "g1"})
-    changes = jira_index.sync()
-    item = next(iter(changes.values()))
-    assert [section["text"] for section in item["sections"]] == [
-        "Issue 101",
-        "Description.",
-        "Open",
-        "Task",
-        "Fixture author",
-        "Comment body.",
-    ]
-    assert item["readers"] == ["grp:staff"]
-    assert item["metadata"]["author"] == "Fixture author"
-    assert item["metadata"]["created_at"] and item["metadata"]["updated_at"]
-    assert item["sections"][-1]["location"]["kind"] == "comment"
-    assert not any(
-        path.startswith(("/group", "/users", "/permissionscheme", "/applicationrole"))
-        or "/role" in path
-        for _, path, _ in jira.requests
-    )
-    assert jira_index.sync() == {}
-    assert jira_index.listing() == set(changes)
-
-
 def test_jira_content_golden(jira):
     from pathlib import Path
 

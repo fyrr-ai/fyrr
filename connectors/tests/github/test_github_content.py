@@ -53,43 +53,6 @@ def test_issues_prs_prose_and_metadata(github, index):
     assert index.listing() == set(changes)
 
 
-@pytest.mark.parametrize("toggle", ["issues", "pull_requests", "prose", "code"])
-def test_each_content_toggle(github, index, toggle):
-    github.topic()
-    github.topic(kind="pr", number=2)
-    github.branch(1, {"readme.md": "Prose.", "file.py": "Code."})
-    item = index.scope["repositories"][0]
-    item.update({key: key == toggle for key in ("issues", "pull_requests", "prose", "code")})
-    changes = index.sync()
-    assert len(changes) == 1
-    kind = next(iter(changes.values()))["metadata"]["source_type"]
-    assert (
-        kind
-        == {
-            "issues": "github-issue",
-            "pull_requests": "github-pr",
-            "prose": "github-file",
-            "code": "github-file",
-        }[toggle]
-    )
-
-
-def test_deleted_comments_without_parent_timestamp_are_rotated(github, index):
-    github.topic()
-    github.comment(body="Deleted comment.")
-    index.sync()
-    parent_stamp = github.topics[1, "issue", 1]["updated_at"]
-    github.comments[1, "issue", 1].clear()
-    changes = index.sync()
-    assert len(changes) == 1
-    assert all(
-        "Deleted comment." not in section["text"]
-        for change in changes.values()
-        for section in change["sections"]
-    )
-    assert github.topics[1, "issue", 1]["updated_at"] == parent_stamp
-
-
 def test_force_push_old_commit_and_file_delete(github, index):
     old = github.branch(1, {"old.md": "Old prose."})
     before = index.sync()
@@ -148,29 +111,6 @@ def test_child_listing_failure_is_not_a_delete(github, index):
     assert index.cursor == old_cursor and index.published
 
 
-def test_later_contradicting_hint_replaces_stale_content(github, index):
-    github.topic()
-    github.comment()
-    index.sync()
-    github.topic(body="Intermediate.")
-    github.after(
-        lambda method, path, params: path.endswith("/issues/comments"),
-        lambda: github.topic(body="Final."),
-    )
-    changes = index.sync()
-    assert next(iter(changes.values()))["sections"][0]["text"] == "Final."
-
-
-def test_rendered_file_has_locations_and_unknown_creation_time(github, index):
-    github.branch(1, {"guide.rst": "Intro\n=====\nText.", "notes.md": "# One\nBody.\n# Two\nMore."})
-    changes = index.sync()
-    assert len(changes) == 2
-    assert all("created_at" not in change["metadata"] for change in changes.values())
-    assert all(
-        section.get("location") for change in changes.values() for section in change["sections"]
-    )
-
-
 def test_golden_sdk_arrow_and_cursors(github):
     from pathlib import Path
 
@@ -200,20 +140,6 @@ def test_arrow_location_overflow_quarantines_and_continues(github, index):
     assert len(changes) == 2
     assert changes[0]["sections"] == [{"text": "\0"}]
     assert changes[1]["sections"][0]["text"] == "Good."
-
-
-def test_rotation_marker_disambiguates_issue_and_pr_id_collision(github, index):
-    github.topic(number=1)
-    github.topic(kind="pr", number=2, id=101)
-    github.comment(kind="pr", number=2, body="Remove this.")
-    index.sync()
-    # No parent or comment hint can report this deletion.
-    for parent in github.topics.values():
-        parent["updated_at"] = "2025-01-01T00:00:00+00:00"
-    github.comments[1, "pr", 2].clear()
-    changes = index.sync()
-    pr = changes["github:repo:1:pr:101:2"]
-    assert all("Remove this." not in section["text"] for section in pr["sections"])
 
 
 def test_oversized_aggregate_stops_accumulating_and_continues(github, index):

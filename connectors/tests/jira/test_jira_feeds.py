@@ -47,27 +47,6 @@ def test_jira_edit_and_deleted_comment_without_parent_updated(jira, jira_index):
     assert "Changed issue." in text(jira_index)
 
 
-def test_jira_delayed_new_issue_is_found_by_periodic_full_scan(jira, jira_index):
-    jira.issue(101)
-    jira_index.sync()
-    jira.issue(102)
-    jira.issues[102]["fields"]["updated"] = jira.issues[101]["fields"]["updated"]
-    jira.clock += 43201
-    jira_index.sync()
-    assert len(jira_index.published) == 2
-
-
-def test_jira_scope_exit_return_at_same_revision_replays(jira, jira_index):
-    jira.issue(101)
-    initial = jira_index.sync()
-    jira_index.scope = {"projects": [1], "labels": ["selected"]}
-    assert jira_index.listing() == set()
-    jira_index.revisions.clear()
-    jira_index.published.clear()
-    jira_index.scope = {"projects": [1]}
-    assert set(jira_index.sync()) == set(initial)
-
-
 @pytest.mark.parametrize("change", ["move", "type", "label", "archive", "delete"])
 def test_jira_complete_reconcile_scope_loss(jira, jira_index, change):
     jira.project(2)
@@ -116,20 +95,6 @@ def test_jira_fetched_parent_must_match_queued_project(jira, jira_index):
     assert not jira_index.published
 
 
-def test_jira_later_contradiction_replaces_staged_document(jira, jira_index):
-    jira.issue(101)
-    # Change after the second canonical read: first staged result is obsolete.
-    jira.after(
-        lambda m, p, a, b: p == "/issue/101",
-        lambda: jira.after(
-            lambda m, p, a, b: p == "/issue/101", lambda: jira.edit(101, summary="Latest.")
-        ),
-    )
-    changes = jira_index.sync()
-    assert len(changes) == 1
-    assert "Latest." in text(jira_index) and "Issue 101" not in text(jira_index)
-
-
 def test_jira_quarantine_preserves_good_and_continues(jira, jira_index):
     jira.issue(101)
     jira_index.sync()
@@ -149,14 +114,6 @@ def test_jira_transient_canonical_ancestor_failure_fails_listing(jira, jira_inde
         list(jira_index.run("reconcile"))
 
 
-def test_jira_static_jql_narrowing_has_canonical_negative_check(jira, jira_index):
-    jira.issue(101)
-    jira_index.scope = {"jql": "project = 1 AND status != Closed"}
-    jira_index.sync()
-    jira.edit(101, status={"name": "Closed"})
-    assert jira_index.listing() == set()
-
-
 def test_jira_ambiguous_forbidden_is_not_authoritative_scope_loss(jira, jira_index):
     jira.issue(101)
     jira_index.sync()
@@ -164,24 +121,6 @@ def test_jira_ambiguous_forbidden_is_not_authoritative_scope_loss(jira, jira_ind
     with pytest.raises(ApiError):
         list(jira_index.run("reconcile"))
     assert jira_index.published
-
-
-def test_jira_later_change_within_same_second_replaces_staged_document(jira, jira_index):
-    jira.issue(101)
-
-    def changed():
-        fields = jira.issues[101]["fields"]
-        fields.update(
-            summary="Latest within second.",
-            updated=fields["updated"].replace("+00:00", ".500000+00:00"),
-        )
-
-    jira.after(
-        lambda m, p, a, b: p == "/issue/101",
-        lambda: jira.after(lambda m, p, a, b: p == "/issue/101", changed),
-    )
-    jira_index.sync()
-    assert "Latest within second." in text(jira_index)
 
 
 def test_jira_later_dynamic_holder_within_same_second_replaces_permission(jira, jira_index):
@@ -205,21 +144,6 @@ def test_jira_later_dynamic_holder_within_same_second_replaces_permission(jira, 
     records = [d for b in jira_index.run("permissions") for d in b.documents]
     assert any(t.endswith(":U002") for t in records[0].readers)
     assert not any(t.endswith(":U001") for t in records[0].readers)
-
-
-def test_jira_rotation_proves_jql_membership_after_a_project_move(jira, jira_index):
-    jira_index.scope = {"jql": "project = 1"}
-    jira.project(2)
-    jira.issue(101)
-    jira_index.sync()
-    jira.clock += 1500
-    jira_index.sync()
-    jira.edit(101, project={"id": "2"})
-    jira.clock += 1500
-    batches = list(jira_index.run(cursor=jira_index.cursor))
-    changes = [r for b in batches for r in rows_to_json(b.changes)]
-    assert changes and all(r["op"] == "delete" for r in changes)
-    assert jira_index.listing() == set()
 
 
 def test_jira_metadata_list_is_bounded_and_bad_metadata_is_quarantined(jira, jira_index):

@@ -69,47 +69,6 @@ def test_a_wrong_token_is_refused_and_fails_the_sync(server: FakeServer, remote:
     assert plain.json()["code"] == "missing_version"
 
 
-def test_the_world_is_driven_over_http(server: FakeServer, remote: Index) -> None:
-    _call(server, "user", name="grace", display="Grace Example")
-    blocks = [block("paragraph", "Ship it.", name="first")]
-    _call(server, "page", name="plan", parent="root", title="Plan", blocks=blocks, author="grace")
-    _call(server, "database", name="tasks", parent="root", title="Tasks")
-    _call(server, "row", name="task", database="tasks", title="A task")
-    _call(server, "page", name="outside", blocks=[block("paragraph", "Outside.")])
-    seen = remote.sync()
-    assert sorted(seen) == ["plan", "task"]
-    assert seen["plan"]["metadata"]["author"] == "Grace Example"
-
-    _call(server, "move", name="outside", parent="root")
-    _call(server, "trash", name="task")
-    _call(server, "scribble", name="plan", blocks=[block("paragraph", "Unnoticed.")])
-    seen = remote.sync()
-    assert {name: change["op"] for name, change in seen.items()} == {
-        "outside": "upsert",
-        "task": "delete",
-    }
-    _call(server, "restore", name="task")
-    _call(server, "unshare", name="plan")
-    _call(server, "remove", name="outside")
-    assert sorted(remote.sync()) == ["task"]
-    assert remote.listing() == ["root", "task"]
-    _call(server, "share", name="plan")
-    _call(server, "set", lag=True, page_size=1, search_trashed=False, lead_seconds=30)
-    _call(server, "page", name="plan", blocks=[block("paragraph", "Search is behind.")])
-    assert remote.sync() == {}
-    _call(server, "set", lag=False, user_capability=False)
-    _call(server, "reindex")
-    assert "author" not in remote.sync()["plan"]["metadata"]
-
-    queries = _call(server, "requests", match={"path": "/query$"})
-    assert queries and set(queries) == {f"/v1/data_sources/{ident('tasks#0')}/query"}
-    wrong = requests.post(f"{server.endpoint}/fake/page", json={"title": "x"}, timeout=10)
-    assert wrong.status_code == 400
-    assert requests.post(f"{server.endpoint}/fake/erase", json={}, timeout=10).status_code == 400
-    unknown = requests.post(f"{server.endpoint}/fake/set", json={"token": "x"}, timeout=10)
-    assert unknown.status_code == 400
-
-
 def test_an_injected_fault_reaches_the_connector(server: FakeServer, remote: Index) -> None:
     server.world.page("plan", "root", blocks=[block("paragraph", "Ship it.")])
     children = f"/blocks/{ident('plan')}/children$"

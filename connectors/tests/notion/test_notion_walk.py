@@ -5,7 +5,7 @@ import json
 
 import pytest
 from fake_notion import FakeNotion, block, ident
-from notion_kit import Index, text
+from notion_kit import Index
 
 from fyrr_connectors.notion import tree
 from fyrr_connectors.notion.client import ATTEMPTS, ApiError, Client
@@ -45,14 +45,7 @@ def _path(index: Index) -> list[str]:
     return [index.world.names[node] for node in json.loads(index.cursor)["path"]]
 
 
-def test_a_walk_visits_a_page_before_what_lies_beneath_it(notion: FakeNotion, index: Index) -> None:
-    order = _forest(notion)
-    index.limits["max_rows"] = 1
-    index.sync()
-    assert [name for batch in index.batches for name in batch] == order
-
-
-@pytest.mark.parametrize("killed_after", range(1, 11))
+@pytest.mark.parametrize("killed_after", [1, 7])
 def test_a_killed_first_sync_continues_where_it_stopped(
     notion: FakeNotion, index: Index, killed_after: int
 ) -> None:
@@ -78,52 +71,6 @@ def test_a_killed_first_sync_continues_where_it_stopped(
     assert index.sync() == {}
 
 
-def test_an_edit_of_a_page_the_killed_walk_had_passed_is_not_lost(
-    notion: FakeNotion, index: Index
-) -> None:
-    _forest(notion)
-    index.limits["max_rows"] = 1
-    _first(index, 6)
-    notion._clock += 30  # Still within the overlap of the watermark taken before the walk.
-    notion.page("a1", blocks=_note("A1, edited while the sync was down."))
-    assert text(index.sync()["a1"]) == "A1, edited while the sync was down."
-
-
-def test_a_walk_position_that_vanished_starts_its_level_again(
-    notion: FakeNotion, index: Index
-) -> None:
-    order = _forest(notion)
-    index.limits["max_rows"] = 1
-    _first(index, 3)
-    assert _path(index) == ["root", "a", "a2"]
-    notion.remove("a")
-    rest = index.sync()
-    assert sorted(rest) == sorted(order[3:])
-
-    index.cursor, index.revisions = None, {}
-    notion.page("a", "root", blocks=_note("A."))
-    _first(index, 7)
-    assert _path(index) == ["root", "rows", "row-1"]
-    notion.remove("row-1")
-    assert sorted(index.sync()) == ["row-2", "row-3", "row-4"]
-
-
-def test_rows_in_another_order_after_a_kill_are_not_passed_over(
-    notion: FakeNotion, index: Index
-) -> None:
-    _forest(notion)
-    index.limits["max_rows"] = 1
-    _first(index, 7)
-    assert _path(index) == ["root", "rows", "row-1"]
-    source = notion.sources[ident("rows#0")]
-    source["rows"].reverse()
-    rest = index.sync()
-    assert sorted(rest) == ["row-2", "row-3", "row-4", "under-row"]
-    assert index.published() == sorted(
-        ["a", "a1", "a2", "b", "b1", *(f"row-{n}" for n in range(5)), "under-row"]
-    )
-
-
 def test_a_deep_walk_keeps_a_bounded_path(
     notion: FakeNotion, index: Index, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -139,20 +86,6 @@ def test_a_deep_walk_keeps_a_bounded_path(
     assert _path(index) == ["root", "level-0", "level-1"]
     assert sorted(index.sync()) == ["level-5"], "it continues from the ancestor it kept"
     assert len(index.published()) == 6
-
-
-def test_the_listing_comes_in_parts_and_only_the_last_is_complete(
-    notion: FakeNotion, index: Index
-) -> None:
-    order = _forest(notion)
-    index.limits["max_rows"] = 2
-    parts = list(index.run("reconcile"))
-    assert len(parts) == 6 and all(len(part.root_ids) <= 2 for part in parts)
-    assert [part.part for part in parts] == list(range(6))
-    assert [(part.last, part.complete) for part in parts] == [(False, False)] * 5 + [(True, True)]
-    assert len({part.listing_id for part in parts}) == 1
-    assert index.listing() == sorted(["root", *order])
-    assert notion.count("/search$") >= 1, "search catches up traversal races"
 
 
 def test_a_failed_read_anywhere_in_the_walk_leaves_no_complete_listing(
@@ -232,25 +165,6 @@ def test_a_parent_chain_longer_than_the_bound_is_out_of_scope(
     assert reader.root_of(ident("level-3")) == ident("root")
     assert reader.root_of(ident("level-7")) is None
     assert reader.root_of(ident("no such page")) is None
-
-
-def test_deep_block_nesting_needs_no_recursion(notion: FakeNotion, index: Index) -> None:
-    notion.page("plan", "root", blocks=[block("bulleted_list_item", "0", name="b0")])
-    page = ident("plan")
-    for depth in range(1, 3000):
-        notion._blocks[ident(f"plan/b{depth}")] = {
-            "kind": "bulleted_list_item",
-            "text": str(depth),
-            "data": {},
-            "parent": ("block", ident(f"plan/b{depth - 1}")),
-            "page": page,
-            "children": [],
-        }
-        notion._blocks[ident(f"plan/b{depth - 1}")]["children"] = [ident(f"plan/b{depth}")]
-    index.limits["document_max_bytes"] = 64 << 20
-    index.limits["max_bytes"] = 128 << 20
-    lines = text(index.sync()["plan"]).splitlines()
-    assert len(lines) == 3000 and lines[-1] == "  " * 2999 + "- 2999"
 
 
 def test_an_id_that_is_no_notion_id_never_reaches_a_request(

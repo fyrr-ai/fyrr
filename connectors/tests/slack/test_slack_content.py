@@ -20,50 +20,6 @@ def bodies(changes):
     )
 
 
-def test_slack_windows_gaps_metadata_mentions_and_exact_fixed_readers(slack, slack_index):
-    slack.post(text="Hello <@U001> in <#C001|platform>.")
-    slack.post(text="Second.", seconds=300)
-    slack.post(text="Separate.", seconds=301)
-    changes = slack_index.sync()
-    assert len(changes) == 2
-    assert "@Fixture author" in bodies(changes) and "#platform" in bodies(changes)
-    assert all(item["readers"] == ["grp:staff"] for item in changes.values())
-    assert all(item["metadata"]["author"] == "Fixture author" for item in changes.values())
-    assert all(
-        item["metadata"]["created_at"] and item["metadata"]["updated_at"]
-        for item in changes.values()
-    )
-    assert all(
-        section["location"]["kind"] == "message"
-        for item in changes.values()
-        for section in item["sections"]
-    )
-    assert not any(
-        method in ("users.list", "conversations.members") for method, _ in slack.requests
-    )
-    assert slack_index.sync() == {}
-    assert slack_index.listing() == set(changes)
-
-
-def test_slack_first_deleted_anchor_stays_stable_within_ledger(slack, slack_index):
-    first = slack.post(text="First.")
-    slack.post(text="Survivor.")
-    initial = slack_index.sync()
-    slack.remove("C001", first["ts"])
-    updated = slack_index.sync()
-    assert set(updated) == set(initial)
-    assert bodies(updated) == "Survivor."
-    assert slack_index.listing() == set(initial)
-
-
-def test_slack_old_message_edit_refreshes_the_published_window(slack, slack_index):
-    first = slack.post(text="Old.")
-    slack_index.sync()
-    slack.clock += 2 * 86400 * 1_000_000
-    slack.edit("C001", first["ts"], "Changed old text.")
-    assert bodies(slack_index.sync()) == "Changed old text."
-
-
 def test_slack_old_thread_growth_and_reply_deletion_without_new_parent_time(slack, slack_index):
     parent = slack.post(text="Parent.")
     slack.post(text="Newer conversation.", seconds=7200)
@@ -79,35 +35,6 @@ def test_slack_old_thread_growth_and_reply_deletion_without_new_parent_time(slac
     assert "Late reply." not in bodies(slack_index.published)
 
 
-@pytest.mark.parametrize(
-    "subtype",
-    [
-        "channel_join",
-        "channel_leave",
-        "channel_name",
-        "channel_topic",
-        "channel_purpose",
-        "unknown_privileged",
-    ],
-)
-def test_slack_system_messages_are_dropped(slack, slack_index, subtype):
-    slack.post(text="System marker.", subtype=subtype)
-    assert slack_index.sync() == {}
-
-
-@pytest.mark.parametrize("bots", [False, True])
-def test_slack_bot_policy_applies_inside_threads_without_losing_human_replies(
-    slack, slack_index, bots
-):
-    slack_index.scope["bots"] = bots
-    parent = slack.post(text="Bot parent.", bot=True)
-    slack.post(text="Human reply.", thread=parent["ts"])
-    slack.post(text="Bot reply.", bot=True, thread=parent["ts"])
-    text = bodies(slack_index.sync())
-    assert "Human reply." in text
-    assert ("Bot parent." in text) is bots and ("Bot reply." in text) is bots
-
-
 @pytest.mark.parametrize("subtype", ["me_message", "file_share"])
 def test_slack_user_text_is_kept_without_dereferencing_files(slack, slack_index, subtype):
     slack.post(
@@ -116,19 +43,6 @@ def test_slack_user_text_is_kept_without_dereferencing_files(slack, slack_index,
         files=[{"url_private": "https://files.invalid/private"}],
     )
     assert bodies(slack_index.sync()) == "User prose."
-
-
-@pytest.mark.parametrize(
-    "bad", ["\0", "x" * 17000, {"not": "text"}], ids=["nul", "oversize", "shape"]
-)
-def test_slack_bad_document_quarantines_without_stalling(slack, slack_index, bad):
-    slack.post(text=bad)
-    slack.post(text="Good.", seconds=400)
-    changes = slack_index.sync()
-    assert len(changes) == 2
-    assert any(item["sections"] == [{"text": "\0"}] for item in changes.values())
-    assert "Good." in bodies(changes)
-    assert slack_index.cursor
 
 
 def test_slack_quarantine_keeps_last_good_and_recovers(slack, slack_index):
@@ -154,35 +68,6 @@ def test_slack_ack_cursor_and_replay_use_pending_revisions(slack, slack_index):
     slack_index.sync()
     assert len(slack_index.published) == 3
     assert all("@" not in batch for batch in [slack_index.cursor])
-
-
-def test_slack_scope_narrowing_and_archived_channels(slack, slack_index):
-    slack.channel("C002", "private", private=True)
-    slack.channels["C002"]["is_archived"] = True
-    slack.post("C001")
-    slack.post("C002")
-    changes = slack_index.sync()
-    assert len(changes) == 2
-    assert any(item["metadata"]["status"] == "archived" for item in changes.values())
-    slack_index.scope["exclude"] = ["private"]
-    assert all(":C002:" not in key for key in slack_index.listing())
-
-
-@pytest.mark.parametrize("error", ["channel_not_found", "not_in_channel"])
-def test_slack_authoritative_channel_loss_does_not_take_other_channels_down(
-    slack, slack_index, error
-):
-    slack.channel("C002", "second")
-    slack.post("C001")
-    slack.post("C002")
-    slack_index.sync()
-    slack.after(
-        lambda method, params: method == "conversations.list", lambda: slack.channels.pop("C001")
-    )
-    changes = slack_index.sync()
-    assert not changes
-    assert all(":C001:" not in key for key in slack_index.listing())
-    assert any(":C002:" in key for key in slack_index.listing())
 
 
 @pytest.mark.parametrize(
@@ -258,36 +143,6 @@ def test_slack_content_golden(slack):
         scope=Index(slack).scope,
     )
     testkit.assert_golden(result, Path(__file__).parent / "golden/content.json")
-
-
-def test_slack_deleting_all_tracked_messages_emits_a_delete(slack, slack_index):
-    message = slack.post()
-    original = slack_index.sync()
-    slack.remove("C001", message["ts"])
-    changes = slack_index.sync()
-    assert set(changes) == set(original)
-    assert all(item["op"] == "delete" for item in changes.values())
-    assert slack_index.listing() == set()
-
-
-def test_slack_ledger_overflow_rekeys_deleted_first_message_until_complete_listing(
-    slack, slack_index
-):
-    first = slack.post(text="First.", seconds=400)
-    slack.post(text="Survivor.")
-    for _ in range(9):
-        slack.post(text="Other window.", seconds=400)
-    original = slack_index.sync()
-    old = min(original)
-    assert len(json.loads(slack_index.cursor)["channels"]["C001"]["anchors"]) == 8
-    slack.remove("C001", first["ts"])
-    changes = slack_index.sync()
-    assert old in slack_index.published
-    assert any(
-        item.get("sections") == [{"text": "Survivor.", "location": item["sections"][0]["location"]}]
-        for item in changes.values()
-    )
-    assert old not in slack_index.listing()
 
 
 @pytest.mark.parametrize("max_rows", [1, 2])

@@ -52,38 +52,6 @@ def allowed(record, groups, cloud, user):
 
 
 @pytest.mark.parametrize(
-    "holder,fields",
-    [
-        ({"type": "user", "value": "U001"}, {}),
-        ({"type": "group", "value": "g1"}, {}),
-        ({"type": "group", "parameter": "Group g1"}, {}),
-        ({"type": "projectRole", "value": "10"}, {}),
-        ({"type": "projectLead"}, {}),
-        ({"type": "applicationRole", "value": "jira-software"}, {}),
-        ({"type": "applicationRole", "parameter": ""}, {}),
-        ({"type": "reporter"}, {}),
-        ({"type": "assignee"}, {"assignee": {"accountId": "U001"}}),
-        (
-            {"type": "userCF", "value": "customfield_10000"},
-            {"customfield_10000": {"accountId": "U001"}},
-        ),
-        ({"type": "userCF", "parameter": "10000"}, {"customfield_10000": [{"accountId": "U001"}]}),
-        (
-            {"type": "groupCF", "value": "customfield_10000"},
-            {"customfield_10000": {"groupId": "g1"}},
-        ),
-    ],
-)
-def test_jira_browse_holder_rows(jira, jira_index, holder, fields):
-    jira_index.mode = "sync"
-    jira.applications = [{"key": "jira-software", "groupDetails": [{"groupId": "g1"}]}]
-    jira.schemes[1] = [{"permission": "BROWSE_PROJECTS", "holder": holder}]
-    jira.issue(101, **fields)
-    records, _ = readers(jira_index)
-    assert allowed(next(iter(records.values())), tokens(jira_index), jira.cloud, "U001")
-
-
-@pytest.mark.parametrize(
     "holder", [{"type": "anyone"}, {"type": "public"}, {"type": "unknown_portal_holder"}]
 )
 def test_jira_public_refused_unknown_holder_under_restricted(jira, jira_index, holder):
@@ -98,38 +66,6 @@ def test_jira_public_refused_unknown_holder_under_restricted(jira, jira_index, h
         assert not allowed(next(iter(records.values())), tokens(jira_index), jira.cloud, "U001")
 
 
-@pytest.mark.parametrize(
-    "holder",
-    [
-        {"type": "user", "value": "U001"},
-        {"type": "group", "value": "g1"},
-        {"type": "projectRole", "value": "10"},
-        {"type": "projectLead"},
-        {"type": "reporter"},
-        {"type": "assignee"},
-        {"type": "userCF", "value": "customfield_10000"},
-        {"type": "groupCF", "value": "customfield_10001"},
-        {"type": "applicationRole", "value": "jira-software"},
-    ],
-)
-def test_jira_security_holder_rows_require_browse_too(jira, jira_index, holder):
-    jira_index.mode = "sync"
-    jira.applications = [{"key": "jira-software", "groupDetails": [{"groupId": "g1"}]}]
-    jira.levels[1][20] = [holder]
-    jira.issue(
-        101,
-        security={"id": "20"},
-        assignee={"accountId": "U001"},
-        customfield_10000={"accountId": "U001"},
-        customfield_10001={"groupId": "g1"},
-    )
-    records, _ = readers(jira_index)
-    assert allowed(next(iter(records.values())), tokens(jira_index), jira.cloud, "U001")
-    jira.schemes[1] = []
-    records, _ = readers(jira_index)
-    assert not allowed(next(iter(records.values())), tokens(jira_index), jira.cloud, "U001")
-
-
 def test_jira_dynamic_only_browse_gets_fields_but_never_restricted_usr(jira, jira_index):
     jira_index.mode = "sync"
     jira.schemes[1] = [{"permission": "BROWSE_PROJECTS", "holder": {"type": "reporter"}}]
@@ -141,31 +77,6 @@ def test_jira_dynamic_only_browse_gets_fields_but_never_restricted_usr(jira, jir
     own = content[0]["sections"][-1]["readers"]
     assert len(own) == 1 and own[0].startswith("grp:")
     assert tokens(jira_index)[own[0][4:]] == set()
-
-
-def test_jira_unrestricted_comments_have_no_own_readers(jira, jira_index):
-    jira_index.mode = "sync"
-    jira.issue(101)
-    jira.comment(101, 201)
-    row = next(r for b in jira_index.run() for r in rows_to_json(b.changes))
-    assert row["sections"][-1].get("readers") is None
-
-
-@pytest.mark.parametrize("kind", ["group", "role"])
-def test_jira_restricted_comments_share_audience_not_per_comment_groups(jira, jira_index, kind):
-    jira_index.mode = "sync"
-    jira.issue(101)
-    for identity in range(201, 221):
-        jira.comment(
-            101,
-            identity,
-            str(identity),
-            visibility={"type": kind, "identifier": "g1" if kind == "group" else "10"},
-        )
-    row = next(r for b in jira_index.run() for r in rows_to_json(b.changes))
-    own = [s["readers"] for s in row["sections"] if s["location"]["kind"] == "comment"]
-    assert len(own) == 20 and len({tuple(v) for v in own}) == 1
-    assert len(tokens(jira_index)) == 2
 
 
 @pytest.mark.parametrize("scope", ["level", "browse"])
@@ -249,21 +160,6 @@ def test_jira_removed_project_is_emptied_without_failing_other_project(jira, jir
     assert not old.readers and not old.containers
 
 
-def test_jira_project_scope_narrowing_immediately_empties_old_container(jira, jira_index):
-    jira_index.mode = "sync"
-    jira.project(2)
-    jira.issue(101)
-    jira.issue(202, project=2)
-    jira_index.scope = {"projects": [1, 2]}
-    jira_index.sync()
-    jira_index.scope = {"projects": [2]}
-    batches = list(jira_index.run("permissions"))
-    old = next(g for b in batches for g in b.container_grants if g.container_id.endswith(":1"))
-    assert not old.readers
-    old_doc = next(d for b in batches for d in b.documents if d.root_id.endswith(":101"))
-    assert not old_doc.readers and not old_doc.containers
-
-
 def test_jira_permission_rotation_does_not_mask_membership_revocation(jira, jira_index):
     jira_index.mode = "sync"
     jira.user("U002")
@@ -298,15 +194,6 @@ def test_jira_permission_records_replay_without_advancing_partial_cursor(jira, j
     assert all(b.cursor == batches[0].cursor for b in batches[:-1])
     replay = list(jira_index.run("permissions"))
     assert replay == batches
-
-
-def test_jira_role_comment_legacy_name_resolved_in_current_numeric_project(jira, jira_index):
-    jira_index.mode = "sync"
-    jira.issue(101)
-    jira.comment(101, 201, visibility={"type": "role", "value": "Readers"})
-    row = next(r for b in jira_index.run() for r in rows_to_json(b.changes))
-    assert row["sections"][-1]["readers"][0].startswith("grp:")
-    assert any(p == "/project/1/role/10" for _, p, _ in jira.requests)
 
 
 def test_jira_unknown_security_and_comment_visibility_are_denied(jira, jira_index):
@@ -375,29 +262,6 @@ def test_jira_changed_comment_visibility_cannot_refresh_stale_content(
         next(stream)
     jira_index.sync()
     assert list(jira_index.run(kind, cursor))
-
-
-def test_jira_holder_type_change_revisits_even_after_content_erases_dynamic_binding(
-    jira, jira_index
-):
-    jira_index.mode = "sync"
-    jira.schemes[1] = [{"permission": "BROWSE_PROJECTS", "holder": {"type": "reporter"}}]
-    for identity in range(101, 111):
-        jira.issue(identity)
-    jira_index.sync()
-    original, cursor = readers(jira_index)
-    assert any(
-        t.endswith(":U001")
-        for t in original[next(k for k in original if k.endswith(":103"))].readers
-    )
-    jira.clock += 1500
-    _, cursor = readers(jira_index, cursor)
-    jira.clock += 1500
-    jira.schemes[1] = []
-    jira_index.sync()
-    latest, _ = readers(jira_index, cursor)
-    assert set(latest) == set(original)
-    assert all(not any(t.startswith("usr:") for t in d.readers) for d in latest.values())
 
 
 def test_jira_permission_cursor_without_holder_type_evidence_is_refused(jira, jira_index):

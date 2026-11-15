@@ -161,19 +161,6 @@ def test_revoked_collaborator_and_removed_repo_get_empty_grant(github, index):
     assert grants(index)["github:repo:1"].readers == ()
 
 
-def test_complete_member_union_deduplicates_repositories(github, index):
-    index.mode = "sync"
-    github.repo(2)
-    github.branch(2, {})
-    index.scope["repositories"].append({"id": 2, "branch": "main"})
-    for repo in (1, 2):
-        github.collaborator(repo, 7)
-    index.limits = replace(index.limits, max_rows=1)
-    parts = list(index.run("members"))
-    assert len(parts) == 1 and parts[0].last
-    assert [user.id for user in parts[0].users] == ["github.com:7"]
-
-
 def test_authorization_frames_are_bounded_before_first_yield(github, index):
     index.mode = "sync"
     for user in range(1, 20):

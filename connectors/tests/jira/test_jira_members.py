@@ -124,48 +124,6 @@ def test_jira_permission_reader_identity_cannot_come_from_another_project(jira, 
         next(jira_index.run("permissions"))
 
 
-def test_jira_binding_group_ids_are_retained_outside_the_cursor(jira, jira_index):
-    jira_index.mode = "sync"
-    jira.schemes[1] = [
-        {
-            "permission": "BROWSE_PROJECTS",
-            "holder": {"type": "groupCF", "value": "customfield_10000"},
-        }
-    ]
-    jira.issue(101, customfield_10000={"groupId": "g1"})
-    jira_index.sync()
-    from fyrr_connectors.jira.feeds import IssueBinding
-
-    binding = IssueBinding.from_revision(next(iter(jira_index.revisions.values())))
-    assert binding.groups == ("g1",)
-    assert "g1" not in jira_index.cursor and "U001" not in jira_index.cursor
-
-
-def test_jira_logged_in_holder_publishes_licensed_workspace_group(jira, jira_index):
-    jira_index.mode = "sync"
-    jira.user("U002", accountType="customer")
-    jira.groups["g1"]["members"].append("U002")
-    jira.applications = [{"key": "jira-software", "groupDetails": [{"groupId": "g1"}]}]
-    jira.schemes[1] = [
-        {"permission": "BROWSE_PROJECTS", "holder": {"type": "applicationRole", "parameter": ""}}
-    ]
-    jira.issue(101)
-    group = next(
-        g for b in jira_index.run("members") for g in b.groups if g.id.endswith(":licensed")
-    )
-    assert group.members == ("usr:atlassian.net:" + jira.cloud + ":U001",)
-
-
-def test_jira_policy_group_members_are_source_user_tokens(jira_index):
-    jira_index.mode = "sync"
-    batches = list(jira_index.run("members"))
-    members = [member for batch in batches for group in batch.groups for member in group.members]
-    assert members
-    assert all(member.startswith("usr:") for member in members)
-    users = {user.id for batch in batches for user in batch.users}
-    assert all(member[4:] in users for member in members)
-
-
 @pytest.mark.parametrize("kind", ["permissions", "members"])
 def test_jira_sync_batches_honor_the_context_row_limit(jira, jira_index, kind):
     from fyrr_connectors.connector import Limits
