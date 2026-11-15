@@ -131,7 +131,7 @@ Jira do this without extra work (Slack and Jira use `verified_domains`
 unless their `corporate_domains` is set). Notion and local files are always
 `fixed`. GitHub reports no usable e-mail, so its
 accounts need explicit links in a directory snapshot; with HTTP users, use
-GitHub with `permissions = "fixed"` for now.
+GitHub with `permissions = "fixed"`.
 
 ## 5. Connect an MCP client
 

@@ -21,10 +21,10 @@ Workers Static Assets runtime at `http://localhost:8486`, including its HTML
 routing, compression, headers, redirects and 404 handling.
 
 `bun run build` prepares an ignored `.content/` collection from `../docs/`,
-exports Fumadocs and the search index, adds the existing homepage and 404
+exports Fumadocs and the search index, adds the homepage and 404
 page, then checks every local link, heading anchor and asset. Missing pages
 in `lib/navigation.ts` fail the build. Repository links outside `docs/`
-still point to GitHub. Published `.html` URLs resolve to the new clean URLs;
+still point to GitHub. Published `.html` URLs resolve to the clean URLs;
 `/docs/connectors/index.html` redirects to `/docs/connectors`.
 
 Search runs in the browser; `/api/search` is a generated static index, not
@@ -74,7 +74,8 @@ bun audit
 
 The browser check visits every docs page on desktop and phone, checks for
 horizontal overflow and browser errors, and exercises search, result
-navigation, old URLs, the desktop table of contents and exact code copying. Install Chromium once with
+navigation, redirected URLs, the desktop table of contents and exact code
+copying. Install Chromium once with
 `bunx playwright install chromium`; `CHROME_PATH` can select another binary.
 
 Lighthouse measures the homepage, quickstart, configuration and a connector
@@ -88,7 +89,7 @@ without other browser measurements in parallel.
 
 | Path | Content |
 | --- | --- |
-| `src/page.html`, `src/base.css`, `src/header.html` | Existing homepage, shared style and header |
+| `src/page.html`, `src/base.css`, `src/header.html` | Homepage, shared style and header |
 | `src/*.js` | Procedural map, fog, ships and homepage interactions |
 | `src/404.html` | Custom 404 page |
 | `app/docs/`, `components/mdx.tsx` | Fumadocs navigation and page components |
@@ -99,6 +100,6 @@ without other browser measurements in parallel.
 | `scripts/finalize.ts` | Static homepage and hosting files |
 | `scripts/check-links.ts` | Exported link, anchor and asset validation |
 
-Keep the homepage's procedural map, approved copy and responsive layout.
+Keep the homepage's procedural map, copy and responsive layout.
 Documentation code blocks use build-time Shiki highlighting and copy the
 original text. Never commit `.content/`, `.source/`, `.next/` or `dist/`.

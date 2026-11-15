@@ -7,11 +7,6 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## [Unreleased]
 
-### Fixed
-
-- Maintenance and source purge remove abandoned local Lance multipart uploads
-  that native object listings hide, while protecting recent and active uploads.
-
 ### Added
 
 - MCP tools `search`, `fetch` and `list_filters`, served over stdio for one
@@ -41,9 +36,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   fixtures, and `scripts/ci`, which checks the reference documentation
   against the binaries.
 
-### Changed
-
-- Native Lance storage and retrieval use the stable 14.0.3 release from
-  crates.io, with exact pins. Arrow remains on major 58 and new datasets
-  retain the default Lance 2.2 data-file format. Native index training and
-  search kernels can change retrieval ranking when publications are rebuilt.
+- Native Lance 14.0.3 storage and retrieval, Arrow 58 and Lance 2.2
+  data files.
+- Maintenance and source purge remove abandoned local Lance multipart uploads
+  that native object listings hide, while protecting recent and active uploads.

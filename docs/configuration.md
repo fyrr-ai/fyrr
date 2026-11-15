@@ -98,8 +98,7 @@ Docker. It is for a single host:
   a purge as on S3; it copies those files on the same disk, up to
   `reader.mirror_max_bytes`.
 
-The generated configuration schema is revision `2.0`; existing S3
-configurations keep working.
+The generated configuration schema is revision `2.0`.
 
 Keep the root and its extended attributes together when making a filesystem
 backup; do not edit its objects or remove its coordination file. There is no

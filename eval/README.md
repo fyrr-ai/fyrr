@@ -1,6 +1,6 @@
 # fyrr-eval
 
-An internal quality-measurement tool. It is not part of any release, and the
+A maintainer quality-measurement tool. It is not part of any release, and the
 product crates do not depend on it: it uses only the public API of
 `fyrr-reader`.
 

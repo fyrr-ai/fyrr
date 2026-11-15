@@ -34,6 +34,10 @@ run on that host as the same user; it cannot be shared with other hosts,
 also not over a network file system. Use S3 as soon as a second host needs
 the namespace.
 
+When a writer runs as PID 1 in the full image, it also reaps orphaned
+processes during worker cleanup. Run unrelated processes in separate
+containers.
+
 ## Minimal production setup
 
 Moving from the [quickstart](quickstart.md) to a deployment changes four
