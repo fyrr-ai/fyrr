@@ -5,10 +5,6 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
     let (sample_events, _) = tokio::sync::broadcast::channel(16);
     #[cfg(test)]
     let observed_samples = sample_events.clone();
-    #[cfg(test)]
-    let (queue_events, _) = tokio::sync::broadcast::channel(16);
-    #[cfg(test)]
-    let observed_queue = queue_events.clone();
     let http = reader.config.reader.http.is_some();
     let cap = reader.config.reader.concurrency;
     let worker_count = crate::generation::PreparationReservation::worker_count(&reader.config);
@@ -105,8 +101,6 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
                 cap,
                 #[cfg(test)]
                 sample_events: observed_samples,
-                #[cfg(test)]
-                queue_events: observed_queue,
             }
             .run()
             .await;
@@ -115,8 +109,6 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
     Ok(McpService {
         #[cfg(test)]
         sample_events,
-        #[cfg(test)]
-        queue_events,
         #[cfg(test)]
         native_slots: observed_native_slots,
         http,
@@ -168,8 +160,6 @@ struct Scheduler {
     cap: usize,
     #[cfg(test)]
     sample_events: tokio::sync::broadcast::Sender<Value>,
-    #[cfg(test)]
-    queue_events: tokio::sync::broadcast::Sender<()>,
 }
 
 impl Scheduler {
@@ -604,8 +594,6 @@ impl Scheduler {
                 .min(job.timing.arrived + self.config.reader.per_request_wait.as_duration());
         }
         self.pending.push_back(job);
-        #[cfg(test)]
-        let _ = self.queue_events.send(());
     }
 
     fn report_sample(&self, result: Result<Value, SampleSkip>) {

@@ -247,7 +247,7 @@ async fn local_storage_reaps_abandoned_uploads_but_protects_live_staging() {
 #[tokio::test]
 #[ignore = "real executable and long local publication history; scripts/ci"]
 async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
-    use super::coordination::{command, host_command, publication, worker_sync};
+    use super::coordination::{command, publication, worker_sync};
     use super::incremental::{envelopes, input, publish, publish_initial, roots, rows};
     use fyrr_core::connector::SyncKind;
     use object_store::ObjectStoreExt;

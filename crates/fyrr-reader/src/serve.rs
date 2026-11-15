@@ -148,8 +148,6 @@ pub(crate) struct McpService {
     #[cfg(test)]
     sample_events: tokio::sync::broadcast::Sender<Value>,
     #[cfg(test)]
-    queue_events: tokio::sync::broadcast::Sender<()>,
-    #[cfg(test)]
     native_slots: Arc<tokio::sync::Semaphore>,
     http: bool,
     sender: mpsc::Sender<Job>,

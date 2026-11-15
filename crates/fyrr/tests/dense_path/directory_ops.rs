@@ -1,5 +1,5 @@
 //! Slice 4 directory operations through the CLI, HTTP, MCP, Keycloak and RustFS.
-use super::coordination::{host_command, publication, worker_sync};
+use super::coordination::{host_command, publication};
 use super::incremental::{fixture, publish, publish_initial};
 use super::tools::Mcp;
 use super::*;

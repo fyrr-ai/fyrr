@@ -1,4 +1,4 @@
-//! Round-1 durability, ACL revision and private-mirror regressions on RustFS.
+//! Durability, ACL revision and private-mirror regressions on RustFS.
 use super::*;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{
@@ -7,11 +7,10 @@ use std::sync::{
 };
 use std::time::Duration;
 
-// Head requests acknowledge entry and stay held until their owning test releases them.
+// Count head requests observed by the proxy.
 #[derive(Default)]
 pub(super) struct HeadReads {
     started: AtomicUsize,
-    gates: Mutex<std::collections::VecDeque<BoundaryHook>>,
 }
 
 impl HeadReads {
@@ -19,28 +18,8 @@ impl HeadReads {
         self.started.load(Ordering::SeqCst)
     }
 
-    pub(super) fn hold_next(&self, count: usize) -> Vec<RequestGate> {
-        let mut hooks = self.gates.lock().unwrap();
-        assert!(
-            hooks.is_empty(),
-            "previous head gates have not been entered"
-        );
-        (0..count)
-            .map(|_| {
-                let (gate, hook) = RequestGate::new(|_, _, _| true);
-                hooks.push_back(hook);
-                gate
-            })
-            .collect()
-    }
-
-    fn start(&self, request: &str) {
-        // Pop before waiting so concurrent requests can acknowledge separate gates.
-        let hook = self.gates.lock().unwrap().pop_front();
+    fn start(&self) {
         self.started.fetch_add(1, Ordering::SeqCst);
-        if let Some(hook) = hook {
-            hook(request, &[], false);
-        }
     }
 }
 
@@ -280,8 +259,8 @@ fn proxy_with_hook(
                     client.get_mut().write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap(); return;
                 }
                 if request.starts_with("GET ") && request.contains("/head.json ") {
-                    if let Some(heads) = &heads { heads.start(request); }
-                    if let Some((heads, _)) = &fault { heads.start(request); }
+                    if let Some(heads) = &heads { heads.start(); }
+                    if let Some((heads, _)) = &fault { heads.start(); }
                     let remaining = revoke.load(Ordering::Relaxed);
                     if remaining != 0 && revoke.fetch_sub(1, Ordering::Relaxed) == 1 { success(&config, &["writer", "commit"]); }
                 }

@@ -92,16 +92,10 @@ struct Verification {
     file: CachedFile,
     checksum: Option<CachedFile>,
     result: tokio::sync::watch::Receiver<Option<VerificationResult>>,
-    #[cfg(test)]
-    started: Arc<AtomicU64>,
 }
 struct Verifications {
     permits: Arc<tokio::sync::Semaphore>,
     files: std::sync::Mutex<BTreeMap<PathBuf, Verification>>,
-    #[cfg(test)]
-    running: AtomicU64,
-    #[cfg(test)]
-    peak: AtomicU64,
 }
 impl Verifications {
     const LIMIT: usize = 2;
@@ -110,10 +104,6 @@ impl Verifications {
         SHARED.get_or_init(|| Self {
             permits: Arc::new(tokio::sync::Semaphore::new(Self::LIMIT)),
             files: std::sync::Mutex::default(),
-            #[cfg(test)]
-            running: AtomicU64::new(0),
-            #[cfg(test)]
-            peak: AtomicU64::new(0),
         })
     }
     fn forget(path: &std::path::Path) {
@@ -605,16 +595,12 @@ impl MirrorStore {
                     )
                 } else {
                     let (sender, receiver) = tokio::sync::watch::channel(None);
-                    #[cfg(test)]
-                    let started = Arc::new(AtomicU64::new(0));
                     files.insert(
                         key,
                         Verification {
                             file: fingerprint.clone(),
                             checksum: checksum.clone(),
                             result: receiver.clone(),
-                            #[cfg(test)]
-                            started: started.clone(),
                         },
                     );
                     let mirror = self.clone();
@@ -629,21 +615,7 @@ impl MirrorStore {
                         };
                         let result = tokio::task::spawn_blocking(move || {
                             let _permit = permit;
-                            #[cfg(test)]
-                            started.fetch_add(1, Ordering::SeqCst);
-                            #[cfg(test)]
-                            pool.peak.fetch_max(
-                                pool.running.fetch_add(1, Ordering::SeqCst) + 1,
-                                Ordering::SeqCst,
-                            );
-                            let result = mirror.verified_file_blocking(
-                                &path,
-                                &fingerprint,
-                                checksum.as_ref(),
-                            );
-                            #[cfg(test)]
-                            pool.running.fetch_sub(1, Ordering::SeqCst);
-                            result
+                            mirror.verified_file_blocking(&path, &fingerprint, checksum.as_ref())
                         })
                         .await
                         .map_err(std::io::Error::other)
