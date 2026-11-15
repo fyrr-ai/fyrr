@@ -17,7 +17,13 @@
 **/__pycache__
 **/.pytest_cache
 **/.ruff_cache
-crates/fyrr/tests/providers/
+# Production builds do not compile test modules or consume their fixtures.
+crates/*/tests/
+crates/*/src/**/tests/
+crates/*/src/**/tests.rs
+crates/*/src/**/*_tests.rs
+eval/tests/
+connectors/tests/
 **/.env
 **/.env.*
 connectors/dist/
