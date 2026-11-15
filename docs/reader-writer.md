@@ -47,7 +47,7 @@ and memory are under [advanced tuning](tuning.md#advanced-tuning).
 | `version_grace` | `1h` | Minimum retention of a version after it stopped serving. Must exceed 300 s plus `reader.max_preparation`. |
 | `max_envelope_age` | `3d` | Older pending envelopes are rejected, forcing a re-scan. At most 6 days: Lance keeps unreferenced files for 7 days. |
 | `document_max_bytes` | `8MiB` | Larger documents are quarantined. |
-| `envelope_max_rows` | `50000` | At least 1. |
+| `envelope_max_rows` | `50000` | At least 1. Provider content batches are further capped by `writer.commit.group_max_rows` and 256. |
 | `envelope_max_bytes` | `256MiB` | Must exceed every document size limit. |
 | `worker_memory_max_bytes` | `2GiB` | Committed-memory ceiling of one provider worker (`RLIMIT_DATA`). |
 | `credentials` | `{}` | Maps a provider's environment reference to a stored credential name (`fyrr writer credential`). |

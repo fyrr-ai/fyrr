@@ -33,7 +33,7 @@ class SyncKind(StrEnum):
 class Limits:
     """Bounds from the fyrr configuration."""
 
-    #: Rows per content batch (`writer.envelope_max_rows`).
+    #: Rows per content batch: min(envelope_max_rows, commit.group_max_rows, 256).
     max_rows: int
     #: Complete Arrow buffer bytes per content batch (`writer.envelope_max_bytes`).
     max_bytes: int

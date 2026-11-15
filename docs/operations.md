@@ -23,7 +23,7 @@ separate and scoped to the namespace.
 
 Lifetime publication and receipt evidence is exact. The history index reads each
 manifest once per maintenance or restore command and reuses validated
-prefixes at subsequent boundaries. Cleanup and receipt lookup can perform
+prefixes at subsequent boundaries. Cleanup, receipt lookup and status enumeration can perform
 additional ancestry walks; their work grows with lifetime history. The
 history index uses a 2 MiB SQLite page cache and grows its disk allowance
 in checked increments. It is never trusted after a restart. Disk, SQL or

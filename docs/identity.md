@@ -37,7 +37,7 @@ value.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `provider` | `none` | `none`, `snapshot`, `keycloak` or `scim`. |
-| `sync_interval` | `15m` | Pull interval, or the attestation interval of SCIM push. |
+| `sync_interval` | `15m` | Pull interval, or SCIM liveness interval renewed by any successful authenticated SCIM request. |
 | `credentials` | absent | `{ env = "VAR" }`: a Keycloak admin bearer token, a Keycloak client secret when `client_id` is set, or the SCIM provider credential. |
 | `endpoint` | absent | Keycloak base URL (HTTPS, or explicitly allowed loopback). |
 | `realm` | absent | Keycloak realm. |

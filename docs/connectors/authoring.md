@@ -192,6 +192,10 @@ when a pass completed; a changed scope must restart from `None`.
 
 ## Limits and failures
 
+`context.limits.max_rows` is the minimum of `writer.envelope_max_rows`,
+`writer.commit.group_max_rows` and 256. Use the supplied limit for every
+content batch, even when the configured envelope limit is larger.
+
 Workers run with a time limit, a memory limit and no stdout or stderr. Raise
 an exception for any failure; fyrr reports a fixed diagnostic code and
 never the exception text. Bound everything you read from the network
