@@ -16,7 +16,7 @@ markdown-dir = "fyrr_provider_markdown:provider_info"
 dev = ["fyrr-connectors[testkit]", "pytest==9.1.1", "ruff==0.16.10"]
 
 [build-system]
-requires = ["uv_build>=0.12.21,<0.13"]
+requires = ["uv_build>=0.12.21,<0.14"]
 build-backend = "uv_build"
 
 [tool.uv]
