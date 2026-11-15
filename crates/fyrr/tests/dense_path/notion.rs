@@ -4,8 +4,8 @@
 //!
 //! Page texts are `fixture document N`, inputs registered with the fixture's embedding service
 //! embeddings; the source's `document_max_bytes` is 64 bytes.
-use super::coordination::{committer_host, host_command, publication, worker_command, worker_sync};
-use super::incremental::{publish, roots};
+use super::coordination::{committer_host, host_command, worker_command, worker_sync};
+use super::incremental::{publish, source_roots};
 use super::*;
 
 /// The fake Notion as a process; it ends when this is dropped.
@@ -147,35 +147,6 @@ fn synced(config: &Path, fake: &Fake, args: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).expect("single JSON result")
 }
 
-/// The published documents of the Notion source, sorted.
-async fn documents(config: &Path) -> Vec<String> {
-    let loaded = fyrr_core::config::load(config).unwrap();
-    let (head, _) = publication(config).await;
-    let dataset = fyrr_reader::storage::open_version(
-        &fyrr_reader::storage::dataset_uri(&loaded.config),
-        loaded
-            .config
-            .storage
-            .object_store_options(&fyrr_core::config::ProcessEnvironment)
-            .unwrap(),
-        head.content.unwrap().lance_version,
-        None,
-    )
-    .await
-    .unwrap();
-    let batch = dataset
-        .scan()
-        .filter("source_id = 'notion'")
-        .unwrap()
-        .try_into_batch()
-        .await
-        .unwrap();
-    let mut found = roots(&batch);
-    found.sort();
-    found.dedup();
-    found
-}
-
 fn sorted(mut ids: Vec<String>) -> Vec<String> {
     ids.sort();
     ids
@@ -206,7 +177,7 @@ async fn notion_content_changes_quarantine_and_reconcile_on_real_s3() {
     );
     publish(&commit);
     assert_eq!(
-        documents(&worker).await,
+        source_roots(&worker, "notion").await,
         sorted(vec![early.clone(), plan.clone()])
     );
     assert_eq!(fake.reads(&early), 1);
@@ -217,7 +188,7 @@ async fn notion_content_changes_quarantine_and_reconcile_on_real_s3() {
     );
     publish(&commit);
     assert_eq!(
-        documents(&worker).await,
+        source_roots(&worker, "notion").await,
         sorted(vec![
             early.clone(),
             plan.clone(),
@@ -257,14 +228,14 @@ async fn notion_content_changes_quarantine_and_reconcile_on_real_s3() {
         late.clone(),
         task.clone(),
     ]);
-    assert_eq!(documents(&worker).await, current);
+    assert_eq!(source_roots(&worker, "notion").await, current);
 
     // A reset cursor walks everything again and publishes nothing twice.
     let reads = fake.reads(&late);
     synced(&worker, &fake, &["--kind", "content", "--full"]);
     assert_eq!(fake.reads(&late), reads + 1);
     publish(&commit);
-    assert_eq!(documents(&worker).await, current);
+    assert_eq!(source_roots(&worker, "notion").await, current);
 
     // A page that left the roots has no change entry. A failed listing
     // deletes nothing; the next complete one removes it.
@@ -281,8 +252,11 @@ async fn notion_content_changes_quarantine_and_reconcile_on_real_s3() {
             .success()
     );
     publish(&commit);
-    assert_eq!(documents(&worker).await, current);
+    assert_eq!(source_roots(&worker, "notion").await, current);
     synced(&worker, &fake, &["--kind", "reconcile"]);
     publish(&commit);
-    assert_eq!(documents(&worker).await, sorted(vec![plan, late, task]));
+    assert_eq!(
+        source_roots(&worker, "notion").await,
+        sorted(vec![plan, late, task])
+    );
 }

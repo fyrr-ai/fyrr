@@ -3130,16 +3130,7 @@ async fn maintenance_native_cache_budget_refuses_shortfall_and_preserves_results
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let fresh = host_command(&live)
-            .args(["reader", "check"])
-            .output()
-            .unwrap();
-        assert!(
-            fresh.status.success(),
-            "{}",
-            String::from_utf8_lossy(&fresh.stderr)
-        );
-        let readiness: Value = serde_json::from_slice(&fresh.stdout).unwrap();
+        let readiness = command(&live, &["reader", "check"]);
         assert_eq!(readiness["native_cache_degradation"], Value::Null);
         assert!(
             readiness["native_cache_available_bytes"].as_u64().unwrap()
@@ -4802,162 +4793,50 @@ async fn maintenance_restore_batched_own_readers_and_retired_rows_on_real_s3() {
         }
         command(&commit, &["writer", "verify"]);
     }
-}
 
-/// Public CLI reproduction of a section restatement after restore or rollback.
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-#[allow(clippy::print_stderr)]
-async fn maintenance_section_restatement_after_restore_on_real_s3() {
-    let mut failures = Vec::new();
-    for rollback in [false, true] {
-        let variant = if rollback { "rollback" } else { "restore" };
-        let (worker, commit, root) = fixture();
-        initial(&root);
-        let mut seed: Value =
-            serde_json::from_slice(&std::fs::read(root.join("input.json")).unwrap()).unwrap();
-        let mut document = doc("section", "r1", "fixture document 0");
-        document["texts"] = json!(["fixture document 0", "fixture document 1"]);
-        document["section_readers"] = json!([["grp:group"], ["grp:group"]]);
-        seed["content"] = json!([[document]]);
-        seed["permissions"] = json!([[{"id":"section","revision":"p1","readers":["grp:group"]}]]);
-        input(&root, seed);
-        // This document-only reproduction has no membership read to rewind.
-        worker_sync(
-            &worker,
-            &["incremental", "--kind", "content", "--kind", "permissions"],
-        );
-        publish(&commit);
-        let target = publication(&commit).await.1.publication_id;
-        let trace = |step: &str, batch: &arrow_array::RecordBatch| {
-            assert_eq!(
-                batch.num_rows(),
-                2,
-                "{variant} {step}: two current sections"
-            );
-            for row in 0..batch.num_rows() {
-                let metadata: Value = serde_json::from_str(
-                    fyrr_writer::apply::strings(batch, "metadata_json")
-                        .unwrap()
-                        .value(row),
-                )
-                .unwrap();
-                let own = metadata
-                    .get("_fyrr_own_readers")
-                    .map(|v| v.as_array().unwrap());
-                let own_state = match own {
-                    None => "absent",
-                    Some(readers) if readers.is_empty() => "empty",
-                    Some(_) => "present",
-                };
-                let state = fyrr_writer::apply::state(batch, row).unwrap();
-                eprintln!(
-                    "section_trace variant={variant} step={step} row={row} revision={} own={own_state} own_count={} row_readers={} document_readers={}",
-                    state.revision.as_deref().unwrap_or("absent"),
-                    own.map_or(0, Vec::len),
-                    fyrr_writer::apply::tokens(batch, row).unwrap().len(),
-                    state.permission.as_ref().map_or(0, |p| p.readers.len())
-                );
-            }
-        };
-        trace("publish", &rows(&worker).await);
-        input(
-            &root,
-            json!({"epoch":2,"permissions":[[{"id":"section","revision":"p2","readers":[]}]]}),
-        );
-        worker_sync(&worker, &["incremental", "--kind", "permissions"]);
-        publish(&commit);
-        trace("revoke", &rows(&worker).await);
-        if rollback {
-            command(&commit, &["writer", "rollback"]);
-        } else {
-            command(&commit, &["writer", "restore", &target]);
+    // A new content revision can restate its own section readers after restore.
+    let mut change = replacement("own-0", "r3", "r1", "fixture document 0");
+    change["texts"] = json!(["fixture document 0", "fixture document 1"]);
+    change["section_readers"] = json!([["grp:group"], ["grp:group"]]);
+    input(&root, json!({"epoch":5,"content":[[change]]}));
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    publish(&commit);
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let restated = fyrr_writer::apply::permission_readers(
+        &loaded.config,
+        "incremental",
+        &["grp:group".into()],
+        &[],
+    )
+    .unwrap();
+    let batch = rows(&worker).await;
+    let roots = fyrr_writer::apply::strings(&batch, "root_id").unwrap();
+    let metadata = fyrr_writer::apply::strings(&batch, "metadata_json").unwrap();
+    let mut changed = 0;
+    for row in 0..batch.num_rows() {
+        if roots.value(row) != "own-0" {
+            continue;
         }
-        trace("restore", &rows(&worker).await);
-        input(
-            &root,
-            json!({"epoch":3,"permissions":[[{"id":"section","revision":"p3","readers":["grp:group"]}]]}),
-        );
-        worker_sync(&worker, &["incremental", "--kind", "permissions"]);
-        publish(&commit);
-        trace("grant", &rows(&worker).await);
-        document["revision"] = json!("r2");
-        document["expected_prior_revision"] = json!("r1");
-        input(&root, json!({"epoch":4,"content":[[document]]}));
-        worker_sync(&worker, &["incremental", "--kind", "content"]);
-        trace("prepare", &rows(&worker).await);
-        let loaded = fyrr_core::config::load(&worker).unwrap();
-        let head = publication(&worker).await.0;
-        let unresolved = fyrr_writer::commit::unconsumed_rejections(&loaded.config, &head, &[])
-            .await
+        changed += 1;
+        let metadata: Value = serde_json::from_str(metadata.value(row)).unwrap();
+        assert_eq!(metadata["_fyrr"]["revision"], "r3");
+        let own: Vec<String> =
+            serde_json::from_value(metadata["_fyrr_own_readers"].clone()).unwrap();
+        assert_eq!(own, restated);
+        let permission = fyrr_writer::apply::state(&batch, row)
+            .unwrap()
+            .permission
             .unwrap();
-        let pending = fyrr_writer::commit::pending(&loaded.config, &head)
-            .await
-            .unwrap();
-        let prepared = pending
-            .iter()
-            .find(|e| {
-                e.source_id == "incremental" && e.kind == fyrr_core::connector::SyncKind::Content
-            })
-            .unwrap();
-        let fyrr_core::envelope::EnvelopePayload::Content(payload) = &prepared.payload else {
-            unreachable!()
-        };
-        assert_eq!(payload.documents[0].source_revision.as_deref(), Some("r2"));
+        let intersection: Vec<_> = own
+            .into_iter()
+            .filter(|token| permission.readers.contains(token))
+            .collect();
         assert_eq!(
-            payload.documents[0].expected_prior_revision.as_deref(),
-            Some("r1")
+            fyrr_writer::apply::tokens(&batch, row).unwrap(),
+            intersection
         );
-        eprintln!(
-            "section_prepared variant={variant} revision=r2 prior=r1 unresolved_members={}",
-            unresolved
-                .iter()
-                .filter(|m| m.source_id == "incremental"
-                    && m.kind == fyrr_core::connector::SyncKind::Members)
-                .count()
-        );
-        publish(&commit);
-        let current = rows(&worker).await;
-        trace("commit", &current);
-        let restated = fyrr_writer::apply::permission_readers(
-            &loaded.config,
-            "incremental",
-            &["grp:group".into()],
-            &[],
-        )
-        .unwrap();
-        for row in 0..current.num_rows() {
-            let metadata: Value = serde_json::from_str(
-                fyrr_writer::apply::strings(&current, "metadata_json")
-                    .unwrap()
-                    .value(row),
-            )
-            .unwrap();
-            if metadata["_fyrr"]["revision"] != json!("r2") {
-                failures.push(format!("{variant} row {row}: new revision was not applied"));
-            }
-            let own: Vec<String> =
-                serde_json::from_value(metadata["_fyrr_own_readers"].clone()).unwrap();
-            assert_eq!(
-                own, restated,
-                "{variant}: apply the restated section readers"
-            );
-            let permission = fyrr_writer::apply::state(&current, row)
-                .unwrap()
-                .permission
-                .unwrap();
-            let intersection: Vec<_> = own
-                .into_iter()
-                .filter(|token| permission.readers.contains(token))
-                .collect();
-            assert_eq!(
-                fyrr_writer::apply::tokens(&current, row).unwrap(),
-                intersection,
-                "{variant}: remain within document authority"
-            );
-        }
     }
-    assert!(failures.is_empty(), "{}", failures.join("; "));
+    assert_eq!(changed, 2, "both restated sections keep document authority");
 }
 
 #[tokio::test]

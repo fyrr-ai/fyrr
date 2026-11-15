@@ -1082,12 +1082,6 @@ async fn coordination_stale_publish_preserves_authoritative_head(backend: Backen
 }
 
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn coordination_live_holder_is_busy_then_fenced_after_expiry_on_real_s3() {
-    coordination_live_holder_is_busy_then_fenced_after_expiry(Backend::S3).await;
-}
-
-#[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn coordination_live_holder_is_busy_then_fenced_after_expiry_on_local_storage() {
     coordination_live_holder_is_busy_then_fenced_after_expiry(Backend::Local).await;

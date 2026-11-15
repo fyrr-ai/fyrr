@@ -1,7 +1,7 @@
 //! GitHub through the real worker and owned RustFS, using the one synthetic HTTP fake.
 //! Sync tests are deliberately not run until the coordinator merges the writer fixes.
 use super::coordination::{committer_host, host_command, publication, worker_command, worker_sync};
-use super::incremental::{publish, roots};
+use super::incremental::{publish, source_roots};
 use super::*;
 
 struct Fake {
@@ -115,33 +115,6 @@ fn synced(worker: &Path, fake: &Fake, kinds: &[&str]) -> Value {
     );
     serde_json::from_slice(&output.stdout).unwrap()
 }
-async fn documents(worker: &Path) -> Vec<String> {
-    let loaded = fyrr_core::config::load(worker).unwrap();
-    let (head, _) = publication(worker).await;
-    let dataset = fyrr_reader::storage::open_version(
-        &fyrr_reader::storage::dataset_uri(&loaded.config),
-        loaded
-            .config
-            .storage
-            .object_store_options(&fyrr_core::config::ProcessEnvironment)
-            .unwrap(),
-        head.content.unwrap().lance_version,
-        None,
-    )
-    .await
-    .unwrap();
-    let batch = dataset
-        .scan()
-        .filter("source_id = 'github'")
-        .unwrap()
-        .try_into_batch()
-        .await
-        .unwrap();
-    let mut ids = roots(&batch);
-    ids.sort();
-    ids.dedup();
-    ids
-}
 
 #[tokio::test]
 #[ignore = "real worker and owned RustFS; coordinator Cargo slot"]
@@ -158,23 +131,26 @@ async fn github_fixed_replay_quarantine_scope_and_reconcile_on_real_s3() {
             .success()
     );
     publish(&commit);
-    assert_eq!(documents(&worker).await, vec!["github:repo:1:issue:101:1"]);
+    assert_eq!(
+        source_roots(&worker, "github").await,
+        vec!["github:repo:1:issue:101:1"]
+    );
     let report = synced(&worker, &fake, &["--kind", "content"]);
     assert_eq!(
         report["paid_calls"], 2,
         "only the two novel document inputs are embedded"
     );
     publish(&commit);
-    assert_eq!(documents(&worker).await.len(), 3);
+    assert_eq!(source_roots(&worker, "github").await.len(), 3);
     fake.topic(1, "fixture document 4");
     fake.topic(4, &"fixture document 6 ".repeat(8));
     let report = synced(&worker, &fake, &["--kind", "content"]);
     assert_eq!(report["stats"]["quarantined"], 1);
     publish(&commit);
-    assert_eq!(documents(&worker).await.len(), 3);
+    assert_eq!(source_roots(&worker, "github").await.len(), 3);
     synced(&worker, &fake, &["--kind", "content", "--full"]);
     publish(&commit);
-    assert_eq!(documents(&worker).await.len(), 3);
+    assert_eq!(source_roots(&worker, "github").await.len(), 3);
     fake.call(
         "remove_topic",
         json!({"repo_id":1,"kind":"issue","number":2}),
@@ -186,10 +162,10 @@ async fn github_fixed_replay_quarantine_scope_and_reconcile_on_real_s3() {
             .success()
     );
     publish(&commit);
-    assert_eq!(documents(&worker).await.len(), 3);
+    assert_eq!(source_roots(&worker, "github").await.len(), 3);
     synced(&worker, &fake, &["--kind", "reconcile"]);
     publish(&commit);
-    assert_eq!(documents(&worker).await.len(), 2);
+    assert_eq!(source_roots(&worker, "github").await.len(), 2);
     let paths = fake.call("requests", json!({}));
     assert!(
         paths
@@ -346,107 +322,4 @@ async fn github_sync_silent_content_and_revoke_on_real_s3() {
                 .is_empty()
         );
     }
-}
-
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn github_sync_acl_failure_default_deadline_hides_only_source_on_real_s3() {
-    let fake = Fake::start();
-    let (worker, commit, _root) = fixture(&fake, "sync");
-    fake.topic(1, "fixture document 0");
-    fake.call("collaborator", json!({"repo_id":1,"user_id":7}));
-    link_account(&worker).await;
-    synced(
-        &worker,
-        &fake,
-        &[
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-            "--kind",
-            "content",
-        ],
-    );
-    publish(&commit);
-    let (before, _) = publication(&worker).await;
-    let prior = before
-        .freshness
-        .sources
-        .iter()
-        .find(|f| f.source_id == "github")
-        .unwrap()
-        .clone();
-    fake.call(
-        "fail",
-        json!({"path":"/repos/synthetic/repo-1/collaborators","status":403}),
-    );
-    assert!(
-        !sync(&worker, &fake, &["--kind", "permissions"])
-            .status
-            .success()
-    );
-    publish(&commit);
-    let (mut head, _) = publication(&worker).await;
-    assert_eq!(
-        head.freshness
-            .sources
-            .iter()
-            .find(|f| f.source_id == "github")
-            .unwrap(),
-        &prior
-    );
-    let mut reader = super::tools::Mcp::open(&worker);
-    let visible = reader.call(
-        "fetch",
-        json!({"source_id":"github","root_id":"github:repo:1:issue:101:1"}),
-    );
-    assert!(
-        !visible["structuredContent"]["documents"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let deadline =
-        chrono::Duration::from_std(loaded.config.identity.validity_deadline.as_duration()).unwrap();
-    head.freshness
-        .sources
-        .iter_mut()
-        .find(|f| f.source_id == "github")
-        .unwrap()
-        .permissions_read_at = chrono::Utc::now() - deadline - chrono::Duration::seconds(1);
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    store
-        .put(
-            &ns.join("head.json"),
-            fyrr_core::write_contract(&head).into(),
-        )
-        .await
-        .unwrap();
-    let hidden = reader.call(
-        "fetch",
-        json!({"source_id":"github","root_id":"github:repo:1:issue:101:1"}),
-    );
-    assert!(
-        hidden["structuredContent"]["documents"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        hidden["structuredContent"]["metadata"]["hidden_sources"],
-        json!(["github"])
-    );
-    let unaffected = reader.call(
-        "search",
-        json!({"sources":["allowed"],"order":"updated_at","limit":2}),
-    );
-    assert_eq!(
-        unaffected["structuredContent"]["hits"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
 }

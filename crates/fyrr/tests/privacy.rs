@@ -292,8 +292,8 @@ fn values_in_the_config_file_never_leave_through_errors() {
         )
     };
     let cases = [
-        // (config text, whether `config show` may run: it prints non-secret
-        // values by design, so only cases whose marker is secret or invalid)
+        // (config text, whether `config show` must also keep stdout private;
+        // non-secret values are intentionally displayed by that command)
         (
             config_with(&source(format!(
                 "api_token = \"{}\"",
@@ -357,24 +357,31 @@ fn values_in_the_config_file_never_leave_through_errors() {
             false,
         ),
     ];
-    for (index, (text, show)) in cases.iter().enumerate() {
+    for (index, (text, private_show)) in cases.iter().enumerate() {
         let path = sandbox.input(&format!("case-{index}.toml"), text);
         let path = path.to_str().expect("path");
         let output = sandbox.run(["--config", path, "config", "check", "--no-env"], &[]);
-        assert_ne!(output.status.code(), Some(0), "case {index} must fail");
+        assert_eq!(output.status.code(), Some(78), "case {index} must fail");
         assert_clean(
             &sentinels,
             &output,
             &sandbox,
             &format!("config check, case {index}"),
         );
-        if *show {
-            let output = sandbox.run(["--config", path, "config", "show"], &[]);
+        let output = sandbox.run(["--config", path, "config", "show"], &[]);
+        assert_eq!(output.status.code(), Some(78), "config show, case {index}");
+        if *private_show {
             assert_clean(
                 &sentinels,
                 &output,
                 &sandbox,
                 &format!("config show, case {index}"),
+            );
+        } else {
+            assert!(
+                sentinels
+                    .found_in(&String::from_utf8_lossy(&output.stderr))
+                    .is_empty()
             );
         }
     }

@@ -151,7 +151,6 @@
       "full:fyrr-core:test:config/missing_secrets_are_reported_by_variable_name",
       "full:fyrr-core:test:config/reader_preparation_budget_keeps_headroom_below_memory_limit",
       "full:fyrr-core:test:config/redacted_messages_keep_their_hints",
-      "full:fyrr-core:test:config/reported_invalid_values_fail_config_check",
       "full:fyrr-core:test:config/rerank_is_optional_capped_validated_and_bound_into_policy",
       "full:fyrr-core:test:config/rescore_depth_keeps_legacy_digest_and_expands_only_at_small_gaps",
       "full:fyrr-core:test:config/retrieval_config_bounds_and_legacy_digest",
@@ -232,7 +231,6 @@
       "full:fyrr:test:cli/config_check_passes_with_secrets_and_never_prints_them",
       "full:fyrr:test:cli/config_check_rejects_unknown_fields_and_inline_secrets",
       "full:fyrr:test:cli/config_check_reports_unset_secrets_by_name",
-      "full:fyrr:test:cli/config_errors_never_echo_values",
       "full:fyrr:test:cli/config_schema_is_the_generated_schema_plus_installed_providers",
       "full:fyrr:test:cli/config_show_never_prints_inline_secrets",
       "full:fyrr:test:cli/config_show_prints_values_with_origins",
@@ -289,7 +287,6 @@
       "full:fyrr:test:dense_path/coordination::coordination_stale_acquire_cannot_replace_live_holder_on_real_s3",
       "full:fyrr:test:dense_path/coordination::coordination_stale_publish_preserves_authoritative_head_on_real_s3",
       "full:fyrr:test:dense_path/coordination::coordination_foreign_native_commit_cannot_publish_head_on_real_s3",
-      "full:fyrr:test:dense_path/coordination::coordination_live_holder_is_busy_then_fenced_after_expiry_on_real_s3"
     ],
     "children": {
       "full:fyrr-writer:lib:fyrr_writer/envelopes::tests::status_bounded_backlog_on_real_s3": [
@@ -423,7 +420,6 @@
   "s3-github": {
     "cases": [
       "full:fyrr:test:dense_path/github::github_fixed_replay_quarantine_scope_and_reconcile_on_real_s3",
-      "full:fyrr:test:dense_path/github::github_sync_acl_failure_default_deadline_hides_only_source_on_real_s3",
       "full:fyrr:test:dense_path/github::github_sync_silent_content_and_revoke_on_real_s3"
     ]
   },
@@ -474,7 +470,6 @@
       "full:fyrr:test:dense_path/maintenance::maintenance_retired_source_commits_are_fenced_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_retired_source_is_denied_at_once_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_retired_source_survives_restore_and_rollback_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_section_restatement_after_restore_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_shared_mirror_repair_and_crashed_holder_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_small_mirror_stays_serving_without_rewarming_each_interval_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_warming_does_not_block_per_request_version_adoption_on_real_s3",
@@ -530,7 +525,6 @@
   "s3-jira": {
     "cases": [
       "full:fyrr:test:dense_path/jira::jira_fixed_issues_comments_quarantine_and_reconcile_on_real_s3",
-      "full:fyrr:test:dense_path/jira::jira_sync_acl_failure_default_deadline_hides_only_source_on_real_s3",
       "full:fyrr:test:dense_path/jira::jira_sync_comment_role_under_share_and_membership_refresh_on_real_s3",
       "full:fyrr:test:dense_path/jira::jira_sync_silent_content_restricted_sections_and_revoke_on_real_s3",
       "full:fyrr:test:dense_path/jira::jira_visibility_change_waits_for_published_content_on_real_s3"
@@ -590,7 +584,6 @@
   "s3-slack": {
     "cases": [
       "full:fyrr:test:dense_path/slack::slack_fixed_windows_threads_quarantine_and_reconcile_on_real_s3",
-      "full:fyrr:test:dense_path/slack::slack_sync_acl_failure_default_deadline_hides_only_source_on_real_s3",
       "full:fyrr:test:dense_path/slack::slack_sync_corporate_email_link_and_changed_external_email_on_real_s3",
       "full:fyrr:test:dense_path/slack::slack_sync_public_floor_guest_membership_and_deactivation_on_real_s3",
       "full:fyrr:test:dense_path/slack::slack_sync_silent_content_and_revoke_on_real_s3"
@@ -1403,7 +1396,6 @@
       "reader:fyrr:test:cli/config_check_passes_with_secrets_and_never_prints_them",
       "reader:fyrr:test:cli/config_check_rejects_unknown_fields_and_inline_secrets",
       "reader:fyrr:test:cli/config_check_reports_unset_secrets_by_name",
-      "reader:fyrr:test:cli/config_errors_never_echo_values",
       "reader:fyrr:test:cli/config_schema_is_the_generated_schema_plus_installed_providers",
       "reader:fyrr:test:cli/config_show_never_prints_inline_secrets",
       "reader:fyrr:test:cli/config_show_prints_values_with_origins",

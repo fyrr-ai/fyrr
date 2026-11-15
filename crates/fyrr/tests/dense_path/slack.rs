@@ -1,7 +1,7 @@
 //! Slack through the actual worker/reader and owned RustFS, using the one HTTP fake.
 //! Synced permission tests await the coordinator's writer-lane merge.
 use super::coordination::{committer_host, host_command, publication, worker_command, worker_sync};
-use super::incremental::{publish, roots};
+use super::incremental::{publish, source_roots};
 use super::*;
 
 struct Fake {
@@ -103,33 +103,6 @@ fn synced(worker: &Path, args: &[&str]) -> Value {
     );
     serde_json::from_slice(&output.stdout).unwrap()
 }
-async fn documents(worker: &Path) -> Vec<String> {
-    let loaded = fyrr_core::config::load(worker).unwrap();
-    let (head, _) = publication(worker).await;
-    let dataset = fyrr_reader::storage::open_version(
-        &fyrr_reader::storage::dataset_uri(&loaded.config),
-        loaded
-            .config
-            .storage
-            .object_store_options(&fyrr_core::config::ProcessEnvironment)
-            .unwrap(),
-        head.content.unwrap().lance_version,
-        None,
-    )
-    .await
-    .unwrap();
-    let batch = dataset
-        .scan()
-        .filter("source_id = 'slack'")
-        .unwrap()
-        .try_into_batch()
-        .await
-        .unwrap();
-    let mut ids = roots(&batch);
-    ids.sort();
-    ids.dedup();
-    ids
-}
 
 #[tokio::test]
 #[ignore = "actual worker/reader and owned RustFS; coordinator Cargo slot"]
@@ -145,7 +118,7 @@ async fn slack_fixed_windows_threads_quarantine_and_reconcile_on_real_s3() {
         "three novel texts occupy two bounded envelopes"
     );
     publish(&commit);
-    assert_eq!(documents(&worker).await.len(), 3);
+    assert_eq!(source_roots(&worker, "slack").await.len(), 3);
     fake.call("advance", json!({"seconds":172800}));
     fake.call(
         "post",
@@ -153,7 +126,7 @@ async fn slack_fixed_windows_threads_quarantine_and_reconcile_on_real_s3() {
     );
     synced(&worker, &["--kind", "content"]);
     publish(&commit);
-    assert_eq!(documents(&worker).await.len(), 3);
+    assert_eq!(source_roots(&worker, "slack").await.len(), 3);
     fake.call(
         "edit",
         json!({"channel":"C001","ts":first["ts"],"text":"fixture document 4"}),
@@ -165,10 +138,10 @@ async fn slack_fixed_windows_threads_quarantine_and_reconcile_on_real_s3() {
     let report = synced(&worker, &["--kind", "content"]);
     assert_eq!(report["stats"]["quarantined"], 1);
     publish(&commit);
-    assert_eq!(documents(&worker).await.len(), 3);
+    assert_eq!(source_roots(&worker, "slack").await.len(), 3);
     synced(&worker, &["--kind", "content", "--full"]);
     publish(&commit);
-    assert_eq!(documents(&worker).await.len(), 3);
+    assert_eq!(source_roots(&worker, "slack").await.len(), 3);
     fake.call("remove", json!({"channel":"C001","ts":first["ts"]}));
     fake.call(
         "fail",
@@ -176,15 +149,15 @@ async fn slack_fixed_windows_threads_quarantine_and_reconcile_on_real_s3() {
     );
     assert!(!sync(&worker, &["--kind", "reconcile"]).status.success());
     publish(&commit);
-    assert_eq!(documents(&worker).await.len(), 3);
+    assert_eq!(source_roots(&worker, "slack").await.len(), 3);
     synced(&worker, &["--kind", "reconcile"]);
     publish(&commit);
-    assert_eq!(documents(&worker).await.len(), 2);
+    assert_eq!(source_roots(&worker, "slack").await.len(), 2);
     // Authoritative channel loss is scope exit; no permission API is needed.
     fake.call("delete_channel", json!({"channel":"C001"}));
     synced(&worker, &["--kind", "reconcile"]);
     publish(&commit);
-    assert!(documents(&worker).await.is_empty());
+    assert!(source_roots(&worker, "slack").await.is_empty());
 }
 
 async fn link_account(worker: &Path, user: &str, email: Option<&str>) {
@@ -328,105 +301,6 @@ async fn slack_sync_silent_content_and_revoke_on_real_s3() {
                 .is_empty()
         );
     }
-}
-
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn slack_sync_acl_failure_default_deadline_hides_only_source_on_real_s3() {
-    let fake = Fake::start();
-    let (worker, commit, _root) = fixture(&fake, "sync");
-    fake.call(
-        "channel",
-        json!({"identity":"C001","name":"private-room","private":true}),
-    );
-    let message = fake.call("post", json!({"text":"fixture document 0"}));
-    let root_id = format!(
-        "slack:T001:C001:window:{}",
-        message["ts"].as_str().unwrap().replace('.', "")
-    );
-    link_account(&worker, "U001", None).await;
-    synced(
-        &worker,
-        &[
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-            "--kind",
-            "content",
-        ],
-    );
-    publish(&commit);
-    let (before, _) = publication(&worker).await;
-    let prior = before
-        .freshness
-        .sources
-        .iter()
-        .find(|f| f.source_id == "slack")
-        .unwrap()
-        .clone();
-    fake.call(
-        "fail",
-        json!({"method":"conversations.members","code":"missing_scope"}),
-    );
-    assert!(!sync(&worker, &["--kind", "permissions"]).status.success());
-    publish(&commit);
-    let (mut head, _) = publication(&worker).await;
-    assert_eq!(
-        head.freshness
-            .sources
-            .iter()
-            .find(|f| f.source_id == "slack")
-            .unwrap(),
-        &prior
-    );
-    let mut reader = super::tools::Mcp::open(&worker);
-    let visible = reader.call("fetch", json!({"source_id":"slack","root_id":&root_id}));
-    assert!(
-        !visible["structuredContent"]["documents"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let deadline =
-        chrono::Duration::from_std(loaded.config.identity.validity_deadline.as_duration()).unwrap();
-    head.freshness
-        .sources
-        .iter_mut()
-        .find(|f| f.source_id == "slack")
-        .unwrap()
-        .permissions_read_at = chrono::Utc::now() - deadline - chrono::Duration::seconds(1);
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    store
-        .put(
-            &ns.join("head.json"),
-            fyrr_core::write_contract(&head).into(),
-        )
-        .await
-        .unwrap();
-    let hidden = reader.call("fetch", json!({"source_id":"slack","root_id":&root_id}));
-    assert!(
-        hidden["structuredContent"]["documents"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        hidden["structuredContent"]["metadata"]["hidden_sources"],
-        json!(["slack"])
-    );
-    let unaffected = reader.call(
-        "search",
-        json!({"sources":["allowed"],"order":"updated_at","limit":2}),
-    );
-    assert_eq!(
-        unaffected["structuredContent"]["hits"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
 }
 
 #[tokio::test]

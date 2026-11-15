@@ -247,36 +247,6 @@ fn config_show_never_prints_inline_secrets() {
 }
 
 #[test]
-fn config_errors_never_echo_values() {
-    let example = std::fs::read_to_string(common::example_config()).expect("example");
-    for broken in [
-        example.replace(
-            "[embedding]\n",
-            &format!("[embedding]\ndimensions = \"{SENTINEL}\"\n"),
-        ),
-        example.replace(
-            "version_check = \"interval\"",
-            &format!("version_check = \"{SENTINEL}\""),
-        ),
-        example.replace("name = \"acme\"", &format!("name = \"{SENTINEL}\"")),
-    ] {
-        let path = temp_config("echo", &broken);
-        let config = config_arg(&path);
-        let output = fyrr(&["--config", &config, "config", "check", "--no-env"], false);
-        let (stdout, stderr) = text(&output);
-        assert_eq!(output.status.code(), Some(EXIT_CONFIG), "{stdout}{stderr}");
-        // `show` lists non-secret values by design; its errors must not echo them.
-        let output = fyrr(&["--config", &config, "config", "show"], false);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(EXIT_CONFIG), "{stderr}");
-        assert!(
-            !stderr.contains(SENTINEL),
-            "an error echoes a value: {stderr}"
-        );
-    }
-}
-
-#[test]
 fn config_schema_is_the_generated_schema_plus_installed_providers() {
     let output = fyrr(&["config", "schema"], false);
     let (stdout, stderr) = text(&output);

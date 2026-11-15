@@ -1,5 +1,5 @@
 //! Incremental contracts through real executable processes and the owned RustFS.
-use super::coordination::{committer_host, host_command, publication, worker_sync};
+use super::coordination::{command, committer_host, host_command, publication, worker_sync};
 use super::*;
 use arrow_array::{Array, StringArray};
 use fyrr_core::connector::SyncKind;
@@ -170,17 +170,9 @@ pub(super) fn doc(id: &str, revision: &str, text: &str) -> Value {
     json!({"id":id,"revision":revision,"texts":[text]})
 }
 pub(super) fn publish(config: &Path) -> Value {
-    let output = host_command(config)
-        .args(["writer", "commit"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "commit: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
+    command(config, &["writer", "commit"])
 }
+
 pub(super) async fn rows(config: &Path) -> arrow_array::RecordBatch {
     source_rows(config, "incremental").await
 }
@@ -217,6 +209,12 @@ pub(super) fn roots(batch: &arrow_array::RecordBatch) -> Vec<String> {
         .iter()
         .map(|v| v.unwrap().to_owned())
         .collect()
+}
+pub(super) async fn source_roots(config: &Path, source: &str) -> Vec<String> {
+    let mut ids = roots(&source_rows(config, source).await);
+    ids.sort();
+    ids.dedup();
+    ids
 }
 pub(super) async fn envelopes(config: &Path) -> Vec<(object_store::path::Path, PreparedEnvelope)> {
     let loaded = fyrr_core::config::load(config).unwrap();
@@ -828,16 +826,7 @@ async fn incremental_damaged_rows_rejected_and_cleanup_retains_log_authority_on_
             .await
             .unwrap();
     }
-    let output = host_command(&worker)
-        .args(["writer", "maintain"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let report = command(&worker, &["writer", "maintain"]);
     assert!(report["deleted_envelopes"].as_u64().unwrap() > 0);
     let entries = envelopes(&worker).await;
     for (key, seq) in latest {
@@ -2274,16 +2263,10 @@ async fn incremental_delta_expired_source_isolated_on_real_s3() {
             )
             .await
             .unwrap();
-        let out = host_command(&worker)
-            .args(["reader", "search", "fixture query", "--limit", "2"])
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
+        let search = command(
+            &worker,
+            &["reader", "search", "fixture query", "--limit", "2"],
         );
-        let search: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(search["metadata"]["hidden_sources"], json!(["incremental"]));
         assert!(
             search["hits"]
