@@ -1,4 +1,4 @@
-//! Final slice acceptance through separate CLI hosts and the owned RustFS.
+//! Publication lifecycle through separate CLI hosts and the owned RustFS.
 use super::coordination::{host_command, publication, worker_sync};
 use super::incremental::{fixture, input, publish};
 use super::*;
@@ -86,7 +86,7 @@ async fn audit(config: &Path, before: u64, after: u64) -> Value {
 
 #[tokio::test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
-async fn block4_broad_audit_detects_content_grant_and_key_changes_on_real_s3() {
+async fn broad_audit_detects_content_grant_and_key_changes_on_real_s3() {
     let (worker, commit, root) = fixture();
     super::incremental::initial(&root);
     worker_sync(
@@ -151,7 +151,7 @@ async fn block4_broad_audit_detects_content_grant_and_key_changes_on_real_s3() {
 
 #[tokio::test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
-async fn block4_committer_indexes_and_stale_prepared_acl_on_real_s3() {
+async fn committer_indexes_and_stale_prepared_acl_on_real_s3() {
     {
         let (config, commit, root) = fixture();
         worker_sync(
@@ -274,7 +274,7 @@ async fn block4_committer_indexes_and_stale_prepared_acl_on_real_s3() {
 
 #[tokio::test]
 #[ignore = "real CLI 60-second service timer and RustFS; scripts/ci"]
-async fn block4_serve_timer_disabled_committer_and_directory_hook_on_real_s3() {
+async fn serve_timer_disabled_committer_and_directory_hook_on_real_s3() {
     let (config, commit, root) = fixture();
     let initial = publication(&commit).await.0.content.unwrap();
     input(
@@ -346,7 +346,7 @@ async fn block4_serve_timer_disabled_committer_and_directory_hook_on_real_s3() {
 
 #[tokio::test]
 #[ignore = "real CLI service worker isolation and RustFS; scripts/ci"]
-async fn block4_serve_isolates_failed_providers_while_publishing_on_real_s3() {
+async fn serve_isolates_failed_providers_while_publishing_on_real_s3() {
     use std::sync::{Arc, atomic::AtomicBool};
     let (worker, commit, root) = fixture();
     worker_sync(
@@ -529,7 +529,7 @@ async fn unverified_attestation_does_not_renew_authorization() {
 
 #[tokio::test]
 #[ignore = "real CLI continuously refilled backlog, SIGTERM and RustFS; scripts/ci"]
-async fn block4_delta_shutdown_finishes_only_current_group_on_real_s3() {
+async fn delta_shutdown_finishes_only_current_group_on_real_s3() {
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},

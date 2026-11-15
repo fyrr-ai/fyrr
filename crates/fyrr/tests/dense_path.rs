@@ -4,8 +4,6 @@
 
 mod common;
 
-#[path = "dense_path/block4.rs"]
-mod block4;
 #[path = "dense_path/coordination.rs"]
 mod coordination;
 #[path = "dense_path/corrections.rs"]
@@ -42,6 +40,8 @@ mod maintenance;
 mod mirror_identity;
 #[path = "dense_path/notion.rs"]
 mod notion;
+#[path = "dense_path/publication_lifecycle.rs"]
+mod publication_lifecycle;
 #[path = "dense_path/rerank.rs"]
 mod rerank;
 #[path = "dense_path/retrieval.rs"]

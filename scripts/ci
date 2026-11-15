@@ -118,6 +118,12 @@ cleanup_fixture() {
 }
 trap cleanup_fixture EXIT
 
+# Locate a package's library test executable through Cargo's artifact metadata.
+test_binary() {
+  cargo test --locked -p "$1" --lib --no-run --message-format=json |
+    jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable'
+}
+
 # Functions run by `step` sit in a `||` context where `set -e` is off, so
 # every command is chained explicitly.
 real_s3_setup() {
@@ -134,8 +140,8 @@ real_s3_setup() {
     } || return 1
   fi
   local exports
-  FYRR_SCIM_HEALTH_TEST_BINARY="$(cargo test --locked -p fyrr-writer --lib --no-run --message-format=json | jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable')" || return 1
-  FYRR_ROUTING_TEST_BINARY="$(cargo test --locked -p fyrr-reader --lib --no-run --message-format=json | jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable')" || return 1
+  FYRR_SCIM_HEALTH_TEST_BINARY="$(test_binary fyrr-writer)" || return 1
+  FYRR_ROUTING_TEST_BINARY="$(test_binary fyrr-reader)" || return 1
   "$ROOT/scripts/s3-fixture" status &&
     exports="$("$ROOT/scripts/s3-fixture" env)" &&
     eval "$exports" &&
@@ -176,7 +182,7 @@ local_storage() {
   local -x RUST_TEST_THREADS=1 FYRR_ROUTING_TEST_BINARY FYRR_TEST_LOCAL_SECRET=fyrr-local-test-secret
   local -x FYRR_TEST_ENCRYPTION_KEY
   FYRR_TEST_ENCRYPTION_KEY="$(printf fyrr-local-test | sha256sum | cut -c1-64)" || return 1
-  FYRR_ROUTING_TEST_BINARY="$(cargo test --locked -p fyrr-reader --lib --no-run --message-format=json | jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable')" || return 1
+  FYRR_ROUTING_TEST_BINARY="$(test_binary fyrr-reader)" || return 1
   "$ROOT/scripts/ci-cases" run local-storage
 }
 

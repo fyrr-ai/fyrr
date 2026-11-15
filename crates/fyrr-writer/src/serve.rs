@@ -193,7 +193,7 @@ mod tests {
 
     /// Invoked by the real CLI/RustFS acceptance harness. Never linked into fyrr.
     #[tokio::test]
-    #[ignore = "test-only SCIM health source; real-S3 block4 harness supplies config"]
+    #[ignore = "test-only SCIM health source; real-S3 publication lifecycle harness supplies config"]
     async fn scim_verified_applied_sync_hook() {
         let path = std::env::var_os("FYRR_SCIM_HEALTH_TEST_CONFIG").unwrap();
         let loaded = fyrr_core::config::load(Path::new(&path)).unwrap();

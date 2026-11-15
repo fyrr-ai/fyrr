@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Reject Rust source lines over 100 characters; defaults to every crate's src."""
+"""Reject Rust source lines over 100 characters in selected paths.
+
+With no paths, checks every crate's src. CI enforces the reader and core
+layout paths; the rest can be checked explicitly during formatting work.
+"""
 
 import sys
 from pathlib import Path

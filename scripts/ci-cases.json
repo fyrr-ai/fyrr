@@ -259,18 +259,18 @@
       "full:fyrr:test:dense_path/local_storage::lifetime_history_keeps_maintenance_restore_and_receipts_available"
     ]
   },
-  "s3-block4": {
+  "s3-publication-lifecycle": {
     "cases": [
-      "full:fyrr:test:dense_path/block4::block4_broad_audit_detects_content_grant_and_key_changes_on_real_s3",
-      "full:fyrr:test:dense_path/block4::block4_committer_indexes_and_stale_prepared_acl_on_real_s3",
-      "full:fyrr:test:dense_path/block4::block4_delta_shutdown_finishes_only_current_group_on_real_s3",
-      "full:fyrr:test:dense_path/block4::unverified_attestation_does_not_renew_authorization",
-      "full:fyrr:test:dense_path/block4::block4_serve_isolates_failed_providers_while_publishing_on_real_s3",
-      "full:fyrr:test:dense_path/block4::block4_serve_timer_disabled_committer_and_directory_hook_on_real_s3"
+      "full:fyrr:test:dense_path/publication_lifecycle::broad_audit_detects_content_grant_and_key_changes_on_real_s3",
+      "full:fyrr:test:dense_path/publication_lifecycle::committer_indexes_and_stale_prepared_acl_on_real_s3",
+      "full:fyrr:test:dense_path/publication_lifecycle::delta_shutdown_finishes_only_current_group_on_real_s3",
+      "full:fyrr:test:dense_path/publication_lifecycle::unverified_attestation_does_not_renew_authorization",
+      "full:fyrr:test:dense_path/publication_lifecycle::serve_isolates_failed_providers_while_publishing_on_real_s3",
+      "full:fyrr:test:dense_path/publication_lifecycle::serve_timer_disabled_committer_and_directory_hook_on_real_s3"
     ],
     "children": {
       "full:fyrr-writer:lib:fyrr_writer/serve::tests::scim_verified_applied_sync_hook": [
-        "full:fyrr:test:dense_path/block4::unverified_attestation_does_not_renew_authorization"
+        "full:fyrr:test:dense_path/publication_lifecycle::unverified_attestation_does_not_renew_authorization"
       ]
     }
   },

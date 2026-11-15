@@ -81,8 +81,6 @@ def inventory():
 def validate(manifest, actual):
     owners = {}
     for row, spec in manifest.items():
-        if spec.get("external") and spec.get("children"):
-            raise ValueError(f"external campaign cannot own public child cases: {row}")
         if not spec["cases"]:
             raise ValueError(f"zero-case row: {row}")
         for case in spec["cases"]:
@@ -105,8 +103,6 @@ def validate(manifest, actual):
 
 
 def run(spec):
-    if spec.get("external"):
-        raise ValueError("external campaign requires its own configured runner")
     groups = collections.defaultdict(list)
     for case in spec["cases"]:
         group, name = case.split("/", 1) if not case.startswith("python:") else (None, None)
