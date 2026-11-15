@@ -51,7 +51,7 @@ async fn boundary(
 
 pub async fn maintain(config: &Config) -> Result<serde_json::Value> {
     crate::lease::LeaseGuard::with(config, |lease| async move {
-        let mut history = commit::RestoreHistory::default();
+        let mut history = commit::RestoreHistory::new(config)?;
         let mut result = maintain_held(config, &lease, &mut history).await;
         // Every expired native step yields to authorization, including storage
         // reads during purge/compaction/index planning before cleanup begins.

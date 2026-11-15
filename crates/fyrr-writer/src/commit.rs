@@ -262,9 +262,8 @@ async fn drain_authorization_held(
     loop {
         let group = if let Some(h) = history.as_deref_mut() {
             h.refresh(config, &head).await?;
-            let markers = h.rejection_markers(config).await?;
-            commit_group_with_rejections(config, remaining, &head, h.unconsumed(&markers, &[]))
-                .await?
+            let unresolved = h.unconsumed_rejections(config, &[]).await?;
+            commit_group_with_rejections(config, remaining, &head, unresolved).await?
         } else {
             commit_group(config, remaining, &head).await?
         };

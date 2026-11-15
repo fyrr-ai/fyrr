@@ -1,9 +1,8 @@
 //! Disposable metadata only. The unlinked SQLite file is never restart evidence.
 use super::*;
+use crate::scratch::check_space;
 use arrow_array::{Array, UInt64Array};
 use rusqlite::{Connection, params};
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -29,13 +28,6 @@ fn budget(rows: u64) -> Result<u64> {
         .ok_or(ERROR)
 }
 
-fn check_space(scratch: &std::path::Path, bytes: u64) -> Result<()> {
-    let space = rustix::fs::statvfs(scratch).map_err(|_| ERROR)?;
-    if space.f_bavail.saturating_mul(space.f_frsize) < bytes {
-        return Err(ERROR);
-    }
-    Ok(())
-}
 const ERROR: WriterError = WriterError::RestoreWorkingSpaceExhausted;
 const COLUMNS: &[&str] = &[
     "source_id",
@@ -105,90 +97,17 @@ impl Row {
 impl Index {
     /// Called under the namespace lease, including before history/target errors.
     pub(super) fn scratch(config: &Config) -> Result<std::path::PathBuf> {
-        let base = std::env::var_os("TMPDIR")
-            .map_or_else(
-                || {
-                    config
-                        .mirror_directory(&fyrr_core::config::ProcessEnvironment)
-                        .and_then(|mirror| mirror.parent().map(std::path::Path::to_owned))
-                        .unwrap_or_else(|| ".".into())
-                },
-                std::path::PathBuf::from,
-            )
-            .join("fyrr-writer");
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&base)
-            .map_err(|_| ERROR)?;
-        let owner = std::fs::symlink_metadata(&base).map_err(|_| ERROR)?;
-        if !owner.is_dir()
-            || owner.mode() & 0o777 != 0o700
-            || owner.uid() != rustix::process::geteuid().as_raw()
-        {
-            return Err(ERROR);
-        }
-        let scratch = base.join(fyrr_reader::embedding::digest(
-            dataset_uri(config).as_bytes(),
-        ));
-        match std::fs::remove_dir_all(&scratch) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(ERROR),
-        }
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&scratch)
-            .map_err(|_| ERROR)?;
-        Ok(scratch)
+        crate::scratch::directory(config, "restore")
     }
 
     pub(super) fn new(config: &Config, sources: &BTreeSet<String>, rows: u64) -> Result<Self> {
         let scratch = Self::scratch(config)?;
         let cap = budget(rows)?;
         check_space(&scratch, cap)?;
-        let path = scratch.join(format!(
-            "fyrr-writer-restore-{}-{}.sqlite",
-            std::process::id(),
-            Utc::now().timestamp_nanos_opt().ok_or(ERROR)?
-        ));
-        // The default SQLite VFS may reject /proc/self/fd after resolving its
-        // symlink. Never let that probe create a named file for the deleted inode.
-        let anonymous = rustix::fs::open(
-            &scratch,
-            rustix::fs::OFlags::TMPFILE | rustix::fs::OFlags::RDWR | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::from_bits_truncate(0o600),
-        )
-        .ok()
-        .and_then(|fd| {
-            let opened = Connection::open_with_flags(
-                format!("/proc/self/fd/{}", fd.as_raw_fd()),
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
-            );
+        let db = crate::scratch::open(&scratch, "restore", |_path| {
             #[cfg(test)]
-            if opened.is_ok() {
-                tests::creation_boundary(&path);
-            }
-            opened.ok()
-        });
-        let db = if let Some(db) = anonymous {
-            db
-        } else {
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&path)
-                .map_err(|_| ERROR)?;
-            #[cfg(test)]
-            tests::creation_boundary(&path);
-            let opened = Connection::open(&path);
-            // No path remains on success, error, cancellation or process death.
-            let removed = std::fs::remove_file(&path);
-            drop(file);
-            removed.map_err(|_| ERROR)?;
-            opened.map_err(|_| ERROR)?
-        };
+            tests::creation_boundary(_path);
+        })?;
         db.execute_batch(
             "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
             PRAGMA locking_mode=EXCLUSIVE; PRAGMA cache_size=-8192;

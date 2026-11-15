@@ -243,3 +243,120 @@ async fn local_storage_reaps_abandoned_uploads_but_protects_live_staging() {
         "later maintenance converges after the safety window"
     );
 }
+
+#[tokio::test]
+#[ignore = "real executable and long local publication history; scripts/ci"]
+async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
+    use super::coordination::{command, host_command, publication, worker_sync};
+    use super::incremental::{envelopes, initial, input, publish, roots, rows};
+    use fyrr_core::connector::SyncKind;
+    use object_store::ObjectStoreExt;
+
+    let setup = setup_on(Backend::Local);
+    for row in 1..768 {
+        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
+    }
+    let (worker, commit, root) =
+        super::incremental::fixture_host_at(1, true, "dense-fixture", setup);
+    initial(&root);
+    worker_sync(
+        &worker,
+        &[
+            "incremental",
+            "--kind",
+            "content",
+            "--kind",
+            "permissions",
+            "--kind",
+            "members",
+        ],
+    );
+    publish(&commit);
+    let (mut head, template) = publication(&commit).await;
+    let oldest = template.envelope_ids.first().unwrap().clone();
+    let (replay_path, replay) = envelopes(&worker)
+        .await
+        .into_iter()
+        .find(|(_, e)| e.source_id == "incremental" && e.kind == SyncKind::Content)
+        .unwrap();
+    let loaded = fyrr_core::config::load(&commit).unwrap();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let mut previous = template.publication_id.clone();
+    // Valid immutable history, without thousands of unnecessary native writes.
+    // Lifetime receipt evidence exceeds the former aggregate 65,536-entry cap.
+    for offset in 1..=550_u64 {
+        let mut manifest = template.clone();
+        manifest.sequence += offset;
+        manifest.publication_id = format!("pub-{:032x}", 1_000_000 + offset);
+        manifest.previous_publication_id = Some(previous);
+        manifest.envelope_ids = (0..128_u64)
+            .map(|id| format!("env-{:032x}", 1_000_000 + offset * 128 + id))
+            .collect();
+        manifest.validate().unwrap();
+        store
+            .put(
+                &object_store::path::Path::from(format!(
+                    "{namespace}/publications/{}.json",
+                    manifest.publication_id
+                )),
+                write_contract(&manifest).into(),
+            )
+            .await
+            .unwrap();
+        previous = manifest.publication_id;
+        let pointer = head.content.as_mut().unwrap();
+        pointer.publication_id = previous.clone();
+        pointer.manifest = format!("publications/{previous}.json");
+        pointer.sequence = manifest.sequence;
+    }
+    store
+        .put(&namespace.join("head.json"), write_contract(&head).into())
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        command(&commit, &["writer", "maintain"]);
+    }
+    let receipt = command(&commit, &["writer", "commit", "--receipt", &oldest]);
+    assert_eq!(receipt["publication_id"], template.publication_id);
+    let before_replay = publication(&commit).await.0.content.unwrap().sequence;
+    store
+        .put(&replay_path, write_contract(&replay).into())
+        .await
+        .unwrap();
+    publish(&commit);
+    assert_eq!(
+        publication(&commit).await.0.content.unwrap().sequence,
+        before_replay,
+        "a cleaned envelope reappearing in the log is still already published"
+    );
+
+    input(
+        &root,
+        json!({"epoch":2,"permissions":[[{"id":"a","revision":"p2","readers":[]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions", "--full"]);
+    command(&commit, &["writer", "maintain"]);
+    assert_eq!(
+        roots(&rows(&worker).await),
+        ["b"],
+        "maintenance drains the revoke and purges its unreadable chunks"
+    );
+    let restored = host_command(&commit)
+        .args(["writer", "restore", &template.publication_id])
+        .output()
+        .unwrap();
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    assert_eq!(
+        roots(&rows(&worker).await),
+        ["b"],
+        "restore preserves the revoke"
+    );
+    assert_eq!(
+        command(&commit, &["writer", "commit", "--receipt", &oldest])["publication_id"],
+        template.publication_id
+    );
+}

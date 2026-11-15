@@ -206,6 +206,12 @@ pub fn assert_clean(sentinels: &Sentinels, output: &Output, sandbox: &Sandbox, c
         }
     }
     for file in sandbox.written_files() {
+        let name = file.file_name().unwrap().to_string_lossy();
+        assert!(
+            !(name.starts_with("fyrr-writer-") && name.ends_with(".sqlite")),
+            "{context}: a named writer scratch database survived: {}",
+            file.display()
+        );
         let bytes = std::fs::read(&file).unwrap_or_default();
         for found in sentinels.found_in(&String::from_utf8_lossy(&bytes)) {
             leaks.push(format!("{}: {found}", file.display()));

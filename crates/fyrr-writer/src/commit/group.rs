@@ -20,9 +20,13 @@ pub(crate) async fn commit_one(
     let previous_manifest = previous_manifest(config, store.as_ref(), &root, &head).await?;
     let markers = if let Some(h) = history.as_deref_mut() {
         h.refresh(config, &head).await?;
-        h.rejection_markers(config).await?
+        h.fences(config, &envelopes).await?
     } else {
-        rejection_markers(config, &head).await?
+        let mut fences = history::RejectionFences::new(&envelopes)?;
+        for marker in rejection_markers(config, &head).await? {
+            fences.observe(&marker)?;
+        }
+        fences
     };
     let current_policy: PolicyArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
@@ -32,8 +36,7 @@ pub(crate) async fn commit_one(
     rejection_head.rejected_envelope_ids = rejected.clone();
     let blocked = if let Some(h) = history.as_deref_mut() {
         h.refresh(config, &rejection_head).await?;
-        let markers = h.rejection_markers(config).await?;
-        blocked_sources(&h.unconsumed(&markers, &accepted))
+        blocked_sources(&h.unconsumed_rejections(config, &accepted).await?)
     } else {
         blocked_sources(&unconsumed_rejections(config, &rejection_head, &accepted).await?)
     };
@@ -227,7 +230,7 @@ async fn accept_envelopes(
     config: &Config,
     head: &ServingHead,
     current_policy: &PolicyArtifact,
-    markers: &[RejectionMarker],
+    markers: &history::RejectionFences,
     envelopes: Vec<PreparedEnvelope>,
 ) -> Result<(Vec<PreparedEnvelope>, Vec<String>)> {
     let mut rejected = head.rejected_envelope_ids.clone();
@@ -239,26 +242,8 @@ async fn accept_envelopes(
             .contains_key(&envelope.source_id)
         {
             Some(WriterError::SourceRetired.as_str())
-        } else if markers.iter().any(|m| {
-            m.source_id == envelope.source_id
-                && m.kind == envelope.kind
-                && envelope.restore_sequence < m.restore_sequence
-                // Restore keeps current authority: a concurrent authorization
-                // input remains valid even when its content cursor was rewound.
-                && !(envelope.kind.is_authorization() && m.reason == "restore_rewind")
-        }) {
-            Some("restore_refetch")
-        } else if envelope.kind.is_authorization()
-            && markers.iter().any(|m| {
-                m.source_id == envelope.source_id
-                    && m.kind == envelope.kind
-                    && envelope.rejection_generation <= m.rejection_generation
-                    && m.reason != "restore_rewind"
-            })
-        {
-            // A rewind invalidates later authorization inputs from the skipped generation,
-            // even if they finish after the replacement read has already published.
-            Some("authorization_rewind_required")
+        } else if let Some(reason) = markers.refusal(&envelope) {
+            Some(reason)
         } else if (Utc::now() - envelope.created_at)
             .to_std()
             .is_ok_and(|age| age > config.writer.max_envelope_age.as_duration())
@@ -311,27 +296,33 @@ async fn refresh_identity(
         .checked_add(1)
         .ok_or(WriterError::IdentityGenerationOverflow)?;
     let configured = configured_identity(config, identity_generation, Utc::now())?;
-    let member_paths = history.map(|h| {
-        h.envelopes
-            .iter()
-            .filter(|(path, (_, summary, _))| {
-                h.listed.contains(path)
-                    && envelopes.iter().any(|e| {
-                        let EnvelopePayload::Members(p) = &e.payload else {
-                            return false;
-                        };
-                        summary.kind == e.kind
-                            && summary.source_id == e.source_id
-                            && summary.rejection_generation == e.rejection_generation
-                            && summary.sequence >= e.sequence.saturating_sub(p.part as u64)
-                            && summary.sequence <= e.sequence
-                    })
-            })
-            .map(|(path, (_, summary, _))| {
-                (path.clone(), h.identities[&summary.envelope_id].clone())
-            })
-            .collect::<Vec<_>>()
-    });
+    let member_paths = history
+        .map(|h| {
+            h.envelopes
+                .iter()
+                .filter(|(path, (_, summary, _))| {
+                    h.listed.contains(path)
+                        && envelopes.iter().any(|e| {
+                            let EnvelopePayload::Members(p) = &e.payload else {
+                                return false;
+                            };
+                            summary.kind == e.kind
+                                && summary.source_id == e.source_id
+                                && summary.rejection_generation == e.rejection_generation
+                                && summary.sequence >= e.sequence.saturating_sub(p.part as u64)
+                                && summary.sequence <= e.sequence
+                        })
+                })
+                .map(|(path, (_, summary, _))| {
+                    Ok((
+                        path.clone(),
+                        h.identity(&summary.envelope_id)?
+                            .ok_or(WriterError::PublicationInvalid)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?;
     let mut next_identity = crate::membership::build(
         config,
         &current_identity,

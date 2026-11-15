@@ -82,7 +82,7 @@ pub(super) async fn restore_held(
     publication: Option<&str>,
 ) -> Result<serde_json::Value> {
     restore_index::Index::scratch(config)?;
-    let mut history = commit::RestoreHistory::default();
+    let mut history = commit::RestoreHistory::new(config)?;
     let head = command_start(config, lease, &mut history, true).await?;
     let retained = retained(config, &head).await?;
     // Pin rollback's target once too: an authorization publication must not
@@ -131,7 +131,7 @@ pub(super) async fn restore_held(
 
 #[cfg(test)]
 pub(super) async fn restore_boundary(config: &Config, lease: &LeaseGuard) -> Result<()> {
-    let mut history = commit::RestoreHistory::default();
+    let mut history = commit::RestoreHistory::new(config)?;
     history.refresh(config, &lease.head().await?).await?;
     restore_boundary_cached(config, lease, &mut history).await
 }

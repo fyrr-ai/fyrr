@@ -108,7 +108,16 @@
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_listing_tolerates_concurrent_deletes",
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_recreated_objects_never_match_earlier_tags",
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_never_restarts_the_counter_over_existing_objects",
-      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::lance_commits_on_a_local_root_are_exclusive"
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::lance_commits_on_a_local_root_are_exclusive",
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::tests::unresolved_folding_preserves_each_replacement_fence",
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::promotion_crosses_mixed_evidence_chunk_boundaries",
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::large_metadata_grows_the_page_allowance_before_insertion",
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::tests::acceptance_fences_preserve_kind_restore_and_generation_boundaries",
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::tests::acceptance_fences_ignore_lifetime_source_churn",
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::lifetime_receipts_exceed_the_active_summary_limit",
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::discarded_prefix_never_becomes_a_validated_anchor",
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::sql_failure_discards_all_cached_evidence",
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::unavailable_working_space_refuses_growth_and_poisons_the_index"
     ],
     "children": {
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::lance_append_child_process": [
@@ -246,7 +255,8 @@
       "full:fyrr:test:dense_path/maintenance::maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror_on_local_storage",
       "full:fyrr:test:dense_path/maintenance::maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery_on_local_storage",
       "full:fyrr:test:dense_path/mirror_identity::recreated_namespace_at_same_uri_never_serves_old_mirror_entries_on_local_storage",
-      "full:fyrr:test:dense_path/mirror_identity::running_reader_never_serves_a_replaced_namespace_incarnation_on_local_storage"
+      "full:fyrr:test:dense_path/mirror_identity::running_reader_never_serves_a_replaced_namespace_incarnation_on_local_storage",
+      "full:fyrr:test:dense_path/local_storage::lifetime_history_keeps_maintenance_restore_and_receipts_available"
     ]
   },
   "s3-block4": {
@@ -613,7 +623,8 @@
       "full:fyrr:test:privacy/response_truncation_counts_cannot_carry_private_values",
       "full:fyrr:test:privacy/routing_configuration_keeps_private_values_out_of_errors",
       "full:fyrr:test:privacy/secrets_from_the_environment_are_never_printed",
-      "full:fyrr:test:privacy/values_in_the_config_file_never_leave_through_errors"
+      "full:fyrr:test:privacy/values_in_the_config_file_never_leave_through_errors",
+      "full:fyrr:test:privacy/privacy_guard_rejects_named_scratch_files_recursively"
     ]
   },
   "s3-storage-identity": {
@@ -1419,7 +1430,8 @@
       "reader:fyrr:test:privacy/response_truncation_counts_cannot_carry_private_values",
       "reader:fyrr:test:privacy/routing_configuration_keeps_private_values_out_of_errors",
       "reader:fyrr:test:privacy/secrets_from_the_environment_are_never_printed",
-      "reader:fyrr:test:privacy/values_in_the_config_file_never_leave_through_errors"
+      "reader:fyrr:test:privacy/values_in_the_config_file_never_leave_through_errors",
+      "reader:fyrr:test:privacy/privacy_guard_rejects_named_scratch_files_recursively"
     ]
   },
   "eval": {

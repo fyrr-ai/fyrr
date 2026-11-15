@@ -41,6 +41,7 @@ pub mod membership;
 pub mod prepare;
 pub mod providers;
 pub mod python;
+mod scratch;
 pub mod serve;
 pub mod source;
 pub mod sync;

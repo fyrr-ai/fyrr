@@ -12,6 +12,25 @@
 Setting a deployment up (topology, images, scheduling) is in
 [deployment](deployment.md).
 
+## Maintenance working space
+
+`writer maintain`, `restore` and `rollback` use private, disposable SQLite
+indexes. Set a writable `TMPDIR`, or configure a reader mirror whose parent
+is writable. If neither location is available, the command refuses rather
+than creating scratch data in its working directory. Files are unlinked
+before storing metadata; directories for history and restore work are
+separate and scoped to the namespace.
+
+Lifetime publication and receipt evidence is exact. The history index reads each
+manifest once per maintenance or restore command and reuses validated
+prefixes at subsequent boundaries. Cleanup and receipt lookup can perform
+additional ancestry walks; their work grows with lifetime history. The
+history index uses a 2 MiB SQLite page cache and grows its disk allowance
+in checked increments. It is never trusted after a restart. Disk, SQL or
+scratch-file failures refuse with `restore_working_space_exhausted`,
+including during maintenance; the active-operation summary limit is
+reported as `restore_history_summary_limit`.
+
 ## Monitoring
 
 - `fyrr writer status` prints the serving `content_sequence`, envelope and
