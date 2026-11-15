@@ -11,11 +11,11 @@ reader_only = 501
 
 [binary_size]
 # Bytes of the stripped release binary (cargo build --release -p fyrr).
-full = 146688896
+full = 146689536
 reader_only = 122663200
 
 [image_size]
 # Bytes of the images as `docker image inspect -f '{{.Size}}'` reports them
 # (containerd image store): fyrr (full build, Python, SDK) and fyrr-reader.
-full = 673233498
+full = 673234410
 reader_only = 215341009
