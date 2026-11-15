@@ -34,7 +34,7 @@ github = "fyrr_connectors.bundled:github"
 notion = "fyrr_connectors.bundled:notion"
 
 [dependency-groups]
-dev = ["pytest==9.1.1", "ruff==0.16.10", "jsonschema>=4.23,<5", "fyrr-connectors[google-drive,github]"]
+dev = ["pytest==9.1.1", "ruff==0.17.4", "jsonschema>=4.23,<5", "fyrr-connectors[google-drive,github]"]
 
 [build-system]
 requires = ["uv_build>=0.12.21,<0.13"]
