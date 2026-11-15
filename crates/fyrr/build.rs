@@ -3,7 +3,9 @@
 //! without LD_LIBRARY_PATH; in the image it is /usr/local/lib, already on the
 //! loader path. The reader-only build has no Python and no rpath.
 
+#[allow(clippy::print_stdout)]
 fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
     #[cfg(feature = "writer")]
     pyo3_build_config::add_libpython_rpath_link_args();
 }
