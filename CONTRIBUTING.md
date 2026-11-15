@@ -75,6 +75,10 @@ provider, budgets, the README quickstart on S3 and on local storage
 rows against local fixtures. It keeps going after a failure and writes
 `target/ci-logs/<UTC stamp>/` with one log per step and `summary.txt`.
 
+For the same test concurrency as the hosted workflow, run
+`RUST_TEST_THREADS=1 scripts/ci --images`. Local runs otherwise retain the
+Rust test harness default, except for storage rows that select one thread.
+
 Read `summary.txt` the way CI does:
 
 - a test step that selected zero tests **fails**;

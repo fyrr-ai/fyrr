@@ -69,7 +69,10 @@ maintain` runs in lease-held steps: it publishes pending permission changes,
 removes unreadable rows, compacts fragments, updates indexes and deletes
 retired versions and applied envelopes. Run it often enough that deleted
 content physically leaves namespace storage within the purge window; until then it remains
-in retained old versions.
+in retained old versions. Physical purge removes one revoked document root
+per bounded step and publishes that step before continuing. A large revoke
+therefore needs multiple publications; permission changes are drained
+between steps.
 
 ## Restore and rollback
 
