@@ -3,7 +3,8 @@
 # fixtures. `scripts/ci` keeps going after a failure, writes
 # target/ci-logs/<stamp>/summary.txt and lists any check it did not run as
 # `n/e` (not evaluated), never as passed; the summary is uploaded whether the
-# run passed or failed. One job runs the full check and image selection.
+# run passed or failed. Public repositories run the full check and images;
+# private repositories use the debug-only selection.
 # release.yml calls this workflow before it publishes anything.
 name: ci
 

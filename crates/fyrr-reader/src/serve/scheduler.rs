@@ -12,8 +12,6 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
     #[cfg(test)]
     let observed_native_slots = native_slots.clone();
     let template = reader;
-    #[cfg(test)]
-    crate::sync::lock(&template.test_hooks.sessions).push(Arc::downgrade(&template.native_session));
     let config = template.config.clone();
     let mut idle = VecDeque::new();
     for _ in 0..worker_count {
@@ -391,9 +389,6 @@ impl Scheduler {
                 self.idle = workers;
                 let reader = self.template.insert(new);
                 self.handover = false;
-                #[cfg(test)]
-                crate::sync::lock(&self.context.test_hooks.sessions)
-                    .push(Arc::downgrade(&reader.native_session));
                 *self.served.write().await = reader.readiness_state();
                 log_refresh("ready", reader.manifest.sequence);
                 self.next_warm = Instant::now() + Duration::from_secs(30);
@@ -411,13 +406,6 @@ impl Scheduler {
                 // Running requests own their old pins and claims independently.
                 self.handover = true;
                 self.warm_cancel.cancel();
-                #[cfg(test)]
-                self.context
-                    .test_hooks
-                    .handovers
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                #[cfg(test)]
-                self.context.test_hooks.handover_entered.notify_one();
                 self.served.write().await.ready = false;
                 emit(format_args!(
                     "telemetry generation_preparation=degraded reason=sequential_handover"

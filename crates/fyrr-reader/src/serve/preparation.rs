@@ -97,8 +97,6 @@ pub(super) fn prepare_version(
     tokio::spawn(async move {
         let config = &context.config;
         let preparation = async {
-            #[cfg(test)]
-            context.test_hooks.preparation.wait().await;
             if let Some((_, version, _, _, _)) = &current {
                 context
                     .cache

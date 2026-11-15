@@ -56,13 +56,6 @@ impl PreparedReader {
         if batch.num_rows() != row_ids.len() {
             return Err(StorageUnavailable);
         }
-        #[cfg(test)]
-        if columns.contains(&"searchable_text") {
-            self.test_hooks.hydration_text_rows.fetch_add(
-                batch.num_rows() as u64,
-                std::sync::atomic::Ordering::Relaxed,
-            );
-        }
         Ok(batch)
     }
 
@@ -97,11 +90,6 @@ impl PreparedReader {
                 )?;
                 let pin = Arc::new(self.mirror_pin.request()?);
                 let scratch = self.response_claim.clone();
-                #[cfg(test)]
-                {
-                    *crate::sync::lock(&self.test_hooks.excerpt_scratch) =
-                        scratch.as_ref().map(Arc::downgrade).unwrap_or_default();
-                }
                 // Share Arrow buffers and query terms; each CPU task only reads
                 // already admitted text. Small agent outputs stay inline. No
                 // waiting or source I/O runs on Lance's compute pool.
@@ -118,12 +106,8 @@ impl PreparedReader {
                             self.preparation_reservation.clone(),
                             scratch.clone(),
                         );
-                        #[cfg(test)]
-                        let hooks = self.test_hooks.clone();
                         lance_core::utils::tokio::spawn_cpu(move || {
                             let _claims = claims;
-                            #[cfg(test)]
-                            hooks.excerpt_cpu.wait_cpu_once();
                             Ok::<_, std::convert::Infallible>(
                                 jobs.into_iter()
                                     .map(|(hit, row, terms, cap)| {

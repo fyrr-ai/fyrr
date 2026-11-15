@@ -40,7 +40,6 @@ syn = { version = "=2.0.119", features = ["full", "visit"] }
 proc-macro2 = "1"
 arrow-buffer.workspace = true
 async-trait.workspace = true
-fyrr-reader = { workspace = true, features = ["test-store"] }
 
 [build-dependencies]
 pyo3-build-config.workspace = true

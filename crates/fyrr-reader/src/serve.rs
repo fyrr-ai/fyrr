@@ -177,23 +177,6 @@ impl Default for TestGate {
 }
 #[cfg(test)]
 impl TestGate {
-    // Test-only parking: the controlling async test never needs this CPU pool
-    // to release the semaphore. Product CPU tasks never wait on a gate.
-    pub(crate) fn wait_cpu_once(&self) {
-        if self
-            .enabled
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            self.entered.notify_one();
-            tokio::runtime::Handle::current().block_on(async {
-                self.release
-                    .acquire()
-                    .await
-                    .expect("CPU test gate open")
-                    .forget();
-            });
-        }
-    }
     pub(crate) async fn wait(&self) {
         if self.enabled.load(std::sync::atomic::Ordering::SeqCst) {
             self.hold().await;
@@ -219,17 +202,9 @@ impl TestGate {
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct TestHooks {
-    pub(crate) hydration_text_rows: std::sync::atomic::AtomicU64,
     pub(crate) embedding_parked: tokio::sync::Notify,
-    pub(crate) embedding_reacquiring: tokio::sync::Notify,
     pub(crate) request_finished: tokio::sync::Notify,
     pub(crate) native_work: TestGate,
-    pub(crate) lexical_complete: tokio::sync::Notify,
-    pub(crate) lexical_queries_completed: std::sync::atomic::AtomicUsize,
-    handovers: std::sync::atomic::AtomicU64,
-    handover_entered: tokio::sync::Notify,
-    sessions: std::sync::Mutex<Vec<std::sync::Weak<crate::generation::NativeSession>>>,
-    pub(crate) sample: TestGate,
     pub(crate) sample_plan: std::sync::atomic::AtomicBool,
     pub(crate) completion: TestGate,
     pub(crate) authorization_output: TestGate,
@@ -237,10 +212,6 @@ pub(crate) struct TestHooks {
     pub(crate) filter_scan: TestGate,
     pub(crate) admission_probe: std::sync::Mutex<Option<AdmissionProbe>>,
     pub(crate) cache_warming: TestGate,
-    pub(crate) excerpt_cpu: TestGate,
-    pub(crate) excerpt_scratch:
-        std::sync::Mutex<std::sync::Weak<tokio::sync::OwnedSemaphorePermit>>,
-    preparation: TestGate,
 }
 
 #[cfg(test)]

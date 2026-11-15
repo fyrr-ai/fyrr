@@ -261,13 +261,6 @@ impl PreparedReader {
                 self.config.namespace.retrieval.lexical_candidates,
             )
             .await;
-            #[cfg(test)]
-            {
-                self.test_hooks
-                    .lexical_queries_completed
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                self.test_hooks.lexical_complete.notify_one();
-            }
             elapsed += micros(start.elapsed());
             results.push(result);
         }
@@ -340,8 +333,6 @@ impl PreparedReader {
                 // A failed provider never queues away the lexical answer.
                 slot.try_resume();
             } else {
-                #[cfg(test)]
-                self.test_hooks.embedding_reacquiring.notify_one();
                 match tokio::time::timeout_at(
                     tokio::time::Instant::from_std(embedding_deadline),
                     slot.resume(),

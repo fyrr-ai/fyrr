@@ -7,9 +7,6 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
-[features]
-test-store = []
-
 [dependencies]
 clap.workspace = true
 fyrr-core.workspace = true

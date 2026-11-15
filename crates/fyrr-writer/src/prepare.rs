@@ -62,10 +62,6 @@ pub fn schema(dimensions: u32) -> Arc<Schema> {
 
 pub fn store_params(config: &Config) -> Result<ObjectStoreParams> {
     Ok(ObjectStoreParams {
-        #[cfg(test)]
-        object_store_wrapper: fyrr_reader::storage::test_store::native(
-            &fyrr_reader::storage::dataset_uri(config),
-        ),
         storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
             config
                 .storage

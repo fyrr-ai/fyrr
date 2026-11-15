@@ -74,58 +74,7 @@ pub fn namespace_store(config: &Config) -> Result<(Arc<dyn ObjectStore>, Path), 
         .build()
         .map_err(|_| StorageError::StorageConfigurationInvalid)?;
     let root = namespace(prefix);
-    #[cfg(feature = "test-store")]
-    if let Some(factory) = test_store::factory(config) {
-        return Ok((factory(Arc::new(store)), root));
-    }
     Ok((Arc::new(store), root))
-}
-
-/// Namespace-local injection enabled only by writer libtests' dev dependency.
-#[cfg(feature = "test-store")]
-pub mod test_store {
-    use super::*;
-    use std::collections::BTreeMap;
-    use std::sync::{Mutex, OnceLock};
-    pub type Factory =
-        Arc<dyn Fn(Arc<object_store::aws::AmazonS3>) -> Arc<dyn ObjectStore> + Send + Sync>;
-    pub type NativeWrapper = Arc<dyn lance_io::object_store::WrappingObjectStore>;
-    static STORES: OnceLock<Mutex<BTreeMap<String, Factory>>> = OnceLock::new();
-    static NATIVE: OnceLock<Mutex<BTreeMap<String, NativeWrapper>>> = OnceLock::new();
-    #[derive(Debug)]
-    pub struct Registration(String);
-    pub fn register(config: &Config, factory: Factory) -> Registration {
-        let key = dataset_uri(config);
-        assert!(
-            crate::sync::lock(STORES.get_or_init(Default::default))
-                .insert(key.clone(), factory)
-                .is_none()
-        );
-        Registration(key)
-    }
-    pub(super) fn factory(config: &Config) -> Option<Factory> {
-        crate::sync::lock(STORES.get_or_init(Default::default))
-            .get(&dataset_uri(config))
-            .cloned()
-    }
-    pub fn register_native(config: &Config, wrapper: NativeWrapper) {
-        assert!(
-            crate::sync::lock(NATIVE.get_or_init(Default::default))
-                .insert(dataset_uri(config), wrapper)
-                .is_none()
-        );
-    }
-    pub fn native(uri: &str) -> Option<NativeWrapper> {
-        crate::sync::lock(NATIVE.get_or_init(Default::default))
-            .get(uri)
-            .cloned()
-    }
-    impl Drop for Registration {
-        fn drop(&mut self) {
-            crate::sync::lock(STORES.get_or_init(Default::default)).remove(&self.0);
-            crate::sync::lock(NATIVE.get_or_init(Default::default)).remove(&self.0);
-        }
-    }
 }
 
 /// The Lance URI of the namespace's dataset. A local dataset uses Lance's
@@ -235,8 +184,6 @@ pub async fn open_version(
     let wrapper = shared
         .as_ref()
         .map(|(_, mirror)| mirror.clone() as Arc<dyn lance_io::object_store::WrappingObjectStore>);
-    #[cfg(feature = "test-store")]
-    let wrapper = test_store::native(uri).or(wrapper);
     let mut builder = DatasetBuilder::from_uri(uri)
         .with_store_params(lance_io::object_store::ObjectStoreParams {
             object_store_wrapper: wrapper,

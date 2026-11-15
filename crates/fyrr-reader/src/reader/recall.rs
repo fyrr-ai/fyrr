@@ -95,8 +95,6 @@ impl PreparedReader {
             .try_into_batch()
             .await
             .map_err(|_| SampleSkip::ReferenceFailed)?;
-        #[cfg(test)]
-        self.test_hooks.sample.wait().await;
         self.recall_authorization(sample).await?;
         let reference = ids(&batch).map_err(|_| SampleSkip::ReferenceFailed)?;
         if reference

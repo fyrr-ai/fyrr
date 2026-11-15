@@ -8,10 +8,8 @@
 # Positive controls run the same checks against the full build, which must
 # contain fyrr-writer, PyO3 and arrow-pyarrow and need libpython, so both
 # checks are known to detect a violation.
-# It also proves that neither release build contains the test store: Cargo
-# compiler-artifact records show that no library enables it, with a build
-# enabling it as the positive control. No product crate declares an
-# evaluation feature, and the internal fyrr-eval tool is outside the graph.
+# Product crates declare no evaluation or test-store feature, and the
+# internal fyrr-eval tool is outside the graph.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT"
 
@@ -45,10 +43,11 @@ packages = {p["name"]: p for p in json.load(sys.stdin)["packages"]}
 if "fyrr-eval" not in packages:
     sys.exit("control failed: the workspace has no fyrr-eval package")
 for name in ("fyrr", "fyrr-reader", "fyrr-writer", "fyrr-core"):
-    if "evaluation" in packages[name]["features"]:
-        sys.exit(f"FAIL: {name} declares an evaluation feature")
+    forbidden = {"evaluation", "test-store"} & packages[name]["features"].keys()
+    if forbidden:
+        sys.exit(f"FAIL: {name} declares forbidden features: {sorted(forbidden)}")
 ' || exit 1
-echo "ok: no product crate declares an evaluation feature or depends on fyrr-eval"
+echo "ok: product crates have no evaluation/test-store features or fyrr-eval dependency"
 
 needed() {
   readelf --dynamic "$1" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'
@@ -56,11 +55,10 @@ needed() {
 
 OUT="$ROOT/target/budget"
 mkdir -p "$OUT"
-# Controls run first so the final CLI artifact has normal release features.
-build_release -p fyrr --features fyrr-reader/test-store --bin fyrr --message-format=json > "$OUT/test-store-artifacts.jsonl"
-build_release -p fyrr --bin fyrr --message-format=json > "$OUT/full-artifacts.jsonl"
+# The full binary is the positive control for Python linkage.
+build_release -p fyrr --bin fyrr
 cp target/release/fyrr "$OUT/fyrr-full"
-build_release -p fyrr --no-default-features --bin fyrr --message-format=json > "$OUT/reader-only-artifacts.jsonl"
+build_release -p fyrr --no-default-features --bin fyrr
 cp target/release/fyrr "$OUT/fyrr-reader-only"
 
 full_needed="$(needed "$OUT/fyrr-full")"
@@ -74,41 +72,3 @@ if grep -qi 'python' <<<"$reader_needed"; then
   exit 1
 fi
 echo "ok: the reader-only binary needs only: $(tr '\n' ' ' <<<"$reader_needed")"
-
-# Inspect the compiled library and executable features, including cached artifacts.
-python3 - "$OUT" <<'PYARTIFACTS'
-import json
-import sys
-from pathlib import Path
-
-out = Path(sys.argv[1])
-forbidden = {"test-store"}
-
-
-def artifact_features(build):
-    messages = [json.loads(line) for line in (out / f"{build}-artifacts.jsonl").read_text().splitlines()]
-    targets = {"fyrr_reader", "fyrr"}
-    artifacts = [message for message in messages
-                 if message.get("reason") == "compiler-artifact"
-                 and message["target"]["name"] in targets]
-    if (len(artifacts) != 2
-            or {message["target"]["name"] for message in artifacts} != targets
-            or any(message["profile"]["test"] for message in artifacts)):
-        sys.exit(f"FAIL: {build} has no unique normal reader library and executable artifacts")
-    features = set()
-    for message in artifacts:
-        features.update(message["features"])
-        print(f"artifact: {build} {message['target']['name']} features={message['features']}")
-    return features
-
-
-for build in ("full", "reader-only"):
-    offenders = artifact_features(build) & forbidden
-    if offenders:
-        sys.exit(f"FAIL: {build} compiled artifacts enable {sorted(offenders)}")
-    print(f"ok: {build} compiled artifacts exclude test-store")
-
-if artifact_features("test-store") & forbidden != {"test-store"}:
-    sys.exit("FAIL: the test-store control does not enable test-store")
-print("control: the artifact feature check rejects test-store")
-PYARTIFACTS
