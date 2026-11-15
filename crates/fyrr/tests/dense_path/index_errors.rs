@@ -7,19 +7,8 @@ async fn writer_verify_preserves_incompatible_index_on_real_s3() {
     let (config, root, _) = super::tools::fixture();
     let original = fyrr_core::config::load(&config).unwrap().config;
     assert!(!original.namespace.fts_stem);
-    let valid = super::coordination::host_command(&config)
-        .args(["writer", "verify"])
-        .output()
-        .unwrap();
-    assert!(
-        valid.status.success(),
-        "{}",
-        String::from_utf8_lossy(&valid.stderr)
-    );
-    assert_eq!(
-        serde_json::from_slice::<Value>(&valid.stdout).unwrap()["verified"],
-        true
-    );
+    let valid = super::coordination::command(&config, &["writer", "verify"]);
+    assert_eq!(valid["verified"], true);
     let before = write_contract(&super::coordination::publication(&config).await.0);
     let text = std::fs::read_to_string(&config).unwrap();
     let changed = text.replacen("[namespace]", "[namespace]\nfts_stem = true", 1);

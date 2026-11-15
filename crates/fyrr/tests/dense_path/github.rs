@@ -1,6 +1,5 @@
 //! GitHub through the real worker and owned RustFS, using the one synthetic HTTP fake.
-//! Sync tests are deliberately not run until the coordinator merges the writer fixes.
-use super::coordination::{committer_host, host_command, publication, worker_command, worker_sync};
+use super::coordination::{committer_host, worker_command, worker_sync};
 use super::incremental::{publish, source_roots};
 use super::*;
 
@@ -76,14 +75,7 @@ fn fixture(fake: &Fake, mode: &str) -> (PathBuf, PathBuf, FixtureRoot) {
          app_id=10\ninstallation_id=20\naccount_id=30\nprivate_key={{ env='FYRR_TEST_GITHUB_KEY' }}\n\
          api_endpoint='{}'\n{intervals}[[sources.scope.repositories]]\nid=1\nbranch='main'\n",
         fake.endpoint)).unwrap();
-    assert!(
-        host_command(&worker)
-            .args(["writer", "namespace", "create"])
-            .output()
-            .unwrap()
-            .status
-            .success()
-    );
+    super::coordination::command(&worker, &["writer", "namespace", "create"]);
     // Bootstrap with normal batches; one-row batches are needed only for the connector replay test.
     worker_sync(&worker, &["allowed", "denied", "--full"]);
     let commit = committer_host(&worker, &root);
@@ -176,51 +168,6 @@ async fn github_fixed_replay_quarantine_scope_and_reconcile_on_real_s3() {
     );
 }
 
-async fn link_account(worker: &Path) {
-    use fyrr_core::directory::{AccountLink, DirectorySnapshot, DirectoryUser};
-    let loaded = fyrr_core::config::load(worker).unwrap();
-    let (head, _) = publication(worker).await;
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let identity: fyrr_core::identity::IdentityArtifact = fyrr_reader::storage::read_contract(
-        store.as_ref(),
-        &object_store::path::Path::from(format!("{ns}/{}", head.identity.object)),
-    )
-    .await
-    .unwrap();
-    let key =
-        fyrr_reader::storage::hash_principal(&loaded.config, "key", "fixture-subject").unwrap();
-    let snapshot = DirectorySnapshot {
-        schema_version: DirectorySnapshot::VERSION,
-        namespace: loaded.config.namespace.name.clone(),
-        provider: "github-test-directory".into(),
-        built_at: chrono::Utc::now(),
-        hashing: identity.hashing,
-        users: vec![DirectoryUser {
-            key: key.clone(),
-            token: fyrr_reader::storage::hash_principal(
-                &loaded.config,
-                "tok",
-                "usr:fixture-subject",
-            )
-            .unwrap(),
-            active: true,
-            aliases: vec![],
-            subjects: vec![],
-        }],
-        groups: vec![],
-        state: None,
-        links: vec![AccountLink {
-            source: "github".into(),
-            user: fyrr_reader::storage::hash_principal(&loaded.config, "key", "github.com:7")
-                .unwrap(),
-            principal: key,
-        }],
-    };
-    fyrr_writer::directory::publish(&loaded.config, &snapshot)
-        .await
-        .unwrap();
-}
-
 #[tokio::test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn github_sync_silent_content_and_revoke_on_real_s3() {
@@ -228,7 +175,7 @@ async fn github_sync_silent_content_and_revoke_on_real_s3() {
     let (worker, commit, _root) = fixture(&fake, "sync");
     fake.topic(1, "fixture document 0");
     fake.call("collaborator", json!({"repo_id":1,"user_id":7}));
-    link_account(&worker).await;
+    super::identity::link_account(&worker, "github", "github.com:7").await;
     synced(
         &worker,
         &fake,

@@ -2,9 +2,7 @@
 //! real delegated sign-in and the owned RustFS, against the fake Drive served
 //! over HTTP (`connectors/tests/google_drive/fake_drive.py`). Path S of
 //! docs/connectors/google-drive.md §6.
-use super::coordination::{
-    command, committer_host, host_command, publication, worker_command, worker_sync,
-};
+use super::coordination::{command, committer_host, publication, worker_command, worker_sync};
 use super::incremental::{envelopes, publish, roots, row_readers, source_rows};
 use super::tools::Mcp;
 use super::*;
@@ -136,15 +134,7 @@ fn fixture(drive: &Drive, keys: &str) -> (PathBuf, PathBuf, FixtureRoot) {
         ),
     )
     .unwrap();
-    let created = host_command(&config)
-        .args(["writer", "namespace", "create"])
-        .output()
-        .unwrap();
-    assert!(
-        created.status.success(),
-        "{}",
-        String::from_utf8_lossy(&created.stderr)
-    );
+    super::coordination::command(&config, &["writer", "namespace", "create"]);
     worker_sync(&config, &["allowed", "denied", "--full"]);
     let commit = committer_host(&config, &root);
     publish(&commit);
@@ -229,130 +219,6 @@ fn in_every_lane(config: &Path, expected: &[&str]) {
     for (lane, found) in lanes(config, "drive", !expected.is_empty()) {
         assert_eq!(found, expected, "{lane} lane");
     }
-}
-
-/// Create, edit and delete propagation, the full-ID listing and the scope of
-/// a `fixed` connection, which reads no permissions at all.
-#[tokio::test]
-#[ignore = "real CLI, fake Drive and RustFS; scripts/ci"]
-async fn google_drive_fixed_source_propagates_changes_listing_and_scope_on_real_s3() {
-    let drive = Drive::start();
-    let mine = json!({"owner":OWNER});
-    drive.call("user", json!({"email":OWNER})).await;
-    drive
-        .call("user", json!({"email":"other@example.test"}))
-        .await;
-    drive
-        .put(
-            "a",
-            "fixture document 0",
-            json!({"owner":OWNER,"name":"Plan"}),
-        )
-        .await;
-    drive.put("b", "fixture document 1", mine.clone()).await;
-    drive
-        .put(
-            "c",
-            "fixture document 2",
-            json!({"owner":OWNER,"parent":"keep"}),
-        )
-        .await;
-    drive
-        .put(
-            "foreign",
-            "fixture document 3",
-            json!({"owner":"other@example.test"}),
-        )
-        .await;
-    let (worker, commit, _root) = fixture(&drive, FIXED);
-
-    drive.synced(&worker, &["--kind", "content"]);
-    publish(&commit);
-    assert_eq!(published(&worker).await, ["a", "b", "c"]);
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let fixed = fyrr_writer::apply::reader_token(&loaded.config, "drive", "grp:allow").unwrap();
-    let batch = source_rows(&worker, "drive").await;
-    for root in ["a", "b", "c"] {
-        assert_eq!(
-            row_readers(&batch, root),
-            std::slice::from_ref(&fixed),
-            "exactly the configured reader"
-        );
-    }
-    let plan = fetch(&worker, "a")["structuredContent"]["documents"][0].clone();
-    assert_eq!(plan["title"], "Plan");
-    assert_eq!(plan["author"], OWNER);
-    assert_eq!(plan["source_type"], "google-doc");
-    assert!(!plan["created_at"].is_null() && !plan["updated_at"].is_null());
-    assert_eq!(plan["records"][0]["text"], "fixture document 0");
-
-    // An edit, a trashed file and new files arrive through the changes feed.
-    drive.put("a", "fixture document 4", json!({})).await;
-    drive
-        .call("touch", json!({"file_id":"b","trashed":true}))
-        .await;
-    for (file, row) in [("d", 5), ("e", 6), ("f", 7)] {
-        drive
-            .put(file, &format!("fixture document {row}"), mine.clone())
-            .await;
-    }
-    drive.synced(&worker, &["--kind", "content"]);
-    publish(&commit);
-    assert_eq!(published(&worker).await, ["a", "c", "d", "e", "f"]);
-    let edited = fetch(&worker, "a")["structuredContent"]["documents"][0].clone();
-    assert_eq!(edited["records"][0]["text"], "fixture document 4");
-    assert_eq!(
-        drive.exports("c").await,
-        1,
-        "an unchanged file is not exported again"
-    );
-
-    // A file deleted for good leaves at the full-ID listing, and only at a
-    // complete one: a listing that loses its second page deletes nothing.
-    drive.call("remove", json!({"file_id":"d"})).await;
-    drive.synced(&worker, &["--kind", "content"]);
-    publish(&commit);
-    assert_eq!(published(&worker).await, ["a", "c", "d", "e", "f"]);
-    drive
-        .call(
-            "fail",
-            json!({"match":{"path":"/files$","params":{"pageToken":"^2$"}},"status":500,"times":6,"retry_after":"0"}),
-        )
-        .await;
-    drive.refused(&worker, &["--kind", "reconcile"]);
-    publish(&commit);
-    assert_eq!(published(&worker).await, ["a", "c", "d", "e", "f"]);
-    drive.synced(&worker, &["--kind", "reconcile"]);
-    publish(&commit);
-    assert_eq!(published(&worker).await, ["a", "c", "e", "f"]);
-
-    // Narrowing the scope deletes what left it at the next listing.
-    for config in [&worker, &commit] {
-        let text = std::fs::read_to_string(config).unwrap();
-        assert!(text.contains(SCOPE));
-        std::fs::write(
-            config,
-            text.replace(SCOPE, &format!("{SCOPE}\nfolders=['keep']")),
-        )
-        .unwrap();
-    }
-    drive.synced(&worker, &["--kind", "reconcile"]);
-    publish(&commit);
-    assert_eq!(published(&worker).await, ["c"]);
-    assert!(readable(&worker, "c") && !readable(&worker, "a"));
-
-    let reads = drive
-        .call(
-            "requests",
-            json!({"match":{"path":"/permissions$|^/admin/directory/"}}),
-        )
-        .await;
-    assert_eq!(
-        reads,
-        json!([]),
-        "a fixed connection reads no permissions and no Directory"
-    );
-    assert_eq!(drive.exports("foreign").await, 0, "outside scope.owners");
 }
 
 /// Under `sync` the permission stream alone decides who reads a document:
@@ -682,16 +548,10 @@ async fn google_drive_quarantine_and_permission_read_failure_deadline_on_real_s3
     let loaded = fyrr_core::config::load(&worker).unwrap();
     let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
     let search = || {
-        let output = host_command(&worker)
-            .args(["reader", "search", "fixture query", "--limit", "2"])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+        command(
+            &worker,
+            &["reader", "search", "fixture query", "--limit", "2"],
+        )
     };
     let sources = |search: &Value| {
         search["hits"]

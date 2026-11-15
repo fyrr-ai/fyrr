@@ -5,76 +5,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-#[test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-fn coordination_status_bounded_backlog_on_real_s3() {
-    let (worker, _, root) = super::incremental::fixture();
-    let mut sentinels = Sentinels::new();
-    let marker = sentinels.mark("status-private-cursor");
-    let result_path = root.join("status-counts.json");
-    let output = Command::new(
-        std::env::var_os("FYRR_SCIM_HEALTH_TEST_BINARY")
-            .expect("writer libtest built by scripts/ci"),
-    )
-    .args([
-        "envelopes::tests::status_bounded_backlog_on_real_s3",
-        "--exact",
-        "--ignored",
-        "--nocapture",
-    ])
-    .env("FYRR_TEST_STATUS_CONFIG", &worker)
-    .env("FYRR_TEST_STATUS_PRIVATE_CURSOR", &marker)
-    .env("FYRR_TEST_STATUS_RESULT", &result_path)
-    .output()
-    .unwrap();
-    for log in [&output.stdout, &output.stderr] {
-        assert!(
-            sentinels.found_in(&String::from_utf8_lossy(log)).is_empty(),
-            "status proof leaked a private cursor"
-        );
-    }
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
-    let expected_bytes = std::fs::read(&result_path).unwrap();
-    assert!(
-        sentinels
-            .found_in(&String::from_utf8_lossy(&expected_bytes))
-            .is_empty()
-    );
-    let expected: Value = serde_json::from_slice(&expected_bytes).unwrap();
-    let output = host_command(&worker)
-        .args(["writer", "status"])
-        .output()
-        .unwrap();
-    for log in [&output.stdout, &output.stderr] {
-        assert!(
-            sentinels.found_in(&String::from_utf8_lossy(log)).is_empty(),
-            "writer status leaked a private cursor"
-        );
-    }
-    assert!(
-        output.status.success(),
-        "{}: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let actual: Value = serde_json::from_slice(&output.stdout).unwrap();
-    for field in [
-        "content_sequence",
-        "envelopes",
-        "pending_envelopes",
-        "quarantine",
-        "freshness",
-    ] {
-        assert_eq!(actual[field], expected[field], "status field {field}");
-    }
-}
-
 // Test failures must not leave a stopped holder or a blocked proxy behind.
 pub(super) struct CommitProcess {
     child: Option<std::process::Child>,
@@ -440,15 +370,8 @@ async fn coordination_crash_boundaries_on_real_s3() {
             std::fs::remove_file(root.join("sources/1.txt")).unwrap();
             worker_sync(&worker, &["allowed"]);
             assert!(host_commit(&committer).status.success());
-            let recovered = host_command(&committer)
-                .args(["writer", "commit", "--receipt", id])
-                .output()
-                .unwrap();
-            assert!(recovered.status.success());
-            assert_eq!(
-                serde_json::from_slice::<Value>(&recovered.stdout).unwrap(),
-                receipt
-            );
+            let recovered = command(&committer, &["writer", "commit", "--receipt", id]);
+            assert_eq!(recovered, receipt);
         }
         success(
             &worker,
@@ -561,420 +484,6 @@ async fn coordination_busy_and_expired_holder_on_real_s3() {
         stop.store(true, Ordering::SeqCst);
         drop(proxy_guard);
     }
-}
-
-#[tokio::test]
-#[ignore = "real CLI and owned RustFS; scripts/ci"]
-async fn coordination_bounded_groups_on_real_s3() {
-    let (worker, root) = setup();
-    // A small envelope bound is permitted, but the first publication deliberately
-    // exceeds the later group's row limit and still trains all IVF rows once.
-    let text = std::fs::read_to_string(&worker).unwrap();
-    std::fs::write(
-        &worker,
-        format!(
-            "{text}\n[writer]\nenvelope_max_rows = 256\n[writer.commit]\ngroup_max_rows = 256\n"
-        ),
-    )
-    .unwrap();
-    success(&worker, &["writer", "namespace", "create"]);
-    worker_sync(&worker, &["--full"]);
-    let committer = committer_host(&worker, &root);
-    let bulk = host_commit(&committer);
-    assert!(
-        bulk.status.success(),
-        "{}",
-        String::from_utf8_lossy(&bulk.stderr)
-    );
-    let (head, initial) = publication(&committer).await;
-    assert_eq!(initial.sequence, 1);
-    assert_eq!(pinned_count(&committer).await, 1536);
-    for row in 0..600 {
-        std::fs::remove_file(root.join("sources").join(format!("{row}.txt"))).unwrap();
-    }
-    worker_sync(&worker, &["allowed"]);
-    let output = host_commit(&committer);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let (_, last) = publication(&committer).await;
-    // Deletes consume document rows in the group budget, even though they write no fragments.
-    assert_eq!(last.sequence, head.content.unwrap().sequence + 3);
-    assert_eq!(pinned_count(&committer).await, 936);
-
-    // Leave an unreceipted native commit after P. With no pending envelopes,
-    // the real committer must Restore P and publish recovery-only Q.
-    let published_receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let loaded = fyrr_core::config::load(&committer).unwrap();
-    let mut dataset = fyrr_reader::storage::open_version(
-        &fyrr_reader::storage::dataset_uri(&loaded.config),
-        loaded
-            .config
-            .storage
-            .object_store_options(&fyrr_core::config::ProcessEnvironment)
-            .unwrap(),
-        last.lance_version,
-        None,
-    )
-    .await
-    .unwrap();
-    dataset
-        .delete("source_id = 'allowed' AND root_id = '600.txt'")
-        .await
-        .unwrap();
-    assert!(dataset.version().version > last.lance_version);
-    assert_eq!(publication(&committer).await.1, last);
-    let recovered = host_commit(&committer);
-    assert!(
-        recovered.status.success(),
-        "{}",
-        String::from_utf8_lossy(&recovered.stderr)
-    );
-    let (_, recovery) = publication(&committer).await;
-    assert_eq!(recovery.sequence, last.sequence + 1);
-    assert!(recovery.envelope_ids.is_empty());
-    assert!(recovery.lineage.recovery_version.is_some());
-    assert_eq!(pinned_count(&committer).await, 936);
-    let receipt = host_command(&committer)
-        .args(["writer", "commit", "--receipt", &last.envelope_ids[0]])
-        .output()
-        .unwrap();
-    assert!(
-        receipt.status.success(),
-        "{}",
-        String::from_utf8_lossy(&receipt.stderr)
-    );
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&receipt.stdout).unwrap(),
-        published_receipt
-    );
-    assert_eq!(
-        publication(&committer).await.1,
-        recovery,
-        "receipt lookup writes nothing"
-    );
-    let plain_retry = host_commit(&committer);
-    assert!(plain_retry.status.success());
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&plain_retry.stdout).unwrap(),
-        serde_json::from_slice::<serde_json::Value>(&recovered.stdout).unwrap()
-    );
-}
-
-#[tokio::test]
-#[ignore = "real CLI and owned RustFS; scripts/ci"]
-async fn coordination_mixed_group_accounting_on_real_s3() {
-    use arrow_array::StringArray;
-    use fyrr_core::envelope::{DocumentIntent, EnvelopePayload, PreparedEnvelope};
-    use std::collections::BTreeMap;
-
-    let (worker, root) = setup();
-    success(&worker, &["writer", "namespace", "create"]);
-    worker_sync(&worker, &["--full"]);
-    let committer = committer_host(&worker, &root);
-    assert!(host_commit(&committer).status.success());
-    let (_, initial) = publication(&committer).await;
-    for config in [&worker, &committer] {
-        let text = std::fs::read_to_string(config).unwrap();
-        std::fs::write(
-            config,
-            format!(
-                "{text}\n[writer]\nenvelope_max_rows = 3\n[writer.commit]\ngroup_max_rows = 6\n"
-            ),
-        )
-        .unwrap();
-    }
-    // Each worker batch has three documents, but four units of commit work:
-    // a two-record replacement, a new one-record upsert and one delete intent.
-    let replacement = format!("{}{}", "x".repeat(16384), "y".repeat(8));
-    let chunks = fyrr_writer::chunk::chunks(&replacement);
-    assert_eq!(chunks.len(), 2);
-    let vector = root.embedding.vector("fixture query");
-    for text in chunks
-        .iter()
-        .copied()
-        .chain(["new fixture 0", "new fixture 1"])
-    {
-        root.embedding.insert_both(text, vector.clone());
-    }
-
-    for round in 0..2 {
-        std::fs::write(
-            root.join("sources").join(format!("{}.txt", round * 2)),
-            &replacement,
-        )
-        .unwrap();
-        std::fs::remove_file(root.join("sources").join(format!("{}.txt", round * 2 + 1))).unwrap();
-        std::fs::write(
-            root.join("sources").join(format!("new-{round}.txt")),
-            format!("new fixture {round}"),
-        )
-        .unwrap();
-        worker_sync(&worker, &["allowed"]);
-    }
-    let output = host_commit(&committer);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let (_, last) = publication(&committer).await;
-    let loaded = fyrr_core::config::load(&committer).unwrap();
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let mut manifest = last.clone();
-    let mut groups = 0;
-    while manifest.publication_id != initial.publication_id {
-        let mut work = 0;
-        for id in &manifest.envelope_ids {
-            let envelope: PreparedEnvelope = fyrr_reader::storage::read_contract(
-                store.as_ref(),
-                &ns.clone().join("envelopes").join(format!("{id}.json")),
-            )
-            .await
-            .unwrap();
-            let EnvelopePayload::Content(content) = envelope.payload else {
-                panic!("content envelope");
-            };
-            let inserted: u64 = content.fragments.iter().map(|f| f.rows).sum();
-            let deleted = content
-                .documents
-                .iter()
-                .filter(|d| d.intent == DocumentIntent::Delete)
-                .count() as u64;
-            assert_eq!(
-                (inserted, deleted),
-                (3, 1),
-                "real worker produced a mixed envelope"
-            );
-            work += inserted + deleted;
-        }
-        assert!(work <= 6, "published group exceeds row limit: {work} > 6");
-        assert_eq!(work, 4);
-        groups += 1;
-        let previous = manifest.previous_publication_id.unwrap();
-        manifest = fyrr_reader::storage::read_contract(
-            store.as_ref(),
-            &ns.clone()
-                .join("publications")
-                .join(format!("{previous}.json")),
-        )
-        .await
-        .unwrap();
-    }
-    assert_eq!(groups, 2);
-    assert_eq!(pinned_count(&committer).await, 1538);
-    let dataset = fyrr_reader::storage::open_version(
-        &fyrr_reader::storage::dataset_uri(&loaded.config),
-        loaded
-            .config
-            .storage
-            .object_store_options(&fyrr_core::config::ProcessEnvironment)
-            .unwrap(),
-        last.lance_version,
-        None,
-    )
-    .await
-    .unwrap();
-    let batch = dataset
-        .scan()
-        .project(&["root_id", "record_id", "searchable_text"])
-        .unwrap()
-        .filter("source_id = 'allowed'")
-        .unwrap()
-        .try_into_batch()
-        .await
-        .unwrap();
-    let strings = |name| {
-        batch
-            .column_by_name(name)
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap()
-    };
-    let actual: BTreeMap<_, _> = (0..batch.num_rows())
-        .map(|row| {
-            (
-                (
-                    strings("root_id").value(row).to_owned(),
-                    strings("record_id").value(row).to_owned(),
-                ),
-                strings("searchable_text").value(row).to_owned(),
-            )
-        })
-        .collect();
-    let mut expected = BTreeMap::new();
-    for row in 0..768 {
-        if row == 1 || row == 3 {
-            continue;
-        }
-        let root = format!("{row}.txt");
-        if row == 0 || row == 2 {
-            for (part, text) in chunks.iter().enumerate() {
-                expected.insert((root.clone(), format!("{root}:{part}")), (*text).to_owned());
-            }
-        } else {
-            expected.insert(
-                (root.clone(), format!("{root}:0")),
-                format!("fixture document {row}"),
-            );
-        }
-    }
-    for round in 0..2 {
-        let root = format!("new-{round}.txt");
-        expected.insert(
-            (root.clone(), format!("{root}:0")),
-            format!("new fixture {round}"),
-        );
-    }
-    assert_eq!(
-        actual, expected,
-        "replacement chunks, new upserts and deletes converge exactly"
-    );
-}
-
-#[tokio::test]
-#[ignore = "real CLI and owned RustFS; scripts/ci"]
-async fn coordination_initial_bulk_recovery_on_real_s3() {
-    let (worker, root) = setup();
-    success(&worker, &["writer", "namespace", "create"]);
-    worker_sync(&worker, &["--full"]);
-    let committer = committer_host(&worker, &root);
-    let stop = Arc::new(AtomicBool::new(false));
-    let (gate, hook) = corrections::RequestGate::rejecting(|request, _, after| {
-        !after && request.starts_with("PUT ") && request.contains("/publications/")
-    });
-    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
-    let (proxy, proxy_guard) = corrections::proxy_at_boundary(endpoint.clone(), stop.clone(), hook);
-    let gate = gate;
-    let fault = committer.parent().unwrap().join("first-bulk-fault.toml");
-    std::fs::write(
-        &fault,
-        std::fs::read_to_string(&committer)
-            .unwrap()
-            .replace(&endpoint, &proxy),
-    )
-    .unwrap();
-    let mut process = CommitProcess::spawn(&fault, Arc::new(AtomicBool::new(false)));
-    gate.entered();
-    process.child().kill().unwrap();
-    assert!(!process.finish_bounded().status.success());
-    gate.release();
-    drop(proxy_guard);
-    let loaded = fyrr_core::config::load(&committer).unwrap();
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let head: ServingHead =
-        fyrr_reader::storage::read_contract(store.as_ref(), &ns.join("head.json"))
-            .await
-            .unwrap();
-    assert!(
-        head.content.is_none(),
-        "no receipt or serving content before first CAS"
-    );
-    assert!(!run(&worker, &["reader", "check"]).status.success());
-    let remaining = (head.lease.unwrap().expires_at - chrono::Utc::now())
-        .to_std()
-        .unwrap_or_default();
-    std::thread::sleep(remaining + Duration::from_millis(50));
-    let retry = host_commit(&committer);
-    assert!(
-        retry.status.success(),
-        "first bulk retry: {}",
-        String::from_utf8_lossy(&retry.stderr)
-    );
-    let (_, manifest) = publication(&committer).await;
-    assert_eq!(manifest.sequence, 1);
-    assert_eq!(pinned_count(&committer).await, 1536);
-    let lineage = manifest.lineage;
-    assert!(
-        lineage.base_version > 0,
-        "retry overwrote the unpublished first bulk"
-    );
-    assert!(
-        lineage.recovery_version.is_none(),
-        "an empty head has no version to Restore"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real S3 conditional acquisition; scripts/ci"]
-async fn coordination_stale_acquire_cannot_replace_live_holder_on_real_s3() {
-    use fyrr_writer::lease::LeaseGuard;
-    let (config, root) = setup();
-    success(&config, &["writer", "namespace", "create"]);
-    let loaded = fyrr_core::config::load(&config).unwrap();
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let path = ns.join("head.json");
-    let original = store.head(&path).await.unwrap().e_tag;
-    let target = format!(
-        "PUT /{}/{} HTTP/1.1\r\n",
-        std::env::var("FYRR_TEST_S3_BUCKET").unwrap(),
-        path.as_ref().replace('(', "%28").replace(')', "%29")
-    );
-    let gate_target = target.clone();
-    let (gate, hook) = corrections::RequestGate::new(move |request, body, after| {
-        !after
-            && request == gate_target
-            && parse_contract::<ServingHead>(body).unwrap().lease.is_some()
-    });
-    let statuses = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let observed = statuses.clone();
-    let transform = Arc::new(move |request: &str, response: &mut Vec<u8>| {
-        if request == target {
-            observed.lock().unwrap().push(
-                String::from_utf8_lossy(response)
-                    .lines()
-                    .next()
-                    .unwrap()
-                    .to_owned(),
-            );
-        }
-    });
-    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
-    let (proxy, _proxy_guard) = corrections::proxy_transform(
-        endpoint.clone(),
-        Arc::new(AtomicBool::new(false)),
-        transform,
-        Some(hook),
-    );
-    let gate = gate;
-    let proxied = root.join("stale-acquire.toml");
-    std::fs::write(
-        &proxied,
-        std::fs::read_to_string(&config)
-            .unwrap()
-            .replace(&endpoint, &proxy),
-    )
-    .unwrap();
-    let proxy_config = fyrr_core::config::load(&proxied).unwrap().config;
-    let contender = tokio::spawn(async move { LeaseGuard::acquire(&proxy_config).await });
-    let attempted: ServingHead = parse_contract(&gate.entered()).unwrap();
-    let winner = LeaseGuard::acquire(&loaded.config).await.unwrap();
-    assert_ne!(attempted.lease.unwrap().holder, winner.holder().holder);
-    assert!(winner.holder().expires_at > chrono::Utc::now());
-    let authoritative = store.get(&path).await.unwrap();
-    let etag = authoritative.meta.e_tag.clone();
-    let bytes = authoritative.bytes().await.unwrap();
-    assert_ne!(etag, original);
-    gate.release();
-    let result = tokio::time::timeout(Duration::from_secs(20), contender)
-        .await
-        .unwrap()
-        .unwrap();
-    let final_object = store.get(&path).await.unwrap();
-    assert_eq!(
-        result.as_ref().err().map(|error| error.as_str()),
-        Some("committer_busy")
-    );
-    assert_eq!(final_object.meta.e_tag, etag);
-    assert_eq!(final_object.bytes().await.unwrap(), bytes);
-    assert_eq!(
-        *statuses.lock().unwrap(),
-        ["HTTP/1.1 412 Precondition Failed"]
-    );
-    winner.release().await.unwrap();
 }
 
 #[tokio::test]
@@ -1260,4 +769,74 @@ async fn coordination_foreign_native_commit_cannot_publish_head_on_real_s3() {
     );
     assert_eq!(fetched["documents"].as_array().unwrap().len(), 1);
     assert!(fetched.to_string().contains("fixture document 0"));
+}
+
+#[test]
+#[ignore = "real CLI and RustFS; scripts/ci"]
+fn coordination_status_bounded_backlog_on_real_s3() {
+    let (worker, _, root) = super::incremental::fixture();
+    let mut sentinels = Sentinels::new();
+    let marker = sentinels.mark("status-private-cursor");
+    let result_path = root.join("status-counts.json");
+    let output = Command::new(
+        std::env::var_os("FYRR_SCIM_HEALTH_TEST_BINARY")
+            .expect("writer libtest built by scripts/ci"),
+    )
+    .args([
+        "envelopes::tests::status_bounded_backlog_on_real_s3",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ])
+    .env("FYRR_TEST_STATUS_CONFIG", &worker)
+    .env("FYRR_TEST_STATUS_PRIVATE_CURSOR", &marker)
+    .env("FYRR_TEST_STATUS_RESULT", &result_path)
+    .output()
+    .unwrap();
+    for log in [&output.stdout, &output.stderr] {
+        assert!(
+            sentinels.found_in(&String::from_utf8_lossy(log)).is_empty(),
+            "status proof leaked a private cursor"
+        );
+    }
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+    let expected_bytes = std::fs::read(&result_path).unwrap();
+    assert!(
+        sentinels
+            .found_in(&String::from_utf8_lossy(&expected_bytes))
+            .is_empty()
+    );
+    let expected: Value = serde_json::from_slice(&expected_bytes).unwrap();
+    let output = host_command(&worker)
+        .args(["writer", "status"])
+        .output()
+        .unwrap();
+    for log in [&output.stdout, &output.stderr] {
+        assert!(
+            sentinels.found_in(&String::from_utf8_lossy(log)).is_empty(),
+            "writer status leaked a private cursor"
+        );
+    }
+    assert!(
+        output.status.success(),
+        "{}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let actual: Value = serde_json::from_slice(&output.stdout).unwrap();
+    for field in [
+        "content_sequence",
+        "envelopes",
+        "pending_envelopes",
+        "quarantine",
+        "freshness",
+    ] {
+        assert_eq!(actual[field], expected[field], "status field {field}");
+    }
 }

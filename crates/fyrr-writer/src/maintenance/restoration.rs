@@ -1,7 +1,6 @@
 use super::*;
 
 pub async fn restore(config: &Config, publication: Option<&str>) -> Result<serde_json::Value> {
-    restore_phase("restore");
     if publication.is_some_and(|id| !fyrr_core::limits::prefixed_hex(id, "pub-", 32)) {
         return Err(WriterError::PublicationIdInvalid);
     }
@@ -15,12 +14,6 @@ pub async fn restore(config: &Config, publication: Option<&str>) -> Result<serde
 
 pub(super) const RESTORE_ROOTS: usize = 256;
 const RESTORE_ATTEMPTS: usize = 3;
-
-// Restore phases are observable only to the counting-store tests.
-pub(super) fn restore_phase(_name: &'static str) {
-    #[cfg(test)]
-    counting_store::phase(_name);
-}
 
 #[derive(Debug)]
 pub(super) struct RestoreAttempt<'a> {
@@ -169,7 +162,6 @@ pub(super) async fn command_start(
     history: &mut commit::RestoreHistory,
     snapshot: bool,
 ) -> Result<ServingHead> {
-    restore_phase("history_start");
     history.refresh(config, &lease.head().await?).await?;
     command_recover(config, lease, history, snapshot).await
 }
@@ -652,7 +644,7 @@ pub(super) async fn restore_attempt(
             &fragments.historical,
         )
         .await?;
-    restore_phase("overlay");
+
     let (roots, body_reads) = Box::pin(restore_pass(
         config,
         lease,
@@ -670,7 +662,7 @@ pub(super) async fn restore_attempt(
         .drain(config, lease, attempt.history)
         .await?;
     let start = std::time::Instant::now();
-    restore_phase("index_optimization");
+
     let before = attempt.dataset.version().version;
     commit::native_step(
         lease,
@@ -706,7 +698,7 @@ async fn publish_restored(
     latest: &BTreeMap<(String, &'static str), RejectionMarker>,
 ) -> Result<(u64, std::time::Duration)> {
     let start = std::time::Instant::now();
-    restore_phase("publication");
+
     // Authorization inputs arriving here are drained at the final boundary;
     // they must never be rejected as stale content and hide a queued revoke.
     for envelope in attempt.history.pending(config, false).await? {

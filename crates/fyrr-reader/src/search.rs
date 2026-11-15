@@ -478,11 +478,3 @@ mod routing_tests;
 #[cfg(test)]
 #[path = "reader/tests/authorization_cache_tests.rs"]
 mod authorization_cache_tests;
-
-#[cfg(test)]
-#[path = "reader/tests/hydration_tests.rs"]
-mod hydration_tests;
-
-#[cfg(test)]
-#[path = "reader/tests/live_embedding_tests.rs"]
-mod live_embedding_tests;

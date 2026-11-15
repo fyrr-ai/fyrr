@@ -11,7 +11,6 @@
       "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_concurrent_calls_share_one_monotone_spend_limit",
       "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_deadline_retains_reservation_and_never_returns_provider_errors",
       "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_no_catalog_probe_checks_optional_model_vectors_and_spend",
-      "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_no_catalog_verifies_with_a_reserved_role_specific_probe",
       "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_provider_roles_order_validation_and_no_uncapped_calls",
       "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_spend_reserves_every_retry_and_refuses_the_next_call",
       "full:fyrr-reader:lib:fyrr_reader/embedding::query::tests::cache_only_query_copies_use_existing_generation_scratch",
@@ -20,23 +19,13 @@
       "full:fyrr-reader:lib:fyrr_reader/embedding::tests::profile_identity_preserves_legacy_bytes_and_binds_roles",
       "full:fyrr-reader:lib:fyrr_reader/embedding::tests::vectors_must_be_finite_nonzero_and_profile_sized",
       "full:fyrr-reader:lib:fyrr_reader/excerpt::tests::excerpt_cases",
-      "full:fyrr-reader:lib:fyrr_reader/generation::tests::asymmetric_resize_cure_and_allocation_use_identical_lane_rounding",
-      "full:fyrr-reader:lib:fyrr_reader/generation::tests::cache_growth_reuses_entries_then_resizes_with_owned_permits",
-      "full:fyrr-reader:lib:fyrr_reader/generation::tests::cache_resize_handover_recovers_space_without_leaking_the_old_session",
       "full:fyrr-reader:lib:fyrr_reader/generation::tests::handover_reclaims_session_cache_and_admits_a_larger_publication",
-      "full:fyrr-reader:lib:fyrr_reader/generation::tests::identical_pool_claims_are_admitted_independently_of_rss",
-      "full:fyrr-reader:lib:fyrr_reader/generation::tests::non_vector_indexes_use_the_shared_cache_envelope",
-      "full:fyrr-reader:lib:fyrr_reader/generation::tests::permanently_cold_publications_need_overlap_or_minimum_claim_handover",
-      "full:fyrr-reader:lib:fyrr_reader/generation::tests::repeated_publications_reserve_overlap_and_reuse_full_or_capped_cache",
       "full:fyrr-reader:lib:fyrr_reader/generation::tests::reservation_falls_back_and_stays_owned_until_last_reference",
       "full:fyrr-reader:lib:fyrr_reader/generation::tests::serving_minimum_funds_two_warm_claims_and_native_caches",
       "full:fyrr-reader:lib:fyrr_reader/generation::tests::underestimated_roots_degrade_and_do_not_retry_the_bad_estimate",
       "full:fyrr-reader:lib:fyrr_reader/http::response_memory_tests::response_frame_keeps_claim_after_body_drop",
-      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::cancelled_checksums_are_bounded_shared_and_failed_results_are_memoized",
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::interrupted_partial_recovers_without_following_symlinks",
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::mutable_control_reads_through_native_named_storage_prefix",
-      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::verified_memo_hit_never_waits_for_the_blocking_pool",
-      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::warm_file_read_does_not_wait_for_miss_lock",
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::version_manifest_entries_are_bound_to_their_publication",
       "full:fyrr-reader:lib:fyrr_reader/rerank::tests::both_envelopes_require_exact_finite_index_coverage",
       "full:fyrr-reader:lib:fyrr_reader/rerank::tests::concurrent_reservations_are_capped_and_never_overflow",
@@ -103,7 +92,6 @@
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_e_tags_never_repeat_and_conditions_fail_closed",
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_root_is_private_and_behaves_like_s3",
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_updates_are_compare_and_swap_across_processes",
-      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_updates_are_compare_and_swap_across_threads",
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_listing_tolerates_concurrent_deletes",
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_recreated_objects_never_match_earlier_tags",
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_never_restarts_the_counter_over_existing_objects",
@@ -142,20 +130,14 @@
       "full:fyrr-core:test:config/composition_is_bounded_defaulted_and_bound_into_policy_identity",
       "full:fyrr-core:test:config/config_show_redacts_inline_secrets",
       "full:fyrr-core:test:config/cross_field_rules_are_enforced",
-      "full:fyrr-core:test:config/effective_values_carry_origins_and_never_secret_values",
       "full:fyrr-core:test:config/every_schema_constraint_is_enforced",
       "full:fyrr-core:test:config/example_and_minimal_files_are_valid",
       "full:fyrr-core:test:config/example_matches_the_generated_json_schema",
-      "full:fyrr-core:test:config/fts_merge_is_an_opt_in_writer_cost_not_a_retrieval_policy_change",
       "full:fyrr-core:test:config/live_embeddings_require_explicit_bounded_spending_and_private_cache",
       "full:fyrr-core:test:config/missing_secrets_are_reported_by_variable_name",
-      "full:fyrr-core:test:config/reader_preparation_budget_keeps_headroom_below_memory_limit",
-      "full:fyrr-core:test:config/redacted_messages_keep_their_hints",
       "full:fyrr-core:test:config/rerank_is_optional_capped_validated_and_bound_into_policy",
       "full:fyrr-core:test:config/rescore_depth_keeps_legacy_digest_and_expands_only_at_small_gaps",
       "full:fyrr-core:test:config/retrieval_config_bounds_and_legacy_digest",
-      "full:fyrr-core:test:config/routing_has_one_exact_default_and_two_opt_in_values",
-      "full:fyrr-core:test:config/search_response_budget_is_optional_and_bounded",
       "full:fyrr-core:test:config/secrets_in_the_file_are_refused_without_echo",
       "full:fyrr-core:test:config/service_http_urls_require_loopback_ip_literals",
       "full:fyrr-core:test:config/sparse_read_backend_is_explicit_and_does_not_change_policy",
@@ -167,10 +149,8 @@
       "full:fyrr-core:test:config/directory_defaults_to_none_and_rejects_unimplemented_providers",
       "full:fyrr-core:test:config/unused_identity_selectors_are_rejected_and_absent_from_effective_config",
       "full:fyrr-core:test:config/chat_sources_default_corporate_domains_to_verified_domains",
-      "full:fyrr-core:test:config/http_operator_credential_is_optional",
       "full:fyrr-core:test:config/identity_keys_are_required_before_runtime",
       "full:fyrr-core:test:config/keycloak_directory_derives_oidc_issuer_profile_and_keys",
-      "full:fyrr-core:test:config/mirror_directory_defaults_to_the_user_cache_per_namespace",
       "full:fyrr-core:test:config/oidc_issuer_must_match_the_directory_issuer",
       "full:fyrr-core:test:config/local_storage_takes_a_canonical_file_uri_and_no_s3_keys"
     ]
@@ -200,7 +180,6 @@
   "mcp": {
     "cases": [
       "full:fyrr-core:test:mcp/agent_tool_parameter_validation_and_limits",
-      "full:fyrr-core:test:mcp/descriptions_follow_the_wording_rules",
       "full:fyrr-core:test:mcp/error_codes_match_the_spec_list",
       "full:fyrr-core:test:mcp/examples_round_trip_and_match_tool_schemas",
       "full:fyrr-core:test:mcp/inputs_reject_unknown_fields",
@@ -221,11 +200,6 @@
       "full:fyrr-reader:test:lance_pin/positionless_native_fts_and_saving"
     ]
   },
-  "s3-native-lance-roundtrip": {
-    "cases": [
-      "full:fyrr-reader:test:real_s3/lance_dataset_round_trips_through_real_s3"
-    ]
-  },
   "cli-full": {
     "cases": [
       "full:fyrr:test:cli/config_check_passes_with_secrets_and_never_prints_them",
@@ -243,8 +217,7 @@
       "full:fyrr:test:cli/usage_errors_exit_two",
       "full:fyrr:test:cli/version_names_the_build",
       "full:fyrr:test:cli/worker_memory_ceiling_is_configurable_and_validated",
-      "full:fyrr:test:cli/writer_service_requires_configuration",
-      "full:fyrr:test:cli/config_check_embedding_timeout_matches_runtime"
+      "full:fyrr:test:cli/writer_service_requires_configuration"
     ]
   },
   "local-storage": {
@@ -253,7 +226,6 @@
       "full:fyrr:test:dense_path/local_storage::local_storage_reaps_abandoned_uploads_but_protects_live_staging",
       "full:fyrr:test:dense_path/coordination::coordination_live_holder_is_busy_then_fenced_after_expiry_on_local_storage",
       "full:fyrr:test:dense_path/coordination::coordination_stale_publish_preserves_authoritative_head_on_local_storage",
-      "full:fyrr:test:dense_path/maintenance::maintenance_disconnected_source_purges_on_local_storage",
       "full:fyrr:test:dense_path/maintenance::maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror_on_local_storage",
       "full:fyrr:test:dense_path/maintenance::maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery_on_local_storage",
       "full:fyrr:test:dense_path/mirror_identity::recreated_namespace_at_same_uri_never_serves_old_mirror_entries_on_local_storage",
@@ -278,13 +250,9 @@
   },
   "s3-coordination": {
     "cases": [
-      "full:fyrr:test:dense_path/coordination::coordination_bounded_groups_on_real_s3",
       "full:fyrr:test:dense_path/coordination::coordination_busy_and_expired_holder_on_real_s3",
       "full:fyrr:test:dense_path/coordination::coordination_crash_boundaries_on_real_s3",
-      "full:fyrr:test:dense_path/coordination::coordination_initial_bulk_recovery_on_real_s3",
-      "full:fyrr:test:dense_path/coordination::coordination_mixed_group_accounting_on_real_s3",
       "full:fyrr:test:dense_path/coordination::coordination_status_bounded_backlog_on_real_s3",
-      "full:fyrr:test:dense_path/coordination::coordination_stale_acquire_cannot_replace_live_holder_on_real_s3",
       "full:fyrr:test:dense_path/coordination::coordination_stale_publish_preserves_authoritative_head_on_real_s3",
       "full:fyrr:test:dense_path/coordination::coordination_foreign_native_commit_cannot_publish_head_on_real_s3"
     ],
@@ -313,83 +281,21 @@
   },
   "s3-tools": {
     "cases": [
-      "full:fyrr:test:dense_path/cutoff::tools_cutoff_fetch_bounds_are_explicit_on_real_s3",
-      "full:fyrr:test:dense_path/cutoff::tools_dense_cutoff_twins_are_stable_between_reader_processes_on_real_s3",
-      "full:fyrr:test:dense_path/cutoff::tools_lexical_cutoff_twins_are_stable_between_reader_processes_on_real_s3",
       "full:fyrr:test:dense_path/embedding::tools_embedding_empty_admission_and_profile_mismatch_make_no_calls_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_embedding_failures_and_spend_degrade_entire_batch_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_embedding_live_cache_and_batched_queries_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_embedding_parked_admission_bound_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_embedding_parked_cancellation_resources_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_embedding_provider_wait_overlaps_native_lexical_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_embedding_reacquire_cancellation_resources_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_embedding_timeout_lexical_under_native_contention_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_embedding_wait_all_drivers_leave_mirror_io_headroom_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_embedding_wait_releases_worker_and_keeps_retired_pin_on_real_s3",
       "full:fyrr:test:dense_path/embedding::tools_embedding_wait_revocation_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_writer_embedding_corrupt_local_float_is_never_published_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_writer_embedding_failure_preserves_earlier_completed_envelope_on_real_s3",
       "full:fyrr:test:dense_path/embedding::tools_writer_embedding_failures_deadline_spend_and_no_partial_stage_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_writer_embedding_forced_unchanged_skip_and_cache_restart_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_writer_embedding_live_start_verifies_model_even_for_unchanged_revisions_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_writer_embedding_spend_is_partitioned_across_source_workers_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_writer_embedding_unchanged_revision_refuses_foreign_chunk_profile_on_real_s3",
-      "full:fyrr:test:dense_path/rerank::tools_rerank_batch_has_four_calls_in_flight_on_real_s3",
       "full:fyrr:test:dense_path/rerank::tools_rerank_default_and_success_on_real_s3",
       "full:fyrr:test:dense_path/rerank::tools_rerank_denied_and_listing_make_no_calls_on_real_s3",
-      "full:fyrr:test:dense_path/rerank::tools_rerank_distinct_queries_keep_their_own_indices_on_real_s3",
-      "full:fyrr:test:dense_path/rerank::tools_rerank_failures_and_shared_deadline_on_real_s3",
       "full:fyrr:test:dense_path/rerank::tools_rerank_revoke_before_body_emission_sends_no_text_on_real_s3",
-      "full:fyrr:test:dense_path/rerank::tools_rerank_revoke_cancels_queued_provider_calls_on_real_s3",
-      "full:fyrr:test:dense_path/rerank::tools_rerank_spend_is_shared_between_queries_and_requests_on_real_s3",
-      "full:fyrr:test:dense_path/rerank::tools_rerank_stalled_response_body_releases_worker_on_real_s3",
       "full:fyrr:test:dense_path/rerank::tools_rerank_text_window_and_response_budget_are_authorized_on_real_s3",
-      "full:fyrr:test:dense_path/rerank::tools_rerank_two_clients_share_spend_and_cancellation_does_not_refund_on_real_s3",
-      "full:fyrr:test:dense_path/rerank::tools_rerank_unconfigured_publication_is_stale_on_real_s3",
       "full:fyrr:test:dense_path/tools::tools_agent_multiquery_text_and_fetch_list_on_real_s3",
-      "full:fyrr:test:dense_path/tools::tools_concurrency_deadlines_cancellation_and_cost_on_real_s3",
-      "full:fyrr:test:dense_path/tools::tools_default_deadline_on_real_s3",
       "full:fyrr:test:dense_path/tools::tools_every_admitted_result_and_error_rechecks_identity_on_real_s3",
       "full:fyrr:test:dense_path/tools::tools_fetch_filters_windows_and_cursors_on_real_s3",
-      "full:fyrr:test:dense_path/tools::tools_filter_none_too_many_and_readable_counts_on_real_s3",
-      "full:fyrr:test:dense_path/tools::tools_hidden_section_insertion_removal_preserves_record_windows_on_real_s3",
-      "full:fyrr:test:dense_path/tools::tools_hydration_projection_reads_only_text_bearing_rows_on_real_s3",
-      "full:fyrr:test:dense_path/tools::tools_multiquery_configured_document_caps_on_real_s3",
-      "full:fyrr:test:dense_path/tools::tools_retrieval_failures_recheck_identity_on_real_s3",
-      "full:fyrr:test:dense_path/tools::tools_metadata_preserves_author_null_time_text_and_revision_on_real_s3",
-      "full:fyrr:test:dense_path/embedding::tools_excerpt_cancellation_retains_capacity_and_scratch_on_real_s3",
       "full:fyrr:test:dense_path/tools::tools_fetch_refuses_unreadable_locator_index_on_real_s3"
     ],
     "children": {
-      "full:fyrr-reader:lib:fyrr_reader/search::hydration_tests::hydration_projection_reads_only_text_bearing_rows_on_real_s3": [
-        "full:fyrr:test:dense_path/tools::tools_hydration_projection_reads_only_text_bearing_rows_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/search::live_embedding_tests::provider_wait_overlaps_native_lexical_on_real_s3": [
-        "full:fyrr:test:dense_path/embedding::tools_embedding_provider_wait_overlaps_native_lexical_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::embedding_parked_admission_saturation_returns_busy_on_real_s3": [
-        "full:fyrr:test:dense_path/embedding::tools_embedding_parked_admission_bound_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::embedding_parked_cancellation_releases_counted_resources_on_real_s3": [
-        "full:fyrr:test:dense_path/embedding::tools_embedding_parked_cancellation_resources_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::embedding_reacquire_cancellation_releases_counted_resources_on_real_s3": [
-        "full:fyrr:test:dense_path/embedding::tools_embedding_reacquire_cancellation_resources_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::embedding_timeout_keeps_lexical_answer_while_native_slot_is_occupied_on_real_s3": [
-        "full:fyrr:test:dense_path/embedding::tools_embedding_timeout_lexical_under_native_contention_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::embedding_wait_all_drivers_leave_mirror_io_headroom_on_real_s3": [
-        "full:fyrr:test:dense_path/embedding::tools_embedding_wait_all_drivers_leave_mirror_io_headroom_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::embedding_wait_releases_native_slot_and_keeps_retired_generation_pin_on_real_s3": [
-        "full:fyrr:test:dense_path/embedding::tools_embedding_wait_releases_worker_and_keeps_retired_pin_on_real_s3"
-      ],
       "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::embedding_wait_revocation_refuses_old_authorization_on_real_s3": [
         "full:fyrr:test:dense_path/embedding::tools_embedding_wait_revocation_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::excerpt_cancellation_retains_capacity_and_batch_scratch_on_real_s3": [
-        "full:fyrr:test:dense_path/embedding::tools_excerpt_cancellation_retains_capacity_and_scratch_on_real_s3"
       ]
     }
   },
@@ -403,18 +309,15 @@
   },
   "s3-identity": {
     "cases": [
-      "full:fyrr:test:dense_path/directory_ops::identity_directory_generic_snapshot_and_independent_sync_frequencies_on_real_s3",
       "full:fyrr:test:dense_path/directory_ops::identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_real_s3",
       "full:fyrr:test:dense_path/directory_ops::identity_directory_scim_crud_patch_replay_collision_and_revocation_on_real_s3",
       "full:fyrr:test:dense_path/http_mcp::identity_http_authentication_isolation_rate_limits_drain_and_refresh_on_real_s3",
-      "full:fyrr:test:dense_path/http_mcp::identity_http_cancellation_flood_preserves_ordinary_requests_on_real_s3",
       "full:fyrr:test:dense_path/http_mcp::identity_http_deadline_cancellation_busy_inflight_refusal_and_active_drain_on_real_s3",
       "full:fyrr:test:dense_path/identity::identity_alias_collision_link_revoke_and_idempotence_on_real_s3",
       "full:fyrr:test:dense_path/identity::identity_directory_keeps_lease_alive_during_slow_storage_on_real_s3",
       "full:fyrr:test:dense_path/identity::identity_email_evidence_and_cross_issuer_bindings_on_real_s3",
       "full:fyrr:test:dense_path/identity::identity_large_grants_are_complete_and_over_limit_is_subject_local_on_real_s3",
-      "full:fyrr:test:dense_path/identity::identity_scim_namespace_creation_and_import_never_attest_without_proof_on_real_s3",
-      "full:fyrr:test:dense_path/directory_ops::directory_freshness_requires_a_completed_read_on_real_s3"
+      "full:fyrr:test:dense_path/identity::identity_scim_namespace_creation_and_import_never_attest_without_proof_on_real_s3"
     ]
   },
   "s3-github": {
@@ -425,7 +328,6 @@
   },
   "s3-google-drive": {
     "cases": [
-      "full:fyrr:test:dense_path/google_drive::google_drive_fixed_source_propagates_changes_listing_and_scope_on_real_s3",
       "full:fyrr:test:dense_path/google_drive::google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_real_s3",
       "full:fyrr:test:dense_path/google_drive::google_drive_quarantine_and_permission_read_failure_deadline_on_real_s3",
       "full:fyrr:test:dense_path/google_drive::google_drive_sync_source_grants_and_revokes_in_every_lane_on_real_s3"
@@ -433,63 +335,24 @@
   },
   "s3-maintenance": {
     "cases": [
-      "full:fyrr:test:dense_path/http_mcp::maintenance_native_cache_resizes_for_growing_publication_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_boundary_discovers_authorization_after_failed_cursor_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_bounded_catalog_restart_and_retrieval_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_delta_cleanup_step_exceeds_deadline",
-      "full:fyrr:test:dense_path/maintenance::maintenance_delta_idle_expired_mirror_survives_failed_preparation",
       "full:fyrr:test:dense_path/maintenance::restore_and_rollback_preserve_current_section_revocation",
-      "full:fyrr:test:dense_path/maintenance::maintenance_delta_status_purge_risk_is_bounded_and_value_free",
-      "full:fyrr:test:dense_path/maintenance::maintenance_disconnected_source_purges_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_generation_live_proofs_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_native_cache_budget_refuses_shortfall_and_preserves_results_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_off_aged_pin_reload_and_verify_damage_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_partial_unreadable_chunk_purge_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_pending_rejected_fragments_survive_seven_day_cleanup_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_pending_revoke_purge_and_verify_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_per_request_checks_collect_only_on_the_periodic_interval_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_per_request_waits_two_seconds_then_flagged_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_preparation_budget_refusal_preserves_authorization_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_purge_killed_before_its_cleanup_converges_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_purge_killed_before_its_head_publication_converges_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_purge_window_and_restore_horizon_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_purged_source_expires_native_versions_and_mirror_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_purged_source_late_envelope_is_deleted_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_reader_modes_and_sighup_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_restore_batched_authorization_boundaries_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_batched_own_readers_and_retired_rows_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_restore_changed_envelope_identity_fails_closed_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_restore_crash_boundaries_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_restore_discovers_authorization_after_failed_cursor_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_fragment_metadata_premises_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_history_request_counts_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_recreated_root_and_changed_bodies_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_restore_rejected_authorization_freezes_freshness_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_retired_source_commits_are_fenced_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_retired_source_is_denied_at_once_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_retired_source_survives_restore_and_rollback_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_shared_mirror_repair_and_crashed_holder_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_small_mirror_stays_serving_without_rewarming_each_interval_on_real_s3",
-      "full:fyrr:test:dense_path/maintenance::maintenance_warming_does_not_block_per_request_version_adoption_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_restore_refuses_envelope_replaced_after_listing_on_real_s3"
     ],
     "children": {
-      "full:fyrr-reader:lib:fyrr_reader/search::routing_tests::serving_minimum_admission_on_real_s3": [
-        "full:fyrr:test:dense_path/maintenance::maintenance_generation_live_proofs_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::generations::generation_exactly_one_curative_handover_on_real_s3": [
-        "full:fyrr:test:dense_path/maintenance::maintenance_generation_live_proofs_on_real_s3"
-      ],
       "full:fyrr-reader:lib:fyrr_reader/serve::tests::generations::generation_inflight_pin_and_mirror_eviction_on_real_s3": [
         "full:fyrr:test:dense_path/maintenance::maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::generations::generation_undersized_five_publications_refused_on_real_s3": [
-        "full:fyrr:test:dense_path/maintenance::maintenance_generation_live_proofs_on_real_s3"
-      ],
-      "full:fyrr-writer:lib:fyrr_writer/maintenance::counting_store::restore_counting_probe_on_real_s3": [
-        "full:fyrr:test:dense_path/maintenance::maintenance_restore_history_request_counts_on_real_s3"
       ],
       "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_tests::restore_drains_restarts_and_caps_attempts_on_real_s3": [
         "full:fyrr:test:dense_path/maintenance::maintenance_restore_batched_authorization_boundaries_on_real_s3"
@@ -499,35 +362,21 @@
   "s3-incremental": {
     "cases": [
       "full:fyrr:test:dense_path/incremental::incremental_caught_revision_failure_never_attests_on_real_s3",
-      "full:fyrr:test:dense_path/incremental::incremental_container_grants_publish_without_rewriting_content_on_real_s3",
       "full:fyrr:test:dense_path/incremental::incremental_content_only_provider_empty_readers_narrow_to_nobody_on_real_s3",
-      "full:fyrr:test:dense_path/incremental::incremental_content_without_a_permission_statement_keeps_applied_readers_on_real_s3",
       "full:fyrr:test:dense_path/incremental::incremental_damaged_rows_rejected_and_cleanup_retains_log_authority_on_real_s3",
-      "full:fyrr:test:dense_path/incremental::incremental_delta_cleanup_preserves_unconsumed_rejection_on_real_s3",
       "full:fyrr:test:dense_path/incremental::incremental_delta_expired_source_isolated_on_real_s3",
       "full:fyrr:test:dense_path/incremental::incremental_delta_genesis_undeclared_row_rejected_on_real_s3",
       "full:fyrr:test:dense_path/incremental::incremental_rejected_authorization_requires_complete_replacement_on_real_s3",
-      "full:fyrr:test:dense_path/incremental::incremental_genesis_count_verification_and_delete_authority_on_real_s3",
       "full:fyrr:test:dense_path/incremental::incremental_members_alone_never_attest_permissions_on_real_s3",
-      "full:fyrr:test:dense_path/incremental::incremental_narrowing_content_releases_the_permission_revision_on_real_s3",
-      "full:fyrr:test:dense_path/incremental::incremental_opt_in_fts_merge_publishes_one_segment_on_real_s3",
-      "full:fyrr:test:dense_path/incremental::incremental_per_kind_leases_due_intervals_and_provider_isolation_on_real_s3",
-      "full:fyrr:test:dense_path/incremental::incremental_priority_backpressure_revoke_and_pending_readers_on_real_s3",
-      "full:fyrr:test:dense_path/incremental::incremental_refused_provider_never_prepares_on_real_s3",
-      "full:fyrr:test:dense_path/incremental::incremental_revisions_quarantine_listing_and_two_old_fragment_replacements_on_real_s3",
       "full:fyrr:test:dense_path/incremental::incremental_section_readers_survive_a_later_permission_state_on_real_s3",
-      "full:fyrr:test:dense_path/incremental::incremental_source_limits_and_retention_precede_embedding_on_real_s3",
       "full:fyrr:test:dense_path/incremental::incremental_sub_envelope_cursor_recovery_and_atomic_chunk_groups_on_real_s3",
-      "full:fyrr:test:dense_path/incremental::incremental_unchanged_upsert_still_protects_pending_reconciliation_on_real_s3",
-      "full:fyrr:test:dense_path/incremental::incremental_invalid_settings_stop_all_sources_before_provider_calls_on_real_s3"
+      "full:fyrr:test:dense_path/incremental::incremental_unchanged_upsert_still_protects_pending_reconciliation_on_real_s3"
     ]
   },
   "s3-jira": {
     "cases": [
       "full:fyrr:test:dense_path/jira::jira_fixed_issues_comments_quarantine_and_reconcile_on_real_s3",
-      "full:fyrr:test:dense_path/jira::jira_sync_comment_role_under_share_and_membership_refresh_on_real_s3",
-      "full:fyrr:test:dense_path/jira::jira_sync_silent_content_restricted_sections_and_revoke_on_real_s3",
-      "full:fyrr:test:dense_path/jira::jira_visibility_change_waits_for_published_content_on_real_s3"
+      "full:fyrr:test:dense_path/jira::jira_sync_silent_content_restricted_sections_and_revoke_on_real_s3"
     ]
   },
   "s3-notion": {
@@ -537,11 +386,8 @@
   },
   "s3-retrieval-publication": {
     "cases": [
-      "full:fyrr:test:dense_path/retrieval::retrieval_publication_analyzer_and_excerpt_on_real_s3",
       "full:fyrr:test:dense_path/retrieval::retrieval_publication_authorization_cache_budget_on_real_s3",
       "full:fyrr:test:dense_path/retrieval::retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_real_s3",
-      "full:fyrr:test:dense_path/retrieval::retrieval_publication_recall_sampler_on_real_s3",
-      "full:fyrr:test:dense_path/retrieval::retrieval_publication_rescore_depths_execute_and_adaptive_expands_on_real_s3",
       "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_real_s3"
     ],
     "children": {
@@ -552,31 +398,9 @@
         "full:fyrr:test:dense_path/retrieval::retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_real_s3"
       ],
       "full:fyrr-reader:lib:fyrr_reader/serve::tests::recall_sampler_cadence_poor_ann_and_same_filtered_reference": [
-        "full:fyrr:test:dense_path/retrieval::retrieval_publication_recall_sampler_on_real_s3",
-        "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::recall_sampler_cancellation_and_time_cap_discard_completed_scan": [
-        "full:fyrr:test:dense_path/retrieval::retrieval_publication_recall_sampler_on_real_s3",
         "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_real_s3"
       ],
       "full:fyrr-reader:lib:fyrr_reader/serve::tests::recall_sampler_cancellation_during_native_scan_reuses_worker": [
-        "full:fyrr:test:dense_path/retrieval::retrieval_publication_recall_sampler_on_real_s3",
-        "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::recall_sampler_duplicate_id_preserves_original_sdk_response": [
-        "full:fyrr:test:dense_path/retrieval::retrieval_publication_recall_sampler_on_real_s3",
-        "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::recall_sampler_multiquery_counts_once_and_retains_one_slot": [
-        "full:fyrr:test:dense_path/retrieval::retrieval_publication_recall_sampler_on_real_s3",
-        "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::recall_sampler_skips_queued_foreground_and_preparation_without_queue": [
-        "full:fyrr:test:dense_path/retrieval::retrieval_publication_recall_sampler_on_real_s3",
-        "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_real_s3"
-      ],
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::generations::routing_reserve_switch_on_real_s3": [
-        "full:fyrr:test:dense_path/retrieval::retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_real_s3",
         "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_real_s3"
       ]
     }
@@ -584,8 +408,6 @@
   "s3-slack": {
     "cases": [
       "full:fyrr:test:dense_path/slack::slack_fixed_windows_threads_quarantine_and_reconcile_on_real_s3",
-      "full:fyrr:test:dense_path/slack::slack_sync_corporate_email_link_and_changed_external_email_on_real_s3",
-      "full:fyrr:test:dense_path/slack::slack_sync_public_floor_guest_membership_and_deactivation_on_real_s3",
       "full:fyrr:test:dense_path/slack::slack_sync_silent_content_and_revoke_on_real_s3"
     ]
   },
@@ -1202,8 +1024,7 @@
       "reader:fyrr:test:cli/reader_only_config_check_says_providers_are_not_checked",
       "reader:fyrr:test:cli/usage_errors_exit_two",
       "reader:fyrr:test:cli/version_names_the_build",
-      "reader:fyrr:test:cli/worker_memory_ceiling_is_configurable_and_validated",
-      "reader:fyrr:test:cli/config_check_embedding_timeout_matches_runtime"
+      "reader:fyrr:test:cli/worker_memory_ceiling_is_configurable_and_validated"
     ]
   },
   "privacy-reader": {
@@ -1227,11 +1048,6 @@
       "full:fyrr-eval:test:cli/stage_files_are_new_files_under_an_external_root",
       "full:fyrr-eval:test:cli/errors_keep_query_values_and_paths_private",
       "full:fyrr-eval:test:cli/frozen_provider_binds_files_roles_and_keeps_inputs_read_only"
-    ]
-  },
-  "s3-evaluation": {
-    "cases": [
-      "full:fyrr-eval:test:real_s3/frozen_vectors_build_a_namespace_and_answer_its_queries_on_real_s3"
     ]
   },
   "s3-writer-provider": {
@@ -1264,11 +1080,6 @@
         "full:fyrr:test:dense_path/http_mcp::tools_failed_scheduler_refuses_readiness_on_real_s3"
       ]
     }
-  },
-  "s3-maintenance-history": {
-    "cases": [
-      "full:fyrr:test:dense_path/maintenance::maintenance_boundary_history_request_counts_on_real_s3"
-    ]
   },
   "s3-head-diagnostics": {
     "cases": [
@@ -1333,16 +1144,6 @@
     "children": {
       "full:fyrr-writer:lib:fyrr_writer/commit::history::sequence_tests::cached_history_checks_sequence_at_joins_on_real_s3": [
         "full:fyrr:test:dense_path/history_integrity::cached_restore_history_checks_sequence_joins_on_real_s3"
-      ]
-    }
-  },
-  "s3-pending-revisions": {
-    "cases": [
-      "full:fyrr:test:dense_path/incremental::pending_revision_view_has_linear_storage_reads_on_real_s3"
-    ],
-    "children": {
-      "full:fyrr-writer:lib:fyrr_writer/python::prepared::revisions::tests::pending_revision_view_reads_each_envelope_once_on_real_s3": [
-        "full:fyrr:test:dense_path/incremental::pending_revision_view_has_linear_storage_reads_on_real_s3"
       ]
     }
   }

@@ -4,7 +4,7 @@
 //!
 //! Page texts are `fixture document N`, inputs registered with the fixture's embedding service
 //! embeddings; the source's `document_max_bytes` is 64 bytes.
-use super::coordination::{committer_host, host_command, worker_command, worker_sync};
+use super::coordination::{committer_host, worker_command, worker_sync};
 use super::incremental::{publish, source_roots};
 use super::*;
 
@@ -112,15 +112,7 @@ fn fixture(fake: &Fake) -> (PathBuf, PathBuf, FixtureRoot) {
         "Name: fixture document 5",
         root.embedding.vector("fixture document 5"),
     );
-    let output = host_command(&config)
-        .args(["writer", "namespace", "create"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    super::coordination::command(&config, &["writer", "namespace", "create"]);
     worker_sync(&config, &["allowed", "denied", "--full"]);
     let commit = committer_host(&config, &root);
     publish(&commit);

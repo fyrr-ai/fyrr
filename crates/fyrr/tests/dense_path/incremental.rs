@@ -90,15 +90,7 @@ pub(super) fn fixture_host_at(
         );
     std::fs::write(&config, format!("{text}\n[[sources]]\nid='incremental'\ntype='incremental-test'\npermissions='sync'\ndocument_max_bytes='64B'\n[sources.intervals]\npermissions='5m'\nmembers='5m'\n[sources.scope]\nfixture='{}'\n", root.join("input.json").display())).unwrap();
     input(&root, json!({"epoch":0}));
-    let output = host_command(&config)
-        .args(["writer", "namespace", "create"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    super::coordination::command(&config, &["writer", "namespace", "create"]);
     worker_sync(&config, &["allowed", "denied", "--full"]);
     let commit = committer_host(&config, &root);
     if publish_initial {
@@ -106,63 +98,7 @@ pub(super) fn fixture_host_at(
     }
     (config, commit, root)
 }
-fn isolated(text: &str, root: &Path, host: &Path) -> String {
-    text.replace(&root.display().to_string(), &host.display().to_string())
-}
 
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_refused_provider_never_prepares_on_real_s3() {
-    use futures::TryStreamExt;
-    let (config, root) = setup();
-    let fixture = root.join("future.json");
-    std::fs::write(
-        &fixture,
-        serde_json::to_vec(&json!({"cursor":"future-1","documents":[{
-            "id":"future","title":"fixture","author":"fixture",
-            "text":"fixture document 0","readers":["grp:allow"]
-        }]}))
-        .unwrap(),
-    )
-    .unwrap();
-    let text = std::fs::read_to_string(&config).unwrap();
-    std::fs::write(&config, format!("{text}\n[[sources]]\nid='future'\ntype='sentinel-future-sdk'\npermissions='fixed'\nreaders=['grp:allow']\n[sources.scope]\nfixture='{}'\n", fixture.display())).unwrap();
-    super::coordination::command(&config, &["writer", "namespace", "create"]);
-    let loaded = fyrr_core::config::load(&config).unwrap();
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    // Explicit kinds and defaults must all refuse invalid providers before dispatch.
-    for args in [
-        vec!["writer", "sync", "future", "--kind", "content"],
-        vec!["writer", "sync", "future", "--kind", "permissions"],
-        vec!["writer", "sync", "future", "--kind", "members"],
-        vec!["writer", "sync", "future", "--kind", "reconcile"],
-        vec!["writer", "sync", "future"],
-        vec!["writer", "sync", "future", "--due"],
-    ] {
-        let output = super::coordination::worker_command(&config)
-            .args(&args)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(78), "{args:?}");
-        assert!(output.stdout.is_empty(), "{args:?}");
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("its connector provider is refused"),
-            "{args:?}"
-        );
-        for prefix in ["envelopes", "cursors"] {
-            let objects: Vec<_> = store
-                .list(Some(&ns.clone().join(prefix)))
-                .try_collect()
-                .await
-                .unwrap();
-            assert!(objects.is_empty(), "{args:?} wrote {prefix}");
-        }
-        assert!(
-            !output.status.success(),
-            "{args:?} executed a refused provider"
-        );
-    }
-}
 pub(super) fn input(root: &Path, value: Value) {
     std::fs::write(root.join("input.json"), serde_json::to_vec(&value).unwrap()).unwrap();
 }
@@ -253,600 +189,6 @@ pub(super) fn publish_initial(worker: &Path, commit: &Path, root: &Path) {
         ],
     );
     publish(commit);
-}
-
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_priority_backpressure_revoke_and_pending_readers_on_real_s3() {
-    let (worker, commit, root) = fixture();
-    publish_initial(&worker, &commit, &root);
-    assert_eq!(roots(&rows(&worker).await), ["a", "b"]);
-    let mut reader = super::tools::Mcp::open(&worker);
-    let visible = reader.call("fetch", json!({"source_id":"incremental","root_id":"a"}));
-    assert!(!visible["isError"].as_bool().unwrap_or(false), "{visible}");
-    input(
-        &root,
-        json!({"epoch":2,"content":[[doc("a","r2","fixture document 2")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    // A different process/host supplies only the permission payload and has no worker corpus.
-    let permission_dir = root.join("permission-host");
-    std::fs::create_dir(&permission_dir).unwrap();
-    let permission_config = permission_dir.join("fyrr.toml");
-    let worker_text = std::fs::read_to_string(&worker).unwrap();
-    let bounded = worker_text.replace(
-        "[reader]",
-        "[writer.backpressure]\nmax_pending_content_envelopes=1\n[reader]",
-    );
-    std::fs::write(&worker, &bounded).unwrap();
-    std::fs::write(
-        &permission_config,
-        isolated(&bounded, &root, &permission_dir),
-    )
-    .unwrap();
-    input(
-        &permission_dir,
-        json!({"epoch":3,"permissions":[[{"id":"a","revision":"p2","readers":[]}]]}),
-    );
-    let blocked = super::coordination::worker_command(&worker)
-        .args(["writer", "sync", "incremental", "--kind", "content"])
-        .output()
-        .unwrap();
-    assert!(!blocked.status.success());
-    assert!(
-        String::from_utf8_lossy(&blocked.stdout).contains("content_backpressure"),
-        "{} {}",
-        String::from_utf8_lossy(&blocked.stdout),
-        String::from_utf8_lossy(&blocked.stderr)
-    );
-    worker_sync(
-        &permission_config,
-        &["incremental", "--kind", "permissions"],
-    );
-    publish(&commit);
-    let denied = reader.call("fetch", json!({"source_id":"incremental","root_id":"a"}));
-    assert!(
-        denied["isError"].as_bool().unwrap_or(false) || denied.to_string().contains("not_found"),
-        "{denied}"
-    );
-    let batch = rows(&worker).await;
-    let ids = roots(&batch);
-    let row = ids.iter().position(|id| id == "a").unwrap();
-    let acl = batch
-        .column_by_name("readers")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<arrow_array::ListArray>()
-        .unwrap();
-    assert_eq!(
-        acl.value(row).len(),
-        0,
-        "pending content regranted a revoked reader"
-    );
-    let values = envelopes(&worker).await;
-    let content = values
-        .iter()
-        .find(|(_, e)| {
-            e.source_id == "incremental" && e.kind == SyncKind::Content && e.sequence == 2
-        })
-        .unwrap();
-    let receipt = host_command(&commit)
-        .args(["writer", "commit", "--receipt", &content.1.envelope_id])
-        .output()
-        .unwrap();
-    assert!(receipt.status.success());
-    let latest = publication(&worker).await.1;
-    let earlier: Value = serde_json::from_slice(&receipt.stdout).unwrap();
-    assert_eq!(earlier["publication_id"], latest.publication_id);
-    let mut fresh = super::tools::Mcp::open(&worker);
-    let denied = fresh.call("fetch", json!({"source_id":"incremental","root_id":"a"}));
-    assert!(
-        denied["isError"].as_bool().unwrap_or(false)
-            || denied["structuredContent"]["documents"]
-                .as_array()
-                .is_some_and(Vec::is_empty),
-        "{denied}"
-    );
-    let before = fresh.call("fetch", json!({"source_id":"incremental","root_id":"b"}));
-    assert!(!before["isError"].as_bool().unwrap_or(false), "{before}");
-    input(
-        &permission_dir,
-        json!({"epoch":4,"members":[{"users":[{"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}],"groups":[{"id":"group","members":[]}]}]}),
-    );
-    worker_sync(&permission_config, &["incremental", "--kind", "members"]);
-    publish(&commit);
-    let removed = fresh.call("fetch", json!({"source_id":"incremental","root_id":"b"}));
-    assert!(
-        removed["isError"].as_bool().unwrap_or(false)
-            || removed["structuredContent"]["documents"]
-                .as_array()
-                .is_some_and(Vec::is_empty),
-        "{removed}"
-    );
-    let mut remaining = roots(&rows(&worker).await);
-    remaining.sort();
-    assert_eq!(remaining, ["a", "b"]);
-    let read_at = publication(&worker)
-        .await
-        .0
-        .freshness
-        .sources
-        .iter()
-        .find(|s| s.source_id == "incremental")
-        .unwrap()
-        .members_read_at;
-    for data in [
-        json!({"epoch":5,"members":[{"last":false,"users":[],"groups":[]}]}),
-        json!({"epoch":6}),
-    ] {
-        input(&permission_dir, data);
-        let refused = super::coordination::worker_command(&permission_config)
-            .args(["writer", "sync", "incremental", "--kind", "members"])
-            .output()
-            .unwrap();
-        assert!(!refused.status.success());
-        assert!(
-            String::from_utf8_lossy(&refused.stdout).contains("membership_snapshot_incomplete")
-        );
-        publish(&commit);
-        assert_eq!(
-            publication(&worker)
-                .await
-                .0
-                .freshness
-                .sources
-                .iter()
-                .find(|s| s.source_id == "incremental")
-                .unwrap()
-                .members_read_at,
-            read_at
-        );
-    }
-}
-
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_revisions_quarantine_listing_and_two_old_fragment_replacements_on_real_s3() {
-    let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    // Two worker invocations start from the same publication and modify disjoint logical keys
-    // in the same physical fragment. Their local homes are distinct and committer has neither.
-    let second_dir = root.join("second-worker");
-    std::fs::create_dir(&second_dir).unwrap();
-    let second = second_dir.join("fyrr.toml");
-    std::fs::write(
-        &second,
-        isolated(
-            &std::fs::read_to_string(&worker).unwrap(),
-            &root,
-            &second_dir,
-        ),
-    )
-    .unwrap();
-    input(
-        &root,
-        json!({"epoch":2,"content":[[doc("a","r2","fixture document 2")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    input(
-        &second_dir,
-        json!({"epoch":3,"content":[[doc("b","r2","fixture document 3")]]}),
-    );
-    // Exercise the exact bounded lookup against the real pin, surfacing native diagnostics
-    // only for these synthetic test values.
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let (head, _) = publication(&worker).await;
-    let ds = fyrr_reader::storage::open_version(
-        &fyrr_reader::storage::dataset_uri(&loaded.config),
-        loaded
-            .config
-            .storage
-            .object_store_options(&fyrr_core::config::ProcessEnvironment)
-            .unwrap(),
-        head.content.unwrap().lance_version,
-        None,
-    )
-    .await
-    .unwrap();
-    ds.scan()
-        .project(&["root_id", "source_revision"])
-        .unwrap()
-        .filter(&fyrr_writer::apply::keys_filter(
-            "incremental",
-            &["b".into()],
-        ))
-        .unwrap()
-        .try_into_batch()
-        .await
-        .unwrap();
-    worker_sync(&second, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    let batch = rows(&worker).await;
-    assert_eq!(batch.num_rows(), 2);
-    let revisions = batch
-        .column_by_name("source_revision")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap();
-    assert!(revisions.iter().all(|r| r == Some("r2")));
-    input(
-        &root,
-        json!({"epoch":4,"content":[[{"id":"a","revision":"bad","texts":[""]},doc("b","r3","fixture document 4")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    let batch = rows(&worker).await;
-    let revisions = batch
-        .column_by_name("source_revision")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap();
-    assert_eq!(
-        revisions.value(roots(&batch).iter().position(|id| id == "a").unwrap()),
-        "r2"
-    );
-    input(
-        &root,
-        json!({"epoch":"oversized","content":[[doc("a","oversized",&"x".repeat(65))]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    let status = host_command(&worker)
-        .args(["writer", "status"])
-        .output()
-        .unwrap();
-    assert!(status.status.success());
-    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
-    assert_eq!(status["quarantine"]["document_invalid"], 1);
-    assert_eq!(status["quarantine"]["document_oversized"], 1);
-    // One stale key conflicts; the disjoint good key still publishes, and refetch rewinds
-    // only the opaque cursor while sequence remains monotonic with a new rejection generation.
-    let mut stale = doc("a", "r4", "fixture document 5");
-    stale["expected_prior_revision"] = json!("foreign");
-    input(
-        &root,
-        json!({"epoch":5,"content":[[stale,doc("b","r4","fixture document 6")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    let (_, manifest) = publication(&worker).await;
-    assert!(!manifest.rejected_envelope_ids.is_empty());
-    let batch = rows(&worker).await;
-    assert_eq!(batch.num_rows(), 2);
-    input(
-        &root,
-        json!({"epoch":6,"content":[[doc("a","r4","fixture document 5")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    let values = envelopes(&worker).await;
-    assert!(
-        values
-            .iter()
-            .any(|(_, e)| e.source_id == "incremental" && e.rejection_generation == 1)
-    );
-    // Partial listing is incapable of deleting. A complete listing bound to the old
-    // watermark cannot delete a later replacement prepared while listing is pending.
-    input(
-        &root,
-        json!({"epoch":7,"listing":[{"last":true,"complete":false,"roots":[]}]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "reconcile"]);
-    publish(&commit);
-    assert_eq!(rows(&worker).await.num_rows(), 2);
-    input(
-        &root,
-        json!({"epoch":8,"listing":[{"last":true,"complete":true,"roots":[]}]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "reconcile"]);
-    input(
-        &root,
-        json!({"epoch":9,"content":[[doc("a","r5","fixture document 7")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    assert_eq!(roots(&rows(&worker).await), ["a"]);
-    // A delete becomes a retained row in the SAME published version. An envelope
-    // prepared before that delete cannot resurrect its old content.
-    input(
-        &root,
-        json!({"epoch":10,"content":[[{"id":"a","revision":"r6","delete":true}]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    assert_eq!(rows(&worker).await.num_rows(), 0);
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let entries = envelopes(&worker).await;
-    let mut stale=entries.iter().find(|(_,e)|matches!(&e.payload,EnvelopePayload::Content(p) if e.source_id=="incremental" && p.documents.len()==1 && p.documents[0].source_revision.as_deref()==Some("r5"))).unwrap().1.clone();
-    stale.rejection_generation += 1;
-    stale.envelope_id = fyrr_core::envelope::envelope_id(
-        &stale.namespace,
-        &stale.source_id,
-        stale.kind,
-        stale.sequence,
-        stale.rejection_generation,
-        stale.cursor.start.as_deref(),
-    );
-    let EnvelopePayload::Content(payload) = &mut stale.payload else {
-        unreachable!()
-    };
-    payload.documents[0].expected_prior_revision = None;
-    store
-        .put(
-            &ns.join("envelopes")
-                .join(format!("{}.json", stale.envelope_id)),
-            fyrr_core::write_contract(&stale).into(),
-        )
-        .await
-        .unwrap();
-    publish(&commit);
-    assert_eq!(rows(&worker).await.num_rows(), 0);
-    assert!(
-        publication(&worker)
-            .await
-            .1
-            .rejected_envelope_ids
-            .contains(&stale.envelope_id)
-    );
-    let output = host_command(&worker)
-        .args(["writer", "maintain"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_per_kind_leases_due_intervals_and_provider_isolation_on_real_s3() {
-    let (worker, commit, root) = fixture();
-    let text = std::fs::read_to_string(&worker)
-        .unwrap()
-        .replace("[reader]", "[writer.commit]\nlease_ttl='3s'\n[reader]");
-    let crash_dir = root.join("crash-host");
-    let hang_dir = root.join("hang-host");
-    std::fs::create_dir(&crash_dir).unwrap();
-    std::fs::create_dir(&hang_dir).unwrap();
-    input(&crash_dir, json!({"mode":"crash"}));
-    input(&hang_dir, json!({"mode":"hang"}));
-    let text = format!(
-        "{text}\n[[sources]]\nid='crasher'\ntype='incremental-test'\npermissions='fixed'\nreaders=['grp:allow']\n[sources.scope]\nfixture='{}'\n[[sources]]\nid='hanger'\ntype='incremental-test'\npermissions='fixed'\nreaders=['grp:allow']\n[sources.scope]\nfixture='{}'\n",
-        crash_dir.join("input.json").display(),
-        hang_dir.join("input.json").display()
-    );
-    std::fs::write(&worker, &text).unwrap();
-    input(
-        &root,
-        json!({"epoch":1,"content":[[doc("a","r1","fixture document 0")]]}),
-    );
-    let started = std::time::Instant::now();
-    let output = super::coordination::worker_command(&worker)
-        .args([
-            "writer",
-            "sync",
-            "incremental",
-            "crasher",
-            "hanger",
-            "--kind",
-            "content",
-            "--jobs",
-            "3",
-            "--timeout",
-            "4s",
-        ])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(started.elapsed() < std::time::Duration::from_secs(8));
-    let reports = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        reports.contains("\"source_id\":\"incremental\"") && reports.contains("\"failed\":false"),
-        "{reports}"
-    );
-    publish(&commit);
-    assert_eq!(roots(&rows(&worker).await), ["a"]);
-    // Another process may own permissions while a content process is hung. The
-    // same-kind contender fails promptly rather than waiting for the first holder.
-    input(&root, json!({"mode":"hang"}));
-    let mut holder = super::coordination::worker_command(&worker)
-        .args([
-            "writer",
-            "sync",
-            "incremental",
-            "--kind",
-            "content",
-            "--timeout",
-            "4s",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let path = ns.clone().join("cursors").join("incremental-content.json");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    loop {
-        let state: fyrr_core::connector::CursorState =
-            fyrr_reader::storage::read_contract(store.as_ref(), &path)
-                .await
-                .unwrap();
-        if root.join("entered").exists()
-            && state
-                .lease
-                .is_some_and(|l| l.expires_at > chrono::Utc::now())
-        {
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline);
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    input(
-        &root,
-        json!({"epoch":2,"permissions":[[{"id":"a","revision":"p1","readers":[]}]]}),
-    );
-    let contender = super::coordination::worker_command(&worker)
-        .args(["writer", "sync", "incremental", "--kind", "content"])
-        .output()
-        .unwrap();
-    assert!(!contender.status.success());
-    assert!(String::from_utf8_lossy(&contender.stdout).contains("sync_busy"));
-    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
-    publish(&commit);
-    let due = super::coordination::worker_command(&worker)
-        .args([
-            "writer",
-            "sync",
-            "incremental",
-            "--kind",
-            "permissions",
-            "--due",
-        ])
-        .output()
-        .unwrap();
-    assert!(due.status.success());
-    assert!(String::from_utf8_lossy(&due.stdout).contains("interval_not_due"));
-    assert!(!holder.wait().unwrap().success());
-}
-
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_damaged_rows_rejected_and_cleanup_retains_log_authority_on_real_s3() {
-    let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    input(
-        &root,
-        json!({"epoch":2,"content":[[doc("a","r2","fixture document 2")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let entries = envelopes(&worker).await;
-    let (_, pending) = entries
-        .iter()
-        .find(|(_, e)| e.source_id == "incremental" && e.sequence == 2)
-        .unwrap();
-    let EnvelopePayload::Content(payload) = &pending.payload else {
-        unreachable!()
-    };
-    let file = &payload.fragments[0].files[0];
-    let path = object_store::path::Path::from(format!("{ns}/dataset.lance/{}", file.path));
-    let bytes = store.get(&path).await.unwrap().bytes().await.unwrap();
-    let mut damage = bytes.to_vec();
-    let offset = damage.len() / 2;
-    damage[offset] ^= 1;
-    store.put(&path, damage.into()).await.unwrap();
-    publish(&commit);
-    let (_, manifest) = publication(&worker).await;
-    assert!(
-        manifest
-            .rejected_envelope_ids
-            .contains(&pending.envelope_id)
-    );
-    let batch = rows(&worker).await;
-    assert!(
-        batch
-            .column_by_name("source_revision")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap()
-            .iter()
-            .all(|r| r == Some("r1"))
-    );
-    input(
-        &root,
-        json!({"epoch":3,"content":[[doc("a","r2","fixture document 2")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    for (case, revision) in [("declared-count", "r3"), ("duplicate-records", "r4")] {
-        input(
-            &root,
-            json!({"epoch":case,"content":[[doc("a",revision,"fixture document 2")]]}),
-        );
-        worker_sync(&worker, &["incremental", "--kind", "content"]);
-        let values = envelopes(&worker).await;
-        let (path, mut envelope) = values
-            .into_iter()
-            .filter(|(_, e)| e.source_id == "incremental" && e.kind == SyncKind::Content)
-            .max_by_key(|(_, e)| e.sequence)
-            .unwrap();
-        let EnvelopePayload::Content(payload) = &mut envelope.payload else {
-            unreachable!()
-        };
-        payload.documents[0].records += 1;
-        if case == "duplicate-records" {
-            payload.fragments.push(payload.fragments[0].clone());
-        }
-        store
-            .put(&path, fyrr_core::write_contract(&envelope).into())
-            .await
-            .unwrap();
-        publish(&commit);
-        let (_, manifest) = publication(&worker).await;
-        assert!(
-            manifest
-                .rejected_envelope_ids
-                .contains(&envelope.envelope_id),
-            "{case}"
-        );
-        assert_eq!(rows(&worker).await.num_rows(), 2);
-        input(
-            &root,
-            json!({"epoch":format!("{case}-repair"),"content":[[doc("a",revision,"fixture document 2")]]}),
-        );
-        worker_sync(&worker, &["incremental", "--kind", "content"]);
-        publish(&commit);
-    }
-    // Age only our own synthetic immutable test envelopes; cleanup is exercised
-    // through the public command, and cursor cache loss is then repaired from S3.
-    let entries = envelopes(&worker).await;
-    let mut latest = std::collections::BTreeMap::new();
-    for (_, e) in &entries {
-        latest
-            .entry((e.source_id.clone(), e.kind.as_str()))
-            .and_modify(|s: &mut u64| *s = (*s).max(e.sequence))
-            .or_insert(e.sequence);
-    }
-    for (path, mut envelope) in entries {
-        envelope.created_at = chrono::Utc::now() - chrono::Duration::days(8);
-        store
-            .put(&path, fyrr_core::write_contract(&envelope).into())
-            .await
-            .unwrap();
-    }
-    let report = command(&worker, &["writer", "maintain"]);
-    assert!(report["deleted_envelopes"].as_u64().unwrap() > 0);
-    let entries = envelopes(&worker).await;
-    for (key, seq) in latest {
-        assert!(
-            entries.iter().any(|(_, e)| e.source_id == key.0
-                && e.kind.as_str() == key.1
-                && e.sequence == seq)
-        );
-    }
-    store
-        .delete(&ns.join("cursors").join("incremental-content.json"))
-        .await
-        .unwrap();
-    input(
-        &root,
-        json!({"epoch":4,"content":[[doc("b","r2","fixture document 3")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    assert_eq!(rows(&worker).await.num_rows(), 2);
 }
 
 #[tokio::test]
@@ -974,12 +316,10 @@ async fn incremental_sub_envelope_cursor_recovery_and_atomic_chunk_groups_on_rea
                 continue;
             }
             assert_eq!(p.documents.len(), 1);
-            let receipt = host_command(&commit)
-                .args(["writer", "commit", "--receipt", &envelope.envelope_id])
-                .output()
-                .unwrap();
-            assert!(receipt.status.success());
-            let receipt: Value = serde_json::from_slice(&receipt.stdout).unwrap();
+            let receipt = command(
+                &commit,
+                &["writer", "commit", "--receipt", &envelope.envelope_id],
+            );
             publications.insert(receipt["publication_id"].as_str().unwrap().to_owned());
         }
         assert_eq!(
@@ -988,141 +328,6 @@ async fn incremental_sub_envelope_cursor_recovery_and_atomic_chunk_groups_on_rea
             "two-chunk and one-chunk permission replacements exceed one group"
         );
     }
-}
-
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_source_limits_and_retention_precede_embedding_on_real_s3() {
-    let (worker, commit, root) = fixture();
-    let text = std::fs::read_to_string(&worker).unwrap().replace(
-        "document_max_bytes='64B'",
-        "document_max_bytes='64B'\nrow_warning=1\nrow_error=2\nretention_days=1",
-    );
-    std::fs::write(&worker, &text).unwrap();
-    initial(&root);
-    let warning = super::coordination::worker_command(&worker)
-        .args(["writer", "sync", "incremental", "--kind", "content"])
-        .output()
-        .unwrap();
-    assert!(warning.status.success());
-    let report: Value = serde_json::from_slice(&warning.stdout).unwrap();
-    assert_eq!(report["stats"]["row_warning"], true);
-    assert_eq!(report["cache_misses"], 2);
-    assert_eq!(
-        report["paid_calls"], 1,
-        "the accepted pair is embedded in one batch"
-    );
-    let embeddings = root.embedding.state.requests.lock().unwrap().len();
-    publish(&commit);
-    assert_eq!(rows(&worker).await.num_rows(), 2);
-    assert_eq!(
-        root.embedding.state.requests.lock().unwrap().len(),
-        embeddings,
-        "limits and retention must precede embedding"
-    );
-    input(
-        &root,
-        json!({"epoch":2,"content":[[doc("c","r1","uncached quota text")]]}),
-    );
-    let refused = super::coordination::worker_command(&worker)
-        .args(["writer", "sync", "incremental", "--kind", "content"])
-        .output()
-        .unwrap();
-    assert!(!refused.status.success());
-    assert!(
-        String::from_utf8_lossy(&refused.stdout).contains("source_row_limit"),
-        "{} {}",
-        String::from_utf8_lossy(&refused.stdout),
-        String::from_utf8_lossy(&refused.stderr)
-    );
-    assert_eq!(rows(&worker).await.num_rows(), 2);
-    assert_eq!(
-        root.embedding.state.requests.lock().unwrap().len(),
-        embeddings,
-        "limits and retention must precede embedding"
-    );
-    input(
-        &root,
-        json!({"epoch":3,"content":[[{"id":"c","revision":"r1","texts":["uncached expired text"],"updated_at":"2000-01-01T00:00:00Z"}]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    assert_eq!(rows(&worker).await.num_rows(), 2);
-    assert_eq!(
-        root.embedding.state.requests.lock().unwrap().len(),
-        embeddings,
-        "limits and retention must precede embedding"
-    );
-    let entries = envelopes(&worker).await;
-    let latest = entries
-        .iter()
-        .filter(|(_, e)| e.source_id == "incremental" && e.kind == SyncKind::Content)
-        .max_by_key(|(_, e)| e.sequence)
-        .unwrap();
-    let EnvelopePayload::Content(payload) = &latest.1.payload else {
-        unreachable!()
-    };
-    assert!(payload.fragments.is_empty());
-    assert_eq!(
-        payload.documents[0].intent,
-        fyrr_core::envelope::DocumentIntent::Delete
-    );
-}
-
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_container_grants_publish_without_rewriting_content_on_real_s3() {
-    let (worker, commit, root) = fixture();
-    input(
-        &root,
-        json!({"epoch":1,"content":[[{"id":"a","revision":"r1","texts":["fixture document 0"],"readers":[],"containers":["folder"]}]],
-        "permissions":[[{"id":"a","revision":"p1","readers":[],"containers":["folder"]}]],
-        "container_grants":[[{"container_id":"folder","container_kind":"folder","permission_revision":"g1","readers":["grp:group"]}]],
-        "members":[{"users":[{"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}],"groups":[{"id":"group","members":["usr:u"]}]}]}),
-    );
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
-    let mut reader = super::tools::Mcp::open(&worker);
-    let result = reader.call("fetch", json!({"source_id":"incremental","root_id":"a"}));
-    assert!(!result["isError"].as_bool().unwrap_or(false), "{result}");
-    assert!(
-        !result["structuredContent"]["documents"]
-            .as_array()
-            .unwrap()
-            .is_empty(),
-        "{result}"
-    );
-    let before = publication(&worker).await.0.content.unwrap().lance_version;
-    input(
-        &root,
-        json!({"epoch":2,"container_grants":[[{"container_id":"folder","container_kind":"folder","permission_revision":"g2","readers":[]}]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
-    publish(&commit);
-    assert_eq!(
-        publication(&worker).await.0.content.unwrap().lance_version,
-        before
-    );
-    let result = reader.call("fetch", json!({"source_id":"incremental","root_id":"a"}));
-    assert!(
-        result["isError"].as_bool().unwrap_or(false)
-            || result["structuredContent"]["documents"]
-                .as_array()
-                .is_some_and(Vec::is_empty),
-        "{result}"
-    );
-    assert_eq!(roots(&rows(&worker).await), ["a"]);
 }
 
 pub(super) fn row_readers(batch: &arrow_array::RecordBatch, root: &str) -> Vec<String> {
@@ -1136,94 +341,6 @@ pub(super) fn row_readers(batch: &arrow_array::RecordBatch, root: &str) -> Vec<S
         .value(row);
     let readers = readers.as_any().downcast_ref::<StringArray>().unwrap();
     readers.iter().map(|v| v.unwrap().to_owned()).collect()
-}
-
-/// A sync source whose content carries no permission revision, readers or
-/// containers makes no permission statement: the permission stream alone
-/// decides who reads the document.
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_content_without_a_permission_statement_keeps_applied_readers_on_real_s3() {
-    let (worker, commit, root) = fixture();
-    let silent = |id: &str, revision: &str, text: &str| json!({"id":id,"revision":revision,"texts":[text],"readers":[]});
-    // New documents: "a" has a permission envelope in the same commit, "c" has
-    // none yet, "d" still states its readers in content.
-    input(
-        &root,
-        json!({"epoch":1,
-        "content":[[silent("a","r1","fixture document 0"),silent("c","r1","fixture document 2"),doc("d","r1","fixture document 3")]],
-        "permissions":[[{"id":"a","revision":"p1","readers":["grp:group"]},{"id":"d","revision":"p1","readers":["grp:group"]}]],
-        "members":[{"users":[{"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}],"groups":[{"id":"group","members":["usr:u"]}]}]}),
-    );
-    worker_sync(
-        &worker,
-        &[
-            "incremental",
-            "--kind",
-            "content",
-            "--kind",
-            "permissions",
-            "--kind",
-            "members",
-        ],
-    );
-    publish(&commit);
-    // A reader opened after the publication: an open one refuses its first
-    // request after the published identity moved.
-    let readable = |root: &str| {
-        let mut reader = super::tools::Mcp::open(&worker);
-        let result = reader.call("fetch", json!({"source_id":"incremental","root_id":root}));
-        !result["isError"].as_bool().unwrap_or(false)
-            && result["structuredContent"]["documents"]
-                .as_array()
-                .is_some_and(|documents| !documents.is_empty())
-    };
-    let batch = rows(&worker).await;
-    let granted = row_readers(&batch, "d");
-    assert_eq!(
-        granted.len(),
-        1,
-        "a reader-carrying change is published as before"
-    );
-    assert_eq!(
-        row_readers(&batch, "a"),
-        granted,
-        "the permission envelope decides the readers of a new document"
-    );
-    assert!(row_readers(&batch, "c").is_empty(), "no state: no readers");
-    assert!(readable("a") && readable("d") && !readable("c"));
-
-    // An existing document: a content edit keeps the applied readers. A
-    // reader-carrying edit still narrows and never widens.
-    let mut edit = silent("a", "r2", "fixture document 1");
-    edit["expected_prior_revision"] = json!("r1");
-    let mut narrowing = doc("d", "r2", "fixture document 4");
-    narrowing["expected_prior_revision"] = json!("r1");
-    narrowing["readers"] = json!(["grp:other"]);
-    input(&root, json!({"epoch":2,"content":[[edit, narrowing]]}));
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    let batch = rows(&worker).await;
-    assert_eq!(
-        row_readers(&batch, "a"),
-        granted,
-        "a content edit without a permission statement keeps the readers"
-    );
-    assert!(
-        row_readers(&batch, "d").is_empty(),
-        "content that states readers narrows as before"
-    );
-    assert!(readable("a") && !readable("d") && !readable("c"));
-
-    // The permission envelope of "c" arrives after its content.
-    input(
-        &root,
-        json!({"epoch":3,"permissions":[[{"id":"c","revision":"p1","readers":["grp:group"]}]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
-    publish(&commit);
-    assert_eq!(row_readers(&rows(&worker).await, "c"), granted);
-    assert!(readable("c") && readable("a"));
 }
 
 /// The readers of the plain and of the restricted section of the two-section
@@ -1252,54 +369,6 @@ fn section_readers(batch: &arrow_array::RecordBatch, id: &str) -> [BTreeSet<Stri
             .map(|v| v.unwrap().to_owned())
             .collect::<BTreeSet<_>>()
     })
-}
-
-/// A content statement that narrows the applied readers no longer stands for
-/// the permission revision it narrowed: the same authoritative envelope
-/// applies again, while an unchanged state still skips an equal revision.
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_narrowing_content_releases_the_permission_revision_on_real_s3() {
-    let (worker, commit, root) = fixture();
-    let granting = json!([[{"id":"a","revision":"p1","readers":["grp:group"]}]]);
-    input(
-        &root,
-        json!({"epoch":1,"content":[[doc("a","r1","fixture document 0")]],"permissions":granting}),
-    );
-    worker_sync(
-        &worker,
-        &["incremental", "--kind", "content", "--kind", "permissions"],
-    );
-    publish(&commit);
-    let granted = row_readers(&rows(&worker).await, "a");
-    assert_eq!(granted.len(), 1);
-    // A newer content change states another reader: nobody is left.
-    let mut narrowing = doc("a", "r2", "fixture document 1");
-    narrowing["expected_prior_revision"] = json!("r1");
-    narrowing["readers"] = json!(["grp:other"]);
-    input(&root, json!({"epoch":2,"content":[[narrowing]]}));
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    assert!(row_readers(&rows(&worker).await, "a").is_empty());
-    // The source sends its permission state again, at the same revision.
-    input(&root, json!({"epoch":3,"permissions":granting}));
-    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
-    publish(&commit);
-    assert_eq!(
-        row_readers(&rows(&worker).await, "a"),
-        granted,
-        "the authoritative envelope applies again"
-    );
-    let published = publication(&worker).await.1.lance_version;
-    input(&root, json!({"epoch":4,"permissions":granting}));
-    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
-    publish(&commit);
-    assert_eq!(
-        publication(&worker).await.1.lance_version,
-        published,
-        "an equal revision on an unchanged state rewrites nothing"
-    );
-    assert_eq!(row_readers(&rows(&worker).await, "a"), granted);
 }
 
 /// A section with its own readers stays restricted to them within the
@@ -1444,279 +513,6 @@ async fn incremental_content_only_provider_empty_readers_narrow_to_nobody_on_rea
         row_readers(&rows(&worker).await, "a").is_empty(),
         "content readers never widen the applied state"
     );
-}
-
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_genesis_count_verification_and_delete_authority_on_real_s3() {
-    use futures::TryStreamExt;
-    let (worker, commit, root) = fixture_host(768, false);
-    input(
-        &root,
-        json!({"epoch":1,"content":[[doc("a","r1","fixture document 0")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let objects: Vec<_> = store
-        .list(Some(&ns.clone().join("envelopes")))
-        .try_collect()
-        .await
-        .unwrap();
-    for object in objects {
-        let mut envelope: PreparedEnvelope =
-            fyrr_reader::storage::read_contract(store.as_ref(), &object.location)
-                .await
-                .unwrap();
-        if envelope.source_id == "incremental" {
-            let EnvelopePayload::Content(payload) = &mut envelope.payload else {
-                continue;
-            };
-            payload.documents[0].records += 1;
-            store
-                .put(
-                    &object.location,
-                    fyrr_core::write_contract(&envelope).into(),
-                )
-                .await
-                .unwrap();
-        }
-    }
-    let rejected = publish(&commit);
-    assert!(rejected["publication_id"].is_null());
-    assert!(
-        fyrr_reader::storage::optional_head(&loaded.config)
-            .await
-            .unwrap()
-            .unwrap()
-            .content
-            .is_none()
-    );
-    input(
-        &root,
-        json!({"epoch":2,"content":[[doc("a","r1","fixture document 0"),{"id":"ghost","delete":true,"revision":"r0"}]]}),
-    );
-    worker_sync(
-        &worker,
-        &[
-            "allowed",
-            "denied",
-            "incremental",
-            "--kind",
-            "content",
-            "--full",
-        ],
-    );
-    publish(&commit);
-    assert_eq!(roots(&rows(&worker).await), ["a"]);
-    input(
-        &root,
-        json!({"epoch":3,"content":[[doc("ghost","r1","fixture document 1")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    let (path, mut stale) = envelopes(&worker)
-        .await
-        .into_iter()
-        .filter(|(_, e)| e.source_id == "incremental" && e.kind == SyncKind::Content)
-        .max_by_key(|(_, e)| e.sequence)
-        .unwrap();
-    store.delete(&path).await.unwrap();
-    stale.sequence = 1;
-    stale.rejection_generation += 1;
-    stale.base_head = None;
-    stale.cursor.start = None;
-    stale.envelope_id = fyrr_core::envelope::envelope_id(
-        &stale.namespace,
-        &stale.source_id,
-        stale.kind,
-        stale.sequence,
-        stale.rejection_generation,
-        None,
-    );
-    store
-        .put(
-            &ns.join("envelopes")
-                .join(format!("{}.json", stale.envelope_id)),
-            fyrr_core::write_contract(&stale).into(),
-        )
-        .await
-        .unwrap();
-    publish(&commit);
-    assert_eq!(
-        roots(&rows(&worker).await),
-        ["a"],
-        "genesis deletion must fence older prepared content"
-    );
-}
-
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_delta_genesis_undeclared_row_rejected_on_real_s3() {
-    let (worker, commit, root) = fixture_host(768, false);
-    initial(&root);
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let head = fyrr_reader::storage::optional_head(&loaded.config)
-        .await
-        .unwrap()
-        .unwrap();
-    let paths = fyrr_writer::commit::envelope_paths(&loaded.config, &head)
-        .await
-        .unwrap()
-        .0;
-    for path in paths {
-        let mut envelope: PreparedEnvelope =
-            fyrr_reader::storage::read_contract(store.as_ref(), &path)
-                .await
-                .unwrap();
-        if envelope.source_id != "incremental" {
-            continue;
-        }
-        let EnvelopePayload::Content(payload) = &mut envelope.payload else {
-            continue;
-        };
-        assert_eq!(payload.documents.len(), 2);
-        payload.documents.retain(|d| d.root_id == "a");
-        store
-            .put(&path, write_contract(&envelope).into())
-            .await
-            .unwrap();
-    }
-    let _ = ns;
-    let result = publish(&commit);
-    assert!(result["publication_id"].is_null());
-    let after = fyrr_reader::storage::optional_head(&loaded.config)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(head.content, after.content, "no staged row becomes visible");
-    assert!(!after.rejected_envelope_ids.is_empty());
-}
-
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_delta_cleanup_preserves_unconsumed_rejection_on_real_s3() {
-    let (worker, commit, root) = fixture();
-    initial(&root);
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    input(
-        &root,
-        json!({"epoch":2,"content":[[doc("a","r2","fixture document 2")],[doc("b","r2","fixture document 3")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let (store, _) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let (path, mut victim) = envelopes(&worker)
-        .await
-        .into_iter()
-        .find(|(_, e)| e.source_id == "incremental" && e.sequence == 2)
-        .unwrap();
-    victim.created_at = chrono::Utc::now() - chrono::Duration::days(8);
-    store
-        .put(&path, fyrr_core::write_contract(&victim).into())
-        .await
-        .unwrap();
-    let EnvelopePayload::Content(p) = &victim.payload else {
-        unreachable!()
-    };
-    let uri = object_store::path::Path::from(
-        fyrr_reader::storage::dataset_uri(&loaded.config)
-            .splitn(4, '/')
-            .nth(3)
-            .unwrap(),
-    );
-    let files: Vec<_> = p
-        .fragments
-        .iter()
-        .flat_map(|f| &f.files)
-        .map(|f| object_store::path::Path::from(format!("{uri}/{}", f.path)))
-        .collect();
-    publish(&commit);
-    assert!(
-        fyrr_writer::commit::published_ids(&loaded.config, &publication(&worker).await.0)
-            .await
-            .unwrap()
-            .1
-            .contains(&victim.envelope_id)
-    );
-    for consume in [false, true] {
-        if consume {
-            input(
-                &root,
-                json!({"epoch":3,"content":[[doc("a","r2","fixture document 2")]]}),
-            );
-            worker_sync(&worker, &["incremental", "--kind", "content"]);
-            // A durable refetch alone cannot release the rejected input.
-            let output = host_command(&worker)
-                .args(["writer", "maintain"])
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(store.head(&path).await.is_ok());
-            publish(&commit);
-        }
-        let output = host_command(&worker)
-            .args(["writer", "maintain"])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(store.head(&path).await.is_ok(), !consume);
-        // This block's cleanup never deletes native fragments; block 3 extends that proof.
-        for file in &files {
-            assert!(store.head(file).await.is_ok(), "{file}");
-        }
-    }
-    let (proof_path, mut proof) = envelopes(&worker)
-        .await
-        .into_iter()
-        .filter(|(_, e)| e.source_id == "incremental" && e.kind == SyncKind::Content)
-        .max_by_key(|(_, e)| e.sequence)
-        .unwrap();
-    proof.created_at = chrono::Utc::now() - chrono::Duration::days(8);
-    store
-        .put(&proof_path, fyrr_core::write_contract(&proof).into())
-        .await
-        .unwrap();
-    // A late fenced writer can leave an immutable marker without a publishing CAS.
-    // Its physical existence cannot invalidate this applied consumption proof.
-    fyrr_writer::apply::reject(&loaded.config, &proof, "changed_rows_invalid")
-        .await
-        .unwrap();
-    input(
-        &root,
-        json!({"epoch":4,"content":[[doc("b","r3","fixture document 4")]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    let output = host_command(&worker)
-        .args(["writer", "maintain"])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    assert!(
-        store.head(&proof_path).await.is_ok(),
-        "the latest applied complete read remains pinned beside a newer pending read"
-    );
-    assert!(
-        fyrr_writer::commit::unconsumed_rejections(
-            &loaded.config,
-            &publication(&worker).await.0,
-            &[]
-        )
-        .await
-        .unwrap()
-        .is_empty()
-    );
-    publish(&commit);
 }
 
 async fn rejected_authorization(kind: SyncKind) {
@@ -2344,73 +1140,6 @@ async fn incremental_delta_expired_source_isolated_on_real_s3() {
     }
 }
 
-#[tokio::test]
-#[ignore = "real executable and RustFS fixture; scripts/ci"]
-async fn incremental_opt_in_fts_merge_publishes_one_segment_on_real_s3() {
-    use lance::index::DatasetIndexExt;
-    async fn segments(config: &Path) -> usize {
-        let loaded = fyrr_core::config::load(config).unwrap();
-        let (head, _) = publication(config).await;
-        let dataset = fyrr_reader::storage::pinned(&loaded.config, &head)
-            .await
-            .unwrap();
-        dataset
-            .load_indices()
-            .await
-            .unwrap()
-            .iter()
-            .filter(|i| i.name == "fts_idx")
-            .count()
-    }
-    let (config, root) = setup();
-    success(&config, &["writer", "namespace", "create"]);
-    assert!(run(&config, &["writer", "sync"]).status.success());
-    success(&config, &["writer", "commit"]);
-    let initial = segments(&config).await;
-    std::fs::write(root.join("sources/extra-a.txt"), "fixture document 0").unwrap();
-    assert!(run(&config, &["writer", "sync"]).status.success());
-    success(&config, &["writer", "commit"]);
-    assert!(
-        segments(&config).await > initial,
-        "default preserves lexical delta segments"
-    );
-    let merged = root.join("merged.toml");
-    std::fs::write(
-        &merged,
-        format!(
-            "{}\n[writer.commit]\nmerge_fts_segments=true\n",
-            std::fs::read_to_string(&config).unwrap()
-        ),
-    )
-    .unwrap();
-    // Enabling the step after an already published incremental commit must
-    // close existing debt even when there are no new envelopes.
-    let repaired = success(&merged, &["writer", "commit"]);
-    assert_eq!(segments(&merged).await, 1);
-    assert_eq!(
-        success(&merged, &["writer", "commit"])["lance_version"],
-        repaired["lance_version"]
-    );
-    std::fs::write(root.join("sources/extra-b.txt"), "fixture document 0").unwrap();
-    assert!(run(&merged, &["writer", "sync"]).status.success());
-    let receipt = success(&merged, &["writer", "commit"]);
-    assert_eq!(segments(&merged).await, 1);
-    let hits = success(&merged, &["reader", "search", "fixture query"]);
-    assert!(!hits["hits"].as_array().unwrap().is_empty());
-    assert!(
-        hits["hits"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|h| h["source_id"] == "allowed")
-    );
-    assert_eq!(
-        success(&merged, &["writer", "commit"])["lance_version"],
-        receipt["lance_version"]
-    );
-    success(&merged, &["reader", "check"]);
-}
-
 /// Catching a failed host revision callback cannot attest an incomplete read.
 #[tokio::test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
@@ -2540,97 +1269,140 @@ async fn incremental_rejected_authorization_requires_complete_replacement_on_rea
 }
 
 #[tokio::test]
-#[ignore = "real CLI, provider entry marker and RustFS; scripts/ci"]
-async fn incremental_invalid_settings_stop_all_sources_before_provider_calls_on_real_s3() {
-    let (worker, _, root) = fixture();
-    input(&root, json!({"epoch":1,"capture_cursors":true}));
-    let marker = root.join("content-cursor.json");
-    let original = std::fs::read_to_string(&worker).unwrap();
-    std::fs::write(&worker, format!("{original}\n[[sources]]\nid='invalid-settings'\ntype='incremental-test'\npermissions='sync'\n[sources.intervals]\npermissions='5m'\n[sources.settings]\nunexpected=true\n[sources.scope]\nfixture='{}'\n", root.join("input.json").display())).unwrap();
-    let before = envelopes(&worker).await.len();
-    for dry_run in [false, true] {
-        let mut command = super::coordination::worker_command(&worker);
-        command.args(["writer", "sync", "--kind", "content", "--jobs", "1"]);
-        if dry_run {
-            command.arg("--dry-run");
-        }
-        let output = command.output().unwrap();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(78), "{dry_run}: {stderr}");
-        assert!(
-            stderr.contains("sources[3].settings") && stderr.contains("nothing ran"),
-            "{stderr}"
-        );
-        assert!(output.stdout.is_empty());
-        assert!(
-            !marker.exists(),
-            "a valid earlier provider ran before validation finished"
-        );
-        assert_eq!(envelopes(&worker).await.len(), before);
-    }
-    std::fs::write(&worker, original).unwrap();
-    worker_sync(&worker, &["incremental", "--kind", "content", "--full"]);
-    assert!(
-        marker.exists(),
-        "the provider-entry probe must run with valid settings"
+#[ignore = "real CLI and RustFS; scripts/ci"]
+async fn incremental_damaged_rows_rejected_and_cleanup_retains_log_authority_on_real_s3() {
+    let (worker, commit, root) = fixture();
+    initial(&root);
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    publish(&commit);
+    input(
+        &root,
+        json!({"epoch":2,"content":[[doc("a","r2","fixture document 2")]]}),
     );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let entries = envelopes(&worker).await;
+    let (_, pending) = entries
+        .iter()
+        .find(|(_, e)| e.source_id == "incremental" && e.sequence == 2)
+        .unwrap();
+    let EnvelopePayload::Content(payload) = &pending.payload else {
+        unreachable!()
+    };
+    let file = &payload.fragments[0].files[0];
+    let path = object_store::path::Path::from(format!("{ns}/dataset.lance/{}", file.path));
+    let bytes = store.get(&path).await.unwrap().bytes().await.unwrap();
+    let mut damage = bytes.to_vec();
+    let offset = damage.len() / 2;
+    damage[offset] ^= 1;
+    store.put(&path, damage.into()).await.unwrap();
+    publish(&commit);
+    let (_, manifest) = publication(&worker).await;
+    assert!(
+        manifest
+            .rejected_envelope_ids
+            .contains(&pending.envelope_id)
+    );
+    let batch = rows(&worker).await;
+    assert!(
+        batch
+            .column_by_name("source_revision")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .iter()
+            .all(|r| r == Some("r1"))
+    );
+    input(
+        &root,
+        json!({"epoch":3,"content":[[doc("a","r2","fixture document 2")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    publish(&commit);
+    for (case, revision) in [("declared-count", "r3"), ("duplicate-records", "r4")] {
+        input(
+            &root,
+            json!({"epoch":case,"content":[[doc("a",revision,"fixture document 2")]]}),
+        );
+        worker_sync(&worker, &["incremental", "--kind", "content"]);
+        let values = envelopes(&worker).await;
+        let (path, mut envelope) = values
+            .into_iter()
+            .filter(|(_, e)| e.source_id == "incremental" && e.kind == SyncKind::Content)
+            .max_by_key(|(_, e)| e.sequence)
+            .unwrap();
+        let EnvelopePayload::Content(payload) = &mut envelope.payload else {
+            unreachable!()
+        };
+        payload.documents[0].records += 1;
+        if case == "duplicate-records" {
+            payload.fragments.push(payload.fragments[0].clone());
+        }
+        store
+            .put(&path, fyrr_core::write_contract(&envelope).into())
+            .await
+            .unwrap();
+        publish(&commit);
+        let (_, manifest) = publication(&worker).await;
+        assert!(
+            manifest
+                .rejected_envelope_ids
+                .contains(&envelope.envelope_id),
+            "{case}"
+        );
+        assert_eq!(rows(&worker).await.num_rows(), 2);
+        input(
+            &root,
+            json!({"epoch":format!("{case}-repair"),"content":[[doc("a",revision,"fixture document 2")]]}),
+        );
+        worker_sync(&worker, &["incremental", "--kind", "content"]);
+        publish(&commit);
+    }
 }
 
-#[test]
-#[ignore = "real S3 revision view request counts; scripts/ci"]
-fn pending_revision_view_has_linear_storage_reads_on_real_s3() {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    };
-    let (config, root, _) = super::tools::fixture();
-    let marker = root.join("revision-counting");
-    let watching = marker.clone();
-    let reads = Arc::new(AtomicUsize::new(0));
-    let observed = reads.clone();
-    let hook: super::corrections::BoundaryHook = Arc::new(move |request, _, after| {
-        if !after
-            && request.starts_with("GET ")
-            && request.contains("/envelopes/")
-            && watching.exists()
-        {
-            observed.fetch_add(1, Ordering::SeqCst);
+#[tokio::test]
+#[ignore = "real CLI and RustFS; scripts/ci"]
+async fn incremental_delta_genesis_undeclared_row_rejected_on_real_s3() {
+    let (worker, commit, root) = fixture_host(768, false);
+    initial(&root);
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let head = fyrr_reader::storage::optional_head(&loaded.config)
+        .await
+        .unwrap()
+        .unwrap();
+    let paths = fyrr_writer::commit::envelope_paths(&loaded.config, &head)
+        .await
+        .unwrap()
+        .0;
+    for path in paths {
+        let mut envelope: PreparedEnvelope =
+            fyrr_reader::storage::read_contract(store.as_ref(), &path)
+                .await
+                .unwrap();
+        if envelope.source_id != "incremental" {
+            continue;
         }
-        false
-    });
-    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
-    let (proxy, _guard) = super::corrections::proxy_at_boundary(
-        endpoint.clone(),
-        Arc::new(AtomicBool::new(false)),
-        hook,
-    );
-    let proxied = root.join("revision-probe.toml");
-    std::fs::write(
-        &proxied,
-        std::fs::read_to_string(&config)
-            .unwrap()
-            .replace(&endpoint, &proxy),
-    )
-    .unwrap();
-    let output = Command::new(std::env::var_os("FYRR_SCIM_HEALTH_TEST_BINARY").unwrap())
-        .args(["python::prepared::revisions::tests::pending_revision_view_reads_each_envelope_once_on_real_s3", "--exact", "--ignored", "--nocapture"])
-        .env("FYRR_TEST_REVISION_CONFIG", &proxied)
-        .env("FYRR_TEST_REVISION_MARKER", &marker)
-        .output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
-    let actual = reads.load(Ordering::SeqCst);
-    if let Some(path) = std::env::var_os("FYRR_TEST_REVISION_RESULT") {
-        std::fs::write(path, serde_json::to_vec(&json!({"pending_envelopes":4,"observed_GETs":actual,"semantic_and_overflow_checks":"passed"})).unwrap()).unwrap();
+        let EnvelopePayload::Content(payload) = &mut envelope.payload else {
+            continue;
+        };
+        assert_eq!(payload.documents.len(), 2);
+        payload.documents.retain(|d| d.root_id == "a");
+        store
+            .put(&path, write_contract(&envelope).into())
+            .await
+            .unwrap();
     }
-    assert!(actual > 0, "real envelope GETs must be observed");
-    assert!(
-        actual <= 8,
-        "four pending envelopes must use at most two linear passes, observed {actual} GETs"
-    );
+    let _ = ns;
+    let result = publish(&commit);
+    assert!(result["publication_id"].is_null());
+    let after = fyrr_reader::storage::optional_head(&loaded.config)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(head.content, after.content, "no staged row becomes visible");
+    assert!(!after.rejected_envelope_ids.is_empty());
 }

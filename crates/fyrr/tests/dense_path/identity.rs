@@ -35,6 +35,22 @@ pub(super) fn snapshot(config: &fyrr_core::config::Config, provider: &str) -> Di
         state: None,
     }
 }
+pub(super) async fn link_account(config: &Path, source: &str, account: &str) {
+    let loaded = fyrr_core::config::load(config).unwrap();
+    let mut directory = snapshot(&loaded.config, &format!("{source}-test-directory"));
+    directory.hashing = artifact(config).await.1.hashing;
+    let principal = user(&loaded.config, "fixture-subject");
+    directory.links.push(AccountLink {
+        source: source.into(),
+        user: principal_hash(&loaded.config, "key", account),
+        principal: principal.key.clone(),
+    });
+    directory.users.push(principal);
+    fyrr_writer::directory::publish(&loaded.config, &directory)
+        .await
+        .unwrap();
+}
+
 fn import(config: &Path, root: &Path, snapshot: &DirectorySnapshot) -> std::process::Output {
     let path = root.join("directory-input.json");
     std::fs::write(&path, write_contract(snapshot)).unwrap();

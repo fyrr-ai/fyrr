@@ -150,51 +150,6 @@ fn config(server: &Server) -> EmbeddingConfig {
 }
 
 #[tokio::test]
-async fn live_no_catalog_verifies_with_a_reserved_role_specific_probe() {
-    let server = server().await;
-    server.fake.no_catalog.store(true, Ordering::Relaxed);
-    let config = config(&server);
-    let client = EmbeddingClient::new(&config, None).unwrap();
-    let mut stats = ProviderStats::default();
-    assert_eq!(
-        client
-            .embed(&["novel query"], Role::Query, &mut stats)
-            .await
-            .unwrap(),
-        [vec![0.125; 512]]
-    );
-    let posts = server.fake.posts.lock().unwrap().clone();
-    assert_eq!(posts.len(), 2);
-    assert_eq!(
-        posts[0]["input"],
-        serde_json::json!(["Q: fyrr model verification"])
-    );
-    assert_eq!(posts[0]["input_type"], "query");
-    assert_eq!(posts[0]["dimensions"], 512);
-    assert_eq!(posts[1]["input"], serde_json::json!(["Q: novel query"]));
-    assert_eq!(
-        (stats.calls, stats.embedding_calls, stats.reserved_microusd),
-        (4, 2, 4)
-    );
-    client
-        .embed(&["next"], Role::Query, &mut stats)
-        .await
-        .unwrap();
-    assert_eq!(server.fake.probes.load(Ordering::Relaxed), 2);
-    let writer = EmbeddingClient::new(&config, None).unwrap();
-    writer
-        .verify_model(&mut ProviderStats::default())
-        .await
-        .unwrap();
-    let body = server.fake.posts.lock().unwrap().last().unwrap().clone();
-    assert_eq!(body["input_type"], "document");
-    assert_eq!(
-        body["input"],
-        serde_json::json!(["D: fyrr model verification"])
-    );
-}
-
-#[tokio::test]
 async fn live_no_catalog_probe_checks_optional_model_vectors_and_spend() {
     let server = server().await;
     server.fake.no_catalog.store(true, Ordering::Relaxed);

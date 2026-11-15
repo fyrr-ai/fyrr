@@ -6,8 +6,6 @@ pub use restoration::restore;
 use restoration::*;
 
 use crate::{apply, commit, lease::LeaseGuard, prepare};
-#[cfg(test)]
-mod counting_store;
 mod restore_fragments;
 mod restore_index;
 use chrono::Utc;

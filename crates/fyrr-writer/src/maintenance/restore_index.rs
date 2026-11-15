@@ -156,11 +156,6 @@ impl Index {
         side: i64,
         fragments: &BTreeSet<u64>,
     ) -> Result<()> {
-        restore_phase(if side == 0 {
-            "authority_scan"
-        } else {
-            "historical_scan"
-        });
         attempt
             .cadence
             .maybe(config, lease, attempt.history)
@@ -321,7 +316,6 @@ impl Index {
         attempt: &mut RestoreAttempt<'_>,
         fragments: &BTreeSet<u64>,
     ) -> Result<()> {
-        restore_phase("verification_scan");
         attempt
             .cadence
             .maybe(config, lease, attempt.history)

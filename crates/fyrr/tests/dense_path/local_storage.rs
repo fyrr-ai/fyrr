@@ -328,15 +328,7 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
         ["b"],
         "maintenance drains the revoke and purges its unreadable chunks"
     );
-    let restored = host_command(&commit)
-        .args(["writer", "restore", &template.publication_id])
-        .output()
-        .unwrap();
-    assert!(
-        restored.status.success(),
-        "{}",
-        String::from_utf8_lossy(&restored.stderr)
-    );
+    command(&commit, &["writer", "restore", &template.publication_id]);
     assert_eq!(
         roots(&rows(&worker).await),
         ["b"],

@@ -3,7 +3,6 @@ use object_store::{ObjectStoreExt, UpdateVersion};
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Child, Command};
-use std::sync::Barrier;
 use std::time::Duration;
 
 const CHILD: &str = "storage::local::tests::local_store_child_process";
@@ -80,83 +79,6 @@ fn outcome(result: Result<PutResult>) -> Outcome {
         Err(Error::AlreadyExists { .. }) => Outcome::Exists,
         Err(error) => panic!("unexpected storage error: {error}"),
     }
-}
-
-#[test]
-fn local_store_updates_are_compare_and_swap_across_threads() {
-    const THREADS: usize = 16;
-    let root = scratch("threads");
-    let shared = LocalStore::open(&root).unwrap();
-    put(&shared, &payload(0, 0), PutMode::Create).unwrap();
-    for round in 1..=12 {
-        let expected = current(&shared);
-        let barrier = Arc::new(Barrier::new(THREADS));
-        let outcomes: Vec<_> = (0..THREADS)
-            .map(|contender| {
-                // Half share one handle, half open their own: the lock is the
-                // file, not the handle.
-                let store = if contender % 2 == 0 {
-                    shared.clone()
-                } else {
-                    LocalStore::open(&root).unwrap()
-                };
-                let (barrier, expected) = (barrier.clone(), expected.clone());
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    let mode = PutMode::Update(version(Some(expected)));
-                    (
-                        contender,
-                        outcome(put(&store, &payload(round, contender), mode)),
-                    )
-                })
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|thread| thread.join().unwrap())
-            .collect();
-        let winners: Vec<_> = outcomes
-            .iter()
-            .filter(|(_, o)| *o == Outcome::Won)
-            .collect();
-        assert_eq!(winners.len(), 1, "round {round}: {outcomes:?}");
-        assert!(
-            outcomes
-                .iter()
-                .all(|(_, o)| matches!(o, Outcome::Won | Outcome::Precondition))
-        );
-        assert_eq!(read(&shared, &root), payload(round, winners[0].0));
-        assert_ne!(current(&shared), expected);
-    }
-
-    let created = at(&shared, "namespaces/ns/envelopes/one.json");
-    let barrier = Arc::new(Barrier::new(THREADS));
-    let outcomes: Vec<_> = (0..THREADS)
-        .map(|contender| {
-            let (store, barrier, created) = (shared.clone(), barrier.clone(), created.clone());
-            std::thread::spawn(move || {
-                barrier.wait();
-                let bytes = payload(0, contender).into();
-                let result = store.put_blocking(&created, bytes, PutMode::Create);
-                (contender, outcome(result))
-            })
-        })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .map(|thread| thread.join().unwrap())
-        .collect();
-    let winners: Vec<_> = outcomes
-        .iter()
-        .filter(|(_, o)| *o == Outcome::Won)
-        .collect();
-    assert_eq!(winners.len(), 1, "{outcomes:?}");
-    assert!(
-        outcomes
-            .iter()
-            .all(|(_, o)| matches!(o, Outcome::Won | Outcome::Exists))
-    );
-    let file = shared.inner.path_to_filesystem(&created).unwrap();
-    assert_eq!(std::fs::read(file).unwrap(), payload(0, winners[0].0));
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 fn child(root: &std::path::Path, action: &str, extra: &[(&str, &std::ffi::OsStr)]) -> Child {

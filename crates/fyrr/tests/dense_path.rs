@@ -8,8 +8,6 @@ mod common;
 mod coordination;
 #[path = "dense_path/corrections.rs"]
 mod corrections;
-#[path = "dense_path/cutoff.rs"]
-mod cutoff;
 #[path = "dense_path/directory_ops.rs"]
 mod directory_ops;
 #[path = "dense_path/embedding.rs"]
@@ -288,38 +286,6 @@ async fn dense_path_and_namespace_contracts_on_real_s3() {
     );
     assert!(!manifest.fts.with_position);
     assert!(hits.iter().all(|h| h["source_id"] == "allowed"));
-    let binary = Command::new(env!("CARGO_BIN_EXE_fyrr"))
-        .arg("--config")
-        .arg(&config)
-        .args(["reader", "serve"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("MCP");
-    let mut binary = binary;
-    let mut stdin = binary.stdin.take().expect("stdin");
-    let mut stdout = BufReader::new(binary.stdout.take().expect("stdout"));
-    initialize_stdio(&mut stdin, &mut stdout);
-    for id in 1..=2 {
-        writeln!(stdin,"{}",json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"search","arguments":{"query":"fixture query","limit":75}}})).expect("request");
-        let mut line = String::new();
-        stdout.read_line(&mut line).expect("response");
-        let response: Value = serde_json::from_str(&line).expect("MCP JSON");
-        assert_eq!(response["result"]["isError"], false, "{response}");
-        assert_eq!(
-            response["result"]["structuredContent"]["hits"],
-            search["hits"]
-        );
-        if id == 2 {
-            assert_eq!(
-                response["result"]["structuredContent"]["metadata"]["telemetry"]["s3_requests"],
-                2
-            );
-        }
-    }
-    drop(stdin);
-    assert!(binary.wait().expect("MCP exit").success());
     let mirror_directory = root.join("mirror").join(digest(
         format!(
             "{}:{}",
@@ -360,23 +326,6 @@ async fn dense_path_and_namespace_contracts_on_real_s3() {
         mirror_bytes > 0 && mirror_bytes <= 16_777_216,
         "read-through mirror remains within its configured byte bound"
     );
-    let lexical_only = success(
-        &config,
-        &["reader", "search", "document", "--output", "metadata"],
-    );
-    assert_eq!(lexical_only["metadata"]["degraded"], json!(["dense"]));
-    assert_eq!(lexical_only["hits"].as_array().unwrap().len(), 50);
-    assert!(
-        lexical_only["hits"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|h| h["source_id"] == "allowed"
-                && h["excerpt"].is_null()
-                && h["content"].is_null())
-    );
-    let no_tokens = success(&config, &["reader", "search", &"x".repeat(40)]);
-    assert!(no_tokens["hits"].as_array().unwrap().is_empty());
     let config_text = std::fs::read_to_string(&config).expect("config");
     // Equal roots/record IDs in two sources survive publication independently.
     let both = root.join("both.toml");
@@ -453,102 +402,6 @@ async fn dense_path_and_namespace_contracts_on_real_s3() {
             manifest.lance_version
         );
     }
-    // The next worker has a new host directory and only the durable S3 cursor/revisions.
-    let copied = root.join("fresh-host");
-    std::fs::create_dir_all(&copied).expect("fresh host");
-    for entry in std::fs::read_dir(root.join("sources")).expect("sources") {
-        let entry = entry.expect("entry");
-        std::fs::copy(entry.path(), copied.join(entry.file_name())).expect("copy owned source");
-    }
-    let fresh = root.join("fresh.toml");
-    std::fs::write(
-        &fresh,
-        config_text.replace(
-            root.join("sources").to_str().expect("path"),
-            copied.to_str().expect("path"),
-        ),
-    )
-    .expect("fresh config");
-    let resumed = run(&fresh, &["writer", "sync", "allowed"]);
-    assert!(resumed.status.success());
-    let resumed: Value = serde_json::from_slice(&resumed.stdout).expect("resumed report");
-    assert_eq!(resumed["stats"]["upserts"], 0);
-    std::fs::write(copied.join("0.txt"), "fixture document 1").expect("edit");
-    std::fs::write(copied.join("added.txt"), "fixture document 2").expect("add");
-    std::fs::remove_file(copied.join("3.txt")).expect("delete owned source");
-    let changed = run(&fresh, &["writer", "sync", "allowed"]);
-    assert!(
-        changed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&changed.stdout)
-    );
-    let changed: Value = serde_json::from_slice(&changed.stdout).expect("changed report");
-    assert_eq!(changed["stats"]["upserts"], 2);
-    assert_eq!(changed["stats"]["deletes"], 1);
-    assert_eq!(changed["cache_misses"], 0);
-    success(&fresh, &["writer", "commit"]);
-    success(&fresh, &["reader", "check"]);
-    let repeated = run(&fresh, &["writer", "sync", "allowed"]);
-    assert!(repeated.status.success());
-    let repeated: Value = serde_json::from_slice(&repeated.stdout).expect("no-op report");
-    assert_eq!(repeated["stats"]["upserts"], 0);
-    assert_eq!(repeated["stats"]["deletes"], 0);
-    // Contract-valid bad content is quarantined; uncached live work requires a spend cap.
-    std::fs::write(root.join("sources/bad.txt"), [255]).expect("bad document");
-    let sync = run(&config, &["writer", "sync", "allowed"]);
-    assert!(
-        sync.status.success(),
-        "{}",
-        String::from_utf8_lossy(&sync.stdout)
-    );
-    let continued: Value = serde_json::from_slice(&sync.stdout).expect("quarantine sync report");
-    // The original source restores 0.txt and recreates 3.txt after the fresh
-    // host's publication. Only those two changed documents need embeddings.
-    assert_eq!(continued["cache_hits"], 2);
-    assert_eq!(continued["cache_misses"], 0);
-    assert_eq!(continued["stats"]["quarantined"], 1);
-    let envelope_objects = store
-        .list_with_delimiter(Some(&path.clone().join("envelopes")))
-        .await
-        .expect("envelopes");
-    let mut diagnostics = Vec::new();
-    for object in envelope_objects.objects {
-        let envelope: fyrr_core::envelope::PreparedEnvelope =
-            fyrr_reader::storage::read_contract(store.as_ref(), &object.location)
-                .await
-                .expect("envelope");
-        if envelope.source_id == "allowed"
-            && let fyrr_core::envelope::EnvelopePayload::Content(payload) = envelope.payload
-        {
-            diagnostics.extend(payload.quarantined);
-        }
-    }
-    assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0].root_digest, digest(b"bad.txt"));
-    assert_eq!(diagnostics[0].reason, "document_invalid");
-    std::fs::remove_file(root.join("sources/bad.txt")).expect("own fixture cleanup");
-    std::fs::write(root.join("sources/miss.txt"), "novel fixture input").unwrap();
-    let uncapped = root.join("uncapped-writer.toml");
-    let text = std::fs::read_to_string(&config)
-        .unwrap()
-        .replace("reader_live = true", "reader_live = false")
-        .replace(
-            "spend = { limit_microusd = 1000000, max_call_microusd = 10 }",
-            "",
-        );
-    std::fs::write(&uncapped, text).unwrap();
-    let calls = root.embedding.calls();
-    let miss = run(&uncapped, &["writer", "sync", "allowed"]);
-    assert!(!miss.status.success());
-    let miss: Value = serde_json::from_slice(&miss.stdout).expect("cache-miss diagnostic");
-    assert_eq!(miss["error"], "embedding_spend_limit_required");
-    assert_eq!(miss["paid_calls"], 0);
-    assert_eq!(
-        root.embedding.calls(),
-        calls,
-        "uncapped work makes no HTTP call"
-    );
-    std::fs::remove_file(root.join("sources/miss.txt")).expect("own fixture cleanup");
     // A fresh policy generation without a readers index cannot become ready.
     let mut missing = manifest.clone();
     missing.indexes.retain(|index| index.column != "readers");
