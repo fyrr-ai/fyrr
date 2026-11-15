@@ -22,6 +22,8 @@ ignore = [
 ]
 
 [licenses]
+# constant_time_eq 0.6.1: CC0-1.0 OR MIT-0 OR Apache-2.0; no advisory
+# (cargo deny check). Version 0.4.2 remains transitively through blake3.
 # aws-smithy-schema 1.2: Apache-2.0; no advisory (cargo deny check).
 # Lance 14 additions: approx, lance-jsonb, nalgebra and simba are Apache-2.0;
 # safe_arch and wide offer Zlib OR Apache-2.0 OR MIT. The added zstd 0.14

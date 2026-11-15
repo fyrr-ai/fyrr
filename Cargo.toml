@@ -39,10 +39,10 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 thiserror = "2.0.21"
 tokio = { version = "1.53", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
-toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde", "std"] }
+toml = { version = "1.2.1", default-features = false, features = ["parse", "display", "serde", "std"] }
 # Validates golden fixtures (dev) and, in the writer, source settings against
 # connector providers' config schemas.
-jsonschema = { version = "0.58", default-features = false }
+jsonschema = { version = "0.61.2", default-features = false }
 # Embedded Python for connector providers, full build only.
 # arrow-pyarrow 58 imports pyarrow batches through the Arrow C Data Interface
 # (PyCapsules, zero-copy) and requires PyO3 0.28.
@@ -66,7 +66,7 @@ lance-core = { version = "=14.0.3", default-features = false }
 lance-io = { version = "=14.0.3", default-features = false }
 lance-linalg = { version = "=14.0.3", default-features = false }
 hmac = "0.13"
-constant_time_eq = "=0.4.2"
+constant_time_eq = "=0.6.1"
 url = "=2.5.8"
 # HTTP serving and authenticated encryption.
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "json"] }

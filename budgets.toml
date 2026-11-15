@@ -6,8 +6,8 @@
 
 [dependencies]
 # Unique packages in the non-dev dependency graph of the fyrr binary.
-full = 526
-reader_only = 492
+full = 534
+reader_only = 501
 
 [binary_size]
 # Bytes of the stripped release binary (cargo build --release -p fyrr).
