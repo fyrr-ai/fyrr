@@ -11,8 +11,8 @@ reader_only = 501
 
 [binary_size]
 # Bytes of the stripped release binary (cargo build --release -p fyrr).
-full = 142613160
-reader_only = 122021752
+full = 146688896
+reader_only = 122663200
 
 [image_size]
 # Bytes of the images as `docker image inspect -f '{{.Size}}'` reports them
