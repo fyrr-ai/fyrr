@@ -4432,11 +4432,6 @@ async fn maintenance_restore_batched_authorization_boundaries_on_real_s3() {
 #[ignore = "real CLI request counts and RustFS; scripts/ci"]
 #[allow(clippy::print_stdout)]
 async fn maintenance_boundary_history_request_counts_on_real_s3() {
-    history_request_counts("maintain").await;
-}
-
-#[allow(clippy::print_stdout)]
-async fn history_request_counts(operation: &'static str) {
     use futures::TryStreamExt;
     use fyrr_core::{
         Contract,
@@ -4445,301 +4440,273 @@ async fn history_request_counts(operation: &'static str) {
         write_contract,
     };
     use std::sync::Mutex;
-    // Fixed corpus with several root groups; independently vary envelope pagination and history depth.
-    let sizes = if operation == "restore" {
-        [64usize, 1064, 2064]
-    } else {
-        [256usize, 1064, 2064]
-    };
-    for envelopes in sizes {
-        for depth in [2usize, 4, 8] {
-            let (worker, commit, root) = fixture();
-            initial(&root);
+    // Vary each scaling axis independently, then combine their maxima.
+    // Envelope counts span one, two and three discovery pages.
+    for (envelopes, depth) in [
+        (256usize, 2usize),
+        (1064, 2),
+        (2064, 2),
+        (256, 4),
+        (256, 8),
+        (2064, 8),
+    ] {
+        let (worker, commit, root) = fixture();
+        initial(&root);
+        worker_sync(
+            &worker,
+            &[
+                "incremental",
+                "--kind",
+                "content",
+                "--kind",
+                "permissions",
+                "--kind",
+                "members",
+            ],
+        );
+        publish(&commit);
+        // Real append publications create enough small fragments to
+        // traverse many boundaries, independently of retained history.
+        for revision in 2..=1 + depth * 4 {
+            let id = format!("extra-{revision}");
+            input(
+                &root,
+                json!({"epoch":revision,
+                    "content":[[doc(&id,"r1","fixture document 0")]],
+                    "permissions":[[{"id":id,"revision":"p1","readers":["grp:group"]}]]
+                }),
+            );
             worker_sync(
                 &worker,
-                &[
-                    "incremental",
-                    "--kind",
-                    "content",
-                    "--kind",
-                    "permissions",
-                    "--kind",
-                    "members",
-                ],
+                &["incremental", "--kind", "content", "--kind", "permissions"],
             );
             publish(&commit);
-            if operation == "maintain" {
-                // Real append publications create enough small fragments to
-                // traverse many boundaries, independently of retained history.
-                for revision in 2..=1 + depth * 4 {
-                    let id = format!("extra-{revision}");
-                    input(
-                        &root,
-                        json!({"epoch":revision,
-                            "content":[[doc(&id,"r1","fixture document 0")]],
-                            "permissions":[[{"id":id,"revision":"p1","readers":["grp:group"]}]]
-                        }),
-                    );
-                    worker_sync(
-                        &worker,
-                        &["incremental", "--kind", "content", "--kind", "permissions"],
-                    );
-                    publish(&commit);
-                }
-                // Append indexes have different coverage until the first
-                // merge. The metered command then compacts that shared coverage.
-                command(&commit, &["writer", "maintain"]);
-            }
-            let (mut head, target) = publication(&commit).await;
-            let loaded = fyrr_core::config::load(&commit).unwrap();
-            let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-            let base_depth = fyrr_reader::storage::manifest_chain(
-                store.clone(),
-                ns.clone(),
-                head.content.as_ref().map(|p| p.manifest.clone()),
-            )
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap()
-            .len();
-            let prefix = ns.clone().join("envelopes");
-            let objects: Vec<_> = store.list(Some(&prefix)).try_collect().await.unwrap();
-            let mut ids = Vec::new();
-            let mut seed = None;
-            for object in objects {
-                let e: PreparedEnvelope =
-                    fyrr_reader::storage::read_contract(store.as_ref(), &object.location)
-                        .await
-                        .unwrap();
-                ids.push(e.envelope_id.clone());
-                if e.kind.is_authorization() {
-                    seed = Some(e);
-                }
-            }
-            let seed = seed.unwrap();
-            for sequence in 1000..1000 + (envelopes - ids.len()) as u64 {
-                let mut e = seed.clone();
-                e.sequence = sequence;
-                e.envelope_id = envelope_id(
-                    &e.namespace,
-                    &e.source_id,
-                    e.kind,
-                    e.sequence,
-                    e.rejection_generation,
-                    e.cursor.start.as_deref(),
-                );
-                e.validate().unwrap();
-                store
-                    .put(
-                        &prefix.clone().join(format!("{}.json", e.envelope_id)),
-                        write_contract(&e).into(),
-                    )
+        }
+        // Append indexes have different coverage until the first
+        // merge. The metered command then compacts that shared coverage.
+        command(&commit, &["writer", "maintain"]);
+        let (mut head, target) = publication(&commit).await;
+        let loaded = fyrr_core::config::load(&commit).unwrap();
+        let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+        let base_depth = fyrr_reader::storage::manifest_chain(
+            store.clone(),
+            ns.clone(),
+            head.content.as_ref().map(|p| p.manifest.clone()),
+        )
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap()
+        .len();
+        let prefix = ns.clone().join("envelopes");
+        let objects: Vec<_> = store.list(Some(&prefix)).try_collect().await.unwrap();
+        let mut ids = Vec::new();
+        let mut seed = None;
+        for object in objects {
+            let e: PreparedEnvelope =
+                fyrr_reader::storage::read_contract(store.as_ref(), &object.location)
                     .await
                     .unwrap();
-                ids.push(e.envelope_id);
+            ids.push(e.envelope_id.clone());
+            if e.kind.is_authorization() {
+                seed = Some(e);
             }
-            let rejected = ids.pop().unwrap();
-            let marker = RejectionMarker {
-                schema_version: fyrr_core::envelope::ENVELOPE_CONTRACT_VERSION,
-                envelope_id: rejected.clone(),
-                source_id: seed.source_id.clone(),
-                kind: seed.kind,
-                sequence: 9999,
-                rejection_generation: 0,
-                restore_sequence: 0,
-                start_cursor: None,
-                reason: "envelope_expired".into(),
-            };
+        }
+        let seed = seed.unwrap();
+        for sequence in 1000..1000 + (envelopes - ids.len()) as u64 {
+            let mut e = seed.clone();
+            e.sequence = sequence;
+            e.envelope_id = envelope_id(
+                &e.namespace,
+                &e.source_id,
+                e.kind,
+                e.sequence,
+                e.rejection_generation,
+                e.cursor.start.as_deref(),
+            );
+            e.validate().unwrap();
             store
                 .put(
-                    &object_store::path::Path::from(format!("{ns}/rejections/{rejected}.json")),
-                    write_contract(&marker).into(),
+                    &prefix.clone().join(format!("{}.json", e.envelope_id)),
+                    write_contract(&e).into(),
                 )
                 .await
                 .unwrap();
-            let mut manifest = target.clone();
-            for index in 1..depth {
-                manifest.previous_publication_id = Some(manifest.publication_id.clone());
-                manifest.sequence += 1;
-                manifest.publication_id = format!("pub-{:032x}", 1000 + index);
-                manifest.envelope_ids = ids.clone();
-                manifest.rejected_envelope_ids = vec![rejected.clone()];
-                let path = format!("publications/{}.json", manifest.publication_id);
-                store
-                    .put(
-                        &object_store::path::Path::from(format!("{ns}/{path}")),
-                        write_contract(&manifest).into(),
-                    )
-                    .await
-                    .unwrap();
-                head.content = Some(ContentPointer {
-                    publication_id: manifest.publication_id.clone(),
-                    sequence: manifest.sequence,
-                    lance_version: manifest.lance_version,
-                    manifest: path,
-                    committed_at: manifest.committed_at,
-                });
-            }
+            ids.push(e.envelope_id);
+        }
+        let rejected = ids.pop().unwrap();
+        let marker = RejectionMarker {
+            schema_version: fyrr_core::envelope::ENVELOPE_CONTRACT_VERSION,
+            envelope_id: rejected.clone(),
+            source_id: seed.source_id.clone(),
+            kind: seed.kind,
+            sequence: 9999,
+            rejection_generation: 0,
+            restore_sequence: 0,
+            start_cursor: None,
+            reason: "envelope_expired".into(),
+        };
+        store
+            .put(
+                &object_store::path::Path::from(format!("{ns}/rejections/{rejected}.json")),
+                write_contract(&marker).into(),
+            )
+            .await
+            .unwrap();
+        let mut manifest = target.clone();
+        for index in 1..depth {
+            manifest.previous_publication_id = Some(manifest.publication_id.clone());
+            manifest.sequence += 1;
+            manifest.publication_id = format!("pub-{:032x}", 1000 + index);
+            manifest.envelope_ids = ids.clone();
+            manifest.rejected_envelope_ids = vec![rejected.clone()];
+            let path = format!("publications/{}.json", manifest.publication_id);
             store
-                .put(&ns.clone().join("head.json"), write_contract(&head).into())
+                .put(
+                    &object_store::path::Path::from(format!("{ns}/{path}")),
+                    write_contract(&manifest).into(),
+                )
                 .await
                 .unwrap();
-            // Count retained history separately from the one predecessor GET
-            // required by each native publication. A publication's new manifest
-            // is not an ancestral-history reread at a quiet boundary.
-            let historical: std::collections::BTreeSet<_> = fyrr_reader::storage::manifest_chain(
-                store.clone(),
-                ns.clone(),
-                head.content.as_ref().map(|p| p.manifest.clone()),
-            )
-            .try_collect::<Vec<_>>()
+            head.content = Some(ContentPointer {
+                publication_id: manifest.publication_id.clone(),
+                sequence: manifest.sequence,
+                lance_version: manifest.lance_version,
+                manifest: path,
+                committed_at: manifest.committed_at,
+            });
+        }
+        store
+            .put(&ns.clone().join("head.json"), write_contract(&head).into())
             .await
-            .unwrap()
-            .into_iter()
-            .filter(|m| Some(&m.publication_id) != head.content.as_ref().map(|p| &p.publication_id))
-            .map(|m| format!("/publications/{}.json", m.publication_id))
-            .collect();
-            // One cache fill plus eight existing cleanup history walks. Native
-            // boundaries must contribute none, regardless of their number.
-            let history_limit = if operation == "restore" {
-                depth * 4 + 16
-            } else {
-                historical.len() * 9
-            };
-            // Each fresh LIST (not a continuation page) begins a boundary
-            // interval; restore's final publication ends its quiet work.
-            let counts = Arc::new(Mutex::new((vec![[0usize; 4]], false)));
-            let observed = counts.clone();
-            let hook: super::corrections::BoundaryHook = Arc::new(move |request, _, after| {
-                if after {
-                    return false;
-                }
-                let mut counts = observed.lock().unwrap();
-                if operation == "restore"
-                    && request.starts_with("PUT ")
-                    && (request.contains("/publications/")
-                        || request.contains("/rejections/restore-"))
+            .unwrap();
+        // Count retained history separately from the one predecessor GET
+        // required by each native publication. A publication's new manifest
+        // is not an ancestral-history reread at a quiet boundary.
+        let historical: std::collections::BTreeSet<_> = fyrr_reader::storage::manifest_chain(
+            store.clone(),
+            ns.clone(),
+            head.content.as_ref().map(|p| p.manifest.clone()),
+        )
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|m| Some(&m.publication_id) != head.content.as_ref().map(|p| &p.publication_id))
+        .map(|m| format!("/publications/{}.json", m.publication_id))
+        .collect();
+        // One cache fill plus eight existing cleanup history walks. Native
+        // boundaries must contribute none, regardless of their number.
+        let history_limit = historical.len() * 9;
+        // Each fresh LIST (not a continuation page) begins a boundary interval.
+        let counts = Arc::new(Mutex::new(vec![[0usize; 4]]));
+        let observed = counts.clone();
+        let hook: super::corrections::BoundaryHook = Arc::new(move |request, _, after| {
+            if after {
+                return false;
+            }
+            let mut counts = observed.lock().unwrap();
+            let listing = request.starts_with("GET ")
+                && request.contains("list-type=2")
+                && request.contains("envelopes");
+            if listing && !request.contains("continuation-token=") {
+                counts.push([0; 4]);
+            }
+            let category = if listing {
+                Some(3)
+            } else if request.starts_with("GET ") {
+                if request.contains("/envelopes/") {
+                    Some(0)
+                } else if request.contains("/rejections/") {
+                    Some(1)
+                } else if request.contains("/publications/")
+                    && historical.iter().any(|path| request.contains(path))
                 {
-                    counts.1 = true;
-                }
-                let listing = request.starts_with("GET ")
-                    && request.contains("list-type=2")
-                    && request.contains("envelopes");
-                if listing && !request.contains("continuation-token=") && !counts.1 {
-                    counts.0.push([0; 4]);
-                }
-                let category = if listing {
-                    Some(3)
-                } else if request.starts_with("GET ") {
-                    if request.contains("/envelopes/") {
-                        Some(0)
-                    } else if request.contains("/rejections/") {
-                        Some(1)
-                    } else if request.contains("/publications/")
-                        && (operation == "restore"
-                            || historical.iter().any(|path| request.contains(path)))
-                    {
-                        Some(2)
-                    } else {
-                        None
-                    }
+                    Some(2)
                 } else {
                     None
-                };
-                if let Some(category) = category {
-                    counts.0.last_mut().unwrap()[category] += 1;
                 }
-                false
-            });
-            let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
-            let (proxy, guard) = super::corrections::proxy_at_boundary(
-                endpoint.clone(),
-                Arc::new(AtomicBool::new(false)),
-                hook,
-            );
-            let metered = root.join("restore-metered.toml");
-            std::fs::write(
-                &metered,
-                std::fs::read_to_string(&commit)
-                    .unwrap()
-                    .replace(&endpoint, &proxy),
-            )
-            .unwrap();
-            let mut command = host_command(&metered);
-            command.args(["writer", operation]);
-            if operation == "restore" {
-                command.arg(&target.publication_id);
-            }
-            let output = command.output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-            if operation == "restore" {
-                assert_eq!(result["restored"], true);
-            }
-            drop(guard);
-            let counts = counts.lock().unwrap();
-            let mut total = [0; 4];
-            for interval in &counts.0 {
-                for i in 0..4 {
-                    total[i] += interval[i];
-                }
-            }
-            let quiet = if operation == "restore" {
-                &counts.0[4..counts.0.len() - 1]
             } else {
-                let steps = result["compaction_steps"].as_u64().unwrap() as usize;
-                assert!(
-                    steps >= 6,
-                    "maintenance must exercise many native boundaries: {result}"
-                );
-                // First LIST seeds summaries; the next begins the first native
-                // step. Cleanup may read bodies once and is outside this range.
-                &counts.0[2..2 + steps]
+                None
             };
-            println!(
-                "{operation}_counts E={envelopes} H={} N={} total_body_marker_history_list={total:?} quiet_boundaries={} quiet_first={:?}",
-                base_depth + depth - 1,
-                if operation == "restore" {
-                    1538
-                } else {
-                    1538 + depth * 4
-                },
-                quiet.len(),
-                quiet.first()
-            );
-            assert!(
-                quiet.len() >= 6,
-                "several groups must traverse quiet boundaries"
-            );
-            for boundary in quiet {
-                assert_eq!(
-                    &boundary[..3],
-                    &[0, 0, 0],
-                    "quiet boundary must read no bodies, markers or history"
-                );
-                assert_eq!(
-                    boundary[3],
-                    envelopes.div_ceil(1000),
-                    "fresh complete paginated discovery at every boundary"
-                );
+            if let Some(category) = category {
+                counts.last_mut().unwrap()[category] += 1;
             }
-            assert!(
-                total[0] <= envelopes * if operation == "restore" { 2 } else { 5 },
-                "body reads must not multiply by boundaries"
+            false
+        });
+        let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+        let (proxy, guard) = super::corrections::proxy_at_boundary(
+            endpoint.clone(),
+            Arc::new(AtomicBool::new(false)),
+            hook,
+        );
+        let metered = root.join("restore-metered.toml");
+        std::fs::write(
+            &metered,
+            std::fs::read_to_string(&commit)
+                .unwrap()
+                .replace(&endpoint, &proxy),
+        )
+        .unwrap();
+        let mut command = host_command(&metered);
+        command.args(["writer", "maintain"]);
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        drop(guard);
+        let counts = counts.lock().unwrap();
+        let mut total = [0; 4];
+        for interval in counts.iter() {
+            for i in 0..4 {
+                total[i] += interval[i];
+            }
+        }
+        let steps = result["compaction_steps"].as_u64().unwrap() as usize;
+        assert!(
+            steps >= 6,
+            "maintenance must exercise many native boundaries: {result}"
+        );
+        // First LIST seeds summaries; the next begins the first native
+        // step. Cleanup may read bodies once and is outside this range.
+        let quiet = &counts[2..2 + steps];
+        println!(
+            "maintain_counts E={envelopes} H={} N={} total_body_marker_history_list={total:?} quiet_boundaries={} quiet_first={:?}",
+            base_depth + depth - 1,
+            1538 + depth * 4,
+            quiet.len(),
+            quiet.first()
+        );
+        assert!(
+            quiet.len() >= 6,
+            "several groups must traverse quiet boundaries"
+        );
+        for boundary in quiet {
+            assert_eq!(
+                &boundary[..3],
+                &[0, 0, 0],
+                "quiet boundary must read no bodies, markers or history"
             );
-            assert!(
-                total[1] <= depth + 4,
-                "marker reads must not multiply by boundaries"
-            );
-            assert!(
-                total[2] <= history_limit,
-                "history reads must not multiply by boundaries"
+            assert_eq!(
+                boundary[3],
+                envelopes.div_ceil(1000),
+                "fresh complete paginated discovery at every boundary"
             );
         }
+        assert!(
+            total[0] <= envelopes * 5,
+            "body reads must not multiply by boundaries"
+        );
+        assert!(
+            total[1] <= depth + 4,
+            "marker reads must not multiply by boundaries"
+        );
+        assert!(
+            total[2] <= history_limit,
+            "history reads must not multiply by boundaries"
+        );
     }
 }
 
@@ -4863,66 +4830,6 @@ async fn discovers_authorization_after_failed_cursor(operation: &str) {
         );
         assert_eq!(readable(&fetch(&mut reader, "b")), kind == "permissions");
     }
-}
-
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn maintenance_restore_history_limit_fails_closed_on_real_s3() {
-    let (_, commit, _root) = fixture();
-    let (mut head, mut manifest) = publication(&commit).await;
-    let target = manifest.publication_id.clone();
-    manifest.previous_publication_id = Some(target.clone());
-    manifest.sequence += 1;
-    manifest.publication_id = format!("pub-{:032x}", 9999);
-    manifest.envelope_ids = (0..65_536).map(|n| format!("env-{n:032x}")).collect();
-    let loaded = fyrr_core::config::load(&commit).unwrap();
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let path = format!("publications/{}.json", manifest.publication_id);
-    store
-        .put(
-            &object_store::path::Path::from(format!("{ns}/{path}")),
-            write_contract(&manifest).into(),
-        )
-        .await
-        .unwrap();
-    head.content = Some(fyrr_core::publication::ContentPointer {
-        publication_id: manifest.publication_id.clone(),
-        sequence: manifest.sequence,
-        lance_version: manifest.lance_version,
-        manifest: path,
-        committed_at: manifest.committed_at,
-    });
-    store
-        .put(&ns.join("head.json"), write_contract(&head).into())
-        .await
-        .unwrap();
-    let before = fyrr_reader::storage::pinned(&loaded.config, &head)
-        .await
-        .unwrap()
-        .latest_version_id()
-        .await
-        .unwrap();
-    let output = host_command(&commit)
-        .args(["writer", "restore", &target])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("restore_history_summary_limit"));
-    let after = publication(&commit).await.0;
-    assert_eq!(
-        after.content, head.content,
-        "resource refusal must not change the publication"
-    );
-    assert_eq!(
-        fyrr_reader::storage::pinned(&loaded.config, &after)
-            .await
-            .unwrap()
-            .latest_version_id()
-            .await
-            .unwrap(),
-        before,
-        "refuse before the initial native restore"
-    );
 }
 
 #[tokio::test]

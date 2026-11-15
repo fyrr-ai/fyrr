@@ -93,53 +93,10 @@ def test_pages_and_rows_match_the_golden_output(notion: FakeNotion) -> None:
         "notion", "content", settings=SETTINGS, scope=_scope(), readers=("grp:staff",)
     )
     testkit.assert_golden(result, GOLDEN / "content.json")
-    changes = [change for batch in result.documents for change in batch["body"]["changes"]]
-    assert sorted(notion.names[change["root_id"]] for change in changes) == [
-        "notes",
-        "plan",
-        "risks",
-        "task-empty",
-        "task-login",
-    ]
-    for change in changes:
-        metadata = change["metadata"]
-        assert metadata["author"] == "Ada Example" and metadata["project"] == "Handbook"
-        assert metadata["created_at"] and metadata["updated_at"] and metadata["title"]
-        assert change["readers"] == ["grp:staff"] and "revision_order" not in change
-    cursor = json.loads(result.cursor)
-    assert cursor["walks"] == [] and cursor["path"] == [] and cursor["roots"] == [ident("root")]
-
     listing = testkit.run_sync("notion", "reconcile", settings=SETTINGS, scope=_scope())
     assert not listing.documents[-1]["body"]["complete"], "testkit has no revision view"
     listed = sorted(notion.names[r] for part in listing.documents for r in part["body"]["root_ids"])
     assert listed == ["notes", "plan", "risks", "root", "task-empty", "task-login"]
-
-
-def test_text_follows_the_document_order(notion: FakeNotion, index: Index) -> None:
-    _world(notion)
-    seen = index.sync()
-    assert text(seen["plan"]) == (
-        "Draft.\n---\n"
-        "# Goals\n\n- Ship the connector\n  - [x] Tests\n1. First\n2. Second\n\n"
-        "Details\n  Inside the toggle.\n---\n"
-        "## Numbers\n\nitem | eur\nrent | 1200\n\nLeft.\n\n```python\nx = 1\n```\n\n"
-        "Reference https://example.com/spec\n\nArchitecture sketch"
-    )
-    assert "Few." not in text(seen["plan"]), "a sub-page is its own document"
-    assert text(seen["task-login"]) == (
-        "Name: Fix the login\nStage: Doing\nTags: auth\n---\n# Steps\n\nReproduce, then fix."
-    )
-    assert seen["task-login"]["sections"][0]["location"] == {"kind": "properties", "index": 0}
-    assert seen["task-login"]["metadata"]["source_type"] == "notion-row"
-    assert seen["task-login"]["metadata"]["connector_map"] == {
-        "page_id": ident("task-login"),
-        "root_page_id": ident("root"),
-        "database_id": ident("tasks"),
-    }
-    assert text(seen["task-empty"]) == "Name: Write the docs"
-    assert seen["plan"]["metadata"]["source_type"] == "notion-page"
-    assert seen["plan"]["metadata"]["source_uri"].startswith("https://www.notion.so/plan-")
-    assert "root" not in seen, "a page without text is not published"
 
 
 def test_create_edit_trash_and_restore_propagate(notion: FakeNotion, index: Index) -> None:

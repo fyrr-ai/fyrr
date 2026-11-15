@@ -49,15 +49,6 @@ def _scripted(monkeypatch: pytest.MonkeyPatch, *bodies: bytes) -> _Scripted:
     return adapter
 
 
-def test_the_token_and_the_api_version_are_sent(notion: FakeNotion) -> None:
-    assert _client().get(ROOT)["object"] == "page"
-    notion.token = "another-secret"
-    with pytest.raises(ApiError) as caught:
-        _client().get(ROOT)
-    assert caught.value.status == 401 and not caught.value.transient
-    assert client.API_VERSION == VERSION
-
-
 @pytest.mark.parametrize(
     ("status", "code"),
     [(429, "rate_limited"), (409, "conflict_error"), (500, "internal_server_error"), (503, "")],

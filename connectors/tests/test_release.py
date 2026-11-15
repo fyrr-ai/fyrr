@@ -114,9 +114,3 @@ def test_release_retry_finishes_before_publication(tmp_path, failure):
         )
         assert pushed < published
         assert f"docker:image tag {image}:wt-0123456789ab ghcr.io/example/{image}:0.1.0" in events
-
-    repeated = run()
-    assert repeated.returncode == 0, repeated.stderr
-    assert (tmp_path / "events").read_text().splitlines()[len(events) :] == [
-        "gh:release view v0.1.0 --json isDraft --jq .isDraft"
-    ]

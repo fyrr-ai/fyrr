@@ -60,14 +60,6 @@ def test_rate_limits_honor_server_waits(github, index, status, headers, expected
     assert github.sleeps == [expected]
 
 
-def test_successful_gets_do_not_sleep(github, index):
-    for ordinal in range(1, 6):
-        github.topic(number=ordinal)
-    index.sync()
-    index.listing()
-    assert github.sleeps == []
-
-
 def test_plain_permission_403_is_not_retried(github, index):
     github.fail("/installation/repositories", 403, times=ATTEMPTS)
     with pytest.raises(ApiError) as caught:

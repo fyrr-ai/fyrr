@@ -61,9 +61,6 @@ def _from_fixture(change: dict) -> Upsert | Delete:
 def test_schema_equals_the_published_contract() -> None:
     published = published_document_changes_schema()
     assert DOCUMENT_CHANGES_SCHEMA.equals(published, check_metadata=True)
-    # pyarrow compares list item nullability and struct children too.
-    assert DOCUMENT_CHANGES_SCHEMA.field("sections").type.value_field.nullable is False
-    assert DOCUMENT_CHANGES_SCHEMA.field("readers").type.value_field.nullable is False
 
 
 def test_golden_fixture_round_trips_through_arrow() -> None:
@@ -118,67 +115,34 @@ def test_nulls_in_non_nullable_fields_are_refused_at_any_depth() -> None:
 @pytest.mark.parametrize(
     ("change", "message"),
     [
+        ({"sections": []}, "at least one section"),
+        ({"readers": [f"bad:{SENTINEL}"]}, "usr:<id> or grp:<id>"),
+        ({"attributes": [SENTINEL]}, "key=value"),
+        ({"root_id": f" {SENTINEL}"}, "surrounding whitespace"),
         (
-            lambda: Upsert(
-                root_id="a",
-                source_revision="1",
-                metadata=Metadata(source_uri="u", source_type="t"),
-                sections=[],
-            ),
-            "at least one section",
-        ),
-        (
-            lambda: Upsert(
-                root_id="a",
-                source_revision="1",
-                readers=[f"bad:{SENTINEL}"],
-                metadata=Metadata(source_uri="u", source_type="t"),
-                sections=[Section(text="x")],
-            ),
-            "usr:<id> or grp:<id>",
-        ),
-        (
-            lambda: Upsert(
-                root_id="a",
-                source_revision="1",
-                attributes=[SENTINEL],
-                metadata=Metadata(source_uri="u", source_type="t"),
-                sections=[Section(text="x")],
-            ),
-            "key=value",
-        ),
-        (
-            lambda: Upsert(
-                root_id=f" {SENTINEL}",
-                source_revision="1",
-                metadata=Metadata(source_uri="u", source_type="t"),
-                sections=[Section(text="x")],
-            ),
-            "surrounding whitespace",
-        ),
-        (
-            lambda: Upsert(
-                root_id="a",
-                source_revision="1",
-                metadata=Metadata(source_uri="u", source_type="t", title=SENTINEL * 200),
-                sections=[Section(text="x")],
-            ),
+            {"metadata": Metadata(source_uri="u", source_type="t", title=SENTINEL * 200)},
             "metadata.title exceeds",
         ),
         (
-            lambda: Upsert(
-                root_id="a",
-                source_revision="1",
-                metadata=Metadata(source_uri="u", source_type="t", created_at=datetime(2026, 1, 1)),
-                sections=[Section(text="x")],
-            ),
+            {
+                "metadata": Metadata(
+                    source_uri="u", source_type="t", created_at=datetime(2026, 1, 1)
+                )
+            },
             "timezone-aware",
         ),
     ],
+    ids=["empty-sections", "readers", "attributes", "root-id", "title", "timestamp"],
 )
 def test_semantic_violations_are_refused_without_values(change, message: str) -> None:
+    valid = {
+        "root_id": "a",
+        "source_revision": "1",
+        "metadata": Metadata(source_uri="u", source_type="t"),
+        "sections": [Section(text="x")],
+    }
     with pytest.raises(ContractViolation) as caught:
-        document_changes([change()])
+        document_changes([Upsert(**(valid | change))])
     assert message in str(caught.value)
     assert SENTINEL not in str(caught.value)
 

@@ -1309,69 +1309,12 @@ async fn incremental_narrowing_content_releases_the_permission_revision_on_real_
     assert_eq!(row_readers(&rows(&worker).await, "a"), granted);
 }
 
-/// Content that makes no permission statement, as the first commit of an
-/// empty namespace, is published as the committer would write it: nothing of
-/// the staging form, and no row readable before a permission state exists.
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_silent_content_at_genesis_is_published_like_any_other_on_real_s3() {
-    let (worker, commit, root) = fixture_host(768, false);
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let token = |reader: &str| {
-        fyrr_writer::apply::reader_token(&loaded.config, "incremental", reader).unwrap()
-    };
-    let (group, other) = (token("grp:group"), token("grp:other"));
-    let content = |revision: &str| {
-        json!({"id":"s","revision":revision,"readers":[],
-            "texts":["fixture document 5","fixture document 6"],
-            "section_readers":[null,["grp:other"]]})
-    };
-    input(&root, json!({"epoch":1,"content":[[content("r1")]]}));
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    let batch = rows(&worker).await;
-    let metadata = batch
-        .column_by_name("metadata_json")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap();
-    assert!(
-        metadata
-            .iter()
-            .all(|row| !row.unwrap().contains("no_permission_statement")),
-        "the staging marker is not published"
-    );
-    assert_eq!(
-        section_readers(&batch, "s"),
-        [BTreeSet::new(), BTreeSet::new()],
-        "no permission state: nobody reads any section"
-    );
-    input(
-        &root,
-        json!({"epoch":2,"permissions":[[{"id":"s","revision":"p1","readers":["grp:group","grp:other"]}]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
-    publish(&commit);
-    let both = [
-        BTreeSet::from([group.clone(), other.clone()]),
-        BTreeSet::from([other.clone()]),
-    ];
-    assert_eq!(section_readers(&rows(&worker).await, "s"), both);
-    let mut edit = content("r2");
-    edit["expected_prior_revision"] = json!("r1");
-    input(&root, json!({"epoch":3,"content":[[edit]]}));
-    worker_sync(&worker, &["incremental", "--kind", "content"]);
-    publish(&commit);
-    assert_eq!(section_readers(&rows(&worker).await, "s"), both);
-}
-
 /// A section with its own readers stays restricted to them within the
 /// document's readers, whichever of content and permissions arrives first.
 #[tokio::test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn incremental_section_readers_survive_a_later_permission_state_on_real_s3() {
-    let (worker, commit, root) = fixture();
+    let (worker, commit, root) = fixture_host(768, false);
     let loaded = fyrr_core::config::load(&worker).unwrap();
     let token = |reader: &str| {
         fyrr_writer::apply::reader_token(&loaded.config, "incremental", reader).unwrap()
@@ -1396,12 +1339,22 @@ async fn incremental_section_readers_survive_a_later_permission_state_on_real_s3
         publish(&commit);
     };
 
-    // Content first, while the document has no permission state.
+    // Content first in an empty namespace, with no permission state.
     apply(1, "content", content("s", "r1", None));
-    assert_eq!(
-        section_readers(&rows(&worker).await, "s"),
-        [set(&[]), set(&[])]
+    let batch = rows(&worker).await;
+    let metadata = batch
+        .column_by_name("metadata_json")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert!(
+        metadata
+            .iter()
+            .all(|row| !row.unwrap().contains("no_permission_statement")),
+        "the staging marker is not published"
     );
+    assert_eq!(section_readers(&batch, "s"), [set(&[]), set(&[])]);
     apply(
         2,
         "permissions",

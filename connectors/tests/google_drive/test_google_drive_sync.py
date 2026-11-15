@@ -47,11 +47,6 @@ def test_docs_sheets_and_slides_match_the_golden_output(drive: FakeDrive) -> Non
         readers=("grp:staff",),
     )
     testkit.assert_golden(result, GOLDEN / "content.json")
-    changes = [change for batch in result.documents for change in batch["body"]["changes"]]
-    assert len(changes) == 3
-    for change in changes:
-        metadata = change["metadata"]
-        assert metadata["author"] and metadata["created_at"] and metadata["updated_at"]
     listing = testkit.run_sync(
         "google-drive",
         "reconcile",

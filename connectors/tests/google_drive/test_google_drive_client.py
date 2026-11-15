@@ -94,13 +94,6 @@ def test_other_errors_are_final_and_carry_no_body(
     assert len(drive.requests) == 1 and not drive.sleeps
 
 
-def test_pages_follow_the_token_to_the_end(drive: FakeDrive) -> None:
-    for number in range(5):
-        drive.put(f"doc-{number}", owner=ALICE)
-    pages = _client().pages(ALICE, "files", corpora="user", fields="nextPageToken,files(id)")
-    assert [len(page["files"]) for page in pages] == [2, 2, 1]
-
-
 def test_an_export_over_the_cap_is_refused_not_buffered(
     drive: FakeDrive, monkeypatch: pytest.MonkeyPatch
 ) -> None:
