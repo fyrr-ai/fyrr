@@ -70,6 +70,9 @@ async fn maintain_held(
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
 ) -> Result<serde_json::Value> {
+    // Obsolete applied objects must not exhaust history's resident allowance
+    // before the cleanup that can remove them becomes reachable.
+    let mut envelopes = crate::envelopes::cleanup_held(config, lease).await?;
     // Recover the previous command's private suffix and reconcile configuration
     // once. Quiet native boundaries need only fresh authorization discovery.
     command_start(config, lease, history, false).await?;
@@ -147,7 +150,7 @@ async fn maintain_held(
     let staging = local_staging::plan(config).await?;
     removed += local_staging::remove(config, lease, staging).await?;
     boundary(config, lease, history).await?;
-    let envelopes = crate::envelopes::cleanup_held(config, lease).await?;
+    envelopes += crate::envelopes::cleanup_held(config, lease).await?;
     let head = boundary(config, lease, history).await?;
     if head.content.is_some() {
         let dataset = pinned(config, &head).await?;

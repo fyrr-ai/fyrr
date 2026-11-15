@@ -31,6 +31,19 @@ scratch-file failures refuse with `restore_working_space_exhausted`,
 including during maintenance; the active-operation summary limit is
 reported as `restore_history_summary_limit`.
 
+Maintenance, restore and rollback first scan the envelope log and run one
+cleanup pass before loading active summaries. Each pass limits deletions
+using `writer.commit.group_max_rows`. It preserves pending work,
+unresolved rejections and the latest applied complete reads. If one pass
+is insufficient, repeated invocations still make cleanup progress.
+Cleanup does not remove receipts.
+
+Recent or otherwise protected envelopes remain subject to the aggregate
+active-operation limit: roughly 32,000 retained envelope objects when
+other working sets are small. If a protected log approaches that size,
+lower `writer.max_envelope_age` (default `3d`, also the pending-envelope
+expiry) or lengthen the source sync intervals.
+
 ## Monitoring
 
 - `fyrr writer status` prints the serving `content_sequence`, envelope and

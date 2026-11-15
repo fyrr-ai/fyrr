@@ -76,6 +76,7 @@ pub(super) async fn restore_held(
 ) -> Result<serde_json::Value> {
     restore_index::Index::scratch(config)?;
     let mut history = commit::RestoreHistory::new(config)?;
+    crate::envelopes::cleanup_held(config, lease).await?;
     let head = command_start(config, lease, &mut history, true).await?;
     let retained = retained(config, &head).await?;
     // Pin rollback's target once too: an authorization publication must not

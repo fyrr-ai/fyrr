@@ -252,7 +252,17 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
     use fyrr_core::connector::SyncKind;
     use object_store::ObjectStoreExt;
 
-    let setup = setup_on(Backend::Local);
+    let fixture_dir = std::env::var_os("FYRR_TEST_HISTORY_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_TARGET_TMPDIR")));
+    let setup = setup_at_on(
+        fixture_dir.join(format!(
+            "fyrr-history-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        )),
+        Backend::Local,
+    );
     for row in 1..768 {
         std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
     }
@@ -261,13 +271,23 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
     publish_initial(&worker, &commit, &root);
     let (mut head, template) = publication(&commit).await;
     let oldest = template.envelope_ids.first().unwrap().clone();
-    let (replay_path, replay) = envelopes(&worker)
-        .await
-        .into_iter()
-        .find(|(_, e)| e.source_id == "incremental" && e.kind == SyncKind::Content)
-        .unwrap();
     let loaded = fyrr_core::config::load(&commit).unwrap();
     let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let Some(StorageBackend::Local { root: storage }) = loaded.config.storage.backend() else {
+        panic!("local history fixture");
+    };
+    let member = envelopes(&worker)
+        .await
+        .into_iter()
+        .find(|(_, e)| {
+            e.source_id == "incremental"
+                && e.kind == SyncKind::Members
+                && fyrr_writer::apply::complete_read(e)
+        })
+        .unwrap()
+        .1;
+    let mut cleaned_replay = None;
+    let mut latest_applied = None;
     let mut previous = template.publication_id.clone();
     // Valid immutable history, without thousands of unnecessary native writes.
     // Lifetime receipt evidence exceeds the former aggregate 65,536-entry cap.
@@ -276,9 +296,43 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
         manifest.sequence += offset;
         manifest.publication_id = format!("pub-{:032x}", 1_000_000 + offset);
         manifest.previous_publication_id = Some(previous);
-        manifest.envelope_ids = (0..128_u64)
-            .map(|id| format!("env-{:032x}", 1_000_000 + offset * 128 + id))
-            .collect();
+        manifest.envelope_ids.clear();
+        for id in 0..128_u64 {
+            let mut envelope = member.clone();
+            envelope.sequence = 1_000_000 + offset * 128 + id;
+            envelope.envelope_id = fyrr_core::envelope::envelope_id(
+                &envelope.namespace,
+                &envelope.source_id,
+                envelope.kind,
+                envelope.sequence,
+                envelope.rejection_generation,
+                envelope.cursor.start.as_deref(),
+            );
+            envelope.created_at = chrono::Utc::now() - chrono::Duration::days(4);
+            if let fyrr_core::envelope::EnvelopePayload::Members(payload) = &mut envelope.payload {
+                payload.read_at = envelope.created_at;
+            }
+            envelope.validate().unwrap();
+            if (offset - 1) * 128 + id < 33_000 {
+                let path = namespace
+                    .clone()
+                    .join("envelopes")
+                    .join(format!("{}.json", envelope.envelope_id));
+                store
+                    .put(&path, write_contract(&envelope).into())
+                    .await
+                    .unwrap();
+                if cleaned_replay.is_none() {
+                    cleaned_replay = Some((
+                        path.clone(),
+                        envelope.clone(),
+                        manifest.publication_id.clone(),
+                    ));
+                }
+                latest_applied = Some(path);
+            }
+            manifest.envelope_ids.push(envelope.envelope_id);
+        }
         manifest.validate().unwrap();
         store
             .put(
@@ -300,9 +354,28 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
         .put(&namespace.join("head.json"), write_contract(&head).into())
         .await
         .unwrap();
-    for _ in 0..2 {
-        command(&commit, &["writer", "maintain"]);
+    input(
+        &root,
+        json!({"epoch":2,"permissions":[[{"id":"a","revision":"p2","readers":[]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions", "--full"]);
+    for attempt in 0..2 {
+        let result = command(&commit, &["writer", "maintain"]);
+        if attempt == 0 {
+            assert!(result["deleted_envelopes"].as_u64().unwrap() >= 32_999);
+        }
     }
+    store.head(&latest_applied.unwrap()).await.unwrap();
+    let (replay_path, replay, replay_publication) = cleaned_replay.unwrap();
+    assert!(matches!(
+        store.head(&replay_path).await,
+        Err(object_store::Error::NotFound { .. })
+    ));
+    assert_eq!(
+        roots(&rows(&worker).await),
+        ["b"],
+        "startup cleanup preserves the queued revoke and maintenance applies it"
+    );
     let receipt = command(&commit, &["writer", "commit", "--receipt", &oldest]);
     assert_eq!(receipt["publication_id"], template.publication_id);
     let before_replay = publication(&commit).await.0.content.unwrap().sequence;
@@ -316,18 +389,14 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
         before_replay,
         "a cleaned envelope reappearing in the log is still already published"
     );
-
-    input(
-        &root,
-        json!({"epoch":2,"permissions":[[{"id":"a","revision":"p2","readers":[]}]]}),
-    );
-    worker_sync(&worker, &["incremental", "--kind", "permissions", "--full"]);
-    command(&commit, &["writer", "maintain"]);
     assert_eq!(
-        roots(&rows(&worker).await),
-        ["b"],
-        "maintenance drains the revoke and purges its unreadable chunks"
+        command(
+            &commit,
+            &["writer", "commit", "--receipt", &replay.envelope_id]
+        )["publication_id"],
+        replay_publication
     );
+
     command(&commit, &["writer", "restore", &template.publication_id]);
     assert_eq!(
         roots(&rows(&worker).await),
@@ -338,4 +407,6 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
         command(&commit, &["writer", "commit", "--receipt", &oldest])["publication_id"],
         template.publication_id
     );
+    std::fs::remove_dir_all(storage).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }

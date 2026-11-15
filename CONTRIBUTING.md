@@ -111,6 +111,10 @@ The `local-storage` row needs no fixture, only the development secrets that
 `local_storage` in `scripts/ci` exports (`FYRR_TEST_LOCAL_SECRET`,
 `FYRR_TEST_ENCRYPTION_KEY`, `FYRR_ROUTING_TEST_BINARY`).
 
+The large local-history fixture defaults to this checkout's `target/tmp`.
+`FYRR_TEST_HISTORY_TMPDIR` can place it on another writable local file
+system with user xattrs. It removes its fixture and storage on success.
+
 The fixture scripts touch only the containers they labelled for this
 checkout. Never prune Docker or remove containers, images or volumes you did
 not create.
