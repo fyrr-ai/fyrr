@@ -43,6 +43,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(302);
 
 #[derive(Clone)]
 struct HttpState {
+    admission: Arc<admission::Admission>,
     service: crate::serve::McpService,
     config: Config,
     public: reqwest::Url,
@@ -129,56 +130,6 @@ fn bearer(request: &Request) -> Result<&str, ()> {
         return Err(());
     }
     Ok(token)
-}
-async fn admission(
-    config: &Config,
-    subject: &crate::auth::AuthenticatedSubject,
-) -> Result<
-    (
-        String,
-        Vec<String>,
-        fyrr_core::publication::GenerationPointer,
-    ),
-    ReaderError,
-> {
-    use crate::storage::{namespace_store, read_contract};
-    let (store, root) = namespace_store(config)?;
-    let head: fyrr_core::publication::ServingHead =
-        read_contract(store.as_ref(), &root.clone().join("head.json")).await?;
-    let now = chrono::Utc::now();
-    if head.namespace != config.namespace.name
-        || subject.expires <= now.timestamp()
-        || !crate::storage::directory_fresh(config, head.freshness.directory, now)
-    {
-        return Err(AuthorizationUnavailable);
-    }
-    let identity: fyrr_core::identity::IdentityArtifact =
-        crate::storage::artifact(store.as_ref(), &root, &head.identity).await?;
-    if identity.namespace != config.namespace.name
-        || identity.generation != head.identity.generation
-    {
-        return Err(AuthorizationUnavailable);
-    }
-    let principal = identity
-        .principal_for_subject(&subject.key)
-        .ok_or(AuthorizationUnavailable)?;
-    if principal.tokens.is_empty()
-        || principal.tokens.len() > config.identity.max_tokens_per_user as usize
-    {
-        return Err(AuthorizationUnavailable);
-    }
-    let groups = principal
-        .groups
-        .iter()
-        .map(|i| {
-            identity
-                .tokens
-                .get(*i as usize)
-                .cloned()
-                .ok_or(AuthorizationUnavailable)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((principal.key.clone(), groups, head.identity))
 }
 async fn boundary(State(state): State<HttpState>, mut request: Request, next: Next) -> Response {
     request.extensions_mut().insert(tokio::time::Instant::now());
@@ -386,9 +337,10 @@ async fn authenticate_mcp(
         }
         return Err(StatusCode::ACCEPTED.into_response());
     }
-    let (principal, groups, identity) = timeout_at(deadline, admission(&state.config, &subject))
-        .await?
-        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable))?;
+    let (principal, groups, identity) =
+        timeout_at(deadline, state.admission.authorize(&state.config, &subject))
+            .await?
+            .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable))?;
     subject.identity = Some(identity);
     let mut limits = timeout_at(deadline, state.limits.lock()).await?;
     limits.retain(|_, (t, _)| t.elapsed() < RATE_WINDOW);
@@ -477,7 +429,7 @@ async fn readiness(State(state): State<HttpState>) -> Response {
     if !state.auth.ready().await {
         return error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable);
     }
-    let Ok(Some(head)) = crate::storage::optional_head(&state.config).await else {
+    let Ok(head) = state.admission.head().await else {
         return error(StatusCode::SERVICE_UNAVAILABLE, PublicationUnavailable);
     };
     let now = chrono::Utc::now();
@@ -486,23 +438,14 @@ async fn readiness(State(state): State<HttpState>) -> Response {
     {
         return error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable);
     }
-    if head.freshness.directory.is_none() {
-        let identity = async {
-            let (store, root) = crate::storage::namespace_store(&state.config)?;
-            crate::storage::artifact::<fyrr_core::identity::IdentityArtifact>(
-                store.as_ref(),
-                &root,
-                &head.identity,
-            )
+    if head.freshness.directory.is_none()
+        && state
+            .admission
+            .identity(&state.config, &head.identity)
             .await
-        }
-        .await;
-        if !identity.is_ok_and(|identity| {
-            identity.namespace == state.config.namespace.name
-                && identity.generation == head.identity.generation
-        }) {
-            return error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable);
-        }
+            .is_err()
+    {
+        return error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable);
     }
     let serde_json::Value::Object(mut readiness) = state.service.publication().await else {
         unreachable!("serving readiness is an object");
@@ -560,8 +503,13 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&h.listen)
         .await
         .map_err(|_| TransportUnavailable)?;
+    let admission = Arc::new(admission::Admission::new(
+        reader.control_store.clone(),
+        reader.control_root.clone(),
+    ));
     let service = crate::serve::start(reader).await?;
     let state = HttpState {
+        admission,
         service: service.clone(),
         config: config.clone(),
         public: public.clone(),
@@ -671,3 +619,6 @@ mod response_memory_tests;
 #[cfg(test)]
 #[path = "http/scheduler_tests.rs"]
 mod scheduler_tests;
+
+#[path = "http/admission.rs"]
+mod admission;

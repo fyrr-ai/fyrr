@@ -117,7 +117,12 @@
       "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::lifetime_receipts_exceed_the_active_summary_limit",
       "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::discarded_prefix_never_becomes_a_validated_anchor",
       "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::sql_failure_discards_all_cached_evidence",
-      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::unavailable_working_space_refuses_growth_and_poisons_the_index"
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::unavailable_working_space_refuses_growth_and_poisons_the_index",
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::repeated_admission_reads_fresh_head_without_refetching_identity",
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::changed_identity_binding_is_observed_on_next_request",
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::cached_identity_never_skips_token_or_directory_expiry",
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::invalid_identity_digest_never_reuses_cached_grants",
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::identity_namespace_and_generation_must_match_the_fresh_head"
     ],
     "children": {
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::lance_append_child_process": [

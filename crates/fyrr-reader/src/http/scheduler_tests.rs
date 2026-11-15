@@ -17,11 +17,16 @@ async fn readiness_refuses_failed_scheduler_on_real_s3() {
         identity: Some(reader.head.identity.clone()),
         expires: chrono::Utc::now().timestamp() + 600,
     };
+    let admission = Arc::new(admission::Admission::new(
+        reader.control_store.clone(),
+        reader.control_root.clone(),
+    ));
     let service = crate::serve::start(reader).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     config.reader.http.as_mut().unwrap().public_url = format!("{url}/mcp");
     let state = HttpState {
+        admission,
         service: service.clone(),
         public: config
             .reader
