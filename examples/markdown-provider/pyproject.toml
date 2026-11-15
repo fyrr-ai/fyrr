@@ -13,7 +13,7 @@ dependencies = ["fyrr-connectors>=0.1,<0.2"]
 markdown-dir = "fyrr_provider_markdown:provider_info"
 
 [dependency-groups]
-dev = ["fyrr-connectors[testkit]", "pytest==9.1.1", "ruff==0.16.10"]
+dev = ["fyrr-connectors[testkit]", "pytest==9.1.1", "ruff==0.17.4"]
 
 [build-system]
 requires = ["uv_build>=0.12.21,<0.13"]
