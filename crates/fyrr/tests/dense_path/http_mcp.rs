@@ -844,8 +844,8 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     *issuer.state.lock().unwrap() = (200, issuer.jwks.clone());
     flood_reader.stop().await;
 
-    // Expired trust forces a slow refresh; a second request's deadline must
-    // include time queued on that same authenticator mutex, before any S3 work.
+    // Expired trust forces a slow refresh; concurrent requests fail closed
+    // immediately without doing authorization or tool work.
     let mut auth_reader = Reader::start(&config, &root, &issuer, 1000, 1000).await;
     tokio::time::sleep(Duration::from_millis(1100)).await;
     *issuer.state.lock().unwrap() = (408, issuer.jwks.clone());
@@ -874,11 +874,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
             json!({"name":"search","arguments":{"query":"fixture query","deadline_ms":100}}),
         )
         .await;
-    assert_eq!(short.status(), 408);
-    assert_eq!(
-        short.json::<Value>().await.unwrap()["error"],
-        "deadline_exceeded"
-    );
+    assert_eq!(short.status(), 503);
     assert!(started.elapsed() < Duration::from_millis(1100));
     assert_eq!(
         heads.load(Ordering::SeqCst),
@@ -1163,6 +1159,31 @@ async fn identity_http_authentication_isolation_rate_limits_drain_and_refresh_on
         1,
         "single-flight refresh"
     );
+    // A slow unknown-kid refresh must not block a still-trusted key.
+    tokio::time::sleep(Duration::from_millis(110)).await;
+    *issuer.state.lock().unwrap() = (408, issuer.jwks.clone());
+    let before = issuer.requests.load(Ordering::SeqCst);
+    let refresh = reader.rpc(&unknown, 900, "tools/list", json!({}));
+    let current = async {
+        while issuer.requests.load(Ordering::SeqCst) == before {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let started = std::time::Instant::now();
+        let good = issuer.token("subject-0", json!({}), json!({}));
+        assert_eq!(
+            reader
+                .rpc(&good, 901, "tools/list", json!({}))
+                .await
+                .status(),
+            200
+        );
+        assert!(started.elapsed() < Duration::from_millis(500));
+    };
+    let (miss, ()) = tokio::join!(refresh, current);
+    // The initiating request outlives the one-second trust validity.
+    assert_eq!(miss.status(), 503);
+    assert_eq!(issuer.requests.load(Ordering::SeqCst) - before, 1);
+    *issuer.state.lock().unwrap() = (200, issuer.jwks.clone());
     // Rotation uses only the pinned endpoint, and rejects the retired kid.
     let mut rotated = issuer.jwks.clone();
     rotated["keys"][0]["kid"] = json!("rotated");

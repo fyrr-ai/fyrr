@@ -53,22 +53,31 @@ pub(crate) struct Authenticator {
     oidc: OidcConfig,
     client: reqwest::Client,
     trust: Arc<Mutex<Trust>>,
+    refresh: Arc<Mutex<()>>,
 }
 impl Authenticator {
     /// Readiness needs fresh pinned trust; uptime alone is insufficient.
     pub(crate) async fn ready(&self) -> bool {
-        let mut trust = self.trust.lock().await;
+        let trust = self.trust.lock().await;
         let fresh = trust
             .fetched
             .is_some_and(|t| t.elapsed() < self.oidc.jwks_validity.as_duration());
+        drop(trust);
         if !fresh {
-            let _ = self.refresh(&mut trust).await;
+            let _ = self.refresh().await;
         }
-        trust
+        self.trust
+            .lock()
+            .await
             .fetched
             .is_some_and(|t| t.elapsed() < self.oidc.jwks_validity.as_duration())
     }
-    async fn refresh(&self, trust: &mut Trust) -> Result<()> {
+    async fn refresh(&self) -> Result<()> {
+        // Unknown keys cannot queue refreshes or block verification of current keys.
+        let Ok(_refresh) = self.refresh.try_lock() else {
+            return Ok(());
+        };
+        let mut trust = self.trust.lock().await;
         if trust
             .attempted
             .is_some_and(|t| t.elapsed() < self.oidc.jwks_refresh_interval.as_duration())
@@ -76,7 +85,9 @@ impl Authenticator {
             return Ok(());
         }
         trust.attempted = Some(Instant::now());
+        drop(trust);
         let keys = self.fetch_keys().await?;
+        let mut trust = self.trust.lock().await;
         trust.keys = Some(keys);
         trust.fetched = Some(Instant::now());
         Ok(())
@@ -90,6 +101,7 @@ impl Authenticator {
             .build()
             .map_err(|_| ConfigurationInvalid)?;
         Ok(Self {
+            refresh: Arc::new(Mutex::new(())),
             config: config.clone(),
             oidc,
             client,
@@ -114,8 +126,7 @@ impl Authenticator {
             .as_deref()
             .filter(|k| !k.is_empty() && k.len() <= 128 && k.bytes().all(|b| b.is_ascii_graphic()))
             .ok_or(Unauthorized)?;
-        // Keep the lock through refresh: concurrent misses produce one pinned request.
-        let mut trust = self.trust.lock().await;
+        let trust = self.trust.lock().await;
         let fresh = trust
             .fetched
             .is_some_and(|t| t.elapsed() < self.oidc.jwks_validity.as_duration());
@@ -124,16 +135,19 @@ impl Authenticator {
                 .iter()
                 .any(|k| k.common.key_id.as_deref() == Some(kid))
         });
+        drop(trust);
         if !fresh || !known {
-            let _ = self.refresh(&mut trust).await;
+            let _ = self.refresh().await;
         }
+        let trust = self.trust.lock().await;
         if !trust
             .fetched
             .is_some_and(|t| t.elapsed() < self.oidc.jwks_validity.as_duration())
         {
             return Err(AuthorizationUnavailable);
         }
-        let keys = trust.keys.as_ref().ok_or(AuthorizationUnavailable)?;
+        let keys = trust.keys.clone().ok_or(AuthorizationUnavailable)?;
+        drop(trust);
         let mut matches = keys
             .keys
             .iter()

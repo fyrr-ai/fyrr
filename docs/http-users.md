@@ -218,3 +218,8 @@ endpoints with two separate credentials; a non-loopback listener requires
 TLS termination in front of it, declared with `tls_terminated = true`. All
 keys are in [identity](identity.md) and
 [reader settings](reader-writer.md#readerhttp).
+
+A signing key withdrawn by the identity provider remains trusted for up to
+`jwks_validity` after the last successful JWKS fetch. Stale keys fail closed
+when refresh fails. Unknown key IDs trigger at most one refresh attempt per
+`jwks_refresh_interval`; an in-flight refresh does not block current keys.
