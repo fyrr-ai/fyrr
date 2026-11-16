@@ -1,34 +1,61 @@
 version: 2
 updates:
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: weekly
-    groups:
-      actions:
-        patterns: ["*"]
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
+    groups:
+      cargo:
+        patterns: ["*"]
+    # Lance 14.0.3 exposes Arrow 58, DataFusion 54 and object_store 0.14
+    # types. Upgrade these together; Arrow PyArrow 58 also requires PyO3 0.28.
+    ignore:
+      - dependency-name: "arrow-*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: lance
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "lance-*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: datafusion
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "datafusion-*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: object_store
+        versions: [">=0.15"]
+      - dependency-name: pyo3
+        versions: [">=0.29"]
+      - dependency-name: "pyo3-*"
+        versions: [">=0.29"]
   - package-ecosystem: uv
-    directory: /connectors
+    directories: [/connectors, /examples/markdown-provider]
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
-  - package-ecosystem: uv
-    directory: /examples/markdown-provider
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-  - package-ecosystem: docker
-    directory: /docker
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
+    groups:
+      python:
+        patterns: ["*"]
   - package-ecosystem: bun
     directory: /site
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
+    groups:
+      site:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 1
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 1
+    groups:
+      docker:
+        patterns: ["*"]

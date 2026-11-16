@@ -5,7 +5,9 @@ name: ci
 on:
   push:
     branches: ["main"]
+    paths-ignore: ["docs/**", "site/**", "**/*.md", ".github/ISSUE_TEMPLATE/**"]
   pull_request:
+    paths-ignore: ["docs/**", "site/**", "**/*.md", ".github/ISSUE_TEMPLATE/**"]
   schedule:
     - cron: "17 2 * * *"
   workflow_dispatch:
@@ -13,6 +15,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: never
