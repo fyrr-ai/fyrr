@@ -33,7 +33,6 @@ on a single host a [local directory](configuration.md#local-storage):
 | envelope | A durable batch a sync has validated and embedded, waiting for the committer to publish it. |
 | mirror | The reader's local cache of immutable published files (`reader.mirror_path`). |
 | admission | The reader's check, at the start of every request, that the caller is known and the pinned publication may be served. |
-
 | Lance | The table storage and retrieval engine used for published text, vectors and indexes. |
 | `root_id` / `record_id` | A source's stable document ID / the ID of one text record within that document. |
 | principal / canonical user | The deployment's user identity to which source accounts and authenticated subjects are linked. |
