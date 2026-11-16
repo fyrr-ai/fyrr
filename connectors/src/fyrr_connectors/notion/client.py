@@ -148,10 +148,11 @@ class Client:
                 code = "body"  # Not Notion's JSON: a proxy in between.
                 continue
             code = _code(response)
+            retries.error = ApiError(status, code, transient=True)
             if retries.policy.retryable(status):
                 after = _http.retry_after(response.headers.get("Retry-After", ""))
                 if after is not None:
-                    retries.wait = after
+                    retries.wait = max(after, retries.wait)
                 continue
             raise ApiError(status, code)
         raise ApiError(status, code, transient=True)

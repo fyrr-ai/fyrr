@@ -3909,6 +3909,26 @@
       "python:connectors/tests/google_drive/test_google_drive_client.py::test_large_domain_counts_members_as_edges[20]": {
         "tier": "quick",
         "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_cumulative_retry_wait_budget_exhaustion": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_retry_after_does_not_shorten_backoff[0]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_retry_after_does_not_shorten_backoff[Wed, 21 Oct 2015 07:28:00 GMT]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/notion/test_notion_client.py::test_retry_after_does_not_shorten_backoff[0]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/notion/test_notion_client.py::test_retry_after_does_not_shorten_backoff[Wed, 21 Oct 2015 07:28:00 GMT]": {
+        "tier": "quick",
+        "seconds": null
       }
     }
   },

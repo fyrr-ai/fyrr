@@ -44,8 +44,9 @@ def test_rate_limits_and_server_errors_are_retried(
 def test_retry_after_is_honored_and_bounded(drive: FakeDrive) -> None:
     drive.fail(_files, 429, retry_after="7")
     drive.fail(_files, 429, retry_after="900")
-    with pytest.raises(ApiError):
+    with pytest.raises(ApiError) as caught:
         _client().get(ALICE, "files", corpora="user")
+    assert caught.value.status == 429 and caught.value.transient
     assert 7 <= drive.sleeps[0] < 8.01
     assert len(drive.sleeps) == 1
 
@@ -447,3 +448,33 @@ def test_folders_budget_tracks_retained_evidence(monkeypatch):
     with pytest.raises(ValueError, match="google_drive_aggregate_limit"):
         folders.learn(feed, {"id": "second"})
     assert (ALICE, "second") not in folders._parents
+
+
+@pytest.mark.parametrize("header", ["0", "Wed, 21 Oct 2015 07:28:00 GMT"])
+def test_retry_after_does_not_shorten_backoff(drive, header):
+    drive.fail(_files, 429, retry_after=header, times=2)
+    _client().get(ALICE, "files", corpora="user")
+    assert 1 <= drive.sleeps[0] <= 2
+    assert 2 <= drive.sleeps[1] <= 3
+
+
+def test_cumulative_retry_wait_budget_exhaustion(monkeypatch):
+    from fyrr_connectors import _http
+
+    now, sleeps = [0.0], []
+
+    def sleep(delay):
+        sleeps.append(delay)
+        now[0] += delay
+
+    monkeypatch.setattr(_http.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(_http.time, "sleep", sleep)
+    retries = _http.Retries(_http.RetryPolicy(budget=5), ValueError("budget"))
+    attempts = iter(retries)
+    next(attempts)
+    retries.wait = 3
+    next(attempts)
+    retries.wait = 3
+    with pytest.raises(ValueError, match="budget"):
+        next(attempts)
+    assert sleeps == [3] and now[0] == 3

@@ -67,8 +67,9 @@ def test_retry_after_is_honored_and_bounded(notion: FakeNotion) -> None:
     notion.fail(_any, 429, "rate_limited", retry_after="900")
     notion.fail(_any, 429, "rate_limited", retry_after="0")
     notion.fail(_any, 429, "rate_limited", retry_after="soon")
-    with pytest.raises(ApiError):
+    with pytest.raises(ApiError) as caught:
         _client().get(ROOT)
+    assert caught.value.status == 429 and caught.value.transient
     assert 7 <= notion.sleeps[0] < 8.01
     assert len(notion.sleeps) == 1
 
@@ -188,3 +189,11 @@ def test_an_answer_that_is_not_json_is_retried(monkeypatch: pytest.MonkeyPatch) 
     with pytest.raises(ApiError) as caught:
         _client().get("pages/x")
     assert caught.value.transient and str(caught.value) == "notion_api_200_body"
+
+
+@pytest.mark.parametrize("header", ["0", "Wed, 21 Oct 2015 07:28:00 GMT"])
+def test_retry_after_does_not_shorten_backoff(notion, header):
+    notion.fail(_any, 429, "rate_limited", retry_after=header, times=2)
+    _client().get(ROOT)
+    assert 1 <= notion.sleeps[0] <= 2
+    assert 2 <= notion.sleeps[1] <= 3

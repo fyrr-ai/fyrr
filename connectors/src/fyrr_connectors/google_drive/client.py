@@ -136,10 +136,11 @@ class Client:
             except requests.RequestException:
                 status, reason = 0, "transport"
                 continue
+            retries.error = ApiError(status, reason, transient=True)
             if retries.policy.retryable(status) or reason in RATE_LIMIT_REASONS:
                 delay = _http.retry_after(retry_after)
                 if delay is not None:
-                    retries.wait = delay
+                    retries.wait = max(delay, retries.wait)
                 continue
             raise ApiError(status, reason, location)
         raise ApiError(status, reason, transient=True)
