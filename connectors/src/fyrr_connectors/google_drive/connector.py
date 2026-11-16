@@ -83,7 +83,7 @@ def _instant(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
-class GoogleDrive(Connector):
+class GoogleDrive(Connector[Settings, Scope]):
     Settings = Settings
     Scope = Scope
 
@@ -405,8 +405,11 @@ class GoogleDrive(Connector):
         """The file's readers; None when it vanished since the change was
         read. Any other failed read raises: nothing is derived from it."""
         listed = file.get("permissions")
-        inline = feed.drive_id is None and listed is not None
-        if not inline or {p.get("id") for p in listed} != set(file.get("permissionIds") or ()):
+        if (
+            feed.drive_id is not None
+            or listed is None
+            or {p.get("id") for p in listed} != set(file.get("permissionIds") or ())
+        ):
             try:
                 listed = self._listed_permissions(feed.subject, file["id"])
             except ApiError as error:

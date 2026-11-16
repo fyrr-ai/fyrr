@@ -13,7 +13,16 @@ import re
 import types
 import typing
 from collections.abc import Mapping, Sequence
-from typing import Any, ClassVar, Literal, Self, get_args, get_origin, get_type_hints
+from typing import (
+    Any,
+    ClassVar,
+    Literal,
+    Self,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 #: Schema keyword marking a secret property.
@@ -280,9 +289,9 @@ def _convert(annotation: Any, value: Any, path: str, constraints: Mapping[str, A
             if high is not None and value > high:
                 raise ConfigError(path, f"must be at most {high}")
         pattern = constraints.get("pattern") if annotation is str else None
-        if pattern is not None and not re.search(pattern, value):
+        if pattern is not None and not re.search(pattern, cast(str, value)):
             raise ConfigError(path, f"does not match the pattern {pattern}")
-        return float(value) if annotation is float else value
+        return float(cast(int | float, value)) if annotation is float else value
     if get_origin(annotation) is Literal:
         options = get_args(annotation)
         if value not in options:

@@ -80,7 +80,9 @@ def build(messages, anchors, gap):
         key=lambda item: item.ts,
     )
     anchors = sorted(anchors, key=lambda item: item.start)
-    result, current, used = [], [], set()
+    result: list[Window] = []
+    current: list[Message] = []
+    used: set[int] = set()
     start, bytes_used = 0, 0
     for item in ordered:
         anchor = next((a.start for a in anchors if a.start <= item.ts <= a.end), item.ts)

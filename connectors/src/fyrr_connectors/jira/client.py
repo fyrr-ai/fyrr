@@ -33,7 +33,7 @@ class Client:
         self.session = session()
         self.token = settings.api_token.reveal()
         self.now = int(datetime.now(UTC).timestamp())
-        self.rate_wait = 0
+        self.rate_wait = 0.0
 
     def call(self, path, *, method="GET", params=None, body=None, public=False):
         if not path.startswith("/") or ".." in path or "?" in path or "#" in path:
@@ -140,6 +140,7 @@ class Client:
             totals_moved = False
             for _ in range(MAX_PAGES):
                 page = self.call(path, params={**arguments, "startAt": offset})
+                entries: object
                 if isinstance(page, list):
                     entries = page
                     total = None
@@ -184,6 +185,7 @@ class Client:
             last_total = None if isinstance(again, list) else again.get("total")
             if (
                 not totals_moved
+                and first is not None
                 and isinstance(start, list)
                 and start[:1] == first_boundary
                 and last_total == first[0]

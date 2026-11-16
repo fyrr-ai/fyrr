@@ -192,6 +192,7 @@ python_checks() {
     uv sync --locked --all-extras &&
     uv run --locked --all-extras ruff check . ../crates/fyrr/tests/providers ../scripts/ci-cases ../scripts/check-docs &&
     uv run --locked --all-extras ruff format --check . ../crates/fyrr/tests/providers ../scripts/ci-cases ../scripts/check-docs &&
+    uv run --locked --all-extras mypy &&
     "$ROOT/scripts/ci-cases" run python-sdk)
 }
 

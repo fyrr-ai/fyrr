@@ -25,12 +25,12 @@ from .client import MAX_ENTRIES, ApiError, Client, number
 from .comments import Comment, visibility_signature
 from .config import Scope, Settings
 from .feeds import Cursor, IssueBinding, fingerprint, rotation, stamp
-from .members import Directory, user_id
+from .members import Directory, account_id, user_id
 from .permissions import DYNAMIC, PolicyGraph, container, digest, field_id, policy_token
 from .projects import Project
 
 
-class Jira(Connector):
+class Jira(Connector[Settings, Scope]):
     Settings = Settings
     Scope = Scope
 
@@ -52,7 +52,7 @@ class Jira(Connector):
         self.state = Cursor.decode(cursor, key)
         self.client = Client(self.settings)
         self.identity = Identity.read(self.client, self.settings)
-        self.known = {}
+        self.known: dict[str, str] = {}
         self.projects = {}
         self.gone = set()
         self.graph = None
@@ -196,7 +196,7 @@ class Jira(Connector):
     def _change(self, issue, comments):
         identity = number(issue["id"])
         project = self.projects[number(issue["fields"]["project"]["id"])]
-        targets = ()
+        targets: tuple[tuple, ...] = ()
         dynamic = False
         groups = ()
         if self.context.permissions == "sync":
@@ -291,7 +291,7 @@ class Jira(Connector):
                         break
                 else:
                     raise ValueError("jira_discovery_did_not_converge")
-                pending = []
+                pending: list[Upsert | Delete] = []
                 for identity, (issue, comments) in readings.items():
                     change = (
                         self._change(issue, comments)
@@ -402,7 +402,7 @@ class Jira(Connector):
         level = render.number_level(issue["fields"])
         holders = graph.rules[project] + graph.levels[project].get(level, [])
         dynamic = False
-        groups = set()
+        groups: set[str] = set()
         for holder in holders:
             kind = holder["type"]
             if kind not in DYNAMIC:
@@ -414,7 +414,7 @@ class Jira(Connector):
             if kind == "groupCF" and body:
                 entries = body if isinstance(body, list) else [body]
                 for entry in entries:
-                    group = entry.get("groupId") if isinstance(entry, dict) else None
+                    group = account_id(entry.get("groupId") if isinstance(entry, dict) else None)
                     graph.group(group)
                     groups.add(group)
         targets = []
@@ -539,19 +539,19 @@ class Jira(Connector):
                     project = number(issue["fields"]["project"]["id"])
                     level = render.number_level(issue["fields"])
                     graph.audience(project, level)
-                    readers = {policy_token(self.identity.cloud, project, level)}
-                    readers.update(
+                    tokens = {policy_token(self.identity.cloud, project, level)}
+                    tokens.update(
                         policy_token(self.identity.cloud, project, level, tuple(t[1:]))
                         for t in targets
                     )
-                    readers.update(
+                    tokens.update(
                         "usr:" + user_id(self.identity.cloud, u) for u in graph.issue_readers(issue)
                     )
-                    containers = ()
+                    containers: tuple[str, ...] = ()
                     if level is None and not dynamic:
-                        readers.discard(policy_token(self.identity.cloud, project))
+                        tokens.discard(policy_token(self.identity.cloud, project))
                         containers = (container(self.identity.cloud, project),)
-                    readers = tuple(sorted(readers))
+                    readers = tuple(sorted(tokens))
                     revision = digest([project, level, readers, containers])
                     documents[identity] = DocumentPermission(
                         root_id=self._root(identity),

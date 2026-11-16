@@ -81,7 +81,7 @@ class AccessSnapshot:
                 identity = body["id"]
                 users[identity], guests[identity] = parsed, guest
         listed_users = set(users)
-        grants = {}
+        grants: dict[str, tuple[str, ...]] = {}
         for identity in list(channels):
             members = set()
             try:

@@ -54,6 +54,14 @@ def later(stamp: object, than: str) -> str:
     return than
 
 
+def earlier(stamp: object, than: str | None) -> str | None:
+    """The earlier valid timestamp; `than` when `stamp` is absent."""
+    one, other = instant(stamp), instant(than)
+    if isinstance(stamp, str) and one is not None and (other is None or one < other):
+        return stamp
+    return than
+
+
 def settled(page: Mapping[str, Any], read_at: datetime) -> bool:
     """Whether no later edit can still carry the page's `last_edited_time`."""
     stamp = instant(page.get("last_edited_time"))
@@ -136,7 +144,7 @@ class Cursor:
         return text
 
 
-def changed(client: Client, since: str | None) -> Iterator[list[Mapping[str, Any]]]:
+def changed(client: Client, since: str | None) -> Iterator[list[dict[str, Any]]]:
     """What search shows of the pages edited since `since` less the overlap,
     newest first, answer by answer. Reading stops after an answer that holds
     nothing that new."""

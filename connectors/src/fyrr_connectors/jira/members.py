@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from ..connector import EmailVerification, SourceUser
 
 
-def account_id(value):
+def account_id(value: object) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9:_-]{1,256}", value):
         raise ValueError("jira_account_id_invalid")
     return value

@@ -52,8 +52,12 @@ provides-extras = ["testkit", "google-drive", "notion", "github", "slack", "jira
 dev = [
     { name = "fyrr-connectors", extras = ["google-drive", "github"] },
     { name = "jsonschema", specifier = ">=4.23,<5" },
+    { name = "mypy", specifier = "==2.4.1" },
     { name = "pytest", specifier = "==9.2.0" },
     { name = "ruff", specifier = "==0.17.4" },
+    { name = "types-jsonschema", specifier = ">=4.23,<5" },
+    { name = "types-openpyxl", specifier = ">=3.1,<4" },
+    { name = "types-requests", specifier = ">=2.32,<3" },
 ]
 
 [[package]]

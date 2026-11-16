@@ -41,7 +41,7 @@ def decode(value, workspace):
     return None
 
 
-class Slack(Connector):
+class Slack(Connector[Settings, Scope]):
     Settings = Settings
     Scope = Scope
 
@@ -57,7 +57,7 @@ class Slack(Connector):
         self.state = Cursor.decode(
             cursor, self.scope, self.settings.window_gap_seconds, self.settings.workspace_id
         )
-        self.known = {}
+        self.known: dict[str, str] = {}
         if self.context.next_revisions:
             while page := self.context.next_revisions():
                 self.known.update(page)
@@ -271,7 +271,7 @@ class Slack(Connector):
     def content(self, cursor):
         self._open(cursor)
         durable = cursor or Cursor(self.state.scope).encode()
-        pending = {}
+        pending: dict[str, Upsert | Delete] = {}
         acknowledged = set(self.known)
 
         def flush(end):
@@ -341,8 +341,8 @@ class Slack(Connector):
                 if targets - acknowledged and (
                     not targets.issubset(pending)
                     or any(
-                        not isinstance(pending[key], Upsert)
-                        or any(section.text == "\0" for section in pending[key].sections)
+                        not isinstance(prepared := pending[key], Upsert)
+                        or any(section.text == "\0" for section in prepared.sections)
                         for key in targets
                     )
                     or document_changes(candidate.values()).num_rows > self.context.limits.max_rows

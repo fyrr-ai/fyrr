@@ -4,10 +4,12 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urlsplit
 
 from ..connector import SourceGroup
-from .client import MAX_ENTRIES, number
+from .client import MAX_ENTRIES, Client, number
+from .config import Settings
 from .members import Directory, account_id, user_id
 
 DYNAMIC = {"reporter", "assignee", "userCF", "groupCF"}
@@ -43,8 +45,8 @@ def policy_token(cloud, project, level=None, target=None):
 
 @dataclass
 class PolicyGraph:
-    client: object
-    settings: object
+    client: Client
+    settings: Settings
     directory: Directory
     rules: dict = field(default_factory=dict)
     levels: dict = field(default_factory=dict)
@@ -223,7 +225,9 @@ class PolicyGraph:
         rules = [g["holder"] for g in grants if g.get("permission") == "BROWSE_PROJECTS"]
         self.rules[project] = rules
         self.static[project] = self.holders(project, rules)
-        levels = {number(item["id"]): [] for item in security["levels"]}
+        levels: dict[int, list[dict[str, Any]]] = {
+            number(item["id"]): [] for item in security["levels"]
+        }
         # scheme and level filters are inclusive, not an intersection: query one scheme.
         items = (
             self.client.snapshot(

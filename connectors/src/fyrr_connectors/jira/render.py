@@ -56,7 +56,7 @@ def document(identity, project, issue, comments, context, targets=(), dynamic=Fa
         body = text(comment.body.get("body"))
         if not body:
             continue
-        readers = None
+        readers: tuple[str, ...] | None = None
         if comment.restricted:
             target = next((item for item in targets if item[0] == comment.id), None)
             if target is None:
@@ -125,7 +125,7 @@ def number_level(fields):
 
 
 def units(body):
-    part = []
+    part: list[str] = []
     used = 0
     for character in body:
         count = len(character.encode())

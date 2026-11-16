@@ -34,7 +34,16 @@ github = "fyrr_connectors.bundled:github"
 notion = "fyrr_connectors.bundled:notion"
 
 [dependency-groups]
-dev = ["pytest==9.2.0", "ruff==0.17.4", "jsonschema>=4.23,<5", "fyrr-connectors[google-drive,github]"]
+dev = [
+    "pytest==9.2.0",
+    "ruff==0.17.4",
+    "jsonschema>=4.23,<5",
+    "fyrr-connectors[google-drive,github]",
+    "mypy==2.4.1",
+    "types-openpyxl>=3.1,<4",
+    "types-jsonschema>=4.23,<5",
+    "types-requests>=2.32,<3",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.21,<0.14"]
@@ -53,3 +62,16 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers -ra"
+
+[tool.mypy]
+files = ["src", "../examples/markdown-provider/src"]
+cache_dir = "../target/mypy"
+python_version = "3.13"
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+# PyArrow publishes its runtime schema API without typing stubs.
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true

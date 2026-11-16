@@ -93,7 +93,13 @@ class IssueBinding:
     visibility: str | None = None
 
     def suffix(self):
-        descriptor = [self.project, self.level, self.dynamic, self.targets, self.groups]
+        descriptor: list[object] = [
+            self.project,
+            self.level,
+            self.dynamic,
+            self.targets,
+            self.groups,
+        ]
         if self.visibility is not None:
             descriptor.append(self.visibility)
         raw = json.dumps(

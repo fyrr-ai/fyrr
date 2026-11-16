@@ -71,7 +71,9 @@ def document(identity, channel, kind, anchor, messages, users, channels, limit):
     if not eligible:
         return None
     uri = f"{identity.url}/archives/{channel.id}/p{anchor}"
-    sections, authors, total = [], set(), 0
+    sections: list[Section] = []
+    authors: set[str] = set()
+    total = 0
     for item in sorted(eligible, key=lambda item: item.ts):
         author = display(item.bot_name) if item.bot else users(item.user)
         if author:

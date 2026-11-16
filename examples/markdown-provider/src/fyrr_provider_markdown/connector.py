@@ -4,11 +4,13 @@ Content: one document per file, ordered by (modification time, path); the
 cursor after a batch is the last file's `mtime_ns:path`, so a later sync
 resumes after it. Deletes are not seen by content syncs; the full-ID listing
 (reconcile) lists every file in scope and is complete, so fyrr derives them.
+Unavailable roots, directory symlinks and enumeration failures refuse the read.
 """
 
 from __future__ import annotations
 
 import hashlib
+import stat
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,7 +44,19 @@ class Scope(ConfigModel):
     """Which files are synced."""
 
     root: str = setting(description="Directory to read.")
-    pattern: str = setting(description="Glob below the root.", default="**/*.md")
+    pattern: str = setting(
+        description="Nonempty relative file glob below the root.", default="**/*.md"
+    )
+
+    def __post_init__(self) -> None:
+        if (
+            not self.pattern
+            or "\0" in self.pattern
+            or self.pattern.endswith("/")
+            or Path(self.pattern).is_absolute()
+            or ".." in Path(self.pattern).parts
+        ):
+            raise ValueError("scope_pattern_invalid")
 
 
 def _front_matter(text: str) -> tuple[dict[str, str], str]:
@@ -81,16 +95,36 @@ def _sections(body: str) -> list[Section]:
     return sections
 
 
-class MarkdownConnector(Connector):
+class MarkdownConnector(Connector[Settings, Scope]):
     Settings = Settings
     Scope = Scope
 
     def _files(self) -> list[tuple[int, str, Path]]:
         root = Path(self.context.scope.root)
+        if not root.is_dir():
+            raise ValueError("source_unavailable")
+
+        def unavailable(error: OSError) -> None:
+            raise error
+
         found = []
-        for path in root.glob(self.context.scope.pattern):
-            if path.is_file() and path.stat().st_size <= self.context.settings.max_file_bytes:
-                found.append((path.stat().st_mtime_ns, path.relative_to(root).as_posix(), path))
+        try:
+            for parent, _, names in root.walk(on_error=unavailable):
+                for name in names:
+                    path = parent / name
+                    relative = path.relative_to(root)
+                    if path.is_symlink() and stat.S_ISDIR(path.stat().st_mode):
+                        raise ValueError("source_unavailable")
+                    if not relative.full_match(self.context.scope.pattern):
+                        continue
+                    info = path.stat()
+                    if (
+                        stat.S_ISREG(info.st_mode)
+                        and info.st_size <= self.context.settings.max_file_bytes
+                    ):
+                        found.append((info.st_mtime_ns, relative.as_posix(), path))
+        except OSError as error:
+            raise ValueError("source_unavailable") from error
         return sorted(found)
 
     def _document(self, relative: str, path: Path) -> Upsert | None:
@@ -122,8 +156,8 @@ class MarkdownConnector(Connector):
     def content(self, cursor: str | None) -> Iterator[ContentBatch]:
         after: tuple[int, str] | None = None
         if cursor:
-            mtime, _, relative = cursor.partition(":")
-            after = (int(mtime), relative)
+            cursor_mtime, _, relative = cursor.partition(":")
+            after = (int(cursor_mtime), relative)
         pending: list[Upsert] = []
         last = emitted = cursor
         for mtime, relative, path in self._files():

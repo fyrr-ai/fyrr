@@ -15,7 +15,7 @@ class LocalFilesScope(ConfigModel):
     include: list[str] = setting(description="Relative patterns", default_factory=lambda: ["**/*"])
 
 
-class LocalFiles(Connector):
+class LocalFiles(Connector[NoConfig, LocalFilesScope]):
     Settings = NoConfig
     Scope = LocalFilesScope
 
@@ -58,7 +58,7 @@ class LocalFiles(Connector):
     def content(self, cursor: str | None) -> Iterator[ContentBatch]:
         if self.context.permissions != "fixed" or not self.context.readers:
             raise ValueError("local_files_readers_invalid")
-        changes = []
+        changes: list[Upsert | Delete] = []
         batch_number = 0
 
         def batch() -> ContentBatch:
@@ -74,7 +74,7 @@ class LocalFiles(Connector):
             changes.clear()
             return result
 
-        page = []
+        page: list[tuple[str, Path]] = []
         files = iter(self._files())
         while True:
             page.clear()
@@ -130,6 +130,8 @@ class LocalFiles(Connector):
                 for root, _ in revisions:
                     if self._path(root).exists():
                         continue
+                    if self.context.lookup_revisions is None:
+                        raise ValueError("local_files_revision_view_unavailable")
                     if self.context.lookup_revisions([root]).get(root) is None:
                         continue
                     changes.append(Delete(root_id=root))

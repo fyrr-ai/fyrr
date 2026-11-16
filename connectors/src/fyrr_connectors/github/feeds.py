@@ -240,8 +240,11 @@ def conversations(client: Client, repo: Repository, scope: RepositoryScope, sinc
 def comment_hints(client: Client, repo: Repository, scope: RepositoryScope, since: str | None):
     if since is None:
         return
+    start = instant(since)
+    if start is None:
+        raise ValueError("github_cursor_invalid")
     params = {
-        "since": (instant(since) - timedelta(hours=1)).isoformat(),
+        "since": (start - timedelta(hours=1)).isoformat(),
         "sort": "updated",
         "direction": "asc",
     }

@@ -45,7 +45,7 @@ class Limits:
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceContext:
+class SourceContext[SettingsT: ConfigModel = ConfigModel, ScopeT: ConfigModel = ConfigModel]:
     """One configured source, as the connector sees it."""
 
     source_id: str
@@ -53,8 +53,8 @@ class SourceContext:
     permissions: str
     #: The configured readers of a `fixed` connection.
     readers: tuple[str, ...]
-    settings: ConfigModel
-    scope: ConfigModel
+    settings: SettingsT
+    scope: ScopeT
     limits: Limits
     #: Bounded callbacks over the pinned publication and durable pending envelopes.
     lookup_revisions: Callable[[list[str]], dict[str, str]] | None = None
@@ -143,7 +143,7 @@ class ListingBatch:
 Batch = ContentBatch | PermissionBatch | PrincipalBatch | ListingBatch
 
 
-class Connector:
+class Connector[SettingsT: ConfigModel = ConfigModel, ScopeT: ConfigModel = ConfigModel]:
     """Base class of a connector. Override `content` and, when the source
     supports them, `permissions`, `members` and `listing`; the provider
     metadata derives its sync kinds from the overridden methods."""
@@ -153,7 +153,7 @@ class Connector:
     #: The model of the source's `scope` table.
     Scope: ClassVar[type[ConfigModel]] = NoConfig
 
-    def __init__(self, context: SourceContext) -> None:
+    def __init__(self, context: SourceContext[SettingsT, ScopeT]) -> None:
         self.context = context
 
     def content(self, cursor: str | None) -> Iterator[ContentBatch]:
@@ -189,10 +189,10 @@ class Connector:
 
     def run(self, kind: SyncKind, cursor: str | None) -> Iterator[Batch]:
         """Dispatch one sync kind."""
-        method = {
+        methods: dict[SyncKind, Callable[[str | None], Iterator[Batch]]] = {
             SyncKind.CONTENT: self.content,
             SyncKind.PERMISSIONS: self.permissions,
             SyncKind.MEMBERS: self.members,
             SyncKind.RECONCILE: self.listing,
-        }[SyncKind(kind)]
-        return method(cursor)
+        }
+        return methods[SyncKind(kind)](cursor)

@@ -174,12 +174,15 @@ def check_batch(batch: Mapping[str, Any]) -> None:
         check_cursor("cursor.start", cursor["start"])
     check_cursor("cursor.end", cursor.get("end"))
     body = batch.get("body") or {}
+    body_type = body.get("type")
+    if not isinstance(body_type, str):
+        raise ContractViolation("body.type is unknown")
     kind = {
         "document_changes": "content",
         "permission_changes": "permissions",
         "principal_snapshot": "members",
         "listing": "reconcile",
-    }.get(body.get("type"))
+    }.get(body_type)
     if kind is None:
         raise ContractViolation("body.type is unknown")
     if batch.get("kind") != kind:

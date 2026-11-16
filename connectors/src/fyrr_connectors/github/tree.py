@@ -7,6 +7,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Any
 from urllib.parse import quote
 
 from .client import MAX_ENTRIES, Client
@@ -94,7 +95,9 @@ class Tree:
         result = self.client.get(repo.path + "/git/trees/" + tree_sha, {"recursive": "1"})
         if not isinstance(result.get("truncated"), bool):
             raise ValueError("github_tree_invalid")
-        levels = [("", tree_sha, result if not result["truncated"] else None, frozenset())]
+        levels: list[tuple[str, str, dict[str, Any] | None, frozenset[str]]] = [
+            ("", tree_sha, result if not result["truncated"] else None, frozenset())
+        ]
         seen: set[str] = set()
         count = 0
         while levels:

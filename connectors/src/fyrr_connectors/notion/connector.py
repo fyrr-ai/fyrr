@@ -25,6 +25,7 @@ from .changes import (
     SETTLE,
     Cursor,
     changed,
+    earlier,
     instant,
     later,
     newest,
@@ -52,7 +53,7 @@ def _revision(page: Mapping[str, Any], mark: str) -> str:
     return hashlib.sha256(repr(parts).encode()).hexdigest()[:32]
 
 
-class Notion(Connector):
+class Notion(Connector[Settings, Scope]):
     Settings = Settings
     Scope = Scope
 
@@ -87,7 +88,9 @@ class Notion(Connector):
         """Learn the published and pending revisions of `pages`."""
         lookup = self.context.lookup_revisions
         unknown = [page for page in dict.fromkeys(pages) if page not in self._known]
-        for start in range(0, len(unknown) if lookup else 0, LOOKUP_ROWS):
+        if lookup is None:
+            return
+        for start in range(0, len(unknown), LOOKUP_ROWS):
             part = unknown[start : start + LOOKUP_ROWS]
             found = lookup(part)
             self._known.update({page: found.get(page) for page in part})
@@ -145,10 +148,8 @@ class Notion(Connector):
             return (removed if known is not None or not self._view else None), []
         is_settled = settled(page, ref.at)
         stamp = page.get("last_edited_time")
-        if not is_settled and (
-            self._unsettled is None or instant(stamp) < instant(self._unsettled)
-        ):
-            self._unsettled = stamp
+        if not is_settled:
+            self._unsettled = earlier(stamp, self._unsettled)
         revision = _revision(page, "settled" if is_settled else "unsettled")
         self._examined[ref.id] = revision
         if ref.id in self._tree.roots:
@@ -258,16 +259,12 @@ class Notion(Connector):
                     self._lookup(visit.batch)
                     ref = visit.ref if visit.ref.page is not None else self._tree.page(visit.ref.id)
                     actual_root = self._tree.scope(ref) if ref is not None else None
-                    if actual_root is not None:
+                    if ref is not None and actual_root is not None:
                         change, visit.children = self._examine(ref, actual_root, descend=True)
                         if change is not None:
                             yield from hand(change)
                     state.path = list(visit.path[:PATH_LEVELS])
-                    if self._unsettled and (
-                        instant(state.since) is None
-                        or instant(self._unsettled) < instant(state.since)
-                    ):
-                        state.since = self._unsettled
+                    state.since = earlier(self._unsettled, state.since)
                     durable = state.encode()
                 del state.walks[0]
                 state.path = []
@@ -321,12 +318,7 @@ class Notion(Connector):
                     state.walks = queued if len(queued) <= MAX_WALKS else [("page", page_id)]
                     durable = state.encode()
                     yield from walks()
-        state.since = (
-            self._unsettled
-            if self._unsettled
-            and (instant(head) is None or instant(self._unsettled) < instant(head))
-            else head
-        )
+        state.since = earlier(self._unsettled, head)
         durable = state.encode()
         if pending or durable != sent:
             yield flush()

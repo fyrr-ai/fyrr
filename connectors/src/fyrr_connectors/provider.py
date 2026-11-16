@@ -24,7 +24,7 @@ from .versions import PROVIDER_CONTRACT_VERSION
 def provider_info(
     *,
     name: str,
-    connector: type[Connector],
+    connector: type[Connector[Any, Any]],
     min_sdk_version: str,
     connection_types: Sequence[str] = ("sync", "fixed"),
     description: str | None = None,

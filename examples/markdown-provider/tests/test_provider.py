@@ -58,13 +58,49 @@ def test_content_resumes_after_its_cursor(root: Path) -> None:
     ]
 
 
-def test_listing_is_complete(root: Path) -> None:
+def test_listing_is_complete(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     result = testkit.run_sync("markdown-dir", "reconcile", scope={"root": str(root)})
     body = result.documents[0]["body"]
     assert body["root_ids"] == ["guides/restore.md", "onboarding.md"]
     assert body["last"] and body["complete"]
 
+    empty = root / "empty"
+    empty.mkdir()
+    result = testkit.run_sync("markdown-dir", "reconcile", scope={"root": str(empty)})
+    assert result.documents[0]["body"]["complete"]
+    assert result.documents[0]["body"]["root_ids"] == []
+    for unavailable in (root / "missing", root / "onboarding.md"):
+        with pytest.raises(ValueError, match="source_unavailable"):
+            testkit.run_sync("markdown-dir", "reconcile", scope={"root": str(unavailable)})
 
-def test_invalid_scope_is_refused() -> None:
+    linked = root / "linked"
+    linked.symlink_to(root / "guides", target_is_directory=True)
+    try:
+        with pytest.raises(ValueError, match="source_unavailable"):
+            testkit.run_sync(
+                "markdown-dir", "reconcile", scope={"root": str(root), "pattern": "linked/*.md"}
+            )
+    finally:
+        linked.unlink()
+
+    scandir = os.scandir
+
+    def denied(path):
+        if Path(path) == root / "guides":
+            raise PermissionError("unavailable fixture directory")
+        return scandir(path)
+
+    monkeypatch.setattr(os, "scandir", denied)
+    with pytest.raises(ValueError, match="source_unavailable"):
+        testkit.run_sync("markdown-dir", "reconcile", scope={"root": str(root)})
+
+
+def test_invalid_scope_is_refused(root: Path) -> None:
     with pytest.raises(AssertionError, match="scope does not match"):
         testkit.run_sync("markdown-dir", "content", scope={"directory": "/srv"})
+
+    for pattern in ("", "/absolute/*.md", "../*.md", "**/../*.md", "**/", "*.md\0"):
+        with pytest.raises(ValueError, match="scope_pattern_invalid"):
+            testkit.run_sync(
+                "markdown-dir", "reconcile", scope={"root": str(root), "pattern": pattern}
+            )

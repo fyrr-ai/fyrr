@@ -174,8 +174,13 @@ class Client:
         for _ in range(MAX_PAGES):
             entries, headers = self.request("GET", path, params=arguments)
             entries = _http.entries(entries, ValueError("github_response_invalid"))
-            stamps = [instant(item.get("updated_at")) for item in entries]
-            if any(stamp is None for stamp in stamps) or stamps != sorted(stamps):
+            stamps: list[datetime] = []
+            for item in entries:
+                stamp = instant(item.get("updated_at"))
+                if stamp is None:
+                    raise ValueError("github_updated_order_invalid")
+                stamps.append(stamp)
+            if stamps != sorted(stamps):
                 raise ValueError("github_updated_order_invalid")
             fresh = []
             for item in entries:

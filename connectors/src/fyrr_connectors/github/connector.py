@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -42,7 +42,7 @@ from .tree import Tree
 QUARANTINE = (Section(text="\0"),)
 
 
-class GitHub(Connector):
+class GitHub(Connector[Settings, Scope]):
     Settings = Settings
     Scope = Scope
 
@@ -186,14 +186,14 @@ class GitHub(Connector):
             for entries in self.client.pages(repo.path + f"/pulls/{ref.number}/comments"):
                 for entry in entries:
                     object_id(entry)
-                    review_id = entry.get("pull_request_review_id")
-                    if review_id is not None and (
-                        not isinstance(review_id, int)
-                        or isinstance(review_id, bool)
-                        or review_id <= 0
+                    comment_review_id = entry.get("pull_request_review_id")
+                    if comment_review_id is not None and (
+                        not isinstance(comment_review_id, int)
+                        or isinstance(comment_review_id, bool)
+                        or comment_review_id <= 0
                     ):
                         raise ValueError("github_review_invalid")
-                    if review_id in submitted:
+                    if comment_review_id in submitted:
                         keep(self._part(repo, ref, entry, "inline"))
         if len(parts) > MAX_ENTRIES or len({(part["kind"], part["id"]) for part in parts}) != len(
             parts
@@ -504,16 +504,19 @@ class GitHub(Connector):
         ]
         state.observed.update(self.repos)
         frontier = state.encode()
-        batches = []
+        batches: list[PermissionBatch] = []
         # Seal all frames before yielding, including their serialization bounds.
         # No provider call follows the first yield.
         from ..runtime import encode
 
         width = min(256, self.context.limits.max_rows)
-        for collection, field in ((grants, "container_grants"), (documents, "documents")):
-            pending = []
+
+        def seal[EntryT](
+            collection: Sequence[EntryT], make: Callable[[Sequence[EntryT]], PermissionBatch]
+        ) -> None:
+            pending: list[EntryT] = []
             for entry in collection:
-                candidate = PermissionBatch(**{field: [*pending, entry]}, cursor=frontier)
+                candidate = make([*pending, entry])
                 header, _ = encode(self.context.source_id, SyncKind.PERMISSIONS, cursor, candidate)
                 if (
                     len(json.dumps(header).encode()) > self.context.limits.max_bytes
@@ -521,9 +524,9 @@ class GitHub(Connector):
                 ):
                     if not pending:
                         raise ValueError("github_permission_batch_limit")
-                    batches.append(PermissionBatch(**{field: pending}, cursor=frontier))
+                    batches.append(make(pending))
                     pending = []
-                    candidate = PermissionBatch(**{field: [entry]}, cursor=frontier)
+                    candidate = make([entry])
                     header, _ = encode(
                         self.context.source_id, SyncKind.PERMISSIONS, cursor, candidate
                     )
@@ -531,7 +534,10 @@ class GitHub(Connector):
                         raise ValueError("github_permission_batch_limit")
                 pending.append(entry)
             if pending:
-                batches.append(PermissionBatch(**{field: pending}, cursor=frontier))
+                batches.append(make(pending))
+
+        seal(grants, lambda rows: PermissionBatch(container_grants=rows, cursor=frontier))
+        seal(documents, lambda rows: PermissionBatch(documents=rows, cursor=frontier))
         yield from batches or [PermissionBatch(cursor=frontier)]
 
     def members(self, cursor: str | None) -> Iterator[PrincipalBatch]:

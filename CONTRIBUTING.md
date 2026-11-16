@@ -42,6 +42,10 @@ the venv: `VIRTUAL_ENV=$PWD/connectors/.venv target/debug/fyrr writer
 providers`. The Python SDK has its own tests:
 `cd connectors && uv sync --locked --all-extras && uv run pytest`.
 
+`cd connectors && uv run --locked --all-extras mypy` checks the SDK, bundled
+providers and example provider. Bodies are checked with partial signature
+annotations; PyArrow's untyped API remains covered by Arrow contract tests.
+
 ## Layout
 
 | Path | Content |
