@@ -128,6 +128,10 @@ directory call is made.
 
 ## Limits
 
+- Each search is limited to 100,000 issues. Keep each source's configured
+  project or JQL scope within that bound; split larger scopes into separate
+  sources. A source above the limit cannot complete reconciliation, so its
+  listing never authorizes deletions.
 - Serial requests honoring 429 `Retry-After` and the rate-limit headers;
   six attempts with bounded backoff per request. No writes, webhooks or
   audit-log dependency.
