@@ -156,7 +156,7 @@ def test_oversized_aggregate_stops_accumulating_and_continues(github, index):
 
 
 def test_changed_files_request_count(github, index):
-    github.branch(1, {f"file-{number}.md": "Prose." for number in range(8)})
+    github.branch(1, {f"file-{number}.md": "Prose." for number in range(10)})
     index.sync()
     blobs = sum("/git/blobs/" in path for _, path, _ in github.requests)
     commits = sum(path.endswith("/commits") for _, path, _ in github.requests)
@@ -165,6 +165,6 @@ def test_changed_files_request_count(github, index):
         f"synthetic requests: blob={blobs} history={commits} "
         f"repository={verification} total={len(github.requests)}"
     )
-    assert blobs == commits == 8
-    assert verification == 4
-    assert len(github.requests) == 28
+    assert blobs == commits == 10
+    assert verification == 5
+    assert len(github.requests) == 33
