@@ -99,7 +99,8 @@ Under `sync`:
 | Deactivated user | no grant; reported inactive |
 | Slack Connect or Enterprise Grid shared channel | refused under `sync`; opt in under `fixed` |
 | Direct or group message | refused in both modes |
-| Bot, unknown identity, incomplete membership page | no grant; the permission pass fails and the last rights stay until the freshness deadline |
+| Bot | no grant |
+| Unknown identity, incomplete membership page | no grant; the permission pass fails and the last rights stay until the freshness deadline |
 
 Membership comes from one complete paged snapshot per channel plus the
 complete user list; the user list over 16,384 full members fails closed.
@@ -107,8 +108,9 @@ The member snapshot carries an e-mail only for accounts in
 `corporate_domains`, marked as verified corporate evidence; other accounts
 need an explicit directory link. Display names are never identities.
 
-Under `fixed` the configured readers apply; no membership or user-directory
-call is made, and shared channels are the operator's responsibility.
+Under `fixed` the configured readers apply; no membership snapshot is read.
+`users.info` still resolves author names, so `users:read` is required in both
+modes. Shared channels are the operator's responsibility.
 
 ## Limits
 

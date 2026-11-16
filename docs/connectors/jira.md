@@ -78,17 +78,16 @@ key changes, project renames and moves keep their identity.
 ## Documents
 
 - One document per issue: summary, description and the selected standard
-  fields (status, type, priority, labels, reporter, assignee, dates) as
+  fields (status, type, priority, labels, reporter, assignee) as
   located sections, then **one section per comment** with that comment's
   own audience. Long text is split into units of at most 16 KiB.
-- Rich text (Atlassian Document Format) is rendered to plain text with
-  light Markdown marks for headings, lists, code and tables; mentions and
-  links keep readable text. Media, attachments and linked issues are not
-  followed.
+- Rich text (Atlassian Document Format) is rendered to plain text; mentions
+  keep readable labels. Media and smart-link cards are dropped; attachments
+  and linked issues are not followed.
 - Title, author, project, status and timestamps come from issue fields,
   never from hidden comments. Unknown dates stay null.
-- Issues are discovered through the enhanced search API ordered by
-  `updated` with an overlap; comment edits and deletions that do not touch
+- Issues are discovered through the enhanced search API ordered by ID
+  with a two-minute `updated` overlap and a full rescan every 12 hours; comment edits and deletions that do not touch
   the parent are caught by a rotation over published issues targeting 12
   hours. A project that leaves the scope, is archived or deleted loses its
   grants and its documents at the next complete listing.
@@ -113,7 +112,8 @@ user-picker holders add per-issue users.
 | Comment with group or role visibility | a separate record readable by the matching policy group only |
 | Comment readable only through a reporter, assignee or picker field | deliberately omitted (under-shared) |
 | Public or anonymous Browse | refused under `sync`; use `fixed` |
-| Unknown holder type, malformed scheme, incomplete member page | the permission pass fails; last rights stay until the freshness deadline |
+| Unknown holder type or unknown comment visibility | grants nobody (under-shared) |
+| Malformed scheme, incomplete member page | the permission pass fails; last rights stay until the freshness deadline |
 
 User tokens are `usr:atlassian.net:<cloud-id>:<accountId>`; groups are
 synthetic policy groups per project, level and visibility target. There is

@@ -17,8 +17,7 @@ to every document and no permission or member read exists.
 ## Setup
 
 1. Create an internal integration in the workspace with read content
-   capabilities. The user-information capability is optional; without it
-   authors are null.
+   capabilities.
 2. Share each root page with the integration; sharing a page shares its
    subtree.
 3. Put the integration secret in an environment variable.
@@ -53,8 +52,7 @@ root_pages = ["11111111-2222-3333-4444-555555555555"]   # page IDs, dashes optio
   keeps light Markdown marks for lists, to-dos, quotes, code, equations and
   table rows; bookmarks and embeds give their URL; media and file blocks
   only their caption. A database row starts with a `properties` section
-  (`Name: value` per non-empty typed property; relations are skipped,
-  values are cut at 25 entries by the API). A page without text is not
+  (`Name: value` per non-empty typed property; relations are skipped). A page without text is not
   published.
 - Each run first reads every root: a root that answers 404 (not shared,
   deleted, wrong workspace) fails the run, so a wrong token never looks
@@ -71,8 +69,9 @@ root_pages = ["11111111-2222-3333-4444-555555555555"]   # page IDs, dashes optio
 
 - At most about three requests per second; 429, 409, 5xx and transport
   errors back off with jitter and `Retry-After` for six attempts, then the
-  run fails with the cursor unmoved. 401 and 403 fail the run.
-- Responses stop at 16 MiB, lists at 10,000 entries, each tree run at
+  run fails with the cursor unmoved. 401 and 403 fail the run except that a missing or unshared parent
+  during an ancestry lookup places the page outside the configured roots.
+- Responses stop at 16 MiB, lists at 10,000 pages of up to 100 entries, each tree run at
   100,000 visited entries, parent walks at 100 levels; reaching a bound
   fails the pass and never marks a listing complete.
 - The full listing reads every block list, so a large workspace needs a

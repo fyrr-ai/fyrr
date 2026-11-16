@@ -75,9 +75,9 @@ source that already synced needs `fyrr writer sync --full`.
   scope and dropped feeds are removed at the next complete listing, which
   re-lists every feed and re-checks files that moved between feeds while
   it ran.
-- Exports over Google's 10 MB export limit, any other final export error,
-  unreadable exports and text over `document_max_bytes` are quarantined;
-  the last good revision stays visible.
+- Exports over Google's 10 MB limit, non-rate-limit 403 refusals, unreadable
+  exports and text over `document_max_bytes` are quarantined. A 404 is left
+  to the listing; other errors fail the sync.
 
 ## Permissions
 
@@ -117,7 +117,7 @@ exactly `scope.owners`.
   responses are authoritative.
 - Sheets are read up to 20 million cells per workbook. Export runs on a
   pool of eight requests per page.
-- The 16 KiB cursor holds about 1,000 feeds (users plus shared drives); a
-  larger domain needs several sources with disjoint `owners`.
+- The cursor is capped at 16 KiB; split sources with disjoint `owners`
+  if their feed state exceeds that bound.
 - A suspended user's My Drive leaves the scope at the next listing; an
   active user whose Drive cannot be read fails the source.

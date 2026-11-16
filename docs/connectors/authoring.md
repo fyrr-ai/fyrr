@@ -92,7 +92,7 @@ The connector receives a `SourceContext`: `source_id`, `permissions`
 `scope`, `limits` (`max_rows`, `max_bytes`, `document_max_bytes`, optional
 row thresholds and retention) and two optional callbacks:
 `lookup_revisions(root_ids)` returns the published or pending revision of
-each root and `next_revisions()` streams pending ones, so a resumed sync can
+each root and `next_revisions()` pages every published and pending `(root_id, revision)`, so a resumed sync can
 skip what fyrr already has.
 
 ## Sync kinds
@@ -132,7 +132,7 @@ Upsert(
     ),
     sections=[Section(text="…", location=Location(kind="heading", label="Backups", index=0))],
     attributes=["markdown.directory=guides"],      # key=value labels for search filters
-    readers=context.readers if context.permissions == "fixed" else (),
+    readers=(),                                 # fixed readers are applied by the writer
     containers=(),
     revision_order=None, expected_prior_revision=None, permission_revision=None,
 )
@@ -149,7 +149,8 @@ Upsert(
 - `source_revision` must change whenever text, sections or metadata
   change. `revision_order` is optional and lets fyrr order edits that
   arrive out of sequence; omit it when timestamps cannot order them.
-- Under `permissions = "fixed"` every upsert carries `context.readers`.
+- Under `permissions = "fixed"` the writer applies the configured readers;
+  setting `context.readers` on an upsert is optional.
   Under `permissions = "sync"` content carries no readers, containers or
   `permission_revision`: the permission stream is the only source of
   permission state.

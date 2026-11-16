@@ -66,7 +66,7 @@ members = "15m"
 
 Repositories are keyed by numeric ID, so renames and transfers refresh URLs
 without changing identities. A configured ID that the installation cannot
-see fails configuration; a repository that later leaves the installation
+see fails the sync; a repository that later leaves the installation
 leaves the scope and its documents are removed at the next complete
 listing.
 
@@ -84,15 +84,15 @@ listing.
 - Metadata comes from GitHub facts only: title, author, project, status and
   source timestamps; file authors and update times from the last commit at
   the pinned head. Unknown values stay null.
-- Not synced: forks, submodules, symlinks, LFS targets, attachments,
+- Not synced: submodules, symlinks, LFS targets, attachments,
   releases, discussions. Archived repositories stay readable.
 
 Issue and pull-request feeds are read by `updated` timestamp with an
 overlap. Deleted comments do not update their parent, so the connector also
 rotates through published conversations with a target of 12 hours; on large
 repositories or under rate limits a deleted comment can stay searchable
-longer. Files are enumerated from the branch tree each pass and reread only
-when their blob changed.
+longer. Files are enumerated each pass and reread when the branch head, blob,
+repository name, visibility or archived flag changes; file URLs pin the commit.
 
 ## Permissions
 
