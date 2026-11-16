@@ -47,10 +47,21 @@ such as `query_cache_max_bytes`, take a TOML integer instead.
 | `endpoint` | absent | Endpoint of an S3-compatible service; absent uses `AWS_ENDPOINT_URL` when set, otherwise AWS S3. |
 | `allow_http` | `false` | Allow a plain-HTTP endpoint (development only). |
 | `virtual_hosted_style` | `false` | Virtual-hosted-style requests instead of path-style. |
-| `access_key_id`, `secret_access_key`, `session_token` | absent | Static credentials as environment references; absent uses the default AWS credential chain. |
+| `access_key_id`, `secret_access_key`, `session_token` | absent | Static credentials as environment references; otherwise uses the environment and role sources below. |
 
 All keys but `uri` configure S3 access; with a `file://` URI, `config check`
 refuses each of them, also one that repeats its default.
+
+S3 uses explicit credential references or `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY` and optional `AWS_SESSION_TOKEN`. Without static
+credentials, it tries web identity (`AWS_WEB_IDENTITY_TOKEN_FILE` and
+`AWS_ROLE_ARN`), container role credentials, then an EC2 instance profile.
+
+Set `AWS_EC2_METADATA_DISABLED=true` on a non-EC2 host when no role credentials
+are available. It disables only the EC2 metadata fallback and reports
+`storage_unavailable` immediately instead of waiting for metadata discovery.
+Explicit credentials, web identity and ECS/EKS container credentials remain
+enabled. Leave it unset on EC2 when using the instance's role.
 
 ### Local storage
 

@@ -111,7 +111,8 @@
       "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::changed_identity_binding_is_observed_on_next_request",
       "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::cached_identity_never_skips_token_or_directory_expiry",
       "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::invalid_identity_digest_never_reuses_cached_grants",
-      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::identity_namespace_and_generation_must_match_the_fresh_head"
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::identity_namespace_and_generation_must_match_the_fresh_head",
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::ec2_metadata_opt_out_preserves_other_credential_sources"
     ],
     "children": {
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::lance_append_child_process": [
@@ -512,7 +513,8 @@
     "cases": [
       "full:fyrr:test:privacy/identity_storage_inputs_credentials_missing_key_and_rotation_are_fail_closed",
       "full:fyrr:test:privacy/identity_storage_writer_embedding_cache_and_failures_keep_values_private",
-      "full:fyrr:test:dense_path/corrections::mirror_endpoint_isolation_on_real_s3"
+      "full:fyrr:test:dense_path/corrections::mirror_endpoint_isolation_on_real_s3",
+      "full:fyrr:test:dense_path/head_diagnostics::ec2_metadata_opt_out_preserves_other_credential_sources_on_real_s3"
     ]
   },
   "python-sdk": {

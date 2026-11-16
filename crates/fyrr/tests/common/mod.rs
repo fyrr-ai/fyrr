@@ -168,6 +168,8 @@ impl Sandbox {
             .env("XDG_STATE_HOME", run.join("home/.local/state"))
             .env("XDG_DATA_HOME", run.join("home/.local/share"))
             // The identity keys `config_with` references; callers may override them.
+            // CLI sandboxes never use the real host's EC2 instance profile.
+            .env("AWS_EC2_METADATA_DISABLED", "true")
             .env("FYRR_IDENTITY_KEY", SANDBOX_IDENTITY_KEY)
             .env("FYRR_ENCRYPTION_KEY", SANDBOX_ENCRYPTION_KEY);
         for (key, value) in env {

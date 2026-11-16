@@ -38,3 +38,57 @@ fn only_an_absent_directory_needs_no_freshness_proof() {
         }
     }
 }
+
+#[test]
+fn ec2_metadata_opt_out_preserves_other_credential_sources() {
+    use AmazonS3ConfigKey as Key;
+    let cases: &[(&[(AmazonS3ConfigKey, &str)], bool)] = &[
+        (&[], true),
+        (&[(Key::AccessKeyId, "key")], false),
+        (&[(Key::SecretAccessKey, "secret")], false),
+        (&[(Key::WebIdentityTokenFile, "/token")], true),
+        (&[(Key::RoleArn, "role")], true),
+        (
+            &[
+                (Key::WebIdentityTokenFile, "/token"),
+                (Key::RoleArn, "role"),
+            ],
+            false,
+        ),
+        (&[(Key::ContainerCredentialsRelativeUri, "/task")], false),
+        (
+            &[(Key::ContainerCredentialsFullUri, "http://container")],
+            true,
+        ),
+        (&[(Key::ContainerAuthorizationTokenFile, "/token")], true),
+        (
+            &[
+                (Key::ContainerCredentialsFullUri, "http://container"),
+                (Key::ContainerAuthorizationTokenFile, "/token"),
+            ],
+            false,
+        ),
+        (&[(Key::SkipSignature, "true")], false),
+        (&[(Key::SkipSignature, "false")], true),
+    ];
+    for (options, expected) in cases {
+        let mut builder = AmazonS3Builder::new().with_bucket_name("credentials");
+        for (key, value) in *options {
+            builder = builder.with_config(*key, *value);
+        }
+        assert_eq!(
+            uses_instance_credentials(&builder),
+            *expected,
+            "{options:?}"
+        );
+    }
+    // A malformed explicit source must retain its configuration error instead
+    // of being mistaken for a disabled instance-profile fallback.
+    assert!(
+        AmazonS3Builder::new()
+            .with_bucket_name("credentials")
+            .with_access_key_id("key")
+            .build()
+            .is_err()
+    );
+}

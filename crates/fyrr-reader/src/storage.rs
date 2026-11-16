@@ -7,7 +7,11 @@ use fyrr_core::config::{Config, ProcessEnvironment, StorageBackend};
 use fyrr_core::publication::GenerationPointer;
 use fyrr_core::{Contract, parse_contract};
 use lance::dataset::builder::DatasetBuilder;
-use object_store::{ObjectStore, ObjectStoreExt, aws::AmazonS3Builder, path::Path};
+use object_store::{
+    ObjectStore, ObjectStoreExt,
+    aws::{AmazonS3Builder, AmazonS3ConfigKey},
+    path::Path,
+};
 use std::sync::Arc;
 
 pub use lance::Dataset;
@@ -58,6 +62,19 @@ impl std::fmt::Display for StorageError {
 }
 impl std::error::Error for StorageError {}
 
+// object_store 0.14 falls back to IMDS after these sources. Respect the AWS
+// opt-out only for that fallback; let the builder validate partial credentials.
+fn uses_instance_credentials(builder: &AmazonS3Builder) -> bool {
+    use AmazonS3ConfigKey as Key;
+    let has = |key| builder.get_config_value(&key).is_some();
+    builder.get_config_value(&Key::SkipSignature).as_deref() != Some("true")
+        && !has(Key::AccessKeyId)
+        && !has(Key::SecretAccessKey)
+        && !(has(Key::WebIdentityTokenFile) && has(Key::RoleArn))
+        && !has(Key::ContainerCredentialsRelativeUri)
+        && !(has(Key::ContainerCredentialsFullUri) && has(Key::ContainerAuthorizationTokenFile))
+}
+
 /// Namespace-scoped storage access. Only the writer calls mutating store methods.
 pub fn namespace_store(config: &Config) -> Result<(Arc<dyn ObjectStore>, Path), StorageError> {
     let namespace = |prefix: &str| {
@@ -90,9 +107,15 @@ pub fn namespace_store(config: &Config) -> Result<(Arc<dyn ObjectStore>, Path), 
             value,
         );
     }
+    let instance_disabled = std::env::var("AWS_EC2_METADATA_DISABLED")
+        .is_ok_and(|value| value.eq_ignore_ascii_case("true"))
+        && uses_instance_credentials(&builder);
     let store = builder
         .build()
         .map_err(|_| StorageError::StorageConfigurationInvalid)?;
+    if instance_disabled {
+        return Err(StorageError::StorageUnavailable);
+    }
     let root = namespace(prefix);
     Ok((Arc::new(store), root))
 }

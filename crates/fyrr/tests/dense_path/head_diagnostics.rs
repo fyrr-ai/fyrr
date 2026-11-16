@@ -93,3 +93,95 @@ fn conditional_head_failure_classifies_untrusted_storage_error_on_real_s3() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real S3 credentials and acknowledged metadata discovery; scripts/ci"]
+async fn ec2_metadata_opt_out_preserves_other_credential_sources_on_real_s3() {
+    use std::sync::atomic::AtomicUsize;
+    let (config, root) = setup_on(Backend::S3);
+    // This storage proof needs no sources or fixed-connection warnings.
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, text.split("[[sources]]").next().unwrap()).unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let seen = requests.clone();
+    // This is a credential endpoint, never a fake object store. A nonretryable
+    // refusal proves which provider is contacted without retry timing or sleeps.
+    let app = axum::Router::new().fallback(move || {
+        let seen = seen.clone();
+        async move {
+            seen.fetch_add(1, Ordering::SeqCst);
+            axum::http::StatusCode::FORBIDDEN
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let command = |path: &Path, disabled: bool| {
+        let mut command = super::coordination::host_command(path);
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("AWS_") {
+                command.env_remove(key);
+            }
+        }
+        command
+            .env("AWS_METADATA_ENDPOINT", &endpoint)
+            .env("AWS_EC2_METADATA_DISABLED", disabled.to_string());
+        command
+    };
+    let mut create = command(&config, true);
+    let output = create
+        .args(["writer", "namespace", "create"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        0,
+        "explicit credentials work against real S3 with metadata disabled"
+    );
+
+    let role = root.join("role.toml");
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .lines()
+        .filter(|line| {
+            !line.starts_with("access_key_id =") && !line.starts_with("secret_access_key =")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&role, text).unwrap();
+    let refused = |mut command: Command| {
+        let output = command.args(["writer", "status"]).output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.stderr, b"error: storage_unavailable\n");
+    };
+    refused(command(&role, true));
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        0,
+        "the opt-out must not contact the metadata endpoint"
+    );
+    refused(command(&role, false));
+    assert!(
+        requests.load(Ordering::SeqCst) > 0,
+        "the instance provider must remain enabled without the opt-out"
+    );
+
+    requests.store(0, Ordering::SeqCst);
+    let token = root.join("container-token");
+    std::fs::write(&token, "fixture-container-token").unwrap();
+    let mut container = command(&role, true);
+    container
+        .env("AWS_CONTAINER_CREDENTIALS_FULL_URI", &endpoint)
+        .env("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", &token);
+    refused(container);
+    assert!(
+        requests.load(Ordering::SeqCst) > 0,
+        "container credential discovery must remain enabled with IMDS disabled"
+    );
+    server.abort();
+}
