@@ -331,3 +331,30 @@ async fn verified_descriptor_never_serves_a_swapped_or_rewritten_blob() {
     assert_eq!(std::fs::read(external).unwrap(), b"corrupted file");
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn prewarm_rejects_manifest_size_mismatch() {
+    let directory = std::env::temp_dir().join(format!(
+        "fyrr-mirror-size-{}-{}",
+        std::process::id(),
+        fyrr_core::clock::now().timestamp_micros()
+    ));
+    let mirror = MirrorStore::new(directory.clone(), 1024).unwrap();
+    mirror.bind_dataset("s3://bucket/dataset.lance").unwrap();
+    let store = Arc::new(object_store::memory::InMemory::new());
+    store
+        .put(&Path::from("dataset.lance/data/file.lance"), "data".into())
+        .await
+        .unwrap();
+    let mut files = vec![fyrr_core::envelope::FileRef {
+        path: "data/file.lance".into(),
+        size_bytes: 5,
+    }];
+    assert_eq!(
+        mirror.prewarm(store.clone(), &files).await,
+        Err(StorageUnavailable)
+    );
+    files[0].size_bytes = 4;
+    assert!(mirror.prewarm(store, &files).await.is_ok());
+    std::fs::remove_dir_all(directory).unwrap();
+}

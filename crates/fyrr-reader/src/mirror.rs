@@ -736,7 +736,7 @@ impl MirrorStore {
         let store = self.wrap(&prefix, store);
         for file in files {
             let path = Path::from(format!("{root}/{}", file.path));
-            store
+            let result = store
                 .get_opts(
                     &path,
                     GetOptions {
@@ -746,6 +746,9 @@ impl MirrorStore {
                 )
                 .await
                 .map_err(|_| StorageUnavailable)?;
+            if result.meta.size != file.size_bytes {
+                return Err(StorageUnavailable);
+            }
             let blob = self.directory.join(
                 self.blob_name(&prefix, path.as_ref())
                     .ok_or(StorageUnavailable)?,
