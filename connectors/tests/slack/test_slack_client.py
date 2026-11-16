@@ -14,7 +14,9 @@ def test_slack_retry_after_and_transient_retry(slack, status):
     slack.fail("auth.test", status=status, headers={"Retry-After": "3"})
     client = Client(slack.origin, slack.token)
     assert client.get("auth.test")["ok"]
-    assert slack.sleeps == ([3] if status == 429 else [1])
+    assert len(slack.sleeps) == 1
+    expected = 3 if status == 429 else 1
+    assert expected <= slack.sleeps[0] <= expected + 1
     before = list(slack.sleeps)
     client.get("auth.test")
     assert slack.sleeps == before

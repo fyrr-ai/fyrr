@@ -49,7 +49,7 @@ class Client:
 
     @_http.retry(
         _http.RetryPolicy(
-            ATTEMPTS, jitter="backoff", budget=300, status_errors=((401, "auth_failure"),)
+            ATTEMPTS, jitter="wait", budget=300, status_errors=((401, "auth_failure"),)
         ),
         lambda: ApiError("transport_failure"),
         lambda: ApiError("rate_wait_budget"),

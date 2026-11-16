@@ -44,7 +44,7 @@ class Client:
         return self._get(method, params)
 
     @_http.retry(
-        _http.RetryPolicy(ATTEMPTS, budget=WAIT_BUDGET, server_error="http_failure"),
+        _http.RetryPolicy(ATTEMPTS, budget=WAIT_BUDGET, jitter="wait", server_error="http_failure"),
         lambda: ApiError("transport_failure"),
         lambda: ApiError("rate_wait_budget"),
     )

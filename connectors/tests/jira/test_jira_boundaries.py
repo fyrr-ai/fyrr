@@ -95,7 +95,8 @@ def test_jira_rate_limit_retry_after(jira, jira_index):
     jira.issue(101)
     jira.fail("/serverInfo", 429, headers={"Retry-After": "7"})
     jira_index.sync()
-    assert jira.sleeps == [7.0]
+    assert len(jira.sleeps) == 1
+    assert 7 <= jira.sleeps[0] <= 8
 
 
 @pytest.mark.parametrize("status", [401, 403, 302])

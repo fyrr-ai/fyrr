@@ -328,7 +328,8 @@ def test_rate_limit_exhaustion_yields_no_freshness(slack, slack_index, kind):
     slack.fail("users.list", times=6, status=429, headers={"Retry-After": "1"})
     with pytest.raises(ApiError, match="rate_limited"):
         next(iter(slack_index.run(kind)))
-    assert slack.sleeps == [1.0] * 5
+    assert len(slack.sleeps) == 5
+    assert all(1 <= delay <= 2 for delay in slack.sleeps)
 
 
 @pytest.mark.parametrize("kind", ["permissions", "members"])
