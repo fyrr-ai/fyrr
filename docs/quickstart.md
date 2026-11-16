@@ -20,7 +20,7 @@ export PATH="$PWD/target/debug:$PATH" VIRTUAL_ENV="$PWD/connectors/.venv"
 python3 examples/quickstart/toy-embeddings.py &
 FYRR_TOY_EMBEDDINGS_PID=$!
 for attempt in $(seq 1 50); do
-  curl -fsS -o /dev/null http://127.0.0.1:8089/v1/models && break
+  curl -fsS -o /dev/null http://127.0.0.1:8089/v1/models 2>/dev/null && break
   sleep 0.2
 done
 kill -0 "$FYRR_TOY_EMBEDDINGS_PID" && curl -fsS -o /dev/null http://127.0.0.1:8089/v1/models

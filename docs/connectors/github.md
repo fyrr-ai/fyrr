@@ -47,7 +47,6 @@ issues = true
 pull_requests = true
 prose = true
 code = false                    # per-repository opt-in
-
 ```
 
 | Key | Meaning |

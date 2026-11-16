@@ -38,7 +38,6 @@ shared_with_me = false                   # files the users can open but do not o
 owners = ["a@example.com"]               # user e-mails; empty = all active users (sync only)
 folders = []                             # folder IDs; empty = no folder restriction
 extensions = ["gdoc", "gsheet", "gslides"]
-
 ```
 
 Under `fixed`, `scope.owners` must list the users whose Drive is read.

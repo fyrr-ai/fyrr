@@ -35,7 +35,6 @@ database or cluster to operate.
 - **Fails closed.** Missing authorization data, an unknown caller or a source
   whose permission reads went stale refuses or hides; it never guesses
   ([security](docs/security.md)).
-
 - **MCP over stdio or HTTP.** `search`, `fetch` and `list_filters` for one
   user per stdio process, or for many over Streamable HTTP with OIDC access
   tokens ([MCP tools](docs/mcp-tools.md)).

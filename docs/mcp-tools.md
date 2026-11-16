@@ -48,7 +48,7 @@ empty result is not an error. Scores only order results.
 | `limit` | 1–75 documents, default 50. With `queries`, per query, default and maximum 20. |
 | `output` | `metadata`, `excerpt` (default) or `content`: what text each hit carries. |
 | `order` | `relevance` (default) or `updated_at`. |
-| `text_hits` | 0–75, capped at the effective `limit` and forbidden with `output: "metadata"`: only the top `text_hits` hits carry text, the rest metadata only. With `queries`, per query before deduplication. |
+| `text_hits` | 0–75, and at most the effective `limit`; a larger value, or any value with `output: "metadata"`, is `invalid_argument`. Only the top `text_hits` hits carry text, the rest metadata only. With `queries`, per query before deduplication. |
 | `excerpt_chars` | 1–1200: caps the excerpt length. |
 | `sources`, `source_types`, `projects`, `authors` | Exact-match filters, 1–64 values of 1–512 characters each. An unknown value gives an empty result. |
 | `updated_after`, `updated_before` | RFC 3339 instants; exclusive bounds. |

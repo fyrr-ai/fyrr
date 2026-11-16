@@ -7,9 +7,6 @@
 
 ## Configuration
 
-See [shared configuration](README.md#shared-configuration) for installation,
-permission intervals, encryption keys and identity links.
-
 ```toml
 [[sources]]
 id = "handbook"

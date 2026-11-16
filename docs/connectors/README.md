@@ -37,7 +37,8 @@ to reader tokens (user and group grants), and known limits.
 
 In a checkout, install a cloud provider's extra with
 `(cd connectors && uv sync --locked --extra slack)`, replacing `slack` with
-its source type. The full image includes all bundled extras.
+its source type. Rerun this after `scripts/doctor`, which syncs the
+environment without extras. The full image includes all bundled extras.
 A source's `settings.api_endpoint` can select a trusted proxy or test server;
 leave it at its default for the upstream API.
 Slack and Jira `settings.corporate_domains` default to
@@ -56,6 +57,7 @@ members = "15m"
 A failed or partial permission/member read keeps the last published rights
 until the [freshness deadline](../architecture.md#terms), then hides that
 source. See [freshness and revocation](../security.md#freshness-and-revocation).
+
 Common rules for every source:
 
 - `permissions = "sync"` publishes the source's own access rights and needs

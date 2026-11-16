@@ -85,8 +85,9 @@ in extended attributes. Missing or damaged version metadata is refused;
 existing namespaces require their original lock file. Publishing the serving
 head flushes the filesystem; Lance uses an atomic create-exclusive link.
 The next mutation reaps crashed control writes. Maintenance and confirmed
-source purge reap abandoned multipart uploads while protecting recent files
-and live source leases. Reader mirrors copy immutable files and preserve
+source purge reap abandoned multipart uploads (`name#digits`), protecting
+files younger than ten minutes and namespaces with live source leases;
+purge plans count them as `namespace_staging_files`. Reader mirrors copy immutable files and preserve
 in-flight pins across purge, bounded by `reader.mirror_max_bytes`.
 
 ## Authorization

@@ -17,8 +17,8 @@
 
 ## Configuration
 
-See [shared configuration](README.md#shared-configuration) for installation,
-permission intervals, encryption keys and identity links.
+See [shared configuration](README.md#shared-configuration) for installing the
+`notion` extra and `settings.api_endpoint`.
 
 ```toml
 [[sources]]

@@ -3,7 +3,7 @@ Describe the problem and the resulting behavior. Link the issue if there is one.
 ## Verification
 
 Report checks and per-step counts as required by
-[Contributing: Verifying](../CONTRIBUTING.md#verifying); unrun checks are `n/e`.
+[Contributing: Verifying](https://github.com/fyrr-ai/fyrr/blob/main/CONTRIBUTING.md#verifying); unrun checks are `n/e`.
 
 ## Compatibility
 

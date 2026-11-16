@@ -49,7 +49,6 @@ projects = [10001, 10002]              # stable numeric project IDs ...
 issue_types = []                       # issue type IDs; empty = all
 labels = []                            # any-of exact labels
 skip_comment_authors = []              # account IDs whose comments are omitted
-
 ```
 
 | Key | Meaning |

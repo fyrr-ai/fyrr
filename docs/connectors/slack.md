@@ -41,7 +41,6 @@ exclude = ["platform-private-*"]         # exclude wins
 channel_types = ["public_channel", "private_channel"]
 bots = false                             # include bot messages
 include_shared = false                   # Slack Connect / shared channels; fixed only
-
 ```
 
 | Key | Meaning |
