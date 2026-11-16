@@ -47,7 +47,7 @@ jsonschema = { version = "0.61.2", default-features = false }
 # arrow-pyarrow 58 imports pyarrow batches through the Arrow C Data Interface
 # (PyCapsules, zero-copy) and requires PyO3 0.28.
 pyo3 = { version = "0.28", default-features = false }
-pyo3-build-config = "0.28"
+pyo3-build-config = "0.30"
 arrow-pyarrow = "58"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 # Already in the graph through Lance; used for deterministic IDs and digests.
