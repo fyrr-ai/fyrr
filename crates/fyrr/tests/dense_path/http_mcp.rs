@@ -140,6 +140,8 @@ impl Reader {
         let token = token.to_owned();
         tokio::spawn(async move {
             let response = client.post(url).bearer_auth(token)
+                // Transport must outlast the requested MCP deadline.
+                .timeout(Duration::from_millis((u64::from(deadline) + 5000).max(15000)))
                 .header("Accept", "application/json, text/event-stream")
                 .header("MCP-Protocol-Version", "2025-11-25")
                 .json(&json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"search","arguments":{"query":"fixture query","sources":["incremental"],"deadline_ms":deadline}}}))
@@ -312,6 +314,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     let entered = Arc::new(AtomicBool::new(false));
     let expired_source = Arc::new(AtomicBool::new(false));
     let stall_before = Arc::new(AtomicBool::new(false));
+    let publication_hook = Arc::new(Mutex::new(None::<super::corrections::BoundaryHook>));
     let hook = {
         let gate = gate.clone();
         let heads = heads.clone();
@@ -319,7 +322,17 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
         let active_heads = active_heads.clone();
         let entered = entered.clone();
         let stall_before = stall_before.clone();
-        Arc::new(move |request: &str, _: &[u8], after: bool| {
+        let publication_hook = publication_hook.clone();
+        Arc::new(move |request: &str, body: &[u8], after: bool| {
+            let pause = || {
+                entered.store(true, Ordering::SeqCst);
+                let publication = publication_hook.lock().unwrap().clone();
+                if let Some(hold) = publication {
+                    hold(request, body, after);
+                } else {
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+            };
             if request.starts_with("GET ") && request.contains("/head.json ") {
                 if !after {
                     active_heads.fetch_add(1, Ordering::SeqCst);
@@ -329,8 +342,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
                             .compare_exchange(n, 0, Ordering::SeqCst, Ordering::SeqCst)
                             .is_ok()
                     {
-                        entered.store(true, Ordering::SeqCst);
-                        std::thread::sleep(Duration::from_secs(2));
+                        pause();
                     }
                 } else {
                     let wanted = gate.load(Ordering::SeqCst);
@@ -340,8 +352,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
                             .compare_exchange(wanted, 0, Ordering::SeqCst, Ordering::SeqCst)
                             .is_ok()
                     {
-                        entered.store(true, Ordering::SeqCst);
-                        std::thread::sleep(Duration::from_secs(2));
+                        pause();
                     }
                     completed_heads.fetch_add(1, Ordering::SeqCst);
                     active_heads.fetch_sub(1, Ordering::SeqCst);
@@ -567,10 +578,19 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
         expired.await.unwrap()["structuredContent"]["code"],
         "authorization_unavailable"
     );
+    let hold_publication = || {
+        let (gate, hook) = super::corrections::RequestGate::new(|_, _, _| true);
+        *publication_hook.lock().unwrap() = Some(hook);
+        gate
+    };
     // Hold the old admitted head response, publish a revoke, then release it.
+    let previous_identity = super::coordination::publication(&commit).await.0.identity;
+    let held = hold_publication();
     arm(3).await;
-    let inflight = reader.search_task(&token, 6, 10000);
+    let requested_at = std::time::Instant::now();
+    let inflight = reader.search_task(&token, 6, 30000);
     blocked(&entered).await;
+    held.entered();
     snapshot.users[1].active = false;
     snapshot.built_at = chrono::Utc::now();
     std::fs::write(root.join("http-directory.json"), write_contract(&snapshot)).unwrap();
@@ -582,17 +602,37 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
             .status
             .success()
     );
+    assert_ne!(
+        super::coordination::publication(&commit).await.0.identity,
+        previous_identity,
+        "the directory change must be published before releasing the head read"
+    );
+    assert!(
+        requested_at.elapsed() < Duration::from_secs(20),
+        "publication exceeded the request deadline"
+    );
+    assert!(
+        !inflight.is_finished(),
+        "the request must still be held at the real storage boundary"
+    );
+    held.release();
+    *publication_hook.lock().unwrap() = None;
+    let response = inflight.await.unwrap();
     assert_eq!(
-        inflight.await.unwrap()["structuredContent"]["code"],
-        "authorization_unavailable"
+        response["structuredContent"]["code"], "authorization_unavailable",
+        "{response}"
     );
     // Stall before the admission refresh reads G+1, after S was bound under G.
     // Rebinding and removal must refuse, without caching A under S/G+1.
     let subject = snapshot.users[0].subjects[0].clone();
     stall_before.store(true, Ordering::SeqCst);
+    let previous_identity = super::coordination::publication(&commit).await.0.identity;
+    let held = hold_publication();
     arm(3).await;
-    let rebinding = reader.search_task(&token, 40, 10000);
+    let requested_at = std::time::Instant::now();
+    let rebinding = reader.search_task(&token, 40, 30000);
     blocked(&entered).await;
+    held.entered();
     snapshot.users[0].subjects.clear();
     snapshot.users[2].subjects.push(subject.clone());
     snapshot.built_at = chrono::Utc::now();
@@ -605,9 +645,25 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
             .status
             .success()
     );
+    assert_ne!(
+        super::coordination::publication(&commit).await.0.identity,
+        previous_identity,
+        "the directory change must be published before releasing the head read"
+    );
+    assert!(
+        requested_at.elapsed() < Duration::from_secs(20),
+        "publication exceeded the request deadline"
+    );
+    assert!(
+        !rebinding.is_finished(),
+        "the request must still be held at the real storage boundary"
+    );
+    held.release();
+    *publication_hook.lock().unwrap() = None;
+    let response = rebinding.await.unwrap();
     assert_eq!(
-        rebinding.await.unwrap()["structuredContent"]["code"],
-        "authorization_unavailable"
+        response["structuredContent"]["code"], "authorization_unavailable",
+        "{response}"
     );
     let namespace = &loaded.config.namespace.name;
     let rebound = reader
@@ -640,9 +696,15 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
             .unwrap()
             .is_empty()
     );
+    let previous_identity = super::coordination::publication(&commit).await.0.identity;
+    let held = hold_publication();
     arm(3).await;
-    let unbinding = reader.search_task(&token, 43, 10000);
+    let requested_at = std::time::Instant::now();
+    let unbinding = reader.search_task(&token, 43, 30000);
     blocked(&entered).await;
+    held.entered();
+    // Deliberately outlast the former two-second timer before publishing.
+    tokio::time::sleep(Duration::from_secs(3)).await;
     snapshot.users[2].subjects.retain(|s| s != &subject);
     snapshot.built_at = chrono::Utc::now();
     std::fs::write(root.join("http-directory.json"), write_contract(&snapshot)).unwrap();
@@ -654,9 +716,25 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
             .status
             .success()
     );
+    assert_ne!(
+        super::coordination::publication(&commit).await.0.identity,
+        previous_identity,
+        "the directory change must be published before releasing the head read"
+    );
+    assert!(
+        requested_at.elapsed() < Duration::from_secs(20),
+        "publication exceeded the request deadline"
+    );
+    assert!(
+        !unbinding.is_finished(),
+        "the request must still be held at the real storage boundary"
+    );
+    held.release();
+    *publication_hook.lock().unwrap() = None;
+    let response = unbinding.await.unwrap();
     assert_eq!(
-        unbinding.await.unwrap()["structuredContent"]["code"],
-        "authorization_unavailable"
+        response["structuredContent"]["code"], "authorization_unavailable",
+        "{response}"
     );
     assert_eq!(
         reader
