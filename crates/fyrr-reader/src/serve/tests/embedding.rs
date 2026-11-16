@@ -808,5 +808,26 @@ async fn empty_selection_metadata_does_not_reveal_query_cache_on_storage() {
         serde_json::to_vec(&metadata[0]).unwrap(),
         serde_json::to_vec(&metadata[1]).unwrap()
     );
+    fixture
+        .wire
+        .call(
+            4,
+            "search",
+            json!({
+                "query":"exactneedle", "limit":4, "output":"metadata", "deadline_ms":8000
+            }),
+        )
+        .await;
+    let cached = fixture.wire.reply().await;
+    assert_eq!(cached["result"]["isError"], false);
+    for response in [&primed, &cached] {
+        let telemetry = &response["result"]["structuredContent"]["metadata"]["telemetry"];
+        assert!(
+            telemetry.get("stage_us").is_none(),
+            "search durations reveal provider waiting: {telemetry}"
+        );
+        assert!(telemetry.get("rerank_us").is_none());
+        assert_eq!(telemetry["queue_wait_ms"], 0);
+    }
     fixture.close().await;
 }

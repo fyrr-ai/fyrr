@@ -90,6 +90,11 @@ impl PreparedReader {
             // An empty selection has no retrieval work or cache-dependent telemetry.
             result.metadata.telemetry = Telemetry::default();
         }
+        // Explicit search durations reveal whether shared embeddings needed a
+        // provider call. Internal stage accounting remains available to execution.
+        result.metadata.telemetry.stage_us.clear();
+        result.metadata.telemetry.rerank_us = None;
+        result.metadata.telemetry.queue_wait_ms = 0;
         if args.order == Some(SearchOrder::UpdatedAt) {
             result.hits.sort_by(|a, b| {
                 b.updated_at.cmp(&a.updated_at).then(

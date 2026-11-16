@@ -137,11 +137,13 @@ Every successful tool response carries `metadata`:
 | `hidden_sources` | Up to 64 source IDs hidden because their permission or membership freshness expired, among those with at least one row the caller could otherwise read. |
 | `stale_version` | The reader served an older pin than the live head allows (`per-request` mode). |
 | `omitted_bytes` | Bytes clipped from the response. |
-| `telemetry` | `cache` (`hot`, `warm`; `cold` is reserved), `queue_wait_ms`, per-stage microseconds in `stage_us`, S3 requests and bytes per stage, candidate counts, `unindexed_rows_scanned`, `filter_rows_scanned`, `embedding_memory_hits`, `embedding_provider_calls`, `routing_strategy`, `routing_fallback`, `rerank_us`. |
+| `telemetry` | `cache` (`hot`, `warm`; `cold` is reserved), `queue_wait_ms`, per-stage microseconds in `stage_us`, S3 requests and bytes per stage, candidate counts, `unindexed_rows_scanned`, `filter_rows_scanned`, `routing_strategy`, `routing_fallback`, `rerank_us`. |
 
-Stage timers are inclusive of their children, so `stage_us` values must not
-be summed; `total` starts when the complete input frame arrives and ends
-before protocol output. Telemetry contains no user data.
+Search responses omit `stage_us` and `rerank_us` and keep `queue_wait_ms`
+at zero to avoid exposing shared query-embedding cache activity.
+For fetch and filter-list responses, stage timers are inclusive of their
+children and must not be summed; `total` starts when the complete input frame
+arrives and ends before protocol output. Telemetry contains no user data.
 
 ## Concurrency, deadlines and cancellation
 

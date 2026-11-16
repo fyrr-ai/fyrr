@@ -100,13 +100,15 @@ pub(super) async fn execute(
     *crate::sync::lock(&job.response_claims.scratch) = reader.response_claim.take();
     let result = match outcome {
         Ok(mut value) => {
-            if job.subject.is_some() {
+            if !matches!(request, ToolCall::Search(_)) && job.subject.is_some() {
                 value["metadata"]["telemetry"]["stage_us"]["authorization_cache_build"] =
                     json!(context.authorization_build_us);
             }
-            value["metadata"]["telemetry"]["queue_wait_ms"] = json!(wait);
-            value["metadata"]["telemetry"]["stage_us"]["total"] =
-                json!(micros(context.arrived.elapsed()));
+            if !matches!(request, ToolCall::Search(_)) {
+                value["metadata"]["telemetry"]["queue_wait_ms"] = json!(wait);
+                value["metadata"]["telemetry"]["stage_us"]["total"] =
+                    json!(micros(context.arrived.elapsed()));
+            }
             if matches!(request, ToolCall::Search(_)) {
                 if value["hits"].as_array().is_some_and(Vec::is_empty) {
                     value["metadata"]["telemetry"] = json!(fyrr_core::mcp::Telemetry::default());

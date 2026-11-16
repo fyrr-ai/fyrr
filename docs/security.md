@@ -140,3 +140,7 @@ The [deployment guide](deployment.md#topology) covers reader hosts; the
 See [HTTP boundary](http-users.md#http-boundary) for host and origin checks,
 request limits, readiness and administration, and [tokens](http-users.md#tokens)
 for access-token validation.
+
+A caller can still infer shared query-embedding cache membership by choosing
+a `deadline_ms` shorter than provider latency and observing whether dense
+retrieval degrades.

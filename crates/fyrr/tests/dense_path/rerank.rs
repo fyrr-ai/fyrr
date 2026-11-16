@@ -181,12 +181,8 @@ async fn tools_rerank_default_and_success_on_storage() {
             ranked["metadata"]["degraded"],
             baseline["metadata"]["degraded"]
         );
-        assert!(
-            ranked["metadata"]["telemetry"]["rerank_us"]
-                .as_u64()
-                .unwrap()
-                > 0
-        );
+        assert!(ranked["metadata"]["telemetry"].get("rerank_us").is_none());
+        assert!(ranked["metadata"]["telemetry"].get("stage_us").is_none());
     }
     for request in provider.state.requests.lock().unwrap().iter() {
         assert_eq!(request.as_object().unwrap().len(), 3);
