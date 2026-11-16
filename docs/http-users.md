@@ -182,10 +182,6 @@ subject bindings return `503 authorization_unavailable`.
   the published identity, or the request gets `503
   authorization_unavailable`.
 
-Any OIDC provider that issues such access tokens works; with an issuer other
-than Keycloak, set `issuer` and `jwks_url` and bind subjects through a SCIM
-or snapshot directory.
-
 ### Keys
 
 The JWKS document may hold at most 16 keys with distinct `kid`s in at most
@@ -214,23 +210,8 @@ requests get `503 authorization_unavailable`.
 
 ### Other directories
 
-- `provider = "scim"`: the identity provider pushes users and groups to the
-  writer's SCIM 2.0 endpoint on the administration listener
-  (`[writer.serve.admin]`), with subjects bound under
-  `identity.directory.issuer`, which `identity.oidc.issuer` must equal.
-  A namespace supports at most 100,000 live users and groups combined;
-  JSON request bodies are limited to 1 MiB.
-  Clients must send the current ETag (`meta.version`) in `If-Match` for PUT,
-  PATCH and DELETE; a missing precondition returns 428 and a stale one 412.
-  Lists support `startIndex`, `count` (at most 1,000) and `eq` filters on
-  `userName` (users only), `displayName`, `id` or `externalId`. Attribute
-  projections, sorting and bulk operations are unsupported. Subject bindings
-  use `subjects` entries (`issuer`, `subject`) in the custom user extension
-  `urn:fyrr:params:scim:schemas:extension:identity:2.0:User`; clients must map
-  that extension and support the required conditional writes.
-- `provider = "snapshot"`: the writer reads a complete, already hashed
-  directory snapshot (`schemas/directory-snapshot.schema.json`) from
-  `snapshot_file` on each pull; its subject bindings name their issuers.
+Use a [SCIM or snapshot directory](identity.md#other-directory-providers) to
+bind subjects when not using Keycloak.
 
 The writer's administration listener serves `/admin/status` and the SCIM
 endpoints with two separate credentials; a non-loopback listener requires

@@ -15,10 +15,7 @@ in [operations](operations.md).
 
 ## Topology
 
-A deployment is one S3 namespace, any number of writer processes and any
-number of reader processes. S3 is the only coordination channel: writers on
-different hosts take expiring leases per source and sync kind, one [committer](architecture.md#terms)
-at a time holds the namespace lease, and readers only read.
+Writers take per-source leases; one committer holds the namespace lease.
 
 - **Writer hosts** run the full build (or the `fyrr` image) with the [provider](architecture.md#terms)
   packages and their credentials.
@@ -97,8 +94,7 @@ and a writer that runs on its own.
    [upgrades](operations.md#upgrades).
 3. **Writer.** On a host with the full build or the `fyrr` image, run
    `fyrr writer namespace create` once, then `fyrr writer serve` as a
-   service, and schedule `fyrr writer maintain` (for example every six
-   hours), which `writer serve` does not run ([scheduling](#scheduling)).
+   service ([scheduling](#scheduling)).
 4. **Reader.** Run the `fyrr-reader` image (or the reader-only build) with
    the same file. Over HTTP it listens on plain HTTP: put a TLS-terminating
    proxy in front of it ([start the reader](http-users.md#3-start-the-writer-and-the-reader)). Check readiness
@@ -155,6 +151,12 @@ on the local S3 fixture and `docker/compose.yaml`. The first build compiles
 [Lance](architecture.md#terms) in release mode and takes a while.
 
 ### Providers in the image
+
+From a checkout, discover providers with
+`VIRTUAL_ENV=$PWD/connectors/.venv target/debug/fyrr writer providers`.
+To try a wheel locally, build it as below, install it with
+`uv pip install --no-deps --python connectors/.venv/bin/python --target /tmp/site target/example-wheels/*.whl`,
+then add `PYTHONPATH=/tmp/site` to the discovery command.
 
 External providers are installed without rebuilding fyrr, either in a
 derived image or from a mounted wheel directory:

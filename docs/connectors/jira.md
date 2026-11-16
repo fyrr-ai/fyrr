@@ -6,14 +6,6 @@
 >   API token.
 > - Modes: `sync` for company-managed software and business projects, `fixed`
 >   for any project.
-> - Read it when you add a `type = "jira"` source: setup, configuration,
->   documents, permissions and limits.
-
-Reads issues and comments from Jira Cloud with a scoped service-account API
-token. Under `sync`, each issue's audience follows the project's Browse
-permission scheme, the issue security level and per-comment visibility.
-Modes: `sync` for company-managed software and business projects, `fixed`
-for any project.
 
 ## Setup
 
@@ -32,10 +24,11 @@ for any project.
    comment-visibility group of the content to sync.
 4. Rights for `fixed`: Browse Projects plus the security levels and comment
    visibilities of the content to read.
-5. Install the `jira` extra (`fyrr-connectors[jira]`: `requests`); the
-   `fyrr` image has it.
 
 ## Configuration
+
+See [shared configuration](README.md#shared-configuration) for installation,
+permission intervals, encryption keys and identity links.
 
 ```toml
 [[sources]]
@@ -47,8 +40,6 @@ permissions = "sync"                   # or "fixed" with readers = [...]
 site_url = "https://acme.atlassian.net"
 cloud_id = "11111111-1111-4111-8111-111111111111"
 api_token = { env = "FYRR_JIRA_API_TOKEN" }
-# corporate_domains = ["example.com"]  # default: identity.directory.verified_domains
-# api_endpoint = ""                    # trusted proxy or loopback test server
 
 [sources.scope]
 projects = [10001, 10002]              # stable numeric project IDs ...
@@ -57,17 +48,12 @@ issue_types = []                       # issue type IDs; empty = all
 labels = []                            # any-of exact labels
 skip_comment_authors = []              # account IDs whose comments are omitted
 
-[sources.intervals]
-permissions = "15m"                    # required for sync
-members = "15m"
-reconcile = "24h"
 ```
 
 | Key | Meaning |
 | --- | --- |
 | `settings.site_url`, `cloud_id` | Pinned HTTPS site and its Cloud UUID; both verified. |
 | `settings.api_token` | Environment reference to the scoped token. |
-| `settings.corporate_domains` | Lowercase domains (at most 64), by default `identity.directory.verified_domains`. A user whose Jira e-mail is in one of them is linked to the canonical directory automatically; otherwise an explicit account link is needed. `[]` turns automatic links off. |
 | `settings.api_endpoint` | Optional HTTPS or loopback origin instead of the cloud gateway. |
 | `scope.projects` or `scope.jql` | Exactly one. JQL is a bounded static expression: no `ORDER BY`, saved filters, `currentUser()`, `membersOf()` or relative-time functions. |
 | `scope.issue_types`, `labels`, `skip_comment_authors` | Optional narrowing (at most 256, 64 and 256 entries). |

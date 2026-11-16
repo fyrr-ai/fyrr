@@ -20,22 +20,8 @@ The deployable directory is `site/dist`. Preview uses the actual Cloudflare
 Workers Static Assets runtime at `http://localhost:8486`, including its HTML
 routing, compression, headers, redirects and 404 handling.
 
-`bun run build` prepares an ignored `.content/` collection from `../docs/`,
-exports Fumadocs and the search index, adds the homepage and 404
-page, then checks every local link, heading anchor and asset. Missing pages
-in `lib/navigation.ts` fail the build. Repository links outside `docs/`
-still point to GitHub. Published `.html` URLs resolve to the clean URLs;
-`/docs/connectors/index.html` redirects to `/docs/connectors`.
-
-Search runs in the browser; `/api/search` is a generated static index, not
-a server endpoint. It loads when search is used. Docs fonts are hosted
-locally, with their license included as `OFL-Geist.txt`. The build embeds one
-shared variable Sans subset for authored text in critical CSS and starts its
-decoding before prose layout. Other Unicode characters load the unchanged
-full font on demand. The subset retains weights 100–900 and shaping closure;
-its 37 KB build limit protects cold-load performance. CSS changes invalidate
-the embedded subset cache. Fumadocs scripts and styles are not added to the
-homepage.
+The build copies `../docs/`, exports Fumadocs and search, and checks links,
+anchors, assets and navigation coverage. Links outside `docs/` point to GitHub.
 
 ## Cloudflare Workers deployment
 
@@ -51,21 +37,8 @@ in Cloudflare, leave the root directory at the repository root, and set:
 | Production branch | `main` |
 | Build variable | `BUN_VERSION=1.4.4` |
 
-Enable preview builds if desired. Leave Cloudflare Access disabled for the
-public production website. After deployment, add your domain in the
-Worker's **Settings → Domains & Routes → Add → Custom domain**.
-
-`wrangler.jsonc` serves only `dist/` and uses the custom 404 page. No Worker
-script, database or paid compute is needed. `_headers` and `_redirects`
-are included in the asset directory. Static asset requests are free and
-unlimited ([Cloudflare billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)).
-Workers Builds has its own build-minute allowance; configure build watch
-paths for `site/**` and `docs/**` to avoid rebuilding for Rust-only changes.
-
-`.github/workflows/site.yml` independently checks the locked install, build,
-types and dependency advisories. Cloudflare handles deployments directly;
-no Cloudflare token or account secret is needed in GitHub Actions.
-
+`wrangler.jsonc` serves `dist/` as static assets. Cloudflare handles deploys;
+`.github/workflows/site.yml` checks builds, types and dependency advisories.
 For a manual deploy from `site/`, run `bun run build && bun run deploy`.
 
 ## Verification

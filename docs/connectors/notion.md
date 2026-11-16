@@ -6,13 +6,6 @@
 >   internal Notion integration.
 > - Always a `fixed` connection: the configured readers apply to every
 >   document.
-> - Read it when you add a `type = "notion"` source: setup, configuration,
->   documents and limits.
-
-Reads the pages and database rows beneath configured root pages through an
-internal Notion integration. Always a `fixed` connection: Notion exposes no
-usable permission model to an integration, so the configured readers apply
-to every document and no permission or member read exists.
 
 ## Setup
 
@@ -21,10 +14,11 @@ to every document and no permission or member read exists.
 2. Share each root page with the integration; sharing a page shares its
    subtree.
 3. Put the integration secret in an environment variable.
-4. Install the `notion` extra (`fyrr-connectors[notion]`: `requests`); the
-   `fyrr` image has it.
 
 ## Configuration
+
+See [shared configuration](README.md#shared-configuration) for installation,
+permission intervals, encryption keys and identity links.
 
 ```toml
 [[sources]]
@@ -35,7 +29,6 @@ readers = ["grp:staff"]
 
 [sources.settings]
 token = { env = "FYRR_NOTION_TOKEN" }
-# api_endpoint = "https://api.notion.com"   # change only for a proxy or test server
 
 [sources.scope]
 root_pages = ["11111111-2222-3333-4444-555555555555"]   # page IDs, dashes optional

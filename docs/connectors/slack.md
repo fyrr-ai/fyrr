@@ -6,12 +6,6 @@
 >   token and publishes conversation windows and threads.
 > - Modes: `sync` (workspace and channel membership become readers) and
 >   `fixed`.
-> - Read it when you add a `type = "slack"` source: setup, configuration,
->   documents, permissions and limits.
-
-Reads public and private channels of one Slack workspace with a user OAuth
-token and publishes conversation windows and threads. Modes: `sync`
-(workspace and channel membership become readers) and `fixed`.
 
 ## Setup
 
@@ -24,10 +18,11 @@ token and publishes conversation windows and threads. Modes: `sync`
 3. The service user must be a member of every private channel to sync.
 4. Put the token in an environment variable and note the workspace ID
    (`T…`); the connector verifies both with `auth.test` every run.
-5. Install the `slack` extra (`fyrr-connectors[slack]`: `requests`); the
-   `fyrr` image has it.
 
 ## Configuration
+
+See [shared configuration](README.md#shared-configuration) for installation,
+permission intervals, encryption keys and identity links.
 
 ```toml
 [[sources]]
@@ -39,8 +34,6 @@ permissions = "sync"                     # or "fixed" with readers = [...]
 token = { env = "FYRR_SLACK_TOKEN" }
 workspace_id = "T0123456789"
 window_gap_seconds = 300                 # messages closer than this form one window
-# corporate_domains = ["example.com"]    # default: identity.directory.verified_domains
-# api_endpoint = "https://slack.com"     # change only for a proxy or test server
 
 [sources.scope]
 include = ["platform-*", "C0123456789"]  # channel IDs or name globs, at most 64
@@ -49,16 +42,12 @@ channel_types = ["public_channel", "private_channel"]
 bots = false                             # include bot messages
 include_shared = false                   # Slack Connect / shared channels; fixed only
 
-[sources.intervals]
-permissions = "15m"                      # required for sync
-members = "15m"
 ```
 
 | Key | Meaning |
 | --- | --- |
 | `settings.token`, `workspace_id` | The user token and the workspace it must belong to. |
 | `settings.window_gap_seconds` | 1–3600; the gap that splits channel messages into windows. |
-| `settings.corporate_domains` | Lowercase domains (at most 64), by default `identity.directory.verified_domains`; members with an e-mail in one of them link to the canonical directory automatically. `[]` turns automatic links off. |
 | `scope.include`, `exclude` | Channel IDs or simple name globs; names are resolved to IDs every run. At most 64 selected channels per source; use several sources for more. |
 | `scope.channel_types` | `public_channel` and/or `private_channel`. Direct messages are refused in both modes. |
 | `scope.bots` | Include bot messages (also inside threads). |

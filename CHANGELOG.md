@@ -35,7 +35,3 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 - Container images for both builds, generated JSON Schemas and contract
   fixtures, and `scripts/ci`, which checks the reference documentation
   against the binaries.
-- Native Lance 14.0.3 storage and retrieval, Arrow 58 and Lance 2.2
-  data files.
-- Maintenance and source purge remove abandoned local Lance multipart uploads
-  that native object listings hide, while protecting recent and active uploads.

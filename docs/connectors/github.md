@@ -5,12 +5,6 @@
 > - Reads issues, pull requests and branch prose from GitHub.com repositories
 >   through a GitHub App installation; source code is opt-in per repository.
 > - Modes: `sync` for private repositories, `fixed` for any repository.
-> - Read it when you add a `type = "github"` source: setup, configuration,
->   documents, permissions and limits.
-
-Reads issues, pull requests and branch prose from GitHub.com repositories
-through a GitHub App installation. Source code is an opt-in per repository.
-Modes: `sync` for private repositories, `fixed` for any repository.
 
 ## Setup
 
@@ -22,14 +16,15 @@ Modes: `sync` for private repositories, `fixed` for any repository.
    repositories. Note the App ID, the installation ID and the numeric ID of
    the installation owner (user or organization).
 3. Put the App's RS256 private key (PEM) in an environment variable.
-4. Install the `github` extra (`fyrr-connectors[github]`: `requests`,
-   `PyJWT[crypto]`); the `fyrr` image has it.
 
 Every run proves the installation: the App JWT must resolve to the
 configured installation and owner, or the sync fails. Installation tokens
 are minted in memory and never persisted.
 
 ## Configuration
+
+See [shared configuration](README.md#shared-configuration) for installation,
+permission intervals, encryption keys and identity links.
 
 ```toml
 [[sources]]
@@ -42,7 +37,6 @@ app_id = 12345
 installation_id = 67890
 account_id = 24680              # expected installation owner ID, not a login
 private_key = { env = "FYRR_GITHUB_APP_KEY" }
-# api_endpoint = "https://api.github.com"   # change only for a proxy or test server
 
 [[sources.scope.repositories]]
 id = 13579                      # stable numeric repository ID
@@ -52,9 +46,6 @@ pull_requests = true
 prose = true
 code = false                    # per-repository opt-in
 
-[sources.intervals]
-permissions = "15m"             # required for sync; omit under fixed
-members = "15m"
 ```
 
 | Key | Meaning |

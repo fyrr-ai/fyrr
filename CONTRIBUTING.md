@@ -81,67 +81,17 @@ and a small external-services set against owned RustFS and Keycloak fixtures.
 It keeps going after a failure and writes
 `target/ci-logs/<UTC stamp>/` with one log per step and `summary.txt`.
 
-Compilation runs through the pinned mr-boxington (`mbx`) shared action
-store. Shell build helpers call `mbx` with rustup's Cargo first on `PATH`;
-`ci-cases` uses the same route. Plain Cargo is used for graph/metadata,
-formatting and advisory commands that do not compile. Each test feature set
-is built once; the ownership inventory and exact row selectors execute
-those artifacts directly. The full and reader CLI binaries are preserved
-separately. Each harness receives its immutable variant path, so concurrent
-cases never replace another case's executable.
-The scripts default `CARGO_INCREMENTAL=0`, `MBX_LEARNED_INCREMENTAL=0` and
-`MBX_EAGER_INCREMENTAL=0` on every host so mbx shares compiler actions between
-worktrees. Cargo's setting alone does not disable mbx's learned private
-incremental state. Explicit caller settings override these defaults.
-Build invocations give mbx exclusive control of `RUSTC_WRAPPER`; an inherited
-wrapper is cleared for those commands because mbx cannot stack Rust wrappers.
+Build helpers use pinned mr-boxington (`mbx`) with rustup's Cargo first on
+`PATH`. Each test feature set is built once; cases execute preserved full
+and reader-only artifacts in a bounded pool. Set `--jobs=N` or
+`FYRR_CI_JOBS=N` to bound concurrency. Each case owns its fixtures; failed
+fixtures and all logs remain for diagnosis (`FYRR_CI_KEEP_FIXTURES=1` also
+keeps successful fixtures). Never share a writable `CARGO_TARGET_DIR` or
+run two top-level CI processes in one checkout. Compiler actions can be
+shared across worktrees; their Cargo outputs stay private.
 
-All Rust cases, including CLI, privacy and unit cases, run in a bounded pool
-as soon as their test executables are built, concurrently with the core gates. Longest cases run
-first, using measured durations in `scripts/ci-cases.json`. Owner rows remain
-disjoint coverage groups; their summary times sum the case work. Overall
-wall time and completion records in `case-pool.log` show the critical path.
-Each Rust parent completion also emits a `ci-case` JSON record with its UTC
-timestamp and elapsed time; serial harnesses include the per-case duration.
-Domain scenarios use real local storage, including crash and lost-response tests
-through a test-only operation observer. The observer delegates operations to
-the real store, including native Lance I/O below the reader mirror, and is
-excluded from shipping builds. It does not emulate S3.
-
-Real-S3 rows retain conditional-write races, lease and serving-head fencing,
-publication switching, native Lance roundtrips, listing pagination and
-visibility, and mirror/storage identity. Each has a private RustFS fixture
-and data directory. The Keycloak integration row uses local storage and a
-private real Keycloak fixture. `scripts/ci-cases plan` lists every case and
-its owner/backend; child cases stay owned with the parent that executes them.
-The default is bounded by CPUs and available RAM, allowing 2 GiB per case
-and reserving 4 GiB for concurrent core gates and external services. Swap
-is not counted as working memory. Per-case results include sampled peak
-process-tree RSS (shared pages may be counted twice; containers are separate).
-`--jobs=N` or `FYRR_CI_JOBS=N` overrides it. Each case owns its fixture.
-Keep one top-level CI process per checkout; separate
-worktrees share compiler results without sharing writable Cargo outputs.
-Successful scenario harnesses remove their own local fixture directories;
-failed runs retain them for diagnosis. Set `FYRR_CI_KEEP_FIXTURES=1` to keep
-successful fixtures too. Logs always remain under `target/ci-logs/`.
-
-Instrumented tests enable `fyrr-core/test-clock` through dev dependencies.
-`fyrr_core::clock::now()` reads a forward-only offset from the private
-`FYRR_TEST_CLOCK_FILE` shared by one scenario parent and all its CLI children.
-Expiry and recovery tests advance that wall clock after their observed
-storage boundary. Monotonic time, Tokio scheduling, lease-renewal intervals,
-operation deadlines, JWKS trust and rate windows remain real.
-Normal/build dependency graphs exclude both `test-clock` and `test-store`,
-and those features refuse builds without debug assertions. The release
-script also rejects a binary containing the test-clock environment hook.
-
-The same entry point selects its cases from `scripts/ci-cases.json` locally
-and on GitHub. Every case has one owner and a `tier`: `quick` cases run in
-both tiers; `full` cases run only in the full tier. Their measured `seconds`
-control longest-first scheduling. Named children explicitly inherit the earliest
-tier of their executing parents. The ownership gate always checks all 908 cases,
-including those excluded from a quick run. The approved split is 811 quick
-cases and 97 additional full cases.
+`scripts/ci-cases.json` owns the cases and their `quick`/`full` tiers; the
+ownership gate checks all cases, including those excluded from the selected tier.
 
 Run `scripts/ci --quick` before a PR. It runs all core gates, CLI and privacy
 cases, the Python SDK and example, local quickstart, and the local scenarios
@@ -153,32 +103,12 @@ Keycloak and long maintenance/history campaigns. Cases excluded by the tier
 are `n/e` in `case-plan.json` and row results; wholly excluded rows are `n/e`
 in `summary.txt`. A mixed row counts only its selected cases as passed.
 
-PRs run `--quick`; pushes to main and nightly run the full tier. `v*` tags
-enter through `release.yml`'s existing reusable CI call with `--images`, so a
-tag runs one CI suite. `--images` adds the image checks. Private repositories
-pass `--debug-only`, retaining debug tests and reporting image/LTO checks
-as `n/e`; release artifact builds are public-only. GitHub uses the pinned
-`jdx/mr-boxington-action` with its GitHub cache backend. Default-branch pushes
-save; PRs restore only. Trusted manual runs may also save, allowing cache
-validation on a branch. Target snapshots and the action store are distinct:
-local worktrees share the action store under `~/.cache/mbx` (or
-`MBX_CACHE_DIR`), while the action restores a pruned target snapshot on
-hosted runners.
+PRs run `--quick`; main and nightly run full CI; `v*` tags run `--images`.
+Private repositories use `--debug-only` and skip release artifacts.
 
-Repository scripts disable managed target relocation: this checkout owns
-its `target/`, including fixtures and logs. This also keeps another build's
-cache collection from evicting executables during direct test execution.
-The shared action store defaults to a 10 GiB budget and 12 GiB minimum free
-space (`MBX_GC_MAX_SIZE`, `MBX_GC_MIN_FREE_SIZE` override these). For other
-projects, mbx's managed targets can also collect old worktree outputs;
-this repository retains its own target directories. Never share a writable
-`CARGO_TARGET_DIR` between worktrees.
-
-Fat-LTO release links run only in the release tier (`scripts/ci --images`
-and `scripts/release` on tags). Quick and full CI retain the
-normal dependency-graph checks and proves that its debug reader-only
-binary has no Python dependency, with the full debug binary as a positive
-control. Quick and full CI report release-only checks as `n/e`.
+This checkout owns its `target/`. Fat-LTO and image checks run only in the
+release tier; quick and full CI check the debug reader-only binary's Python
+independence and report release-only rows as `n/e`.
 
 Read `summary.txt` the way CI does:
 

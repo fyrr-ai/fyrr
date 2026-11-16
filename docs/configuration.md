@@ -70,51 +70,21 @@ enabled. Leave it unset on EC2 when using the instance's role.
 uri = "file:///var/lib/fyrr"
 ```
 
-A `file://` root keeps the namespace, the same objects and [Lance](architecture.md#terms) dataset as
-on S3, in a directory, for trying fyrr out or personal use without S3 or
-Docker. It is for a single host:
+Use local storage for one host and user:
 
-- The writer and every reader run on that host as the same user. fyrr
-  creates the root with mode 0700; an existing root must be a directory
-  owned by that user with no group or other access, and not a symlink.
-  Only the root is forced private; Lance files beneath it follow the umask.
-- Writers coordinate through an exclusive `flock` on the root's
-  `.fyrr-storage.lock` and atomic renames, which hold only within one
-  kernel. A durable counter stored in extended attributes gives each
-  control-object write a fresh version, including identical rewrites; the
-  local file system must support user extended attributes and `fsync`.
-  A control object with missing or damaged version metadata is refused.
-  Namespace creation and writes also refuse to recreate a missing
-  `.fyrr-storage.lock` beside existing `namespaces/`: restore the whole root,
-  including that file and its extended attributes, from a consistent backup.
-  The next mutation removes any temporary control object left by a crashed
-  writer, including before purge. Use local file systems only, never NFS,
-  SMB or FUSE. A root detected as
-  NFS, SMB/CIFS, AFS, Ceph or 9p is refused with `storage_unavailable`. Detection
-  is partial: FUSE, virtiofs and Lustre are not detected and
-  remain unsupported, as do other remote or synchronized file systems.
-- The URI is canonical: absolute, without host, query, `.`, `..` or empty
-  segments, with reserved characters such as spaces percent-encoded
-  (`file:///srv/my%20data`).
-- Lance commits local dataset versions with an atomic create-exclusive
-  link protocol.
-  Publishing the serving head flushes the local file system first.
-- Maintenance and confirmed source purge also reap abandoned local multipart
-  uploads (`name#digits`) that native listings hide. Files younger than ten
-  minutes and namespaces with live source cursor leases stay protected. Purge
-  plans count eligible files as `namespace_staging_files`; these files cannot
-  be attributed to a single source.
-- The reader's mirror (`reader.mirror_path`) still holds the immutable files
-  of the publication it serves, so in-flight requests keep their pin across
-  a purge as on S3; it copies those files on the same disk, up to
-  `reader.mirror_max_bytes`.
+- Writers and readers run as the same user. The root must be private,
+  owned by that user and have no symlink ancestors; new roots use mode 0700.
+- Use a local filesystem with user extended attributes and `fsync`. NFS,
+  SMB/CIFS, AFS, Ceph and 9p are detected and refused. FUSE, virtiofs,
+  Lustre and other remote or synchronized filesystems remain unsupported.
+- The URI must be absolute, without a host, query, `.`, `..` or empty
+  segments; percent-encode reserved characters (`file:///srv/my%20data`).
+- Back up the whole root with its extended attributes and coordination file;
+  never edit its objects. To move between local storage and S3, sync into a
+  fresh namespace on the other storage.
 
-The generated configuration schema is revision `3.0`.
-
-Keep the root and its extended attributes together when making a filesystem
-backup; do not edit its objects or remove its coordination file. There is no
-migration between local storage and S3: sync the sources into a
-namespace on the other storage instead.
+See [local storage mechanics](architecture.md#local-storage) for coordination,
+cleanup and mirror behavior. The configuration schema is revision `3.0`.
 
 ## `[embedding]`
 

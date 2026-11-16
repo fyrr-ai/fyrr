@@ -78,6 +78,18 @@ is refused with `publication_invalid` at startup or
 or retrieval policy do not match is refused with `incompatible_index`. The exact formats are generated into `schemas/`
 and `fixtures/`.
 
+## Local storage
+
+A `file://` root stores the same namespace objects and Lance dataset as S3.
+Writers use `.fyrr-storage.lock`, atomic renames and durable version counters
+in extended attributes. Missing or damaged version metadata is refused;
+existing namespaces require their original lock file. Publishing the serving
+head flushes the filesystem; Lance uses an atomic create-exclusive link.
+The next mutation reaps crashed control writes. Maintenance and confirmed
+source purge reap abandoned multipart uploads while protecting recent files
+and live source leases. Reader mirrors copy immutable files and preserve
+in-flight pins across purge, bounded by `reader.mirror_max_bytes`.
+
 ## Authorization
 
 The writer replaces every reader token with an HMAC-SHA256 digest keyed by

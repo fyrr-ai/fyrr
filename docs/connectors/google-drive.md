@@ -6,13 +6,6 @@
 >   through a service account with domain-wide delegation.
 > - Modes: `sync` (Drive permissions and the Directory become readers) and
 >   `fixed`.
-> - Read it when you add a `type = "google-drive"` source: setup,
->   configuration, documents, permissions and limits.
-
-Exports Google Docs, Sheets and Slides from My Drive and shared drives of a
-Google Workspace domain through a service account with domain-wide
-delegation. Modes: `sync` (Drive permissions and the Directory become
-readers) and `fixed`.
 
 ## Setup
 
@@ -22,11 +15,11 @@ readers) and `fixed`.
    `admin.directory.group.readonly`, and name an administrator in
    `settings.admin_email` whom the sync impersonates for the Directory.
 3. Put the service-account key JSON in an environment variable.
-4. Install the `google-drive` extra (`fyrr-connectors[google-drive]`:
-   `google-auth`, `requests`, `openpyxl`); the `fyrr` image has it.
-   Without it `fyrr writer providers` refuses the [provider](../architecture.md#terms).
 
 ## Configuration
+
+See [shared configuration](README.md#shared-configuration) for installation,
+permission intervals, encryption keys and identity links.
 
 ```toml
 [[sources]]
@@ -37,7 +30,6 @@ permissions = "sync"                     # or "fixed" with readers = [...]
 [sources.settings]
 service_account = { env = "FYRR_GDRIVE_SERVICE_ACCOUNT" }  # key JSON
 admin_email = "admin@example.com"        # required for sync, unused for fixed
-# api_endpoint = "https://www.googleapis.com"   # change only for a proxy or test server
 
 [sources.scope]
 my_drive = true                          # files owned by the users below
@@ -47,9 +39,6 @@ owners = ["a@example.com"]               # user e-mails; empty = all active user
 folders = []                             # folder IDs; empty = no folder restriction
 extensions = ["gdoc", "gsheet", "gslides"]
 
-[sources.intervals]
-permissions = "15m"                      # required for sync
-members = "15m"
 ```
 
 Under `fixed`, `scope.owners` must list the users whose Drive is read.

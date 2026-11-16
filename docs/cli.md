@@ -25,9 +25,6 @@ errors name the argument and the usage line; they never echo what was typed.
 Terms such as serving head, publication and envelope are defined in
 [How fyrr works](architecture.md#terms).
 
-The reader-only build has `reader` and `config` only; `fyrr writer …` there
-exits 69 and says to use the full image.
-
 ## `fyrr config`
 
 | Command | Effect |
@@ -72,23 +69,4 @@ The writer runs every provider in isolated `__worker` child processes. The
 
 ### Finding providers
 
-The worker's Python environment is the interpreter's site-packages (in the
-image), the user site, `PYTHONPATH` and the virtual environment named by
-`VIRTUAL_ENV`. From a repository checkout:
-
-```sh
-VIRTUAL_ENV=$PWD/connectors/.venv target/debug/fyrr writer providers
-```
-
-Wheels installed without rebuilding fyrr:
-
-```sh
-uv build --wheel --out-dir target/example-wheels examples/markdown-provider
-uv pip install --no-deps --python connectors/.venv/bin/python --target /tmp/site target/example-wheels/*.whl
-VIRTUAL_ENV=$PWD/connectors/.venv PYTHONPATH=/tmp/site target/debug/fyrr writer providers
-```
-
-In the full image, a directory of wheels mounted at `FYRR_PROVIDER_WHEELS` is
-installed at start, or a derived image installs them with `pip`; see
-[deployment](deployment.md#providers-in-the-image).
-
+See [provider installation and discovery](deployment.md#providers-in-the-image).

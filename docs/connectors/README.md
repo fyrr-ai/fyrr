@@ -33,6 +33,29 @@ Every provider page covers setup (credentials and API scopes), the
 `settings` and `scope` keys, what becomes a document, how permissions map
 to reader tokens (user and group grants), and known limits.
 
+## Shared configuration
+
+In a checkout, install a cloud provider's extra with
+`(cd connectors && uv sync --locked --extra slack)`, replacing `slack` with
+its source type. The full image includes all bundled extras.
+A source's `settings.api_endpoint` can select a trusted proxy or test server;
+leave it at its default for the upstream API.
+Slack and Jira `settings.corporate_domains` default to
+`identity.directory.verified_domains`; only corporate e-mails in these domains
+link automatically to canonical users. Set `[]` to require explicit links.
+See [identity configuration](../identity.md).
+
+For `permissions = "sync"`, set `identity.encryption_key` and intervals:
+
+```toml
+[sources.intervals]
+permissions = "15m"
+members = "15m"
+```
+
+A failed or partial permission/member read keeps the last published rights
+until the [freshness deadline](../architecture.md#terms), then hides that
+source. See [freshness and revocation](../security.md#freshness-and-revocation).
 Common rules for every source:
 
 - `permissions = "sync"` publishes the source's own access rights and needs

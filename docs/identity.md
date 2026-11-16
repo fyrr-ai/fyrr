@@ -63,6 +63,21 @@ client's token lifespan in Keycloak for the expected read duration. The
 short-lived admin-token example suits small realms. Partial or failed
 pulls publish no directory snapshot or freshness proof.
 
+### Other directory providers
+
+- `scim`: pushes users and groups to `[writer.serve.admin]`, binding subjects
+  under `identity.directory.issuer` (which must match the OIDC issuer).
+  At most 100,000 live users and groups combined; bodies at most 1 MiB.
+  PUT, PATCH and DELETE require `If-Match: <meta.version>` (428 if missing,
+  412 if stale). Lists support `startIndex`, `count` up to 1,000 and `eq`
+  filters on `userName` (users only), `displayName`, `id` or `externalId`.
+  Projections, sorting and bulk operations are unsupported. Map `subjects`
+  (`issuer`, `subject`) in the custom user extension
+  `urn:fyrr:params:scim:schemas:extension:identity:2.0:User` and support
+  conditional writes.
+- `snapshot`: pulls a complete hashed directory snapshot from `snapshot_file`
+  (`schemas/directory-snapshot.schema.json`); subject bindings name issuers.
+
 ### `[identity.oidc]`
 
 | Key | Default | Meaning |

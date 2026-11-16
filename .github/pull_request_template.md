@@ -2,10 +2,8 @@ Describe the problem and the resulting behavior. Link the issue if there is one.
 
 ## Verification
 
-Paste the `summary.txt` of `scripts/ci` (under `target/ci-logs/`) with the
-per-step test counts, or name the steps you ran. A step you did not run is
-`n/e`, not passed. Changes to `docker/`, the SDK packaging or provider install
-paths also need `scripts/images`.
+Report checks and per-step counts as required by
+[Contributing: Verifying](../CONTRIBUTING.md#verifying); unrun checks are `n/e`.
 
 ## Compatibility
 

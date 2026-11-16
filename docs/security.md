@@ -8,8 +8,7 @@
 >   decide who may read what, and when a revocation reaches readers.
 > - How secrets, stored credentials and provider workers are handled.
 
-How fyrr decides who may read what, and what a deployment must protect
-itself. To report a vulnerability, see [SECURITY.md](../SECURITY.md).
+To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 Serving many users over HTTP is in [HTTP login and users](http-users.md).
 
 ## Trust boundaries
@@ -37,13 +36,8 @@ Serving many users over HTTP is in [HTTP login and users](http-users.md).
 
 ## Principals and reader tokens
 
-A *reader token* names who may read a row: `usr:<id>` for a user or
-`grp:<id>` for a group, as the source or the operator names them (see
-[Terms](architecture.md#terms); OIDC access tokens are a different thing and
-only authenticate HTTP callers). The writer hashes every reader token before
-it enters a Lance row, a grant snapshot or the identity artifact. A reader
-resolves the caller to the set of hashed reader tokens it holds and matches
-rows and container grants against that set.
+[Reader tokens and principals](architecture.md#terms) are checked at the
+[authorization gates](architecture.md#authorization).
 
 A **subject** is the caller of a request:
 
@@ -131,22 +125,11 @@ stderr discarded. Results return over a size-capped socket with fixed
 diagnostic codes, never Python exception text. A crash or hang fails only
 that source.
 
-The reader-only build links no Python and no writer code, so a serving host
-needs neither an interpreter nor provider credentials.
-
-`reader.mirror_path` (by default `$XDG_CACHE_HOME/fyrr/<namespace>`) must be a
-private directory (mode 0700) owned by the process and not a symlink; the
-reader creates it 0700 and cached files 0600.
+The [deployment guide](deployment.md#topology) covers reader hosts; the
+[reader settings](reader-writer.md#reader) specify mirror ownership and modes.
 
 ## HTTP boundary
 
-- Every route but `/readyz` requires the `Host` header to equal the
-  authority of `reader.http.public_url`; other requests get 403
-  `host_mismatch`, and the reader logs `http refused code=host_mismatch`.
-  `/readyz` answers any `Host`, but a foreign one gets only the status code
-  with an empty body. Requests with an `Origin` header are refused on every
-  route.
-- `POST /admin/refresh` exists only when `reader.http.operator_credential`
-  is set.
-- Access tokens are checked as described in
-  [HTTP login and users](http-users.md#tokens).
+See [HTTP boundary](http-users.md#http-boundary) for host and origin checks,
+request limits, readiness and administration, and [tokens](http-users.md#tokens)
+for access-token validation.

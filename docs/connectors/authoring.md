@@ -7,16 +7,6 @@
 >   `fyrr.connectors`.
 > - This page covers the package layout, the connector class, sync kinds,
 >   documents, permissions, cursors, limits, testing and compatibility.
-> - Read it when you write a provider of your own;
->   `examples/markdown-provider` is a complete, tested example.
-
-A provider is an ordinary Python distribution that depends on
-`fyrr-connectors` and registers one entry point per provider name in the
-group `fyrr.connectors`. fyrr's full build discovers installed providers,
-validates their metadata against the published provider schema, refuses a
-provider built for another SDK series, and runs each source
-in an isolated worker process. `examples/markdown-provider` is a complete,
-tested example.
 
 ## Package layout
 

@@ -4,14 +4,11 @@
 >
 > - Reads UTF-8 text files from directories on the writer host.
 > - Always a `fixed` connection; every listed reader token reads every file.
-> - Read it when you add a `type = "local-files"` source: configuration,
->   documents and limits.
-
-Reads UTF-8 text files from directories on the writer host. Always a
-`fixed` connection with one or more reader tokens. Sync kinds: `content` and
-`reconcile`.
 
 ## Configuration
+
+See [shared configuration](README.md#shared-configuration) for installation,
+permission intervals, encryption keys and identity links.
 
 ```toml
 [[sources]]

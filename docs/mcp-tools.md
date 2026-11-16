@@ -108,7 +108,7 @@ Its only argument is `deadline_ms`, 1–300000 as for `search`.
 
 A failed tool call returns `isError: true` with a structured error
 (`schemas/mcp-tool-error.schema.json`) that holds only `code`, `message` and
-`retryable`.
+`retryable`. The table includes the HTTP-only `rate_limited` code.
 
 | Code | Retryable | Meaning |
 | --- | --- | --- |
@@ -120,7 +120,7 @@ A failed tool call returns `isError: true` with a structured error
 | `cancelled` | no | The request was cancelled. |
 | `stale_cursor` | no | The cursor is expired, belongs to another subject or its content version changed. |
 | `busy` | yes | The namespace concurrency cap, queue or per-call work budget is exhausted. |
-| `rate_limited` | yes | HTTP boundary only: 429 when a request limit is reached. |
+| `rate_limited` | yes | A per-user or per-group request limit was reached. |
 
 HTTP boundary refusals (authentication, rate, size and connection limits)
 are HTTP statuses with a body `{"error":"<code>"}`, not tool results.

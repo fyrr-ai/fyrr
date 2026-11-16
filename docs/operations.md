@@ -12,37 +12,6 @@
 Setting a deployment up (topology, images, scheduling) is in
 [deployment](deployment.md).
 
-## Maintenance working space
-
-`writer maintain`, `restore` and `rollback` use private, disposable SQLite
-indexes. Set a writable `TMPDIR`, or configure a reader mirror whose parent
-is writable. If neither location is available, the command refuses rather
-than creating scratch data in its working directory. Files are unlinked
-before storing metadata; directories for history and restore work are
-separate and scoped to the namespace.
-
-Lifetime publication and receipt evidence is exact. The history index reads each
-manifest once per maintenance or restore command and reuses validated
-prefixes at subsequent boundaries. Cleanup, receipt lookup and status enumeration can perform
-additional ancestry walks; their work grows with lifetime history. The
-history index uses a 2 MiB SQLite page cache and grows its disk allowance
-in checked increments. It is never trusted after a restart. Disk, SQL or
-scratch-file failures refuse with `restore_working_space_exhausted`,
-including during maintenance; the active-operation summary limit is
-reported as `restore_history_summary_limit`.
-
-Maintenance, restore and rollback first scan the envelope log and run one
-cleanup pass before loading active summaries. Each pass limits deletions
-using `writer.commit.group_max_rows`. It preserves pending work,
-unresolved rejections and the latest applied complete reads. If one pass
-is insufficient, repeated invocations still make cleanup progress.
-Cleanup does not remove receipts.
-
-Recent or protected envelopes count toward the bounded active-operation
-working set. If the command reports `restore_history_summary_limit`,
-lower `writer.max_envelope_age` (default `3d`, also the pending-envelope
-expiry) or lengthen the source sync intervals.
-
 ## Monitoring
 
 - `fyrr writer status` prints the serving `content_sequence`, envelope and
@@ -86,6 +55,17 @@ in retained old versions. Physical purge removes one revoked document root
 per bounded step and publishes that step before continuing. A large revoke
 therefore needs multiple publications; permission changes are drained
 between steps.
+
+### Working space
+
+Maintenance, restore and rollback use disposable SQLite indexes. Provide a
+writable `TMPDIR` or writable mirror parent; there is no working-directory
+fallback. History work grows with namespace lifetime. Scratch or disk failures
+report `restore_working_space_exhausted`; bounded active summaries report
+`restore_history_summary_limit`. Cleanup preserves pending work, unresolved
+rejections, latest complete reads and receipts. Repeat commands for further
+cleanup; reduce `writer.max_envelope_age` or sync frequency if protected
+work reaches the summary bound.
 
 ## Restore and rollback
 
