@@ -17,7 +17,7 @@
    No `search`, `files`, `im`, `mpim`, user-group, admin or write scopes.
 3. The service user must be a member of every private channel to sync.
 4. Put the token in an environment variable and note the workspace ID
-   (`T…`); the connector verifies both with `auth.test` every run.
+   (`T…`, the `team_id` returned by `auth.test`); both are verified every run.
 
 ## Configuration
 

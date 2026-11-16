@@ -14,7 +14,9 @@
    collaborators per repository.
 2. Install it on the account that owns the repositories and select those
    repositories. Note the App ID, the installation ID and the numeric ID of
-   the installation owner (user or organization).
+   the installation owner (user or organization). The App-authenticated
+   `/app/installations/<installation_id>` response supplies `id`, `app_id`
+   and `account.id`; repository API responses supply each repository's `id`.
 3. Put the App's RS256 private key (PEM) in an environment variable.
 
 Every run proves the installation: the App JWT must resolve to the

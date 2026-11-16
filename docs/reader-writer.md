@@ -69,5 +69,5 @@ and memory are under [advanced tuning](tuning.md#advanced-tuning).
 | `maintenance.step_max_duration` | `5m` | Time budget of one lease-held maintenance step. |
 | `backpressure.max_pending_content_envelopes` | `1000` | At least 1. Content sync pauses above it; permissions and members still publish. |
 | `backpressure.max_pending_content_bytes` | `16GiB` | |
-| `serve.[committer](architecture.md#terms)` | `true` | Run the committer role in `writer serve`; off keeps polling and leaves publication to batch `commit` jobs. |
+| `serve.committer` | `true` | Run the [committer](architecture.md#terms) role in `writer serve`; off keeps polling and leaves publication to batch `commit` jobs. |
 | `serve.admin` | absent | Writer administration listener: `listen`, `operator_token = { env = "VAR" }`, `tls_terminated` (required for a non-loopback listener). Needs `identity.encryption_key`. |

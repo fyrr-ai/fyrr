@@ -10,7 +10,9 @@
 ## Setup
 
 1. Create a dedicated service account and a scoped API token for it. Put
-   the token in an environment variable. Requests go through the Cloud
+   the token in an environment variable; the client sends it as Bearer
+   authentication. Use the numeric `id` from project API responses for
+   `scope.projects`. Requests go through the Cloud
    gateway `https://api.atlassian.com/ex/jira/<cloud-id>`.
 2. Find the site's cloud ID (`https://<site>.atlassian.net/_edge/tenant_info`).
    The connector verifies the site URL and cloud ID every run and sends

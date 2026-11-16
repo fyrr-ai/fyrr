@@ -42,7 +42,7 @@ python3 - "$HOME" "$FYRR_CONFIG" <<'PY'
 from pathlib import Path
 import json, sys
 text = Path("examples/quickstart/fyrr.toml").read_text()
-uri = (Path(sys.argv[1]).resolve() / ".local/share/fyrr/notes").as_uri()
+uri = (Path(sys.argv[1]) / ".local/share/fyrr/notes").resolve().as_uri()
 text = text.replace('"file:///home/you/.local/share/fyrr/notes"', json.dumps(uri))
 Path(sys.argv[2]).write_text(text)
 PY
