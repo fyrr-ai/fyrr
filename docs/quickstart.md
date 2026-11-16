@@ -51,11 +51,12 @@ chmod 600 "$HOME/.config/fyrr/identity.key"
 export FYRR_IDENTITY_KEY="$(cat "$HOME/.config/fyrr/identity.key")"
 fyrr config check
 fyrr writer namespace create && fyrr writer sync && fyrr writer commit
-fyrr reader search mirror --limit 3
+fyrr reader search 'How do I restore a backup?' --limit 3
 ```
 
-The example indexes `docs/` as source `notes`, for stdio user `me` with
-reader token `usr:me`. To index your notes, change `sources.scope.paths`
+The example indexes the small, checked-in `examples/quickstart/handbook/`
+as source `notes`, for stdio user `me` with reader token `usr:me`.
+The top hit is `notes/backup.md`. To index your notes, change `sources.scope.paths`
 to their absolute path. Relative source paths use the writer's working
 directory. Repeat `fyrr writer sync && fyrr writer commit` after edits.
 In a new shell, return to the checkout and restore `PATH`, `VIRTUAL_ENV`,
@@ -75,12 +76,12 @@ claude mcp add fyrr --scope user \
 
 Start Claude anywhere and ask:
 
-> Use fyrr search and fetch to find where the reader keeps its local mirror,
-> and quote the documentation.
+> Use fyrr search and fetch to answer: How do I restore a backup? Quote the handbook.
 
-Claude calls `search` and `fetch`. The default mirror is
-`$XDG_CACHE_HOME/fyrr/notes` when `XDG_CACHE_HOME` is absolute, otherwise
-`$HOME/.cache/fyrr/notes`. `--scope user` registers fyrr for all your projects;
+Claude calls `search` and `fetch` for `notes/backup.md`. Its answer should quote:
+"To restore a backup, run the restore job and verify the checksum."
+The checked-in handbook keeps this example independent of reference-doc edits.
+`--scope user` registers fyrr for all your projects;
 other MCP clients use the same executable, arguments and environment.
 
 ## 4. Add Slack or another connector

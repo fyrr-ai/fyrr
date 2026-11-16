@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the quickstart end to end from the repository root and checks it:
 #
-# 1. fyrr.toml indexes the repository's docs/ folder for one stdio user; a
+# 1. fyrr.toml indexes the checked-in handbook for one stdio user; a
 #    search and a fetch work over the CLI and over an MCP stdio session that
 #    starts in another working directory, as an MCP client would start it.
 # 2. permissions.toml publishes two folders with different readers: ada
@@ -141,19 +141,19 @@ tool() {
     jq -c '.structuredContent'
 }
 
-log "quickstart ($MODE): the docs/ folder"
+log "quickstart ($MODE): the example handbook"
 FYRR_CONFIG="$(fresh fyrr.toml)"
 export FYRR_CONFIG
 publish
-first="$(fyrr reader search per_request_wait --limit 3 | hits | head -n 1)"
-[[ "$first" == notes/*.md ]] || fail "docs search: no Markdown hit (got '$first')"
-expect "docs, reader search" "notes/reader-writer.md" "$first"
+question='How do I restore a backup?'
+first="$(fyrr reader search "$question" --limit 3 | hits | head -n 1)"
+expect "notes, reader search" "notes/backup.md" "$first"
 mkdir -p "$WORK/elsewhere"
 open_mcp "$WORK/elsewhere"
-expect "docs, MCP search" "notes/reader-writer.md" \
-  "$(tool 2 search '{"query":"per_request_wait","limit":3}' | hits | head -n 1)"
-expect "docs, MCP fetch reader-writer.md" "1 documents" \
-  "$(tool 3 fetch '{"source_id":"notes","root_id":"reader-writer.md"}' | jq -r '"\(.documents | length) documents"')"
+expect "notes, MCP search" "notes/backup.md" \
+  "$(tool 2 search "$(jq -nc --arg query "$question" '{query:$query,limit:3}')" | hits | head -n 1)"
+expect "notes, MCP fetch backup.md" "To restore a backup, run the restore job and verify the checksum." \
+  "$(tool 3 fetch '{"source_id":"notes","root_id":"backup.md"}' | jq -r '.documents[].records[].text')"
 close_mcp
 [[ -d "$XDG_CACHE_HOME/fyrr/notes" ]] || fail "the reader mirror is not in \$XDG_CACHE_HOME/fyrr/notes"
 [[ "$(stat -c %a "$XDG_CACHE_HOME/fyrr/notes")" == 700 ]] || fail "the reader mirror is not private"

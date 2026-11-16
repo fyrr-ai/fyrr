@@ -60,6 +60,13 @@ fyrr writer commit
 claude mcp add fyrr --scope user -e FYRR_IDENTITY_KEY="$FYRR_IDENTITY_KEY" -- "$PWD/target/debug/fyrr" --config "$FYRR_CONFIG" reader serve
 ```
 
+Ask Claude:
+
+> Use fyrr search and fetch to answer: How do I restore a backup? Quote the handbook.
+
+The example's top hit is `notes/backup.md`, with the answer:
+"To restore a backup, run the restore job and verify the checksum."
+
 ## Limits
 
 - **You need a stable release.** fyrr is pre-1.0: storage formats and the

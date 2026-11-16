@@ -34,5 +34,5 @@ type = "local-files"
 permissions = "fixed"
 readers = ["usr:me"]
 [sources.scope]
-paths = ["docs"]
+paths = ["examples/quickstart/handbook"]
 include = ["**/*.md"]
