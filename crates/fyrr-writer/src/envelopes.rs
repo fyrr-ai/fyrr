@@ -212,25 +212,48 @@ pub(crate) async fn cleanup_held(
 ) -> Result<usize> {
     discard_purged(config, lease).await?;
     let head = lease.head().await?;
-    let (store, _, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
-    let (paths, applied) = crate::commit::envelope_paths(config, &head).await?;
-    let unresolved: BTreeSet<_> = crate::commit::unconsumed_rejections(config, &head, &[])
-        .await?
-        .into_iter()
-        .map(|m| m.envelope_id)
+    let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
+    let (published_applied, published_rejected) =
+        crate::commit::published_ids(config, &head).await?;
+    let applied: BTreeSet<_> = published_applied
+        .union(&published_rejected)
+        .cloned()
         .collect();
-    let (_, published_rejected) = crate::commit::published_ids(config, &head).await?;
+    let paths: Vec<_> = store
+        .list(Some(&root.join("envelopes")))
+        .try_collect()
+        .await?;
+    let paths: Vec<_> = paths.into_iter().map(|object| object.location).collect();
+    let envelopes = crate::commit::read_envelopes(config, &paths).await?;
+    // Match the original filename fence: only published, non-rejected complete
+    // reads can consume a rejection. Reuse the same decoded envelopes below.
+    let reads = envelopes
+        .iter()
+        .filter(|(path, _)| {
+            path.filename()
+                .and_then(|name| name.strip_suffix(".json"))
+                .is_some_and(|id| {
+                    published_applied.contains(id) && !published_rejected.contains(id)
+                })
+        })
+        .map(|(_, envelope)| envelope)
+        .collect::<Vec<_>>();
+    let unresolved: BTreeSet<_> =
+        crate::commit::unconsumed_rejections_from_reads(config, &head, &reads, &published_rejected)
+            .await?
+            .into_iter()
+            .map(|marker| marker.envelope_id)
+            .collect();
     let mut latest_applied = BTreeMap::new();
-    let mut envelopes = Vec::new();
     let mut latest = BTreeMap::new();
     let mut keep_multipart = BTreeSet::new();
-    for (path, envelope) in crate::commit::read_envelopes(config, &paths).await? {
+    for (_, envelope) in &envelopes {
         latest
             .entry((envelope.source_id.clone(), envelope.kind.as_str()))
             .and_modify(|seq: &mut u64| *seq = (*seq).max(envelope.sequence))
             .or_insert(envelope.sequence);
         if applied.contains(&envelope.envelope_id)
-            && crate::apply::complete_read(&envelope)
+            && crate::apply::complete_read(envelope)
             && !published_rejected.contains(&envelope.envelope_id)
         {
             latest_applied
@@ -257,7 +280,6 @@ pub(crate) async fn cleanup_held(
                 _ => {}
             }
         }
-        envelopes.push((path, envelope));
     }
     let mut deleted = 0usize;
     for (path, envelope) in envelopes {

@@ -95,8 +95,16 @@ pub(crate) async fn rejection_markers(
     config: &Config,
     head: &ServingHead,
 ) -> Result<Vec<RejectionMarker>> {
-    let (store, root) = namespace_store(config)?;
     let (_, rejected) = published_ids(config, head).await?;
+    rejection_markers_from_ids(config, head, &rejected).await
+}
+
+async fn rejection_markers_from_ids(
+    config: &Config,
+    head: &ServingHead,
+    rejected: &BTreeSet<String>,
+) -> Result<Vec<RejectionMarker>> {
+    let (store, root) = namespace_store(config)?;
     let mut markers = Vec::new();
     for id in rejected {
         markers.push(
@@ -150,8 +158,19 @@ pub async fn unconsumed_rejections(
             reads.push(fyrr_reader::storage::read_contract(store.as_ref(), &path.location).await?);
         }
     }
+    let reads = reads.iter().collect::<Vec<_>>();
+    unconsumed_rejections_from_reads(config, head, &reads, &rejected).await
+}
+
+/// Reuse an operation's envelope snapshot and receipt sets during cleanup.
+pub(crate) async fn unconsumed_rejections_from_reads(
+    config: &Config,
+    head: &ServingHead,
+    reads: &[&PreparedEnvelope],
+    rejected: &BTreeSet<String>,
+) -> Result<Vec<RejectionMarker>> {
     let mut unresolved = Vec::new();
-    for marker in rejection_markers(config, head).await? {
+    for marker in rejection_markers_from_ids(config, head, rejected).await? {
         if !reads.iter().any(|e| {
             history::replacement_matches(
                 &marker,
