@@ -89,6 +89,9 @@ struct ParkedEmbedding {
 }
 impl ParkedEmbedding {
     async fn open(timeout: &str) -> Self {
+        Self::open_with_cache(timeout, 0).await
+    }
+    async fn open_with_cache(timeout: &str, cache_bytes: u64) -> Self {
         async fn embed(
             axum::extract::State(gate): axum::extract::State<Arc<TestGate>>,
             axum::Json(request): axum::Json<Value>,
@@ -122,7 +125,7 @@ impl ParkedEmbedding {
         let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         config.embedding.endpoint = format!("http://{}", socket.local_addr().unwrap());
         config.embedding.reader_live = true;
-        config.embedding.query_cache_max_bytes = 0;
+        config.embedding.query_cache_max_bytes = cache_bytes;
         config.embedding.timeout = serde_json::from_value(json!(timeout)).unwrap();
         config.embedding.spend = Some(fyrr_core::config::SpendConfig {
             limit_microusd: 1000,
@@ -761,5 +764,49 @@ async fn request_filters_preserve_base_admission_and_worker_reuse_on_storage() {
         assert_eq!(completed[1].worker, completed[3].worker);
         assert_eq!(completed[2].worker, completed[4].worker);
     }
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real publication and shared embedding cache over MCP"]
+async fn empty_selection_metadata_does_not_reveal_query_cache_on_storage() {
+    let mut fixture = ParkedEmbedding::open_with_cache("10s", 1024 * 1024).await;
+    fixture.parked(1).await;
+    fixture.provider.release.add_permits(1);
+    let primed = fixture.wire.reply().await;
+    assert_eq!(primed["result"]["isError"], false);
+    fixture
+        .wire
+        .send(json!({"jsonrpc":"2.0","id":900,"method":"ping"}))
+        .await;
+    assert_eq!(fixture.wire.reply().await["id"], 900);
+    let mut metadata = Vec::new();
+    for (id, query) in [(2, "exactneedle"), (3, "never-cached-probe")] {
+        fixture
+            .wire
+            .call(
+                id,
+                "search",
+                json!({
+                    "query":query, "authors":["no-such-author"],
+                    "limit":4, "output":"metadata", "deadline_ms":8000
+                }),
+            )
+            .await;
+        let reply = fixture.wire.reply().await;
+        assert_eq!(reply["result"]["isError"], false);
+        assert_eq!(reply["result"]["structuredContent"]["hits"], json!([]));
+        metadata.push(reply["result"]["structuredContent"]["metadata"].clone());
+        fixture
+            .wire
+            .send(json!({"jsonrpc":"2.0","id":900,"method":"ping"}))
+            .await;
+        assert_eq!(fixture.wire.reply().await["id"], 900);
+    }
+    assert_eq!(metadata[0]["degraded"], metadata[1]["degraded"]);
+    assert_eq!(
+        serde_json::to_vec(&metadata[0]).unwrap(),
+        serde_json::to_vec(&metadata[1]).unwrap()
+    );
     fixture.close().await;
 }

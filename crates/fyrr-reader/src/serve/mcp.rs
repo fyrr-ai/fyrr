@@ -108,6 +108,9 @@ pub(super) async fn execute(
             value["metadata"]["telemetry"]["stage_us"]["total"] =
                 json!(micros(context.arrived.elapsed()));
             if matches!(request, ToolCall::Search(_)) {
+                if value["hits"].as_array().is_some_and(Vec::is_empty) {
+                    value["metadata"]["telemetry"] = json!(fyrr_core::mcp::Telemetry::default());
+                }
                 if let Some(max) = reader.config.reader.max_response_bytes {
                     let fitted = serde_json::from_value(value)
                         .map_err(|_| StorageUnavailable)

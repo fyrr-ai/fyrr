@@ -474,3 +474,11 @@ fn tools_request_filters_preserve_base_admission_on_storage() {
         "serve::tests::embedding::request_filters_preserve_base_admission_and_worker_reuse_on_storage",
     );
 }
+
+#[test]
+#[ignore = "real publication and shared embedding cache over MCP"]
+fn tools_empty_selection_hides_query_cache_on_storage() {
+    parked_reader_test(
+        "serve::tests::embedding::empty_selection_metadata_does_not_reveal_query_cache_on_storage",
+    );
+}

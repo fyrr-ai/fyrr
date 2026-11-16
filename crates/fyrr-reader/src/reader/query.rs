@@ -86,6 +86,10 @@ impl PreparedReader {
             counters,
         );
         self.finish_metadata(&mut result.metadata, total, before);
+        if self.selected_rows().max_len().unwrap_or(0) == 0 {
+            // An empty selection has no retrieval work or cache-dependent telemetry.
+            result.metadata.telemetry = Telemetry::default();
+        }
         if args.order == Some(SearchOrder::UpdatedAt) {
             result.hits.sort_by(|a, b| {
                 b.updated_at.cmp(&a.updated_at).then(
@@ -119,6 +123,18 @@ impl PreparedReader {
         self.stage(&mut telemetry, "predicate", stage, filter_counters);
         if args.query.is_none() && args.queries.is_none() {
             return self.listing(args, telemetry).await;
+        }
+        // Determine participation before preparing query vectors or consulting
+        // the process cache. Refused arms cannot observe shared cache membership.
+        self.authorization()?;
+        if self.selected_rows().max_len().unwrap_or(0) == 0 {
+            let mut metadata = self.metadata(Telemetry::default());
+            metadata.degraded = vec![Lane::Dense];
+            return Ok(SearchOutput {
+                hits: Vec::new(),
+                truncated: None,
+                metadata,
+            });
         }
         // Reserve added batch scratch from the same pool as serving generations.
         // Default requests retain their existing claims and executable path.

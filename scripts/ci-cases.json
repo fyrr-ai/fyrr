@@ -4151,6 +4151,10 @@
       "full:fyrr:test:dense_path/embedding::tools_request_filters_preserve_base_admission_on_storage": {
         "tier": "quick",
         "seconds": 8.522
+      },
+      "full:fyrr:test:dense_path/embedding::tools_empty_selection_hides_query_cache_on_storage": {
+        "tier": "quick",
+        "seconds": 10.0
       }
     },
     "children": {
@@ -4158,6 +4162,12 @@
         "tier": "quick",
         "parents": [
           "full:fyrr:test:dense_path/embedding::tools_request_filters_preserve_base_admission_on_storage"
+        ]
+      },
+      "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::empty_selection_metadata_does_not_reveal_query_cache_on_storage": {
+        "tier": "quick",
+        "parents": [
+          "full:fyrr:test:dense_path/embedding::tools_empty_selection_hides_query_cache_on_storage"
         ]
       }
     }
