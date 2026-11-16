@@ -125,6 +125,41 @@ impl Verifications {
     }
 }
 
+// Opened only while holding the global host lock. Waiters never retain an
+// obsolete inode while a completed download removes its coordination pathname.
+struct DownloadLock {
+    mirror: MirrorStore,
+    path: PathBuf,
+    file: Option<std::fs::File>,
+}
+impl DownloadLock {
+    async fn finish(mut self) -> std::io::Result<()> {
+        let _host = self.mirror.host_lock().await?;
+        MirrorStore::remove_partial(&self.path)?;
+        drop(self.file.take());
+        Ok(())
+    }
+}
+impl Drop for DownloadLock {
+    fn drop(&mut self) {
+        let Some(file) = self.file.take() else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let mirror = self.mirror.clone();
+            let path = self.path.clone();
+            // Cancellation retains exclusion until cleanup owns the global lock.
+            runtime.spawn(async move {
+                let _file = file;
+                if let Ok(_host) = mirror.host_lock().await {
+                    let _ = MirrorStore::remove_partial(&path);
+                }
+            });
+        }
+        // Without a live runtime, startup or sweep removes the idle lock.
+    }
+}
+
 /// Derived local reference ownership, never a persistent publication authority.
 #[derive(Debug)]
 pub(crate) struct MirrorLease {
@@ -145,8 +180,20 @@ pub(crate) struct MirrorRequest {
 }
 impl Drop for MirrorRequest {
     fn drop(&mut self) {
-        self.holder.take();
-        if (self.lease.retired.load(Ordering::SeqCst) || self.lease.expired())
+        let final_pin = {
+            // Serialize refcount inspection and close with release() and other
+            // request drops, so concurrent final drops cannot miss one another.
+            let holder = crate::sync::lock(&self.lease.holder);
+            let final_pin = holder.is_none()
+                && self
+                    .holder
+                    .as_ref()
+                    .is_some_and(|file| Arc::strong_count(file) == 1);
+            drop(self.holder.take());
+            final_pin
+        };
+        if final_pin
+            && (self.lease.retired.load(Ordering::SeqCst) || self.lease.expired())
             && let Ok(runtime) = tokio::runtime::Handle::try_current()
             && !self.lease.sweep_requested.swap(true, Ordering::SeqCst)
         {
@@ -313,13 +360,20 @@ impl MirrorStore {
             Ok(()) => {
                 for entry in std::fs::read_dir(&directory).map_err(|_| StorageUnavailable)? {
                     let entry = entry.map_err(|_| StorageUnavailable)?;
-                    let meta =
-                        std::fs::symlink_metadata(entry.path()).map_err(|_| StorageUnavailable)?;
+                    let meta = match std::fs::symlink_metadata(entry.path()) {
+                        Ok(meta) => meta,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(_) => return Err(StorageUnavailable),
+                    };
                     if !Self::owned_private_file(&meta) {
                         return Err(StorageUnavailable);
                     }
                     if Self::cache_name(&entry.file_name().to_string_lossy(), ".partial") {
                         Self::remove_idle_partial(&entry.path()).map_err(|_| StorageUnavailable)?;
+                    }
+                    if Self::cache_name(&entry.file_name().to_string_lossy(), ".download") {
+                        Self::remove_idle_download(&entry.path())
+                            .map_err(|_| StorageUnavailable)?;
                     }
                 }
             }
@@ -385,6 +439,27 @@ impl MirrorStore {
             return Err(std::io::Error::other("storage_unavailable"));
         }
         Ok(file)
+    }
+    async fn download_lock(&self, blob: &std::path::Path) -> std::io::Result<DownloadLock> {
+        let path = blob.with_extension("download");
+        loop {
+            {
+                let _host = self.host_lock().await?;
+                let file = Self::private_file(&path, true)?;
+                match file.try_lock() {
+                    Ok(()) => {
+                        return Ok(DownloadLock {
+                            mirror: self.clone(),
+                            path,
+                            file: Some(file),
+                        });
+                    }
+                    Err(std::fs::TryLockError::WouldBlock) => {}
+                    Err(std::fs::TryLockError::Error(error)) => return Err(error),
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
     }
     async fn host_lock(&self) -> std::io::Result<std::fs::File> {
         Self::lock_file(&self.directory.join("mirror.lock")).await
@@ -499,6 +574,9 @@ impl MirrorStore {
             if Self::cache_name(&name, ".partial") {
                 Self::remove_idle_partial(&entry.path())?;
             }
+            if Self::cache_name(&name, ".download") {
+                Self::remove_idle_download(&entry.path())?;
+            }
             if Self::cache_name(&name, ".blob") && !allowed.contains(&name) {
                 expired.insert(entry.path());
             }
@@ -519,6 +597,22 @@ impl MirrorStore {
     fn remove_idle_partial(path: &std::path::Path) -> std::io::Result<()> {
         let lock = Self::private_file(&path.with_extension("download"), true)?;
         match lock.try_lock() {
+            Ok(()) => {
+                Self::remove_partial(path)?;
+                Self::remove_partial(&path.with_extension("download"))
+            }
+            Err(std::fs::TryLockError::WouldBlock) => Ok(()),
+            Err(std::fs::TryLockError::Error(error)) => Err(error),
+        }
+    }
+    // Called under the global host lock, like download_lock() and finish().
+    fn remove_idle_download(path: &std::path::Path) -> std::io::Result<()> {
+        let file = match Self::private_file(path, false) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        match file.try_lock() {
             Ok(()) => Self::remove_partial(path),
             Err(std::fs::TryLockError::WouldBlock) => Ok(()),
             Err(std::fs::TryLockError::Error(error)) => Err(error),

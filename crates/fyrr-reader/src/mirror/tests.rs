@@ -445,6 +445,19 @@ async fn oversized_objects_use_direct_ranges_after_first_read() {
     source.put(&path, "0123456789".into()).await.unwrap();
     let store = mirror.wrap("namespace", source);
     assert_eq!(store.get_range(&path, 2..4).await.unwrap(), "23");
+    assert_eq!(
+        std::fs::read_dir(&directory)
+            .unwrap()
+            .filter(|entry| entry
+                .as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "download"))
+            .count(),
+        0,
+        "completed downloads leave no lock files"
+    );
     let before = mirror.totals();
     assert_eq!(before.requests, 2);
     assert_eq!(store.get_range(&path, 6..8).await.unwrap(), "67");
@@ -465,27 +478,39 @@ async fn retired_request_drops_schedule_one_sweep() {
     mirror
         .bind_dataset("s3://bucket/namespace/dataset.lance")
         .unwrap();
-    let lease = mirror.pin(&[]).await.unwrap();
-    let requests = (0..100)
-        .map(|_| lease.request().unwrap())
-        .collect::<Vec<_>>();
+    let source = Arc::new(object_store::memory::InMemory::new());
+    let path = Path::from("namespace/dataset.lance/data/file.lance");
+    source.put(&path, "data".into()).await.unwrap();
+    let store = mirror.wrap("s3$bucket", source);
+    store.get(&path).await.unwrap().bytes().await.unwrap();
+    let blob = directory.join(mirror.blob_name("s3$bucket", path.as_ref()).unwrap());
+    let lease = mirror
+        .pin(&[fyrr_core::envelope::FileRef {
+            path: "data/file.lance".into(),
+            size_bytes: 4,
+        }])
+        .await
+        .unwrap();
+    let first = lease.request().unwrap();
+    let last = lease.request().unwrap();
     lease.retire();
-    drop(requests);
-    tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while mirror.sweep_runs.load(Ordering::SeqCst) == 0 {
+    drop(first);
+    assert!(
+        !lease.sweep_requested.load(Ordering::SeqCst),
+        "a drop while the lease flock is held cannot consume final cleanup"
+    );
+    lease.release(true);
+    mirror.evict_unpinned().await.unwrap();
+    assert!(blob.exists(), "the remaining request still pins the blob");
+    drop(last);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while blob.exists() {
             tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
-    // Queue a barrier after the spawned cleanup and check the entire burst.
-    mirror.evict_unpinned().await.unwrap();
-    assert_eq!(mirror.sweep_runs.load(Ordering::SeqCst), 2);
-    // A later request in the same retired generation cannot queue another sweep.
-    drop(lease.request().unwrap());
-    tokio::task::yield_now().await;
-    assert_eq!(mirror.sweep_runs.load(Ordering::SeqCst), 2);
+    assert!(lease.sweep_requested.load(Ordering::SeqCst));
     drop(lease);
-    tokio::task::yield_now().await;
     std::fs::remove_dir_all(directory).unwrap();
 }
