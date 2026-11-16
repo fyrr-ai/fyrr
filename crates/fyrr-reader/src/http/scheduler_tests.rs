@@ -95,6 +95,11 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
             .unwrap()
             .is_err()
     );
+    // A dropped reply observes the request panic, not the scheduler's handling
+    // of its JoinError. Wait for admission to close at that recorded boundary.
+    tokio::time::timeout(Duration::from_secs(10), hooks.scheduler_failed.notified())
+        .await
+        .expect("scheduler records the failed request and closes admission");
     assert!(
         tokio::time::timeout(Duration::from_secs(10), service.refresh())
             .await

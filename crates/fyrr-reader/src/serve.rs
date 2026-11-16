@@ -206,6 +206,7 @@ impl TestGate {
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct TestHooks {
+    pub(crate) scheduler_failed: tokio::sync::Notify,
     pub(crate) embedding_parked: tokio::sync::Notify,
     pub(crate) request_finished: tokio::sync::Notify,
     pub(crate) native_work: TestGate,

@@ -280,6 +280,12 @@ impl Scheduler {
                     if self.warming.is_some() => self.on_warmed(warmed).await,
                 Some(result) = self.running.next(), if !self.running.is_empty() => {
                     let Ok(result) = result else {
+                        // Publish failure before dropping readers and native sessions:
+                        // their cleanup can delay destruction of the input receiver.
+                        self.input.close();
+                        self.served.write().await.ready = false;
+                        #[cfg(test)]
+                        self.context.test_hooks.scheduler_failed.notify_one();
                         emit(format_args!(
                             "telemetry reader_scheduler=unavailable reason=request_task_failed"
                         ));
