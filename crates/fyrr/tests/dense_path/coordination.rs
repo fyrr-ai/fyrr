@@ -391,6 +391,8 @@ async fn coordination_busy_and_expired_holder_on_storage() {
             format!("{text}\n[writer.commit]\nlease_ttl = '3s'\n"),
         )
         .unwrap();
+        // Prepare data with the normal lease; only the stalled holder uses 3s.
+        set_lease_ttl(&worker, None);
         success(&worker, &["writer", "namespace", "create"]);
         worker_sync(&worker, &["--full"]);
         let committer = committer_host(&worker, &root);
