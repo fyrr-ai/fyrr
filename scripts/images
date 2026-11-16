@@ -11,9 +11,9 @@
 #
 # Images are tagged per worktree (fyrr:<tag>, fyrr-reader:<tag>, where <tag>
 # is derived from a hash of the worktree path) and labelled with that tag,
-# never with the path itself. The script removes only images it labelled
-# (superseded builds, the temporary derived image) and only its own compose
-# project; it never prunes. Logs, timings and sizes go to target/images/.
+# never with the path itself. The script removes only its temporary derived
+# tag and compose project; it never prunes. Superseded image IDs are retained
+# because callers may have tagged or pinned them. Logs go to target/images/.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT"
 # These generated fixtures contain synthetic data and are bind-mounted into
@@ -40,7 +40,6 @@ OUT="$ROOT/target/images"
 WHEELS="$ROOT/target/example-wheels"
 DOCS="$ROOT/examples/markdown-provider/tests/data"
 ours() { [[ "$(docker image inspect -f '{{index .Config.Labels "org.fyrr.worktree"}}' "$1" 2>/dev/null)" == "$TAG" ]]; }
-image_id() { docker image inspect -f '{{.Id}}' "$1" 2>/dev/null || true; }
 
 # Rootless image UIDs own the private cache files. Remove only this script's
 # synthetic cache through its labelled image, including after a failed check.
@@ -55,24 +54,14 @@ clear_mirror || die "cannot clean this image fixture's cache"
 rm -rf "$OUT"
 mkdir -p "$OUT/compose"
 
-# Removes an image this worktree built when a rebuild superseded it.
-drop_superseded() {
-  local old="$1" new="$2"
-  if [[ -n "$old" && "$old" != "$new" ]] && ours "$old"; then
-    docker image rm "$old" >/dev/null 2>&1 || log "kept superseded image $old (still in use)"
-  fi
-}
-
 build() {
-  local target="$1" tag="$2" old started
-  old="$(image_id "$tag")"
+  local target="$1" tag="$2" started
   started=$SECONDS
   log "building $tag (--target $target)"
   docker build "${NO_CACHE[@]}" --file docker/Dockerfile --target "$target" \
     --label "$LABEL" --tag "$tag" . >"$OUT/build-$target.log" 2>&1 ||
     { tail -n 40 "$OUT/build-$target.log"; die "building $tag failed (log: target/images/build-$target.log)"; }
   echo "$target $((SECONDS - started))" >>"$OUT/build-seconds.txt"
-  drop_superseded "$old" "$(image_id "$tag")"
 }
 
 # expect <exit code> <grep pattern> <description> <docker run args…>

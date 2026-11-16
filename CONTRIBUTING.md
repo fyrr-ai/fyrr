@@ -103,6 +103,9 @@ anything that moves image size need `scripts/ci --images`.
 | `scripts/images [--record]` | Builds, tests and measures both images. |
 | `scripts/release` | Assembles versioned local release artifacts with SHA-256 sums; it publishes nothing itself (see [Releasing](#releasing)). |
 
+`scripts/images` retains superseded image IDs. Reclaim their storage manually
+only after confirming that no tag, digest or container still needs them.
+
 Run a single real-S3 row like this:
 
 ```sh
