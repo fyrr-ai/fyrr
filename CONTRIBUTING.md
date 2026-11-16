@@ -65,7 +65,7 @@ annotations; PyArrow's untyped API remains covered by Arrow contract tests.
 
 ```sh
 scripts/ci              # every check
-scripts/ci --jobs=2     # bound concurrent scenario rows (default: CPU/memory based)
+scripts/ci --jobs=2     # bound concurrent Rust cases (default: CPU/memory based)
 scripts/ci --step=configuration "--step=schema drift" # exact names; others n/e
 ```
 
@@ -93,11 +93,11 @@ incremental state. Explicit caller settings override these defaults.
 Build invocations give mbx exclusive control of `RUSTC_WRAPPER`; an inherited
 wrapper is cleared for those commands because mbx cannot stack Rust wrappers.
 
-Independent scenario cases run in a bounded pool as soon as their test
-executables are built, concurrently with the core gates. Longest cases run
+All Rust cases, including CLI, privacy and unit cases, run in a bounded pool
+as soon as their test executables are built, concurrently with the core gates. Longest cases run
 first, using measured durations in `scripts/ci-cases.json`. Owner rows remain
 disjoint coverage groups; their summary times sum the case work. Overall
-wall time and completion records in `scenario-pool.log` show the critical path.
+wall time and completion records in `case-pool.log` show the critical path.
 Each Rust parent completion also emits a `ci-case` JSON record with its UTC
 timestamp and elapsed time; serial harnesses include the per-case duration.
 Domain scenarios use real local storage, including crash and lost-response tests

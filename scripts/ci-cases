@@ -27,21 +27,6 @@ os.environ.setdefault("MBX_LEARNED_INCREMENTAL", "0")
 os.environ.setdefault("MBX_EAGER_INCREMENTAL", "0")
 MANIFEST = ROOT / "scripts/ci-cases.json"
 BUILD = ROOT / "target/ci-build/manifest.json"
-CORE_ROWS = {
-    "units",
-    "config",
-    "contracts",
-    "generated",
-    "mcp",
-    "lance-pin",
-    "cli-full",
-    "cli-reader",
-    "privacy-full",
-    "privacy-reader",
-    "python-sdk",
-    "python-example",
-    "eval",
-}
 
 
 def build():
@@ -155,8 +140,10 @@ def validate(manifest, actual):
                 raise ValueError(f"unknown storage backend: {row}")
             if set(spec.get("services", [])) - {"keycloak"}:
                 raise ValueError(f"unknown external service: {row}")
-        elif row not in CORE_ROWS:
-            raise ValueError(f"row is not scheduled by CI: {row}")
+        if spec.get("kind") not in {"rust", "python"} or not spec.get("title"):
+            raise ValueError(f"row needs its execution kind and title: {row}")
+        if any(case.startswith("python:") != (spec["kind"] == "python") for case in spec["cases"]):
+            raise ValueError(f"case does not match its row kind: {row}")
         if not spec["cases"]:
             raise ValueError(f"zero-case row: {row}")
         for case in spec["cases"]:
@@ -279,13 +266,6 @@ def run(spec):
             print(f"ci-fixtures: removed {removed} successful roots for harness {process.pid}")
 
 
-def row_title(row):
-    if row == "local-storage":
-        return "local storage"
-    prefix, name = row.split("-", 1)
-    return f"{'real S3' if prefix == 's3' else prefix}: {name}"
-
-
 async def pool(manifest, logs, jobs, rows):
     """Schedule independent parents; every worker owns its fixture and process."""
     selected = [(row, case) for row in rows for case in manifest[row]["cases"]]
@@ -378,7 +358,7 @@ async def pool(manifest, logs, jobs, rows):
                             await process.wait()
                     active.pop(process.pid, None)
             duration = time.monotonic() - began
-            title = row_title(row)
+            title = manifest[row]["title"]
             summary = directory / "summary.txt"
             record = None
             if summary.exists():
@@ -409,7 +389,7 @@ async def pool(manifest, logs, jobs, rows):
                 "log": str((directory / "runner.log").relative_to(ROOT)),
             }
             results[row].append(result)
-            print("ci-scenario " + json.dumps(result), flush=True)
+            print("ci-result " + json.dumps(result), flush=True)
 
     try:
         await asyncio.gather(*(execute(row, case) for row, case in selected))
@@ -427,7 +407,7 @@ async def pool(manifest, logs, jobs, rows):
         path = logs / row / "cases.json"
         path.write_text(json.dumps(items, indent=2) + "\n")
         line = (
-            f"{row_title(row):<38} {status:<5} {passed:7} {failed:7} {ignored:8} "
+            f"{manifest[row]['title']:<38} {status:<5} {passed:7} {failed:7} {ignored:8} "
             f"{seconds:6}s  {path.relative_to(ROOT)}\n"
         )
         (logs / row / "summary.txt").write_text(line)
@@ -456,13 +436,16 @@ def main():
     manifest = json.loads(MANIFEST.read_text())
     if mode == "check":
         validate(manifest, inventory())
+    elif mode == "titles":
+        for row, spec in manifest.items():
+            print(f"{row}\t{spec['title']}")
     elif mode == "rows":
         rows = [
             row
             for row, spec in manifest.items()
             if (
-                "backend" in spec
-                if sys.argv[2] == "scenarios"
+                spec["kind"] == "rust"
+                if sys.argv[2] == "pool"
                 else row.startswith(sys.argv[2] + "-")
             )
         ]
@@ -470,9 +453,7 @@ def main():
             print(row)
     elif mode == "settings":
         spec = manifest[sys.argv[2]]
-        if spec.get("backend") not in {"local", "s3"}:
-            raise ValueError("scenario row requires a known storage backend")
-        print(json.dumps({"backend": spec["backend"], "services": spec.get("services", [])}))
+        print(json.dumps({"backend": spec.get("backend"), "services": spec.get("services", [])}))
     elif mode == "plan":
         for row, spec in manifest.items():
             for case in [*spec["cases"], *spec.get("children", {})]:

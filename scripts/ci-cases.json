@@ -1,5 +1,7 @@
 {
   "units": {
+    "title": "unit tests",
+    "kind": "rust",
     "cases": [
       "full:fyrr:test:dense_path/coordination::recovery_lease_ttl_ignores_toml_formatting_and_preserves_source_settings",
       "full:fyrr-core:lib:fyrr_core/envelope::tests::envelope_ids_are_deterministic_and_distinct",
@@ -126,9 +128,127 @@
         "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_crash_before_publication_keeps_the_old_object",
         "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_updates_are_compare_and_swap_across_processes"
       ]
-    }
+    },
+    "case_seconds": {
+      "full:fyrr:test:dense_path/coordination::recovery_lease_ttl_ignores_toml_formatting_and_preserves_source_settings": 0.021,
+      "full:fyrr-core:lib:fyrr_core/envelope::tests::envelope_ids_are_deterministic_and_distinct": 0.0,
+      "full:fyrr-core:lib:fyrr_core/layout::tests::namespace_paths_preserve_names_and_native_classification": 0.0,
+      "full:fyrr-core:lib:fyrr_core/mcp::tests::times_are_utc_with_microseconds_only_when_nonzero": 0.0,
+      "full:fyrr-core:lib:fyrr_core/version::tests::parses_canonical_versions_only": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/error::tests::every_reader_error_preserves_legacy_mcp_mapping": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/readiness::tests::readiness_wire_preserves_states_degradation_and_nulls": 0.001,
+      "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_concurrent_calls_share_one_monotone_spend_limit": 0.012,
+      "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_deadline_retains_reservation_and_never_returns_provider_errors": 1.008,
+      "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_no_catalog_probe_checks_optional_model_vectors_and_spend": 0.028,
+      "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_provider_roles_order_validation_and_no_uncapped_calls": 0.026,
+      "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_spend_reserves_every_retry_and_refuses_the_next_call": 0.16,
+      "full:fyrr-reader:lib:fyrr_reader/embedding::query::tests::cache_only_query_copies_use_existing_generation_scratch": 0.006,
+      "full:fyrr-reader:lib:fyrr_reader/embedding::query::tests::process_query_keys_include_the_legacy_profile_and_exact_utf8": 0.011,
+      "full:fyrr-reader:lib:fyrr_reader/embedding::query::tests::query_cache_charges_memory_and_capacity_and_evicts_without_leaks": 0.011,
+      "full:fyrr-reader:lib:fyrr_reader/embedding::tests::profile_identity_preserves_legacy_bytes_and_binds_roles": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/embedding::tests::vectors_must_be_finite_nonzero_and_profile_sized": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/excerpt::tests::excerpt_cases": 0.001,
+      "full:fyrr-reader:lib:fyrr_reader/generation::tests::handover_reclaims_session_cache_and_admits_a_larger_publication": 0.001,
+      "full:fyrr-reader:lib:fyrr_reader/generation::tests::reservation_falls_back_and_stays_owned_until_last_reference": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/generation::tests::serving_minimum_funds_two_warm_claims_and_native_caches": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/generation::tests::underestimated_roots_degrade_and_do_not_retry_the_bad_estimate": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/http::response_memory_tests::response_frame_keeps_claim_after_body_drop": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::interrupted_partial_recovers_without_following_symlinks": 0.096,
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::mutable_control_reads_through_native_named_storage_prefix": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::version_manifest_entries_are_bound_to_their_publication": 0.103,
+      "full:fyrr-reader:lib:fyrr_reader/rerank::tests::both_envelopes_require_exact_finite_index_coverage": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/rerank::tests::concurrent_reservations_are_capped_and_never_overflow": 0.006,
+      "full:fyrr-reader:lib:fyrr_reader/rerank::tests::payload_and_deadline_skip_before_spend_or_http": 0.006,
+      "full:fyrr-reader:lib:fyrr_reader/rerank::tests::pilot_score_blend_and_raw_endpoints_have_stable_ties": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/rerank::tests::text_window_is_bounded_term_seeking_and_utf8_safe": 0.001,
+      "full:fyrr-reader:lib:fyrr_reader/retrieval::tests::composition_cases": 0.001,
+      "full:fyrr-reader:lib:fyrr_reader/routing::tests::auto_threshold_is_only_a_strategy_decision": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/routing::tests::router_yields_to_next_warm_claim": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/search::authorization_cache_tests::authorization_cache_budget_disabled_and_oversized_leave_allowance": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/search::authorization_cache_tests::authorization_cache_budget_exact_boundary_and_held_claim": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::lexical_request_mask_precedes_topk_and_preserves_sql_scores": 0.027,
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::pinned_publication_serves_only_its_own_namespace_incarnation": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::pruning_old_admissions_releases_only_unheld_reservations": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::recall_at_10_accepts_authorized_boundary_ties_in_opposite_lane_order": 0.005,
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::only_an_absent_directory_needs_no_freshness_proof": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/tools::cursor_tests::list_cursor_maximum_identifiers_and_windows_fit_and_roundtrip": 0.001,
+      "full:fyrr-reader:lib:fyrr_reader/tools::cursor_tests::cursor_wire_bytes_preserve_lookup_and_document_envelopes": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/response_budget::tests::response_budget_cases": 0.1,
+      "full:fyrr-reader:lib:fyrr_reader/response_budget::tests::counters_include_hits_removed_when_their_digits_grow": 0.026,
+      "full:fyrr-reader:lib:fyrr_reader/response_budget::tests::wire_size_accounting_matches_serde_with_escaped_text_and_counters": 0.058,
+      "full:fyrr-writer:lib:fyrr_writer/scim::tests::replay_at_live_capacity_preserves_the_resource_and_refuses_new_posts": 1.196,
+      "full:fyrr-writer:lib:fyrr_writer/directory_pull::tests::collection_limit_allows_exact_capacity": 0.234,
+      "full:fyrr-writer:lib:fyrr_writer/batch::tests::contract_rows_convert_and_count": 0.01,
+      "full:fyrr-writer:lib:fyrr_writer/batch::tests::cursors_chain_and_bounds_hold": 0.001,
+      "full:fyrr-writer:lib:fyrr_writer/batch::tests::other_kinds_carry_no_rows": 0.0,
+      "full:fyrr-writer:lib:fyrr_writer/batch::tests::producer_schemas_must_match_the_contract": 0.0,
+      "full:fyrr-writer:lib:fyrr_writer/batch::tests::violations_are_refused_without_values": 0.002,
+      "full:fyrr-writer:lib:fyrr_writer/chunk::tests::whole_units_preserve_utf8_bytes_without_overlap": 0.001,
+      "full:fyrr-writer:lib:fyrr_writer/directory::tests::nested_cycles_and_inactive_or_dangling_members_do_not_widen_grants": 0.0,
+      "full:fyrr-writer:lib:fyrr_writer/directory::tests::subject_collisions_include_inactive_accounts": 0.0,
+      "full:fyrr-writer:lib:fyrr_writer/embedding::tests::local_cache_evicts_at_fixed_bound_and_refuses_symlinks": 0.021,
+      "full:fyrr-writer:lib:fyrr_writer/embedding::tests::local_cache_restart_dimension_validation_and_private_files": 0.014,
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_fragments::tests::reused_ids_cannot_prove_file_identity_and_restore_mismatch_falls_back": 0.003,
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_index::tests::persisted_projection_excludes_text_vectors_and_nonstate_metadata": 0.002,
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_index::tests::prospective_comparison_includes_every_state_field_and_record_grant": 0.0,
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_index::tests::scratch_cleanup_does_not_touch_another_namespace": 0.001,
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_index::tests::working_budget_rejects_overflow_and_expands_for_fallback": 0.001,
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_index::tests::working_file_is_private_unlinked_bounded_and_disposable": 0.002,
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_index::tests::working_file_kill_during_creation_and_restart_leave_no_file": 0.021,
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_tests::restore_body_bound_precedes_native_materialization": 0.002,
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_tests::restore_future_can_move_between_runtime_threads": 0.0,
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_tests::restore_step_deadline_elapsed_arithmetic": 0.0,
+      "full:fyrr-writer:lib:fyrr_writer/prepare::tests::generation_pointer_reads_the_immutable_object_and_checks_its_digest": 0.002,
+      "full:fyrr-writer:lib:fyrr_writer/providers::tests::compatible_providers_are_accepted_and_others_refused": 0.003,
+      "full:fyrr-writer:lib:fyrr_writer/providers::tests::duplicates_and_other_installed_sdk_series_are_refused": 0.001,
+      "full:fyrr-writer:lib:fyrr_writer/providers::tests::secret_traversal_resolves_array_references_and_fails_closed": 0.0,
+      "full:fyrr-writer:lib:fyrr_writer/providers::tests::sources_are_checked_against_their_provider_without_values": 0.001,
+      "full:fyrr-writer:lib:fyrr_writer/providers::tests::the_effective_schema_joins_provider_schemas": 0.004,
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::prepared_callback_origin_keeps_host_codes_closed": 0.0,
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::prepared_generator_closes_retained_iterators_and_preserves_errors": 0.009,
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::prepared_generator_success_does_not_call_close": 0.001,
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::provider_driver_preserves_row_and_error_policies": 0.004,
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::run_kind_closes_retained_iterators_and_preserves_errors": 0.001,
+      "full:fyrr-writer:lib:fyrr_writer/sync::report_tests::every_closed_code_survives_reports_with_other_kind_statistics": 0.008,
+      "full:fyrr-writer:lib:fyrr_writer/worker::codes_tests::catalog_covers_production_error_expressions": 0.099,
+      "full:fyrr-writer:lib:fyrr_writer/error::tests::writer_error_wire_strings_and_admission_are_unchanged": 0.0,
+      "full:fyrr-core:lib:fyrr_core/limits::tests::hex_checks_preserve_case_and_length_rules": 0.0,
+      "full:fyrr-writer:lib:fyrr_writer/narrowing_tests::narrowing_preserves_existing_low_bits": 0.0,
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::tests::replacement_read_preserves_rejection_fences": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/search::scope::tests::binding_expectation_is_not_completed_admission": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/search::scope::tests::invalidation_and_worker_cloning_never_carry_admission": 0.0,
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_crash_before_publication_keeps_the_old_object": 0.54,
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_e_tags_never_repeat_and_conditions_fail_closed": 23.186,
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_root_is_private_and_behaves_like_s3": 0.19,
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_updates_are_compare_and_swap_across_processes": 3.2,
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_listing_tolerates_concurrent_deletes": 7.112,
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_recreated_objects_never_match_earlier_tags": 9.929,
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_never_restarts_the_counter_over_existing_objects": 0.202,
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::lance_commits_on_a_local_root_are_exclusive": 0.896,
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::tests::unresolved_folding_preserves_each_replacement_fence": 0.002,
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::promotion_crosses_mixed_evidence_chunk_boundaries": 0.019,
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::large_metadata_grows_the_page_allowance_before_insertion": 0.007,
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::tests::acceptance_fences_preserve_kind_restore_and_generation_boundaries": 0.001,
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::tests::acceptance_fences_ignore_lifetime_source_churn": 0.024,
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::lifetime_receipts_exceed_the_active_summary_limit": 0.938,
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::discarded_prefix_never_becomes_a_validated_anchor": 0.003,
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::sql_failure_discards_all_cached_evidence": 0.001,
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::unavailable_working_space_refuses_growth_and_poisons_the_index": 0.001,
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::repeated_admission_reads_fresh_head_without_refetching_identity": 0.001,
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::changed_identity_binding_is_observed_on_next_request": 0.001,
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::cached_identity_never_skips_token_or_directory_expiry": 0.001,
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::invalid_identity_digest_never_reuses_cached_grants": 0.001,
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::identity_namespace_and_generation_must_match_the_fresh_head": 0.002,
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::ec2_metadata_opt_out_preserves_other_credential_sources": 0.0,
+      "full:fyrr-writer:lib:fyrr_writer/lease::tests::namespace_renewal_finishes_before_release_on_local_storage": 1.321,
+      "full:fyrr-writer:lib:fyrr_writer/sync_lease::tests::cursor_renewal_finishes_before_release_on_local_storage": 1.313,
+      "full:fyrr-core:lib:fyrr_core/clock::test_clock::tests::offset_only_moves_forward_and_is_shared_through_a_file": 0.006
+    },
+    "seconds": 52.257
   },
   "config": {
+    "title": "configuration",
+    "kind": "rust",
     "cases": [
       "full:fyrr-core:test:config/analyzer_flags_are_publication_settings_with_legacy_defaults",
       "full:fyrr-core:test:config/composition_is_bounded_defaulted_and_bound_into_policy_identity",
@@ -157,9 +277,41 @@
       "full:fyrr-core:test:config/keycloak_directory_derives_oidc_issuer_profile_and_keys",
       "full:fyrr-core:test:config/oidc_issuer_must_match_the_directory_issuer",
       "full:fyrr-core:test:config/local_storage_takes_a_canonical_file_uri_and_no_s3_keys"
-    ]
+    ],
+    "case_seconds": {
+      "full:fyrr-core:test:config/analyzer_flags_are_publication_settings_with_legacy_defaults": 0.002,
+      "full:fyrr-core:test:config/composition_is_bounded_defaulted_and_bound_into_policy_identity": 0.001,
+      "full:fyrr-core:test:config/config_show_redacts_inline_secrets": 0.001,
+      "full:fyrr-core:test:config/cross_field_rules_are_enforced": 0.001,
+      "full:fyrr-core:test:config/every_schema_constraint_is_enforced": 0.025,
+      "full:fyrr-core:test:config/example_and_minimal_files_are_valid": 0.001,
+      "full:fyrr-core:test:config/example_matches_the_generated_json_schema": 0.005,
+      "full:fyrr-core:test:config/live_embeddings_require_explicit_bounded_spending_and_private_cache": 0.001,
+      "full:fyrr-core:test:config/missing_secrets_are_reported_by_variable_name": 0.001,
+      "full:fyrr-core:test:config/rerank_is_optional_capped_validated_and_bound_into_policy": 0.002,
+      "full:fyrr-core:test:config/rescore_depth_keeps_legacy_digest_and_expands_only_at_small_gaps": 0.001,
+      "full:fyrr-core:test:config/retrieval_config_bounds_and_legacy_digest": 0.001,
+      "full:fyrr-core:test:config/secrets_in_the_file_are_refused_without_echo": 0.001,
+      "full:fyrr-core:test:config/service_http_urls_require_loopback_ip_literals": 0.001,
+      "full:fyrr-core:test:config/sparse_read_backend_is_explicit_and_does_not_change_policy": 0.0,
+      "full:fyrr-core:test:config/storage_rules_and_options": 0.0,
+      "full:fyrr-core:test:config/type_errors_never_echo_values": 0.002,
+      "full:fyrr-core:test:config/unknown_fields_are_rejected": 0.0,
+      "full:fyrr-core:test:config/version_grace_covers_deadline_and_reader_preparation": 0.0,
+      "full:fyrr-core:test:config/config_unit_roundtrip_cases": 0.0,
+      "full:fyrr-core:test:config/directory_defaults_to_none_and_rejects_unimplemented_providers": 0.001,
+      "full:fyrr-core:test:config/unused_identity_selectors_are_rejected_and_absent_from_effective_config": 0.0,
+      "full:fyrr-core:test:config/chat_sources_default_corporate_domains_to_verified_domains": 0.0,
+      "full:fyrr-core:test:config/identity_keys_are_required_before_runtime": 0.0,
+      "full:fyrr-core:test:config/keycloak_directory_derives_oidc_issuer_profile_and_keys": 0.001,
+      "full:fyrr-core:test:config/oidc_issuer_must_match_the_directory_issuer": 0.001,
+      "full:fyrr-core:test:config/local_storage_takes_a_canonical_file_uri_and_no_s3_keys": 0.002
+    },
+    "seconds": 0.051
   },
   "contracts": {
+    "title": "contract fixtures",
+    "kind": "rust",
     "cases": [
       "full:fyrr-core:test:contracts/arrow_document_changes_schema_is_checked_before_rows",
       "full:fyrr-core:test:contracts/arrow_nested_additions_follow_the_minor_rule",
@@ -173,15 +325,39 @@
       "full:fyrr-core:test:contracts/unknown_arrow_field_names_are_not_diagnostics",
       "full:fyrr-core:test:contracts/unknown_major_versions_are_refused_fail_closed",
       "full:fyrr-core:test:contracts/provider_version_cases"
-    ]
+    ],
+    "case_seconds": {
+      "full:fyrr-core:test:contracts/arrow_document_changes_schema_is_checked_before_rows": 0.002,
+      "full:fyrr-core:test:contracts/arrow_nested_additions_follow_the_minor_rule": 0.0,
+      "full:fyrr-core:test:contracts/committed_compat_fixtures_behave": 0.004,
+      "full:fyrr-core:test:contracts/golden_fixtures_round_trip_and_match_schemas": 0.034,
+      "full:fyrr-core:test:contracts/identity_groups_and_subject_bindings_fail_closed": 0.001,
+      "full:fyrr-core:test:contracts/source_email_without_evidence_is_unverified_and_written_without_it": 0.0,
+      "full:fyrr-core:test:contracts/minor_version_additions_are_accepted": 0.007,
+      "full:fyrr-core:test:contracts/publication_lineage_refuses_gaps_and_wrong_endpoints": 0.002,
+      "full:fyrr-core:test:contracts/semantic_violations_are_refused_without_echoing_values": 0.006,
+      "full:fyrr-core:test:contracts/unknown_arrow_field_names_are_not_diagnostics": 0.0,
+      "full:fyrr-core:test:contracts/unknown_major_versions_are_refused_fail_closed": 0.005,
+      "full:fyrr-core:test:contracts/provider_version_cases": 0.0
+    },
+    "seconds": 0.061
   },
   "generated": {
+    "title": "schema drift",
+    "kind": "rust",
     "cases": [
       "full:fyrr-core:test:generated/generated_files_match_committed_copies",
       "full:fyrr-core:test:generated/schemas_directory_holds_only_generated_files"
-    ]
+    ],
+    "case_seconds": {
+      "full:fyrr-core:test:generated/generated_files_match_committed_copies": 0.234,
+      "full:fyrr-core:test:generated/schemas_directory_holds_only_generated_files": 0.012
+    },
+    "seconds": 0.246
   },
   "mcp": {
+    "title": "tools/list golden",
+    "kind": "rust",
     "cases": [
       "full:fyrr-core:test:mcp/agent_tool_parameter_validation_and_limits",
       "full:fyrr-core:test:mcp/error_codes_match_the_spec_list",
@@ -193,17 +369,41 @@
       "full:fyrr-core:test:mcp/tools_list_fits_the_size_budget",
       "full:fyrr-core:test:mcp/truncation_is_optional_additive_and_has_bounded_numeric_counts",
       "full:fyrr-core:test:mcp/validation_enforces_bytes_relations_and_bounds"
-    ]
+    ],
+    "case_seconds": {
+      "full:fyrr-core:test:mcp/agent_tool_parameter_validation_and_limits": 0.008,
+      "full:fyrr-core:test:mcp/error_codes_match_the_spec_list": 0.0,
+      "full:fyrr-core:test:mcp/examples_round_trip_and_match_tool_schemas": 0.015,
+      "full:fyrr-core:test:mcp/inputs_reject_unknown_fields": 0.0,
+      "full:fyrr-core:test:mcp/routing_telemetry_schema_accepts_only_bounded_outcomes": 0.004,
+      "full:fyrr-core:test:mcp/schemas_state_the_effective_limits": 0.005,
+      "full:fyrr-core:test:mcp/tools_have_names_annotations_and_version": 0.012,
+      "full:fyrr-core:test:mcp/tools_list_fits_the_size_budget": 0.007,
+      "full:fyrr-core:test:mcp/truncation_is_optional_additive_and_has_bounded_numeric_counts": 0.004,
+      "full:fyrr-core:test:mcp/validation_enforces_bytes_relations_and_bounds": 0.0
+    },
+    "seconds": 0.055
   },
   "lance-pin": {
+    "title": "native Lance pin checks",
+    "kind": "rust",
     "cases": [
       "full:fyrr-reader:test:lance_pin/bm25_global_statistics_deletions_merge_and_rebuild",
       "full:fyrr-reader:test:lance_pin/configurable_max_token_length_default_40_and_override_128",
       "full:fyrr-reader:test:lance_pin/native_rabitq_centroid_codes_and_f32_routing_order",
       "full:fyrr-reader:test:lance_pin/positionless_native_fts_and_saving"
-    ]
+    ],
+    "case_seconds": {
+      "full:fyrr-reader:test:lance_pin/bm25_global_statistics_deletions_merge_and_rebuild": 0.062,
+      "full:fyrr-reader:test:lance_pin/configurable_max_token_length_default_40_and_override_128": 0.022,
+      "full:fyrr-reader:test:lance_pin/native_rabitq_centroid_codes_and_f32_routing_order": 0.01,
+      "full:fyrr-reader:test:lance_pin/positionless_native_fts_and_saving": 0.069
+    },
+    "seconds": 0.163
   },
   "cli-full": {
+    "title": "cli (full build)",
+    "kind": "rust",
     "cases": [
       "full:fyrr:test:cli/config_check_passes_with_secrets_and_never_prints_them",
       "full:fyrr:test:cli/config_check_rejects_unknown_fields_and_inline_secrets",
@@ -221,9 +421,30 @@
       "full:fyrr:test:cli/version_names_the_build",
       "full:fyrr:test:cli/worker_memory_ceiling_is_configurable_and_validated",
       "full:fyrr:test:cli/writer_service_requires_configuration"
-    ]
+    ],
+    "case_seconds": {
+      "full:fyrr:test:cli/config_check_passes_with_secrets_and_never_prints_them": 2.148,
+      "full:fyrr:test:cli/config_check_rejects_unknown_fields_and_inline_secrets": 0.028,
+      "full:fyrr:test:cli/config_check_reports_unset_secrets_by_name": 4.444,
+      "full:fyrr:test:cli/config_schema_is_the_generated_schema_plus_installed_providers": 2.292,
+      "full:fyrr:test:cli/config_show_never_prints_inline_secrets": 2.479,
+      "full:fyrr:test:cli/config_show_prints_values_with_origins": 3.003,
+      "full:fyrr:test:cli/every_writer_command_rejects_invalid_cross_field_configuration": 0.097,
+      "full:fyrr:test:cli/providers::config_check_validates_sources_against_their_providers": 13.624,
+      "full:fyrr:test:cli/providers::dry_run_validates_each_source_in_its_own_worker": 9.558,
+      "full:fyrr:test:cli/providers::fixed_connections_make_no_permission_or_member_reads": 2.015,
+      "full:fyrr:test:cli/providers::providers_lists_bundled_and_installed_providers_and_refuses_bad_ones": 1.916,
+      "full:fyrr:test:cli/reader_commands_require_configuration": 0.029,
+      "full:fyrr:test:cli/usage_errors_exit_two": 0.01,
+      "full:fyrr:test:cli/version_names_the_build": 0.008,
+      "full:fyrr:test:cli/worker_memory_ceiling_is_configurable_and_validated": 0.016,
+      "full:fyrr:test:cli/writer_service_requires_configuration": 0.01
+    },
+    "seconds": 41.677
   },
   "local-storage": {
+    "title": "local storage",
+    "kind": "rust",
     "cases": [
       "full:fyrr:test:dense_path/local_storage::local_storage_publishes_and_serves_with_permission_filtering",
       "full:fyrr:test:dense_path/local_storage::local_storage_reaps_abandoned_uploads_but_protects_live_staging",
@@ -241,27 +462,29 @@
       "full:fyrr:test:dense_path/corrections::local::bulk_fixture_versions_remain_private_and_support_later_cas"
     ],
     "backend": "local",
-    "seconds": 655.03,
+    "seconds": 739.697,
     "case_seconds": {
-      "full:fyrr:test:dense_path/local_storage::lifetime_history_keeps_maintenance_restore_and_receipts_available": 377.392,
-      "full:fyrr:test:dense_path/mirror_identity::running_http_reader_never_serves_a_revoked_grant_of_a_replaced_namespace_on_local_storage": 38.915,
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery_on_local_storage": 41.942,
-      "full:fyrr:test:dense_path/coordination::coordination_live_holder_is_busy_then_fenced_after_expiry_on_local_storage": 21.168,
-      "full:fyrr:test:dense_path/dense_path_and_namespace_contracts_on_local_storage": 32.177,
-      "full:fyrr:test:dense_path/local_storage::local_storage_publishes_and_serves_with_permission_filtering": 33.593,
-      "full:fyrr:test:dense_path/maintenance::maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror_on_local_storage": 35.33,
-      "full:fyrr:test:dense_path/corrections::local::local_native_observer_preserves_warm_mirror_reads": 31.247,
-      "full:fyrr:test:dense_path/mirror_identity::running_reader_never_serves_a_replaced_namespace_incarnation_on_local_storage": 16.127,
-      "full:fyrr:test:dense_path/mirror_identity::recreated_namespace_at_same_uri_never_serves_old_mirror_entries_on_local_storage": 10.253,
-      "full:fyrr:test:dense_path/local_storage::local_storage_reaps_abandoned_uploads_but_protects_live_staging": 6.876,
-      "full:fyrr:test:dense_path/coordination::coordination_stale_publish_preserves_authoritative_head_on_local_storage": 3.161,
-      "full:fyrr:test:dense_path/corrections::local::local_operation_boundaries_preserve_durability_and_release_killed_writers": 3.802,
-      "full:fyrr:test:dense_path/corrections::local::bulk_fixture_versions_remain_private_and_support_later_cas": 3.047
+      "full:fyrr:test:dense_path/local_storage::local_storage_publishes_and_serves_with_permission_filtering": 31.39,
+      "full:fyrr:test:dense_path/local_storage::local_storage_reaps_abandoned_uploads_but_protects_live_staging": 9.929,
+      "full:fyrr:test:dense_path/coordination::coordination_live_holder_is_busy_then_fenced_after_expiry_on_local_storage": 25.262,
+      "full:fyrr:test:dense_path/coordination::coordination_stale_publish_preserves_authoritative_head_on_local_storage": 1.535,
+      "full:fyrr:test:dense_path/maintenance::maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror_on_local_storage": 31.389,
+      "full:fyrr:test:dense_path/maintenance::maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery_on_local_storage": 46.331,
+      "full:fyrr:test:dense_path/mirror_identity::recreated_namespace_at_same_uri_never_serves_old_mirror_entries_on_local_storage": 11.412,
+      "full:fyrr:test:dense_path/mirror_identity::running_reader_never_serves_a_replaced_namespace_incarnation_on_local_storage": 18.04,
+      "full:fyrr:test:dense_path/local_storage::lifetime_history_keeps_maintenance_restore_and_receipts_available": 459.079,
+      "full:fyrr:test:dense_path/corrections::local::local_operation_boundaries_preserve_durability_and_release_killed_writers": 1.558,
+      "full:fyrr:test:dense_path/corrections::local::local_native_observer_preserves_warm_mirror_reads": 28.184,
+      "full:fyrr:test:dense_path/dense_path_and_namespace_contracts_on_local_storage": 32.088,
+      "full:fyrr:test:dense_path/mirror_identity::running_http_reader_never_serves_a_revoked_grant_of_a_replaced_namespace_on_local_storage": 42.059,
+      "full:fyrr:test:dense_path/corrections::local::bulk_fixture_versions_remain_private_and_support_later_cas": 1.441
     }
   },
   "local-publication-lifecycle": {
+    "title": "local: publication-lifecycle",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 265.107,
+    "seconds": 280.212,
     "cases": [
       "full:fyrr:test:dense_path/publication_lifecycle::broad_audit_detects_content_grant_and_key_changes_on_storage",
       "full:fyrr:test:dense_path/publication_lifecycle::committer_indexes_and_stale_prepared_acl_on_storage",
@@ -276,17 +499,19 @@
       ]
     },
     "case_seconds": {
-      "full:fyrr:test:dense_path/publication_lifecycle::serve_timer_disabled_committer_and_directory_hook_on_storage": 84.839,
-      "full:fyrr:test:dense_path/publication_lifecycle::broad_audit_detects_content_grant_and_key_changes_on_storage": 47.455,
-      "full:fyrr:test:dense_path/publication_lifecycle::committer_indexes_and_stale_prepared_acl_on_storage": 40.594,
-      "full:fyrr:test:dense_path/publication_lifecycle::delta_shutdown_finishes_only_current_group_on_storage": 33.346,
-      "full:fyrr:test:dense_path/publication_lifecycle::serve_isolates_failed_providers_while_publishing_on_storage": 28.017,
-      "full:fyrr:test:dense_path/publication_lifecycle::unverified_attestation_does_not_renew_authorization": 30.856
+      "full:fyrr:test:dense_path/publication_lifecycle::broad_audit_detects_content_grant_and_key_changes_on_storage": 52.141,
+      "full:fyrr:test:dense_path/publication_lifecycle::committer_indexes_and_stale_prepared_acl_on_storage": 35.728,
+      "full:fyrr:test:dense_path/publication_lifecycle::delta_shutdown_finishes_only_current_group_on_storage": 36.761,
+      "full:fyrr:test:dense_path/publication_lifecycle::unverified_attestation_does_not_renew_authorization": 25.899,
+      "full:fyrr:test:dense_path/publication_lifecycle::serve_isolates_failed_providers_while_publishing_on_storage": 33.382,
+      "full:fyrr:test:dense_path/publication_lifecycle::serve_timer_disabled_committer_and_directory_hook_on_storage": 96.301
     }
   },
   "local-coordination": {
+    "title": "local: coordination",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 202.155,
+    "seconds": 242.288,
     "cases": [
       "full:fyrr:test:dense_path/coordination::coordination_busy_and_expired_holder_on_storage",
       "full:fyrr:test:dense_path/coordination::coordination_crash_boundaries_on_storage",
@@ -298,62 +523,72 @@
       ]
     },
     "case_seconds": {
-      "full:fyrr:test:dense_path/coordination::coordination_crash_boundaries_on_storage": 121.811,
-      "full:fyrr:test:dense_path/coordination::coordination_busy_and_expired_holder_on_storage": 39.937,
-      "full:fyrr:test:dense_path/coordination::coordination_status_bounded_backlog_on_storage": 40.407
+      "full:fyrr:test:dense_path/coordination::coordination_busy_and_expired_holder_on_storage": 49.294,
+      "full:fyrr:test:dense_path/coordination::coordination_crash_boundaries_on_storage": 156.618,
+      "full:fyrr:test:dense_path/coordination::coordination_status_bounded_backlog_on_storage": 36.376
     }
   },
   "s3-coordination": {
+    "title": "real S3: coordination",
+    "kind": "rust",
     "backend": "s3",
-    "seconds": 45.169,
+    "seconds": 35.661,
     "cases": [
       "full:fyrr:test:dense_path/coordination::coordination_stale_publish_preserves_authoritative_head_on_real_s3",
       "full:fyrr:test:dense_path/coordination::coordination_foreign_native_commit_cannot_publish_head_on_real_s3",
       "full:fyrr-writer:lib:fyrr_writer/lease::tests::renewals_finish_before_release_on_real_s3"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/coordination::coordination_foreign_native_commit_cannot_publish_head_on_real_s3": 28.75,
-      "full:fyrr-writer:lib:fyrr_writer/lease::tests::renewals_finish_before_release_on_real_s3": 10.085,
-      "full:fyrr:test:dense_path/coordination::coordination_stale_publish_preserves_authoritative_head_on_real_s3": 6.334
+      "full:fyrr:test:dense_path/coordination::coordination_stale_publish_preserves_authoritative_head_on_real_s3": 3.113,
+      "full:fyrr:test:dense_path/coordination::coordination_foreign_native_commit_cannot_publish_head_on_real_s3": 26.761,
+      "full:fyrr-writer:lib:fyrr_writer/lease::tests::renewals_finish_before_release_on_real_s3": 5.787
     }
   },
   "local-correction-durability": {
+    "title": "local: correction-durability",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 52.448,
+    "seconds": 59.471,
     "cases": [
       "full:fyrr:test:dense_path/corrections::correction_durability_acl_and_private_mirror_on_storage",
       "full:fyrr:test:dense_path/corrections::correction_durability_proxy_guard_preserves_panics"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/corrections::correction_durability_acl_and_private_mirror_on_storage": 50.224,
-      "full:fyrr:test:dense_path/corrections::correction_durability_proxy_guard_preserves_panics": 2.224
+      "full:fyrr:test:dense_path/corrections::correction_durability_acl_and_private_mirror_on_storage": 58.345,
+      "full:fyrr:test:dense_path/corrections::correction_durability_proxy_guard_preserves_panics": 1.126
     }
   },
   "local-correction-inflight": {
+    "title": "local: correction-inflight",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 17.797,
+    "seconds": 18.369,
     "cases": [
       "full:fyrr:test:dense_path/corrections::correction_inflight_identity_change_on_storage",
       "full:fyrr:test:dense_path/corrections::retrieval_error_revocation_cases"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/corrections::retrieval_error_revocation_cases": 11.373,
-      "full:fyrr:test:dense_path/corrections::correction_inflight_identity_change_on_storage": 6.424
+      "full:fyrr:test:dense_path/corrections::correction_inflight_identity_change_on_storage": 6.332,
+      "full:fyrr:test:dense_path/corrections::retrieval_error_revocation_cases": 12.037
     }
   },
   "local-live-expiry": {
+    "title": "local: live-expiry",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 5.467,
+    "seconds": 5.427,
     "cases": [
       "full:fyrr:test:dense_path/corrections::correction_live_mcp_expires_without_commit"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/corrections::correction_live_mcp_expires_without_commit": 5.467
+      "full:fyrr:test:dense_path/corrections::correction_live_mcp_expires_without_commit": 5.427
     }
   },
   "local-tools": {
+    "title": "local: tools",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 116.824,
+    "seconds": 128.346,
     "cases": [
       "full:fyrr:test:dense_path/embedding::tools_embedding_empty_admission_and_profile_mismatch_make_no_calls_on_storage",
       "full:fyrr:test:dense_path/embedding::tools_embedding_wait_revocation_on_storage",
@@ -373,32 +608,36 @@
       ]
     },
     "case_seconds": {
-      "full:fyrr:test:dense_path/embedding::tools_writer_embedding_failures_deadline_spend_and_no_partial_stage_on_storage": 15.723,
-      "full:fyrr:test:dense_path/tools::tools_fetch_filters_windows_and_cursors_on_storage": 13.185,
-      "full:fyrr:test:dense_path/tools::tools_every_admitted_result_and_error_rechecks_identity_on_storage": 13.817,
-      "full:fyrr:test:dense_path/rerank::tools_rerank_denied_and_listing_make_no_calls_on_storage": 13.913,
-      "full:fyrr:test:dense_path/rerank::tools_rerank_revoke_before_body_emission_sends_no_text_on_storage": 10.896,
-      "full:fyrr:test:dense_path/rerank::tools_rerank_default_and_success_on_storage": 6.711,
-      "full:fyrr:test:dense_path/embedding::tools_embedding_empty_admission_and_profile_mismatch_make_no_calls_on_storage": 6.563,
-      "full:fyrr:test:dense_path/tools::tools_agent_multiquery_text_and_fetch_list_on_storage": 7.763,
-      "full:fyrr:test:dense_path/embedding::tools_embedding_wait_revocation_on_storage": 6.525,
-      "full:fyrr:test:dense_path/rerank::tools_rerank_text_window_and_response_budget_are_authorized_on_storage": 8.638,
-      "full:fyrr:test:dense_path/tools::tools_fetch_refuses_unreadable_locator_index_on_storage": 13.09
+      "full:fyrr:test:dense_path/embedding::tools_embedding_empty_admission_and_profile_mismatch_make_no_calls_on_storage": 8.419,
+      "full:fyrr:test:dense_path/embedding::tools_embedding_wait_revocation_on_storage": 7.738,
+      "full:fyrr:test:dense_path/embedding::tools_writer_embedding_failures_deadline_spend_and_no_partial_stage_on_storage": 15.107,
+      "full:fyrr:test:dense_path/rerank::tools_rerank_default_and_success_on_storage": 8.416,
+      "full:fyrr:test:dense_path/rerank::tools_rerank_denied_and_listing_make_no_calls_on_storage": 15.281,
+      "full:fyrr:test:dense_path/rerank::tools_rerank_revoke_before_body_emission_sends_no_text_on_storage": 13.604,
+      "full:fyrr:test:dense_path/rerank::tools_rerank_text_window_and_response_budget_are_authorized_on_storage": 7.775,
+      "full:fyrr:test:dense_path/tools::tools_agent_multiquery_text_and_fetch_list_on_storage": 9.663,
+      "full:fyrr:test:dense_path/tools::tools_every_admitted_result_and_error_rechecks_identity_on_storage": 16.049,
+      "full:fyrr:test:dense_path/tools::tools_fetch_filters_windows_and_cursors_on_storage": 16.038,
+      "full:fyrr:test:dense_path/tools::tools_fetch_refuses_unreadable_locator_index_on_storage": 10.256
     }
   },
   "s3-namespace-contracts": {
+    "title": "real S3: namespace-contracts",
+    "kind": "rust",
     "backend": "s3",
-    "seconds": 37.77,
+    "seconds": 33.538,
     "cases": [
       "full:fyrr:test:dense_path/dense_path_and_namespace_contracts_on_real_s3"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/dense_path_and_namespace_contracts_on_real_s3": 37.77
+      "full:fyrr:test:dense_path/dense_path_and_namespace_contracts_on_real_s3": 33.538
     }
   },
   "external-keycloak": {
+    "title": "external: keycloak",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 86.873,
+    "seconds": 82.627,
     "cases": [
       "full:fyrr:test:dense_path/directory_ops::identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_storage"
     ],
@@ -406,12 +645,14 @@
       "keycloak"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/directory_ops::identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_storage": 86.873
+      "full:fyrr:test:dense_path/directory_ops::identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_storage": 82.627
     }
   },
   "local-identity": {
+    "title": "local: identity",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 434.575,
+    "seconds": 442.584,
     "cases": [
       "full:fyrr:test:dense_path/directory_ops::identity_directory_scim_crud_patch_replay_collision_and_revocation_on_storage",
       "full:fyrr:test:dense_path/http_mcp::identity_http_authentication_isolation_rate_limits_drain_and_refresh_on_storage",
@@ -423,45 +664,51 @@
       "full:fyrr:test:dense_path/identity::identity_scim_namespace_creation_and_import_never_attest_without_proof_on_storage"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/http_mcp::identity_http_deadline_cancellation_busy_inflight_refusal_and_active_drain_on_storage": 146.185,
-      "full:fyrr:test:dense_path/http_mcp::identity_http_authentication_isolation_rate_limits_drain_and_refresh_on_storage": 77.64,
-      "full:fyrr:test:dense_path/identity::identity_email_evidence_and_cross_issuer_bindings_on_storage": 47.628,
-      "full:fyrr:test:dense_path/directory_ops::identity_directory_scim_crud_patch_replay_collision_and_revocation_on_storage": 47.985,
-      "full:fyrr:test:dense_path/identity::identity_directory_keeps_lease_alive_during_slow_storage_on_storage": 33.758,
-      "full:fyrr:test:dense_path/identity::identity_alias_collision_link_revoke_and_idempotence_on_storage": 32.79,
-      "full:fyrr:test:dense_path/identity::identity_large_grants_are_complete_and_over_limit_is_subject_local_on_storage": 31.489,
-      "full:fyrr:test:dense_path/identity::identity_scim_namespace_creation_and_import_never_attest_without_proof_on_storage": 17.1
+      "full:fyrr:test:dense_path/directory_ops::identity_directory_scim_crud_patch_replay_collision_and_revocation_on_storage": 47.941,
+      "full:fyrr:test:dense_path/http_mcp::identity_http_authentication_isolation_rate_limits_drain_and_refresh_on_storage": 85.864,
+      "full:fyrr:test:dense_path/http_mcp::identity_http_deadline_cancellation_busy_inflight_refusal_and_active_drain_on_storage": 156.747,
+      "full:fyrr:test:dense_path/identity::identity_alias_collision_link_revoke_and_idempotence_on_storage": 31.047,
+      "full:fyrr:test:dense_path/identity::identity_directory_keeps_lease_alive_during_slow_storage_on_storage": 33.697,
+      "full:fyrr:test:dense_path/identity::identity_email_evidence_and_cross_issuer_bindings_on_storage": 48.179,
+      "full:fyrr:test:dense_path/identity::identity_large_grants_are_complete_and_over_limit_is_subject_local_on_storage": 26.613,
+      "full:fyrr:test:dense_path/identity::identity_scim_namespace_creation_and_import_never_attest_without_proof_on_storage": 12.496
     }
   },
   "local-github": {
+    "title": "local: github",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 77.053,
+    "seconds": 76.764,
     "cases": [
       "full:fyrr:test:dense_path/github::github_fixed_replay_quarantine_scope_and_reconcile_on_storage",
       "full:fyrr:test:dense_path/github::github_sync_silent_content_and_revoke_on_storage"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/github::github_fixed_replay_quarantine_scope_and_reconcile_on_storage": 41.842,
-      "full:fyrr:test:dense_path/github::github_sync_silent_content_and_revoke_on_storage": 35.211
+      "full:fyrr:test:dense_path/github::github_fixed_replay_quarantine_scope_and_reconcile_on_storage": 44.908,
+      "full:fyrr:test:dense_path/github::github_sync_silent_content_and_revoke_on_storage": 31.856
     }
   },
   "local-google-drive": {
+    "title": "local: google-drive",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 140.6,
+    "seconds": 122.655,
     "cases": [
       "full:fyrr:test:dense_path/google_drive::google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_storage",
       "full:fyrr:test:dense_path/google_drive::google_drive_quarantine_and_permission_read_failure_deadline_on_storage",
       "full:fyrr:test:dense_path/google_drive::google_drive_sync_source_grants_and_revokes_in_every_lane_on_storage"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/google_drive::google_drive_sync_source_grants_and_revokes_in_every_lane_on_storage": 54.589,
-      "full:fyrr:test:dense_path/google_drive::google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_storage": 39.985,
-      "full:fyrr:test:dense_path/google_drive::google_drive_quarantine_and_permission_read_failure_deadline_on_storage": 46.026
+      "full:fyrr:test:dense_path/google_drive::google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_storage": 32.14,
+      "full:fyrr:test:dense_path/google_drive::google_drive_quarantine_and_permission_read_failure_deadline_on_storage": 45.653,
+      "full:fyrr:test:dense_path/google_drive::google_drive_sync_source_grants_and_revokes_in_every_lane_on_storage": 44.862
     }
   },
   "local-maintenance": {
+    "title": "local: maintenance",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 681.726,
+    "seconds": 823.472,
     "cases": [
       "full:fyrr:test:dense_path/maintenance::restore_and_rollback_preserve_current_section_revocation",
       "full:fyrr:test:dense_path/maintenance::maintenance_pending_revoke_purge_and_verify_on_storage",
@@ -481,22 +728,24 @@
       ]
     },
     "case_seconds": {
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_crash_boundaries_on_storage": 137.376,
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_batched_authorization_boundaries_on_storage": 162.255,
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_rejected_authorization_freezes_freshness_on_storage": 60.228,
-      "full:fyrr:test:dense_path/maintenance::restore_and_rollback_preserve_current_section_revocation": 66.869,
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_discovers_authorization_after_failed_cursor_on_storage": 51.712,
-      "full:fyrr:test:dense_path/maintenance::maintenance_purge_killed_before_its_head_publication_converges_on_storage": 25.646,
-      "full:fyrr:test:dense_path/maintenance::maintenance_purge_window_and_restore_horizon_on_storage": 54.422,
-      "full:fyrr:test:dense_path/maintenance::maintenance_pending_revoke_purge_and_verify_on_storage": 48.695,
-      "full:fyrr:test:dense_path/maintenance::maintenance_retired_source_commits_are_fenced_on_storage": 33.742,
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_changed_envelope_identity_fails_closed_on_storage": 15.267,
-      "full:fyrr:test:dense_path/maintenance::maintenance_retired_source_survives_restore_and_rollback_on_storage": 25.514
+      "full:fyrr:test:dense_path/maintenance::restore_and_rollback_preserve_current_section_revocation": 86.188,
+      "full:fyrr:test:dense_path/maintenance::maintenance_pending_revoke_purge_and_verify_on_storage": 45.062,
+      "full:fyrr:test:dense_path/maintenance::maintenance_purge_killed_before_its_head_publication_converges_on_storage": 36.069,
+      "full:fyrr:test:dense_path/maintenance::maintenance_purge_window_and_restore_horizon_on_storage": 42.941,
+      "full:fyrr:test:dense_path/maintenance::maintenance_restore_batched_authorization_boundaries_on_storage": 194.848,
+      "full:fyrr:test:dense_path/maintenance::maintenance_restore_changed_envelope_identity_fails_closed_on_storage": 23.985,
+      "full:fyrr:test:dense_path/maintenance::maintenance_restore_crash_boundaries_on_storage": 173.868,
+      "full:fyrr:test:dense_path/maintenance::maintenance_restore_discovers_authorization_after_failed_cursor_on_storage": 70.21,
+      "full:fyrr:test:dense_path/maintenance::maintenance_restore_rejected_authorization_freezes_freshness_on_storage": 73.103,
+      "full:fyrr:test:dense_path/maintenance::maintenance_retired_source_commits_are_fenced_on_storage": 37.976,
+      "full:fyrr:test:dense_path/maintenance::maintenance_retired_source_survives_restore_and_rollback_on_storage": 39.222
     }
   },
   "s3-maintenance": {
+    "title": "real S3: maintenance",
+    "kind": "rust",
     "backend": "s3",
-    "seconds": 57.285,
+    "seconds": 60.196,
     "cases": [
       "full:fyrr:test:dense_path/maintenance::maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror_on_real_s3",
       "full:fyrr:test:dense_path/maintenance::maintenance_restore_refuses_envelope_replaced_after_listing_on_real_s3"
@@ -507,13 +756,15 @@
       ]
     },
     "case_seconds": {
-      "full:fyrr:test:dense_path/maintenance::maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror_on_real_s3": 34.481,
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_refuses_envelope_replaced_after_listing_on_real_s3": 22.804
+      "full:fyrr:test:dense_path/maintenance::maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror_on_real_s3": 32.533,
+      "full:fyrr:test:dense_path/maintenance::maintenance_restore_refuses_envelope_replaced_after_listing_on_real_s3": 27.663
     }
   },
   "local-incremental": {
+    "title": "local: incremental",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 469.169,
+    "seconds": 536.321,
     "cases": [
       "full:fyrr:test:dense_path/incremental::incremental_caught_revision_failure_never_attests_on_storage",
       "full:fyrr:test:dense_path/incremental::incremental_content_only_provider_empty_readers_narrow_to_nobody_on_storage",
@@ -527,43 +778,49 @@
       "full:fyrr:test:dense_path/incremental::incremental_unchanged_upsert_still_protects_pending_reconciliation_on_storage"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/incremental::incremental_caught_revision_failure_never_attests_on_storage": 112.964,
-      "full:fyrr:test:dense_path/incremental::incremental_rejected_authorization_requires_complete_replacement_on_storage": 83.283,
-      "full:fyrr:test:dense_path/incremental::incremental_sub_envelope_cursor_recovery_and_atomic_chunk_groups_on_storage": 58.85,
-      "full:fyrr:test:dense_path/incremental::incremental_damaged_rows_rejected_and_cleanup_retains_log_authority_on_storage": 38.305,
-      "full:fyrr:test:dense_path/incremental::incremental_section_readers_survive_a_later_permission_state_on_storage": 38.771,
-      "full:fyrr:test:dense_path/incremental::incremental_members_alone_never_attest_permissions_on_storage": 34.758,
-      "full:fyrr:test:dense_path/incremental::incremental_content_only_provider_empty_readers_narrow_to_nobody_on_storage": 29.398,
-      "full:fyrr:test:dense_path/incremental::incremental_delta_expired_source_isolated_on_storage": 34.77,
-      "full:fyrr:test:dense_path/incremental::incremental_delta_genesis_undeclared_row_rejected_on_storage": 25.807,
-      "full:fyrr:test:dense_path/incremental::incremental_unchanged_upsert_still_protects_pending_reconciliation_on_storage": 12.263
+      "full:fyrr:test:dense_path/incremental::incremental_caught_revision_failure_never_attests_on_storage": 141.246,
+      "full:fyrr:test:dense_path/incremental::incremental_content_only_provider_empty_readers_narrow_to_nobody_on_storage": 30.969,
+      "full:fyrr:test:dense_path/incremental::incremental_damaged_rows_rejected_and_cleanup_retains_log_authority_on_storage": 44.076,
+      "full:fyrr:test:dense_path/incremental::incremental_delta_expired_source_isolated_on_storage": 26.637,
+      "full:fyrr:test:dense_path/incremental::incremental_delta_genesis_undeclared_row_rejected_on_storage": 29.872,
+      "full:fyrr:test:dense_path/incremental::incremental_rejected_authorization_requires_complete_replacement_on_storage": 103.26,
+      "full:fyrr:test:dense_path/incremental::incremental_members_alone_never_attest_permissions_on_storage": 34.768,
+      "full:fyrr:test:dense_path/incremental::incremental_section_readers_survive_a_later_permission_state_on_storage": 45.062,
+      "full:fyrr:test:dense_path/incremental::incremental_sub_envelope_cursor_recovery_and_atomic_chunk_groups_on_storage": 66.458,
+      "full:fyrr:test:dense_path/incremental::incremental_unchanged_upsert_still_protects_pending_reconciliation_on_storage": 13.973
     }
   },
   "local-jira": {
+    "title": "local: jira",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 108.988,
+    "seconds": 122.679,
     "cases": [
       "full:fyrr:test:dense_path/jira::jira_fixed_issues_comments_quarantine_and_reconcile_on_storage",
       "full:fyrr:test:dense_path/jira::jira_sync_silent_content_restricted_sections_and_revoke_on_storage"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/jira::jira_fixed_issues_comments_quarantine_and_reconcile_on_storage": 76.195,
-      "full:fyrr:test:dense_path/jira::jira_sync_silent_content_restricted_sections_and_revoke_on_storage": 32.793
+      "full:fyrr:test:dense_path/jira::jira_fixed_issues_comments_quarantine_and_reconcile_on_storage": 86.87,
+      "full:fyrr:test:dense_path/jira::jira_sync_silent_content_restricted_sections_and_revoke_on_storage": 35.809
     }
   },
   "local-notion": {
+    "title": "local: notion",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 82.555,
+    "seconds": 96.859,
     "cases": [
       "full:fyrr:test:dense_path/notion::notion_content_changes_quarantine_and_reconcile_on_storage"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/notion::notion_content_changes_quarantine_and_reconcile_on_storage": 82.555
+      "full:fyrr:test:dense_path/notion::notion_content_changes_quarantine_and_reconcile_on_storage": 96.859
     }
   },
   "local-retrieval-publication": {
+    "title": "local: retrieval-publication",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 135.317,
+    "seconds": 126.004,
     "cases": [
       "full:fyrr:test:dense_path/retrieval::retrieval_publication_authorization_cache_budget_on_storage",
       "full:fyrr:test:dense_path/retrieval::retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_storage",
@@ -584,24 +841,28 @@
       ]
     },
     "case_seconds": {
-      "full:fyrr:test:dense_path/retrieval::retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_storage": 56.364,
-      "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_storage": 48.795,
-      "full:fyrr:test:dense_path/retrieval::retrieval_publication_authorization_cache_budget_on_storage": 30.158
+      "full:fyrr:test:dense_path/retrieval::retrieval_publication_authorization_cache_budget_on_storage": 29.316,
+      "full:fyrr:test:dense_path/retrieval::retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_storage": 57.451,
+      "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_storage": 39.237
     }
   },
   "local-slack": {
+    "title": "local: slack",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 70.587,
+    "seconds": 76.596,
     "cases": [
       "full:fyrr:test:dense_path/slack::slack_fixed_windows_threads_quarantine_and_reconcile_on_storage",
       "full:fyrr:test:dense_path/slack::slack_sync_silent_content_and_revoke_on_storage"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/slack::slack_fixed_windows_threads_quarantine_and_reconcile_on_storage": 38.913,
-      "full:fyrr:test:dense_path/slack::slack_sync_silent_content_and_revoke_on_storage": 31.674
+      "full:fyrr:test:dense_path/slack::slack_fixed_windows_threads_quarantine_and_reconcile_on_storage": 45.106,
+      "full:fyrr:test:dense_path/slack::slack_sync_silent_content_and_revoke_on_storage": 31.49
     }
   },
   "privacy-full": {
+    "title": "privacy sentinel (full build)",
+    "kind": "rust",
     "cases": [
       "full:fyrr:test:privacy/dense_reader_and_namespace_paths_keep_identity_and_query_values_private",
       "full:fyrr:test:privacy/directory_snapshot_errors_never_echo_private_input",
@@ -631,11 +892,44 @@
       "full:fyrr:test:privacy/routing_configuration_keeps_private_values_out_of_errors",
       "full:fyrr:test:privacy/secrets_from_the_environment_are_never_printed",
       "full:fyrr:test:privacy/values_in_the_config_file_never_leave_through_errors"
-    ]
+    ],
+    "case_seconds": {
+      "full:fyrr:test:privacy/dense_reader_and_namespace_paths_keep_identity_and_query_values_private": 0.366,
+      "full:fyrr:test:privacy/directory_snapshot_errors_never_echo_private_input": 0.012,
+      "full:fyrr:test:privacy/http_reader_configuration_and_startup_keep_identity_and_credentials_private": 0.058,
+      "full:fyrr:test:privacy/live_embedding_configuration_and_startup_keep_values_private": 0.061,
+      "full:fyrr:test:privacy/mcp_validation_errors_keep_filter_cursor_and_window_values_private": 0.0,
+      "full:fyrr:test:privacy/providers::a_provider_dry_run_never_prints_document_values": 2.036,
+      "full:fyrr:test:privacy/providers::config_show_refuses_unset_provider_secrets": 3.874,
+      "full:fyrr:test:privacy/providers::contract_validation_errors_never_echo_values": 2.123,
+      "full:fyrr:test:privacy/providers::detached_worker_descendants_are_killed_and_reaped_on_every_exit_path": 12.074,
+      "full:fyrr:test:privacy/providers::failing_providers_never_echo_their_messages": 3.146,
+      "full:fyrr:test:privacy/providers::github_app_keys_never_leave_config_commands": 7.67,
+      "full:fyrr:test:privacy/providers::nested_secret_lists_are_redacted_and_validated": 7.923,
+      "full:fyrr:test:privacy/providers::notion_credentials_never_leave_config_commands": 8.516,
+      "full:fyrr:test:privacy/providers::oversized_text_intake_does_not_materialize_a_second_copy": 4.904,
+      "full:fyrr:test:privacy/providers::provider_listing_never_prints_metadata_values": 3.734,
+      "full:fyrr:test:privacy/providers::provider_secret_fields_take_only_references": 9.374,
+      "full:fyrr:test:privacy/providers::result_channel_rejects_empty_wrong_kind_and_free_text_reports": 6.174,
+      "full:fyrr:test:privacy/providers::worker_report_cases": 14.829,
+      "full:fyrr:test:privacy/providers::scalar_secret_arrays_are_never_printed_as_aggregates": 2.042,
+      "full:fyrr:test:privacy/providers::slack_user_tokens_never_leave_config_commands": 8.519,
+      "full:fyrr:test:privacy/providers::unconfigured_aborting_metadata_does_not_disable_healthy_sources": 6.558,
+      "full:fyrr:test:privacy/providers::worker_groups_are_cleaned_on_every_exit_path": 13.051,
+      "full:fyrr:test:privacy/query_like_input_is_never_echoed": 0.118,
+      "full:fyrr:test:privacy/reranker_configuration_and_startup_keep_values_private": 0.041,
+      "full:fyrr:test:privacy/response_truncation_counts_cannot_carry_private_values": 0.0,
+      "full:fyrr:test:privacy/routing_configuration_keeps_private_values_out_of_errors": 0.054,
+      "full:fyrr:test:privacy/secrets_from_the_environment_are_never_printed": 15.984,
+      "full:fyrr:test:privacy/values_in_the_config_file_never_leave_through_errors": 15.467
+    },
+    "seconds": 148.708
   },
   "s3-storage-identity": {
+    "title": "real S3: storage-identity",
+    "kind": "rust",
     "backend": "s3",
-    "seconds": 39.774,
+    "seconds": 35.024,
     "cases": [
       "full:fyrr:test:privacy/identity_storage_inputs_credentials_missing_key_and_rotation_are_fail_closed",
       "full:fyrr:test:privacy/identity_storage_writer_embedding_cache_and_failures_keep_values_private",
@@ -643,13 +937,15 @@
       "full:fyrr:test:dense_path/head_diagnostics::ec2_metadata_opt_out_preserves_other_credential_sources_on_real_s3"
     ],
     "case_seconds": {
-      "full:fyrr:test:privacy/identity_storage_inputs_credentials_missing_key_and_rotation_are_fail_closed": 14.743,
-      "full:fyrr:test:privacy/identity_storage_writer_embedding_cache_and_failures_keep_values_private": 8.907,
-      "full:fyrr:test:dense_path/corrections::mirror_endpoint_isolation_on_real_s3": 8.412,
-      "full:fyrr:test:dense_path/head_diagnostics::ec2_metadata_opt_out_preserves_other_credential_sources_on_real_s3": 7.712
+      "full:fyrr:test:privacy/identity_storage_inputs_credentials_missing_key_and_rotation_are_fail_closed": 14.686,
+      "full:fyrr:test:privacy/identity_storage_writer_embedding_cache_and_failures_keep_values_private": 8.45,
+      "full:fyrr:test:dense_path/corrections::mirror_endpoint_isolation_on_real_s3": 8.045,
+      "full:fyrr:test:dense_path/head_diagnostics::ec2_metadata_opt_out_preserves_other_credential_sources_on_real_s3": 3.843
     }
   },
   "python-sdk": {
+    "title": "python connector SDK",
+    "kind": "python",
     "cases": [
       "python:connectors/tests/github/test_github_auth_client.py::test_auth_verifies_installation_and_mints_read_only_token",
       "python:connectors/tests/github/test_github_auth_client.py::test_cursor_contains_only_validated_ids_timestamps_digests[commit-private@example.test]",
@@ -1197,6 +1493,8 @@
     ]
   },
   "python-example": {
+    "title": "example provider (test kit)",
+    "kind": "python",
     "cases": [
       "python:examples/markdown-provider/tests/test_provider.py::test_content_matches_the_golden_output",
       "python:examples/markdown-provider/tests/test_provider.py::test_content_resumes_after_its_cursor",
@@ -1206,6 +1504,8 @@
     ]
   },
   "cli-reader": {
+    "title": "cli (reader-only build)",
+    "kind": "rust",
     "cases": [
       "reader:fyrr:test:cli/config_check_passes_with_secrets_and_never_prints_them",
       "reader:fyrr:test:cli/config_check_rejects_unknown_fields_and_inline_secrets",
@@ -1216,9 +1516,23 @@
       "reader:fyrr:test:cli/reader_only_build_explains_the_missing_writer",
       "reader:fyrr:test:cli/reader_only_config_check_says_providers_are_not_checked",
       "reader:fyrr:test:cli/worker_memory_ceiling_is_configurable_and_validated"
-    ]
+    ],
+    "case_seconds": {
+      "reader:fyrr:test:cli/config_check_passes_with_secrets_and_never_prints_them": 0.495,
+      "reader:fyrr:test:cli/config_check_rejects_unknown_fields_and_inline_secrets": 0.024,
+      "reader:fyrr:test:cli/config_check_reports_unset_secrets_by_name": 0.016,
+      "reader:fyrr:test:cli/config_schema_is_the_generated_schema_plus_installed_providers": 0.033,
+      "reader:fyrr:test:cli/config_show_never_prints_inline_secrets": 0.011,
+      "reader:fyrr:test:cli/config_show_prints_values_with_origins": 0.007,
+      "reader:fyrr:test:cli/reader_only_build_explains_the_missing_writer": 0.043,
+      "reader:fyrr:test:cli/reader_only_config_check_says_providers_are_not_checked": 0.009,
+      "reader:fyrr:test:cli/worker_memory_ceiling_is_configurable_and_validated": 0.017
+    },
+    "seconds": 0.655
   },
   "privacy-reader": {
+    "title": "privacy sentinel (reader-only build)",
+    "kind": "rust",
     "cases": [
       "reader:fyrr:test:privacy/dense_reader_and_namespace_paths_keep_identity_and_query_values_private",
       "reader:fyrr:test:privacy/directory_snapshot_errors_never_echo_private_input",
@@ -1231,32 +1545,58 @@
       "reader:fyrr:test:privacy/routing_configuration_keeps_private_values_out_of_errors",
       "reader:fyrr:test:privacy/secrets_from_the_environment_are_never_printed",
       "reader:fyrr:test:privacy/values_in_the_config_file_never_leave_through_errors"
-    ]
+    ],
+    "case_seconds": {
+      "reader:fyrr:test:privacy/dense_reader_and_namespace_paths_keep_identity_and_query_values_private": 0.504,
+      "reader:fyrr:test:privacy/directory_snapshot_errors_never_echo_private_input": 0.006,
+      "reader:fyrr:test:privacy/http_reader_configuration_and_startup_keep_identity_and_credentials_private": 0.058,
+      "reader:fyrr:test:privacy/live_embedding_configuration_and_startup_keep_values_private": 0.042,
+      "reader:fyrr:test:privacy/mcp_validation_errors_keep_filter_cursor_and_window_values_private": 0.0,
+      "reader:fyrr:test:privacy/query_like_input_is_never_echoed": 0.08,
+      "reader:fyrr:test:privacy/reranker_configuration_and_startup_keep_values_private": 0.031,
+      "reader:fyrr:test:privacy/response_truncation_counts_cannot_carry_private_values": 0.0,
+      "reader:fyrr:test:privacy/routing_configuration_keeps_private_values_out_of_errors": 0.044,
+      "reader:fyrr:test:privacy/secrets_from_the_environment_are_never_printed": 1.032,
+      "reader:fyrr:test:privacy/values_in_the_config_file_never_leave_through_errors": 0.118
+    },
+    "seconds": 1.915
   },
   "eval": {
+    "title": "fyrr-eval (internal tool)",
+    "kind": "rust",
     "cases": [
       "full:fyrr-eval:test:cli/stage_files_are_new_files_under_an_external_root",
       "full:fyrr-eval:test:cli/errors_keep_query_values_and_paths_private",
       "full:fyrr-eval:test:cli/frozen_provider_binds_files_roles_and_keeps_inputs_read_only"
-    ]
+    ],
+    "case_seconds": {
+      "full:fyrr-eval:test:cli/stage_files_are_new_files_under_an_external_root": 0.043,
+      "full:fyrr-eval:test:cli/errors_keep_query_values_and_paths_private": 0.104,
+      "full:fyrr-eval:test:cli/frozen_provider_binds_files_roles_and_keeps_inputs_read_only": 0.305
+    },
+    "seconds": 0.452
   },
   "local-writer-provider": {
+    "title": "local: writer-provider",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 13.943,
+    "seconds": 10.096,
     "cases": [
       "full:fyrr:test:writer_provider/prepared_errors_preserve_batch_invalid_and_provider_failure_on_storage",
       "full:fyrr:test:writer_provider/committer_busy_remains_closed_on_storage",
       "full:fyrr-writer:lib:fyrr_writer/sync_lease::tests::scoped_cursor_lease_preserves_error_priority_on_storage"
     ],
     "case_seconds": {
-      "full:fyrr:test:writer_provider/prepared_errors_preserve_batch_invalid_and_provider_failure_on_storage": 7.957,
-      "full:fyrr:test:writer_provider/committer_busy_remains_closed_on_storage": 3.144,
-      "full:fyrr-writer:lib:fyrr_writer/sync_lease::tests::scoped_cursor_lease_preserves_error_priority_on_storage": 2.842
+      "full:fyrr:test:writer_provider/prepared_errors_preserve_batch_invalid_and_provider_failure_on_storage": 7.159,
+      "full:fyrr:test:writer_provider/committer_busy_remains_closed_on_storage": 1.418,
+      "full:fyrr-writer:lib:fyrr_writer/sync_lease::tests::scoped_cursor_lease_preserves_error_priority_on_storage": 1.519
     }
   },
   "local-admission-cancellation": {
+    "title": "local: admission-cancellation",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 14.646,
+    "seconds": 17.766,
     "cases": [
       "full:fyrr:test:dense_path/embedding::tools_cancelled_admission_rebuild_refuses_stale_mask_on_storage",
       "full:fyrr:test:dense_path/embedding::tools_timed_out_admission_rebuild_refuses_stale_mask_on_storage"
@@ -1270,13 +1610,15 @@
       ]
     },
     "case_seconds": {
-      "full:fyrr:test:dense_path/embedding::tools_timed_out_admission_rebuild_refuses_stale_mask_on_storage": 8.157,
-      "full:fyrr:test:dense_path/embedding::tools_cancelled_admission_rebuild_refuses_stale_mask_on_storage": 6.489
+      "full:fyrr:test:dense_path/embedding::tools_cancelled_admission_rebuild_refuses_stale_mask_on_storage": 7.837,
+      "full:fyrr:test:dense_path/embedding::tools_timed_out_admission_rebuild_refuses_stale_mask_on_storage": 9.929
     }
   },
   "local-scheduler-failure": {
+    "title": "local: scheduler-failure",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 32.486,
+    "seconds": 29.653,
     "cases": [
       "full:fyrr:test:dense_path/http_mcp::tools_failed_scheduler_refuses_readiness_on_storage"
     ],
@@ -1286,32 +1628,38 @@
       ]
     },
     "case_seconds": {
-      "full:fyrr:test:dense_path/http_mcp::tools_failed_scheduler_refuses_readiness_on_storage": 32.486
+      "full:fyrr:test:dense_path/http_mcp::tools_failed_scheduler_refuses_readiness_on_storage": 29.653
     }
   },
   "s3-head-diagnostics": {
+    "title": "real S3: head-diagnostics",
+    "kind": "rust",
     "backend": "s3",
-    "seconds": 7.809,
+    "seconds": 8.241,
     "cases": [
       "full:fyrr:test:dense_path/head_diagnostics::conditional_head_failure_classifies_untrusted_storage_error_on_real_s3"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/head_diagnostics::conditional_head_failure_classifies_untrusted_storage_error_on_real_s3": 7.809
+      "full:fyrr:test:dense_path/head_diagnostics::conditional_head_failure_classifies_untrusted_storage_error_on_real_s3": 8.241
     }
   },
   "local-index-errors": {
+    "title": "local: index-errors",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 12.764,
+    "seconds": 7.977,
     "cases": [
       "full:fyrr:test:dense_path/index_errors::writer_verify_preserves_incompatible_index_on_storage"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/index_errors::writer_verify_preserves_incompatible_index_on_storage": 12.764
+      "full:fyrr:test:dense_path/index_errors::writer_verify_preserves_incompatible_index_on_storage": 7.977
     }
   },
   "local-admission-refresh": {
+    "title": "local: admission-refresh",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 8.489,
+    "seconds": 7.792,
     "cases": [
       "full:fyrr:test:dense_path/embedding::tools_directory_recovery_refuses_admission_after_failed_refresh_on_storage"
     ],
@@ -1321,12 +1669,14 @@
       ]
     },
     "case_seconds": {
-      "full:fyrr:test:dense_path/embedding::tools_directory_recovery_refuses_admission_after_failed_refresh_on_storage": 8.489
+      "full:fyrr:test:dense_path/embedding::tools_directory_recovery_refuses_admission_after_failed_refresh_on_storage": 7.792
     }
   },
   "local-stdio-failure": {
+    "title": "local: stdio-failure",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 7.886,
+    "seconds": 8.965,
     "cases": [
       "full:fyrr:test:dense_path/embedding::tools_failed_scheduler_terminates_stdio_on_storage"
     ],
@@ -1336,22 +1686,26 @@
       ]
     },
     "case_seconds": {
-      "full:fyrr:test:dense_path/embedding::tools_failed_scheduler_terminates_stdio_on_storage": 7.886
+      "full:fyrr:test:dense_path/embedding::tools_failed_scheduler_terminates_stdio_on_storage": 8.965
     }
   },
   "local-history-integrity": {
+    "title": "local: history-integrity",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 14.49,
+    "seconds": 9.249,
     "cases": [
       "full:fyrr:test:dense_path/history_integrity::history_cycles_are_refused_on_storage"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/history_integrity::history_cycles_are_refused_on_storage": 14.49
+      "full:fyrr:test:dense_path/history_integrity::history_cycles_are_refused_on_storage": 9.249
     }
   },
   "local-rerank-admission": {
+    "title": "local: rerank-admission",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 7.243,
+    "seconds": 9.251,
     "cases": [
       "full:fyrr:test:dense_path/rerank::tools_rerank_refresh_preserves_rebuilt_admission_on_storage"
     ],
@@ -1361,12 +1715,14 @@
       ]
     },
     "case_seconds": {
-      "full:fyrr:test:dense_path/rerank::tools_rerank_refresh_preserves_rebuilt_admission_on_storage": 7.243
+      "full:fyrr:test:dense_path/rerank::tools_rerank_refresh_preserves_rebuilt_admission_on_storage": 9.251
     }
   },
   "local-request-filters": {
+    "title": "local: request-filters",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 7.204,
+    "seconds": 8.522,
     "cases": [
       "full:fyrr:test:dense_path/embedding::tools_request_filters_preserve_base_admission_on_storage"
     ],
@@ -1376,12 +1732,14 @@
       ]
     },
     "case_seconds": {
-      "full:fyrr:test:dense_path/embedding::tools_request_filters_preserve_base_admission_on_storage": 7.204
+      "full:fyrr:test:dense_path/embedding::tools_request_filters_preserve_base_admission_on_storage": 8.522
     }
   },
   "local-restore-history": {
+    "title": "local: restore-history",
+    "kind": "rust",
     "backend": "local",
-    "seconds": 36.663,
+    "seconds": 33.902,
     "cases": [
       "full:fyrr:test:dense_path/history_integrity::restore_history_checks_order_before_recovery_on_storage",
       "full:fyrr:test:dense_path/history_integrity::cached_restore_history_checks_sequence_joins_on_storage"
@@ -1392,18 +1750,20 @@
       ]
     },
     "case_seconds": {
-      "full:fyrr:test:dense_path/history_integrity::restore_history_checks_order_before_recovery_on_storage": 31.066,
-      "full:fyrr:test:dense_path/history_integrity::cached_restore_history_checks_sequence_joins_on_storage": 5.597
+      "full:fyrr:test:dense_path/history_integrity::restore_history_checks_order_before_recovery_on_storage": 27.983,
+      "full:fyrr:test:dense_path/history_integrity::cached_restore_history_checks_sequence_joins_on_storage": 5.919
     }
   },
   "s3-object-store": {
+    "title": "real S3: object-store",
+    "kind": "rust",
     "backend": "s3",
-    "seconds": 9.288,
+    "seconds": 4.202,
     "cases": [
       "full:fyrr:test:dense_path/coordination::s3_conditional_writes_and_paginated_listing_are_visible"
     ],
     "case_seconds": {
-      "full:fyrr:test:dense_path/coordination::s3_conditional_writes_and_paginated_listing_are_visible": 9.288
+      "full:fyrr:test:dense_path/coordination::s3_conditional_writes_and_paginated_listing_are_visible": 4.202
     }
   }
 }

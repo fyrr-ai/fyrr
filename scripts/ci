@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The same complete test suite locally and on GitHub. Compile each variant
-# once, execute exact owned cases, and run bounded storage scenarios on isolated
+# once, execute exact owned cases, and run bounded Rust cases on isolated
 # fixtures. Keep going after failures; unselected/release-only checks are n/e.
 # Logs and per-step counts live under target/ci-logs/<stamp>/summary.txt.
 #
@@ -8,15 +8,9 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT"
 
-row_name() {
-  case "$1" in
-    local-storage) printf '%s\n' "local storage" ;;
-    local-*) printf 'local: %s\n' "${1#local-}" ;;
-    s3-*) printf 'real S3: %s\n' "${1#s3-}" ;;
-    external-*) printf 'external: %s\n' "${1#external-}" ;;
-    *) printf '%s\n' "$1" ;;
-  esac
-}
+declare -A ROW_TITLES=()
+while IFS=$'\t' read -r row title; do ROW_TITLES["$row"]="$title"; done < <("$ROOT/scripts/ci-cases" titles)
+row_name() { printf '%s\n' "${ROW_TITLES[$1]:-$1}"; }
 
 ONLY_STEPS=0
 JOBS="${FYRR_CI_JOBS:-$(python3 - <<'JOBS'
@@ -36,21 +30,21 @@ if limit.exists() and limit.read_text().strip().isdigit():
 print(max(1, min(len(os.sched_getaffinity(0)), (capacity - 4 * 1024**2) // (2 * 1024**2))))
 JOBS
 )}"
-SCENARIO_ROW=
-SCENARIO_CASE=
-SCENARIO_PID=0
-declare -a SCENARIO_ROWS=()
+CASE_ROW=
+CASE_ID=
+POOL_PID=0
+declare -a POOL_ROWS=()
 declare -A REQUESTED_STEPS=() SEEN_STEPS=()
 for arg in "$@"; do
   case "$arg" in
     --jobs=*) JOBS="${arg#--jobs=}" ;;
     --row=*)
-      SCENARIO_ROW="${arg#--row=}"
+      CASE_ROW="${arg#--row=}"
       ONLY_STEPS=1
-      REQUESTED_STEPS["$(row_name "$SCENARIO_ROW")"]=1
+      REQUESTED_STEPS["$(row_name "$CASE_ROW")"]=1
       JOBS=1
       ;;
-    --case=*) SCENARIO_CASE="${arg#--case=}" ;;
+    --case=*) CASE_ID="${arg#--case=}" ;;
     --step=*)
       name="${arg#--step=}"
       [[ -n "$name" ]] || die "--step requires an exact step name"
@@ -60,13 +54,13 @@ for arg in "$@"; do
     *) die "unknown argument $arg (use --jobs=N or --step=NAME)" ;;
   esac
 done
-[[ -z "$SCENARIO_CASE" || -n "$SCENARIO_ROW" ]] || die "--case requires --row"
+[[ -z "$CASE_ID" || -n "$CASE_ROW" ]] || die "--case requires --row"
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer"
 if ((JOBS > 1)) && [[ -n "${FYRR_S3_FIXTURE_DATA:-}" ]]; then
   die "parallel CI rows require private fixture data; unset FYRR_S3_FIXTURE_DATA or use --jobs=1"
 fi
 # Harness cases that inspect process-wide descriptors need serial execution.
-# Independent scenario rows run concurrently on private storage below.
+# Independent Rust cases run concurrently on private storage below.
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-1}"
 # The drift test rewrites goldens when this is set; CI must only compare.
 unset FYRR_UPDATE_GOLDEN
@@ -135,8 +129,6 @@ ensure_build() {
     export FYRR_CI_PREBUILT=1
   fi
 }
-run_cases() { ensure_build && "$ROOT/scripts/ci-cases" run "$1"; }
-case_step() { step "$1" cargo run_cases "$2"; }
 ownership_check() { ensure_build && "$ROOT/scripts/ci-cases" check; }
 reference_docs() {
   ensure_build && "$ROOT/scripts/check-docs" \
@@ -150,9 +142,9 @@ reader_link_check() { ensure_build && "$ROOT/scripts/check-reader-only"; }
 FIXTURE_STARTED=0
 KEYCLOAK_STARTED=0
 cleanup_fixture() {
-  if ((SCENARIO_PID)); then
-    kill -TERM "$SCENARIO_PID" 2>/dev/null || true
-    wait "$SCENARIO_PID" 2>/dev/null || true
+  if ((POOL_PID)); then
+    kill -TERM "$POOL_PID" 2>/dev/null || true
+    wait "$POOL_PID" 2>/dev/null || true
   fi
   if ((KEYCLOAK_STARTED)); then
     "$ROOT/scripts/keycloak-fixture" stop || true
@@ -170,7 +162,8 @@ trap 'exit 143' TERM
 scenario_setup() {
   local row="$1" settings backend exports
   settings="$("$ROOT/scripts/ci-cases" settings "$row")" || return 1
-  backend="$(jq -r .backend <<<"$settings")" || return 1
+  backend="$(jq -r ' .backend // empty' <<<"$settings")" || return 1
+  [[ -n "$backend" ]] || return 0
   export FYRR_TEST_BACKEND="$backend"
   if [[ "$backend" == s3 ]]; then
     if ! "$ROOT/scripts/s3-fixture" status | grep -q ' running '; then
@@ -197,25 +190,29 @@ scenario_setup() {
   fi
 }
 
-run_scenario() {
+run_row() {
   scenario_setup "$1" || return 1
   local -a selection=()
-  [[ -z "$SCENARIO_CASE" ]] || selection+=("$SCENARIO_CASE")
+  [[ -z "$CASE_ID" ]] || selection+=("$CASE_ID")
   "$ROOT/scripts/ci-cases" run "$1" "${selection[@]}"
 }
 
-scenarios_start() {
+cases_start() {
   local -x FYRR_SCIM_HEALTH_TEST_BINARY FYRR_ROUTING_TEST_BINARY
   local -a selected_rows=()
   local row name line
-  while IFS= read -r row; do
-    name="$(row_name "$row")"
-    if ((!ONLY_STEPS)) || [[ ${REQUESTED_STEPS["$name"]+selected} ]]; then
-      selected_rows+=("$row")
-    else
-      not_evaluated "$name" "not selected by --step"
-    fi
-  done < <("$ROOT/scripts/ci-cases" rows scenarios)
+  if [[ -n "$CASE_ROW" ]]; then
+    selected_rows=("$CASE_ROW")
+  else
+    while IFS= read -r row; do
+      name="$(row_name "$row")"
+      if ((!ONLY_STEPS)) || [[ ${REQUESTED_STEPS["$name"]+selected} ]]; then
+        selected_rows+=("$row")
+      else
+        not_evaluated "$name" "not selected by --step"
+      fi
+    done < <("$ROOT/scripts/ci-cases" rows pool)
+  fi
   ((${#selected_rows[@]})) || return 0
   if ! ensure_build; then
     for row in "${selected_rows[@]}"; do
@@ -223,31 +220,31 @@ scenarios_start() {
     done
     return
   fi
-  FYRR_SCIM_HEALTH_TEST_BINARY="$("$ROOT/scripts/ci-cases" binary full:fyrr-writer:lib:fyrr_writer)" || return 1
-  FYRR_ROUTING_TEST_BINARY="$("$ROOT/scripts/ci-cases" binary full:fyrr-reader:lib:fyrr_reader)" || return 1
-  if [[ -n "$SCENARIO_ROW" ]]; then
-    step "$(row_name "$SCENARIO_ROW")" cargo run_scenario "$SCENARIO_ROW"
+  FYRR_SCIM_HEALTH_TEST_BINARY="${FYRR_SCIM_HEALTH_TEST_BINARY:-$("$ROOT/scripts/ci-cases" binary full:fyrr-writer:lib:fyrr_writer)}" || return 1
+  FYRR_ROUTING_TEST_BINARY="${FYRR_ROUTING_TEST_BINARY:-$("$ROOT/scripts/ci-cases" binary full:fyrr-reader:lib:fyrr_reader)}" || return 1
+  if [[ -n "$CASE_ROW" ]]; then
+    step "$(row_name "$CASE_ROW")" cargo run_row "$CASE_ROW"
     return
   fi
-  SCENARIO_ROWS=("${selected_rows[@]}")
-  log "scheduling independent storage cases with up to $JOBS workers"
-  "$ROOT/scripts/ci-cases" pool "$LOGS" "$JOBS" "${selected_rows[@]}" >"$LOGS/scenario-pool.log" 2>&1 &
-  SCENARIO_PID=$!
+  POOL_ROWS=("${selected_rows[@]}")
+  log "scheduling independent Rust cases with up to $JOBS workers"
+  "$ROOT/scripts/ci-cases" pool "$LOGS" "$JOBS" "${selected_rows[@]}" >"$LOGS/case-pool.log" 2>&1 &
+  POOL_PID=$!
 }
 
-scenarios_finish() {
-  ((SCENARIO_PID)) || return 0
-  wait "$SCENARIO_PID" || log "some scenario workers failed; see their case logs"
-  SCENARIO_PID=0
+cases_finish() {
+  ((POOL_PID)) || return 0
+  wait "$POOL_PID" || log "some Rust case workers failed; see their case logs"
+  POOL_PID=0
   local row name line
-  for row in "${SCENARIO_ROWS[@]}"; do
+  for row in "${POOL_ROWS[@]}"; do
     name="$(row_name "$row")"
     STEP=$((STEP + 1))
     SEEN_STEPS["$name"]=1
     line="$(awk -v name="$name" 'index($0, name) == 1 && $0 ~ / (pass|FAIL) / {print}' "$LOGS/$row/summary.txt" 2>/dev/null)" || line=
     if [[ -z "$line" ]]; then
       FAILED=$((FAILED + 1))
-      ROWS+=("$(printf '%-38s %-5s %7s %7s %8s %6ss  %s' "$name" FAIL 0 0 0 0 "missing worker summary: ${LOGS#"$ROOT"/}/$row/runner.log")")
+      ROWS+=("$(printf '%-38s %-5s %7s %7s %8s %6ss  %s' "$name" FAIL 0 0 0 0 "missing worker summary: ${LOGS#"$ROOT"/}/$row")")
     else
       ROWS+=("$line")
       [[ "$line" != *" FAIL "* ]] || FAILED=$((FAILED + 1))
@@ -313,28 +310,42 @@ not_evaluated() {
   log "step $STEP: $1 not evaluated ($2)"
 }
 
+finish_summary() {
+  for name in "${!REQUESTED_STEPS[@]}"; do
+    if [[ ! ${SEEN_STEPS["$name"]+known} ]]; then
+      log "unknown CI step: $name"
+      FAILED=$((FAILED + 1))
+    fi
+  done
+
+  {
+    echo "fyrr ci $STAMP  commit ${FYRR_CI_REVISION:-$(git rev-parse --short HEAD 2>/dev/null || echo unavailable)}  $(rustc --version)"
+    printf '%-38s %-5s %7s %7s %8s %7s  %s\n' step status passed failed ignored time log
+    printf '%s\n' "${ROWS[@]}"
+    echo "steps: $STEP, failed: $FAILED"
+  } | tee "$LOGS/summary.txt"
+
+  if ((FAILED > 0)); then
+    log "ci FAILED ($FAILED step(s)); full logs in ${LOGS#"$ROOT"/}"
+    exit 1
+  fi
+  log "ci passed; full logs in ${LOGS#"$ROOT"/}"
+}
+
 log "fyrr ci: logs in ${LOGS#"$ROOT"/}"
-step "doctor" none "$ROOT/scripts/doctor"
-if [[ -z "$SCENARIO_ROW" ]]; then
-  if ((!ONLY_STEPS)); then step "build test executables" none ensure_build; fi
-  scenarios_start
+if [[ -n "$CASE_ROW" ]]; then
+  cases_start
+  finish_summary
+  exit
 fi
+step "doctor" none "$ROOT/scripts/doctor"
+if ((!ONLY_STEPS)); then step "build test executables" none ensure_build; fi
+cases_start
 step "rustfmt" none cargo fmt --all --check
 step "clippy (full workspace)" none cargo clippy --locked --workspace --all-targets -- -D warnings
 step "clippy (reader-only build)" none cargo clippy --locked --workspace --no-default-features --all-targets -- -D warnings
 step "test-case ownership guard" none ownership_check
-case_step "unit tests" units
-case_step "native Lance pin checks" lance-pin
-case_step "contract fixtures" contracts
-case_step "configuration" config
-case_step "schema drift" generated
-case_step "tools/list golden" mcp
-case_step "cli (full build)" cli-full
-case_step "cli (reader-only build)" cli-reader
-case_step "privacy sentinel (full build)" privacy-full
-case_step "privacy sentinel (reader-only build)" privacy-reader
 step "reference docs" none reference_docs
-case_step "fyrr-eval (internal tool)" eval
 step "reader-only link check" none reader_link_check
 step "licenses and advisories" none cargo deny --locked check
 step "python connector SDK" pytest python_checks
@@ -342,25 +353,6 @@ step "example provider (test kit)" pytest example_provider
 step "example wheels without rebuild" none example_wheels
 not_evaluated "images (build, derived, compose)" "image checks run in scripts/release"
 step "quickstart example (local storage)" none quickstart
-if [[ -n "$SCENARIO_ROW" ]]; then scenarios_start; fi
-scenarios_finish
+cases_finish
 
-for name in "${!REQUESTED_STEPS[@]}"; do
-  if [[ ! ${SEEN_STEPS["$name"]+known} ]]; then
-    log "unknown CI step: $name"
-    FAILED=$((FAILED + 1))
-  fi
-done
-
-{
-  echo "fyrr ci $STAMP  commit ${FYRR_CI_REVISION:-$(git rev-parse --short HEAD 2>/dev/null || echo unavailable)}  $(rustc --version)"
-  printf '%-38s %-5s %7s %7s %8s %7s  %s\n' step status passed failed ignored time log
-  printf '%s\n' "${ROWS[@]}"
-  echo "steps: $STEP, failed: $FAILED"
-} | tee "$LOGS/summary.txt"
-
-if ((FAILED > 0)); then
-  log "ci FAILED ($FAILED step(s)); full logs in ${LOGS#"$ROOT"/}"
-  exit 1
-fi
-log "ci passed; full logs in ${LOGS#"$ROOT"/}"
+finish_summary
