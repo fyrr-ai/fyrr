@@ -153,3 +153,18 @@ def test_oversized_aggregate_stops_accumulating_and_continues(github, index):
     assert changes["github:repo:1:issue:102:2"]["sections"][0]["text"] == "Good."
     reads = [params for _, path, params in github.requests if path.endswith("/issues/1/comments")]
     assert reads and all(int(params["page"]) == 1 for params in reads)
+
+
+def test_changed_files_request_count(github, index):
+    github.branch(1, {f"file-{number}.md": "Prose." for number in range(8)})
+    index.sync()
+    blobs = sum("/git/blobs/" in path for _, path, _ in github.requests)
+    commits = sum(path.endswith("/commits") for _, path, _ in github.requests)
+    verification = sum(path == "/repositories/1" for _, path, _ in github.requests)
+    print(
+        f"synthetic requests: blob={blobs} history={commits} "
+        f"repository={verification} total={len(github.requests)}"
+    )
+    assert blobs == commits == 8
+    assert verification == 4
+    assert len(github.requests) == 28

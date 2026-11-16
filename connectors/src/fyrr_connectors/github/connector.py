@@ -338,6 +338,7 @@ class GitHub(Connector[Settings, Scope]):
                 repository_revision = hashlib.sha256(
                     json.dumps([render.FORMAT, repo.name, repo.visibility, repo.archived]).encode()
                 ).hexdigest()[:32]
+                acquired = []
                 for file in files:
                     stamp = f"{file.blob}:{repository_revision}:{file.commit}"
                     known = self._lookup(file.root)
@@ -369,8 +370,16 @@ class GitHub(Connector[Settings, Scope]):
                             )
                     except render.InvalidDocument:
                         change = self._bad(file.root, repo, "github-file", file.blob)
+                    acquired.append(change)
+                    if len(acquired) == 8:
+                        repo.verify(self.client)
+                        for prepared in acquired:
+                            yield from hand(prepared)
+                        acquired.clear()
+                if acquired:
                     repo.verify(self.client)
-                    yield from hand(change)
+                    for prepared in acquired:
+                        yield from hand(prepared)
                 if (
                     self.tree.head(repo, item) != commit
                     or Repository.read(self.client, repo.id) != repo
