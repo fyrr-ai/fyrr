@@ -426,3 +426,25 @@ fn lease_inventory_buffering_bounds_underlying_reads() {
     assert!(before >= bytes.len());
     assert!(reads.get() <= bytes.len().div_ceil(8192) + 1);
 }
+
+#[tokio::test]
+async fn oversized_objects_use_direct_ranges_after_first_read() {
+    let directory = std::env::temp_dir().join(format!(
+        "fyrr-mirror-oversized-{}-{}",
+        std::process::id(),
+        fyrr_core::clock::now().timestamp_micros()
+    ));
+    let mirror = MirrorStore::new(directory.clone(), 2).unwrap();
+    let source = Arc::new(object_store::memory::InMemory::new());
+    let path = Path::from("namespace/dataset.lance/data/large.lance");
+    source.put(&path, "0123456789".into()).await.unwrap();
+    let store = mirror.wrap("namespace", source);
+    assert_eq!(store.get_range(&path, 2..4).await.unwrap(), "23");
+    let before = mirror.totals();
+    assert_eq!(before.requests, 2);
+    assert_eq!(store.get_range(&path, 6..8).await.unwrap(), "67");
+    let after = mirror.totals();
+    assert_eq!(after.requests - before.requests, 1);
+    assert_eq!(after.bytes - before.bytes, 2);
+    std::fs::remove_dir_all(directory).unwrap();
+}

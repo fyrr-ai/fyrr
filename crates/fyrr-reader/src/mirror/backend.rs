@@ -44,6 +44,9 @@ impl ObjectStore for MirrorStore {
             return self.pass_through(location, options, &counters).await;
         };
         let file = self.directory.join(name);
+        if crate::sync::lock(&self.oversized).contains(&file) {
+            return self.pass_through(location, options, &counters).await;
+        }
         if let Some((opened, metadata)) = self
             .open_verified_blob(&file)
             .await
@@ -73,6 +76,14 @@ impl ObjectStore for MirrorStore {
         self.record(&counters, Io::Request, 1);
         let metadata = self.target().head(location).await?;
         if metadata.size > self.max_bytes {
+            {
+                let mut oversized = crate::sync::lock(&self.oversized);
+                // Bound derived metadata independently of the file and memory caches.
+                if oversized.len() >= 4096 {
+                    oversized.clear();
+                }
+                oversized.insert(file.clone());
+            }
             return self.pass_through(location, options, &counters).await;
         }
         let _lock = self.lock.lock().await;

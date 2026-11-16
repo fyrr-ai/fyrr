@@ -103,6 +103,10 @@
         "tier": "quick",
         "seconds": 0.01
       },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::oversized_objects_use_direct_ranges_after_first_read": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::prewarm_rejects_manifest_size_mismatch": {
         "tier": "quick",
         "seconds": 0.01
