@@ -217,11 +217,6 @@ impl PreparedReader {
             &mut completion,
             &mut telemetry,
         )?;
-        if vectors.provider_us != 0 {
-            telemetry
-                .stage_us
-                .insert("embedding_provider".into(), vectors.provider_us);
-        }
         self.finish_search_batch(
             args,
             queries,

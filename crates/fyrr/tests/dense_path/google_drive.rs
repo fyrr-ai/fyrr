@@ -163,6 +163,12 @@ pub(super) fn lanes(
                 "shared embedding cache activity must remain private"
             );
         }
+        assert!(
+            body["metadata"]["telemetry"]["stage_us"]
+                .get("embedding_provider")
+                .is_none(),
+            "provider-stage presence must not reveal shared cache activity"
+        );
         let found = body["hits"]
             .as_array()
             .unwrap()

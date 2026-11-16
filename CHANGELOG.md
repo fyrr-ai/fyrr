@@ -10,7 +10,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 ### Changed
 
 - MCP contract 3.0 removes query embedding cache-hit and provider-call
-  counters from responses to prevent disclosure of shared cache activity.
+  counters and provider-stage timing from responses to prevent disclosure of
+  shared cache activity.
 
 ### Added
 
