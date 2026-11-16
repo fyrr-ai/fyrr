@@ -36,10 +36,11 @@ COPY .cargo .cargo
 COPY crates crates
 # Worktrees can supply source mtimes older than the shared Cargo cache.
 # Refresh workspace inputs under the cache lock; versioned dependencies stay cached.
+# BuildKit owns these cache mounts; use the builder's Cargo without the host mbx wrapper.
 RUN --mount=type=cache,id=fyrr-cargo-registry,sharing=locked,target=/usr/local/cargo/registry \
     --mount=type=cache,id=fyrr-cargo-git,sharing=locked,target=/usr/local/cargo/git \
     --mount=type=cache,id=fyrr-cargo-target,sharing=locked,target=/cache/target \
-    bash -c 'source scripts/lib.sh; mkdir -p /out; \
+    bash -c 'source scripts/lib.sh; unset -f cargo; mkdir -p /out; \
     find crates -type f -exec touch {} +; \
     build_release -p fyrr; \
     cp /cache/target/release/fyrr /out/fyrr; \
