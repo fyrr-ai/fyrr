@@ -95,6 +95,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/serve::scheduler::blocking_tests::reads_progress_while_drivers_and_hashes_are_blocked": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::lease_inventory_buffering_bounds_underlying_reads": {
         "tier": "quick",
         "seconds": 0.01

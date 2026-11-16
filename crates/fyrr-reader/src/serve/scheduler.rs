@@ -1,5 +1,11 @@
 use super::*;
 
+fn blocking_thread_limit(worker_count: usize, concurrency: usize) -> usize {
+    worker_count
+        .saturating_add(concurrency.max(2))
+        .saturating_add(3)
+}
+
 pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
     #[cfg(test)]
     let (sample_events, _) = tokio::sync::broadcast::channel(16);
@@ -39,11 +45,10 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
             std::thread::available_parallelism().map_or(2, |cpus| cpus.get().min(8));
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(worker_threads)
-            // Live embedding releases native permits while drivers still occupy
-            // blocking workers. Reserve every possible driver plus two I/O workers
-            // so mirror reads can progress even when all readers are parked.
-            // The request cap and its cancellation-held permits are unchanged.
-            .max_blocking_threads(worker_count.saturating_add(2))
+            // Every driver may park on native I/O. Two checksum verifiers and
+            // one centroid build can also block; reserve those independently
+            // plus at least two I/O workers (one per admitted request at scale).
+            .max_blocking_threads(blocking_thread_limit(worker_count, cap))
             .enable_all()
             .build()
             .unwrap_or_else(|error| panic!("reader runtime: {error:?}"));
@@ -595,5 +600,56 @@ impl Scheduler {
         let _ = self.sample_events.send(event);
         #[cfg(not(test))]
         drop(event);
+    }
+}
+
+#[cfg(test)]
+mod blocking_tests {
+    #[test]
+    fn reads_progress_while_drivers_and_hashes_are_blocked() {
+        fn probe(limit: usize) -> bool {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .max_blocking_threads(limit)
+                .build()
+                .unwrap();
+            let gate =
+                std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+            let (started, ready) = std::sync::mpsc::channel();
+            for _ in 0..6 {
+                let gate = gate.clone();
+                let started = started.clone();
+                runtime.spawn_blocking(move || {
+                    let (lock, condition) = &*gate;
+                    let mut released = lock.lock().unwrap();
+                    started.send(()).unwrap();
+                    while !*released {
+                        released = condition.wait(released).unwrap();
+                    }
+                });
+            }
+            for _ in 0..6 {
+                ready
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+            }
+            let (done, completion) = std::sync::mpsc::channel();
+            runtime.spawn_blocking(move || {
+                let _ = done.send(());
+            });
+            let progressed = completion
+                .recv_timeout(std::time::Duration::from_millis(500))
+                .is_ok();
+            let (lock, condition) = &*gate;
+            *lock.lock().unwrap() = true;
+            condition.notify_all();
+            drop(runtime);
+            progressed
+        }
+        assert!(!probe(4 + 2), "baseline exhausts I/O workers");
+        assert!(
+            probe(super::blocking_thread_limit(4, 2)),
+            "reserved I/O workers progress"
+        );
     }
 }
