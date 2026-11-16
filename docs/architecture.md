@@ -121,8 +121,8 @@ Every `search`, `fetch` and `list_filters` call passes three gates:
    old grant.
 
 Unknown and denied documents look the same to `fetch`: an empty result.
-Revocations at a source reach readers through publication: a sync reads the
-new rights and the next commit publishes them.
+Source revocations require a successful sync that reads the changed rights
+and a commit that publishes them; [in-run changes can be missed](security.md#source-polling).
 
 ## Retrieval
 

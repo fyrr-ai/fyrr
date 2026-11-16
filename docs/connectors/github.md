@@ -88,6 +88,8 @@ repository name, visibility or archived flag changes; file URLs pin the commit.
 
 ## Permissions
 
+Permission snapshots are reused within a run; see [source revocation timing](../security.md#source-polling).
+
 Under `sync`, only **private** repositories are supported. The effective
 collaborators with pull access are flattened to users:
 

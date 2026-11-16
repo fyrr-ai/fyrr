@@ -69,6 +69,8 @@ source that already synced needs `fyrr writer sync --full`.
 
 ## Permissions
 
+Permission snapshots are reused within a run; see [source revocation timing](../security.md#source-polling).
+
 Under `sync`, each in-scope file's complete permission list is read
 (inline when the API proves it complete, else fully paged) and mapped:
 

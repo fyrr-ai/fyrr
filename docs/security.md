@@ -82,10 +82,17 @@ plan for:
   completed read within `identity.validity_deadline`, or the whole namespace
   is refused. With the default `provider = "none"` no directory clock
   applies.
-- A revocation at the source reaches readers after the next permission sync
-  and commit; schedule `intervals.permissions` accordingly.
 - A retired source (`fyrr writer source retire`) is denied on every reader's
   next request, and restore and rollback never bring it back.
+
+### Source polling
+
+Connectors reuse permission and membership snapshots read during a sync run,
+so a rights change at the source during that run may still leave old grants
+in its publication. Revocation takes effect after the next successful sync
+of that source that reads the changed rights and a commit publishes them;
+Keycloak membership changes similarly need a successful directory pull and
+commit. Sync intervals alone provide no end-to-end wall-clock bound.
 
 ## Canonical directory
 

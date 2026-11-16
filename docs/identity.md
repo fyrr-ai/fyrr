@@ -56,6 +56,8 @@ and 1,000,000 combined user/group membership edges. Each user needs two
 membership count checks and a paged membership read, plus directory and
 group scans. The whole pull uses `--timeout` (default `10m`).
 
+Keycloak membership reads can miss changes during a pull; see [source revocation timing](security.md#source-polling).
+
 A pull uses one access token and does not refresh it mid-read. Its remaining
 lifetime must exceed the read duration; increasing `--timeout` does not
 extend that lifetime. With `client_id`, configure the service-account

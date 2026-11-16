@@ -77,6 +77,8 @@ include_shared = false                   # Slack Connect / shared channels; fixe
 
 ## Permissions
 
+Permission snapshots are reused within a run; see [source revocation timing](../security.md#source-polling).
+
 Under `sync`:
 
 | Slack case | Readers on the channel container `slack:<workspace>:channel:<id>` |

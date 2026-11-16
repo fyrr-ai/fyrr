@@ -85,6 +85,8 @@ key changes, project renames and moves keep their identity.
 
 ## Permissions
 
+Permission snapshots are reused within a run; see [source revocation timing](../security.md#source-polling).
+
 Under `sync` the audience of an issue is the intersection of three layers:
 the project's static Browse holders, the issue's security level and each
 comment's visibility restriction. Jira users, groups, project roles,
