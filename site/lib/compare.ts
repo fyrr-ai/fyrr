@@ -111,7 +111,7 @@ export function parseResults(data: unknown): Results {
   }
   for (const [key, meta] of Object.entries(w.metrics)) requireField(object(meta) && meta.key === key && typeof meta.label === 'string' && typeof meta.unit === 'string' && (groups.has(String(meta.group)) || meta.group === 'cost') && ['higher_is_better', 'lower_is_better'].includes(String(meta.direction)) && (meta.ci === null || object(meta.ci)) && (meta.scope === undefined || typeof meta.scope === 'string') && (meta.description === undefined || typeof meta.description === 'string'), 'metric presentation metadata');
   for (const meta of Object.values(w.metrics)) {
-    if (object(meta) && meta.stage_of !== undefined) requireField(meta.stage_of === 'ingest_seconds' && meta.unit === 'seconds' && meta.group === 'ingest', 'ingest stages must be elapsed seconds');
+    if (object(meta) && meta.stage_of !== undefined) requireField(meta.stage_of === 'ingest_wall_s' && meta.unit === 'seconds' && meta.group === 'ingest', 'ingest stages must be elapsed seconds');
     if (object(meta) && meta.stage_order !== undefined) requireField(count(meta.stage_order), 'ingest stage order');
   }
   for (const product of Object.values(w.products)) {
@@ -203,11 +203,11 @@ export function relativeValue(value: number, best: number, direction: string) {
 function sampleSet(metric: Metric | undefined) {
   return metric?.sample_ids?.length ? createHash('sha256').update([...metric.sample_ids].sort().join('\n')).digest('hex') : '';
 }
-function ingestRate(results: Results, metric: Metric | undefined) {
-  const documents = results.benchmark.documents;
-  return finite(documents) && documents > 0 && metric?.status === 'measured' && metric.value != null && metric.value > 0
-    ? `${format(documents * 60 / metric.value, 'docs/min')} docs/min` : 'n/e docs/min';
+function ingestRate(metric: Metric | undefined) {
+  if (metric?.value == null) return metric?.status === 'invalid' ? 'invalid docs/min' : 'n/e docs/min';
+  return `${format(metric.value, 'docs/min')} docs/min${metric.status === 'partial' ? ' *' : ''}`;
 }
+
 function axisScale(value: number, unit: string) {
   if (unit === 'fraction') return { max: 1, step: .25 };
   if (!value) return { max: 0, step: 0 };
@@ -248,7 +248,7 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
   const pct = (value: number) => max ? `${value / max * 100}%` : '0%';
   const caption = results.draft ? 'Preliminary / placeholder data. No published scores or rankings.' : 'Whiskers show 95% confidence intervals where available. Partial results cannot establish a product win.';
   const title = options.tailKey ? key.startsWith('first_ask_') ? 'First-ask search latency' : 'Repeated-query search latency' : meta?.label ?? name(key);
-  // stage_of denotes disjoint elapsed-time segments, never cumulative work in parallel.
+  // stage_of denotes disjoint submission-to-searchable elapsed segments, excluding setup and parallel work.
   const stages = options.ingest ? Object.values(results.website.metrics).filter(stage => stage.stage_of === key).sort((a, b) => (a.stage_order ?? 0) - (b.stage_order ?? 0)) : [];
   function stageBreakdown(system: Results['systems'][number]) {
     const total = system.metrics[key];
@@ -284,7 +284,7 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
         ${hasValue ? `<i style="--w:${pct(metric.value!)}">${breakdown.segments.map((stage, i) => `<span class="ingest-segment" style="width:${metric.value ? stage.value / metric.value * 100 : 0}%;--stage-shade:${Math.min(i * .18, .72)}" title="${escape(stage.label)}: ${escape(format(stage.value, 'seconds'))} s"></span>`).join('')}</i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}
         ${tail?.value != null ? `<b class="tail-tick" style="left:${pct(tail.value)}"></b>${tail.ci95 ? `<b class="whisker whisker--tail" style="--low:${pct(tail.ci95[0])};--high:${pct(tail.ci95[1])}"></b>` : ''}` : ''}
       </div>
-      <span class="chart-value"><span class="primary-value">${options.tailKey ? `<span class="sr-only">p50 </span>` : ''}${value}${key === 'ingest_seconds' && hasValue ? ' s' : ''}</span>${options.tailKey ? `<small class="tail-value">p95 ${tailValue}</small>` : ''}${key === 'ingest_seconds' ? `<small class="ingest-rate">${escape(ingestRate(results, metric))}</small>` : ''}<small class="relative">${relative}</small></span>
+      <span class="chart-value"><span class="primary-value">${options.tailKey ? `<span class="sr-only">p50 </span>` : ''}${value}${key === 'ingest_wall_s' && hasValue ? ' s' : ''}</span>${options.tailKey ? `<small class="tail-value">p95 ${tailValue}</small>` : ''}${key === 'ingest_wall_s' ? `<small class="ingest-rate">${escape(ingestRate(system.metrics.ingest_docs_per_min))}</small>` : ''}<small class="relative">${relative}</small></span>
       ${options.ingest ? `<small class="ingest-cost" data-secondary-metric="embedding_cost_usd">Embedding cost: ${cost?.value != null ? `${escape(format(cost.value, cost.unit))}${cost.status === 'partial' ? ' *' : ''}` : cost?.status === 'invalid' ? 'invalid' : 'n/e'}</small>` : ''}
     </div>`;
   }).join('');
@@ -336,7 +336,7 @@ export function renderScoreboard(results: Results) {
       const metric = system.metrics[key], max = scales.get(key) ?? 0;
       const unit = metric?.unit ?? results.website.metrics[key]?.unit ?? '';
       const pct = (value: number) => `${max ? value / max * 100 : 0}%`;
-      return `<div class="score-cell" data-score-metric="${escape(key)}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-expected="${metric?.expected ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-missing="${metric?.missing ?? ''}" data-samples="${sampleSet(metric)}"><span class="score-label">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span><span class="score-value">${metric?.value != null ? format(metric.value, unit) + (unit === 'ms' ? ' ms' : unit === 'seconds' ? ' s' : '') + (metric.status === 'partial' ? ' *' : '') : metric?.status === 'invalid' ? 'invalid' : 'n/e'}</span>${key === 'ingest_seconds' ? `<small class="score-rate">${escape(ingestRate(results, metric))}</small>` : ''}<div class="bar${system.id === 'fyrr' ? ' bar--fyrr' : ''}${metric?.value != null ? '' : ' is-empty'}" aria-hidden="true">${metric?.value != null ? `<i style="--w:${pct(metric.value)}"></i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}</div><small class="relative"></small></div>`;
+      return `<div class="score-cell" data-score-metric="${escape(key)}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-expected="${metric?.expected ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-missing="${metric?.missing ?? ''}" data-samples="${sampleSet(metric)}"><span class="score-label">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span><span class="score-value">${metric?.value != null ? format(metric.value, unit) + (unit === 'ms' ? ' ms' : unit === 'seconds' ? ' s' : '') + (metric.status === 'partial' ? ' *' : '') : metric?.status === 'invalid' ? 'invalid' : 'n/e'}</span>${key === 'ingest_wall_s' ? `<small class="score-rate">${escape(ingestRate(system.metrics.ingest_docs_per_min))}</small>` : ''}<div class="bar${system.id === 'fyrr' ? ' bar--fyrr' : ''}${metric?.value != null ? '' : ' is-empty'}" aria-hidden="true">${metric?.value != null ? `<i style="--w:${pct(metric.value)}"></i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}</div><small class="relative"></small></div>`;
     }).join('')}</div>`).join('')}
     <p class="score-note">n/e = not evaluated. Each column shares a zero-based scale; quality spans 0–100%. <a href="#details">Intervals, samples &amp; assumptions ↘</a></p></div><p class="overview-empty note" hidden>The overview compares default variants. Select a default system to see it.</p>`;
 }

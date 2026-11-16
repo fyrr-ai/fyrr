@@ -57,7 +57,7 @@ try {
     if (results.draft && !results.synthetic_design_preview) assert.equal(await page.locator('.bar i, .whisker').count(), 0, 'Placeholder must never draw fabricated bars');
     assert.equal(await page.locator('.synthetic-watermark').count(), results.synthetic_design_preview ? 1 : 0);
     assert.equal(await page.locator('.score-row:visible').first().locator('.score-cell:visible').count(), results.website.overview_metrics.length, 'Every overview column is selected initially');
-    assert.equal(await page.locator('.score-row:visible .score-cell[data-score-metric="ingest_seconds"] .score-rate').count(), results.systems.filter(system => !system.variant || system.variant === 'default').length, 'Every default row exposes ingest throughput');
+    assert.equal(await page.locator('.score-row:visible .score-cell[data-score-metric="ingest_wall_s"] .score-rate').count(), results.systems.filter(system => !system.variant || system.variant === 'default').length, 'Every default row exposes ingest throughput');
     assert.equal(await page.locator('#story-ingest .metric-panel').count(), 1, 'Ingest story has one wall-time chart');
     assert.equal(await page.locator('#story-ingest .ingest-cost').count(), results.systems.filter(system => !system.variant || system.variant === 'default').length, 'Embedding cost is a secondary line for each default product');
     const suffix = `${width}${motion === 'reduce' ? '-reduced' : ''}`;
