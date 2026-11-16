@@ -64,7 +64,9 @@ annotations; PyArrow's untyped API remains covered by Arrow contract tests.
 ## Verifying
 
 ```sh
-scripts/ci              # every check
+scripts/ci --quick      # before a PR: core gates and local security scenarios
+scripts/ci              # full suite: storage, connectors or maintenance changes
+scripts/ci --images     # release tier: full suite plus image checks
 scripts/ci --jobs=2     # bound concurrent Rust cases (default: CPU/memory based)
 scripts/ci --step=configuration "--step=schema drift" # exact names; others n/e
 ```
@@ -132,8 +134,28 @@ Normal/build dependency graphs exclude both `test-clock` and `test-store`,
 and those features refuse builds without debug assertions. The release
 script also rejects a binary containing the test-clock environment hook.
 
-The same complete suite runs locally, on PRs, main, nightly and manual
-workflow runs. There is no separate fast gate. GitHub uses the pinned
+The same entry point selects its cases from `scripts/ci-cases.json` locally
+and on GitHub. Every case has one owner and a `tier`: `quick` cases run in
+both tiers; `full` cases run only in the full tier. Their measured `seconds`
+control longest-first scheduling. Named children explicitly inherit the earliest
+tier of their executing parents. The ownership gate always checks all 911 cases,
+including those excluded from a quick run. The approved split is 814 quick
+cases and 97 additional full cases.
+
+Run `scripts/ci --quick` before a PR. It runs all core gates, CLI and privacy
+cases, the Python SDK and example, local quickstart, and the local scenarios
+for permission filtering, revocation, fail-closed authorization and CAS/leases.
+The full `scripts/ci` is required when changing storage, connectors or
+maintenance; it adds the remaining local scenarios, providers, real S3,
+Keycloak and long maintenance/history campaigns. Cases excluded by the tier
+are `n/e` in `case-plan.json` and row results; wholly excluded rows are `n/e`
+in `summary.txt`. A mixed row counts only its selected cases as passed.
+
+PRs run `--quick`; pushes to main and nightly run the full tier. `v*` tags
+enter through `release.yml`'s existing reusable CI call with `--images`, so a
+tag runs one CI suite. `--images` adds the image checks. Private repositories
+pass `--debug-only`, retaining debug tests and reporting image/LTO checks
+as `n/e`; release artifact builds are public-only. GitHub uses the pinned
 `jdx/mr-boxington-action` with its GitHub cache backend. Default-branch pushes
 save; PRs restore only. Trusted manual runs may also save, allowing cache
 validation on a branch. Target snapshots and the action store are distinct:
@@ -150,10 +172,11 @@ projects, mbx's managed targets can also collect old worktree outputs;
 this repository retains its own target directories. Never share a writable
 `CARGO_TARGET_DIR` between worktrees.
 
-Fat-LTO release links and image tests run in `scripts/release` on tags. CI retains the
+Fat-LTO release links run only in the release tier (`scripts/ci --images`
+and `scripts/release` on tags). Quick and full CI retain the
 normal dependency-graph checks and proves that its debug reader-only
 binary has no Python dependency, with the full debug binary as a positive
-control. CI reports the release-only rows as `n/e`.
+control. Quick and full CI report release-only checks as `n/e`.
 
 Read `summary.txt` the way CI does:
 
@@ -163,7 +186,7 @@ Read `summary.txt` the way CI does:
 - report the per-step passed, failed and ignored counts with your change.
 
 Changes to `docker/`, the SDK's packaging, provider install paths or
-anything that moves image size need `scripts/images` in addition to CI.
+anything that moves image size also need `scripts/ci --images`.
 
 | Script | What it does |
 | --- | --- |

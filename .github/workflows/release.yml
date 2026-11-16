@@ -27,6 +27,7 @@ jobs:
 
   build:
     name: build release artifacts
+    if: ${{ !github.event.repository.private }}
     needs: ci
     runs-on: ubuntu-24.04
     timeout-minutes: 360

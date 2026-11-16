@@ -1,5 +1,5 @@
-# One complete local/hosted entry point. Compiler actions are shared through
-# mr-boxington; bounded scenario concurrency and fixture ownership live in scripts/ci.
+# One local/hosted entry point with declarative case tiers and shared builds.
+# v* tags enter through release.yml's workflow_call, avoiding duplicate CI runs.
 name: ci
 
 on:
@@ -75,9 +75,19 @@ jobs:
       - name: scripts/ci
         env:
           FYRR_CI_REVISION: ${{ github.sha }}
+          CI_EVENT: ${{ github.event_name }}
+          CI_REF: ${{ github.ref }}
+          CI_PRIVATE: ${{ github.event.repository.private }}
         run: |
+          args=()
+          if [[ "$CI_EVENT" == pull_request ]]; then
+            args+=(--quick)
+          elif [[ "$CI_REF" == refs/tags/v* ]]; then
+            args+=(--images)
+          fi
+          if [[ "$CI_PRIVATE" == true ]]; then args+=(--debug-only); fi
           mkdir -p target/ci-measurements
-          /usr/bin/time -v -o target/ci-measurements/ci.time scripts/ci
+          /usr/bin/time -v -o target/ci-measurements/ci.time scripts/ci "${args[@]}"
           du -sh target | tee target/ci-measurements/size.txt
           mbx stats > target/ci-measurements/cache.txt
 

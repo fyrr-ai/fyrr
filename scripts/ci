@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# The same complete test suite locally and on GitHub. Compile each variant
+# One local/hosted entry point for quick, full and image tiers. Compile each variant
 # once, execute exact owned cases, and run bounded Rust cases on isolated
 # fixtures. Keep going after failures; unselected/release-only checks are n/e.
 # Logs and per-step counts live under target/ci-logs/<stamp>/summary.txt.
 #
-# scripts/ci [--jobs=N] [--step=NAME ...]
+# scripts/ci [--quick|--images] [--debug-only] [--jobs=N] [--step=NAME ...]
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT"
 
@@ -13,6 +13,9 @@ while IFS=$'\t' read -r row title; do ROW_TITLES["$row"]="$title"; done < <("$RO
 row_name() { printf '%s\n' "${ROW_TITLES[$1]:-$1}"; }
 
 ONLY_STEPS=0
+TIER="${FYRR_CI_TIER:-full}"
+IMAGES=0
+DEBUG_ONLY=0
 JOBS="${FYRR_CI_JOBS:-$(python3 - <<'JOBS'
 import os
 from pathlib import Path
@@ -37,6 +40,9 @@ declare -a POOL_ROWS=()
 declare -A REQUESTED_STEPS=() SEEN_STEPS=()
 for arg in "$@"; do
   case "$arg" in
+    --quick) TIER=quick ;;
+    --images) IMAGES=1 ;;
+    --debug-only) DEBUG_ONLY=1 ;;
     --jobs=*) JOBS="${arg#--jobs=}" ;;
     --row=*)
       CASE_ROW="${arg#--row=}"
@@ -51,9 +57,12 @@ for arg in "$@"; do
       ONLY_STEPS=1
       REQUESTED_STEPS["$name"]=1
       ;;
-    *) die "unknown argument $arg (use --jobs=N or --step=NAME)" ;;
+    *) die "unknown argument $arg (use --quick, --images, --jobs=N or --step=NAME)" ;;
   esac
 done
+[[ "$TIER" == quick || "$TIER" == full ]] || die "unknown CI tier $TIER"
+((IMAGES == 0)) || [[ "$TIER" == full ]] || die "--images cannot be combined with --quick"
+export FYRR_CI_TIER="$TIER"
 [[ -z "$CASE_ID" || -n "$CASE_ROW" ]] || die "--case requires --row"
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer"
 if ((JOBS > 1)) && [[ -n "${FYRR_S3_FIXTURE_DATA:-}" ]]; then
@@ -200,13 +209,15 @@ run_row() {
 cases_start() {
   local -x FYRR_SCIM_HEALTH_TEST_BINARY FYRR_ROUTING_TEST_BINARY
   local -a selected_rows=()
-  local row name line
+  local row name count
   if [[ -n "$CASE_ROW" ]]; then
     selected_rows=("$CASE_ROW")
   else
-    while IFS= read -r row; do
+    while IFS=$'\t' read -r row count; do
       name="$(row_name "$row")"
-      if ((!ONLY_STEPS)) || [[ ${REQUESTED_STEPS["$name"]+selected} ]]; then
+      if ((count == 0)); then
+        not_evaluated "$name" "not selected by $TIER tier"
+      elif ((!ONLY_STEPS)) || [[ ${REQUESTED_STEPS["$name"]+selected} ]]; then
         selected_rows+=("$row")
       else
         not_evaluated "$name" "not selected by --step"
@@ -319,7 +330,7 @@ finish_summary() {
   done
 
   {
-    echo "fyrr ci $STAMP  commit ${FYRR_CI_REVISION:-$(git rev-parse --short HEAD 2>/dev/null || echo unavailable)}  $(rustc --version)"
+    echo "fyrr ci $STAMP  tier $TIER  commit ${FYRR_CI_REVISION:-$(git rev-parse --short HEAD 2>/dev/null || echo unavailable)}  $(rustc --version)"
     printf '%-38s %-5s %7s %7s %8s %7s  %s\n' step status passed failed ignored time log
     printf '%s\n' "${ROWS[@]}"
     echo "steps: $STEP, failed: $FAILED"
@@ -351,7 +362,13 @@ step "licenses and advisories" none cargo deny --locked check
 step "python connector SDK" pytest python_checks
 step "example provider (test kit)" pytest example_provider
 step "example wheels without rebuild" none example_wheels
-not_evaluated "images (build, derived, compose)" "image checks run in scripts/release"
+if ((IMAGES && !DEBUG_ONLY)); then
+  step "images (build, derived, compose)" none "$ROOT/scripts/images"
+else
+  reason="not selected; use --images for release checks"
+  ((DEBUG_ONLY == 0)) || reason="skipped by --debug-only"
+  not_evaluated "images (build, derived, compose)" "$reason"
+fi
 step "quickstart example (local storage)" none quickstart
 cases_finish
 

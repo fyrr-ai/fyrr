@@ -7,6 +7,7 @@ import contextlib
 import datetime
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -27,6 +28,22 @@ os.environ.setdefault("MBX_LEARNED_INCREMENTAL", "0")
 os.environ.setdefault("MBX_EAGER_INCREMENTAL", "0")
 MANIFEST = ROOT / "scripts/ci-cases.json"
 BUILD = ROOT / "target/ci-build/manifest.json"
+
+
+def selected_cases(spec):
+    tier = os.environ.get("FYRR_CI_TIER", "full")
+    if tier not in {"quick", "full"}:
+        raise ValueError(f"unknown CI tier: {tier}")
+    return {
+        case: details
+        for case, details in spec["cases"].items()
+        if tier == "full" or details["tier"] == "quick"
+    }
+
+
+def case_seconds(details):
+    # Python stays batched; individual Python durations are not measured.
+    return details["seconds"] or 0
 
 
 def build():
@@ -148,15 +165,34 @@ def validate(manifest, actual):
             raise ValueError(f"case does not match its row kind: {row}")
         if not spec["cases"]:
             raise ValueError(f"zero-case row: {row}")
-        for case in spec["cases"]:
+        for case, details in spec["cases"].items():
+            if details.get("tier") not in {"quick", "full"}:
+                raise ValueError(f"case needs a quick or full tier: {case}")
+            seconds = details.get("seconds")
+            if seconds is None:
+                if spec["kind"] != "python":
+                    raise ValueError(f"Rust case needs its measured seconds: {case}")
+            elif (
+                isinstance(seconds, bool)
+                or not isinstance(seconds, (float, int))
+                or not math.isfinite(seconds)
+                or seconds < 0
+            ):
+                raise ValueError(f"invalid case duration: {case}")
             if case in owners:
                 raise ValueError(f"duplicate owner: {case}: {owners[case]} and {row}")
             owners[case] = row
-        for child, parents in spec.get("children", {}).items():
+        for child, details in spec.get("children", {}).items():
+            parents = details["parents"]
             if child in owners:
                 raise ValueError(f"duplicate child owner: {child}")
             if not parents or any(parent not in spec["cases"] for parent in parents):
                 raise ValueError(f"child parent is not executed by {row}: {parents}")
+            expected = (
+                "quick" if any(spec["cases"][p]["tier"] == "quick" for p in parents) else "full"
+            )
+            if details.get("tier") != expected:
+                raise ValueError(f"child tier differs from its executing parents: {child}")
             owners[child] = row
     missing = actual.keys() - owners.keys()
     stale = owners.keys() - actual.keys()
@@ -165,6 +201,12 @@ def validate(manifest, actual):
     for row, spec in manifest.items():
         print(f"{row}: {len(spec['cases'])} cases, {len(spec.get('children', {}))} named children")
     print(f"ownership: {len(owners)} executable cases, each with exactly one owner")
+    counts = collections.Counter(
+        details["tier"]
+        for spec in manifest.values()
+        for details in [*spec["cases"].values(), *spec.get("children", {}).values()]
+    )
+    print(f"tiers: {counts['quick']} quick; {len(owners)} full ({counts['full']} additional)")
 
 
 def run(spec):
@@ -270,15 +312,22 @@ def run(spec):
 
 async def pool(manifest, logs, jobs, rows):
     """Schedule independent parents; every worker owns its fixture and process."""
-    selected = [(row, case) for row in rows for case in manifest[row]["cases"]]
-    selected.sort(
-        key=lambda item: (
-            -manifest[item[0]]
-            .get("case_seconds", {})
-            .get(item[1], manifest[item[0]]["seconds"] / len(manifest[item[0]]["cases"]))
-        )
-    )
-    (logs / "scenario-plan.json").write_text(json.dumps(selected, indent=2) + "\n")
+    selected = [(row, case) for row in rows for case in selected_cases(manifest[row])]
+    selected.sort(key=lambda item: -case_seconds(manifest[item[0]]["cases"][item[1]]))
+    plan = [
+        {
+            "row": row,
+            "case": case,
+            "tier": manifest[row]["cases"][case]["tier"],
+            "status": "selected"
+            if row in rows and case in selected_cases(manifest[row])
+            else "n/e",
+        }
+        for row, spec in manifest.items()
+        if spec["kind"] == "rust"
+        for case in spec["cases"]
+    ]
+    (logs / "case-plan.json").write_text(json.dumps(plan, indent=2) + "\n")
     capacity = asyncio.Semaphore(jobs)
     started = time.monotonic()
     results = collections.defaultdict(list)
@@ -380,6 +429,7 @@ async def pool(manifest, logs, jobs, rows):
             result = {
                 "row": row,
                 "case": case,
+                "tier": manifest[row]["cases"][case]["tier"],
                 "peak_rss_kib": peaks[case],
                 "status": status,
                 "passed": passed,
@@ -401,7 +451,21 @@ async def pool(manifest, logs, jobs, rows):
             await sampler
     for row in rows:
         items = results[row]
-        status = "pass" if all(item["status"] == "pass" for item in items) else "FAIL"
+        for case in manifest[row]["cases"].keys() - selected_cases(manifest[row]).keys():
+            items.append(
+                {
+                    "row": row,
+                    "case": case,
+                    "tier": "full",
+                    "status": "n/e",
+                    "passed": 0,
+                    "failed": 0,
+                    "ignored": 0,
+                    "seconds": 0,
+                    "reason": "not selected by quick tier",
+                }
+            )
+        status = "pass" if all(item["status"] in {"pass", "n/e"} for item in items) else "FAIL"
         passed, failed, ignored = (
             sum(item[name] for item in items) for name in ("passed", "failed", "ignored")
         )
@@ -413,7 +477,7 @@ async def pool(manifest, logs, jobs, rows):
             f"{seconds:6}s  {path.relative_to(ROOT)}\n"
         )
         (logs / row / "summary.txt").write_text(line)
-    if any(item["status"] != "pass" for items in results.values() for item in items):
+    if any(item["status"] not in {"pass", "n/e"} for items in results.values() for item in items):
         raise SystemExit(1)
 
 
@@ -451,24 +515,26 @@ def main():
                 else row.startswith(sys.argv[2] + "-")
             )
         ]
-        for row in sorted(rows, key=lambda r: -manifest[r].get("seconds", 0)):
-            print(row)
+        for row in sorted(
+            rows, key=lambda r: -sum(case_seconds(d) for d in selected_cases(manifest[r]).values())
+        ):
+            print(f"{row}\t{len(selected_cases(manifest[row]))}" if sys.argv[2] == "pool" else row)
     elif mode == "settings":
         spec = manifest[sys.argv[2]]
         print(json.dumps({"backend": spec.get("backend"), "services": spec.get("services", [])}))
     elif mode == "plan":
         for row, spec in manifest.items():
-            for case in [*spec["cases"], *spec.get("children", {})]:
-                print(f"{row}\t{spec.get('backend', 'core')}\t{case}")
+            for case, details in {**spec["cases"], **spec.get("children", {})}.items():
+                print(f"{row}\t{spec.get('backend', 'core')}\t{details['tier']}\t{case}")
     elif mode == "pool":
         asyncio.run(pool(manifest, Path(sys.argv[2]), int(sys.argv[3]), sys.argv[4:]))
     elif mode == "run":
-        spec = manifest[sys.argv[2]]
+        spec = {**manifest[sys.argv[2]], "cases": selected_cases(manifest[sys.argv[2]])}
         if len(sys.argv) == 4:
             case = sys.argv[3]
             if case not in spec["cases"]:
                 raise ValueError("case does not belong to the selected owner")
-            spec = {**spec, "cases": [case]}
+            spec = {**spec, "cases": {case: spec["cases"][case]}}
         if not spec["cases"]:
             raise ValueError("zero-case row")
         run(spec)
