@@ -16,6 +16,13 @@ bun run typecheck
 bun run preview
 ```
 
+The comparison currently contains an explicit draft fixture. `bun run build`
+rejects it before exporting the site. For local design review, run
+`bun run build:preview`, then `bun run preview`. The page shows a prominent
+placeholder notice, is marked `noindex`, and draws no invented result bars.
+Both deployment commands reject drafts, including an old draft export left
+in `dist/`; the local preview opt-in cannot bypass the deployment guard.
+
 The deployable directory is `site/dist`. Preview uses the actual Cloudflare
 Workers Static Assets runtime at `http://localhost:8486`, including its HTML
 routing, compression, headers, redirects and 404 handling.
@@ -48,6 +55,8 @@ With the preview server running:
 
 ```sh
 bun run verify:browser
+bun run test:compare
+bun run verify:compare
 bun audit
 ```
 
@@ -57,12 +66,66 @@ navigation, redirected URLs, the desktop table of contents and exact code
 copying. Install Chromium once with
 `bunx playwright install chromium`; `CHROME_PATH` can select another binary.
 
+The comparison browser check captures desktop, mobile and reduced-motion
+screenshots in `shots/compare/` (override with `REPORT_DIR`). It verifies
+navigation, data coverage, overflow, uncertainty details, JSON downloads,
+and static map and lighthouse frames with reduced motion. The site uses
+one dark palette, with no light-theme variant.
+
+The comparison opens with a default-system scoreboard, followed by three
+short chart sections and the product trade-offs. The detailed notebook is
+collapsed initially; its links open the relevant section. System and
+metric chips recompute the view. Selection links preserve filters, tabs,
+question search and the notebook's open state. Higher-is-better scores
+show percentage-point gaps; time, cost and footprint show ratios to the
+best selected complete result.
+
+## Comparison data
+
+`data/compare-results.json` is the single data source for `/compare`.
+It extends the benchmark's schema 1.1 envelope: `benchmark`, `protocol`,
+`systems[]`, and `website.metrics`. Metrics preserve `status`, `value`,
+`unit`, `n`, `expected`, `attempted`, `missing`, `sample_ids`, `ci95`,
+`method`, `artifact`, and notes. Run identity is `(id, variant)`; a missing
+variant means `default`. Optional extra variants have their own checkbox
+and rows in the notebook, while the headline and overview use defaults.
+Each run also exports its own JSON under `/compare/runs/`.
+Unavailable/invalid measurements have null values. Partial values carry
+an asterisk and cannot establish a product win. Fraction axes cover
+0–100%; other axes start at zero and include the full confidence interval.
+No metric is sorted to favor a product. Retrieval is primary; answer quality is secondary and does not block primary measurements.
+
+Import a new benchmark envelope with:
+
+```sh
+bun scripts/import-compare.ts /path/to/benchmark-results.json
+```
+
+The importer preserves reviewed page copy and accepts new systems/metric
+keys without a layout edit. It always sets `draft: true`. The additional
+`website` fields hold section copy, product profiles and
+methodology. New products without a reviewed profile show an explicit
+pending state. The hero verdict is generated from complete retrieval results on identical sample IDs. Unknown metric keys appear under additional metrics;
+catalogue metadata supplies labels, units, section and direction.
+
+Before publishing, review the data, all attempted systems, equal evaluation
+subsets, product profiles, protocol, hardware, configurations, prices and
+dated sources. Replace planned fixture copy with the actual protocol and
+limitations. Set `draft: false` only after that review. The production
+parser requires real measurements, valid freeze/protocol hashes and exact
+version/config/date metadata for measured systems. Then run the normal
+build, type check and both browser checks. No secrets belong in results
+or resolved configurations; use environment-variable names only.
+
 ## Source layout
 
 | Path | Content |
 | --- | --- |
 | `src/page.html`, `src/base.css`, `src/header.html` | Homepage, shared style and header |
 | `src/use-cases.html`, `src/sections.css` | Use-cases page; section and panel styles it shares with the homepage |
+| `src/footer.html` | Shared homepage and comparison footer |
+| `src/compare.html`, `src/compare.css`, `src/compare.js` | Comparison template, chart skin and motion |
+| `data/compare-results.json`, `lib/compare.ts` | Results, boundary validation and data-driven charts |
 | `src/*.js` | Procedural map, fog, ships and homepage interactions |
 | `src/404.html` | Custom 404 page |
 | `app/docs/`, `components/mdx.tsx` | Fumadocs navigation and page components |
