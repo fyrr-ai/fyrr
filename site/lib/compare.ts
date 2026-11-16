@@ -33,7 +33,7 @@ export type Results = {
   }[];
   website: {
     headline_metric: string; groups: Group[];
-    metrics: Record<string, { key: string; label: string; unit: string; group: string; direction: 'higher_is_better' | 'lower_is_better'; ci: Record<string, unknown> | null; tier?: 'primary' | 'secondary'; scope?: string; description?: string; stage_of?: string; stage_order?: number }>;
+    metrics: Record<string, { key: string; label: string; unit: string; group: string; direction: 'higher_is_better' | 'lower_is_better'; ci: Record<string, unknown> | null; tier?: 'primary' | 'secondary'; scope?: string; description?: string; comparable?: boolean; stage_of?: string; stage_order?: number }>;
     products: Record<string, Product>;
     features?: Feature[];
     variant_note?: string;
@@ -109,7 +109,7 @@ export function parseResults(data: unknown): Results {
     requireField(/^[a-z][a-z0-9_-]*$/.test(String(group.id)) && !groups.has(String(group.id)), 'unique group id');
     groups.add(String(group.id));
   }
-  for (const [key, meta] of Object.entries(w.metrics)) requireField(object(meta) && meta.key === key && typeof meta.label === 'string' && typeof meta.unit === 'string' && (groups.has(String(meta.group)) || meta.group === 'cost') && ['higher_is_better', 'lower_is_better'].includes(String(meta.direction)) && (meta.ci === null || object(meta.ci)) && (meta.scope === undefined || typeof meta.scope === 'string') && (meta.description === undefined || typeof meta.description === 'string'), 'metric presentation metadata');
+  for (const [key, meta] of Object.entries(w.metrics)) requireField(object(meta) && meta.key === key && typeof meta.label === 'string' && typeof meta.unit === 'string' && (groups.has(String(meta.group)) || meta.group === 'cost') && ['higher_is_better', 'lower_is_better'].includes(String(meta.direction)) && (meta.ci === null || object(meta.ci)) && (meta.scope === undefined || typeof meta.scope === 'string') && (meta.comparable === undefined || typeof meta.comparable === 'boolean') && (meta.description === undefined || typeof meta.description === 'string'), 'metric presentation metadata');
   for (const meta of Object.values(w.metrics)) {
     if (object(meta) && meta.stage_of !== undefined) requireField(meta.stage_of === 'ingest_wall_s' && meta.unit === 'seconds' && meta.group === 'ingest', 'ingest stages must be elapsed seconds');
     if (object(meta) && meta.stage_order !== undefined) requireField(count(meta.stage_order), 'ingest stage order');
@@ -218,10 +218,13 @@ function axisScale(value: number, unit: string) {
   return { max: Math.ceil(value / step) * step, step };
 }
 
+const canCompare = (meta: Results['website']['metrics'][string] | undefined) => meta?.comparable !== false && meta?.scope !== 'fyrr-only';
+
 export function headlineVerdict(results: Results) {
   results = { ...results, systems: results.systems.filter(system => !system.variant || system.variant === 'default') };
   const key = results.website.headline_metric;
   const meta = results.website.metrics[key];
+  if (!canCompare(meta)) return `${meta?.label ?? 'This metric'} is a diagnostic; it does not establish a product ranking.`;
   const cells = results.systems.map(system => system.metrics[key]);
   const complete = cells.every(metric => metric?.status === 'measured' && metric.value !== null && metric.missing === 0 && metric.expected === metric.n && metric.attempted === metric.n && metric.ci95 && metric.sample_ids);
   const sameSamples = complete && new Set(cells.map(metric => [...metric.sample_ids!].sort().join('\n'))).size === 1;
@@ -274,8 +277,8 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
     const tailValue = tail?.value != null ? `${format(tail.value, unit)}${tail.status === 'partial' ? ' *' : ''}` : tail?.status === 'invalid' ? 'invalid' : 'n/e';
     const measured = cells.filter((cell): cell is Metric & { value: number } => cell?.status === 'measured' && cell.value !== null);
     const best = meta?.direction === 'higher_is_better' ? Math.max(...measured.map(cell => cell.value)) : Math.min(...measured.map(cell => cell.value));
-    const ratio = metric?.status === 'measured' && metric.value !== null && meta ? relativeValue(metric.value, best, meta.direction) : null;
-    const relative = ratio === null ? metric?.status === 'partial' ? 'partial · unranked' : 'n/e comparison' : unit === 'fraction' && meta?.direction === 'higher_is_better' ? metric!.value === best ? 'highest evaluated' : `${((metric!.value! - best) * 100).toFixed(1)} pp` : `×${Number.isFinite(ratio) ? ratio.toFixed(2) : '∞'}${ratio === 1 ? ' evaluated' : ''}`;
+    const ratio = metric?.status === 'measured' && metric.value !== null && meta && canCompare(meta) ? relativeValue(metric.value, best, meta.direction) : null;
+    const relative = !canCompare(meta) ? 'diagnostic · unranked' : ratio === null ? metric?.status === 'partial' ? 'partial · unranked' : 'n/e comparison' : unit === 'fraction' && meta?.direction === 'higher_is_better' ? metric!.value === best ? 'highest evaluated' : `${((metric!.value! - best) * 100).toFixed(1)} pp` : `×${Number.isFinite(ratio) ? ratio.toFixed(2) : '∞'}${ratio === 1 ? ' evaluated' : ''}`;
     const breakdown = stageBreakdown(system);
     const cost = system.metrics.embedding_cost_usd;
     return `<div class="chart-row${system.id === 'fyrr' ? ' is-fyrr' : ''}" data-system="${escape(runKey(system))}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-missing="${metric?.missing ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-expected="${metric?.expected ?? ''}" data-samples="${sampleSet(metric)}" role="listitem">
@@ -289,7 +292,7 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
     </div>`;
   }).join('');
   return `<figure class="panel metric-panel rv" data-metric="${escape(key)}" data-direction="${escape(meta?.direction ?? '')}"${options.tailKey ? ` data-companion="${escape(options.tailKey)}"` : ''}>
-    <figcaption class="panel__bar"><span>${meta?.scope === 'fyrr-only' ? 'FYRR-only diagnostic' : escape(meta ? results.website.groups.find(group => group.id === (meta.group === 'cost' ? 'footprint' : meta.group))?.label ?? 'Additional metric' : 'Additional metric')}${meta?.tier === 'secondary' ? ' / secondary' : ''}</span><span>${meta?.scope === 'fyrr-only' ? 'No cross-product comparison' : meta?.direction ? `${meta.direction === 'higher_is_better' ? 'higher' : 'lower'} is better` : 'Reported value'}</span></figcaption>
+    <figcaption class="panel__bar"><span>${meta?.scope === 'fyrr-only' ? 'FYRR-only diagnostic' : escape(meta ? results.website.groups.find(group => group.id === (meta.group === 'cost' ? 'footprint' : meta.group))?.label ?? 'Additional metric' : 'Additional metric')}${meta?.tier === 'secondary' ? ' / secondary' : ''}</span><span>${meta?.scope === 'fyrr-only' ? 'No cross-product comparison' : !canCompare(meta) ? 'Diagnostic only · no product ranking' : meta?.direction ? `${meta.direction === 'higher_is_better' ? 'higher' : 'lower'} is better` : 'Reported value'}</span></figcaption>
     <div class="panel__body"><h3 class="metric-title">${escape(title)}</h3>
       <p class="metric-sub">${escape(unit === 'fraction' ? 'Score · full scale 0–100%' : unit === 'bytes' ? 'Memory / storage · scaled to MiB or GiB' : unit)}${available.length ? '' : ' · awaiting measurements'}</p>
       ${meta?.description ? `<p class="metric-sub">${escape(meta.description)}</p>` : ''}
@@ -336,7 +339,7 @@ export function renderScoreboard(results: Results) {
       const metric = system.metrics[key], max = scales.get(key) ?? 0;
       const unit = metric?.unit ?? results.website.metrics[key]?.unit ?? '';
       const pct = (value: number) => `${max ? value / max * 100 : 0}%`;
-      return `<div class="score-cell" data-score-metric="${escape(key)}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-expected="${metric?.expected ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-missing="${metric?.missing ?? ''}" data-samples="${sampleSet(metric)}"><span class="score-label">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span><span class="score-value">${metric?.value != null ? format(metric.value, unit) + (unit === 'ms' ? ' ms' : unit === 'seconds' ? ' s' : '') + (metric.status === 'partial' ? ' *' : '') : metric?.status === 'invalid' ? 'invalid' : 'n/e'}</span>${key === 'ingest_wall_s' ? `<small class="score-rate">${escape(ingestRate(system.metrics.ingest_docs_per_min))}</small>` : ''}<div class="bar${system.id === 'fyrr' ? ' bar--fyrr' : ''}${metric?.value != null ? '' : ' is-empty'}" aria-hidden="true">${metric?.value != null ? `<i style="--w:${pct(metric.value)}"></i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}</div><small class="relative"></small></div>`;
+      return `<div class="score-cell" data-score-metric="${escape(key)}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-expected="${metric?.expected ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-missing="${metric?.missing ?? ''}" data-samples="${sampleSet(metric)}"><span class="score-label">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span><span class="score-value">${metric?.value != null ? format(metric.value, unit) + (unit === 'ms' ? ' ms' : unit === 'seconds' ? ' s' : '') + (metric.status === 'partial' ? ' *' : '') : metric?.status === 'invalid' ? 'invalid' : 'n/e'}</span>${key === 'ingest_wall_s' ? `<small class="score-rate">${escape(ingestRate(system.metrics.ingest_docs_per_min))}</small>` : ''}<div class="bar${system.id === 'fyrr' ? ' bar--fyrr' : ''}${metric?.value != null ? '' : ' is-empty'}" aria-hidden="true">${metric?.value != null ? `<i style="--w:${pct(metric.value)}"></i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}</div><small class="relative">${canCompare(results.website.metrics[key]) ? '' : 'diagnostic · unranked'}</small></div>`;
     }).join('')}</div>`).join('')}
     <p class="score-note">n/e = not evaluated. Each column shares a zero-based scale; quality spans 0–100%. <a href="#details">Intervals, samples &amp; assumptions ↘</a></p></div><p class="overview-empty note" hidden>The overview compares default variants. Select a default system to see it.</p>`;
 }
@@ -399,7 +402,7 @@ export function renderDetailView(results: Results) {
       const rows = [...new Map(results.details?.filter(row => row.kind === kind).map(row => [`${row.metric}/${row.id}`, row])).values()];
       return `<div role="tabpanel" id="detail-${kind}" aria-labelledby="tab-${kind}"${kind === 'question' ? ' hidden' : ''}><div class="detail-scroll" tabindex="0" aria-label="${kind === 'category' ? 'Question type' : 'Per-question'} result table"><table class="detail-table"><thead><tr><th scope="col">${kind === 'category' ? 'Question type' : 'Question'}</th>${results.systems.map(system => `<th scope="col" data-system="${escape(runKey(system))}">${escape(runLabel(results, system))}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr data-detail-metric="${escape(row.metric)}" data-direction="${escape(results.website.metrics[row.metric]?.direction ?? '')}"><th scope="row">${escape(row.kind === 'category' ? name(row.label) : row.label)}<small>${escape(results.website.metrics[row.metric]?.label ?? name(row.metric))}</small></th>${results.systems.map(system => {
         const metric = matrix.get(`${row.kind}/${row.metric}/${row.id}/${system.variant ?? 'default'}`)?.results[system.id];
-        return `<td data-system="${escape(runKey(system))}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-missing="${metric?.missing ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-expected="${metric?.expected ?? ''}" data-samples="${sampleSet(metric)}">${metric?.value != null ? format(metric.value, metric.unit) + (metric.status === 'partial' ? ' *' : '') : metric?.status === 'invalid' ? 'invalid' : 'n/e'}<small class="relative">n/e ratio</small></td>`;
+        return `<td data-system="${escape(runKey(system))}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-missing="${metric?.missing ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-expected="${metric?.expected ?? ''}" data-samples="${sampleSet(metric)}">${metric?.value != null ? format(metric.value, metric.unit) + (metric.status === 'partial' ? ' *' : '') : metric?.status === 'invalid' ? 'invalid' : 'n/e'}<small class="relative">${canCompare(results.website.metrics[row.metric]) ? 'n/e ratio' : 'diagnostic · unranked'}</small></td>`;
       }).join('')}</tr>`).join('') || `<tr><td colspan="${results.systems.length + 1}">n/e · ${kind === 'category' ? 'Question-type' : 'Per-question'} results have not been evaluated.</td></tr>`}</tbody></table></div></div>`;
     }).join('')}
     <p class="note">A bright cell marks a complete row winner; ties are labelled. Overlapping uncertainty can still make differences inconclusive. Scores show percentage-point gaps; lower-is-better measurements show value / best. A zero baseline may have an infinite ratio; no axis is truncated.</p>

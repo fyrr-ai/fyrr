@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readResults, parseResults, assertPublishable, headlineVerdict, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, relativeValue } from '../lib/compare';
+import { readResults, parseResults, assertPublishable, headlineVerdict, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderDetailView, relativeValue } from '../lib/compare';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -102,6 +102,46 @@ test('first-ask and repeated-query latency have independent controls and diagnos
   assert(diagnostic.includes('No cross-product comparison'));
   assert(!diagnostic.includes('data-system="onyx"'));
   assert(!diagnostic.includes('data-system="pipeshub"'));
+});
+test('noncomparable diagnostics cannot produce ratios, heatmap winners or a headline win', () => {
+  const data = structuredClone(fixture);
+  const key = 'voyage_probe_c1_p50_ms';
+  data.website.metrics[key] = { key, label: 'Voyage provider probe', unit: 'ms', group: 'speed', direction: 'lower_is_better', ci: null, tier: 'secondary', comparable: false, description: 'Provider and network diagnostic; not an engine measurement.' };
+  data.systems.forEach((system, i) => { system.metrics[key] = { status: 'measured', value: i + 1, unit: 'ms', n: 1, expected: 1, attempted: 1, missing: 0, ci95: [i + 1, i + 1], sample_ids: ['a'] }; });
+  data.details = [{ id: 'probe', label: 'Probe', kind: 'category', metric: key, results: Object.fromEntries(data.systems.filter(system => !system.variant || system.variant === 'default').map(system => [system.id, system.metrics[key]])) }];
+  data.website.headline_metric = key;
+  data.website.overview_metrics = [key];
+  const parsed = parseResults(data);
+  const html = renderMetric(parsed, key);
+  assert(html.includes('Diagnostic only · no product ranking'));
+  assert(html.includes('Provider and network diagnostic'));
+  assert(html.includes('diagnostic · unranked'));
+  assert(!html.includes('×'));
+  assert(!html.includes('best'));
+  assert(renderScoreboard(parsed).includes('diagnostic · unranked'));
+  assert(renderDetailView(parsed).includes('diagnostic · unranked'));
+  parsed.draft = false;
+  assert(headlineVerdict(parsed).includes('does not establish a product ranking'));
+  // Execute the actual browser ranking function with a minimal DOM surface.
+  const source = readFileSync('src/compare.js', 'utf8');
+  const start = source.indexOf('  function ratios(');
+  const end = source.indexOf('\n  function update()', start);
+  assert(start > 0 && end > start);
+  const clientRatios = new Function('results', source.slice(start, end) + '\nreturn ratios;')(data);
+  for (const heatmap of [false, true]) {
+    const classes = new Set(['is-best', 'is-winner']);
+    const properties = new Map([['--heat', '.14']]);
+    const classList = { remove: (name: string) => classes.delete(name), contains: (name: string) => classes.has(name), add: (name: string) => classes.add(name), toggle: (name: string, on: boolean) => on ? classes.add(name) : classes.delete(name) };
+    const relative = { textContent: '×1.00 best', classList };
+    const cell = { dataset: { system: data.systems[0].id, status: 'measured', value: '1', n: '1', attempted: '1', expected: '1', missing: '0', samples: 'a' }, classList, querySelector: () => relative, style: { removeProperty: (name: string) => properties.delete(name), setProperty: (name: string, value: string) => properties.set(name, value) } };
+    clientRatios([cell], 'lower_is_better', heatmap, 'ms', key);
+    assert.equal(relative.textContent, 'diagnostic · unranked');
+    assert(!classes.has('is-best') && !classes.has('is-winner'));
+    assert(!properties.has('--heat'));
+  }
+  const bad = structuredClone(data) as unknown as { website: { metrics: Record<string, { comparable: unknown }> } };
+  bad.website.metrics[key].comparable = 'false';
+  assert.throws(() => parseResults(bad), /metric presentation metadata/);
 });
 test('ingest overview uses the reported throughput and never infers a missing rate', () => {
   const data = structuredClone(fixture);

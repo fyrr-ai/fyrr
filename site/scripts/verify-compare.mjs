@@ -28,6 +28,15 @@ async function assertBarWidths(page) {
   assert.equal(stackErrors, 0, 'Ingest stages must fill their measured total within 1%');
 }
 let cases = 0;
+async function assertDiagnosticsUnranked(page) {
+  const errors = await page.locator('.relative').evaluateAll((labels, metrics) => labels.filter(label => {
+    const parent = label.closest('[data-metric], [data-score-metric], [data-detail-metric]');
+    const key = parent?.dataset.metric ?? parent?.dataset.scoreMetric ?? parent?.dataset.detailMetric;
+    const meta = metrics[key];
+    return meta && (meta.comparable === false || meta.scope === 'fyrr-only') && (label.textContent !== 'diagnostic · unranked' || label.classList.contains('is-best') || label.closest('.is-winner'));
+  }).map(label => label.textContent), results.website.metrics);
+  assert.deepEqual(errors, [], 'Diagnostics must never gain a ratio or winner label, including after filtering');
+}
 try {
   for (const [width, motion] of [[1440, 'no-preference'], [390, 'no-preference'], [390, 'reduce']]) {
     const context = await browser.newContext({ viewport: { width, height: 960 }, reducedMotion: motion, permissions: ['clipboard-read', 'clipboard-write'] });
@@ -44,6 +53,7 @@ try {
       return c.width > 100 && c.getContext('2d').getImageData(0, 0, c.width, c.height).data.some((value, i) => i % 4 !== 3 && value > 0);
     });
     await assertBarWidths(page);
+    await assertDiagnosticsUnranked(page);
     assert.equal(await page.locator('.draft-notice').count(), results.draft ? 1 : 0);
     assert.equal(await page.locator('.product-card').count(), new Set(results.systems.map(system => system.id)).size);
     const keys = new Set(results.systems.flatMap(system => Object.keys(system.metrics)));
@@ -119,6 +129,7 @@ try {
     await recall.press('Home');
     assert.equal(await page.locator('#tab-recall_at_10').getAttribute('aria-selected'), 'true', 'Tab keyboard navigation');
     await page.locator('[data-select-system][value="fyrr"]').uncheck();
+    await assertDiagnosticsUnranked(page);
     assert.equal(await page.locator('.chart-row[data-system="fyrr"]:visible').count(), 0);
     assert(new URL(page.url()).searchParams.get('systems').includes('onyx'));
     await page.getByRole('button', { name: 'Copy selection link' }).click();

@@ -81,6 +81,9 @@ overlapping work must not use `stage_of`.
 Exposed stages are stacked only when they fit within the measured total; remaining
 time is labelled “Other / unreported”. Per-stage measurements stay in details.
 
+Metrics marked `comparable: false` show diagnostic values without ratios or win
+labels. This also applies to scoped engine diagnostics and filtered selections.
+
 The comparison opens with a default-system scoreboard, followed by four
 short chart sections and the product trade-offs. Primary speed is first-ask
 latency with fresh query caches; repeated-query timings are secondary. The
