@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-16 -16 1152 502" width="1152" height="502" shape-rendering="crispEdges" role="img" aria-labelledby="title"><title id="title">fyrr architecture: Your company data syncs through the writer into an immutable publication on S3. The reader admits the caller, filters by permission before ranking, rechecks, then replies to the AI agent over MCP. Writer and reader call an external embeddings API.</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-16 -16 1152 502" width="1152" height="502" shape-rendering="crispEdges" role="img" aria-labelledby="title"><title id="title">fyrr architecture: Your company data syncs through the writer into an immutable publication on S3 or local disk. The reader admits the caller, filters by permission before ranking, rechecks, then replies to the AI agent over MCP. Writer and reader call an external embeddings API.</title>
 <style>
 text{font-family:Geist,"Helvetica Neue",Arial,sans-serif;fill:#ededed}
 .cap{font-size:13px;letter-spacing:.06em}
@@ -19,7 +19,7 @@ text{font-family:Geist,"Helvetica Neue",Arial,sans-serif;fill:#ededed}
 <rect x="12" y="28" width="172" height="150" fill="url(#dg)"/><rect x="6" y="34" width="172" height="150" fill="url(#dg)"/><rect class="box" x="0" y="40" width="172" height="150"/><rect class="tag" x="12" y="52" width="77" height="18"/><text class="cap dim" x="19" y="65" style="">SOURCES</text><text class="t" x="14" y="104">Your data</text><text class="s" x="14" y="132">your docs, chats,</text><text class="s" x="14" y="152">tickets and code</text>
 <rect class="box" x="237" y="40" width="172" height="150"/><rect class="tag" x="249" y="52" width="104" height="18"/><text class="cap dim" x="256" y="65" style="">FULL BUILD</text><text class="t" x="251" y="104">Writer</text><text class="s" x="251" y="132">connector workers</text><text class="s" x="251" y="152">text + access rights</text><text class="s" x="251" y="172">one committer</text>
 <rect x="474" y="40" width="172" height="150" fill="url(#dy)"/><rect x="474" y="40" width="172" height="150" fill="none" stroke="#ffea5d" stroke-width="2"/>
-<rect x="484" y="50" width="152" height="130" fill="#000"/><text class="cap" x="494" y="72" style="fill:#ffea5d">S3</text><text class="t" x="494" y="102">Publication</text>
+<rect x="484" y="50" width="152" height="130" fill="#000"/><text class="cap" x="494" y="72" style="fill:#ffea5d">S3 or local disk</text><text class="t" x="494" y="102">Publication</text>
 <text class="s" x="494" y="128">immutable files</text>
 <text class="s" x="494" y="147">versioned</text>
 <text class="s" x="494" y="166">one serving head</text>

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-16 -16 1152 502" width="1152" height="502" shape-rendering="crispEdges" role="img" aria-labelledby="title"><title id="title">fyrr architecture: Your company data syncs through the writer into an immutable publication on S3 or local disk. The reader admits the caller, filters by permission before ranking, rechecks, then replies to the AI agent over MCP. Writer and reader call an external embeddings API.</title>
+<style>
+text{font-family:Geist,"Helvetica Neue",Arial,sans-serif;fill:#171717}
+.cap{font-size:13px;letter-spacing:.06em}
+.dim{fill:#666666}
+.t{font-size:24px;letter-spacing:-.01em}
+.s{font-size:14px;fill:#555555}
+.box{fill:#fafafa;stroke:#4a4a4a}
+.hl{fill:#fafafa;stroke:#786600;stroke-width:2}
+.tag{fill:#ffffff;stroke:#3a3a3a}
+.ln{fill:none;stroke:#666666;stroke-dasharray:2 2}
+.yl{fill:none;stroke:#786600;stroke-width:2}
+.ext{fill:none;stroke:#6a6a6a;stroke-dasharray:4 4}
+.gl{font-size:11px;letter-spacing:.04em}
+.zone{fill:none;stroke:#3a3a3a;stroke-dasharray:2 4}
+</style>
+<defs><pattern id="dy" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="2" height="2" fill="#786600"/><rect x="2" y="2" width="2" height="2" fill="#786600"/></pattern><pattern id="dg" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="2" height="2" fill="#dddddd"/><rect x="2" y="2" width="2" height="2" fill="#dddddd"/></pattern><marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L7 4L1 7" fill="none" stroke="#555555"/></marker><marker id="ay" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1L7 4L1 7" fill="none" stroke="#786600"/></marker></defs>
+<rect x="-16" y="-16" width="1152" height="502" fill="#ffffff"/>
+<rect x="12" y="28" width="172" height="150" fill="url(#dg)"/><rect x="6" y="34" width="172" height="150" fill="url(#dg)"/><rect class="box" x="0" y="40" width="172" height="150"/><rect class="tag" x="12" y="52" width="77" height="18"/><text class="cap dim" x="19" y="65" style="">SOURCES</text><text class="t" x="14" y="104">Your data</text><text class="s" x="14" y="132">your docs, chats,</text><text class="s" x="14" y="152">tickets and code</text>
+<rect class="box" x="237" y="40" width="172" height="150"/><rect class="tag" x="249" y="52" width="104" height="18"/><text class="cap dim" x="256" y="65" style="">FULL BUILD</text><text class="t" x="251" y="104">Writer</text><text class="s" x="251" y="132">connector workers</text><text class="s" x="251" y="152">text + access rights</text><text class="s" x="251" y="172">one committer</text>
+<rect x="474" y="40" width="172" height="150" fill="url(#dy)"/><rect x="474" y="40" width="172" height="150" fill="none" stroke="#786600" stroke-width="2"/>
+<rect x="484" y="50" width="152" height="130" fill="#ffffff"/><text class="cap" x="494" y="72" style="fill:#786600">S3 or local disk</text><text class="t" x="494" y="102">Publication</text>
+<text class="s" x="494" y="128">immutable files</text>
+<text class="s" x="494" y="147">versioned</text>
+<text class="s" x="494" y="166">one serving head</text>
+<rect class="hl" x="711" y="40" width="172" height="150"/><rect class="tag" x="723" y="52" width="68" height="18"/><text class="cap " x="730" y="65" style="fill:#786600">READER</text><text class="t" x="725" y="104">Reader</text><text class="s" x="725" y="132">1 admit the caller</text><text class="s" x="725" y="152">2 filter, then rank</text><text class="s" x="725" y="172">3 recheck, reply</text>
+<rect class="box" x="948" y="40" width="172" height="150"/><rect class="tag" x="960" y="52" width="104" height="18"/><text class="cap dim" x="967" y="65" style="">MCP CLIENT</text><text class="t" x="962" y="104">AI agent</text><text class="s" x="962" y="132">search</text><text class="s" x="962" y="152">fetch</text><text class="s" x="962" y="172">list_filters</text>
+<path class="ln" d="M174 115H234" marker-end="url(#a)"/><text class="cap gl dim" x="204.5" y="105" text-anchor="middle">SYNC</text>
+<path class="ln" d="M411 115H471" marker-end="url(#a)"/><text class="cap gl dim" x="441.5" y="105" text-anchor="middle">COMMIT</text>
+<path class="ln" d="M648 115H708" marker-end="url(#a)"/><text class="cap gl dim" x="678.5" y="105" text-anchor="middle">PIN</text>
+<path class="ln" d="M946 101H887" marker-end="url(#a)"/><text class="cap gl dim" x="915.5" y="93" text-anchor="middle">MCP</text>
+<path class="yl" d="M885 129H944" marker-end="url(#ay)"/><text class="cap gl" x="915.5" y="147" text-anchor="middle" style="fill:#786600">ALLOWED</text>
+<rect x="454" y="270" width="212" height="72" fill="#ffffff" stroke="#6a6a6a" stroke-dasharray="4 4"/><text class="t" x="560.0" y="302" text-anchor="middle">Embeddings</text><text class="s" x="560.0" y="326" text-anchor="middle">OpenAI-compatible API</text>
+<path class="ext" d="M323 192V306H451" marker-end="url(#a)"/><text class="cap dim" x="333" y="230">TEXT</text>
+<path class="ext" d="M797 192V306H669" marker-end="url(#a)"/><text class="cap dim" x="787" y="230" text-anchor="end">QUERY</text>
+<path d="M0 416H1120" stroke="#262626"/>
+<path class="yl" d="M0 440H34" marker-end="url(#ay)"/><text class="s" x="44" y="444" style="fill:#171717">Only rows the caller may read are scored or returned</text>
+<path class="ext" d="M480 440H514" marker-end="url(#a)"/><text class="s" x="524" y="444" style="fill:#171717">External service (receives the text)</text>
+<path class="ln" d="M840 440H874" marker-end="url(#a)"/><text class="s" x="884" y="444" style="fill:#171717">Tool call over MCP</text>
+</svg>
