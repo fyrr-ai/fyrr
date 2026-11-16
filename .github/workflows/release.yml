@@ -80,7 +80,7 @@ jobs:
             "fyrr:$image_tag" writer providers)"
           printf '%s\n' "$providers"
           for provider in local-files google-drive notion github slack jira; do
-            grep -qE "^$provider[[:space:]].*[[:space:]]ok$" <<<"$providers"
+            grep -qE "^${provider}[[:space:]].*[[:space:]]ok$" <<<"$providers"
           done
 
       - name: Upload the release artifacts
