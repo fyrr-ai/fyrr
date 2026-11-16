@@ -20,7 +20,7 @@ use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
 
 /// The publication contract version (manifest and head) written by this build.
-pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(2, 2);
+pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(3, 0);
 
 /// Immutable policy generation used by the reader's admission path.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

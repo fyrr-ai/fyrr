@@ -118,9 +118,14 @@ and cursors; each step is idempotent, so an interrupted purge is run again.
 
 ## Upgrades
 
+The current configuration schema is `3.0`, the prepared-envelope and
+rejection contracts are `4.0`, and content manifests and serving heads are
+`3.0`. Embedding settings are required even for the default BGE-M3 model.
+Republish older namespaces before using this build.
+
 Contracts carry `major.minor` versions; a new minor reads older data. These
 changes need a fresh namespace instead: a new contract major, and any change
-of the embedding `profile`, `model`, `dimensions`, prefixes, `roles` or
+of the embedding `model`, `dimensions`, prefixes, `roles` or
 `send_dimensions` (a sync, commit, maintain, verify or reader against the
 old namespace fails with `embedding_profile_mismatch`).
 Publish the new namespace next to the old one, verify it, then switch

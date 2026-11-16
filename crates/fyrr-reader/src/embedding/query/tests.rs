@@ -2,7 +2,7 @@ use super::*;
 use crate::ReaderError;
 
 #[test]
-fn process_query_keys_include_the_legacy_profile_and_exact_utf8() {
+fn process_query_keys_include_the_profile_and_exact_utf8() {
     let mut config = fyrr_core::config::parse(
         "[namespace]\nname='query-key'\n[storage]\nuri='s3://query-key'\n[embedding]\n\
             endpoint='https://fake.invalid'\nquery_cache_max_bytes=0\n",
@@ -16,10 +16,6 @@ fn process_query_keys_include_the_legacy_profile_and_exact_utf8() {
     assert_ne!(baseline.keys[0], baseline.keys[1]);
     assert_ne!(baseline.keys[0], digest("é".as_bytes()));
     config.prefix = "query:".into();
-    assert!(
-        super::super::identity(&config).settings.is_none(),
-        "legacy BGE profile"
-    );
     let prefixed = QueryEmbeddings::new(&config, pool).unwrap();
     let changed = prefixed.prepare(&["é"]).unwrap();
     assert_ne!(baseline.keys[0], changed.keys[0]);

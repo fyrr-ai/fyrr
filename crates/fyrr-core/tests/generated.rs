@@ -9,15 +9,33 @@ mod common;
 
 use std::collections::BTreeSet;
 
+use artifacts::{GeneratedFile, generated_files};
 use fyrr_core::connector::{ConnectorBatch, CursorState};
 use fyrr_core::envelope::PreparedEnvelope;
 use fyrr_core::publication::{ContentManifest, ServingHead};
-use artifacts::{GeneratedFile, generated_files};
 
 fn contract_fixture<T: fyrr_core::Contract>(path: &'static str, bytes: &[u8]) -> GeneratedFile {
     let mut value: serde_json::Value =
         serde_json::from_slice(bytes).expect("contract fixture JSON");
     value["schema_version"] = T::VERSION.to_string().into();
+    // These fixtures describe the default model with no text transformation.
+    // Construct its complete persisted identity with the current contract.
+    let embedding = if T::NAME == "content-manifest" {
+        value.get_mut("embedding")
+    } else {
+        value["payload"].get_mut("embedding")
+    };
+    if let Some(embedding) = embedding {
+        use fyrr_core::envelope::{EmbeddingApiStyle, EmbeddingRoles, EmbeddingSettings};
+        let settings = EmbeddingSettings {
+            api_style: EmbeddingApiStyle::OpenaiCompatible,
+            prefix: String::new(),
+            roles: EmbeddingRoles::default(),
+            send_dimensions: false,
+        };
+        embedding["fingerprint"] = settings.fingerprint("BAAI/bge-m3", 1024).into();
+        embedding["settings"] = serde_json::to_value(settings).unwrap();
+    }
     if T::NAME == "prepared-envelope" && value["payload"]["type"] == "permissions" {
         use sha2::Digest;
         for field in ["documents", "container_grants"] {

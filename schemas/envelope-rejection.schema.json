@@ -70,5 +70,5 @@
     }
   },
   "x-fyrr-contract": "envelope-rejection",
-  "x-fyrr-schema-version": "3.1"
+  "x-fyrr-schema-version": "4.0"
 }

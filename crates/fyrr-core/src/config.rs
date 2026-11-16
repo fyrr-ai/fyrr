@@ -31,7 +31,7 @@ use crate::units::{ByteSize, ConfigDuration};
 
 /// Configuration schema revision: adding a storage backend changes the URI
 /// contract beyond an optional field, so it starts a new major revision.
-pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(2, 0);
+pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(3, 0);
 
 /// Namespace IDs: lowercase letters, digits and `-`, at most 63 bytes.
 pub const NAMESPACE_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
@@ -344,8 +344,6 @@ pub struct StorageConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EmbeddingConfig {
-    #[serde(default)]
-    pub profile: EmbeddingProfile,
     /// Base URL of the OpenAI-compatible embeddings API.
     pub endpoint: String,
     #[serde(default = "default_model")]
@@ -389,14 +387,6 @@ pub struct EmbeddingConfig {
     #[serde(default = "default_embedding_retries")]
     #[schemars(range(max = MAX_RETRIES_MAX))]
     pub max_retries: u32,
-}
-
-/// Supported embedding provider protocols.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-pub enum EmbeddingProfile {
-    #[default]
-    OpenaiCompatible,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

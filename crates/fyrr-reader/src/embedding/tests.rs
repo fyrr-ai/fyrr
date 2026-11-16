@@ -14,7 +14,7 @@ fn vectors_must_be_finite_nonzero_and_profile_sized() {
 }
 
 #[test]
-fn profile_identity_preserves_legacy_bytes_and_binds_roles() {
+fn profile_identity_always_records_settings_and_binds_roles() {
     let mut config = fyrr_core::config::parse(
         "[namespace]\nname='profile'\n[storage]\nuri='s3://profile'\n[embedding]\n\
             endpoint='https://cache.invalid'\n",
@@ -22,30 +22,31 @@ fn profile_identity_preserves_legacy_bytes_and_binds_roles() {
     .unwrap()
     .config
     .embedding;
-    let legacy = identity(&config);
-    assert!(legacy.settings.is_none());
+    let baseline = identity(&config);
+    baseline.validate_profile().unwrap();
+    assert_eq!(baseline.settings.prefix, "");
+    assert_eq!(baseline.settings.roles, EmbeddingRoles::default());
     assert_eq!(
-        legacy.fingerprint,
+        serde_json::to_value(&baseline)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_ne!(
+        baseline.fingerprint,
         digest(
             serde_json::json!(["BAAI/bge-m3", 1024, "", "exact-utf8"])
                 .to_string()
                 .as_bytes()
         )
     );
-    assert_eq!(
-        serde_json::to_value(&legacy)
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .len(),
-        3
-    );
     for dimension in [512, 1024] {
         config.dimensions = dimension;
         config.roles.query.input_type = Some("query".into());
         let profile = identity(&config);
-        assert!(profile.settings.is_some());
-        assert_ne!(profile.fingerprint, legacy.fingerprint);
+        assert_ne!(profile.fingerprint, baseline.fingerprint);
         profile.validate_profile().unwrap();
         config.roles.document.prefix = Some("document: ".into());
         assert_ne!(identity(&config).fingerprint, profile.fingerprint);

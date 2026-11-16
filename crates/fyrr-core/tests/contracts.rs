@@ -497,6 +497,50 @@ fn semantic_violations_are_refused_without_echoing_values() {
         "complete listing on a non-final part"
     );
 
+    // A current publication/envelope always records settings, including the
+    // default BGE-M3 model, and checks its fingerprint against those settings.
+    for (file, pointer) in [
+        (
+            "fixtures/contracts/content-manifest/manifest.json",
+            "/embedding",
+        ),
+        (
+            "fixtures/contracts/prepared-envelope/content.json",
+            "/payload/embedding",
+        ),
+    ] {
+        let fixture = common::read_json(file);
+        for mutation in ["missing", "prefix", "fingerprint"] {
+            let mut invalid = fixture.clone();
+            let embedding = invalid.pointer_mut(pointer).unwrap();
+            match mutation {
+                "missing" => {
+                    embedding.as_object_mut().unwrap().remove("settings");
+                }
+                "prefix" => embedding["settings"]["prefix"] = json!(sentinel),
+                _ => embedding["fingerprint"] = json!(format!("sha256:{}", "0".repeat(64))),
+            }
+            let error = if pointer == "/embedding" {
+                parse::<ContentManifest>(&invalid).unwrap_err()
+            } else {
+                parse::<PreparedEnvelope>(&invalid).unwrap_err()
+            };
+            assert!(!error.to_string().contains(sentinel), "{error}");
+        }
+        let mut old = fixture;
+        old["schema_version"] = json!(if pointer == "/embedding" {
+            "2.2"
+        } else {
+            "3.1"
+        });
+        let error = if pointer == "/embedding" {
+            parse::<ContentManifest>(&old).unwrap_err()
+        } else {
+            parse::<PreparedEnvelope>(&old).unwrap_err()
+        };
+        assert!(matches!(error, ContractError::UnsupportedMajor { .. }));
+    }
+
     let mut envelope = common::read_json("fixtures/contracts/prepared-envelope/content.json");
     envelope["sequence"] = json!(43);
     assert!(

@@ -138,8 +138,7 @@ impl QueryEmbeddings {
             _copies: copies,
         };
         for query in queries {
-            // Process entries always include the full profile, including the
-            // legacy BGE prefix.
+            // Process entries include the full profile and preserve exact UTF-8.
             let key = digest(
                 serde_json::json!([self.profile_fingerprint, "query", query])
                     .to_string()

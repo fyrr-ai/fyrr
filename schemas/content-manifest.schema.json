@@ -146,30 +146,22 @@
           "description": "Digest of the model settings and text transformation (prefix,\nnormalization) that keys the embedding cache."
         },
         "settings": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/EmbeddingSettings"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Absent in legacy publications: OpenAI-compatible, shared prefix only.\nDefault BGE-M3 identities retain their original serialized bytes."
+          "$ref": "#/$defs/EmbeddingSettings"
         }
       },
       "required": [
         "model",
         "dimensions",
-        "fingerprint"
+        "fingerprint",
+        "settings"
       ],
       "description": "The embedding identity bound into envelopes and publications."
     },
     "EmbeddingSettings": {
       "type": "object",
-      "additionalProperties": false,
       "properties": {
         "api_style": {
-          "$ref": "#/$defs/EmbeddingProfile"
+          "$ref": "#/$defs/EmbeddingApiStyle"
         },
         "prefix": {
           "type": "string",
@@ -191,37 +183,37 @@
       ],
       "description": "Vector-affecting settings recorded with a publication's model/dimensions."
     },
-    "EmbeddingProfile": {
+    "EmbeddingApiStyle": {
       "type": "string",
       "enum": [
         "openai-compatible"
       ],
-      "description": "Supported embedding provider protocols."
+      "description": "Fixed protocol identity recorded in persisted embedding settings."
     },
     "EmbeddingRoles": {
       "type": "object",
-      "additionalProperties": false,
       "properties": {
         "document": {
-          "$ref": "#/$defs/EmbeddingRole",
-          "default": {}
+          "$ref": "#/$defs/EmbeddingRole"
         },
         "query": {
-          "$ref": "#/$defs/EmbeddingRole",
-          "default": {}
+          "$ref": "#/$defs/EmbeddingRole"
         }
-      }
+      },
+      "required": [
+        "document",
+        "query"
+      ],
+      "description": "Persisted role transformations accept future minor-version additions.\nConfiguration uses strict types at its TOML boundary."
     },
     "EmbeddingRole": {
       "type": "object",
-      "additionalProperties": false,
       "properties": {
         "prefix": {
           "type": [
             "string",
             "null"
           ],
-          "description": "Added after the shared prefix, before the unchanged input text.",
           "maxLength": 4096,
           "x-maxUtf8Bytes": 4096
         },
@@ -230,7 +222,6 @@
             "string",
             "null"
           ],
-          "description": "Sent as `input_type` only when configured.",
           "minLength": 1,
           "maxLength": 128,
           "x-maxUtf8Bytes": 128
@@ -430,5 +421,5 @@
     }
   },
   "x-fyrr-contract": "content-manifest",
-  "x-fyrr-schema-version": "2.2"
+  "x-fyrr-schema-version": "3.0"
 }

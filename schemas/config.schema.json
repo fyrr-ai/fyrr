@@ -464,10 +464,6 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "profile": {
-          "$ref": "#/$defs/EmbeddingProfile",
-          "default": "openai-compatible"
-        },
         "endpoint": {
           "type": "string",
           "description": "Base URL of the OpenAI-compatible embeddings API."
@@ -570,13 +566,6 @@
         "endpoint"
       ],
       "description": "Embedding identity, role transformations and bounded provider access."
-    },
-    "EmbeddingProfile": {
-      "type": "string",
-      "enum": [
-        "openai-compatible"
-      ],
-      "description": "Supported embedding provider protocols."
     },
     "EmbeddingRoles": {
       "type": "object",
@@ -1332,5 +1321,5 @@
       "description": "When each of a source's syncs is due."
     }
   },
-  "x-fyrr-schema-version": "2.0"
+  "x-fyrr-schema-version": "3.0"
 }

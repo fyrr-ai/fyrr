@@ -1,5 +1,5 @@
 {
-  "schema_version": "3.1",
+  "schema_version": "4.0",
   "envelope_id": "env-ab0dc87cb67ccdbb62a36a806c0cd6c5",
   "namespace": "acme",
   "source_id": "jira-eng",
@@ -23,7 +23,16 @@
     "embedding": {
       "model": "BAAI/bge-m3",
       "dimensions": 1024,
-      "fingerprint": "sha256:6e344f82fb4dcaf18c9088486df6acb47676ced4cb1749a991249781afb5d8c8"
+      "fingerprint": "sha256:153ebedfabc06d487f789189fc0d33b7daa637931185368c4c1d331564ad2187",
+      "settings": {
+        "api_style": "openai-compatible",
+        "prefix": "",
+        "roles": {
+          "document": {},
+          "query": {}
+        },
+        "send_dimensions": false
+      }
     },
     "chunk_profile": {
       "name": "v5-whole-unit",

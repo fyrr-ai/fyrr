@@ -13,7 +13,7 @@ use crate::limits::{MAX_REVISION_BYTES, check_digest, check_id, check_text};
 use crate::version::{Contract, SchemaVersion};
 
 /// The envelope contract version written by this build.
-pub const ENVELOPE_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(3, 1);
+pub const ENVELOPE_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
 
 /// A prepared envelope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -129,21 +129,42 @@ pub struct EmbeddingIdentity {
     /// Digest of the model settings and text transformation (prefix,
     /// normalization) that keys the embedding cache.
     pub fingerprint: String,
-    /// Absent in legacy publications: OpenAI-compatible, shared prefix only.
-    /// Default BGE-M3 identities retain their original serialized bytes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settings: Option<Box<EmbeddingSettings>>,
+    pub settings: Box<EmbeddingSettings>,
 }
 
 /// Vector-affecting settings recorded with a publication's model/dimensions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct EmbeddingSettings {
-    pub api_style: crate::config::EmbeddingProfile,
+    pub api_style: EmbeddingApiStyle,
     #[schemars(length(max = 4096), extend("x-maxUtf8Bytes" = 4096))]
     pub prefix: String,
-    pub roles: crate::config::EmbeddingRoles,
+    pub roles: EmbeddingRoles,
     pub send_dimensions: bool,
+}
+
+/// Fixed protocol identity recorded in persisted embedding settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum EmbeddingApiStyle {
+    OpenaiCompatible,
+}
+
+/// Persisted role transformations accept future minor-version additions.
+/// Configuration uses strict types at its TOML boundary.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct EmbeddingRoles {
+    pub document: EmbeddingRole,
+    pub query: EmbeddingRole,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct EmbeddingRole {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 4096), extend("x-maxUtf8Bytes" = 4096))]
+    pub prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 128), extend("x-maxUtf8Bytes" = 128))]
+    pub input_type: Option<String>,
 }
 
 impl EmbeddingSettings {
@@ -179,29 +200,26 @@ impl EmbeddingIdentity {
         {
             return Err("embedding profile invalid".into());
         }
-        if let Some(settings) = &self.settings {
-            if settings.prefix.len() > 4096
-                || [&settings.roles.document, &settings.roles.query]
-                    .iter()
-                    .any(|role| {
-                        role.prefix
-                            .as_ref()
-                            .is_some_and(|prefix| prefix.len() > 4096)
-                            || role.input_type.as_ref().is_some_and(|kind| {
-                                kind.is_empty()
-                                    || kind.len() > 128
-                                    || kind.chars().any(char::is_control)
-                            })
-                    })
-            {
-                return Err("embedding role invalid".into());
-            }
-            let expected = settings.fingerprint(&self.model, self.dimensions);
-            if self.fingerprint != expected {
-                return Err("embedding profile fingerprint invalid".into());
-            }
-        } else if self.model != "BAAI/bge-m3" || self.dimensions != 1024 {
-            return Err("legacy embedding profile invalid".into());
+        let settings = &self.settings;
+        if settings.prefix.len() > 4096
+            || [&settings.roles.document, &settings.roles.query]
+                .iter()
+                .any(|role| {
+                    role.prefix
+                        .as_ref()
+                        .is_some_and(|prefix| prefix.len() > 4096)
+                        || role.input_type.as_ref().is_some_and(|kind| {
+                            kind.is_empty()
+                                || kind.len() > 128
+                                || kind.chars().any(char::is_control)
+                        })
+                })
+        {
+            return Err("embedding role invalid".into());
+        }
+        let expected = settings.fingerprint(&self.model, self.dimensions);
+        if self.fingerprint != expected {
+            return Err("embedding profile fingerprint invalid".into());
         }
         Ok(())
     }

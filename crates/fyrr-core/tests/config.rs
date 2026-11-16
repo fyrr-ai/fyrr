@@ -240,6 +240,15 @@ fn example_matches_the_generated_json_schema() {
 
 #[test]
 fn unknown_fields_are_rejected() {
+    for removed in [
+        "profile = 'openai-compatible'",
+        "roles.query.unknown = 'value'",
+    ] {
+        let text = MINIMAL.replace("[embedding]", &format!("[embedding]\n{removed}"));
+        let issue = parse(&text).expect_err("unknown embedding setting");
+        assert!(issue.message.contains("unknown field"), "{issue}");
+    }
+
     for (extra, line) in [
         ("[bogus]\nx = 1", 11),
         ("[reader]\nversion_check_intervall = \"30s\"", 12),

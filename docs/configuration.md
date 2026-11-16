@@ -109,7 +109,7 @@ Docker. It is for a single host:
   a purge as on S3; it copies those files on the same disk, up to
   `reader.mirror_max_bytes`.
 
-The generated configuration schema is revision `2.0`.
+The generated configuration schema is revision `3.0`.
 
 Keep the root and its extended attributes together when making a filesystem
 backup; do not edit its objects or remove its coordination file. There is no
@@ -118,9 +118,10 @@ namespace on the other storage instead.
 
 ## `[embedding]`
 
+The provider must implement the OpenAI-compatible embeddings protocol.
+
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `profile` | `openai-compatible` | The only supported provider protocol. |
 | `endpoint` | required | Base URL of the embeddings API (`…/v1`). |
 | `model` | `BAAI/bge-m3` | 1–512 characters. |
 | `dimensions` | `1024` | 1–8192; must match the model. |
@@ -138,8 +139,8 @@ namespace on the other storage instead.
 | `query_cache_max_bytes` | `16777216` | 0–134217728 (128 MiB): bounded in-process query vector cache per reader process, in bytes. An integer; unit suffixes are refused. |
 
 The writer declares its spend before every call and reserves
-`max_call_microusd` even for an ambiguous timeout. The embedding profile,
-model, dimensions, prefixes, roles and `send_dimensions` bind the namespace:
+`max_call_microusd` even for an ambiguous timeout. The model, dimensions, prefixes,
+roles and `send_dimensions` bind the namespace:
 a change needs a fresh namespace ([upgrades](operations.md#upgrades)).
 
 ## `[[sources]]`

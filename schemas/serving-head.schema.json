@@ -204,5 +204,5 @@
     }
   },
   "x-fyrr-contract": "serving-head",
-  "x-fyrr-schema-version": "2.2"
+  "x-fyrr-schema-version": "3.0"
 }

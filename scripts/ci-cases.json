@@ -55,7 +55,7 @@
         "tier": "quick",
         "seconds": 0.006
       },
-      "full:fyrr-reader:lib:fyrr_reader/embedding::query::tests::process_query_keys_include_the_legacy_profile_and_exact_utf8": {
+      "full:fyrr-reader:lib:fyrr_reader/embedding::query::tests::process_query_keys_include_the_profile_and_exact_utf8": {
         "tier": "quick",
         "seconds": 0.011
       },
@@ -63,7 +63,7 @@
         "tier": "quick",
         "seconds": 0.011
       },
-      "full:fyrr-reader:lib:fyrr_reader/embedding::tests::profile_identity_preserves_legacy_bytes_and_binds_roles": {
+      "full:fyrr-reader:lib:fyrr_reader/embedding::tests::profile_identity_always_records_settings_and_binds_roles": {
         "tier": "quick",
         "seconds": 0.0
       },

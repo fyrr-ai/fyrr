@@ -4,7 +4,9 @@ use EmbeddingError::*;
 
 type Result<T> = std::result::Result<T, EmbeddingError>;
 use fyrr_core::config::EmbeddingConfig;
-use fyrr_core::envelope::{EmbeddingIdentity, EmbeddingSettings};
+use fyrr_core::envelope::{
+    EmbeddingApiStyle, EmbeddingIdentity, EmbeddingRole, EmbeddingRoles, EmbeddingSettings,
+};
 pub use fyrr_core::limits::digest;
 
 mod error;
@@ -61,33 +63,25 @@ pub fn check_profile(config: &EmbeddingConfig) -> Result<()> {
 
 pub fn identity(config: &EmbeddingConfig) -> EmbeddingIdentity {
     let settings = EmbeddingSettings {
-        api_style: config.profile,
+        api_style: EmbeddingApiStyle::OpenaiCompatible,
         prefix: config.prefix.clone(),
-        roles: config.roles.clone(),
+        roles: EmbeddingRoles {
+            document: EmbeddingRole {
+                prefix: config.roles.document.prefix.clone(),
+                input_type: config.roles.document.input_type.clone(),
+            },
+            query: EmbeddingRole {
+                prefix: config.roles.query.prefix.clone(),
+                input_type: config.roles.query.input_type.clone(),
+            },
+        },
         send_dimensions: config.send_dimensions,
-    };
-    let legacy = config.model == "BAAI/bge-m3"
-        && config.dimensions == 1024
-        && config.roles == fyrr_core::config::EmbeddingRoles::default()
-        && !config.send_dimensions;
-    let fingerprint = if legacy {
-        digest(
-            serde_json::json!([config.model, config.dimensions, config.prefix, "exact-utf8"])
-                .to_string()
-                .as_bytes(),
-        )
-    } else {
-        settings.fingerprint(&config.model, config.dimensions)
     };
     EmbeddingIdentity {
         model: config.model.clone(),
         dimensions: config.dimensions,
-        fingerprint,
-        settings: if legacy {
-            None
-        } else {
-            Some(Box::new(settings))
-        },
+        fingerprint: settings.fingerprint(&config.model, config.dimensions),
+        settings: Box::new(settings),
     }
 }
 
