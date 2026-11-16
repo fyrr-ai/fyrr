@@ -339,3 +339,62 @@ def test_members_over_aggregate_limit_emit_no_snapshot(drive, index, monkeypatch
         for batch in index.run("members", "sync", owners=[ALICE]):
             batches.append(batch)
     assert batches == []
+
+
+def test_run_reuses_executor_and_closes_sessions(drive, index, monkeypatch):
+    from fyrr_connectors.google_drive import connector
+
+    pools, sessions, closed = [], [], []
+    original_pool = connector.ThreadPoolExecutor
+    original_session = client.authorized_session
+
+    def pool(*args):
+        created = original_pool(*args)
+        pools.append(created)
+        return created
+
+    def session(*args):
+        created = original_session(*args)
+        sessions.append(created)
+        close = created.close
+
+        def finish():
+            closed.append(created)
+            close()
+
+        created.close = finish
+        return created
+
+    monkeypatch.setattr(connector, "ThreadPoolExecutor", pool)
+    monkeypatch.setattr(client, "authorized_session", session)
+    for number in range(105):
+        drive.put(f"doc-{number}", owner=ALICE)
+    list(index.run("content", "fixed", owners=[ALICE]))
+    assert len(pools) == 1
+    assert sessions and len(sessions) <= 9
+    assert len(closed) == len(sessions)
+
+
+def test_thread_sessions_keep_subject_api_pairs_until_shutdown(monkeypatch):
+    opened = []
+
+    class Session:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    def factory(*args):
+        result = Session()
+        opened.append(result)
+        return result
+
+    monkeypatch.setattr(client, "authorized_session", factory)
+    shared = _client()
+    first = shared._session(ALICE, client.DRIVE)
+    shared._session("admin", client.DRIVE)
+    shared._session("admin", client.DIRECTORY)
+    assert shared._session(ALICE, client.DRIVE) is first
+    assert len(opened) == 3 and not any(session.closed for session in opened)
+    shared.close()
+    assert all(session.closed for session in opened)

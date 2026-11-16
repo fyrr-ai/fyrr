@@ -3889,6 +3889,14 @@
       "python:connectors/tests/google_drive/test_google_drive_client.py::test_worker_sessions_are_owned_by_each_thread": {
         "tier": "quick",
         "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_run_reuses_executor_and_closes_sessions": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_thread_sessions_keep_subject_api_pairs_until_shutdown": {
+        "tier": "quick",
+        "seconds": null
       }
     }
   },

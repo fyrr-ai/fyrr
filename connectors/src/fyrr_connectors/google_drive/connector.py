@@ -10,11 +10,12 @@ Design, the reference review and the tenant items: docs/connectors/google-drive.
 from __future__ import annotations
 
 import hashlib
+import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from functools import partial
+from functools import partial, wraps
 from itertools import chain, islice
 from typing import Any
 from urllib.parse import quote
@@ -85,7 +86,24 @@ def _instant(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
+def _run(operation):
+    @wraps(operation)
+    def run(self, *args, **kwargs):
+        try:
+            with ThreadPoolExecutor(EXPORT_WORKERS) as pool:
+                self._pool = pool
+                self._drives_lock = threading.Lock()
+                yield from operation(self, *args, **kwargs)
+        finally:
+            if hasattr(self, "_client"):
+                self._client.close()
+
+    return run
+
+
 class GoogleDrive(Connector[Settings, Scope]):
+    _pool: ThreadPoolExecutor
+    _drives_lock: threading.Lock
     Settings = Settings
     Scope = Scope
 
@@ -219,16 +237,15 @@ class GoogleDrive(Connector[Settings, Scope]):
                     yield self._delete(file, f"trashed:{file['version']}")
             elif known != _revision(file) and self._folders.contain(feed, file):
                 exports.append(file)
-        with ThreadPoolExecutor(EXPORT_WORKERS) as pool:
-            exported = pool.map(lambda file: self._export(feed, file), exports)
-            for file, sections in zip(exports, exported, strict=True):
-                if sections:
-                    yield self._upsert(feed, file, sections)
-                elif sections is not None and (
-                    published is None or file["id"] in published or file["id"] in pending
-                ):
-                    # Nothing left to index: an emptied document leaves.
-                    yield self._delete(file, _revision(file))
+        exported = self._pool.map(lambda file: self._export(feed, file), exports)
+        for file, sections in zip(exports, exported, strict=True):
+            if sections:
+                yield self._upsert(feed, file, sections)
+            elif sections is not None and (
+                published is None or file["id"] in published or file["id"] in pending
+            ):
+                # Nothing left to index: an emptied document leaves.
+                yield self._delete(file, _revision(file))
 
     def _candidates(
         self,
@@ -255,6 +272,7 @@ class GoogleDrive(Connector[Settings, Scope]):
                 ):
                     yield from beneath(self._client, feed, file["id"], self._mime_types, fields)
 
+    @_run
     def content(self, cursor: str | None) -> Iterator[ContentBatch]:
         feeds = self._open()
         limits = self.context.limits
@@ -291,6 +309,7 @@ class GoogleDrive(Connector[Settings, Scope]):
         if pending or durable != sent:
             yield flush()
 
+    @_run
     def listing(self, cursor: str | None) -> Iterator[ListingBatch]:
         feeds = self._open()
         listing_id = hashlib.sha256(f"{cursor}:{time.time_ns()}".encode()).hexdigest()
@@ -420,14 +439,15 @@ class GoogleDrive(Connector[Settings, Scope]):
                 if error.transient or error.status != 404:
                     raise
                 return None
-        drive = drives.get(feed.drive_id or "")
-        tokens, inherits = readers(listed, drive, feed.drive_id)
-        if drive is not None and not inherits:
-            # A member left since the drive was read, or a limited-access folder.
-            drive = frozenset(
-                permission["id"] for permission in self._drive_permissions(feed.drive_id or "")
-            )
+        with self._drives_lock:
+            drive = drives.get(feed.drive_id or "")
             tokens, inherits = readers(listed, drive, feed.drive_id)
+            if drive is not None and not inherits:
+                # A member left since the drive was read, or a limited-access folder.
+                drive = drives[feed.drive_id or ""] = frozenset(
+                    permission["id"] for permission in self._drive_permissions(feed.drive_id or "")
+                )
+                tokens, inherits = readers(listed, drive, feed.drive_id)
         # The list states the inheritance; a folder above may still cut it.
         inherits = inherits and not self._folders.limited(feed, file)
         containers = [feed.drive_id] if inherits and feed.drive_id else []
@@ -438,6 +458,7 @@ class GoogleDrive(Connector[Settings, Scope]):
             containers=containers,
         )
 
+    @_run
     def permissions(self, cursor: str | None) -> Iterator[PermissionBatch]:
         feeds = self._open(sync_only=True)
         state = Cursor.decode(cursor)
@@ -490,18 +511,18 @@ class GoogleDrive(Connector[Settings, Scope]):
                         and not file.get("trashed")
                         and self._folders.contain(feed, file)
                     ]
-                    with ThreadPoolExecutor(EXPORT_WORKERS) as pool:
-                        read = pool.map(partial(self._permission, feed, drives=drives), wanted)
-                        for document in read:
-                            if document is not None:
-                                if len(pending) >= LOOKUP_ROWS:
-                                    yield flush()
-                                pending[document.root_id] = document
+                    read = self._pool.map(partial(self._permission, feed, drives=drives), wanted)
+                    for document in read:
+                        if document is not None:
+                            if len(pending) >= LOOKUP_ROWS:
+                                yield flush()
+                            pending[document.root_id] = document
                 step()
                 durable = state.encode()
         if pending or durable != sent:
             yield flush()
 
+    @_run
     def members(self, cursor: str | None) -> Iterator[PrincipalBatch]:
         self._connect(sync_only=True)
         budget = Budget()

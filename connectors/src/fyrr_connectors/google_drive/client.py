@@ -84,18 +84,27 @@ class Client:
             raise ValueError("google_drive_service_account_invalid") from None
         self._endpoint = endpoint
         self._local = threading.local()
+        self._lock = threading.Lock()
+        self._sessions: list[requests.Session] = []
 
     def _session(self, subject: str, api: str) -> requests.Session:
         sessions = getattr(self._local, "sessions", None)
         if sessions is None:
             sessions = self._local.sessions = {}
         if (subject, api) not in sessions:
-            # Only this worker owns these connections and may close them.
-            for session in sessions.values():
-                session.close()
-            sessions.clear()
-            sessions[subject, api] = authorized_session(self._key, subject, api)
+            session = authorized_session(self._key, subject, api)
+            sessions[subject, api] = session
+            with self._lock:
+                self._sessions.append(session)
         return sessions[subject, api]
+
+    def close(self) -> None:
+        # Called after all run workers have stopped.
+        with self._lock:
+            for session in self._sessions:
+                session.close()
+            self._sessions.clear()
+            self._local = threading.local()
 
     def _request[T](
         self,
