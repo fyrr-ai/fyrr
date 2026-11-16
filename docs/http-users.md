@@ -218,6 +218,8 @@ requests get `503 authorization_unavailable`.
   writer's SCIM 2.0 endpoint on the administration listener
   (`[writer.serve.admin]`), with subjects bound under
   `identity.directory.issuer`, which `identity.oidc.issuer` must equal.
+  A namespace supports at most 100,000 live users and groups combined;
+  JSON request bodies are limited to 1 MiB.
   Clients must send the current ETag (`meta.version`) in `If-Match` for PUT,
   PATCH and DELETE; a missing precondition returns 428 and a stale one 412.
   Lists support `startIndex`, `count` (at most 1,000) and `eq` filters on
