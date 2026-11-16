@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readResults, parseResults, assertPublishable, headlineVerdict, renderMetric, renderSections, renderProducts, relativeValue } from '../lib/compare';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -89,6 +89,20 @@ test('zero is a measured result, ratios handle zero baselines and axes stay roun
   assert.equal(relativeValue(0, 0, 'lower_is_better'), 1);
   assert.equal(relativeValue(1, 0, 'lower_is_better'), Infinity);
 });
+test('first-ask and repeated-query latency have independent controls and diagnostics stay scoped', () => {
+  const data = structuredClone(fixture);
+  data.website.metrics.engine_diagnostic = { key: 'engine_diagnostic', label: 'Engine time', unit: 'ms', group: 'speed', direction: 'lower_is_better', ci: null, tier: 'secondary', scope: 'fyrr-only', description: 'Total minus embedding stage; not a cross-product measurement.' };
+  for (const system of data.systems) system.metrics.engine_diagnostic = { status: 'n/e', value: null, unit: 'ms', n: 0 };
+  const html = renderSections(parseResults(data));
+  assert(html.includes('id="tab-first_ask_c8_p50_ms"'));
+  assert(html.includes('id="tab-repeat-warm_c8_p50_ms"'));
+  const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
+  assert.equal(new Set(ids).size, ids.length);
+  const diagnostic = renderMetric(data, 'engine_diagnostic');
+  assert(diagnostic.includes('No cross-product comparison'));
+  assert(!diagnostic.includes('data-system="onyx"'));
+  assert(!diagnostic.includes('data-system="pipeshub"'));
+});
 test('deploy guard rejects draft even when the local preview opt-in is set', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fyrr-site-draft-'));
   try {
@@ -113,4 +127,23 @@ test('an optional variant has its own row and cannot win the default headline', 
   assert.equal((renderProducts(data).match(/class="product-card/g) ?? []).length, new Set(data.systems.map(system => system.id)).size);
   data.systems.push(structuredClone(data.systems[0]));
   assert.throws(() => parseResults({ ...data, draft: true }), /unique product\/variant/);
+});
+test('synthetic or smoke fixtures cannot overwrite the committed results', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fyrr-site-import-'));
+  const before = readFileSync('data/compare-results.json', 'utf8');
+  try {
+    mkdirSync(join(dir, 'data'));
+    const canonical = join(dir, 'data/compare-results.json');
+    writeFileSync(canonical, before);
+    const importer = join(process.cwd(), 'scripts/import-compare.ts');
+    for (const synthetic of [true, false]) {
+      const file = join(dir, 'rejected.json');
+      writeFileSync(file, JSON.stringify({ ...fixture, synthetic_design_preview: synthetic, benchmark: { ...fixture.benchmark, publishable: false } }));
+      const child = spawnSync(process.execPath, [importer, file], { cwd: dir, encoding: 'utf8' });
+      assert.notEqual(child.status, 0);
+      assert.match(child.stderr, /cannot be imported/);
+      assert.equal(readFileSync('data/compare-results.json', 'utf8'), before);
+      assert.equal(readFileSync(canonical, 'utf8'), before);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

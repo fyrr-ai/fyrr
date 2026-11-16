@@ -33,7 +33,7 @@ export type Results = {
   }[];
   website: {
     headline_metric: string; groups: Group[];
-    metrics: Record<string, { key: string; label: string; unit: string; group: string; direction: 'higher_is_better' | 'lower_is_better'; ci: Record<string, unknown> | null; tier?: 'primary' | 'secondary' }>;
+    metrics: Record<string, { key: string; label: string; unit: string; group: string; direction: 'higher_is_better' | 'lower_is_better'; ci: Record<string, unknown> | null; tier?: 'primary' | 'secondary'; scope?: string; description?: string }>;
     products: Record<string, Product>;
     features?: Feature[];
     variant_note?: string;
@@ -109,7 +109,7 @@ export function parseResults(data: unknown): Results {
     requireField(/^[a-z][a-z0-9_-]*$/.test(String(group.id)) && !groups.has(String(group.id)), 'unique group id');
     groups.add(String(group.id));
   }
-  for (const [key, meta] of Object.entries(w.metrics)) requireField(object(meta) && meta.key === key && typeof meta.label === 'string' && typeof meta.unit === 'string' && (groups.has(String(meta.group)) || meta.group === 'cost') && ['higher_is_better', 'lower_is_better'].includes(String(meta.direction)) && (meta.ci === null || object(meta.ci)), 'metric presentation metadata');
+  for (const [key, meta] of Object.entries(w.metrics)) requireField(object(meta) && meta.key === key && typeof meta.label === 'string' && typeof meta.unit === 'string' && (groups.has(String(meta.group)) || meta.group === 'cost') && ['higher_is_better', 'lower_is_better'].includes(String(meta.direction)) && (meta.ci === null || object(meta.ci)) && (meta.scope === undefined || typeof meta.scope === 'string') && (meta.description === undefined || typeof meta.description === 'string'), 'metric presentation metadata');
   for (const product of Object.values(w.products)) {
     requireField(object(product) && typeof product.type === 'string' && strings(product.pros) && strings(product.cons) && Array.isArray(product.sources), 'product presentation metadata');
     for (const source of product.sources) requireField(object(source) && typeof source.label === 'string' && typeof source.url === 'string', 'product source');
@@ -228,6 +228,7 @@ export function headlineVerdict(results: Results) {
 
 export function renderMetric(results: Results, key: string, options: { tailKey?: string; axisMax?: number } = {}) {
   const meta = results.website.metrics[key];
+  if (meta?.scope === 'fyrr-only') results = { ...results, systems: results.systems.filter(system => system.id === 'fyrr') };
   const cells = results.systems.map(system => system.metrics[key]);
   const unit = cells.find(Boolean)?.unit ?? meta?.unit ?? '';
   const tails = options.tailKey ? results.systems.map(system => system.metrics[options.tailKey!]) : [];
@@ -237,7 +238,7 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
   const max = axis.max;
   const pct = (value: number) => max ? `${value / max * 100}%` : '0%';
   const caption = results.draft ? 'Preliminary / placeholder data. No published scores or rankings.' : 'Whiskers show 95% confidence intervals where available. Partial results cannot establish a product win.';
-  const title = options.tailKey ? 'Warm search latency' : meta?.label ?? name(key);
+  const title = options.tailKey ? key.startsWith('first_ask_') ? 'First-ask search latency' : 'Repeated-query search latency' : meta?.label ?? name(key);
   function detailsFor(system: Results['systems'][number], metric: Metric | undefined, label: string) {
     if (!metric) return `<li>${escape(runLabel(results, system))} · ${escape(label)}: n/e · metric absent from this run.</li>`;
     return `<li>${escape(runLabel(results, system))} · ${escape(label)}: ${escape(metric.status)} · valid ${metric.n} / attempted ${metric.attempted ?? 'n/e'} · missing ${metric.missing ?? 'n/e'}${metric.ci95 ? ` · 95% CI ${format(metric.ci95[0], unit)}–${format(metric.ci95[1], unit)}` : ' · 95% CI n/e'}${metric.method ? ` · ${escape(metric.method)}` : ''}${metric.notes?.length ? ` · ${escape(metric.notes.join(' '))}` : ''}${metric.artifact ? ` · ${escape(metric.artifact)}` : ''}</li>`;
@@ -262,9 +263,10 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
     </div>`;
   }).join('');
   return `<figure class="panel metric-panel rv" data-metric="${escape(key)}" data-direction="${escape(meta?.direction ?? '')}"${options.tailKey ? ` data-companion="${escape(options.tailKey)}"` : ''}>
-    <figcaption class="panel__bar"><span>${escape(meta ? results.website.groups.find(group => group.id === meta.group)?.label ?? 'Additional metric' : 'Additional metric')}${meta?.tier === 'secondary' ? ' / secondary' : ''}</span><span>${meta?.direction ? `${meta.direction === 'higher_is_better' ? 'higher' : 'lower'} is better` : 'Reported value'}</span></figcaption>
+    <figcaption class="panel__bar"><span>${meta?.scope === 'fyrr-only' ? 'FYRR-only diagnostic' : escape(meta ? results.website.groups.find(group => group.id === (meta.group === 'cost' ? 'footprint' : meta.group))?.label ?? 'Additional metric' : 'Additional metric')}${meta?.tier === 'secondary' ? ' / secondary' : ''}</span><span>${meta?.scope === 'fyrr-only' ? 'No cross-product comparison' : meta?.direction ? `${meta.direction === 'higher_is_better' ? 'higher' : 'lower'} is better` : 'Reported value'}</span></figcaption>
     <div class="panel__body"><h3 class="metric-title">${escape(title)}</h3>
       <p class="metric-sub">${escape(unit === 'fraction' ? 'Score · full scale 0–100%' : unit === 'bytes' ? 'Memory / storage · scaled to MiB or GiB' : unit)}${available.length ? '' : ' · awaiting measurements'}</p>
+      ${meta?.description ? `<p class="metric-sub">${escape(meta.description)}</p>` : ''}
       ${options.tailKey ? '<p class="chart-legend"><span><i></i> p50 bar</span><span><b></b> p95 tick</span><span>Whiskers: 95% CI</span></p>' : ''}
       <div class="chart${options.tailKey ? ' chart--latency' : ''}" role="list" aria-label="${escape(title)} by product">${rows}</div>
       ${max ? `<div class="axis" aria-hidden="true">${Array.from({ length: Math.round(max / axis.step) + 1 }, (_, i) => `<span>${unit === 'fraction' ? `${Math.round(i * axis.step * 100)}%` : format(i * axis.step, unit)}</span>`).join('')}</div>` : '<p class="axis-pending">n/e · no measured scale</p>'}
@@ -275,8 +277,9 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
 
 function renderMetricSet(results: Results, group: string, keys: string[], prefix = '') {
   const latency = group === 'speed';
+  const timing = keys.some(key => key.startsWith('first_ask_')) ? 'first_ask' : 'warm';
   const views = latency ? ['1', '8'].map(concurrency => ({
-    key: `warm_c${concurrency}_p50_ms`, tailKey: `warm_c${concurrency}_p95_ms`, label: `Concurrency ${concurrency}`,
+    key: `${timing}_c${concurrency}_p50_ms`, tailKey: `${timing}_c${concurrency}_p95_ms`, label: `Concurrency ${concurrency}`,
   })) : [...new Set(['recall_at_10', 'ndcg_at_10', 'recall_at_50', ...keys])].filter(key => keys.includes(key)).map(key => ({ key, tailKey: undefined, label: results.website.metrics[key]?.label ?? name(key) }));
   const present = views.filter(view => keys.includes(view.key) || Boolean(view.tailKey && keys.includes(view.tailKey)));
   if (!present.length) return '';
@@ -324,7 +327,14 @@ export function renderSections(results: Results, prefix = '') {
   const unknown = keys.filter(key => !results.website.metrics[key]);
   return [...results.website.groups, ...(unknown.length ? [{ id: 'additional', number: '+', label: 'Additional metrics', title: 'More of the picture.', description: 'Additional measurements reported by the benchmark.' }] : [])].map(group => {
     const selected = group.id === 'additional' ? unknown : keys.filter(key => results.website.metrics[key]?.group === group.id || group.id === 'footprint' && results.website.metrics[key]?.group === 'cost');
-    return `<section class="section" id="${escape(prefix + group.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">${escape(group.number)} / ${escape(group.label)}</p><h2>${escape(group.title)}</h2><p class="sub">${escape(group.description)}</p></div><div class="charts">${group.id === 'retrieval' ? renderMetricSet(results, group.id, selected) : group.id === 'speed' ? renderMetricSet(results, group.id, selected.filter(key => /^warm_c[18]_p(?:50|95)_ms$/.test(key))) + selected.filter(key => !/^warm_c[18]_p(?:50|95)_ms$/.test(key)).map(key => renderMetric(results, key)).join('') : selected.map(key => renderMetric(results, key)).join('')}</div>${group.id === 'footprint' ? renderFootprints(results) : ''}<p class="note">n/e = not evaluated. Invalid = unusable measurement. * = partial; see samples and uncertainty. ${group.id === 'quality' ? 'Shared answer track only. Native answer results, if available, are labelled separately.' : ''}</p></div></section>`;
+    let charts: string;
+    if (group.id === 'retrieval') charts = renderMetricSet(results, group.id, selected);
+    else if (group.id === 'speed') {
+      const timing = /^(?:first_ask|warm)_c[18]_p(?:50|95)_ms$/;
+      charts = ['first_ask', 'warm'].map(family => renderMetricSet(results, group.id, selected.filter(key => timing.test(key) && key.startsWith(family)), family === 'warm' ? 'repeat-' : '')).join('')
+        + selected.filter(key => !timing.test(key)).map(key => renderMetric(results, key)).join('');
+    } else charts = selected.map(key => renderMetric(results, key)).join('');
+    return `<section class="section" id="${escape(prefix + group.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">${escape(group.number)} / ${escape(group.label)}</p><h2>${escape(group.title)}</h2><p class="sub">${escape(group.description)}</p></div><div class="charts">${charts}</div>${group.id === 'footprint' ? renderFootprints(results) : ''}<p class="note">n/e = not evaluated. Invalid = unusable measurement. * = partial; see samples and uncertainty. ${group.id === 'quality' ? 'Shared answer track only. Native answer results, if available, are labelled separately.' : ''}</p></div></section>`;
   }).join('');
 }
 
@@ -373,5 +383,5 @@ export function renderMethodology(results: Results) {
   const answer = object(results.protocol.answer) ? results.protocol.answer : {};
   const judge = object(results.protocol.judge) ? results.protocol.judge : {};
   const modelSummary = `Generator: ${answer.model ?? 'n/e'} (${answer.reasoning_effort ?? 'n/e'} reasoning). Judge: ${judge.model ?? 'n/e'} (${judge.reasoning_effort ?? 'n/e'} reasoning). Transport: ${answer.transport ?? answer.backend ?? 'n/e'}. Exact prompts and hashes are in provenance below.`;
-  return `<dl class="method-grid">${results.website.methodology.map(item => `<div class="method-item"><dt>${escape(item.label)}</dt><dd>${escape(item.text)}${item.url ? ` <a href="${link(item.url)}">Source ↗</a>` : ''}</dd></div>`).join('')}<div class="method-item"><dt>Answer &amp; judge protocol metadata</dt><dd>${escape(modelSummary)}</dd></div></dl><details class="run-config"><summary>Versions, dates, configurations &amp; provenance</summary><pre>${escape(JSON.stringify({ ...provenance, details: undefined, systems: systems.map(({ id, variant, version, config, date, status, notes, artifacts }) => ({ id, variant: variant ?? 'default', version, config, date, status, notes, artifacts })) }, null, 2))}</pre></details><div class="method-links"><a class="btn btn--primary" href="/compare/results.json">Download results JSON ↗</a><a class="btn" href="${link(String(results.benchmark.source_url))}">Upstream benchmark ↗</a></div><details class="run-config"><summary>Add your system / reproduce a run</summary><ol class="contribute-steps"><li>Use the frozen corpus and question selection; verify the manifest hashes.</li><li>Implement the benchmark adapter against the actual product API. Preserve native ranking and return product-selected evidence.</li><li>Run the shared protocol. Record every attempt, missing result, exact version, date, hardware and nonsecret configuration.</li><li>Export one schema 1.1 results JSON per run, including the metric catalogue, confidence intervals, artifacts and detailed rows.</li><li>Contribute the JSON and reproducibility artifacts to the open benchmark repository when its public URL is available. Until then, the downloadable JSON is the local review artifact.</li></ol></details><p class="note">Published by the fyrr team. Product descriptions link to their sources; measurements apply only to the exact configurations recorded above. Open comparison repository: ${results.benchmark.repository_url ? `<a href="${link(String(results.benchmark.repository_url))}">Reproduce &amp; add a system ↗</a>` : 'n/e · not published yet; no public artifact URL is claimed.'}</p>`;
+  return `<dl class="method-grid">${results.website.methodology.map(item => `<div class="method-item"><dt>${escape(item.label)}</dt><dd>${escape(item.text)}${item.url ? ` <a href="${link(item.url)}">Source ↗</a>` : ''}</dd></div>`).join('')}<div class="method-item"><dt>Answer &amp; judge protocol metadata</dt><dd>${escape(modelSummary)}</dd></div></dl><details class="run-config"><summary>Versions, dates, configurations &amp; provenance</summary><pre>${escape(JSON.stringify({ ...provenance, details: undefined, systems: systems.map(({ metrics: _metrics, footprint: _footprint, ...system }) => ({ ...system, variant: system.variant ?? 'default' })) }, null, 2))}</pre></details><div class="method-links"><a class="btn btn--primary" href="/compare/results.json">Download results JSON ↗</a><a class="btn" href="${link(String(results.benchmark.source_url))}">Upstream benchmark ↗</a></div><details class="run-config"><summary>Add your system / reproduce a run</summary><ol class="contribute-steps"><li>Use the frozen corpus and question selection; verify the manifest hashes.</li><li>Implement the benchmark adapter against the actual product API. Preserve native ranking and return product-selected evidence.</li><li>Run the shared protocol. Record every attempt, missing result, exact version, date, hardware and nonsecret configuration.</li><li>Export one schema 1.1 results JSON per run, including the metric catalogue, confidence intervals, artifacts and detailed rows.</li><li>Contribute the JSON and reproducibility artifacts to the open benchmark repository when its public URL is available. Until then, the downloadable JSON is the local review artifact.</li></ol></details><p class="note">Published by the fyrr team. Product descriptions link to their sources; measurements apply only to the exact configurations recorded above. Open comparison repository: ${results.benchmark.repository_url ? `<a href="${link(String(results.benchmark.repository_url))}">Reproduce &amp; add a system ↗</a>` : 'n/e · not published yet; no public artifact URL is claimed.'}</p>`;
 }
