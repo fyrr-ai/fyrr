@@ -44,9 +44,10 @@ def test_rate_limits_and_server_errors_are_retried(
 def test_retry_after_is_honored_and_bounded(drive: FakeDrive) -> None:
     drive.fail(_files, 429, retry_after="7")
     drive.fail(_files, 429, retry_after="900")
-    _client().get(ALICE, "files", corpora="user")
+    with pytest.raises(ApiError):
+        _client().get(ALICE, "files", corpora="user")
     assert 7 <= drive.sleeps[0] < 8.01
-    assert drive.sleeps[1] <= client.MAX_WAIT_SECONDS + 1
+    assert len(drive.sleeps) == 1
 
 
 def test_exhausted_retries_are_transient_failures(drive: FakeDrive) -> None:
@@ -295,3 +296,35 @@ def test_listing_over_aggregate_limit_never_completes(drive, index, monkeypatch)
         for batch in index.run("reconcile", "sync", owners=[ALICE]):
             batches.append(batch)
     assert all(not getattr(batch, "complete", False) for batch in batches)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("7", 7),
+        ("Wed, 21 Oct 2015 07:28:00 GMT", 10),
+        ("Wed, 21 Oct 2015 07:27:00 GMT", 0),
+        ("soon", None),
+        ("nan", None),
+        ("-1", None),
+    ],
+)
+def test_shared_retry_after_parser(value, expected, monkeypatch):
+    from fyrr_connectors import _http
+
+    monkeypatch.setattr(_http.time, "time", lambda: 1445412470)
+    assert _http.retry_after(value) == expected
+
+
+def test_retry_after_over_remaining_budget_fails_without_sleep(monkeypatch):
+    from fyrr_connectors import _http
+
+    sleeps = []
+    monkeypatch.setattr(_http.time, "sleep", sleeps.append)
+    retries = _http.Retries(_http.RetryPolicy(budget=1), ValueError("budget"))
+    attempts = iter(retries)
+    next(attempts)
+    retries.wait = 2
+    with pytest.raises(ValueError, match="budget"):
+        next(attempts)
+    assert sleeps == []

@@ -100,7 +100,12 @@ class Client:
         status, code = 0, "transport"
         retries = _http.Retries(
             _http.RetryPolicy(
-                ATTEMPTS, float("inf"), MAX_WAIT_SECONDS, jitter="wait", retry_statuses=(409, 429)
+                ATTEMPTS,
+                float("inf"),
+                MAX_WAIT_SECONDS,
+                jitter="wait",
+                budget=300,
+                retry_statuses=(409, 429),
             ),
             ApiError(0, "transport", transient=True),
         )
@@ -144,7 +149,7 @@ class Client:
                 continue
             code = _code(response)
             if retries.policy.retryable(status):
-                after = _http.seconds(response.headers.get("Retry-After", ""))
+                after = _http.retry_after(response.headers.get("Retry-After", ""))
                 if after is not None:
                     retries.wait = after
                 continue

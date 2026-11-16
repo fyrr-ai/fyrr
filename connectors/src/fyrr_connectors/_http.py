@@ -8,6 +8,7 @@ import random
 import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from functools import wraps
 from urllib.parse import urlsplit
 
@@ -37,6 +38,19 @@ def seconds(value: str) -> float | None:
     return result if math.isfinite(result) and result >= 0 else None
 
 
+def retry_after(value: str) -> float | None:
+    numeric = seconds(value)
+    if numeric is not None:
+        return numeric
+    try:
+        date = parsedate_to_datetime(value)
+        if date.tzinfo is None:
+            return None
+        return max(0.0, date.timestamp() - time.time())
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
 @dataclass(frozen=True)
 class RetryPolicy:
     attempts: int = 6
@@ -63,7 +77,9 @@ class Retries:
     def __iter__(self) -> Iterator[int]:
         began = time.monotonic()
         for attempt in range(self.policy.attempts):
-            wait = min(self.policy.wait_cap, self.wait)
+            wait = self.wait
+            if wait > self.policy.wait_cap:
+                raise self.error
             if attempt and self.policy.jitter == "wait":
                 wait += random.uniform(0, 1)
             if wait:
@@ -127,7 +143,7 @@ def json_response(response, retries, error, limit, http_error=None):
     if policy.retryable(status):
         wait = None
         if status == 429:
-            wait = seconds(response.headers.get(policy.retry_header, ""))
+            wait = retry_after(response.headers.get(policy.retry_header, ""))
             if wait is None or wait > policy.budget:
                 raise error("rate_header_invalid")
         code = "rate_limited" if status == 429 else policy.server_error

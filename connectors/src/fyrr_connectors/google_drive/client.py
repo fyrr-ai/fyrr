@@ -107,7 +107,7 @@ class Client:
     ) -> T:
         status, reason = 0, "transport"
         retries = _http.Retries(
-            _http.RetryPolicy(ATTEMPTS, float("inf"), MAX_WAIT_SECONDS, jitter="wait"),
+            _http.RetryPolicy(ATTEMPTS, float("inf"), MAX_WAIT_SECONDS, jitter="wait", budget=300),
             ApiError(0, "transport", transient=True),
         )
         for _attempt in retries:
@@ -128,8 +128,9 @@ class Client:
                 status, reason = 0, "transport"
                 continue
             if retries.policy.retryable(status) or reason in RATE_LIMIT_REASONS:
-                if retry_after.isdigit():
-                    retries.wait = float(retry_after)
+                delay = _http.retry_after(retry_after)
+                if delay is not None:
+                    retries.wait = delay
                 continue
             raise ApiError(status, reason, location)
         raise ApiError(status, reason, transient=True)
