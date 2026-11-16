@@ -10,83 +10,38 @@ use super::*;
 
 /// The fake Notion as a process; it ends when this is dropped.
 struct Fake {
-    child: std::process::Child,
-    endpoint: String,
+    server: super::synthetic::Server,
     token: String,
 }
 
 impl Fake {
     fn start() -> Self {
-        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut child = Command::new(checkout.join("connectors/.venv/bin/python"))
-            .arg(checkout.join("connectors/tests/notion/fake_notion.py"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("fake Notion");
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let connection: Value = serde_json::from_str(&line).expect("fake Notion connection");
-        Self {
-            child,
-            endpoint: connection["endpoint"].as_str().unwrap().to_owned(),
-            token: connection["token"].as_str().unwrap().to_owned(),
-        }
-    }
-
-    /// `POST /fake/<name>`: change the world, inject a fault, read the request log.
-    fn call(&self, name: &str, arguments: Value) -> Value {
-        let output = Command::new("curl")
-            .args([
-                "-sS",
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-            ])
-            .arg(arguments.to_string())
-            .arg(format!("{}/fake/{name}", self.endpoint))
-            .output()
-            .expect("curl");
-        let answer: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
-        assert!(
-            answer.get("result").is_some(),
-            "fake {name}: {} {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        answer["result"].clone()
+        let server = super::synthetic::Server::start("notion/fake_notion.py");
+        let token = server.connection["token"].as_str().unwrap().into();
+        Self { server, token }
     }
 
     /// A page with one paragraph; its ID.
     fn page(&self, name: &str, parent: &str, text: &str) -> String {
         let blocks = json!([{"kind": "paragraph", "text": text}]);
-        self.call(
-            "page",
-            json!({"name": name, "parent": parent, "blocks": blocks}),
-        )
-        .as_str()
-        .unwrap()
-        .to_owned()
+        self.server
+            .call(
+                "page",
+                json!({"name": name, "parent": parent, "blocks": blocks}),
+            )
+            .as_str()
+            .unwrap()
+            .to_owned()
     }
 
     /// How often the page's own block list was asked for.
     fn reads(&self, page: &str) -> usize {
         let path = format!("/blocks/{page}/children$");
-        self.call("requests", json!({"match": {"path": path}}))
+        self.server
+            .call("requests", json!({"match": {"path": path}}))
             .as_array()
             .unwrap()
             .len()
-    }
-}
-
-impl Drop for Fake {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
@@ -94,7 +49,9 @@ impl Drop for Fake {
 /// one document per envelope; the worker's config and the committer's.
 fn fixture(fake: &Fake) -> (PathBuf, PathBuf, FixtureRoot) {
     let (config, root) = setup();
-    let root_page = fake.call("page", json!({"name": "root", "title": "Handbook"}));
+    let root_page = fake
+        .server
+        .call("page", json!({"name": "root", "title": "Handbook"}));
     let text = std::fs::read_to_string(&config).unwrap();
     std::fs::write(
         &config,
@@ -103,7 +60,7 @@ fn fixture(fake: &Fake) -> (PathBuf, PathBuf, FixtureRoot) {
              readers=['grp:allow']\ndocument_max_bytes='64B'\n[sources.settings]\n\
              token={{ env='FYRR_TEST_NOTION_TOKEN' }}\napi_endpoint='{}'\n[sources.scope]\n\
              root_pages=['{}']\n",
-            fake.endpoint,
+            fake.server.endpoint,
             root_page.as_str().unwrap()
         ),
     )
@@ -167,7 +124,7 @@ async fn notion_content_changes_quarantine_and_reconcile_on_storage() {
     // The first sync fails at the last page, with `notes` read but not yet
     // handed over. What was acknowledged stays, and the next run continues
     // behind it: the cursor follows the envelopes.
-    fake.call(
+    fake.server.call(
         "fail",
         json!({"match": {"path": format!("/blocks/{late}/children$")},
                "status": 503, "times": 6, "retry_after": "0"}),
@@ -206,8 +163,10 @@ async fn notion_content_changes_quarantine_and_reconcile_on_storage() {
 
     // Edit, a database row, trash; an oversized page is quarantined and the sync goes on.
     fake.page("plan", "root", "fixture document 4");
-    fake.call("database", json!({"name": "tasks", "parent": "root"}));
+    fake.server
+        .call("database", json!({"name": "tasks", "parent": "root"}));
     let task = fake
+        .server
         .call(
             "row",
             json!({"name": "task", "database": "tasks", "title": "fixture document 5"}),
@@ -216,7 +175,7 @@ async fn notion_content_changes_quarantine_and_reconcile_on_storage() {
         .unwrap()
         .to_owned();
     fake.page("huge", "root", &"fixture document 6 ".repeat(8));
-    fake.call("trash", json!({"name": "early"}));
+    fake.server.call("trash", json!({"name": "early"}));
     let report = synced(&worker, &fake, &["--kind", "content"]);
     assert_eq!(report["stats"]["quarantined"], 1);
     assert_eq!(
@@ -241,9 +200,10 @@ async fn notion_content_changes_quarantine_and_reconcile_on_storage() {
 
     // A page that left the roots has no change entry. A failed listing
     // deletes nothing; the next complete one removes it.
-    fake.call("move", json!({"name": "notes", "parent": null}));
+    fake.server
+        .call("move", json!({"name": "notes", "parent": null}));
     synced(&worker, &fake, &["--kind", "content"]);
-    fake.call(
+    fake.server.call(
         "fail",
         json!({"match": {"path": format!("/blocks/{late}/children$")},
                "status": 503, "times": 6, "retry_after": "0"}),

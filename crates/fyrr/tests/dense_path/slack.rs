@@ -3,53 +3,8 @@ use super::coordination::{committer_host, worker_command, worker_sync};
 use super::incremental::{publish, source_roots};
 use super::*;
 
-struct Fake {
-    child: std::process::Child,
-    endpoint: String,
-}
-impl Fake {
-    fn start() -> Self {
-        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut child = Command::new(checkout.join("connectors/.venv/bin/python"))
-            .arg(checkout.join("connectors/tests/slack/fake_slack.py"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let result: Value = serde_json::from_str(&line).unwrap();
-        Self {
-            child,
-            endpoint: result["endpoint"].as_str().unwrap().into(),
-        }
-    }
-    fn call(&self, operation: &str, body: Value) -> Value {
-        let output = Command::new("curl")
-            .args([
-                "-fsS",
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-            ])
-            .arg(body.to_string())
-            .arg(format!("{}/fake/{operation}", self.endpoint))
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "synthetic Slack control failed");
-        serde_json::from_slice::<Value>(&output.stdout).unwrap()["result"].clone()
-    }
-}
-impl Drop for Fake {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
+use super::synthetic::Server as Fake;
+
 fn fixture(fake: &Fake, mode: &str) -> (PathBuf, PathBuf, FixtureRoot) {
     let (worker, root) = setup();
     let text = std::fs::read_to_string(&worker).unwrap();
@@ -99,7 +54,7 @@ fn synced(worker: &Path, args: &[&str]) -> Value {
 #[tokio::test]
 #[ignore = "actual worker/reader and local storage; coordinator Cargo slot"]
 async fn slack_fixed_windows_threads_quarantine_and_reconcile_on_storage() {
-    let fake = Fake::start();
+    let fake = Fake::start("slack/fake_slack.py");
     let (worker, commit, _root) = fixture(&fake, "fixed");
     let first = fake.call("post", json!({"text":"fixture document 0","seconds":400}));
     fake.call("post", json!({"text":"fixture document 1","seconds":400}));
@@ -155,7 +110,7 @@ async fn slack_fixed_windows_threads_quarantine_and_reconcile_on_storage() {
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn slack_sync_silent_content_and_revoke_on_storage() {
-    let fake = Fake::start();
+    let fake = Fake::start("slack/fake_slack.py");
     let (worker, commit, _root) = fixture(&fake, "sync");
     fake.call(
         "channel",

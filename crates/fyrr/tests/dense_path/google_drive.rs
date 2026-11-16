@@ -21,63 +21,36 @@ const SYNC: &str = "permissions='sync'\nintervals={ permissions='5m', members='5
 /// The fake Drive as a process. It ends with the test: on drop, or when its
 /// standard input closes.
 struct Drive {
-    child: std::process::Child,
-    endpoint: String,
+    server: super::synthetic::Server,
     key: String,
-    http: reqwest::Client,
 }
 impl Drive {
     fn start() -> Self {
-        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut child = Command::new(checkout.join("connectors/.venv/bin/python"))
-            .arg(checkout.join("connectors/tests/google_drive/fake_drive.py"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("the fake Drive; run scripts/doctor");
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let connection: Value = serde_json::from_str(&line).expect("the fake's connection line");
-        Self {
-            child,
-            endpoint: connection["endpoint"].as_str().unwrap().to_owned(),
-            key: connection["service_account"].as_str().unwrap().to_owned(),
-            http: reqwest::Client::builder().no_proxy().build().unwrap(),
-        }
-    }
-    /// `POST /fake/<name>`: change the world, inject a fault, read the request log.
-    async fn call(&self, name: &str, arguments: Value) -> Value {
-        let response = self
-            .http
-            .post(format!("{}/fake/{name}", self.endpoint))
-            .json(&arguments)
-            .send()
-            .await
-            .unwrap();
-        let status = response.status();
-        let body: Value = response.json().await.unwrap();
-        assert!(status.is_success(), "fake {name}: {body}");
-        body["result"].clone()
+        let server = super::synthetic::Server::start("google_drive/fake_drive.py");
+        let key = server.connection["service_account"]
+            .as_str()
+            .unwrap()
+            .into();
+        Self { server, key }
     }
     async fn put(&self, file: &str, text: &str, place: Value) {
         let mut arguments = json!({"file_id":file,"content":text});
         for (key, value) in place.as_object().unwrap() {
             arguments[key] = value.clone();
         }
-        self.call("put", arguments).await;
+        self.server.call_async("put", arguments).await;
     }
     /// How often the connector exported `file`.
     async fn exports(&self, file: &str) -> usize {
-        self.call(
-            "requests",
-            json!({"match":{"path":format!("/files/{file}/export$")}}),
-        )
-        .await
-        .as_array()
-        .unwrap()
-        .len()
+        self.server
+            .call_async(
+                "requests",
+                json!({"match":{"path":format!("/files/{file}/export$")}}),
+            )
+            .await
+            .as_array()
+            .unwrap()
+            .len()
     }
     /// `fyrr writer sync drive` as a worker that holds the fake's key.
     fn sync_command(&self, config: &Path) -> Command {
@@ -110,13 +83,6 @@ impl Drive {
         );
     }
 }
-impl Drop for Drive {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
 /// A published namespace (the local-file sources) whose `drive` source reads
 /// the fake. `keys` are the source's own keys: permissions mode, readers,
 /// intervals, limits.
@@ -130,7 +96,7 @@ fn fixture(drive: &Drive, keys: &str) -> (PathBuf, PathBuf, FixtureRoot) {
         &config,
         format!(
             "{text}\n[[sources]]\nid='drive'\ntype='google-drive'\n{keys}\n[sources.settings]\nservice_account={{ env='FYRR_TEST_GDRIVE_KEY' }}\nadmin_email='admin@example.com'\napi_endpoint='{}'\n[sources.scope]\n{SCOPE}\n",
-            drive.endpoint
+            drive.server.endpoint
         ),
     )
     .unwrap();
@@ -230,13 +196,21 @@ async fn google_drive_sync_source_grants_and_revokes_in_every_lane_on_storage() 
     let drive = Drive::start();
     let staff = "staff@example.test";
     let grant = format!("p-{READER}");
-    drive.call("user", json!({"email":OWNER})).await;
-    drive.call("user", json!({"email":READER})).await;
     drive
-        .call("group", json!({"email":staff,"members":[[READER,"USER"]]}))
+        .server
+        .call_async("user", json!({"email":OWNER}))
         .await;
     drive
-        .call(
+        .server
+        .call_async("user", json!({"email":READER}))
+        .await;
+    drive
+        .server
+        .call_async("group", json!({"email":staff,"members":[[READER,"USER"]]}))
+        .await;
+    drive
+        .server
+        .call_async(
             "drive",
             json!({"drive_id":"drive-eng","name":"Engineering","members":[OWNER,READER]}),
         )
@@ -253,7 +227,8 @@ async fn google_drive_sync_source_grants_and_revokes_in_every_lane_on_storage() 
         .await;
     drive.put("team", text, json!({"owner":OWNER})).await;
     drive
-        .call(
+        .server
+        .call_async(
             "share",
             json!({"file_id":"team","type":"group","emailAddress":staff}),
         )
@@ -311,7 +286,8 @@ async fn google_drive_sync_source_grants_and_revokes_in_every_lane_on_storage() 
 
     // The direct grant is revoked.
     drive
-        .call("unshare", json!({"file_id":"direct","permission_id":grant}))
+        .server
+        .call_async("unshare", json!({"file_id":"direct","permission_id":grant}))
         .await;
     drive.synced(&worker, &["--kind", "permissions"]);
     publish(&commit);
@@ -320,7 +296,8 @@ async fn google_drive_sync_source_grants_and_revokes_in_every_lane_on_storage() 
 
     // The reader leaves the group.
     drive
-        .call("group", json!({"email":staff,"members":[]}))
+        .server
+        .call_async("group", json!({"email":staff,"members":[]}))
         .await;
     drive.synced(&worker, &["--kind", "members"]);
     publish(&commit);
@@ -329,7 +306,8 @@ async fn google_drive_sync_source_grants_and_revokes_in_every_lane_on_storage() 
 
     // The reader leaves the shared drive: no file reports a change.
     drive
-        .call(
+        .server
+        .call_async(
             "leave",
             json!({"drive_id":"drive-eng","permission_id":grant}),
         )
@@ -352,7 +330,10 @@ async fn google_drive_sync_source_grants_and_revokes_in_every_lane_on_storage() 
 #[ignore = "real CLI, fake Drive and local storage; scripts/ci"]
 async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_storage() {
     let drive = Drive::start();
-    drive.call("user", json!({"email":OWNER})).await;
+    drive
+        .server
+        .call_async("user", json!({"email":OWNER}))
+        .await;
     for row in 1..=7 {
         drive
             .put(
@@ -377,7 +358,8 @@ async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_s
     // The third page of the first listing never answers; by then the first
     // batch is durable and the second is exported but not handed over.
     drive
-        .call(
+        .server
+        .call_async(
             "hold",
             json!({"match":{"path":"/files$","params":{"pageToken":"^4$"}}}),
         )
@@ -390,7 +372,7 @@ async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_s
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(120);
-    while drive.call("parked", json!({})).await != 1 {
+    while drive.server.call_async("parked", json!({})).await != 1 {
         assert!(
             sync.try_wait().unwrap().is_none(),
             "the sync ended before its third page"
@@ -404,7 +386,7 @@ async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_s
         .unwrap();
     assert!(killed.success(), "the worker process of the sync");
     assert!(!sync.wait_with_output().unwrap().status.success());
-    drive.call("release", json!({})).await;
+    drive.server.call_async("release", json!({})).await;
     let delivered: Vec<_> = envelopes(&worker)
         .await
         .into_iter()
@@ -446,9 +428,13 @@ async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_s
     // A reset cursor: the trashed file's change entry is behind the new start
     // token and the deleted file has none, so both leave at the listing.
     drive
-        .call("touch", json!({"file_id":"doc-1","trashed":true}))
+        .server
+        .call_async("touch", json!({"file_id":"doc-1","trashed":true}))
         .await;
-    drive.call("remove", json!({"file_id":"doc-2"})).await;
+    drive
+        .server
+        .call_async("remove", json!({"file_id":"doc-2"}))
+        .await;
     drive
         .put("doc-8", "fixture document 8", json!({"owner":OWNER}))
         .await;
@@ -475,10 +461,17 @@ async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_s
 async fn google_drive_quarantine_and_permission_read_failure_deadline_on_storage() {
     let drive = Drive::start();
     let place = json!({"drive":"drive-eng"});
-    drive.call("user", json!({"email":OWNER})).await;
-    drive.call("user", json!({"email":READER})).await;
     drive
-        .call(
+        .server
+        .call_async("user", json!({"email":OWNER}))
+        .await;
+    drive
+        .server
+        .call_async("user", json!({"email":READER}))
+        .await;
+    drive
+        .server
+        .call_async(
             "drive",
             json!({"drive_id":"drive-eng","name":"Engineering","members":[OWNER,READER]}),
         )
@@ -487,8 +480,8 @@ async fn google_drive_quarantine_and_permission_read_failure_deadline_on_storage
     let oversized = "fixture document 1 ".repeat(4);
     drive.put("big", &oversized, place.clone()).await;
     drive.put("refused", "fixture document 2", place).await;
-    drive
-        .call(
+    drive.server
+        .call_async(
             "fail",
             json!({"match":{"path":"/files/refused/export$"},"status":403,"reason":"exportSizeLimitExceeded"}),
         )
@@ -535,8 +528,8 @@ async fn google_drive_quarantine_and_permission_read_failure_deadline_on_storage
             .permissions_read_at
     };
     let before = read_at(publication(&worker).await.0);
-    drive
-        .call(
+    drive.server
+        .call_async(
             "fail",
             json!({"match":{"path":"/files/drive-eng/permissions$"},"status":403,"reason":"insufficientFilePermissions"}),
         )

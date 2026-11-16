@@ -4,58 +4,20 @@ use super::incremental::{publish, source_roots};
 use super::*;
 
 struct Fake {
-    child: std::process::Child,
-    endpoint: String,
+    server: super::synthetic::Server,
     key: String,
 }
 impl Fake {
     fn start() -> Self {
-        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut child = Command::new(checkout.join("connectors/.venv/bin/python"))
-            .arg(checkout.join("connectors/tests/github/fake_github.py"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let connection: Value = serde_json::from_str(&line).unwrap();
-        Self {
-            child,
-            endpoint: connection["endpoint"].as_str().unwrap().into(),
-            key: connection["private_key"].as_str().unwrap().into(),
-        }
-    }
-    fn call(&self, operation: &str, body: Value) -> Value {
-        let output = Command::new("curl")
-            .args([
-                "-fsS",
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-            ])
-            .arg(body.to_string())
-            .arg(format!("{}/fake/{operation}", self.endpoint))
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "synthetic GitHub control failed");
-        serde_json::from_slice::<Value>(&output.stdout).unwrap()["result"].clone()
+        let server = super::synthetic::Server::start("github/fake_github.py");
+        let key = server.connection["private_key"].as_str().unwrap().into();
+        Self { server, key }
     }
     fn topic(&self, number: usize, text: &str) {
-        self.call("topic", json!({"repo_id":1,"number":number,"body":text}));
+        self.server
+            .call("topic", json!({"repo_id":1,"number":number,"body":text}));
     }
 }
-impl Drop for Fake {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
 fn fixture(fake: &Fake, mode: &str) -> (PathBuf, PathBuf, FixtureRoot) {
     let (worker, root) = setup();
     let text = std::fs::read_to_string(&worker).unwrap();
@@ -74,7 +36,7 @@ fn fixture(fake: &Fake, mode: &str) -> (PathBuf, PathBuf, FixtureRoot) {
          {authorization}document_max_bytes='64B'\n[sources.settings]\n\
          app_id=10\ninstallation_id=20\naccount_id=30\nprivate_key={{ env='FYRR_TEST_GITHUB_KEY' }}\n\
          api_endpoint='{}'\n{intervals}[[sources.scope.repositories]]\nid=1\nbranch='main'\n",
-        fake.endpoint)).unwrap();
+        fake.server.endpoint)).unwrap();
     super::coordination::command(&worker, &["writer", "namespace", "create"]);
     // Bootstrap with normal batches; one-row batches are needed only for the connector replay test.
     worker_sync(&worker, &["allowed", "denied", "--full"]);
@@ -116,7 +78,7 @@ async fn github_fixed_replay_quarantine_scope_and_reconcile_on_storage() {
     for number in 1..=3 {
         fake.topic(number, &format!("fixture document {}", number - 1));
     }
-    fake.call("fail", json!({"path":"/repos/synthetic/repo-1/issues/3/comments","status":503,"times":6,"headers":{"Retry-After":"0"}}));
+    fake.server.call("fail", json!({"path":"/repos/synthetic/repo-1/issues/3/comments","status":503,"times":6,"headers":{"Retry-After":"0"}}));
     assert!(
         !sync(&worker, &fake, &["--kind", "content"])
             .status
@@ -143,11 +105,11 @@ async fn github_fixed_replay_quarantine_scope_and_reconcile_on_storage() {
     synced(&worker, &fake, &["--kind", "content", "--full"]);
     publish(&commit);
     assert_eq!(source_roots(&worker, "github").await.len(), 3);
-    fake.call(
+    fake.server.call(
         "remove_topic",
         json!({"repo_id":1,"kind":"issue","number":2}),
     );
-    fake.call("fail", json!({"path":"/repos/synthetic/repo-1/issues","status":503,"times":6,"headers":{"Retry-After":"0"}}));
+    fake.server.call("fail", json!({"path":"/repos/synthetic/repo-1/issues","status":503,"times":6,"headers":{"Retry-After":"0"}}));
     assert!(
         !sync(&worker, &fake, &["--kind", "reconcile"])
             .status
@@ -158,7 +120,7 @@ async fn github_fixed_replay_quarantine_scope_and_reconcile_on_storage() {
     synced(&worker, &fake, &["--kind", "reconcile"]);
     publish(&commit);
     assert_eq!(source_roots(&worker, "github").await.len(), 2);
-    let paths = fake.call("requests", json!({}));
+    let paths = fake.server.call("requests", json!({}));
     assert!(
         paths
             .as_array()
@@ -174,7 +136,8 @@ async fn github_sync_silent_content_and_revoke_on_storage() {
     let fake = Fake::start();
     let (worker, commit, _root) = fixture(&fake, "sync");
     fake.topic(1, "fixture document 0");
-    fake.call("collaborator", json!({"repo_id":1,"user_id":7}));
+    fake.server
+        .call("collaborator", json!({"repo_id":1,"user_id":7}));
     super::identity::link_account(&worker, "github", "github.com:7").await;
     synced(
         &worker,
@@ -217,7 +180,7 @@ async fn github_sync_silent_content_and_revoke_on_storage() {
             .unwrap()
             .is_empty()
     );
-    fake.call("clear_readers", json!({"repo_id":1}));
+    fake.server.call("clear_readers", json!({"repo_id":1}));
     synced(
         &worker,
         &fake,
