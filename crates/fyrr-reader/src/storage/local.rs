@@ -135,7 +135,7 @@ impl LocalStore {
             if metadata.len() != file.size_bytes {
                 return Err(std::io::Error::other("native file size changed"));
             }
-            opened.sync_all()?;
+            sync_file(&opened, &target)?;
             let mut parent = target.parent();
             while let Some(directory) =
                 parent.filter(|directory| directory.starts_with(self.lock.parent().expect("root")))
@@ -146,7 +146,7 @@ impl LocalStore {
         }
         // Descendants before ancestors, including newly created native directories.
         for directory in directories.into_iter().rev() {
-            File::open(directory)?.sync_all()?;
+            sync_file(&File::open(&directory)?, &directory)?;
         }
         Ok(())
     }
@@ -164,7 +164,7 @@ impl LocalStore {
             let mut directories = directories.lock().expect("cleanup directories lock");
             for directory in directories.iter() {
                 File::open(directory)
-                    .and_then(|file| file.sync_all())
+                    .and_then(|file| sync_file(&file, directory))
                     .map_err(|error| failure(directory, error))?;
             }
             directories.clear();
@@ -234,7 +234,7 @@ impl LocalStore {
                 }
             }
             file.write_all(b"fyrr local version counter\n")?;
-            file.sync_all()?;
+            sync_file(&file, &self.lock)?;
             sync_parent(&self.lock)?;
         }
         // Missing or damaged counter metadata must never reset the sequence.
@@ -339,12 +339,24 @@ impl LocalStore {
         if current.is_none() {
             // Another writer or Lance may have created these directory names
             // without persisting them. New objects depend on the whole chain.
-            let root = self.lock.parent().ok_or_else(|| io(std::io::Error::other("missing storage root")))?;
-            let mut directory = target.parent().ok_or_else(|| io(std::io::Error::other("missing object parent")))?;
+            let root = self
+                .lock
+                .parent()
+                .ok_or_else(|| io(std::io::Error::other("missing storage root")))?;
+            let mut directory = target
+                .parent()
+                .ok_or_else(|| io(std::io::Error::other("missing object parent")))?;
             loop {
-                File::open(directory).and_then(|file| file.sync_all()).map_err(io)?;
-                if directory == root { break; }
-                directory = directory.parent().filter(|parent| parent.starts_with(root)).ok_or_else(|| io(std::io::Error::other("object outside storage root")))?;
+                File::open(directory)
+                    .and_then(|file| sync_file(&file, directory))
+                    .map_err(io)?;
+                if directory == root {
+                    break;
+                }
+                directory = directory
+                    .parent()
+                    .filter(|parent| parent.starts_with(root))
+                    .ok_or_else(|| io(std::io::Error::other("object outside storage root")))?;
             }
         }
         let next = read_version(lock)
@@ -353,11 +365,13 @@ impl LocalStore {
             .ok_or_else(|| io(std::io::Error::other("version counter exhausted")))?;
         set_version(lock, next).map_err(io)?;
         // Persist the reservation before any object can expose this version.
-        lock.sync_all().map_err(io)?;
+        sync_file(lock, &self.lock).map_err(io)?;
         set_version(file, next).map_err(io)?;
-        file.sync_all().map_err(io)?;
+        sync_file(file, staged).map_err(io)?;
         #[cfg(test)]
         tests::pause("versioned");
+        #[cfg(feature = "test-store")]
+        super::test_store::sync::publishing(target, staged, payload).map_err(io)?;
         if matches!(mode, PutMode::Create) {
             std::fs::hard_link(staged, target).map_err(io)?;
             // Publication succeeded, but a cleanup error still fails the call.
@@ -567,6 +581,8 @@ impl LocalStore {
         self.reap_stage().map_err(io)?;
         match std::fs::remove_file(&target) {
             Ok(()) => {
+                #[cfg(feature = "test-store")]
+                super::test_store::sync::unlinked(&target).map_err(io)?;
                 if let Some(directories) = &self.cleanup_directories {
                     directories
                         .lock()
@@ -654,11 +670,22 @@ fn micros(at: SystemTime) -> u128 {
         .as_micros()
 }
 
+fn sync_file(file: &File, path: &std::path::Path) -> std::io::Result<()> {
+    file.sync_all()?;
+    #[cfg(feature = "test-store")]
+    if std::env::var_os("FYRR_TEST_SYNC_LOG").is_some() {
+        super::test_store::sync::synced(path, file.metadata()?.is_dir())?;
+    }
+    #[cfg(not(feature = "test-store"))]
+    let _ = path;
+    Ok(())
+}
+
 fn sync_parent(target: &std::path::Path) -> std::io::Result<()> {
     let parent = target
         .parent()
         .ok_or_else(|| std::io::Error::other("object has no directory"))?;
-    File::open(parent)?.sync_all()
+    sync_file(&File::open(parent)?, parent)
 }
 
 fn failure(target: &std::path::Path, error: std::io::Error) -> Error {

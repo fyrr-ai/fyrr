@@ -793,3 +793,6 @@ mod metadata_io;
 
 #[path = "dense_path/worker_io_probe.rs"]
 mod worker_io_probe;
+
+#[path = "dense_path/durability_syncs.rs"]
+mod durability_syncs;

@@ -1,3 +1,4 @@
+// Process-kill tests verify restart recovery; they do not simulate power loss.
 use super::*;
 use object_store::{ObjectStoreExt, UpdateVersion};
 use std::collections::BTreeSet;
@@ -931,7 +932,7 @@ fn scratch_root(root: &std::path::Path) -> &std::path::Path {
 }
 
 #[tokio::test]
-async fn local_cleanup_crash_converges_and_preserves_referenced_objects() {
+async fn local_cleanup_process_restart_converges_and_preserves_referenced_objects() {
     let root = scratch("cleanup-crash");
     let store = LocalStore::open(&root).unwrap();
     put(&store, b"referenced", PutMode::Create).unwrap();
@@ -988,7 +989,7 @@ async fn local_cleanup_crash_converges_and_preserves_referenced_objects() {
 }
 
 #[test]
-fn local_native_durability_precedes_reference_publication() {
+fn local_native_process_restart_preserves_unpublished_reference() {
     let root = scratch("native-durability");
     let store = LocalStore::open(&root).unwrap();
     put(&store, b"old-reference", PutMode::Create).unwrap();
@@ -1005,7 +1006,7 @@ fn local_native_durability_precedes_reference_publication() {
     while !marker.exists() {
         assert!(
             start.elapsed() < Duration::from_secs(30),
-            "native durability boundary"
+            "native persistence call boundary"
         );
         std::thread::sleep(Duration::from_millis(5));
     }

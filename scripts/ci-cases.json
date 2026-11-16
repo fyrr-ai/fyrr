@@ -475,11 +475,11 @@
         "tier": "quick",
         "seconds": 0.006
       },
-      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_cleanup_crash_converges_and_preserves_referenced_objects": {
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_cleanup_process_restart_converges_and_preserves_referenced_objects": {
         "tier": "quick",
         "seconds": 0.1
       },
-      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_native_durability_precedes_reference_publication": {
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_native_process_restart_preserves_unpublished_reference": {
         "tier": "quick",
         "seconds": 0.1
       },
@@ -539,13 +539,13 @@
         "tier": "quick",
         "seconds": 0.02
       },
-      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::command_index_errors_remove_their_private_directory": {
-        "tier": "quick",
-        "seconds": 0.02
-      },
       "full:fyrr-reader:lib:fyrr_reader/storage::conditional::tests::capability_probe_rejects_ignored_conditions_and_reuses_store_transport": {
         "tier": "quick",
         "seconds": 0.1
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::command_index_errors_remove_their_private_directory": {
+        "tier": "quick",
+        "seconds": 0.02
       }
     },
     "children": {
@@ -566,8 +566,8 @@
         "parents": [
           "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_crash_before_publication_keeps_the_old_object",
           "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_updates_are_compare_and_swap_across_processes",
-          "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_cleanup_crash_converges_and_preserves_referenced_objects",
-          "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_native_durability_precedes_reference_publication"
+          "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_cleanup_process_restart_converges_and_preserves_referenced_objects",
+          "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_native_process_restart_preserves_unpublished_reference"
         ]
       },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::mirror_population_child_process": {
@@ -999,6 +999,14 @@
       "full:fyrr:test:dense_path/namespace_delete::delete_refuses_envelope_arriving_after_export_listing": {
         "tier": "full",
         "seconds": 5
+      },
+      "full:fyrr:test:dense_path/durability_syncs::references_are_synced_before_real_prepare_and_publication": {
+        "tier": "full",
+        "seconds": 10
+      },
+      "full:fyrr:test:dense_path/durability_syncs::purged_fragments_are_durable_before_their_envelope_is_unlinked": {
+        "tier": "full",
+        "seconds": 10
       }
     },
     "backend": "local"
