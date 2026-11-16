@@ -398,3 +398,52 @@ def test_thread_sessions_keep_subject_api_pairs_until_shutdown(monkeypatch):
     assert len(opened) == 3 and not any(session.closed for session in opened)
     shared.close()
     assert all(session.closed for session in opened)
+
+
+@pytest.mark.parametrize("group_count", [20, 101])
+def test_large_domain_counts_members_as_edges(drive, index, monkeypatch, group_count):
+    from fyrr_connectors.google_drive.connector import GoogleDrive
+
+    def directory(self, path, key, **params):
+        if key == "groups":
+            yield from ({"email": f"group-{number}@example.com"} for number in range(group_count))
+        else:
+            yield from (
+                {"email": f"user-{number}@example.com", "type": "USER"} for number in range(10_000)
+            )
+
+    def users(self):
+        yield from ({"primaryEmail": f"user-{number}@example.com"} for number in range(10_000))
+
+    monkeypatch.setattr(GoogleDrive, "_directory", directory)
+    monkeypatch.setattr(GoogleDrive, "_directory_users", users)
+    batches = []
+    if group_count == 101:
+        with pytest.raises(ValueError, match="google_drive_aggregate_limit"):
+            for batch in index.run("members", "sync", owners=[ALICE]):
+                batches.append(batch)
+        assert batches == []
+    else:
+        batches = list(index.run("members", "sync", owners=[ALICE]))
+        assert sum(len(batch.users) for batch in batches) == 10_000
+        assert sum(len(batch.groups) for batch in batches) == 21
+        assert batches[-1].last
+
+
+def test_folders_budget_tracks_retained_evidence(monkeypatch):
+    from fyrr_connectors.google_drive import bounds
+    from fyrr_connectors.google_drive.feeds import Feed, Folders
+
+    monkeypatch.setattr(bounds, "MAX_ENTRIES", 1)
+    monkeypatch.setattr(bounds, "MAX_BYTES", 150)
+    feed = Feed("user", ALICE)
+    folders = Folders(_client(), [])
+    for _ in range(1000):
+        folders.learn(feed, {"id": "folder", "parents": ["parent"], "unused": "x" * 1000})
+    assert folders._budget.entries == 1
+    initial = folders._budget.bytes
+    folders.learn(feed, {"id": "folder", "parents": ["longer-parent"]})
+    assert folders._budget.bytes == initial + len("longer-")
+    with pytest.raises(ValueError, match="google_drive_aggregate_limit"):
+        folders.learn(feed, {"id": "second"})
+    assert (ALICE, "second") not in folders._parents

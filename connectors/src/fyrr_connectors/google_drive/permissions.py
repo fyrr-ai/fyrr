@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict
 from typing import Any
 
 from ..connector import EmailVerification, SourceGroup, SourceUser
@@ -111,7 +112,6 @@ def principals(
     people: list[SourceUser] = []
     domains: dict[str, list[str]] = {}
     for user in users:
-        budget.add(user)
         address = _principal(user.get("primaryEmail"))
         if address is None:
             continue
@@ -124,6 +124,7 @@ def principals(
                 email_verification=EmailVerification.VERIFIED_CORPORATE,
             )
         )
+        budget.add(asdict(people[-1]))
         if active and "@" in address:
             domains.setdefault(address.rsplit("@", 1)[1], []).append(f"usr:{address}")
     everyone = [f"grp:domain:{domain}" for domain in sorted(domains)]

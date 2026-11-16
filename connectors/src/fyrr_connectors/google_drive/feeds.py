@@ -319,40 +319,52 @@ class Folders:
     def __bool__(self) -> bool:
         return bool(self._folders)
 
+    def _remember(
+        self, key: tuple[str, str], parent: str | None, limits: tuple[bool | None, ...]
+    ) -> None:
+        previous = None
+        if key in self._parents:
+            old_limits = (self._limits[key],) if key in self._limits else ()
+            previous = [key, self._parents[key], old_limits]
+        self._budget.add([key, parent, limits], entries=int(previous is None), previous=previous)
+        self._parents[key] = parent
+        if limits:
+            self._limits[key] = limits[0]
+        else:
+            self._limits.pop(key, None)
+
     def _parent(self, feed: Feed, folder: str, limits: bool = False) -> str | None:
+        """Read a missing parent and, when requested, its inheritance flag."""
         with self._lock:
-            """The folder's parent. With `limits` its inheritance flag is read
-            too: only the permission mapping asks for it."""
             key = (feed.subject, folder)
-            if key not in self._parents:
-                self._budget.add(key)
             if key not in self._parents or (limits and key not in self._limits):
                 fields = "parents,inheritedPermissionsDisabled" if limits else "parents"
+                flags: tuple[bool | None, ...] = ()
                 try:
                     body = self._client.get(
                         feed.subject, f"files/{folder}", fields=fields, supportsAllDrives="true"
                     )
                     if limits:
-                        self._limits[key] = bool(body.get("inheritedPermissionsDisabled"))
+                        flags = (bool(body.get("inheritedPermissionsDisabled")),)
                 except ApiError as error:
                     if error.transient or error.status not in (403, 404):
                         raise
                     body = {}
-                    self._limits[key] = None
-                self._budget.add(body)
-                self._parents[key] = (body.get("parents") or [None])[0]
+                    flags = (None,)
+                self._remember(key, (body.get("parents") or [None])[0], flags)
             return self._parents[key]
 
     def learn(self, feed: Feed, folder: dict[str, Any]) -> None:
+        """Replace retained evidence, without charging discarded resource fields."""
         with self._lock:
-            """Take a folder's parent from its current resource (a change entry)."""
-            key = (feed.subject, folder["id"])
-            self._budget.add(folder)
-            self._parents[key] = (folder.get("parents") or [None])[0]
-            if "inheritedPermissionsDisabled" in folder:
-                self._limits[key] = bool(folder["inheritedPermissionsDisabled"])
-            else:
-                self._limits.pop(key, None)
+            flags = (
+                (bool(folder["inheritedPermissionsDisabled"]),)
+                if "inheritedPermissionsDisabled" in folder
+                else ()
+            )
+            self._remember(
+                (feed.subject, folder["id"]), (folder.get("parents") or [None])[0], flags
+            )
 
     def limited(self, feed: Feed, file: dict[str, Any]) -> bool:
         with self._lock:

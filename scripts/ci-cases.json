@@ -3897,6 +3897,18 @@
       "python:connectors/tests/google_drive/test_google_drive_client.py::test_thread_sessions_keep_subject_api_pairs_until_shutdown": {
         "tier": "quick",
         "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_folders_budget_tracks_retained_evidence": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_large_domain_counts_members_as_edges[101]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_large_domain_counts_members_as_edges[20]": {
+        "tier": "quick",
+        "seconds": null
       }
     }
   },

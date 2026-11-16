@@ -11,9 +11,13 @@ class Budget:
     def __init__(self) -> None:
         self.entries = self.edges = self.bytes = 0
 
-    def add(self, value: object, *, edges: int = 0) -> None:
-        self.entries += 1
+    def add(
+        self, value: object, *, edges: int = 0, entries: int = 1, previous: object = None
+    ) -> None:
+        self.entries += entries
         self.edges += edges
         self.bytes += len(json.dumps(value, ensure_ascii=True).encode())
+        if previous is not None:
+            self.bytes -= len(json.dumps(previous, ensure_ascii=True).encode())
         if self.entries > MAX_ENTRIES or self.edges > MAX_EDGES or self.bytes > MAX_BYTES:
             raise ValueError("google_drive_aggregate_limit")

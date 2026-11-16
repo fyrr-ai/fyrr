@@ -529,7 +529,7 @@ class GoogleDrive(Connector[Settings, Scope]):
 
         def bounded(values, *, edges=False):
             for value in values:
-                budget.add(value, edges=int(edges))
+                budget.add(value, edges=int(edges), entries=int(not edges))
                 yield value
 
         groups = {
@@ -550,9 +550,7 @@ class GoogleDrive(Connector[Settings, Scope]):
                 )
             )
         }
-        users, found = principals(bounded(self._directory_users()), groups)
-        for group in found:
-            budget.add([group.id, group.members], edges=len(group.members))
+        users, found = principals(self._directory_users(), groups)
         total = len(users) + len(found)
         entries = iter(chain(users, found))
         snapshot_id = hashlib.sha256(f"{cursor}:{time.time_ns()}".encode()).hexdigest()
