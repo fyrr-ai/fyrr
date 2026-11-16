@@ -48,6 +48,11 @@ try {
       assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
     }
     await page.getByRole('button', { name: /^Search docs/ }).click();
+    // An unauthored character must use the original full variable font.
+    const fullFont = page.waitForResponse(response => response.url().endsWith('/geist-sans-full.woff2'));
+    await page.getByRole('combobox').fill('café');
+    assert.equal((await fullFont).status(), 200);
+    await page.evaluate(async () => { await document.fonts.ready; });
     await page.getByRole('combobox').fill('permissions');
     const result = page.getByRole('dialog').getByRole('option').filter({ hasText: /GitHub/ }).first();
     await result.waitFor();
@@ -63,6 +68,6 @@ try {
     await page.screenshot({ path: `${process.env.REPORT_DIR ?? '../target'}/fumadocs-${width}.png` });
     assert.deepEqual(errors, [], `Browser errors at ${width}`);
     await context.close();
-    console.log(`${width}px: 20 docs pages, legacy URL, search, result navigation, ${width >= 992 ? 'desktop table of contents, ' : ''}exact code copying passed`);
+    console.log(`${width}px: 20 docs pages, legacy URL, Unicode font loading, search, result navigation, ${width >= 992 ? 'desktop table of contents, ' : ''}exact code copying passed`);
   }
 } finally { await browser.close(); }

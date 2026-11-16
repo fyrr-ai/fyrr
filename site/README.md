@@ -29,7 +29,13 @@ still point to GitHub. Published `.html` URLs resolve to the clean URLs;
 
 Search runs in the browser; `/api/search` is a generated static index, not
 a server endpoint. It loads when search is used. Docs fonts are hosted
-locally, with their license included as `OFL-Geist.txt`. Fumadocs scripts and styles are not added to the homepage.
+locally, with their license included as `OFL-Geist.txt`. The build embeds one
+shared variable Sans subset for authored text in critical CSS and starts its
+decoding before prose layout. Other Unicode characters load the unchanged
+full font on demand. The subset retains weights 100–900 and shaping closure;
+its 37 KB build limit protects cold-load performance. CSS changes invalidate
+the embedded subset cache. Fumadocs scripts and styles are not added to the
+homepage.
 
 ## Cloudflare Workers deployment
 

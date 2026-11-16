@@ -3,8 +3,10 @@
 @import 'fumadocs-ui/css/preset.css';
 @import '../src/base.css';
 @import './docs.css';
+@import '../.content/geist-sans.css';
 
 :root, .dark {
+  --font-geist-sans: GeistSans, "Geist Fallback";
   --font: var(--font-geist-sans), system-ui, sans-serif;
   --mono: var(--font-geist-mono), ui-monospace, monospace;
   --font-sans: var(--font);
