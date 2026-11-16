@@ -47,6 +47,10 @@ h2 { font-size: clamp(34px, 4vw, 48px); line-height: 1.08; font-weight: 400; let
 .product-name a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .chart-value { text-align: right; font-variant-numeric: tabular-nums; }
 .bar { position: relative; height: 12px; background: #171717; }
+.bar > i:has(.ingest-segment) { display: flex; }
+.ingest-segment { display: block; height: 100%; background: rgb(0 0 0 / var(--stage-shade)); border-left: 1px solid #0008; }
+.ingest-segment:first-child { border-left: 0; }
+.ingest-cost { grid-column: 2 / -1; text-align: right; margin-top: 6px; font-size: 10px; color: var(--fg-dim); }
 .bar.is-empty { background: repeating-linear-gradient(90deg, #282828 0 1px, transparent 1px 8px); height: 1px; }
 .bar i { display: block; height: 100%; width: var(--w); background: #4a4a4a; transform-origin: 0 50%; }
 .bar--fyrr i { background: linear-gradient(90deg, var(--yellow) 55%, transparent 100%), repeating-conic-gradient(var(--yellow) 0 25%, transparent 0 50%) 0 0 / 4px 4px; }
@@ -174,6 +178,7 @@ summary { cursor: pointer; padding-block: 6px; }
 .score-product:hover { text-decoration: underline; text-underline-offset: 3px; }
 .score-cell { min-width: 0; font-variant-numeric: tabular-nums; }
 .score-label { display: none; }
+.score-rate { display: block; color: var(--fg-dim); font-size: 10px; line-height: 14px; margin-top: 2px; }
 .score-value { display: block; font-size: 17px; line-height: 22px; }
 .score-cell .bar { height: 6px; margin-top: 10px; }
 .score-cell .bar.is-empty { height: 1px; margin-block: 12px 3px; }
@@ -209,6 +214,7 @@ summary { cursor: pointer; padding-block: 6px; }
   .score-row { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 12px; padding: 12px; }
   .score-product { grid-column: 1 / -1; font-size: 14px; line-height: 20px; }
   .score-label { display: block; color: var(--fg-dim); font-size: 10px; line-height: 12px; }
+  .score-rate { font-size: 9px; line-height: 11px; }
   .score-value { font-size: 13px; line-height: 18px; }
   .score-cell .bar { margin-top: 4px; height: 4px; }
   .score-cell .bar.is-empty { margin-block: 7px 0; }

@@ -72,11 +72,17 @@ navigation, data coverage, overflow, uncertainty details, JSON downloads,
 and static map and lighthouse frames with reduced motion. The site uses
 one dark palette, with no light-theme variant.
 
-The comparison opens with a default-system scoreboard, followed by three
+The overview includes fresh ingest wall time and completed documents per minute.
+The “Indexes fast” chart shows embedding cost as a secondary line. Optional metric
+catalogue fields `stage_of: "ingest_seconds"` and `stage_order` describe disjoint
+elapsed stages in seconds. Cumulative or overlapping work must not use `stage_of`.
+Exposed stages are stacked only when they fit within the measured total; remaining
+time is labelled “Other / unreported”. Per-stage measurements stay in details.
+
+The comparison opens with a default-system scoreboard, followed by four
 short chart sections and the product trade-offs. Primary speed is first-ask
 latency with fresh query caches; repeated-query timings are secondary. The
-detailed notebook is
-collapsed initially; its links open the relevant section. System and
+detailed notebook is collapsed initially; its links open the relevant section. System and
 metric chips recompute the view. Selection links preserve filters, tabs,
 question search and the notebook's open state. Higher-is-better scores
 show percentage-point gaps; time, cost and footprint show ratios to the
