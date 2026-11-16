@@ -53,6 +53,20 @@ pub(crate) async fn publish(
         &indexes,
     )
     .await?;
+    let durable: BTreeSet<_> = previous_manifest
+        .iter()
+        .flat_map(|manifest| manifest.files.iter())
+        .map(|file| file.path.as_str())
+        .collect();
+    fyrr_reader::storage::persist_native_files(
+        config,
+        files
+            .iter()
+            .filter(|file| !durable.contains(file.path.as_str()))
+            .cloned()
+            .collect(),
+    )
+    .await?;
     let sequence = head.content.as_ref().map_or(Ok(1), |p| {
         p.sequence
             .checked_add(1)

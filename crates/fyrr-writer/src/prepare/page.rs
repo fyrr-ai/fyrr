@@ -93,6 +93,17 @@ pub(super) async fn content_page(
             quarantined: rows.quarantined,
         }),
     };
+    if let EnvelopePayload::Content(payload) = &envelope.payload {
+        fyrr_reader::storage::persist_native_files(
+            config,
+            payload
+                .fragments
+                .iter()
+                .flat_map(|fragment| fragment.files.iter().cloned())
+                .collect(),
+        )
+        .await?;
+    }
     lease.state().await?;
     put_immutable(store.as_ref(), &envelope_path, &envelope).await?;
     if advances_cursor {

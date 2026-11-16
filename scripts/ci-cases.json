@@ -458,6 +458,10 @@
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_cleanup_crash_converges_and_preserves_referenced_objects": {
         "tier": "quick",
         "seconds": 0.1
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_native_durability_precedes_reference_publication": {
+        "tier": "quick",
+        "seconds": 0.1
       }
     },
     "children": {
@@ -478,7 +482,8 @@
         "parents": [
           "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_crash_before_publication_keeps_the_old_object",
           "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_updates_are_compare_and_swap_across_processes",
-          "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_cleanup_crash_converges_and_preserves_referenced_objects"
+          "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_cleanup_crash_converges_and_preserves_referenced_objects",
+          "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_native_durability_precedes_reference_publication"
         ]
       }
     }

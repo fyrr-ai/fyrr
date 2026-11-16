@@ -107,6 +107,21 @@ fn child(root: &std::path::Path, action: &str, extra: &[(&str, &std::ffi::OsStr)
 fn local_store_child_process() {
     let root = PathBuf::from(std::env::var_os("FYRR_TEST_LOCAL_ROOT").unwrap());
     let store = LocalStore::open(&root).unwrap();
+    if std::env::var("FYRR_TEST_LOCAL_ACTION").as_deref() == Ok("native") {
+        let dataset = at(&store, "namespaces/ns/dataset.lance");
+        store
+            .persist_native(
+                &dataset,
+                &[fyrr_core::envelope::FileRef {
+                    path: "data/new.lance".into(),
+                    size_bytes: 6,
+                }],
+            )
+            .unwrap();
+        pause("native");
+        put(&store, b"new-reference", PutMode::Overwrite).unwrap();
+        return;
+    }
     if std::env::var("FYRR_TEST_LOCAL_ACTION").as_deref() == Ok("cleanup") {
         let store = store.cleanup_batch();
         store
@@ -957,5 +972,47 @@ async fn local_cleanup_crash_converges_and_preserves_referenced_objects() {
         1
     );
     batch.finish_cleanup().await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_native_durability_precedes_reference_publication() {
+    let root = scratch("native-durability");
+    let store = LocalStore::open(&root).unwrap();
+    put(&store, b"old-reference", PutMode::Create).unwrap();
+    let native = root.join("namespaces/ns/dataset.lance/data/new.lance");
+    std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+    std::fs::write(&native, b"native").unwrap();
+    let marker = root.join("native-persisted");
+    let mut process = child(
+        &root,
+        "native",
+        &[("FYRR_TEST_LOCAL_PAUSE_NATIVE", marker.as_os_str())],
+    );
+    let start = std::time::Instant::now();
+    while !marker.exists() {
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "native durability boundary"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    process.kill().unwrap();
+    process.wait().unwrap();
+    let restarted = LocalStore::open(&root).unwrap();
+    assert_eq!(read(&restarted, &root), b"old-reference");
+    let dataset = at(&restarted, "namespaces/ns/dataset.lance");
+    restarted
+        .persist_native(
+            &dataset,
+            &[fyrr_core::envelope::FileRef {
+                path: "data/new.lance".into(),
+                size_bytes: 6,
+            }],
+        )
+        .unwrap();
+    put(&restarted, b"new-reference", PutMode::Overwrite).unwrap();
+    assert_eq!(read(&restarted, &root), b"new-reference");
+    assert_eq!(std::fs::read(native).unwrap(), b"native");
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -12,9 +12,9 @@
 //! - a durable, monotonically increasing counter on the lock inode assigns
 //!   each write a version, stored as an xattr on its staging inode before
 //!   publication. Versions survive crashes and never depend on timestamps;
-//! - an object is written to a staging file, the file system is flushed
-//!   (`syncfs`, which also makes the Lance files it may name durable), and the
-//!   object is published by `rename` (replace) or `link` (create only), then
+//! - an object and its version xattr are flushed on a staging inode, then
+//!   published by `rename` (replace) or `link` (create only). Native files are
+//!   persisted explicitly before the contracts that reference them. Finally,
 //!   its directory is flushed. A crash leaves the old object or the new one.
 //!
 //! - the single reserved staging file is reaped under the lock before every
@@ -111,6 +111,38 @@ impl LocalStore {
             lock: root.join(LOCK),
             cleanup_directories: None,
         })
+    }
+
+    pub(super) fn persist_native(
+        &self,
+        dataset: &Path,
+        files: &[fyrr_core::envelope::FileRef],
+    ) -> std::io::Result<()> {
+        let mut directories = std::collections::BTreeSet::new();
+        for file in files {
+            let location = Path::from(format!("{dataset}/{}", file.path));
+            if location.prefix_match(dataset).is_none() || !self.is_native_file(&location) {
+                return Err(std::io::Error::other("native file outside dataset"));
+            }
+            let target = self.target(&location).map_err(std::io::Error::other)?;
+            let opened = open_object(&target)?;
+            if opened.metadata()?.len() != file.size_bytes {
+                return Err(std::io::Error::other("native file size changed"));
+            }
+            opened.sync_all()?;
+            let mut parent = target.parent();
+            while let Some(directory) =
+                parent.filter(|directory| directory.starts_with(self.lock.parent().expect("root")))
+            {
+                directories.insert(directory.to_path_buf());
+                parent = directory.parent();
+            }
+        }
+        // Descendants before ancestors, including newly created native directories.
+        for directory in directories.into_iter().rev() {
+            File::open(directory)?.sync_all()?;
+        }
+        Ok(())
     }
 
     /// Only maintenance and purge opt into deferred directory durability.
@@ -217,11 +249,23 @@ impl LocalStore {
         let parent = target
             .parent()
             .ok_or_else(|| io(std::io::Error::other("object has no directory")))?;
+        let mut missing = Vec::new();
+        let mut ancestor = parent;
+        while !ancestor.try_exists().map_err(io)? {
+            missing.push(ancestor.to_path_buf());
+            ancestor = ancestor
+                .parent()
+                .ok_or_else(|| io(std::io::Error::other("missing storage root")))?;
+        }
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(parent)
             .map_err(io)?;
+        // Make new directory names durable before publishing an object below them.
+        for directory in missing.iter().rev() {
+            sync_parent(directory).map_err(io)?;
+        }
         let staged = self.lock.with_file_name(STAGE);
         let mut file = OpenOptions::new()
             .write(true)
@@ -250,7 +294,6 @@ impl LocalStore {
         for chunk in payload.iter() {
             file.write_all(chunk).map_err(io)?;
         }
-        rustix::fs::syncfs(&*file).map_err(|e| io(e.into()))?;
         #[cfg(test)]
         tests::pause("staged");
         #[cfg(test)]

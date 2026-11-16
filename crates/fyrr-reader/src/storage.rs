@@ -75,6 +75,35 @@ fn uses_instance_credentials(builder: &AmazonS3Builder) -> bool {
         && !(has(Key::ContainerCredentialsFullUri) && has(Key::ContainerAuthorizationTokenFile))
 }
 
+/// Persist immutable native files before publishing a contract that names them.
+/// S3 already completes each upload before returning; local Lance rename does
+/// not flush file contents or parent directory entries.
+pub async fn persist_native_files(
+    config: &Config,
+    files: Vec<fyrr_core::envelope::FileRef>,
+) -> Result<(), StorageError> {
+    let Some(StorageBackend::Local { root }) = config.storage.backend() else {
+        return Ok(());
+    };
+    if files.is_empty() {
+        return Ok(());
+    }
+    let namespace = config.namespace.name.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = local::LocalStore::open(&root)?;
+        let dataset = store
+            .root()
+            .clone()
+            .join("namespaces")
+            .join(namespace.as_str())
+            .join("dataset.lance");
+        store.persist_native(&dataset, &files)
+    })
+    .await
+    .map_err(|_| StorageError::StorageUnavailable)?
+    .map_err(|_| StorageError::StorageUnavailable)
+}
+
 /// Explicit durability scope for maintenance and purge deletions.
 /// Call `finish` before reporting cleanup success. Dropping an unfinished scope
 /// may leave retired files after a crash; subsequent cleanup can remove them.
