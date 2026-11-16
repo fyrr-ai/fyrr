@@ -68,7 +68,9 @@ def build():
             if item.get("reason") != "compiler-artifact" or not item.get("executable"):
                 continue
             target = item["target"]
-            package = tomllib.loads(Path(item["manifest_path"]).read_text())["package"]["name"]
+            package = tomllib.loads(Path(item["manifest_path"]).read_text())["package"][
+                "name"
+            ]
             if item["profile"]["test"]:
                 if variant == "reader" and (
                     package != "fyrr"
@@ -91,7 +93,9 @@ def build():
                 temporary.replace(destination)
                 result["binaries"][variant] = str(destination.relative_to(ROOT))
             elif target["name"] == "fyrr-eval":
-                result["binaries"]["eval"] = str(Path(item["executable"]).relative_to(ROOT))
+                result["binaries"]["eval"] = str(
+                    Path(item["executable"]).relative_to(ROOT)
+                )
     if not {"full", "reader", "eval"} <= result["binaries"].keys():
         raise ValueError("Cargo did not produce every required binary")
     BUILD.write_text(json.dumps(result, indent=2) + "\n")
@@ -171,16 +175,22 @@ def validate(manifest, actual):
     missing = actual.keys() - owners.keys()
     stale = owners.keys() - actual.keys()
     if missing or stale:
-        raise ValueError(f"unowned cases: {sorted(missing)}\nstale cases: {sorted(stale)}")
+        raise ValueError(
+            f"unowned cases: {sorted(missing)}\nstale cases: {sorted(stale)}"
+        )
     for row, spec in manifest.items():
-        print(f"{row}: {len(spec['cases'])} cases, {len(spec.get('children', {}))} named children")
+        print(
+            f"{row}: {len(spec['cases'])} cases, {len(spec.get('children', {}))} named children"
+        )
     print(f"ownership: {len(owners)} executable cases, each with exactly one owner")
 
 
 def run(spec):
     groups = collections.defaultdict(list)
     for case in spec["cases"]:
-        group, name = case.split("/", 1) if not case.startswith("python:") else (None, None)
+        group, name = (
+            case.split("/", 1) if not case.startswith("python:") else (None, None)
+        )
         if group is None:
             directory = (
                 "connectors"
@@ -207,7 +217,9 @@ def run(spec):
             cwd = ROOT / item["cwd"]
         env = dict(os.environ)
         if not group.startswith("python:"):
-            env["FYRR_GATE_BINARY"] = str(ROOT / compiled["binaries"][group.split(":")[0]])
+            env["FYRR_GATE_BINARY"] = str(
+                ROOT / compiled["binaries"][group.split(":")[0]]
+            )
         if group.startswith("full:fyrr-eval:"):
             # The tool's real-S3 cases drive the full fyrr binary.
             env["FYRR_BINARY"] = str(ROOT / compiled["binaries"]["full"])
@@ -261,7 +273,25 @@ def run(spec):
         else:
             counts = re.findall(r"test result: ok\. (\d+) passed;", transcript)
         if not counts or int(counts[-1]) != len(names):
-            raise ValueError(f"{group}: expected {len(names)} passed cases, got {counts}")
+            raise ValueError(
+                f"{group}: expected {len(names)} passed cases, got {counts}"
+            )
+        if not group.startswith("python:") and env.get("FYRR_CI_KEEP_FIXTURES") != "1":
+            # Only this completed harness owns these local fixture roots. Keep
+            # failed runs intact, and never remove external-service data here.
+            owned = re.compile(rf"(?:storage-)?(?:dense|fyrr-history)-{process.pid}-")
+            removed = 0
+            for directory in (ROOT / "target/tmp").iterdir():
+                if (
+                    owned.match(directory.name)
+                    and directory.is_dir()
+                    and not directory.is_symlink()
+                ):
+                    shutil.rmtree(directory)
+                    removed += 1
+            print(
+                f"ci-fixtures: removed {removed} successful roots for harness {process.pid}"
+            )
 
 
 def row_title(row):
@@ -278,7 +308,9 @@ async def pool(manifest, logs, jobs, rows):
         key=lambda item: (
             -manifest[item[0]]
             .get("case_seconds", {})
-            .get(item[1], manifest[item[0]]["seconds"] / len(manifest[item[0]]["cases"]))
+            .get(
+                item[1], manifest[item[0]]["seconds"] / len(manifest[item[0]]["cases"])
+            )
         )
     )
     (logs / "scenario-plan.json").write_text(json.dumps(selected, indent=2) + "\n")
@@ -366,7 +398,8 @@ async def pool(manifest, logs, jobs, rows):
         items = results[row]
         status = "pass" if all(item["status"] == "pass" for item in items) else "FAIL"
         passed, failed, ignored = (
-            sum(item[name] for item in items) for name in ("passed", "failed", "ignored")
+            sum(item[name] for item in items)
+            for name in ("passed", "failed", "ignored")
         )
         seconds = round(sum(item["seconds"] for item in items))
         path = logs / row / "cases.json"
@@ -417,7 +450,11 @@ def main():
         spec = manifest[sys.argv[2]]
         if spec.get("backend") not in {"local", "s3"}:
             raise ValueError("scenario row requires a known storage backend")
-        print(json.dumps({"backend": spec["backend"], "services": spec.get("services", [])}))
+        print(
+            json.dumps(
+                {"backend": spec["backend"], "services": spec.get("services", [])}
+            )
+        )
     elif mode == "plan":
         for row, spec in manifest.items():
             for case in [*spec["cases"], *spec.get("children", {})]:

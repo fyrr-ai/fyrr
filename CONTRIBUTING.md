@@ -116,6 +116,9 @@ and configured swap, reserving memory for concurrent core gates.
 `--jobs=N` or `FYRR_CI_JOBS=N` overrides it. Each case owns its fixture.
 Keep one top-level CI process per checkout; separate
 worktrees share compiler results without sharing writable Cargo outputs.
+Successful scenario harnesses remove their own local fixture directories;
+failed runs retain them for diagnosis. Set `FYRR_CI_KEEP_FIXTURES=1` to keep
+successful fixtures too. Logs always remain under `target/ci-logs/`.
 
 Instrumented tests enable `fyrr-core/test-clock` through dev dependencies.
 `fyrr_core::clock::now()` reads a forward-only offset from the private
