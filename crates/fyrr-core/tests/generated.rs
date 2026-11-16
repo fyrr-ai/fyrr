@@ -3,6 +3,8 @@
 //! `FYRR_UPDATE_GOLDEN=1 cargo test -p fyrr-core --test generated` and review
 //! the diff.
 
+#[path = "support/generated.rs"]
+mod artifacts;
 mod common;
 
 use std::collections::BTreeSet;
@@ -10,7 +12,7 @@ use std::collections::BTreeSet;
 use fyrr_core::connector::{ConnectorBatch, CursorState};
 use fyrr_core::envelope::PreparedEnvelope;
 use fyrr_core::publication::{ContentManifest, ServingHead};
-use fyrr_core::schemas::{GeneratedFile, generated_files};
+use artifacts::{GeneratedFile, generated_files};
 
 fn contract_fixture<T: fyrr_core::Contract>(path: &'static str, bytes: &[u8]) -> GeneratedFile {
     let mut value: serde_json::Value =
