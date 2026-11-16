@@ -3,14 +3,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun run build && bun run preview",
+    "dev": "bun run build:preview && bun run preview",
     "build": "bun run content && next build && bun scripts/finalize.ts && bun scripts/check-links.ts",
+    "build:preview": "SITE_ALLOW_DRAFT_COMPARE=1 bun run build",
     "typecheck": "tsc --noEmit",
     "preview": "wrangler dev --port 8486",
     "verify:browser": "node scripts/verify-browser.mjs",
+    "verify:compare": "node scripts/verify-compare.mjs",
+    "test:compare": "bun test scripts/compare.test.ts",
     "content": "bun scripts/prepare.ts && fumadocs-mdx",
-    "deploy": "wrangler deploy",
-    "deploy:preview": "wrangler versions upload"
+    "deploy": "bun scripts/check-compare.ts --publish && wrangler deploy",
+    "deploy:preview": "bun scripts/check-compare.ts --publish && wrangler versions upload"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.0",

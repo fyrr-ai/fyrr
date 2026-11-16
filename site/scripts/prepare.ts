@@ -8,6 +8,10 @@ import { toString } from 'mdast-util-to-string';
 import { visit } from 'unist-util-visit';
 import subsetFont from 'subset-font';
 import { navigation } from '../lib/navigation';
+import { readResults, assertPublishable } from '../lib/compare';
+
+const comparison = await readResults();
+if (process.env.SITE_ALLOW_DRAFT_COMPARE !== '1') assertPublishable(comparison);
 
 const repo = path.resolve('..');
 const content = '.content';
