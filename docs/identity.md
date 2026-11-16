@@ -70,7 +70,7 @@ pulls publish no directory snapshot or freshness proof.
 | `issuer` | required | Exact `iss` of accepted tokens. With a `keycloak` directory it defaults to the directory issuer. With a `keycloak` or `scim` directory it must equal that issuer, which binds every subject; `config check` refuses a mismatch. |
 | `audience` | required | The token's `aud`, a string or an array, must contain it. |
 | `jwks_url` | required | Operator-pinned key endpoint; token headers never choose a URL. With `keycloak = true` it defaults to `<issuer>/protocol/openid-connect/certs`. |
-| `jwks_validity` | `5m` | |
+| `jwks_validity` | `5m` | 1s–300s; maximum trust age after a successful fetch. |
 | `jwks_refresh_interval` | `5s` | |
 | `scope` | `fyrr:read` | Required scope. |
 | `keycloak` | `false` | Accept Keycloak's `JWT`/`Bearer` access-token profile instead of `at+jwt`. On by default when `issuer` comes from a Keycloak directory. |

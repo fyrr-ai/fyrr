@@ -22,7 +22,7 @@ and memory are under [advanced tuning](tuning.md#advanced-tuning).
 | `mirror_path` | absent (`$XDG_CACHE_HOME/fyrr/<namespace>`, else `~/.cache/fyrr/<namespace>`) | Private local directory of immutable read-through files (mode 0700, owned by the process, not a symlink), created on first use. The default does not depend on the working directory; a relative `mirror_path` resolves against it. Without the setting and without an absolute `XDG_CACHE_HOME` or `HOME`, the reader refuses to start (`storage_configuration_invalid`). |
 | `mirror_max_bytes` | `8589934592` | Disk limit of the mirror in bytes (8 GiB). An integer; unit suffixes are refused. |
 | `version_check` | `interval` | `interval`, `off` or `per-request`. |
-| `version_check_interval` | `30s` | |
+| `version_check_interval` | `30s` | Background scheduler caps the effective interval at 30 s. |
 | `per_request_wait` | `2s` | `per-request` mode: wait this long for a newer version, then serve the old one flagged `stale_version`. |
 | `max_preparation` | `15m` | Upper bound on preparing a new generation. |
 | `max_response_bytes` | absent | 4096–16777216: budget for a serialized search result. Over it, whole hits are dropped from the end of the rank order (each query keeps at least four), then the lowest-ranked hits lose their excerpt or content; `truncated` and `omitted_bytes` report what was removed. |
@@ -32,8 +32,8 @@ and memory are under [advanced tuning](tuning.md#advanced-tuning).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `listen` | required | Socket address. The listener speaks plain HTTP; see [HTTP boundary](http-users.md#http-boundary). |
-| `public_url` | required | 1–2048 characters: the `https://…/mcp` URL clients use (plain HTTP only on loopback); the `Host` header must match its authority on every route except `/readyz`. |
+| `listen` | required | IP socket address (`IP:port`); Socket address. The listener speaks plain HTTP; see [HTTP boundary](http-users.md#http-boundary). |
+| `public_url` | required | URL path must be `/mcp`; 1–2048 characters: the `https://…/mcp` URL clients use (plain HTTP only on loopback); the `Host` header must match its authority on every route except `/readyz`. |
 | `operator_credential` | absent | `{ env = "VAR" }` for `POST /admin/refresh`; separate from OIDC access tokens. Absent, the route is not served (404); readers still pick up new versions through `version_check`. |
 | `authorization_cache_subjects` | `64` | 1–1024 subjects whose admission is cached (LRU, 128 MiB accounted bound). |
 | `user_requests_per_minute` | `120` | At least 1, per canonical user; linked subjects share it. |

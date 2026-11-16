@@ -5,7 +5,8 @@ Claude Code over MCP. No Docker, accounts or embedding keys are needed.
 The first build downloads dependencies. You need Linux x86-64, git, curl,
 unzip, openssl, Python 3.11+, rustup, uv, a C compiler, jq, binutils and
 about 10 GiB free. Install Claude Code before connecting the client.
-Run the commands from the repository root in one shell.
+Clone below, or use an existing checkout. Run the remaining commands from
+its root in one shell.
 
 ## 1. Build and start toy embeddings
 
@@ -45,7 +46,9 @@ uri = (Path(sys.argv[1]).resolve() / ".local/share/fyrr/notes").as_uri()
 text = text.replace('"file:///home/you/.local/share/fyrr/notes"', json.dumps(uri))
 Path(sys.argv[2]).write_text(text)
 PY
-export FYRR_IDENTITY_KEY="${FYRR_IDENTITY_KEY:-$(openssl rand -hex 32)}"   # keep this value for future sessions
+[ -f "$HOME/.config/fyrr/identity.key" ] || (umask 077; openssl rand -hex 32 > "$HOME/.config/fyrr/identity.key")
+chmod 600 "$HOME/.config/fyrr/identity.key"
+export FYRR_IDENTITY_KEY="$(cat "$HOME/.config/fyrr/identity.key")"
 fyrr config check
 fyrr writer namespace create && fyrr writer sync && fyrr writer commit
 fyrr reader search mirror --limit 3
@@ -55,7 +58,9 @@ The example indexes `docs/` as source `notes`, for stdio user `me` with
 reader token `usr:me`. To index your notes, change `sources.scope.paths`
 to their absolute path. Relative source paths use the writer's working
 directory. Repeat `fyrr writer sync && fyrr writer commit` after edits.
-Keep the identity key: readers and subsequent writes need the same value.
+In a new shell, return to the checkout and restore `PATH`, `VIRTUAL_ENV`,
+`FYRR_CONFIG` and `FYRR_IDENTITY_KEY` using the exports above. Keep
+`identity.key`: readers and subsequent writes need the same value.
 The storage directory must be on a local filesystem, used by one host and
 user. For a shared/production deployment using S3, see
 [deployment](deployment.md#minimal-production-setup).
@@ -78,18 +83,11 @@ Claude calls `search` and `fetch`. The default mirror is
 `$HOME/.cache/fyrr/notes`. `--scope user` registers fyrr for all your projects;
 other MCP clients use the same executable, arguments and environment.
 
-## Optional: see permissions in action
-
-`examples/quickstart/run` checks local search, fetch and permissions without
-Docker; `examples/quickstart/run --s3` checks the same flow on the fixture.
-The [permission configuration](../examples/quickstart/permissions.toml)
-publishes handbook and payroll folders. Ada (`grp:engineering`) sees only
-the handbook; Grace (`grp:finance`) sees payroll. The runner verifies both
-identities; Ada's payroll fetch returns no documents.
-
 ## 4. Add Slack or another connector
 
-Add a source to your configuration and publish again:
+Use a user token with the [Slack scopes](connectors/slack.md#setup),
+including `users:read`; its user must belong to matched private channels.
+Add this source to your configuration and publish again:
 
 ```toml
 [[sources]]
@@ -114,3 +112,16 @@ See [Slack](connectors/slack.md) for token scopes and channel rules, or the
 [connectors index](connectors/README.md). Only the writer needs the token;
 the reader checks for publications automatically. Stop toy embeddings with
 `kill "$FYRR_TOY_EMBEDDINGS_PID"`; remove the client entry with `claude mcp remove fyrr --scope user`.
+
+Stopping toy embeddings leaves Claude registered; searches then use lexical
+retrieval until the service is restarted.
+
+## Optional: see permissions in action
+
+`examples/quickstart/run` checks local search, fetch and permissions without
+Docker; `examples/quickstart/run --s3` checks the same flow on the fixture.
+The [permission configuration](../examples/quickstart/permissions.toml)
+publishes handbook and payroll folders. Ada (`grp:engineering`) sees only
+the handbook; Grace (`grp:finance`) sees payroll. The runner verifies both
+identities; Ada's payroll fetch returns no documents.
+

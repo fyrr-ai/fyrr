@@ -25,7 +25,9 @@ paths = ["/srv/docs"]               # one or more directories
 include = ["**/*.md", "**/*.txt"]   # relative glob patterns; default ["**/*"]
 ```
 
-There are no `settings`.
+There are no `settings`. Patterns use Python `Path.match`: they match from
+the end of the relative path; a leading `**/` is also tried without that
+prefix. Do not assume arbitrary recursive `**` glob semantics.
 
 ## Documents
 

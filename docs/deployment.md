@@ -129,6 +129,9 @@ discovery. Reader-only binaries require no Python.
 
 ## Images
 
+Tagged releases will publish `ghcr.io/fyrr-ai/fyrr:<version>` and
+`ghcr.io/fyrr-ai/fyrr-reader:<version>`.
+
 `docker/Dockerfile` builds both images from the repository root; every base
 image is pinned by digest. Both carry the `LICENSE` and `NOTICE` files under
 `/usr/share/doc/fyrr/`.

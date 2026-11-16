@@ -43,6 +43,8 @@ root_pages = ["11111111-2222-3333-4444-555555555555"]   # page IDs, dashes optio
 
 ## Documents
 
+Authors use `created_by.name` when present, otherwise null.
+
 - A document is a page under a root (a sub-page at any block depth, a row
   of a database under a root, and the pages beneath those). `root_id` is
   the dashed page ID; `source_type` is `notion-page` or `notion-row`;

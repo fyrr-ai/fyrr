@@ -47,7 +47,7 @@ such as `query_cache_max_bytes`, take a TOML integer instead.
 | `endpoint` | absent | Endpoint of an S3-compatible service; absent uses `AWS_ENDPOINT_URL` when set, otherwise AWS S3. |
 | `allow_http` | `false` | Allow a plain-HTTP endpoint (development only). |
 | `virtual_hosted_style` | `false` | Virtual-hosted-style requests instead of path-style. |
-| `access_key_id`, `secret_access_key`, `session_token` | absent | Static credentials as environment references; otherwise uses the environment and role sources below. |
+| `access_key_id`, `secret_access_key`, `session_token` | absent | Set `access_key_id` and `secret_access_key` together; `session_token` requires both. Otherwise uses the environment and role sources below. |
 
 All keys but `uri` configure S3 access; with a `file://` URI, `config check`
 refuses each of them, also one that repeats its default.
@@ -134,7 +134,7 @@ The provider must implement the OpenAI-compatible embeddings protocol.
 | `timeout` | `30s` | Per request; must be greater than zero. |
 | `max_retries` | `3` | 0–10. |
 | `reader_live` | `false` | Permit readers to embed queries after authorization. Off, the dense lane is degraded for every query. |
-| `spend` | absent | Required for live calls: `limit_microusd` and `max_call_microusd`, in millionths of a US dollar. The scope is one reader process, one `writer sync` invocation (split evenly across its sources) or one source run under `writer serve`, including retries; it is not an account-wide cap. |
+| `spend` | absent | Required for live calls: `limit_microusd` and `max_call_microusd` (1 to `limit_microusd`), in millionths of a US dollar. The scope is one reader process, one `writer sync` invocation (split evenly across its sources) or one source run under `writer serve`, including retries; it is not an account-wide cap. |
 | `local_cache` | absent (`$XDG_CACHE_HOME/fyrr/writer-embeddings`) | Writer document-vector cache directory. |
 | `query_cache_max_bytes` | `16777216` | 0–134217728 (128 MiB): bounded in-process query vector cache per reader process, in bytes. An integer; unit suffixes are refused. |
 
