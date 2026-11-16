@@ -247,7 +247,7 @@ def run(spec):
             event = {
                 "case": f"{group}/{pending}",
                 "status": status,
-                "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "finished_at": datetime.datetime.now(datetime.UTC).isoformat(),
                 "elapsed_seconds": round(finished - started, 3),
             }
             if env.get("RUST_TEST_THREADS", "1") == "1":
