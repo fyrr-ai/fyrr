@@ -117,18 +117,20 @@ impl ObjectStore for MirrorStore {
         if written != metadata.size {
             return Err(Self::failure());
         }
+        #[cfg(test)]
+        tests::pause("downloaded");
         let checksum = file.with_extension("checksum");
         // Readers never trust a checksum until it matches the complete immutable blob.
         let mut proof = Self::private_file(&checksum, true).map_err(|_| Self::failure())?;
         proof.set_len(0).map_err(|_| Self::failure())?;
         proof.rewind().map_err(|_| Self::failure())?;
         write!(proof, "{}", hex::encode(hasher.finalize())).map_err(|_| Self::failure())?;
-        proof.sync_all().map_err(|_| Self::failure())?;
-        output.sync_all().map_err(|_| Self::failure())?;
+        // Both files are recoverable. Restart verifies their size and checksum.
+        #[cfg(test)]
+        tests::pause("proof");
         std::fs::rename(temporary, &file).map_err(|_| Self::failure())?;
-        std::fs::File::open(&self.directory)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|_| Self::failure())?;
+        #[cfg(test)]
+        tests::pause("published");
         crate::sync::lock(&self.verified).insert(
             file.clone(),
             CachedFile::of(&std::fs::metadata(&file).map_err(|_| Self::failure())?),

@@ -131,3 +131,119 @@ async fn version_manifest_entries_are_bound_to_their_publication() {
     assert_eq!(read(&mirror).await, "second");
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+/// The same process-kill boundary mechanism used by the local storage tests.
+pub(super) fn pause(stage: &str) {
+    if std::env::var("FYRR_TEST_MIRROR_STAGE").as_deref() == Ok(stage) {
+        std::fs::write(std::env::var_os("FYRR_TEST_MIRROR_MARKER").unwrap(), b"").unwrap();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "child of mirror population crash test"]
+#[allow(clippy::print_stderr)]
+async fn mirror_population_child_process() {
+    let root = PathBuf::from(std::env::var_os("FYRR_TEST_MIRROR_ROOT").unwrap());
+    let mirror = MirrorStore::new(root.join("mirror"), 1024).unwrap();
+    let target = Arc::new(
+        object_store::local::LocalFileSystem::new_with_prefix(root.join("source")).unwrap(),
+    );
+    mirror
+        .wrap("namespace", target)
+        .get(&Path::from("namespace/dataset.lance/data/file.lance"))
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    if let Ok(hits) = std::env::var("FYRR_TEST_MIRROR_HITS") {
+        let hits: usize = hits.parse().unwrap();
+        let mirror = MirrorStore::new(root.join("mirror"), 1024).unwrap();
+        let target = Arc::new(
+            object_store::local::LocalFileSystem::new_with_prefix(root.join("source")).unwrap(),
+        );
+        let store = mirror.wrap("namespace", target);
+        let path = Path::from("namespace/dataset.lance/data/file.lance");
+        store.get(&path).await.unwrap().bytes().await.unwrap();
+        eprintln!("phase=warm-mirror-hits");
+        let start = std::time::Instant::now();
+        for _ in 0..hits {
+            assert_eq!(
+                store.get(&path).await.unwrap().bytes().await.unwrap(),
+                "immutable file"
+            );
+        }
+        eprintln!(
+            "phase=done hits={hits} elapsed_ns={}",
+            start.elapsed().as_nanos()
+        );
+        assert_eq!(mirror.totals().hits, hits as u64 + 1);
+    }
+}
+
+#[tokio::test]
+async fn mirror_population_crash_boundaries_recover_verified_bytes() {
+    for stage in ["downloaded", "proof", "published"] {
+        let root =
+            std::env::temp_dir().join(format!("fyrr-mirror-crash-{}-{stage}", std::process::id()));
+        std::fs::create_dir_all(root.join("source/namespace/dataset.lance/data")).unwrap();
+        std::fs::write(
+            root.join("source/namespace/dataset.lance/data/file.lance"),
+            b"immutable file",
+        )
+        .unwrap();
+        let marker = root.join("paused");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "--ignored",
+                "mirror::tests::mirror_population_child_process",
+            ])
+            .env("FYRR_TEST_MIRROR_ROOT", &root)
+            .env("FYRR_TEST_MIRROR_STAGE", stage)
+            .env("FYRR_TEST_MIRROR_MARKER", &marker)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let start = std::time::Instant::now();
+        while !marker.exists() {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(30),
+                "{stage} boundary"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let cache = root.join("mirror");
+        // A power loss may retain either file, truncate it, or lose its pair.
+        for entry in std::fs::read_dir(&cache).unwrap() {
+            let path = entry.unwrap().path();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "blob")
+            {
+                std::fs::write(path, b"corrupt").unwrap();
+            }
+        }
+        let mirror = MirrorStore::new(cache, 1024).unwrap();
+        let target = Arc::new(
+            object_store::local::LocalFileSystem::new_with_prefix(root.join("source")).unwrap(),
+        );
+        let store = mirror.wrap("namespace", target);
+        assert_eq!(
+            store
+                .get(&Path::from("namespace/dataset.lance/data/file.lance"))
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+            "immutable file"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

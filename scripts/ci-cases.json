@@ -462,6 +462,10 @@
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_native_durability_precedes_reference_publication": {
         "tier": "quick",
         "seconds": 0.1
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::mirror_population_crash_boundaries_recover_verified_bytes": {
+        "tier": "quick",
+        "seconds": 0.1
       }
     },
     "children": {
@@ -484,6 +488,12 @@
           "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_updates_are_compare_and_swap_across_processes",
           "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_cleanup_crash_converges_and_preserves_referenced_objects",
           "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_native_durability_precedes_reference_publication"
+        ]
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::mirror_population_child_process": {
+        "tier": "quick",
+        "parents": [
+          "full:fyrr-reader:lib:fyrr_reader/mirror::tests::mirror_population_crash_boundaries_recover_verified_bytes"
         ]
       }
     }
