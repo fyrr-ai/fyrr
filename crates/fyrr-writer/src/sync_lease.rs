@@ -61,7 +61,9 @@ impl CursorLease {
 
     pub async fn acquire(config: &Config, source: &str, kind: SyncKind) -> Result<Arc<Self>> {
         let (store, root) = namespace_store(config)?;
+        crate::commit::sources_allowed(config, store.as_ref(), &root).await?;
         let path = root
+            .clone()
             .join("cursors")
             .join(format!("{source}-{}.json", kind.as_str()));
         let (mut state, mode) = match store.get(&path).await {
@@ -102,12 +104,17 @@ impl CursorLease {
                 | object_store::Error::AlreadyExists { .. } => WriterError::SyncBusy,
                 _ => WriterError::StorageUnavailable,
             })?;
-        Ok(Arc::new(Self {
-            store,
+        let lease = Arc::new(Self {
+            store: store.clone(),
             path,
             held: Mutex::new((state, result, Instant::now())),
             ttl,
-        }))
+        });
+        if let Err(error) = crate::commit::sources_allowed(config, store.as_ref(), &root).await {
+            let _ = lease.release().await;
+            return Err(error);
+        }
+        Ok(lease)
     }
     pub async fn state(&self) -> Result<CursorState> {
         let held = self.held.lock().await;

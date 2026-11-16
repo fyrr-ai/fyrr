@@ -82,3 +82,174 @@ pub async fn create(config: &Config) -> Result<()> {
     };
     put_immutable(store.as_ref(), &root.join("head.json"), &head).await
 }
+
+// This coordination record is not a publication or user data. Its authority is
+// the matching namespace lease and incarnation, never the record's existence.
+const DELETE_FENCE: &str = ".namespace-delete.json";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteFence {
+    version: u8,
+    namespace: String,
+    incarnation: String,
+    holder: String,
+    epoch: u64,
+}
+
+async fn deletion_fence(
+    config: &Config,
+    store: &dyn ObjectStore,
+    root: &Path,
+) -> Result<Option<(DeleteFence, object_store::UpdateVersion)>> {
+    let object = match store.get(&root.clone().join(DELETE_FENCE)).await {
+        Ok(object) => object,
+        Err(object_store::Error::NotFound { .. }) => return Ok(None),
+        Err(_) => return Err(WriterError::StorageUnavailable),
+    };
+    if object.meta.size > 4096 {
+        return Err(WriterError::LeaseInvalid);
+    }
+    let version = crate::lease::version_of(&object.meta);
+    let fence: DeleteFence =
+        serde_json::from_slice(&object.bytes().await?).map_err(|_| WriterError::LeaseInvalid)?;
+    if fence.version != 1
+        || fence.namespace != config.namespace.name
+        || (!fence.incarnation.is_empty() && !fyrr_core::limits::ascii_hex(&fence.incarnation, 32))
+        || !fence
+            .holder
+            .strip_prefix("holder-")
+            .is_some_and(|holder| fyrr_core::limits::ascii_hex(holder, 32))
+    {
+        return Err(WriterError::LeaseInvalid);
+    }
+    Ok(Some((fence, version)))
+}
+
+/// Cursor acquisition checks on both sides of its CAS, so a new source cannot
+/// enter between the deletion fence and the active-worker inventory.
+pub(crate) async fn sources_allowed(
+    config: &Config,
+    store: &dyn ObjectStore,
+    root: &Path,
+) -> Result<()> {
+    let Some((fence, _)) = deletion_fence(config, store, root).await? else {
+        return Ok(());
+    };
+    let head = fyrr_reader::storage::optional_head(config)
+        .await?
+        .ok_or(WriterError::NamespaceUnavailable)?;
+    if head.namespace != config.namespace.name {
+        return Err(WriterError::PublicationNamespaceInvalid);
+    }
+    if head.incarnation == fence.incarnation
+        && head
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.holder == fence.holder && lease.epoch == fence.epoch)
+    {
+        if head
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.expires_at > fyrr_core::clock::now())
+        {
+            return Err(WriterError::SyncBusy);
+        }
+        // An expired deleter may still have a conditional request in flight.
+        // Advance the namespace token before permitting a source to write.
+        LeaseGuard::with(config, |_| async { Ok::<(), WriterError>(()) }).await?;
+    }
+    Ok(())
+}
+
+async fn fence_sources(
+    config: &Config,
+    store: &dyn ObjectStore,
+    root: &Path,
+    lease: &LeaseGuard,
+) -> Result<()> {
+    let head = lease.head().await?;
+    let fence = DeleteFence {
+        version: 1,
+        namespace: config.namespace.name.clone(),
+        incarnation: head.incarnation,
+        holder: lease.holder().holder.clone(),
+        epoch: lease.holder().epoch,
+    };
+    let mode = match deletion_fence(config, store, root).await? {
+        Some((_, version)) => object_store::PutMode::Update(version),
+        None => object_store::PutMode::Create,
+    };
+    let bytes = serde_json::to_vec(&fence).map_err(|_| WriterError::LeaseInvalid)?;
+    store
+        .put_opts(&root.clone().join(DELETE_FENCE), bytes.into(), mode.into())
+        .await?;
+    let cursors: Vec<_> = store
+        .list(Some(&root.clone().join("cursors")))
+        .try_collect()
+        .await?;
+    for object in cursors {
+        lease.head().await?;
+        let state: fyrr_core::connector::CursorState =
+            fyrr_reader::storage::read_contract(store, &object.location).await?;
+        if state.namespace != config.namespace.name {
+            return Err(WriterError::CursorInvalid);
+        }
+        if state
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.expires_at > fyrr_core::clock::now())
+        {
+            return Err(WriterError::SyncBusy);
+        }
+    }
+    Ok(())
+}
+
+pub async fn delete(
+    config: &Config,
+    export: Option<&std::path::Path>,
+) -> Result<serde_json::Value> {
+    let (store, root) = namespace_store(config)?;
+    if fyrr_reader::storage::optional_head(config).await?.is_none() {
+        return Ok(serde_json::json!({"deleted":true}));
+    }
+    let Some(export) = export else {
+        let objects: Vec<_> = store.list(Some(&root)).try_collect().await?;
+        return Ok(
+            serde_json::json!({"dry_run":true,"objects":objects.len(),"bytes":objects.iter().map(|object|object.size).sum::<u64>(),"requires_verified_export":true}),
+        );
+    };
+    LeaseGuard::with(config, |lease| async move {
+        fence_sources(config, store.as_ref(), &root, &lease).await?;
+        let objects: Vec<_> = store.list(Some(&root)).try_collect().await?;
+        for object in objects {
+            if object.location == root.clone().join(DELETE_FENCE) {
+                continue;
+            }
+            lease.head().await?;
+            let relative = fyrr_reader::storage::relative_path(&object.location, &root);
+            let bytes = store.get(&object.location).await?.bytes().await?;
+            let saved =
+                std::fs::read(export.join(relative)).map_err(|_| WriterError::ExportInvalid)?;
+            let matches = if object.location == root.clone().join("head.json") {
+                // Taking/renewing the fence changes only volatile lease fields.
+                let mut current: ServingHead =
+                    fyrr_core::parse_contract(&bytes).map_err(|_| WriterError::ExportInvalid)?;
+                let mut exported: ServingHead =
+                    fyrr_core::parse_contract(&saved).map_err(|_| WriterError::ExportInvalid)?;
+                current.lease = None;
+                exported.lease = None;
+                write_contract(&current) == write_contract(&exported)
+            } else {
+                digest(&saved) == digest(&bytes)
+            };
+            if !matches {
+                return Err(WriterError::ExportInvalid);
+            }
+        }
+        lease.delete_head(config).await?;
+        Ok(serde_json::json!({"deleted":true,"retained_data":true}))
+    })
+    .await
+}

@@ -148,23 +148,33 @@ pub fn cleanup_namespace_store(
 
 /// Namespace-scoped storage access. Only the writer calls mutating store methods.
 pub fn namespace_store(config: &Config) -> Result<(Arc<dyn ObjectStore>, Path), StorageError> {
-    let namespace = |prefix: &str| {
-        Path::from(prefix)
-            .join("namespaces")
-            .join(config.namespace.name.as_str())
-    };
-    let (bucket, prefix) = match config.storage.backend() {
-        Some(StorageBackend::S3 { bucket, prefix }) => (bucket, prefix),
+    match config.storage.backend() {
         Some(StorageBackend::Local { root }) => {
             let store =
                 local::LocalStore::open(&root).map_err(|_| StorageError::StorageUnavailable)?;
-            let root = namespace(store.root().as_ref());
+            let root = store
+                .root()
+                .clone()
+                .join("namespaces")
+                .join(config.namespace.name.as_str());
             let store: Arc<dyn ObjectStore> = Arc::new(store);
             #[cfg(feature = "test-store")]
             let store = test_store::boundary::wrap(store);
-            return Ok((store, root));
+            Ok((store, root))
         }
-        None => return Err(StorageError::StorageConfigurationInvalid),
+        Some(StorageBackend::S3 { .. }) => {
+            let (store, root) = s3_namespace_store(config)?;
+            Ok((Arc::new(store), root))
+        }
+        None => Err(StorageError::StorageConfigurationInvalid),
+    }
+}
+
+fn s3_namespace_store(
+    config: &Config,
+) -> Result<(object_store::aws::AmazonS3, Path), StorageError> {
+    let Some(StorageBackend::S3 { bucket, prefix }) = config.storage.backend() else {
+        return Err(StorageError::StorageConfigurationInvalid);
     };
     let mut builder = AmazonS3Builder::from_env().with_bucket_name(bucket);
     let options = config
@@ -187,8 +197,87 @@ pub fn namespace_store(config: &Config) -> Result<(Arc<dyn ObjectStore>, Path), 
     if instance_disabled {
         return Err(StorageError::StorageUnavailable);
     }
-    let root = namespace(prefix);
-    Ok((Arc::new(store), root))
+    let root = Path::from(prefix)
+        .join("namespaces")
+        .join(config.namespace.name.as_str());
+    Ok((store, root))
+}
+
+/// Delete only the current namespace head matching the holder's CAS token.
+/// S3 deletes the current key without versionId so an older head cannot revive.
+pub async fn delete_head_if_match(
+    config: &Config,
+    expected: &object_store::UpdateVersion,
+) -> object_store::Result<()> {
+    use object_store::signer::{HeaderName, HeaderValue, Method, SignedUrlOptions, Signer};
+    let failure = || object_store::Error::Generic {
+        store: "fyrr namespace head",
+        source: "conditional head deletion failed".into(),
+    };
+    let tag = expected.e_tag.as_deref().ok_or_else(failure)?;
+    match config.storage.backend() {
+        Some(StorageBackend::Local { root }) => {
+            let store = local::LocalStore::open(&root).map_err(|_| failure())?;
+            let path = store
+                .root()
+                .clone()
+                .join("namespaces")
+                .join(config.namespace.name.as_str())
+                .join("head.json");
+            let deletion = store.delete_if_match(path.clone(), tag.to_owned());
+            #[cfg(feature = "test-store")]
+            {
+                test_store::boundary::conditional_delete(&path, tag, deletion).await
+            }
+            #[cfg(not(feature = "test-store"))]
+            {
+                deletion.await
+            }
+        }
+        Some(StorageBackend::S3 { .. }) => {
+            let (store, root) = s3_namespace_store(config).map_err(|_| failure())?;
+            let path = root.join("head.json");
+            let header = HeaderValue::from_str(tag).map_err(|_| failure())?;
+            let options = SignedUrlOptions::new()
+                .with_signed_header(HeaderName::from_static("if-match"), header.clone());
+            let url = store
+                .signed_url_opts(
+                    Method::DELETE,
+                    &path,
+                    std::time::Duration::from_secs(30),
+                    &options,
+                )
+                .await
+                .map_err(|_| failure())?;
+            // Never include the signed URL or transport error in diagnostics.
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .map_err(|_| failure())?;
+            let status = client
+                .delete(url)
+                .header(reqwest::header::IF_MATCH, header)
+                .send()
+                .await
+                .map_err(|_| failure())?
+                .status();
+            if status.is_success() {
+                return Ok(());
+            }
+            if status == reqwest::StatusCode::PRECONDITION_FAILED
+                || status == reqwest::StatusCode::CONFLICT
+            {
+                return Err(object_store::Error::Precondition {
+                    path: path.to_string(),
+                    source: "namespace head changed".into(),
+                });
+            }
+            Err(failure())
+        }
+        None => Err(failure()),
+    }
 }
 
 /// The Lance URI of the namespace's dataset. A local dataset uses Lance's

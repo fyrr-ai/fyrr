@@ -36,6 +36,8 @@ mod local_storage;
 mod maintenance;
 #[path = "dense_path/mirror_identity.rs"]
 mod mirror_identity;
+#[path = "dense_path/namespace_delete.rs"]
+mod namespace_delete;
 #[path = "dense_path/notion.rs"]
 mod notion;
 #[path = "dense_path/publication_lifecycle.rs"]

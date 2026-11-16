@@ -541,6 +541,25 @@ impl LocalStore {
         Ok(objects)
     }
 
+    pub(super) async fn delete_if_match(&self, location: Path, expected: String) -> Result<()> {
+        self.blocking(move |store| {
+            let target = store.target(&location)?;
+            let io = |error| failure(&target, error);
+            let _lock = store.lock().map_err(io)?;
+            store.reap_stage().map_err(io)?;
+            let (file, _) = open_object(&target).map_err(io)?;
+            if version_tag(read_version(&file).map_err(io)?) != expected {
+                return Err(Error::Precondition {
+                    path: location.to_string(),
+                    source: "namespace head changed".into(),
+                });
+            }
+            std::fs::remove_file(&target).map_err(io)?;
+            sync_parent(&target).map_err(io)
+        })
+        .await
+    }
+
     /// Deleting a missing object succeeds, as on S3.
     fn delete_blocking(&self, location: &Path) -> Result<()> {
         let target = self.target(location)?;

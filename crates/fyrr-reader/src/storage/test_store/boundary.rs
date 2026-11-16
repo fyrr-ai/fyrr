@@ -142,6 +142,33 @@ impl Operation {
     }
 }
 
+/// Observe the real conditional local mutation without implementing it here.
+pub(crate) async fn conditional_delete(
+    path: &Path,
+    condition: &str,
+    deletion: impl std::future::Future<Output = Result<()>>,
+) -> Result<()> {
+    let Some(client) = Client::current() else {
+        return deletion.await;
+    };
+    let mut operation = client.operation().await?;
+    operation
+        .observe("DELETE", path, false, 0, condition.as_bytes(), None)
+        .await?;
+    let result = deletion.await;
+    operation
+        .observe(
+            "DELETE",
+            path,
+            true,
+            status(&result),
+            condition.as_bytes(),
+            None,
+        )
+        .await?;
+    result
+}
+
 fn status<T>(result: &Result<T>) -> u16 {
     match result {
         Ok(_) => 200,

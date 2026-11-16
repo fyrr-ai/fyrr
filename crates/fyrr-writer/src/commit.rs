@@ -32,7 +32,8 @@ mod publication;
 pub(crate) use group::commit_one;
 pub(crate) use history::RestoreHistory;
 pub(crate) use namespace::configured_identity;
-pub use namespace::create;
+pub(crate) use namespace::sources_allowed;
+pub use namespace::{create, delete};
 pub(crate) use publication::publish;
 
 pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<PreparedEnvelope>> {
@@ -610,40 +611,6 @@ async fn verify_lineage(dataset: &Dataset, lineage: &CommitLineage) -> Result<()
         previous = recorded.version;
     }
     Ok(())
-}
-
-pub async fn delete(
-    config: &Config,
-    export: Option<&std::path::Path>,
-) -> Result<serde_json::Value> {
-    let (store, root) = namespace_store(config)?;
-    let head = fyrr_reader::storage::optional_head(config).await?;
-    if head.is_none() {
-        return Ok(serde_json::json!({"deleted":true}));
-    }
-    let objects: Vec<_> = store.list(Some(&root)).try_collect().await?;
-    let Some(export) = export else {
-        return Ok(
-            serde_json::json!({"dry_run":true,"objects":objects.len(),"bytes":objects.iter().map(|o|o.size).sum::<u64>(),"requires_verified_export":true}),
-        );
-    };
-    for object in objects {
-        let relative = object
-            .location
-            .prefix_match(&root)
-            .ok_or(WriterError::ExportInvalid)?
-            .map(|p| p.as_ref().to_owned())
-            .collect::<Vec<_>>()
-            .join("/");
-        let local = export.join(relative);
-        let bytes = store.get(&object.location).await?.bytes().await?;
-        let saved = std::fs::read(local).map_err(|_| WriterError::ExportInvalid)?;
-        if digest(&saved) != digest(&bytes) {
-            return Err(WriterError::ExportInvalid);
-        }
-    }
-    store.delete(&root.join("head.json")).await?;
-    Ok(serde_json::json!({"deleted":true,"retained_data":true}))
 }
 
 fn fixed_grants(config: &Config) -> Result<std::collections::BTreeMap<String, Vec<String>>> {

@@ -911,6 +911,22 @@
       "full:fyrr:test:dense_path/corrections::local::bulk_fixture_versions_remain_private_and_support_later_cas": {
         "tier": "full",
         "seconds": 1.441
+      },
+      "full:fyrr:test:dense_path/namespace_delete::delete_rejects_publication_after_verification_on_local_storage": {
+        "tier": "full",
+        "seconds": 10.0
+      },
+      "full:fyrr:test:dense_path/namespace_delete::delete_blocks_source_workers_during_verification_on_local_storage": {
+        "tier": "full",
+        "seconds": 10.0
+      },
+      "full:fyrr:test:dense_path/namespace_delete::stale_delete_fence_advances_head_before_source_write_on_local_storage": {
+        "tier": "full",
+        "seconds": 10.0
+      },
+      "full:fyrr:test:dense_path/namespace_delete::delete_refuses_active_source_worker_on_local_storage": {
+        "tier": "full",
+        "seconds": 10.0
       }
     },
     "backend": "local"
@@ -1108,6 +1124,10 @@
       "full:fyrr:test:dense_path/dense_path_and_namespace_contracts_on_real_s3": {
         "tier": "full",
         "seconds": 33.538
+      },
+      "full:fyrr:test:dense_path/namespace_delete::delete_rejects_publication_after_verification_on_real_s3": {
+        "tier": "full",
+        "seconds": 10.0
       }
     }
   },

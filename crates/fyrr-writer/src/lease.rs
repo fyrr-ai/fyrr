@@ -93,12 +93,19 @@ pub(crate) async fn cas_put<T: Contract>(
         .map(Into::into)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadStatus {
+    Live,
+    Failed,
+    Deleted,
+}
+
 #[derive(Debug)]
 struct HeldHead {
     head: ServingHead,
     expected: UpdateVersion,
     renewed: Instant,
-    failed: bool,
+    status: HeadStatus,
 }
 
 /// A process-local handle to the S3 authority, not another durable state store.
@@ -183,7 +190,7 @@ impl LeaseGuard {
                 head,
                 expected: result,
                 renewed: Instant::now(),
-                failed: false,
+                status: HeadStatus::Live,
             }),
         }))
     }
@@ -193,7 +200,7 @@ impl LeaseGuard {
     }
 
     fn live(&self, state: &HeldHead) -> Result<()> {
-        if state.failed
+        if state.status != HeadStatus::Live
             || state.renewed.elapsed() >= self.ttl
             || state
                 .head
@@ -241,9 +248,28 @@ impl LeaseGuard {
                 Ok(())
             }
             Err(error) => {
-                state.failed = true;
+                state.status = HeadStatus::Failed;
                 telemetry::head_write_failed(stage, &error);
                 Err(WriterError::HeadCasFailed)
+            }
+        }
+    }
+
+    /// Serialize the final conditional deletion with renewal on the same token.
+    pub(crate) async fn delete_head(&self, config: &Config) -> Result<()> {
+        let mut state = self.state.lock().await;
+        self.live(&state)?;
+        match fyrr_reader::storage::delete_head_if_match(config, &state.expected).await {
+            Ok(()) => {
+                state.status = HeadStatus::Deleted;
+                Ok(())
+            }
+            Err(error) => {
+                state.status = HeadStatus::Failed;
+                Err(match error {
+                    object_store::Error::Precondition { .. } => WriterError::HeadCasFailed,
+                    _ => WriterError::StorageUnavailable,
+                })
             }
         }
     }
@@ -254,8 +280,11 @@ impl LeaseGuard {
             let guard = guard.clone();
             async move {
                 let mut state = guard.state.lock().await;
+                if state.status == HeadStatus::Deleted {
+                    return false;
+                }
                 if guard.live(&state).is_err() {
-                    state.failed = true;
+                    state.status = HeadStatus::Failed;
                     return false;
                 }
                 let mut head = state.head.clone();
@@ -279,6 +308,9 @@ impl LeaseGuard {
 
     pub async fn release(&self) -> Result<()> {
         let mut state = self.state.lock().await;
+        if state.status == HeadStatus::Deleted {
+            return Ok(());
+        }
         // A publication response may have been lost. Read the S3 authority
         // before release and preserve every pointer it actually published.
         let object = self.store.get(&self.path).await?;
