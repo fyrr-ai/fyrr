@@ -98,13 +98,12 @@ impl Preparation<'_> {
             .iter()
             .map(|c| c.root_id.clone())
             .collect::<Vec<_>>();
-        let known = rt.block_on(lookup_revisions(
+        let (published, known) = rt.block_on(revision_views(
             config,
             dataset.as_deref(),
             revisions,
             &roots,
         ))?;
-        let published = rt.block_on(published_revisions(dataset.as_deref(), &source.id, &roots))?;
         for change in &mut changes {
             if change.op == fyrr_core::connector::ChangeOp::Upsert
                 && source.retention_days.is_some_and(|days| {

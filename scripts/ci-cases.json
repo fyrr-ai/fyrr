@@ -498,6 +498,10 @@
       "full:fyrr-writer:lib:fyrr_writer/python::prepared::state::tests::command_evidence_discards_bodies_when_head_identity_changes": {
         "tier": "quick",
         "seconds": 0.01
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::prepared::revisions::tests::pending_revision_overflow_keeps_exact_unsigned_overlays_without_rescans": {
+        "tier": "quick",
+        "seconds": 2.0
       }
     },
     "children": {

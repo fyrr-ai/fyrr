@@ -15,6 +15,7 @@ pub(crate) enum Evidence {
     Identity,
     Marker,
     Preparation,
+    PendingRevision,
 }
 
 #[derive(Debug)]
@@ -142,6 +143,15 @@ impl Index {
             };
             db.execute(sql, params![kind as i64, key, bytes])
                 .map_err(|_| ERROR)?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn replace(&self, kind: Evidence, key: &str, value: &impl Serialize) -> Result<()> {
+        let bytes = serde_json::to_vec(value).map_err(|_| ERROR)?;
+        self.with_db(|db| {
+            self.reserve(db, key.len().checked_add(bytes.len()).ok_or(ERROR)?)?;
+            db.execute("INSERT INTO evidence VALUES (?1,?2,?3) ON CONFLICT(kind,key) DO UPDATE SET value=excluded.value", params![kind as i64, key, bytes]).map_err(|_| ERROR)?;
             Ok(())
         })
     }

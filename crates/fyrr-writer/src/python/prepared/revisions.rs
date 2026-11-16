@@ -13,16 +13,12 @@ pub(super) struct RevisionView<'a> {
     pub(super) failure: &'a RevisionFailure,
 }
 
-// Per-preparation metadata only. Bound string payload and map cardinality;
-// these limits do not claim a bound on the whole worker's RSS.
-const REVISION_KEYS: usize = 8192;
-const REVISION_STRINGS: usize = 1024 * 1024;
-type PendingSummary = BTreeMap<String, (u64, Option<String>)>;
+use crate::commit::history::index::{Evidence, Index};
 
 pub(super) struct PendingRevisions {
     paths: Arc<Vec<Path>>,
     source: String,
-    summary: tokio::sync::OnceCell<Option<PendingSummary>>,
+    summary: tokio::sync::OnceCell<Index>,
 }
 impl PendingRevisions {
     pub(super) fn new(paths: Arc<Vec<Path>>, source: String) -> Self {
@@ -32,11 +28,15 @@ impl PendingRevisions {
             summary: tokio::sync::OnceCell::new(),
         }
     }
-    async fn summary(&self, store: &dyn ObjectStore) -> Result<&Option<PendingSummary>> {
+
+    async fn summary(
+        &self,
+        config: &fyrr_core::config::Config,
+        store: &dyn ObjectStore,
+    ) -> Result<&Index> {
         self.summary
             .get_or_try_init(|| async {
-                let mut result = BTreeMap::new();
-                let mut strings = 0;
+                let index = Index::command(config)?;
                 for path in self.paths.iter() {
                     let envelope: PreparedEnvelope =
                         fyrr_reader::storage::read_contract(store, path).await?;
@@ -47,8 +47,9 @@ impl PendingRevisions {
                         continue;
                     };
                     for doc in payload.documents {
-                        let old: Option<&(u64, Option<String>)> = result.get(&doc.root_id);
-                        if old.is_some_and(|(sequence, _)| *sequence >= envelope.sequence) {
+                        let old: Option<(u64, Option<String>)> =
+                            index.get(Evidence::PendingRevision, &doc.root_id)?;
+                        if old.is_some_and(|(sequence, _)| sequence >= envelope.sequence) {
                             continue;
                         }
                         let revision = if doc.intent == DocumentIntent::Delete {
@@ -56,23 +57,15 @@ impl PendingRevisions {
                         } else {
                             doc.source_revision
                         };
-                        let previous = old.map_or(0, |(_, value)| {
-                            doc.root_id.len() + value.as_ref().map_or(0, String::len)
-                        });
-                        let bytes = strings - previous
-                            + doc.root_id.len()
-                            + revision.as_ref().map_or(0, String::len);
-                        if bytes > REVISION_STRINGS
-                            || (old.is_none() && result.len() == REVISION_KEYS)
-                        {
-                            // Keep the existing bounded streaming path for larger views.
-                            return Ok(None);
-                        }
-                        result.insert(doc.root_id, (envelope.sequence, revision));
-                        strings = bytes;
+                        // Store unsigned sequences as JSON, never narrowed to a signed SQL integer.
+                        index.replace(
+                            Evidence::PendingRevision,
+                            &doc.root_id,
+                            &(envelope.sequence, revision),
+                        )?;
                     }
                 }
-                Ok(Some(result))
+                Ok(index)
             })
             .await
     }
@@ -142,52 +135,50 @@ pub(super) async fn published_revisions(
     Ok(result)
 }
 
-/// Effective revisions, using one bounded immutable summary per preparation.
+/// Effective revisions from one published lookup and an exact disposable overlay.
 pub(super) async fn lookup_revisions(
     config: &fyrr_core::config::Config,
     dataset: Option<&lance::Dataset>,
     pending: &PendingRevisions,
     roots: &[String],
 ) -> Result<BTreeMap<String, (String, u64)>> {
-    let source = pending.source.as_str();
-    let mut result = published_revisions(dataset, source, roots).await?;
-    let (store, _) = fyrr_reader::storage::namespace_store(config)?;
-    if let Some(summary) = pending.summary(store.as_ref()).await? {
-        for root in roots {
-            if let Some((sequence, revision)) = summary.get(root) {
-                if let Some(revision) = revision {
-                    result.insert(root.clone(), (revision.clone(), *sequence));
-                } else {
-                    result.remove(root);
-                }
-            }
-        }
+    let published = published_revisions(dataset, &pending.source, roots).await?;
+    overlay_revisions(config, pending, roots, published).await
+}
+
+pub(super) async fn revision_views(
+    config: &fyrr_core::config::Config,
+    dataset: Option<&lance::Dataset>,
+    pending: &PendingRevisions,
+    roots: &[String],
+) -> Result<(
+    BTreeMap<String, (String, u64)>,
+    BTreeMap<String, (String, u64)>,
+)> {
+    let published = published_revisions(dataset, &pending.source, roots).await?;
+    let effective = overlay_revisions(config, pending, roots, published.clone()).await?;
+    Ok((published, effective))
+}
+
+async fn overlay_revisions(
+    config: &fyrr_core::config::Config,
+    pending: &PendingRevisions,
+    roots: &[String],
+    mut result: BTreeMap<String, (String, u64)>,
+) -> Result<BTreeMap<String, (String, u64)>> {
+    if pending.paths.is_empty() {
         return Ok(result);
     }
-    // Overflow fallback reads one envelope at a time and retains only page keys.
-    let mut newest = std::collections::BTreeMap::<String, u64>::new();
-    for path in pending.paths.iter() {
-        let envelope: PreparedEnvelope =
-            fyrr_reader::storage::read_contract(store.as_ref(), path).await?;
-        if envelope.source_id != source {
-            continue;
-        }
-        let EnvelopePayload::Content(payload) = envelope.payload else {
-            continue;
-        };
-        for document in payload.documents {
-            if !roots.contains(&document.root_id)
-                || newest
-                    .get(&document.root_id)
-                    .is_some_and(|s| *s >= envelope.sequence)
-            {
-                continue;
-            }
-            newest.insert(document.root_id.clone(), envelope.sequence);
-            if document.intent == DocumentIntent::Delete {
-                result.remove(&document.root_id);
-            } else if let Some(rev) = document.source_revision {
-                result.insert(document.root_id, (rev, envelope.sequence));
+    let (store, _) = fyrr_reader::storage::namespace_store(config)?;
+    let index = pending.summary(config, store.as_ref()).await?;
+    for root in roots {
+        if let Some((sequence, revision)) =
+            index.get::<(u64, Option<String>)>(Evidence::PendingRevision, root)?
+        {
+            if let Some(revision) = revision {
+                result.insert(root.clone(), (revision, sequence));
+            } else {
+                result.remove(root);
             }
         }
     }
@@ -252,26 +243,27 @@ impl Preparation<'_> {
         let source_pending = self.source.id.clone();
         let dataset_pending = dataset.clone();
         let overlay_config = self.config.clone();
-        let overlay_dataset = dataset.clone();
         let overlay_pending = pending.clone();
         revision_batches = revision_batches
             .then(move |page| {
                 let config = overlay_config.clone();
-                let dataset = overlay_dataset.clone();
                 let pending = overlay_pending.clone();
                 async move {
                     let page = page?;
                     if pending.paths.is_empty() {
                         return Ok(page);
                     }
-                    let roots: Vec<_> = page.into_iter().map(|(root, _)| root).collect();
-                    Ok(
-                        lookup_revisions(&config, dataset.as_deref(), &pending, &roots)
-                            .await?
-                            .into_iter()
-                            .map(|(root, (revision, _))| (root, revision))
-                            .collect(),
-                    )
+                    let roots: Vec<_> = page.iter().map(|(root, _)| root.clone()).collect();
+                    let published = page
+                        .into_iter()
+                        .filter(|(_, revision)| !revision.is_empty())
+                        .map(|(root, revision)| (root, (revision, 0)))
+                        .collect();
+                    Ok(overlay_revisions(&config, &pending, &roots, published)
+                        .await?
+                        .into_iter()
+                        .map(|(root, (revision, _))| (root, revision))
+                        .collect())
                 }
             })
             .boxed();
@@ -300,9 +292,8 @@ impl Preparation<'_> {
                     .iter()
                     .map(|d| d.root_id.clone())
                     .collect();
-                let published = published_revisions(dataset.as_deref(), &source, &roots).await?;
-                let effective =
-                    lookup_revisions(&config, dataset.as_deref(), &pending, &roots).await?;
+                let (published, effective) =
+                    revision_views(&config, dataset.as_deref(), &pending, &roots).await?;
                 Ok(payload
                     .documents
                     .into_iter()
@@ -318,5 +309,109 @@ impl Preparation<'_> {
             }
         });
         Ok(revision_batches.chain(pending_stream).boxed())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fyrr_core::Contract;
+    use object_store::ObjectStoreExt;
+
+    #[tokio::test]
+    async fn pending_revision_overflow_keeps_exact_unsigned_overlays_without_rescans() {
+        let (config, root) = crate::lease::tests::local_config("revision-overflow");
+        let (store, namespace) = fyrr_reader::storage::namespace_store(&config).unwrap();
+        let template: PreparedEnvelope = serde_json::from_str(include_str!(
+            "../../../../../fixtures/contracts/prepared-envelope/content.json"
+        ))
+        .unwrap();
+        let mut paths = Vec::new();
+        let mut seed = Vec::new();
+        // Cross both the old 8,192-key and 1 MiB string limits.
+        for page in 0..40 {
+            let mut envelope = template.clone();
+            envelope.namespace.clone_from(&config.namespace.name);
+            envelope.sequence = page + 1;
+            envelope.envelope_id = fyrr_core::envelope::envelope_id(
+                &envelope.namespace,
+                &envelope.source_id,
+                envelope.kind,
+                envelope.sequence,
+                envelope.rejection_generation,
+                envelope.cursor.start.as_deref(),
+            );
+            let EnvelopePayload::Content(payload) = &mut envelope.payload else {
+                unreachable!()
+            };
+            let mut document = payload.documents[0].clone();
+            document.records = 0;
+            payload.fragments.clear();
+            payload.documents = (0..256)
+                .map(|row| {
+                    let mut doc = document.clone();
+                    doc.root_id = format!("root-{:05}", page * 256 + row);
+                    doc.source_revision = Some("r".repeat(160));
+                    doc
+                })
+                .collect();
+            envelope.validate().unwrap();
+            let path = namespace
+                .clone()
+                .join("envelopes")
+                .join(format!("{}.json", envelope.envelope_id));
+            seed.push((path.clone(), fyrr_core::write_contract(&envelope)));
+            paths.push(path);
+        }
+        let mut tail = template;
+        tail.namespace.clone_from(&config.namespace.name);
+        tail.sequence = u64::MAX;
+        tail.envelope_id = fyrr_core::envelope::envelope_id(
+            &tail.namespace,
+            &tail.source_id,
+            tail.kind,
+            tail.sequence,
+            tail.rejection_generation,
+            tail.cursor.start.as_deref(),
+        );
+        let EnvelopePayload::Content(payload) = &mut tail.payload else {
+            unreachable!()
+        };
+        payload.fragments.clear();
+        payload.documents[0].root_id = "root-00001".into();
+        payload.documents[0].source_revision = Some("newest".into());
+        payload.documents[0].records = 0;
+        payload.documents[1].root_id = "root-00000".into();
+        tail.validate().unwrap();
+        let path = namespace
+            .clone()
+            .join("envelopes")
+            .join(format!("{}.json", tail.envelope_id));
+        seed.push((path.clone(), fyrr_core::write_contract(&tail)));
+        paths.push(path);
+        fyrr_reader::storage::test_store::seed_local_fixture(&config, seed).unwrap();
+        let pending = PendingRevisions::new(Arc::new(paths.clone()), tail.source_id);
+        let roots: Vec<_> = (0..256).map(|row| format!("root-{row:05}")).collect();
+        for _ in 0..20 {
+            let view = lookup_revisions(&config, None, &pending, &roots)
+                .await
+                .unwrap();
+            assert!(!view.contains_key("root-00000"));
+            assert_eq!(view["root-00001"], ("newest".into(), u64::MAX));
+            assert_eq!(view["root-00002"].0, "r".repeat(160));
+        }
+        // The immutable command snapshot is exact even after its source objects
+        // are retired; another lookup must not perform another envelope scan.
+        for path in paths {
+            store.delete(&path).await.unwrap();
+        }
+        let view = lookup_revisions(&config, None, &pending, &roots)
+            .await
+            .unwrap();
+        assert!(!view.contains_key("root-00000"));
+        assert_eq!(view["root-00001"], ("newest".into(), u64::MAX));
+        drop(pending);
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

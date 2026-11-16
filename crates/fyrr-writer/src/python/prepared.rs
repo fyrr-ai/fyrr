@@ -12,9 +12,7 @@ use fyrr_core::envelope::{
 use fyrr_core::publication::ServingHead;
 use object_store::{ObjectStore, path::Path};
 use pyo3::{exceptions::PyRuntimeError, types::PyCFunction};
-use revisions::{
-    PendingRevisions, RevisionView, lookup_revisions, published_revisions, source_counts,
-};
+use revisions::{PendingRevisions, RevisionView, lookup_revisions, revision_views, source_counts};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
