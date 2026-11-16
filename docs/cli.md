@@ -70,3 +70,9 @@ The writer runs every provider in isolated `__worker` child processes. The
 ### Finding providers
 
 See [provider installation and discovery](deployment.md#providers-in-the-image).
+
+### Namespace deletion failures
+
+| Code | Meaning |
+| --- | --- |
+| `conditional_delete_unsupported` | The S3 server did not prove that it honors conditional deletion. The serving head is retained; use a backend supporting `If-Match` on DELETE. |

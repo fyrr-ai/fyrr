@@ -109,6 +109,7 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
         ("delete_stage_failed", false),
         ("document_invalid", false),
         ("document_revision_missing", false),
+        ("conditional_delete_unsupported", false),
         ("export_invalid", false),
         ("file_inventory_unavailable", false),
         ("foreign_lineage", false),

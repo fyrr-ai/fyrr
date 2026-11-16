@@ -8,6 +8,7 @@
 docs/cli.md: every command and subcommand of both builds, their flags,
 positional arguments and defaults match `--help`; documented flag ranges
 are probed (the bounds parse, one past them is a usage error).
+The namespace-deletion diagnostic table matches the writer's error catalog.
 docs/configuration.md, docs/identity.md, docs/tuning.md and
 docs/reader-writer.md: every key of schemas/config.schema.json is
 documented once, in one of them, with its default, `required` or `absent`,
@@ -517,6 +518,19 @@ def check_mcp_tools():
         fail(where, f"{len(documented)} error codes documented, {len(expected)} exist")
 
 
+def check_namespace_delete_diagnostics():
+    source = (ROOT / "crates/fyrr-writer/src/error.rs").read_text()
+    codes = dict(re.findall(r'(\w+) => \("([a-z_]+)", (?:true|false)\)', source))
+    body = sections(ROOT / "docs/cli.md", 3).get("Namespace deletion failures", "")
+    documented = [row["Code"].strip("`") for row in table(body)]
+    expected = codes.get("ConditionalDeleteUnsupported")
+    if expected is None or expected not in documented:
+        fail("docs/cli.md", "conditional namespace-deletion refusal is not documented")
+    for code in documented:
+        if code not in codes.values():
+            fail("docs/cli.md", f"unknown writer diagnostic: {code}")
+
+
 # --- binaries -------------------------------------------------------------------
 
 
@@ -534,6 +548,7 @@ def main():
         check_cli(str(full), str(reader))
         check_configuration(str(full))
     check_mcp_tools()
+    check_namespace_delete_diagnostics()
     for error in errors:
         print(f"FAIL {error}")
     if errors:

@@ -134,6 +134,10 @@ command checks each saved object against storage before unpublishing:
 unpublishes the old namespace; its objects stay in storage until you remove
 that namespace's objects ([CLI](cli.md)).
 
+On S3, deletion first probes whether the server honors `If-Match` on DELETE.
+If it does not, `conditional_delete_unsupported` leaves the serving head
+in place. Use a backend supporting conditional deletion before retrying.
+
 Analyzer (`namespace.fts_*`), composition, retrieval and
 `[namespace.rerank]` changes stay in place: the next commit rebuilds the lexical index or publishes the new
 retrieval policy. Readers must run the same settings; a reader with the old
