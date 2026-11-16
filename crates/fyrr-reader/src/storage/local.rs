@@ -71,6 +71,7 @@ pub(super) struct LocalStore {
     inner: Arc<LocalFileSystem>,
     root: Path,
     lock: PathBuf,
+    cleanup_directories: Option<Arc<std::sync::Mutex<std::collections::BTreeSet<PathBuf>>>>,
 }
 
 impl std::fmt::Display for LocalStore {
@@ -108,7 +109,30 @@ impl LocalStore {
             inner: Arc::new(LocalFileSystem::new().with_fsync(true)),
             root: Path::from_absolute_path(root).map_err(std::io::Error::other)?,
             lock: root.join(LOCK),
+            cleanup_directories: None,
         })
+    }
+
+    /// Only maintenance and purge opt into deferred directory durability.
+    pub(super) fn cleanup_batch(mut self) -> Self {
+        self.cleanup_directories = Some(Arc::new(std::sync::Mutex::new(Default::default())));
+        self
+    }
+
+    /// A successful cleanup includes durable removal of every directory entry.
+    pub(super) async fn finish_cleanup(&self) -> Result<()> {
+        self.blocking(|store| {
+            let directories = store.cleanup_directories.as_ref().expect("cleanup batch");
+            let mut directories = directories.lock().expect("cleanup directories lock");
+            for directory in directories.iter() {
+                File::open(directory)
+                    .and_then(|file| file.sync_all())
+                    .map_err(|error| failure(directory, error))?;
+            }
+            directories.clear();
+            Ok(())
+        })
+        .await
     }
 
     /// The object path of the storage root.
@@ -430,7 +454,19 @@ impl LocalStore {
         let _lock = self.lock().map_err(io)?;
         self.reap_stage().map_err(io)?;
         match std::fs::remove_file(&target) {
-            Ok(()) => sync_parent(&target).map_err(io),
+            Ok(()) => {
+                if let Some(directories) = &self.cleanup_directories {
+                    directories
+                        .lock()
+                        .expect("cleanup directories lock")
+                        .insert(target.parent().expect("object directory").to_path_buf());
+                    #[cfg(test)]
+                    tests::pause("unlinked");
+                    Ok(())
+                } else {
+                    sync_parent(&target).map_err(io)
+                }
+            }
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
             Err(error) => Err(io(error)),
         }

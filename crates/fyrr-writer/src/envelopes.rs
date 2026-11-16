@@ -154,7 +154,7 @@ pub(crate) async fn discard_purged(
     lease: &crate::lease::LeaseGuard,
 ) -> Result<usize> {
     let head = lease.head().await?;
-    let (store, root) = namespace_store(config)?;
+    let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
     let policy: fyrr_core::publication::PolicyArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
     if !policy
@@ -202,6 +202,7 @@ pub(crate) async fn discard_purged(
         }
         deleted += 1;
     }
+    durability.finish().await?;
     Ok(deleted)
 }
 
@@ -211,7 +212,7 @@ pub(crate) async fn cleanup_held(
 ) -> Result<usize> {
     discard_purged(config, lease).await?;
     let head = lease.head().await?;
-    let (store, _) = namespace_store(config)?;
+    let (store, _, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
     let (paths, applied) = crate::commit::envelope_paths(config, &head).await?;
     let unresolved: BTreeSet<_> = crate::commit::unconsumed_rejections(config, &head, &[])
         .await?
@@ -291,6 +292,7 @@ pub(crate) async fn cleanup_held(
         store.delete(&path).await?;
         deleted += 1;
     }
+    durability.finish().await?;
     Ok(deleted)
 }
 

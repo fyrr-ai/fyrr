@@ -357,7 +357,7 @@ async fn cleanup_versions(
     };
     // Native cleanup doesn't know prepared envelopes. Filter its candidates under
     // the namespace lease; protect every remaining log fragment, including rejects.
-    let (store, root) = namespace_store(config)?;
+    let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
     let (paths, applied) = commit::envelope_paths(config, &head).await?;
     let unresolved: BTreeSet<_> = commit::unconsumed_rejections(config, &head, &[])
         .await?
@@ -429,6 +429,7 @@ async fn cleanup_versions(
             .await?;
         removed += 1;
     }
+    durability.finish().await?;
     Ok((removed, protected_count, unverified_protected))
 }
 

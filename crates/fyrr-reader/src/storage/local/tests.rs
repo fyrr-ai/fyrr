@@ -107,6 +107,14 @@ fn child(root: &std::path::Path, action: &str, extra: &[(&str, &std::ffi::OsStr)
 fn local_store_child_process() {
     let root = PathBuf::from(std::env::var_os("FYRR_TEST_LOCAL_ROOT").unwrap());
     let store = LocalStore::open(&root).unwrap();
+    if std::env::var("FYRR_TEST_LOCAL_ACTION").as_deref() == Ok("cleanup") {
+        let store = store.cleanup_batch();
+        store
+            .delete_blocking(&at(&store, "namespaces/ns/retired"))
+            .unwrap();
+        futures::executor::block_on(store.finish_cleanup()).unwrap();
+        return;
+    }
     if let Some(go) = std::env::var_os("FYRR_TEST_LOCAL_GO") {
         while !std::path::Path::new(&go).exists() {
             std::thread::sleep(Duration::from_micros(200));
@@ -893,4 +901,61 @@ async fn lance_commits_on_a_local_root_are_exclusive() {
 
 fn scratch_root(root: &std::path::Path) -> &std::path::Path {
     root.parent().and_then(std::path::Path::parent).unwrap()
+}
+
+#[tokio::test]
+async fn local_cleanup_crash_converges_and_preserves_referenced_objects() {
+    let root = scratch("cleanup-crash");
+    let store = LocalStore::open(&root).unwrap();
+    put(&store, b"referenced", PutMode::Create).unwrap();
+    let retired = at(&store, "namespaces/ns/retired");
+    store
+        .put_opts(&retired, b"retired".to_vec().into(), PutMode::Create.into())
+        .await
+        .unwrap();
+    let marker = root.join("unlinked");
+    let mut process = child(
+        &root,
+        "cleanup",
+        &[("FYRR_TEST_LOCAL_PAUSE_UNLINKED", marker.as_os_str())],
+    );
+    let started = std::time::Instant::now();
+    while !marker.exists() {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "unlink boundary not reached"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    process.kill().unwrap();
+    process.wait().unwrap();
+    let batch = LocalStore::open(&root).unwrap().cleanup_batch();
+    batch.delete_blocking(&retired).unwrap();
+    batch.finish_cleanup().await.unwrap();
+    assert_eq!(read(&store, &root), b"referenced");
+    assert!(matches!(
+        store.get(&retired).await,
+        Err(Error::NotFound { .. })
+    ));
+    // Several deletions in one directory produce one durability obligation.
+    for key in ["a", "b"] {
+        let path = at(&store, &format!("namespaces/ns/{key}"));
+        store
+            .put_opts(&path, b"retired".to_vec().into(), PutMode::Create.into())
+            .await
+            .unwrap();
+        batch.delete_blocking(&path).unwrap();
+    }
+    assert_eq!(
+        batch
+            .cleanup_directories
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .len(),
+        1
+    );
+    batch.finish_cleanup().await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }

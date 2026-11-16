@@ -75,6 +75,45 @@ fn uses_instance_credentials(builder: &AmazonS3Builder) -> bool {
         && !(has(Key::ContainerCredentialsFullUri) && has(Key::ContainerAuthorizationTokenFile))
 }
 
+/// Explicit durability scope for maintenance and purge deletions.
+/// Call `finish` before reporting cleanup success. Dropping an unfinished scope
+/// may leave retired files after a crash; subsequent cleanup can remove them.
+#[derive(Debug)]
+pub struct CleanupDurability(Option<local::LocalStore>);
+
+impl CleanupDurability {
+    pub async fn finish(self) -> Result<(), StorageError> {
+        if let Some(store) = self.0 {
+            store
+                .finish_cleanup()
+                .await
+                .map_err(|_| StorageError::StorageUnavailable)?;
+        }
+        Ok(())
+    }
+}
+
+pub fn cleanup_namespace_store(
+    config: &Config,
+) -> Result<(Arc<dyn ObjectStore>, Path, CleanupDurability), StorageError> {
+    if let Some(StorageBackend::Local { root }) = config.storage.backend() {
+        let local = local::LocalStore::open(&root)
+            .map_err(|_| StorageError::StorageUnavailable)?
+            .cleanup_batch();
+        let root = local
+            .root()
+            .clone()
+            .join("namespaces")
+            .join(config.namespace.name.as_str());
+        let store: Arc<dyn ObjectStore> = Arc::new(local.clone());
+        #[cfg(feature = "test-store")]
+        let store = test_store::boundary::wrap(store);
+        return Ok((store, root, CleanupDurability(Some(local))));
+    }
+    let (store, root) = namespace_store(config)?;
+    Ok((store, root, CleanupDurability(None)))
+}
+
 /// Namespace-scoped storage access. Only the writer calls mutating store methods.
 pub fn namespace_store(config: &Config) -> Result<(Arc<dyn ObjectStore>, Path), StorageError> {
     let namespace = |prefix: &str| {

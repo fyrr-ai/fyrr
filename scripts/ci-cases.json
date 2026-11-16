@@ -454,6 +454,10 @@
       "full:fyrr-core:lib:fyrr_core/clock::test_clock::tests::offset_only_moves_forward_and_is_shared_through_a_file": {
         "tier": "quick",
         "seconds": 0.006
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_cleanup_crash_converges_and_preserves_referenced_objects": {
+        "tier": "quick",
+        "seconds": 0.1
       }
     },
     "children": {
@@ -473,7 +477,8 @@
         "tier": "quick",
         "parents": [
           "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_crash_before_publication_keeps_the_old_object",
-          "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_updates_are_compare_and_swap_across_processes"
+          "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_updates_are_compare_and_swap_across_processes",
+          "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_cleanup_crash_converges_and_preserves_referenced_objects"
         ]
       }
     }
