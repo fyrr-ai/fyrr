@@ -606,9 +606,6 @@ fn apply_mutation(
     request: &Mutation,
     revision: u64,
 ) -> Result<MutationResult> {
-    if state.users.len() + state.groups.len() >= 100_000 && request.method == "POST" {
-        return Err(ScimError::new(413, "tooLarge"));
-    }
     let replay_body = if request.method == "POST" {
         normalize(&request.body, request.users, "request")?
     } else {
@@ -637,6 +634,9 @@ fn apply_mutation(
                 .get(id)
                 .map(|v| MutationResult::Unchanged(response(v, request.users)))
                 .ok_or(ScimError::new(409, "uniqueness"));
+        }
+        if state.users.len() + state.groups.len() >= 100_000 {
+            return Err(ScimError::new(413, "tooLarge"));
         }
     }
     let resources = if request.users {
@@ -724,4 +724,64 @@ fn apply_mutation(
         state.replays.insert(replay, id);
     }
     Ok(MutationResult::Changed(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_at_live_capacity_preserves_the_resource_and_refuses_new_posts() {
+        let mut state = ScimState::default();
+        let mut request = Mutation {
+            users: true,
+            method: "POST".into(),
+            id: None,
+            version: None,
+            idempotency: Some("capacity-fixture".into()),
+            body: json!({"schemas":[USER_SCHEMA],"userName":"replay@example.test"}),
+        };
+        let MutationResult::Changed(Some(original)) =
+            apply_mutation(&mut state, &request, 1).unwrap()
+        else {
+            panic!("first POST must create a resource");
+        };
+        let id = original["id"].as_str().unwrap().to_owned();
+        for index in 0..99_999 {
+            let group = format!("group-{index}");
+            let mut value = normalize(
+                &json!({"schemas":[GROUP_SCHEMA],"displayName":group}),
+                false,
+                &group,
+            )
+            .unwrap();
+            value["meta"] = json!({"version":1});
+            state.groups.insert(group, value);
+        }
+        let MutationResult::Unchanged(replayed) = apply_mutation(&mut state, &request, 2).unwrap()
+        else {
+            panic!("a matching replay must not publish a resource mutation");
+        };
+        assert_eq!(replayed, response(&original, true));
+        assert_eq!(state.users[&id], original);
+        assert_eq!((state.users.len(), state.groups.len()), (1, 99_999));
+
+        request.body["userName"] = json!("new@example.test");
+        let error = apply_mutation(&mut state, &request, 2).err().unwrap();
+        assert_eq!((error.status, error.kind), (413, "tooLarge"));
+        assert_eq!((state.users.len(), state.groups.len()), (1, 99_999));
+
+        // Legacy replay tombstones must not authorize insertion at capacity.
+        state.users.remove(&id);
+        let mut replacement = state.groups["group-0"].clone();
+        replacement["id"] = json!("replacement");
+        replacement["displayName"] = json!("replacement");
+        state.groups.insert("replacement".into(), replacement);
+        request.body["userName"] = json!("replay@example.test");
+        let error = apply_mutation(&mut state, &request, 2).err().unwrap();
+        assert_eq!((error.status, error.kind), (413, "tooLarge"));
+        assert_eq!(state.groups.len(), 100_000);
+        assert!(state.users.is_empty());
+        assert!(state.replays.is_empty());
+    }
 }
