@@ -199,6 +199,9 @@ pub(crate) async fn discard_purged(
                 }
             })
             .await?;
+            // The envelope is the retry index for these retired fragments.
+            // Persist their disappearance before removing that index entry.
+            durability.finish().await?;
         }
         retired.push(path);
     }

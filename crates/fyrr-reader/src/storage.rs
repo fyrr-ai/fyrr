@@ -114,8 +114,8 @@ pub async fn persist_native_files(
 pub struct CleanupDurability(Option<local::LocalStore>);
 
 impl CleanupDurability {
-    pub async fn finish(self) -> Result<(), StorageError> {
-        if let Some(store) = self.0 {
+    pub async fn finish(&self) -> Result<(), StorageError> {
+        if let Some(store) = &self.0 {
             store
                 .finish_cleanup()
                 .await
