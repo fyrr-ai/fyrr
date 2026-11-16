@@ -787,3 +787,6 @@ async fn ready_request(
 
 #[path = "dense_path/preparation_evidence.rs"]
 mod preparation_evidence;
+
+#[path = "dense_path/metadata_io.rs"]
+mod metadata_io;

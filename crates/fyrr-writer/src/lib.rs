@@ -25,6 +25,7 @@
 )]
 
 mod error;
+mod io;
 pub use error::{Result, WriterError};
 
 pub mod apply;

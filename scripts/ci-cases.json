@@ -939,6 +939,14 @@
       "full:fyrr:test:dense_path/preparation_evidence::preparation_reuses_bodies_but_discovers_new_envelopes_on_local_storage": {
         "tier": "full",
         "seconds": 10.0
+      },
+      "full:fyrr:test:dense_path/metadata_io::page_metadata_coalesces_equal_keys_and_bounds_independent_puts": {
+        "tier": "full",
+        "seconds": 10.0
+      },
+      "full:fyrr:test:dense_path/metadata_io::metadata_failure_keeps_cursor_lease_until_admitted_write_finishes": {
+        "tier": "full",
+        "seconds": 10.0
       }
     },
     "backend": "local"

@@ -204,12 +204,17 @@ pub async fn purge(config: &Config, source: &str, confirm: bool) -> Result<serde
             .await?;
         }
         let (store, _) = namespace_store(config)?;
-        for path in envelopes.iter().chain(&cursors) {
-            match store.delete(path).await {
-                Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
-                Err(_) => return Err(WriterError::StorageUnavailable),
+        let deletion_store = store.as_ref();
+        crate::io::bounded(envelopes.iter().chain(&cursors), |path| {
+            let lease = &lease;
+            async move {
+                lease.head().await?;
+                match deletion_store.delete(path).await {
+                    Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+                    Err(_) => Err(WriterError::StorageUnavailable),
+                }
             }
-        }
+        }).await?;
         // The identity is rebuilt without the source's principal snapshot.
         commit::commit_one(config, false, &lease, Vec::new(), None).await?;
         mark(config, &lease, source, true).await?;

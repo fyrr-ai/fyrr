@@ -166,7 +166,7 @@ pub(crate) async fn discard_purged(
     }
     let (paths, _) = crate::commit::envelope_paths(config, &head).await?;
     let (applied, _) = crate::commit::published_ids(config, &head).await?;
-    let mut deleted = 0;
+    let mut retired = Vec::new();
     for (path, envelope) in crate::commit::read_envelopes(config, &paths).await? {
         if !policy
             .retired_sources
@@ -178,30 +178,40 @@ pub(crate) async fn discard_purged(
         if !applied.contains(&envelope.envelope_id)
             && let EnvelopePayload::Content(payload) = &envelope.payload
         {
-            for file in payload
+            let files = payload
                 .fragments
                 .iter()
                 .flat_map(|fragment| &fragment.files)
-            {
+                .collect::<Vec<_>>();
+            for file in &files {
                 if !file.path.starts_with("data/") || file.path.contains("..") {
                     return Err(WriterError::ChangedRowsInvalid);
                 }
-                lease.head().await?;
-                let fragment =
-                    object_store::path::Path::from(format!("{root}/dataset.lance/{}", file.path));
-                match store.delete(&fragment).await {
-                    Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
-                    Err(_) => return Err(WriterError::StorageUnavailable),
-                }
             }
+            let deletion_store = store.as_ref();
+            let root = &root;
+            crate::io::bounded(files, |file| async move {
+                lease.head().await?;
+                let fragment = Path::from(format!("{root}/dataset.lance/{}", file.path));
+                match deletion_store.delete(&fragment).await {
+                    Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+                    Err(_) => Err(WriterError::StorageUnavailable),
+                }
+            })
+            .await?;
         }
-        lease.head().await?;
-        match store.delete(&path).await {
-            Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
-            Err(_) => return Err(WriterError::StorageUnavailable),
-        }
-        deleted += 1;
+        retired.push(path);
     }
+    let deletion_store = store.as_ref();
+    let deleted = crate::io::bounded(retired, |path| async move {
+        lease.head().await?;
+        match deletion_store.delete(&path).await {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(_) => Err(WriterError::StorageUnavailable),
+        }
+    })
+    .await?
+    .len();
     durability.finish().await?;
     Ok(deleted)
 }
@@ -256,9 +266,9 @@ pub(crate) async fn cleanup_held(
             }
         }
     }
-    let mut deleted = 0usize;
+    let mut retired = Vec::new();
     for (path, envelope) in envelopes {
-        if deleted as u64 >= config.writer.commit.group_max_rows {
+        if retired.len() as u64 >= config.writer.commit.group_max_rows {
             break;
         }
         let multipart = match &envelope.payload {
@@ -285,10 +295,16 @@ pub(crate) async fn cleanup_held(
         {
             continue;
         }
-        lease.head().await?;
-        store.delete(&path).await?;
-        deleted += 1;
+        retired.push(path);
     }
+    let deletion_store = store.as_ref();
+    let deleted = crate::io::bounded(retired, |path| async move {
+        lease.head().await?;
+        deletion_store.delete(&path).await?;
+        Ok(())
+    })
+    .await?
+    .len();
     durability.finish().await?;
     Ok(deleted)
 }

@@ -229,15 +229,21 @@ async fn file_inventory(
         if let Some(transaction) = &dataset.manifest().transaction_file {
             paths.insert(format!("_transactions/{transaction}"));
         }
-        for path in paths {
-            if let std::collections::btree_map::Entry::Vacant(entry) = inventory.entry(path.clone())
-            {
-                let metadata = store
-                    .head(&Path::from(format!("{dataset_root}/{path}")))
-                    .await
-                    .map_err(|_| WriterError::FileInventoryUnavailable)?;
-                entry.insert(metadata.size);
-            }
+        let new_paths = paths
+            .into_iter()
+            .filter(|path| !inventory.contains_key(path))
+            .collect::<Vec<_>>();
+        let native_root = &dataset_root;
+        for (path, size) in crate::io::bounded(new_paths, |path| async move {
+            let metadata = store
+                .head(&Path::from(format!("{native_root}/{path}")))
+                .await
+                .map_err(|_| WriterError::FileInventoryUnavailable)?;
+            Ok((path, metadata.size))
+        })
+        .await?
+        {
+            inventory.insert(path, size);
         }
         let old_uuids: BTreeSet<_> = previous_manifest
             .iter()

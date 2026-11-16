@@ -57,6 +57,45 @@ pub(super) async fn content_page(
         .flat_map(|section| crate::chunk::chunks(&section.text))
         .collect::<Vec<_>>();
     let mut embedded = cache.embed(&embedding_texts).await?.into_iter();
+    let mut maps = std::collections::BTreeMap::new();
+    for change in &changes {
+        if let ContentChange::Write(change) = change
+            && quarantine_reason(config, source, change).is_none()
+            && let Some(map) = change
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.connector_map.as_ref())
+        {
+            let bytes = serde_json::to_vec(map).map_err(|_| WriterError::DocumentInvalid)?;
+            maps.entry(digest(&bytes)).or_insert(bytes);
+        }
+    }
+    let metadata_store = store.as_ref();
+    let metadata_root = &root;
+    crate::io::bounded(maps, |(reference, bytes)| async move {
+        lease.state().await?;
+        let path = metadata_root
+            .clone()
+            .join("document-metadata")
+            .join(format!("{}.json", &reference[7..]));
+        match metadata_store
+            .put_opts(
+                &path,
+                bytes.into(),
+                PutOptions {
+                    mode: PutMode::Create,
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Ok(_)
+            | Err(object_store::Error::AlreadyExists { .. })
+            | Err(object_store::Error::Precondition { .. }) => Ok(()),
+            Err(_) => Err(WriterError::StorageUnavailable),
+        }
+    })
+    .await?;
     let page = Page {
         config,
         source,
@@ -67,7 +106,7 @@ pub(super) async fn content_page(
     };
     let mut rows = PageRows::default();
     for change in changes {
-        rows.append(&page, change, &mut embedded).await?;
+        rows.append(&page, change, &mut embedded)?;
     }
     let fragments = rows.columns.fragments(&page).await?;
     let quarantined_count = rows.quarantined.len() as u64;
@@ -157,7 +196,7 @@ struct DocumentRows<'a> {
 }
 
 impl PageRows {
-    async fn append(
+    fn append(
         &mut self,
         page: &Page<'_>,
         change: ContentChange,
@@ -180,7 +219,7 @@ impl PageRows {
             });
             return Ok(());
         }
-        let rows = DocumentRows::new(page, &change).await?;
+        let rows = DocumentRows::new(page, &change)?;
         let count = self.columns.append(page, &rows, embedded)?;
         self.documents.push(EnvelopeDocument {
             root_id: change.root_id,
@@ -199,36 +238,14 @@ impl PageRows {
     }
 }
 impl<'a> DocumentRows<'a> {
-    async fn new(page: &Page<'_>, change: &'a DocumentChange) -> Result<Self> {
+    fn new(page: &Page<'_>, change: &'a DocumentChange) -> Result<Self> {
         let source = page.source;
-        let store = page.store;
-        let root = page.root;
         let permission_stream = page.permission_stream;
         let mut common = change.metadata.clone();
         let map = common.as_mut().and_then(|m| m.connector_map.take());
         let map_ref = if let Some(map) = map {
             let bytes = serde_json::to_vec(&map).map_err(|_| WriterError::DocumentInvalid)?;
             let reference = digest(&bytes);
-            let path = root
-                .clone()
-                .join("document-metadata")
-                .join(format!("{}.json", &reference[7..]));
-            match store
-                .put_opts(
-                    &path,
-                    bytes.into(),
-                    PutOptions {
-                        mode: PutMode::Create,
-                        ..Default::default()
-                    },
-                )
-                .await
-            {
-                Ok(_)
-                | Err(object_store::Error::AlreadyExists { .. })
-                | Err(object_store::Error::Precondition { .. }) => {}
-                Err(_) => return Err(WriterError::StorageUnavailable),
-            }
             Some(reference)
         } else {
             None

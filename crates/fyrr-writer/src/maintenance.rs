@@ -392,6 +392,7 @@ async fn cleanup_versions(
     let mut removed = 0;
     let mut protected_count = 0;
     let mut unverified_protected = 0;
+    let mut candidates = Vec::new();
     for candidate in plan.candidate_files {
         let path = Path::from(candidate.path);
         let relative = path.prefix_match(&dataset_root).map_or_else(
@@ -407,26 +408,47 @@ async fn cleanup_versions(
             unverified_protected += usize::from(candidate.unverified);
             continue;
         }
-        if removed >= crate::narrow_usize(config.writer.commit.group_max_rows)
+        candidates.push(relative);
+    }
+    let deletion_store = store.as_ref();
+    for chunk in candidates.chunks(crate::io::CONCURRENCY) {
+        let remaining =
+            crate::narrow_usize(config.writer.commit.group_max_rows).saturating_sub(removed);
+        if remaining == 0
             || start.elapsed() >= config.writer.maintenance.step_max_duration.as_duration()
         {
-            continue;
+            break;
         }
-        // A cleanup step is at most 64 deletes (and the configured time/row
-        // budget). Drain revokes at its boundary, not the whole history per file.
+        // Keep the 64-delete revocation boundary and the row/time budgets.
         let current = if removed % 64 == 0 {
             boundary(config, lease, history).await?
         } else {
             lease.head().await?
         };
-        // A newly published revoke changes the native graph: restart the plan.
         if current.content.as_ref().map(|p| p.lance_version) != Some(plan.read_version) {
             break;
         }
-        store
-            .delete(&Path::from(format!("{dataset_root}/{relative}")))
-            .await?;
-        removed += 1;
+        let dataset_root = &dataset_root;
+        let read_version = plan.read_version;
+        let results = crate::io::bounded(
+            &chunk[..chunk.len().min(remaining)],
+            |relative| async move {
+                let current = lease.head().await?;
+                if current.content.as_ref().map(|p| p.lance_version) != Some(read_version) {
+                    return Ok(false);
+                }
+                deletion_store
+                    .delete(&Path::from(format!("{dataset_root}/{relative}")))
+                    .await?;
+                Ok(true)
+            },
+        )
+        .await?;
+        let changed = results.iter().any(|deleted| !deleted);
+        removed += results.into_iter().filter(|deleted| *deleted).count();
+        if changed {
+            break;
+        }
     }
     durability.finish().await?;
     Ok((removed, protected_count, unverified_protected))
