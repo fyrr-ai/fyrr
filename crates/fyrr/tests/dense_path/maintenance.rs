@@ -1301,6 +1301,8 @@ async fn maintenance_restore_batched_authorization_boundaries_on_storage() {
             ]
         });
     for case in cases {
+        use std::os::unix::process::ExitStatusExt;
+        let started = Instant::now();
         // Bound a hung child, including the real CLI commands its hooks invoke.
         // Event order comes from the acknowledged restore callbacks, not this watchdog.
         let mut probe = Command::new("timeout");
@@ -1341,9 +1343,20 @@ async fn maintenance_restore_batched_authorization_boundaries_on_storage() {
             )
             .output()
             .unwrap();
+        eprintln!(
+            "restore_probe case={case:?} status={} code={:?} signal={:?} elapsed={:?}",
+            output.status,
+            output.status.code(),
+            output.status.signal(),
+            started.elapsed(),
+        );
         assert!(
             output.status.success(),
-            "{}\n{}",
+            "case={case:?} status={} code={:?} signal={:?} elapsed={:?}\n{}\n{}",
+            output.status,
+            output.status.code(),
+            output.status.signal(),
+            started.elapsed(),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
