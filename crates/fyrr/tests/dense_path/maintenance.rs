@@ -922,10 +922,12 @@ async fn maintenance_restore_changed_envelope_identity_fails_closed_on_real_s3()
     let changed = Arc::new(AtomicBool::new(false));
     let altered = changed.clone();
     let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    // Cleanup lists twice, then history records its first snapshot.
+    // Change the next history listing, after that identity is cached.
     let transform: super::corrections::ResponseTransform = Arc::new(move |request, response| {
         if request.contains("list-type=2")
             && request.contains("envelopes")
-            && lists.fetch_add(1, Ordering::SeqCst) == 1
+            && lists.fetch_add(1, Ordering::SeqCst) == 3
         {
             super::corrections::rewrite_ok_body(response, |body| {
                 let mut text = String::from_utf8(body.clone()).unwrap();
@@ -959,7 +961,7 @@ async fn maintenance_restore_changed_envelope_identity_fails_closed_on_real_s3()
     drop(guard);
     assert!(
         changed.load(Ordering::SeqCst),
-        "second complete LIST must expose the changed immutable identity"
+        "second history LIST must expose the changed immutable identity"
     );
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("restore_history_identity_changed"));
@@ -987,17 +989,11 @@ async fn maintenance_restore_refuses_envelope_replaced_after_listing_on_real_s3(
         path.as_ref().replace('(', "%28").replace(')', "%29")
     );
     let gate_get = get.clone();
-    let listed = Arc::new(AtomicBool::new(false));
+    // Skip the two startup-cleanup LISTs; gate history's conditional GET.
+    let listed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let gate_listed = listed.clone();
     let (gate, hook) = super::corrections::RequestGate::new(move |request, _, after| {
-        if !after && request == gate_get {
-            assert!(
-                gate_listed.load(Ordering::SeqCst),
-                "envelope GET must follow its real LIST"
-            );
-            return true;
-        }
-        false
+        !after && request == gate_get && gate_listed.load(Ordering::SeqCst) >= 3
     });
     let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
     let statuses = observed.clone();
@@ -1006,9 +1002,9 @@ async fn maintenance_restore_refuses_envelope_replaced_after_listing_on_real_s3(
         let text = String::from_utf8_lossy(response);
         if request.contains("list-type=2") && text.contains(&key) {
             assert!(text.starts_with("HTTP/1.1 200 "));
-            listed.store(true, Ordering::SeqCst);
+            listed.fetch_add(1, Ordering::SeqCst);
         }
-        if request == get {
+        if request == get && listed.load(Ordering::SeqCst) >= 3 {
             statuses
                 .lock()
                 .unwrap()
