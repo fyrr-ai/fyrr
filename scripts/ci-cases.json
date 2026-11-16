@@ -514,6 +514,26 @@
       "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::retry_after_accepts_http_date_forms_and_saturates_numeric_overflow": {
         "tier": "quick",
         "seconds": 0.001
+      },
+      "full:fyrr-writer:lib:fyrr_writer/directory_pull::tests::snapshot_blocked_read_does_not_block_the_runtime_deadline": {
+        "tier": "quick",
+        "seconds": 0.25
+      },
+      "full:fyrr-writer:lib:fyrr_writer/embedding::tests::local_cache_runtime_io_measurement": {
+        "tier": "full",
+        "seconds": 2.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::history_sqlite_runtime_io_measurement": {
+        "tier": "full",
+        "seconds": 2.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_index::tests::restore_sqlite_runtime_io_measurement": {
+        "tier": "full",
+        "seconds": 2.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::local_staging::tests::staging_cursor_scan_runtime_io_measurement": {
+        "tier": "full",
+        "seconds": 2.0
       }
     },
     "children": {
@@ -957,6 +977,10 @@
         "seconds": 10.0
       },
       "full:fyrr:test:dense_path/metadata_io::metadata_failure_keeps_cursor_lease_until_admitted_write_finishes": {
+        "tier": "full",
+        "seconds": 10.0
+      },
+      "full:fyrr:test:dense_path/worker_io_probe::revision_callback_thread_progress_measurement_on_local_storage": {
         "tier": "full",
         "seconds": 10.0
       }

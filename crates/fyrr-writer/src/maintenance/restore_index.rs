@@ -803,4 +803,50 @@ mod tests {
         marker.state.publication_sequence += 1;
         assert!(!unchanged("source", "root", &[marker], &authority));
     }
+    #[tokio::test]
+    #[ignore = "diagnostic: restore SQLite query phase on one runtime thread"]
+    async fn restore_sqlite_runtime_io_measurement() {
+        let config = config();
+        let index = Index::new(&config, &BTreeSet::from(["source".into()]), 10_000).unwrap();
+        let tx = index.db.unchecked_transaction().unwrap();
+        for n in 0..10_000 {
+            let root = format!("root-{n:05}");
+            let row = Row {
+                source: "source".into(),
+                root: root.clone(),
+                record: "record".into(),
+                revision: "r1".into(),
+                state: apply::DocumentState::default(),
+                readers: Vec::new(),
+                own_readers: None,
+                address: 0,
+                canonical_metadata: true,
+                marker_metadata: true,
+            };
+            tx.execute("INSERT INTO roots VALUES(?1,?2)", params!["source", root])
+                .unwrap();
+            tx.execute(
+                "INSERT INTO rows VALUES(0,?1,?2,?3,?4)",
+                params!["source", root, "record", serde_json::to_vec(&row).unwrap()],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        crate::io_probe::measure("restore-sqlite-10000-roots", async {
+            let mut after = (String::new(), String::new());
+            let mut count = 0;
+            loop {
+                let roots = index.roots(&after).unwrap();
+                if roots.is_empty() {
+                    break;
+                }
+                for (source, root) in &roots {
+                    count += index.rows(&config, 0, source, root).unwrap().len();
+                }
+                after = roots.last().unwrap().clone();
+            }
+            assert_eq!(count, 10_000);
+        })
+        .await;
+    }
 }

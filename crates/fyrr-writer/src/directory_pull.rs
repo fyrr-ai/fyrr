@@ -299,12 +299,18 @@ async fn read_snapshot(config: &Config) -> Result<DirectorySnapshot> {
         .snapshot_file
         .as_ref()
         .ok_or(WriterError::DirectorySnapshotUnavailable)?;
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .map_err(|_| WriterError::DirectorySnapshotUnavailable)?
-        .take(16 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| WriterError::DirectorySnapshotUnavailable)?;
+    let path = path.clone();
+    let bytes = tokio::task::spawn_blocking(move || {
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .map_err(|_| WriterError::DirectorySnapshotUnavailable)?
+            .take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| WriterError::DirectorySnapshotUnavailable)?;
+        Ok::<_, WriterError>(bytes)
+    })
+    .await
+    .map_err(|_| WriterError::DirectorySnapshotUnavailable)??;
     if bytes.len() > 16 * 1024 * 1024 {
         return Err(WriterError::DirectorySnapshotInvalid);
     }
@@ -451,5 +457,44 @@ mod tests {
                 assert!(matches!(result, Err(WriterError::DirectoryPullLimit)));
             }
         }
+    }
+    #[allow(clippy::print_stdout)] // Report the observed timeout boundary.
+    #[tokio::test]
+    async fn snapshot_blocked_read_does_not_block_the_runtime_deadline() {
+        use std::io::Write;
+        let (mut config, root) = crate::lease::tests::local_config("snapshot-blocking");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("snapshot.fifo");
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            &path,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        )
+        .unwrap();
+        config.identity.directory.snapshot_file = Some(path.clone());
+        let bytes = fyrr_core::write_contract(&base(&config, "snapshot"));
+        let writer = std::thread::spawn(move || {
+            let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            // The blocking read may outlive its caller's deadline. It must still
+            // terminate normally when the operating system supplies the bytes.
+            file.write_all(&bytes).unwrap();
+        });
+        let start = std::time::Instant::now();
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(20), read_snapshot(&config))
+                .await;
+        let observed = start.elapsed();
+        writer.join().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        println!(
+            "snapshot-runtime: timeout={}, elapsed_us={}",
+            result.is_err(),
+            observed.as_micros()
+        );
+        assert!(
+            result.is_err(),
+            "a synchronous read prevented the runtime timeout"
+        );
     }
 }

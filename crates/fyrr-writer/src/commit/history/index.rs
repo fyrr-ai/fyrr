@@ -383,4 +383,26 @@ mod tests {
             Some(value)
         );
     }
+    #[tokio::test]
+    #[ignore = "diagnostic: receipt SQLite phase on one runtime thread"]
+    async fn history_sqlite_runtime_io_measurement() {
+        let index = index();
+        crate::io_probe::measure("history-sqlite-17600-receipts", async {
+            index.begin().unwrap();
+            for n in 0..17_600 {
+                index
+                    .put(Evidence::Applied, &format!("receipt-{n:032x}"), &(), true)
+                    .unwrap();
+            }
+            index.promote().unwrap();
+            for n in 0..17_600 {
+                assert!(
+                    index
+                        .contains(Evidence::Applied, &format!("receipt-{n:032x}"))
+                        .unwrap()
+                );
+            }
+        })
+        .await;
+    }
 }

@@ -26,6 +26,8 @@
 
 mod error;
 mod io;
+#[cfg(test)]
+mod io_probe;
 pub use error::{Result, WriterError};
 
 pub mod apply;

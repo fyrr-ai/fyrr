@@ -122,3 +122,75 @@ pub(crate) async fn remove(
     }
     Ok(removed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object_store::ObjectStoreExt;
+
+    #[tokio::test]
+    #[ignore = "diagnostic: repeated cursor discovery during local upload removal"]
+    async fn staging_cursor_scan_runtime_io_measurement() {
+        let (config, storage) = crate::lease::tests::local_config("staging-io-probe");
+        let (store, namespace) = namespace_store(&config).unwrap();
+        let mut head: fyrr_core::publication::ServingHead = serde_json::from_str(include_str!(
+            "../../../../fixtures/contracts/serving-head/head.json"
+        ))
+        .unwrap();
+        head.namespace.clone_from(&config.namespace.name);
+        head.content = None;
+        head.lease = None;
+        store
+            .put(
+                &namespace.clone().join("head.json"),
+                fyrr_core::write_contract(&head).into(),
+            )
+            .await
+            .unwrap();
+        let mut seed = Vec::new();
+        for n in 0..8 {
+            let mut cursor: CursorState = serde_json::from_str(include_str!(
+                "../../../../fixtures/contracts/connector-cursor/cursor.json"
+            ))
+            .unwrap();
+            cursor.namespace.clone_from(&config.namespace.name);
+            cursor.source_id = format!("cursor-{n}");
+            seed.push((
+                namespace
+                    .clone()
+                    .join("cursors")
+                    .join(format!("cursor-{n}.json")),
+                fyrr_core::write_contract(&cursor),
+            ));
+        }
+        fyrr_reader::storage::test_store::seed_local_fixture(&config, seed).unwrap();
+        let dataset = storage.join(namespace.as_ref()).join("dataset.lance");
+        std::fs::create_dir_all(&dataset).unwrap();
+        let old = SystemTime::from(fyrr_core::clock::now()) - Duration::from_secs(1200);
+        let lease = LeaseGuard::acquire(&config).await.unwrap();
+        for files in [8, 32] {
+            let mut paths = Vec::new();
+            for n in 0..files {
+                let path = dataset.join(format!("retired-{n}#1"));
+                std::fs::write(&path, b"retired upload").unwrap();
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_times(std::fs::FileTimes::new().set_modified(old))
+                    .unwrap();
+                paths.push(path);
+            }
+            let removed = crate::io_probe::measure(
+                &format!("staging-remove-{files}-files-8-cursors"),
+                remove(&config, &lease, paths),
+            )
+            .await
+            .unwrap();
+            assert_eq!(removed, files);
+        }
+        lease.release().await.unwrap();
+        drop(store);
+        std::fs::remove_dir_all(storage).unwrap();
+    }
+}

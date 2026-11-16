@@ -790,3 +790,6 @@ mod preparation_evidence;
 
 #[path = "dense_path/metadata_io.rs"]
 mod metadata_io;
+
+#[path = "dense_path/worker_io_probe.rs"]
+mod worker_io_probe;

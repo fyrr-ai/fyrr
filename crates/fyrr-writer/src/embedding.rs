@@ -504,4 +504,29 @@ mod tests {
             Err(WriterError::EmbeddingLocalCacheInvalid)
         ));
     }
+    #[tokio::test]
+    #[ignore = "diagnostic: local embedding cache on one runtime thread"]
+    async fn local_cache_runtime_io_measurement() {
+        let scratch = Scratch::new();
+        let mut cache = LocalCache::open(scratch.0.clone()).unwrap();
+        for n in 0..1024 {
+            cache.write(&format!("{n:064x}"), &[0.25; 512]).unwrap();
+        }
+        drop(cache);
+        let cache = crate::io_probe::measure("embedding-cache-open-1024", async {
+            LocalCache::open(scratch.0.clone()).unwrap()
+        })
+        .await;
+        assert_eq!(cache.files.len(), 1024);
+        crate::io_probe::measure("embedding-cache-hit-1024x512", async {
+            for n in 0..1024 {
+                assert!(
+                    read_vector(&scratch.0.join(format!("{n:064x}")), 512)
+                        .unwrap()
+                        .is_some()
+                );
+            }
+        })
+        .await;
+    }
 }
