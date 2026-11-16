@@ -97,7 +97,7 @@ collaborators with pull access are flattened to users:
 | Direct and outside collaborators, team members (nested teams included), organization owners, base-permission readers | `usr:github.com:<numeric user ID>` on the repository container `github:repo:<repository ID>` |
 | Personal repository owner | the owner's `usr:` token |
 | Public or internal repository | refused under `sync`; use `fixed` |
-| Unknown visibility, unresolvable user, incomplete collaborator list | no grant; the permission pass fails and the last rights stay until the source's [freshness deadline](../architecture.md#terms) |
+| Unknown visibility, unresolvable user, incomplete collaborator list | no grant; the permission pass fails ([failure handling](README.md#shared-configuration)) |
 
 No `grp:` grants are emitted; teams are expanded to their effective
 members. The member snapshot lists every observed reader as

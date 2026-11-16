@@ -9,7 +9,7 @@
 > - `[namespace]` is in [tuning](tuning.md); `[reader]` and `[writer]` are in
 >   [reader and writer settings](reader-writer.md).
 
-One TOML file holds the whole deployment. `fyrr` reads `fyrr.toml` in the
+`fyrr` reads `fyrr.toml` in the
 working directory, `--config PATH` or `FYRR_CONFIG`. Unknown keys are
 rejected, and error messages name the key path without quoting a value.
 `schemas/config.schema.json` is the generated JSON Schema for editors;

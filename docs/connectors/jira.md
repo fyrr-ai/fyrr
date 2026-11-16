@@ -101,14 +101,12 @@ user-picker holders add per-issue users.
 | Comment readable only through a reporter, assignee or picker field | deliberately omitted (under-shared) |
 | Public or anonymous Browse | refused under `sync`; use `fixed` |
 | Unknown holder type or unknown comment visibility | grants nobody (under-shared) |
-| Malformed scheme, incomplete member page | the permission pass fails; last rights stay until the [freshness deadline](../architecture.md#terms) |
+| Malformed scheme, incomplete member page | the permission pass fails ([failure handling](README.md#shared-configuration)) |
 
 User tokens are `usr:atlassian.net:<cloud-id>:<accountId>`; groups are
 synthetic policy groups per project, level and visibility target. There is
-no administrator, creator or author bypass. The member snapshot carries
-e-mail addresses only for accounts in `corporate_domains`, marked as
-verified corporate evidence; all other accounts need an explicit directory
-link.
+no administrator, creator or author bypass. See [corporate identity links](README.md#shared-configuration) for member
+e-mail handling.
 
 Under `fixed` the configured readers apply; restricted and
 unknown-visibility comments are omitted, and no scheme, role, group or

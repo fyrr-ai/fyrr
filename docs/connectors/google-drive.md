@@ -81,7 +81,7 @@ Under `sync`, each in-scope file's complete permission list is read
 | `domain` link-only; `anyone` | nobody |
 | deleted, expiring or view-restricted permissions | nobody |
 | shared-drive membership | the drive as a container grant, only when the API shows every member's access inherited from the drive and no limited-access folder sits above the file; otherwise membership grants are dropped (over-restricted) |
-| unreadable or partial permission list | the permission pass fails; last rights stay until the [freshness deadline](../architecture.md#terms) |
+| unreadable or partial permission list | the permission pass fails ([failure handling](README.md#shared-configuration)) |
 
 The member snapshot comes from the Directory: users by lower-cased primary
 e-mail, marked verified corporate (so they link to the canonical directory

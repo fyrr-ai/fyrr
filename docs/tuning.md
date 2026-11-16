@@ -28,10 +28,6 @@ and the other `[reader]` and `[writer]` keys in
 | `retrieval` | see below | Candidate depths, fusion weight and output bounds. |
 | `rerank` | absent | Optional hosted reranker; absent makes no reranker calls. |
 
-Changing an `fts_*` analyzer setting rebuilds the lexical index at the next
-commit. Composition and retrieval changes publish a new retrieval policy
-without rewriting text.
-
 ### `[namespace.composition]`
 
 Fused results come first, then further unique dense and lexical hits. The

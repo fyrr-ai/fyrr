@@ -8,8 +8,7 @@
 >   and the transport rules for stdio and Streamable HTTP.
 > - Read it when you connect an agent or another MCP client to fyrr.
 
-`fyrr reader serve` exposes three read-only tools: `search`, `fetch` and
-`list_filters`. `fixtures/mcp/tools-list.json` is the exact `tools/list`
+`fixtures/mcp/tools-list.json` is the exact `tools/list`
 response (names, descriptions, input and output schemas, annotations);
 `fixtures/mcp/examples/` holds example requests and responses and
 `fixtures/mcp/error-codes.json` the closed list of error codes. All three are

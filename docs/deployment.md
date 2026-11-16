@@ -15,7 +15,7 @@ in [operations](operations.md).
 
 ## Topology
 
-Writers take per-source leases; one committer holds the namespace lease.
+Writers take per-source leases; one [committer](architecture.md#terms) holds the namespace lease.
 
 - **Writer hosts** run the full build (or the `fyrr` image) with the [provider](architecture.md#terms)
   packages and their credentials.
