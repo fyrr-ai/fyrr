@@ -8,7 +8,6 @@
     "typecheck": "tsc --noEmit",
     "preview": "wrangler dev --port 8486",
     "verify:browser": "node scripts/verify-browser.mjs",
-    "lighthouse": "node scripts/lighthouse.mjs",
     "content": "bun scripts/prepare.ts && fumadocs-mdx",
     "deploy": "wrangler deploy",
     "deploy:preview": "wrangler versions upload"
@@ -32,13 +31,12 @@
     "unist-util-visit": "^5.0.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.65.1",
     "@types/mdx": "^2.0.13",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@types/subset-font": "2.3.0",
-    "lighthouse": "^13.6.0",
+    "playwright": "^1.65.1",
     "subset-font": "2.9.0",
     "typescript": "^5.9.0",
     "wrangler": "4.162.0"

@@ -1,4 +1,4 @@
-import { chromium } from '@playwright/test';
+import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
 import { navigation } from '../lib/navigation.ts';
 

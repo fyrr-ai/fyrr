@@ -74,7 +74,6 @@ With the preview server running:
 
 ```sh
 bun run verify:browser
-bun run lighthouse
 bun audit
 ```
 
@@ -83,13 +82,6 @@ horizontal overflow and browser errors, and exercises search, result
 navigation, redirected URLs, the desktop table of contents and exact code
 copying. Install Chromium once with
 `bunx playwright install chromium`; `CHROME_PATH` can select another binary.
-
-Lighthouse measures the homepage, quickstart, configuration and a connector
-page on mobile and desktop. Reports go to `target/site-lighthouse/`; set
-`SITE_URL` to the deployed origin to check production. The check requires 100 in all four categories (override with `MIN_SCORE`
-for diagnostics). Scores depend on the
-browser, test host and network, so report the actual results. Run browsers
-without other browser measurements in parallel.
 
 ## Source layout
 
