@@ -36,13 +36,11 @@ database or cluster to operate.
   whose permission reads went stale refuses or hides; it never guesses
   ([security](docs/security.md)).
 
-
 - **MCP over stdio or HTTP.** `search`, `fetch` and `list_filters` for one
   user per stdio process, or for many over Streamable HTTP with OIDC access
   tokens ([MCP tools](docs/mcp-tools.md)).
 - **Connectors and an SDK.** Local files, Google Drive, Notion, GitHub, Slack
   and Jira, plus a Python SDK for your own ([connectors](docs/connectors/README.md)).
-
 
 ## Quick start
 
@@ -87,11 +85,18 @@ claude mcp add fyrr --scope user -e FYRR_IDENTITY_KEY="$FYRR_IDENTITY_KEY" -- "$
 | --- | --- |
 | [Quickstart](docs/quickstart.md) | Build, configure and search a local folder |
 | [How fyrr works](docs/architecture.md) | Terms, publication, authorization and retrieval |
-| [Security model](docs/security.md), [HTTP login and users](docs/http-users.md) | Trust boundaries, permissions, secrets; enrolling HTTP users |
-| [Deployment](docs/deployment.md), [Operations](docs/operations.md) | Production setup, images, scheduling; monitoring, restore, upgrades |
-| [Configuration](docs/configuration.md), [identity](docs/identity.md), [tuning](docs/tuning.md), [reader and writer](docs/reader-writer.md) | Configuration reference |
-| [CLI](docs/cli.md), [MCP tools](docs/mcp-tools.md) | Command and tool references |
-| [Connectors](docs/connectors/README.md) | Setup and limits per source; [writing a provider](docs/connectors/authoring.md) |
+| [Security model](docs/security.md) | Trust boundaries, permissions and secrets |
+| [HTTP login and users](docs/http-users.md) | Authenticate and enroll HTTP users |
+| [Deployment](docs/deployment.md) | Production setup, images and scheduling |
+| [Operations](docs/operations.md) | Monitor, restore, retire and upgrade |
+| [Configuration](docs/configuration.md) | Storage, embeddings, sources and secrets |
+| [Identity](docs/identity.md) | Users, directories, keys and OIDC |
+| [Tuning](docs/tuning.md) | Namespace and retrieval settings |
+| [Reader and writer settings](docs/reader-writer.md) | Serving, retention and maintenance settings |
+| [CLI](docs/cli.md) | Commands, flags and exit statuses |
+| [MCP tools](docs/mcp-tools.md) | Tool arguments, results and transport |
+| [Connectors](docs/connectors/README.md) | Setup and limits per source |
+| [Writing a provider](docs/connectors/authoring.md) | Connector SDK contract and example |
 
 ## Contributing
 
