@@ -498,3 +498,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "directory_pull/keycloak_probe.rs"]
+mod keycloak_probe;

@@ -1195,6 +1195,10 @@
       "full:fyrr:test:dense_path/directory_ops::identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_storage": {
         "tier": "full",
         "seconds": 82.627
+      },
+      "full:fyrr-writer:lib:fyrr_writer/directory_pull::keycloak_probe::keycloak_membership_concurrency_preserves_complete_reads": {
+        "tier": "full",
+        "seconds": 5.0
       }
     },
     "services": [
