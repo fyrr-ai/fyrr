@@ -102,7 +102,7 @@ fn fixture(fake: &Fake) -> (PathBuf, PathBuf, FixtureRoot) {
             "{text}\n[[sources]]\nid='notion'\ntype='notion'\npermissions='fixed'\n\
              readers=['grp:allow']\ndocument_max_bytes='64B'\n[sources.settings]\n\
              token={{ env='FYRR_TEST_NOTION_TOKEN' }}\napi_endpoint='{}'\n[sources.scope]\n\
-             root_pages=['{}']\n[writer]\nenvelope_max_rows=1\n[writer.commit]\ngroup_max_rows=1\n",
+             root_pages=['{}']\n",
             fake.endpoint,
             root_page.as_str().unwrap()
         ),
@@ -116,6 +116,16 @@ fn fixture(fake: &Fake) -> (PathBuf, PathBuf, FixtureRoot) {
     worker_sync(&config, &["allowed", "denied", "--full"]);
     let commit = committer_host(&config, &root);
     publish(&commit);
+    // The resume proof needs one Notion document per envelope. Its unrelated
+    // dense baseline uses normal batching, then both hosts adopt these limits.
+    for path in [&config, &commit] {
+        let text = std::fs::read_to_string(path).unwrap();
+        std::fs::write(
+            path,
+            format!("{text}\n[writer]\nenvelope_max_rows=1\n[writer.commit]\ngroup_max_rows=1\n"),
+        )
+        .unwrap();
+    }
     (config, commit, root)
 }
 
