@@ -40,13 +40,13 @@ done
 if [[ "$(mbx --version 2>/dev/null)" == "mbx 1.30.0" ]]; then
   ok "mr-boxington 1.30.0 (mise.toml)"
 else
-  bad "mr-boxington 1.30.0 missing; run: mise install"
+  if ((LOCAL)); then warn "mr-boxington 1.30.0 missing (required for CI)"; else bad "mr-boxington 1.30.0 missing; run: mise install"; fi
 fi
 
 if deny_version="$(cargo deny --version 2>/dev/null)" && [[ "$deny_version" == "cargo-deny $CARGO_DENY_VERSION" ]]; then
   ok "$deny_version"
 else
-  bad "cargo-deny $CARGO_DENY_VERSION missing; run: cargo install --locked cargo-deny@$CARGO_DENY_VERSION"
+  if ((LOCAL)); then warn "cargo-deny $CARGO_DENY_VERSION missing (required for CI)"; else bad "cargo-deny $CARGO_DENY_VERSION missing; run: cargo install --locked cargo-deny@$CARGO_DENY_VERSION"; fi
 fi
 
 if ensure_protoc; then ok "protoc $PROTOC_VERSION (pinned, checksum verified): $PROTOC_DIR/bin/protoc"; else bad "protoc could not be prepared"; fi
