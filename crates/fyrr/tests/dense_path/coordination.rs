@@ -67,9 +67,7 @@ impl Drop for CommitProcess {
     }
 }
 pub(super) fn host_command(config: &Path) -> Command {
-    let mut command = Command::new(
-        std::env::var_os("FYRR_GATE_BINARY").unwrap_or_else(|| env!("CARGO_BIN_EXE_fyrr").into()),
-    );
+    let mut command = Command::new(crate::common::binary());
     command
         .arg("--config")
         .arg(config)

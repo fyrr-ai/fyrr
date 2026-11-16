@@ -341,7 +341,7 @@ async fn retrieval_publication_authorization_cache_budget_on_storage() {
             "--nocapture",
         ])
         .env("FYRR_TEST_CACHE_CONFIG", &config)
-        .env("FYRR_TEST_CACHE_WRITER", env!("CARGO_BIN_EXE_fyrr"))
+        .env("FYRR_TEST_CACHE_WRITER", crate::common::binary())
         .env(
             "VIRTUAL_ENV",
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../connectors/.venv"),

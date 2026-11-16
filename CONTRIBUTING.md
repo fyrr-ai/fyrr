@@ -84,15 +84,19 @@ store. Shell build helpers call `mbx` with rustup's Cargo first on `PATH`;
 formatting and advisory commands that do not compile. Each test feature set
 is built once; the ownership inventory and exact row selectors execute
 those artifacts directly. The full and reader CLI binaries are preserved
-separately and restored to Cargo's embedded executable path before each row.
+separately. Each harness receives its immutable variant path, so concurrent
+cases never replace another case's executable.
 The scripts default `CARGO_INCREMENTAL=0` on every host so mbx can share
 compiler actions between worktrees rather than retaining private incremental
 state. An explicit caller setting overrides that default.
 Build invocations give mbx exclusive control of `RUSTC_WRAPPER`; an inherited
 wrapper is cleared for those commands because mbx cannot stack Rust wrappers.
 
-Scenario rows run in a bounded pool, longest estimated rows first.
-Row estimates in `scripts/ci-cases.json` come from measured CI summaries.
+Independent scenario cases run in a bounded pool as soon as their test
+executables are built, concurrently with the core gates. Longest cases run
+first, using measured durations in `scripts/ci-cases.json`. Owner rows remain
+disjoint coverage groups; their summary times sum the case work. Overall
+wall time and completion records in `scenario-pool.log` show the critical path.
 Each Rust parent completion also emits a `ci-case` JSON record with its UTC
 timestamp and elapsed time; serial harnesses include the per-case duration.
 Domain scenarios use real local storage, including crash and lost-response tests
@@ -107,8 +111,9 @@ and data directory. The Keycloak integration row uses local storage and a
 private real Keycloak fixture. `scripts/ci-cases plan` lists every case and
 its owner/backend; child cases stay owned with the parent that executes them.
 The default is at most six rows, bounded by CPUs, available memory
-and configured swap. `--jobs=N` or `FYRR_CI_JOBS=N` overrides it. Rows are
-serial within a fixture. Keep one CI process per checkout; separate
+and configured swap, reserving memory for concurrent core gates.
+`--jobs=N` or `FYRR_CI_JOBS=N` overrides it. Each case owns its fixture.
+Keep one top-level CI process per checkout; separate
 worktrees share compiler results without sharing writable Cargo outputs.
 
 The same complete suite runs locally, on PRs, main, nightly and manual

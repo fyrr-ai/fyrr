@@ -23,8 +23,7 @@ impl Mcp {
         Self::open_options(config, env, None)
     }
     fn open_options(config: &Path, env: &[(&str, &Path)], log: Option<&Path>) -> Self {
-        let binary = std::env::var_os("FYRR_GATE_BINARY")
-            .unwrap_or_else(|| env!("CARGO_BIN_EXE_fyrr").into());
+        let binary = crate::common::binary();
         Self::open_binary(config, &binary, env, log)
     }
     fn open_binary(
@@ -768,7 +767,7 @@ async fn tools_agent_multiquery_text_and_fetch_list_on_storage() {
         ),
     )
     .unwrap();
-    let mut rejected = Command::new(env!("CARGO_BIN_EXE_fyrr"))
+    let mut rejected = Command::new(crate::common::binary())
         .arg("--config")
         .arg(&stale)
         .args(["reader", "serve"])

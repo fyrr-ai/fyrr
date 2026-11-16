@@ -24,7 +24,7 @@ import os
 from pathlib import Path
 memory = dict((line.split(':')[0], int(line.split()[1]))
               for line in Path('/proc/meminfo').read_text().splitlines())
-# Reserve 2 GiB for the host, allow up to 8 GiB of the configured swap, and
+# Reserve 4 GiB for the host and concurrent core gates, allow up to 8 GiB of swap, and
 # budget 4 GiB per fixture/row. Cargo builds finish before any rows start.
 capacity = memory['MemAvailable'] + min(memory['SwapFree'], 8 * 1024**2)
 limit = Path('/sys/fs/cgroup/memory.max')
@@ -32,10 +32,13 @@ usage = Path('/sys/fs/cgroup/memory.current')
 if limit.exists() and limit.read_text().strip().isdigit():
     available = max(0, int(limit.read_text()) - int(usage.read_text())) // 1024
     capacity = min(capacity, available + min(memory['SwapFree'], 8 * 1024**2))
-print(max(1, min(6, len(os.sched_getaffinity(0)), (capacity - 2 * 1024**2) // (4 * 1024**2))))
+print(max(1, min(6, len(os.sched_getaffinity(0)), (capacity - 4 * 1024**2) // (4 * 1024**2))))
 JOBS
 )}"
 SCENARIO_ROW=
+SCENARIO_CASE=
+SCENARIO_PID=0
+declare -a SCENARIO_ROWS=()
 declare -A REQUESTED_STEPS=() SEEN_STEPS=()
 for arg in "$@"; do
   case "$arg" in
@@ -46,6 +49,7 @@ for arg in "$@"; do
       REQUESTED_STEPS["$(row_name "$SCENARIO_ROW")"]=1
       JOBS=1
       ;;
+    --case=*) SCENARIO_CASE="${arg#--case=}" ;;
     --step=*)
       name="${arg#--step=}"
       [[ -n "$name" ]] || die "--step requires an exact step name"
@@ -55,6 +59,7 @@ for arg in "$@"; do
     *) die "unknown argument $arg (use --jobs=N or --step=NAME)" ;;
   esac
 done
+[[ -z "$SCENARIO_CASE" || -n "$SCENARIO_ROW" ]] || die "--case requires --row"
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer"
 if ((JOBS > 1)) && [[ -n "${FYRR_S3_FIXTURE_DATA:-}" ]]; then
   die "parallel CI rows require private fixture data; unset FYRR_S3_FIXTURE_DATA or use --jobs=1"
@@ -137,14 +142,17 @@ reference_docs() {
     "$ROOT/target/ci-build/full/fyrr" "$ROOT/target/ci-build/reader/fyrr"
 }
 quickstart() {
-  ensure_build && "$ROOT/scripts/ci-cases" binary full >/dev/null &&
-    FYRR_CI_PREBUILT=1 "$ROOT/examples/quickstart/run" "$@"
+  ensure_build && FYRR_CI_PREBUILT=1 FYRR_CI_BINARY_DIR="$ROOT/target/ci-build/full"     "$ROOT/examples/quickstart/run" "$@"
 }
 reader_link_check() { ensure_build && "$ROOT/scripts/check-reader-only"; }
 
 FIXTURE_STARTED=0
 KEYCLOAK_STARTED=0
 cleanup_fixture() {
+  if ((SCENARIO_PID)); then
+    kill -TERM "$SCENARIO_PID" 2>/dev/null || true
+    wait "$SCENARIO_PID" 2>/dev/null || true
+  fi
   if ((KEYCLOAK_STARTED)); then
     "$ROOT/scripts/keycloak-fixture" stop || true
   fi
@@ -153,6 +161,8 @@ cleanup_fixture() {
   fi
 }
 trap cleanup_fixture EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Functions run by `step` sit in a `||` context where `set -e` is off, so
 # every command is chained explicitly.
@@ -187,10 +197,13 @@ scenario_setup() {
 }
 
 run_scenario() {
-  scenario_setup "$1" && "$ROOT/scripts/ci-cases" run "$1"
+  scenario_setup "$1" || return 1
+  local -a selection=()
+  [[ -z "$SCENARIO_CASE" ]] || selection+=("$SCENARIO_CASE")
+  "$ROOT/scripts/ci-cases" run "$1" "${selection[@]}"
 }
 
-scenarios() {
+scenarios_start() {
   local -x FYRR_SCIM_HEALTH_TEST_BINARY FYRR_ROUTING_TEST_BINARY
   local -a selected_rows=()
   local row name line
@@ -215,19 +228,18 @@ scenarios() {
     step "$(row_name "$SCENARIO_ROW")" cargo run_scenario "$SCENARIO_ROW"
     return
   fi
-  "$ROOT/scripts/ci-cases" binary full >/dev/null || return 1
-  log "running ${#selected_rows[@]} storage scenario rows with up to $JOBS workers"
-  printf '%s\0' "${selected_rows[@]}" >"$LOGS/scenario-rows.txt"
-  # Every worker has private local storage or labelled external fixtures.
-  # The full executable is immutable throughout this phase.
-  xargs -0 -r -P "$JOBS" -I{} bash -c '
-    row="$1"; directory="$2/$row"
-    mkdir -p "$directory"
-    FYRR_CI_LOG_DIR="$directory" FYRR_FIXTURE_ID="ci-$3-$row" FYRR_CI_PREBUILT=1 \
-      "$4/scripts/ci" "--row=$row" >"$directory/runner.log" 2>&1
-  ' _ {} "$LOGS" "$$" "$ROOT" <"$LOGS/scenario-rows.txt" ||
-    log "some scenario workers failed; see their row logs"
-  for row in "${selected_rows[@]}"; do
+  SCENARIO_ROWS=("${selected_rows[@]}")
+  log "scheduling independent storage cases with up to $JOBS workers"
+  "$ROOT/scripts/ci-cases" pool "$LOGS" "$JOBS" "${selected_rows[@]}" >"$LOGS/scenario-pool.log" 2>&1 &
+  SCENARIO_PID=$!
+}
+
+scenarios_finish() {
+  ((SCENARIO_PID)) || return 0
+  wait "$SCENARIO_PID" || log "some scenario workers failed; see their case logs"
+  SCENARIO_PID=0
+  local row name line
+  for row in "${SCENARIO_ROWS[@]}"; do
     name="$(row_name "$row")"
     STEP=$((STEP + 1))
     SEEN_STEPS["$name"]=1
@@ -270,7 +282,7 @@ example_wheels() {
   uv build --wheel --quiet --out-dir "$wheels" "$ROOT/examples/markdown-provider" || return 1
   uv pip install --quiet --no-deps --python "$ROOT/connectors/.venv/bin/python" \
     --target "$site" "$wheels"/*.whl || return 1
-  ensure_build && "$ROOT/scripts/ci-cases" binary full >/dev/null || return 1
+  ensure_build || return 1
   config="$site/fyrr.toml"
   printf '%s\n' '[namespace]' 'name = "dev"' '[storage]' 'uri = "s3://fyrr-dev/dev"' \
     '[identity]' 'hashing_key = { env = "FYRR_EXAMPLE_HASHING_KEY" }' \
@@ -280,7 +292,7 @@ example_wheels() {
   run_fyrr() {
     VIRTUAL_ENV="$ROOT/connectors/.venv" PYTHONPATH="$site" PYTHONDONTWRITEBYTECODE=1 \
       FYRR_EXAMPLE_HASHING_KEY=example-wheels-key \
-      "$ROOT/target/debug/fyrr" "$@"
+      "$ROOT/target/ci-build/full/fyrr" "$@"
   }
   output="$(run_fyrr writer providers)"
   echo "$output"
@@ -302,6 +314,10 @@ not_evaluated() {
 
 log "fyrr ci: logs in ${LOGS#"$ROOT"/}"
 step "doctor" none "$ROOT/scripts/doctor"
+if [[ -z "$SCENARIO_ROW" ]]; then
+  if ((!ONLY_STEPS)); then step "build test executables" none ensure_build; fi
+  scenarios_start
+fi
 step "rustfmt" none cargo fmt --all --check
 step "Rust source line length (reader)" none "$ROOT/scripts/check-line-length" \
   "$ROOT/crates/fyrr-reader/src" "$ROOT/crates/fyrr-core/src/layout.rs" \
@@ -328,7 +344,8 @@ step "example provider (test kit)" pytest example_provider
 step "example wheels without rebuild" none example_wheels
 not_evaluated "images (build, derived, compose)" "image checks run in scripts/release"
 step "quickstart example (local storage)" none quickstart
-scenarios
+if [[ -n "$SCENARIO_ROW" ]]; then scenarios_start; fi
+scenarios_finish
 
 for name in "${!REQUESTED_STEPS[@]}"; do
   if [[ ! ${SEEN_STEPS["$name"]+known} ]]; then

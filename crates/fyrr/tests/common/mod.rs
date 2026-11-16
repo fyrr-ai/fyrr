@@ -40,11 +40,16 @@ pub fn test_providers() -> PathBuf {
     repo().join("crates/fyrr/tests/providers")
 }
 
+/// An immutable variant selected by CI, or Cargo's binary for a direct test run.
+pub fn binary() -> OsString {
+    std::env::var_os("FYRR_GATE_BINARY").unwrap_or_else(|| env!("CARGO_BIN_EXE_fyrr").into())
+}
+
 /// The `fyrr` binary under test with a controlled environment: no inherited
 /// `FYRR_CONFIG`, and in the full build the connectors venv (`VIRTUAL_ENV`)
 /// with the test providers on `PYTHONPATH`. `scripts/doctor` creates the venv.
 pub fn fyrr() -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_fyrr"));
+    let mut command = Command::new(binary());
     command
         .env_remove("FYRR_CONFIG")
         .env_remove("PYTHONHOME")

@@ -62,12 +62,8 @@ use std::process::{Command, Output, Stdio};
 fn run(config: &Path, args: &[&str]) -> Output {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     Command::new("bash")
-        .args([
-            "-c",
-            "umask 022; exec \"$@\"",
-            "fyrr-test",
-            env!("CARGO_BIN_EXE_fyrr"),
-        ])
+        .args(["-c", "umask 022; exec \"$@\"", "fyrr-test"])
+        .arg(crate::common::binary())
         .arg("--config")
         .arg(config)
         .args(args)
@@ -534,7 +530,7 @@ async fn dense_path_and_namespace_contracts(backend: Backend) {
         assert!(!String::from_utf8_lossy(&output.stderr).contains("embedding_unavailable"));
     }
     success(&config, &["writer", "commit"]);
-    let binary = Command::new(env!("CARGO_BIN_EXE_fyrr"))
+    let binary = Command::new(crate::common::binary())
         .arg("--config")
         .arg(&config)
         .args(["reader", "serve"])

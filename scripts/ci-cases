@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Enumerate executable cases and run the committed, disjoint CI ownership rows."""
 
+import asyncio
 import collections
 import datetime
+import hashlib
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -77,8 +80,8 @@ def build():
                     "cwd": str(Path(item["manifest_path"]).parent.relative_to(ROOT)),
                 }
             elif target["name"] == "fyrr":
-                # Cargo's reader build replaces target/debug/fyrr. Preserve both;
-                # CARGO_BIN_EXE_fyrr in the harnesses still points to that path.
+                # Preserve immutable variants so concurrent harnesses never
+                # replace the executable another case is about to launch.
                 destination = BUILD.parent / variant / "fyrr"
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 temporary = destination.with_suffix(".tmp")
@@ -99,16 +102,6 @@ def artifacts():
     if result["root"] != str(ROOT):
         raise ValueError("test binaries belong to another checkout; rebuild them")
     return result
-
-
-def activate(variant, compiled):
-    """Restore the binary path embedded by Cargo in this variant's harnesses."""
-    destination = ROOT / "target/debug/fyrr"
-    source = ROOT / compiled["binaries"][variant]
-    if not destination.exists() or not os.path.samefile(source, destination):
-        destination.unlink(missing_ok=True)
-        os.link(source, destination)
-    return str(destination)
 
 
 def output(command, cwd=ROOT):
@@ -207,11 +200,12 @@ def run(spec):
             command = ["uv", "run", "--locked", *extras, "pytest", *names]
             cwd = ROOT / directory
         else:
-            activate(group.split(":")[0], compiled)
             item = compiled["tests"][group]
             command = [str(ROOT / item["path"]), "--include-ignored", "--exact", *names]
             cwd = ROOT / item["cwd"]
         env = dict(os.environ)
+        if not group.startswith("python:"):
+            env["FYRR_GATE_BINARY"] = str(ROOT / compiled["binaries"][group.split(":")[0]])
         if group.startswith("full:fyrr-eval:"):
             # The tool's real-S3 cases drive the full fyrr binary.
             env["FYRR_BINARY"] = str(ROOT / compiled["binaries"]["full"])
@@ -268,6 +262,122 @@ def run(spec):
             raise ValueError(f"{group}: expected {len(names)} passed cases, got {counts}")
 
 
+def row_title(row):
+    if row == "local-storage":
+        return "local storage"
+    prefix, name = row.split("-", 1)
+    return f"{'real S3' if prefix == 's3' else prefix}: {name}"
+
+
+async def pool(manifest, logs, jobs, rows):
+    """Schedule independent parents; every worker owns its fixture and process."""
+    selected = [(row, case) for row in rows for case in manifest[row]["cases"]]
+    selected.sort(
+        key=lambda item: (
+            -manifest[item[0]]
+            .get("case_seconds", {})
+            .get(item[1], manifest[item[0]]["seconds"] / len(manifest[item[0]]["cases"]))
+        )
+    )
+    (logs / "scenario-plan.json").write_text(json.dumps(selected, indent=2) + "\n")
+    capacity = asyncio.Semaphore(jobs)
+    started = time.monotonic()
+    results = collections.defaultdict(list)
+    task = asyncio.current_task()
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
+
+    async def execute(row, case):
+        async with capacity:
+            key = hashlib.sha256(case.encode()).hexdigest()[:12]
+            directory = logs / row / key
+            directory.mkdir(parents=True, exist_ok=True)
+            clock = directory / "offset-ms"
+            clock.write_text("0")
+            clock.chmod(0o600)
+            environment = {
+                **os.environ,
+                "FYRR_CI_LOG_DIR": str(directory),
+                "FYRR_FIXTURE_ID": f"ci-{os.getpid()}-{key}",
+                "FYRR_CI_PREBUILT": "1",
+                "FYRR_TEST_CLOCK_FILE": str(clock),
+            }
+            began = time.monotonic()
+            with (directory / "runner.log").open("w") as output_log:
+                process = await asyncio.create_subprocess_exec(
+                    str(ROOT / "scripts/ci"),
+                    f"--row={row}",
+                    f"--case={case}",
+                    cwd=ROOT,
+                    env=environment,
+                    stdout=output_log,
+                    stderr=asyncio.subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                try:
+                    code = await process.wait()
+                finally:
+                    if process.returncode is None:
+                        # This process group was created above for this case only.
+                        try:
+                            os.killpg(process.pid, signal.SIGTERM)
+                            await asyncio.wait_for(process.wait(), timeout=30)
+                        except TimeoutError:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            await process.wait()
+                        except ProcessLookupError:
+                            await process.wait()
+            duration = time.monotonic() - began
+            title = row_title(row)
+            summary = directory / "summary.txt"
+            record = None
+            if summary.exists():
+                for line in summary.read_text().splitlines():
+                    if not line.startswith(title + " "):
+                        continue
+                    record = re.match(
+                        r"^.*?\s+(pass|FAIL)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)s\s+(.+)$",
+                        line,
+                    )
+                    if record:
+                        break
+            status, passed, failed, ignored = ("FAIL", 0, 0, 0)
+            if record:
+                status = record[1] if code == 0 else "FAIL"
+                passed, failed, ignored = map(int, record.group(2, 3, 4))
+            result = {
+                "row": row,
+                "case": case,
+                "status": status,
+                "passed": passed,
+                "failed": failed,
+                "ignored": ignored,
+                "seconds": round(duration, 3),
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "finished_at": datetime.datetime.now(datetime.UTC).isoformat(),
+                "log": str((directory / "runner.log").relative_to(ROOT)),
+            }
+            results[row].append(result)
+            print("ci-scenario " + json.dumps(result), flush=True)
+
+    await asyncio.gather(*(execute(row, case) for row, case in selected))
+    for row in rows:
+        items = results[row]
+        status = "pass" if all(item["status"] == "pass" for item in items) else "FAIL"
+        passed, failed, ignored = (
+            sum(item[name] for item in items) for name in ("passed", "failed", "ignored")
+        )
+        seconds = round(sum(item["seconds"] for item in items))
+        path = logs / row / "cases.json"
+        path.write_text(json.dumps(items, indent=2) + "\n")
+        line = (
+            f"{row_title(row):<38} {status:<5} {passed:7} {failed:7} {ignored:8} "
+            f"{seconds:6}s  {path.relative_to(ROOT)}\n"
+        )
+        (logs / row / "summary.txt").write_text(line)
+    if any(item["status"] != "pass" for items in results.values() for item in items):
+        raise SystemExit(1)
+
+
 def main():
     os.chdir(ROOT)
     mode = sys.argv[1]
@@ -278,8 +388,8 @@ def main():
         compiled = artifacts()
         name = sys.argv[2]
         print(
-            activate(name, compiled)
-            if name in ("full", "reader")
+            ROOT / compiled["binaries"][name]
+            if name in ("full", "reader", "eval")
             else ROOT / compiled["tests"][name]["path"]
         )
         return
@@ -310,8 +420,15 @@ def main():
         for row, spec in manifest.items():
             for case in [*spec["cases"], *spec.get("children", {})]:
                 print(f"{row}\t{spec.get('backend', 'core')}\t{case}")
+    elif mode == "pool":
+        asyncio.run(pool(manifest, Path(sys.argv[2]), int(sys.argv[3]), sys.argv[4:]))
     elif mode == "run":
         spec = manifest[sys.argv[2]]
+        if len(sys.argv) == 4:
+            case = sys.argv[3]
+            if case not in spec["cases"]:
+                raise ValueError("case does not belong to the selected owner")
+            spec = {**spec, "cases": [case]}
         if not spec["cases"]:
             raise ValueError("zero-case row")
         run(spec)

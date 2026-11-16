@@ -632,7 +632,7 @@ async fn correction_durability_acl_and_private_mirror_on_storage() {
 
     // Revoke between admission/embedding and the error recheck. A cache miss
     // must become authorization_unavailable in this still-running MCP process.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_fyrr"))
+    let mut child = Command::new(crate::common::binary())
         .arg("--config")
         .arg(&proxied)
         .args(["reader", "serve"])
@@ -902,7 +902,7 @@ fn correction_inflight_identity_change_on_storage() {
     );
     let proxied = root.join("proxy.toml");
     std::fs::write(&proxied, text.replace(&endpoint, &proxied_endpoint)).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_fyrr"))
+    let mut child = Command::new(crate::common::binary())
         .arg("--config")
         .arg(&proxied)
         .args(["reader", "serve"])
@@ -1019,7 +1019,7 @@ fn correction_live_mcp_expires_without_commit() {
     assert!(!unread.status.success());
     assert!(String::from_utf8_lossy(&unread.stderr).contains("authorization_unavailable"));
     success(&config, &["writer", "sync", "--directory", "--full"]);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_fyrr"))
+    let mut child = Command::new(crate::common::binary())
         .arg("--config")
         .arg(&config)
         .args(["reader", "serve"])
@@ -1125,7 +1125,7 @@ fn retrieval_error_during_identity_change(query: Option<&str>) {
     let proxied = root.join("proxy.toml");
     std::fs::write(&proxied, text.replace(&endpoint, &proxied_endpoint)).unwrap();
     let response = if let Some(query) = query {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_fyrr"))
+        let mut child = Command::new(crate::common::binary())
             .arg("--config")
             .arg(&proxied)
             .args(["reader", "serve"])
