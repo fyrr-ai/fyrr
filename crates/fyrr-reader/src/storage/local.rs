@@ -255,23 +255,11 @@ impl LocalStore {
         let parent = target
             .parent()
             .ok_or_else(|| io(std::io::Error::other("object has no directory")))?;
-        let mut missing = Vec::new();
-        let mut ancestor = parent;
-        while !ancestor.try_exists().map_err(io)? {
-            missing.push(ancestor.to_path_buf());
-            ancestor = ancestor
-                .parent()
-                .ok_or_else(|| io(std::io::Error::other("missing storage root")))?;
-        }
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(parent)
             .map_err(io)?;
-        // Make new directory names durable before publishing an object below them.
-        for directory in missing.iter().rev() {
-            sync_parent(directory).map_err(io)?;
-        }
         let staged = self.lock.with_file_name(STAGE);
         let mut file = OpenOptions::new()
             .write(true)
@@ -347,6 +335,17 @@ impl LocalStore {
                 }
             },
             _ => {}
+        }
+        if current.is_none() {
+            // Another writer or Lance may have created these directory names
+            // without persisting them. New objects depend on the whole chain.
+            let root = self.lock.parent().ok_or_else(|| io(std::io::Error::other("missing storage root")))?;
+            let mut directory = target.parent().ok_or_else(|| io(std::io::Error::other("missing object parent")))?;
+            loop {
+                File::open(directory).and_then(|file| file.sync_all()).map_err(io)?;
+                if directory == root { break; }
+                directory = directory.parent().filter(|parent| parent.starts_with(root)).ok_or_else(|| io(std::io::Error::other("object outside storage root")))?;
+            }
         }
         let next = read_version(lock)
             .map_err(io)?
