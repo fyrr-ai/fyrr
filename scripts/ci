@@ -197,6 +197,11 @@ scenario_setup() {
 }
 
 run_row() {
+  # The pool supplies an isolated clock; direct row selections need one too.
+  if [[ -z "${FYRR_TEST_CLOCK_FILE:-}" ]]; then
+    export FYRR_TEST_CLOCK_FILE="$LOGS/offset-ms"
+    (umask 077; printf '0' > "$FYRR_TEST_CLOCK_FILE") || return 1
+  fi
   scenario_setup "$1" || return 1
   local -a selection=()
   [[ -z "$CASE_ID" ]] || selection+=("$CASE_ID")
