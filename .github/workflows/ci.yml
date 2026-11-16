@@ -35,6 +35,16 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
           df -h "$GITHUB_WORKSPACE"
 
+      # The real-S3 maintenance cases run the S3 fixture (up to 4 GB) next to a
+      # large test process; swap keeps smaller runners from aborting on memory.
+      - name: Add swap
+        run: |
+          sudo fallocate -l 12G /fyrr-swapfile
+          sudo chmod 600 /fyrr-swapfile
+          sudo mkswap /fyrr-swapfile >/dev/null
+          sudo swapon /fyrr-swapfile
+          free -g
+
       - name: Install the pinned Rust toolchain
         run: |
           channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
