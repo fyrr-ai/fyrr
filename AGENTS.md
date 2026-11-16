@@ -1,7 +1,7 @@
 # Agent instructions
 
 [CONTRIBUTING.md](CONTRIBUTING.md) is the contributor guide: build, layout,
-verification and the rules every change follows (tests, contracts, budgets,
+verification and the rules every change follows (tests, contracts,
 secrets, reader-only build, commits). Follow it; this file adds only what
 agents must do on top of it.
 
@@ -14,7 +14,7 @@ agents must do on top of it.
    with the per-step test counts. A test step with zero selected tests
    fails; a check you did not run is `not evaluated` (`n/e`), never passed.
    Changes to `docker/`, the SDK's packaging, provider install paths or
-   anything that moves image size need `scripts/ci --images`.
+   anything that moves image size also need `scripts/images`.
 
 ## Safety
 

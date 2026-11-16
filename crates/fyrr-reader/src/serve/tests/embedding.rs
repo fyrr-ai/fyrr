@@ -216,7 +216,7 @@ impl ParkedEmbedding {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real S3 publication, native scheduler, SDK transport and fake provider"]
-async fn embedding_wait_revocation_refuses_old_authorization_on_real_s3() {
+async fn embedding_wait_revocation_refuses_old_authorization_on_storage() {
     use object_store::ObjectStoreExt;
     let mut fixture = ParkedEmbedding::open("10s").await;
     fixture.parked(1).await;
@@ -258,13 +258,13 @@ async fn embedding_wait_revocation_refuses_old_authorization_on_real_s3() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real S3 publication and stdio cancellation during admission"]
-async fn cancelled_admission_rebuild_cannot_reuse_stale_stdio_mask_on_real_s3() {
+async fn cancelled_admission_rebuild_cannot_reuse_stale_stdio_mask_on_storage() {
     interrupted_admission_rebuild(false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real S3 publication and stdio deadline during admission"]
-async fn timed_out_admission_rebuild_cannot_reuse_stale_stdio_mask_on_real_s3() {
+async fn timed_out_admission_rebuild_cannot_reuse_stale_stdio_mask_on_storage() {
     interrupted_admission_rebuild(true).await;
 }
 
@@ -357,7 +357,7 @@ async fn interrupted_admission_rebuild(deadline: bool) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real S3 and stdio directory freshness recovery"]
-async fn failed_refresh_cannot_admit_a_stale_mask_after_directory_recovery_on_real_s3() {
+async fn failed_refresh_cannot_admit_a_stale_mask_after_directory_recovery_on_storage() {
     use crate::storage::read_contract;
     use fyrr_core::publication::ServingHead;
     use object_store::ObjectStoreExt;
@@ -453,7 +453,7 @@ async fn failed_refresh_cannot_admit_a_stale_mask_after_directory_recovery_on_re
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real S3, MCP stdio lifecycle and a failed native task"]
-async fn stdio_terminates_after_scheduler_failure_on_real_s3() {
+async fn stdio_terminates_after_scheduler_failure_on_storage() {
     let path = std::env::var_os("FYRR_TEST_EMBED_CONFIG").expect("publication fixture config");
     let mut config = fyrr_core::config::load(std::path::Path::new(&path))
         .unwrap()
@@ -519,7 +519,7 @@ async fn stdio_terminates_after_scheduler_failure_on_real_s3() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real S3 publication, SDK transport and gated embedding before rerank refresh"]
-async fn rerank_refresh_preserves_rebuilt_admission_on_real_s3() {
+async fn rerank_refresh_preserves_rebuilt_admission_on_storage() {
     use object_store::ObjectStoreExt;
 
     let mut fixture = ParkedEmbedding::open("10s").await;
@@ -661,7 +661,7 @@ async fn rerank_refresh_preserves_rebuilt_admission_on_real_s3() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real S3, MCP filters and cancellation before filter installation"]
-async fn request_filters_preserve_base_admission_and_worker_reuse_on_real_s3() {
+async fn request_filters_preserve_base_admission_and_worker_reuse_on_storage() {
     let mut fixture = ParkedEmbedding::open("10s").await;
     *crate::sync::lock(&fixture.hooks.admission_probe) = Some(AdmissionProbe {
         row: fixture.probe_row,

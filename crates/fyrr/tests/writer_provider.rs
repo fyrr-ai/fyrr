@@ -1,4 +1,4 @@
-//! Provider-boundary compatibility through the real worker executable and S3.
+//! Provider-boundary compatibility through the real worker executable and local storage.
 #![cfg(feature = "writer")]
 
 mod common;
@@ -22,10 +22,8 @@ impl Fixture {
             &json!({"documents":[{"text":"fixture"}]}).to_string(),
         );
         let config = sandbox.input("fyrr.toml", &format!(
-            "[namespace]\nname='driver-fixture'\n[storage]\nuri='s3://{}/{}'\nendpoint='{}'\nallow_http=true\naccess_key_id={{env='FYRR_TEST_S3_ACCESS_KEY_ID'}}\nsecret_access_key={{env='FYRR_TEST_S3_SECRET_ACCESS_KEY'}}\n[embedding]\nendpoint='{}'\napi_key={{env='FYRR_TEST_S3_SECRET_ACCESS_KEY'}}\nlocal_cache='{}'\nspend={{limit_microusd=1000,max_call_microusd=1}}\n[identity]\nstdio_user='fixture'\nhashing_key={{env='FYRR_TEST_S3_SECRET_ACCESS_KEY'}}\nencryption_key={{env='FYRR_TEST_ENCRYPTION_KEY'}}\n[writer]\nenvelope_max_bytes='16MiB'\n[[sources]]\nid='fixture'\ntype='{provider}'\npermissions='fixed'\nreaders=['grp:fixture']\n[sources.settings]\nmode='{mode}'\n[sources.scope]\nfixture='{}'\n",
-            std::env::var("FYRR_TEST_S3_BUCKET").unwrap(),
-            sandbox.output().parent().unwrap().file_name().unwrap().to_string_lossy(),
-            std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap(), embedding.endpoint,
+            "[namespace]\nname='driver-fixture'\n[storage]\nuri='file://{}'\n[embedding]\nendpoint='{}'\napi_key={{env='FYRR_TEST_SECRET'}}\nlocal_cache='{}'\nspend={{limit_microusd=1000,max_call_microusd=1}}\n[identity]\nstdio_user='fixture'\nhashing_key={{env='FYRR_TEST_SECRET'}}\nencryption_key={{env='FYRR_TEST_ENCRYPTION_KEY'}}\n[writer]\nenvelope_max_bytes='16MiB'\n[[sources]]\nid='fixture'\ntype='{provider}'\npermissions='fixed'\nreaders=['grp:fixture']\n[sources.settings]\nmode='{mode}'\n[sources.scope]\nfixture='{}'\n",
+            sandbox.output().join("storage").display(), embedding.endpoint,
             sandbox.output().join("embeddings").display(), documents.display()
         ));
         let fixture = Self {
@@ -49,7 +47,7 @@ impl Fixture {
 
 #[test]
 #[ignore = "real worker and RustFS; scripts/ci"]
-fn prepared_errors_preserve_batch_invalid_and_provider_failure_on_real_s3() {
+fn prepared_errors_preserve_batch_invalid_and_provider_failure_on_storage() {
     for (provider, mode, code) in [
         ("sentinel-review", "text-huge", "batch_invalid"),
         ("sentinel-failing", "raise", "provider_failure"),
@@ -76,7 +74,7 @@ fn prepared_errors_preserve_batch_invalid_and_provider_failure_on_real_s3() {
 
 #[tokio::test]
 #[ignore = "real committer lease and RustFS; scripts/ci"]
-async fn committer_busy_remains_closed_on_real_s3() {
+async fn committer_busy_remains_closed_on_storage() {
     let fixture = Fixture::new("sentinel-failing", "raise");
     let loaded = fyrr_core::config::load(Path::new(&fixture.config)).unwrap();
     let lease = fyrr_writer::lease::LeaseGuard::acquire(&loaded.config)

@@ -11,7 +11,7 @@ fn assert_fallback(result: SearchOutput, exact: &[SearchHit], reason: RoutingFal
 
 #[tokio::test]
 #[ignore = "real publication supplied by the dense_path routing fixture"]
-async fn routing_fallbacks_on_real_s3() {
+async fn routing_fallbacks_on_storage() {
     let path = std::env::var_os("FYRR_TEST_ROUTING_CONFIG").expect("routing fixture config");
     let mut config = fyrr_core::config::load(std::path::Path::new(&path))
         .unwrap()

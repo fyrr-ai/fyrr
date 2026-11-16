@@ -8,8 +8,8 @@ use object_store::ObjectStoreExt;
 use std::collections::BTreeSet;
 
 #[tokio::test]
-#[ignore = "real worker and RustFS; scripts/ci"]
-async fn incremental_unchanged_upsert_still_protects_pending_reconciliation_on_real_s3() {
+#[ignore = "real worker and local storage; scripts/ci"]
+async fn incremental_unchanged_upsert_still_protects_pending_reconciliation_on_storage() {
     let setup = setup();
     for row in 8..768 {
         std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
@@ -192,8 +192,8 @@ pub(super) fn publish_initial(worker: &Path, commit: &Path, root: &Path) {
 }
 
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_sub_envelope_cursor_recovery_and_atomic_chunk_groups_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_sub_envelope_cursor_recovery_and_atomic_chunk_groups_on_storage() {
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -375,7 +375,7 @@ fn section_readers(batch: &arrow_array::RecordBatch, id: &str) -> [BTreeSet<Stri
 /// document's readers, whichever of content and permissions arrives first.
 #[tokio::test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_section_readers_survive_a_later_permission_state_on_real_s3() {
+async fn incremental_section_readers_survive_a_later_permission_state_on_storage() {
     let (worker, commit, root) = fixture_host(768, false);
     let loaded = fyrr_core::config::load(&worker).unwrap();
     let token = |reader: &str| {
@@ -473,8 +473,8 @@ async fn incremental_section_readers_survive_a_later_permission_state_on_real_s3
 /// the applied state again. Only a provider with a permission
 /// stream makes no statement that way.
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_content_only_provider_empty_readers_narrow_to_nobody_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_content_only_provider_empty_readers_narrow_to_nobody_on_storage() {
     let (worker, commit, root) = fixture();
     for config in [&worker, &commit] {
         let text = std::fs::read_to_string(config).unwrap();
@@ -874,8 +874,8 @@ async fn rejected_authorization(kind: SyncKind) {
 }
 
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_members_alone_never_attest_permissions_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_members_alone_never_attest_permissions_on_storage() {
     let (worker, commit, root) = fixture();
     initial(&root);
     worker_sync(&worker, &["incremental", "--kind", "content"]);
@@ -970,7 +970,7 @@ async fn incremental_members_alone_never_attest_permissions_on_real_s3() {
 
 #[tokio::test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_delta_expired_source_isolated_on_real_s3() {
+async fn incremental_delta_expired_source_isolated_on_storage() {
     let (worker, commit, root) = fixture();
     publish_initial(&worker, &commit, &root);
     let loaded = fyrr_core::config::load(&worker).unwrap();
@@ -1142,8 +1142,8 @@ async fn incremental_delta_expired_source_isolated_on_real_s3() {
 
 /// Catching a failed host revision callback cannot attest an incomplete read.
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_caught_revision_failure_never_attests_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_caught_revision_failure_never_attests_on_storage() {
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -1262,15 +1262,15 @@ async fn incremental_caught_revision_failure_never_attests_on_real_s3() {
 
 #[tokio::test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_rejected_authorization_requires_complete_replacement_on_real_s3() {
+async fn incremental_rejected_authorization_requires_complete_replacement_on_storage() {
     for kind in [SyncKind::Permissions, SyncKind::Members] {
         rejected_authorization(kind).await;
     }
 }
 
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_damaged_rows_rejected_and_cleanup_retains_log_authority_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_damaged_rows_rejected_and_cleanup_retains_log_authority_on_storage() {
     let (worker, commit, root) = fixture();
     initial(&root);
     worker_sync(&worker, &["incremental", "--kind", "content"]);
@@ -1363,8 +1363,8 @@ async fn incremental_damaged_rows_rejected_and_cleanup_retains_log_authority_on_
 }
 
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_delta_genesis_undeclared_row_rejected_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_delta_genesis_undeclared_row_rejected_on_storage() {
     let (worker, commit, root) = fixture_host(768, false);
     initial(&root);
     worker_sync(&worker, &["incremental", "--kind", "content"]);

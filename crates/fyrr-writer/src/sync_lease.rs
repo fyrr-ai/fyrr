@@ -201,25 +201,17 @@ mod tests {
 
     #[test]
     #[ignore = "real cursor lease and RustFS; scripts/ci"]
-    fn scoped_cursor_lease_preserves_error_priority_on_real_s3() {
+    fn scoped_cursor_lease_preserves_error_priority_on_storage() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let mut config = fyrr_core::config::parse(
             "[namespace]\nname='cursor-scope'\n[storage]\nuri='s3://cursor-scope'\n[embedding]\nendpoint='http://127.0.0.1:9/v1'\n",
         ).unwrap().config;
-        config.storage.uri = format!(
-            "s3://{}/cursor-scope-{}-{}",
-            std::env::var("FYRR_TEST_S3_BUCKET").unwrap(),
+        let root = std::env::temp_dir().join(format!(
+            "fyrr-cursor-scope-{}-{}",
             std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap()
-        );
-        config.storage.endpoint = Some(std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap());
-        config.storage.allow_http = true;
-        config.storage.access_key_id = Some(fyrr_core::config::SecretRef {
-            env: "FYRR_TEST_S3_ACCESS_KEY_ID".into(),
-        });
-        config.storage.secret_access_key = Some(fyrr_core::config::SecretRef {
-            env: "FYRR_TEST_S3_SECRET_ACCESS_KEY".into(),
-        });
+            Utc::now().timestamp_nanos_opt().unwrap(),
+        ));
+        config.storage.uri = format!("file://{}", root.display());
         for (index, (operation_failed, release_failed)) in
             [(false, false), (true, false), (false, true), (true, true)]
                 .into_iter()
@@ -260,5 +252,6 @@ mod tests {
                 "operation_failed={operation_failed}, release_failed={release_failed}"
             );
         }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

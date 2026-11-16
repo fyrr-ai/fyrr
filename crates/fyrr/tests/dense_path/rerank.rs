@@ -56,10 +56,7 @@ async fn provider(
             .unwrap()
             .to_str()
             .unwrap()
-            == format!(
-                "Bearer {}",
-                std::env::var("FYRR_TEST_S3_SECRET_ACCESS_KEY").unwrap()
-            ),
+            == format!("Bearer {}", std::env::var("FYRR_TEST_SECRET").unwrap()),
         "expected test bearer authorization"
     );
     let count = request["documents"].as_array().unwrap().len();
@@ -87,7 +84,7 @@ fn configured(
         .unwrap()
         .replace("[reader]\n", "[reader]\nconcurrency=1\n");
     let path = config.with_file_name(format!("rerank-{weight}-{cap}-{deadline}.toml"));
-    std::fs::write(&path, format!("{text}\n[namespace.rerank]\nendpoint='{}'\nmodel='fixture-rerank'\napi_key={{env='FYRR_TEST_S3_SECRET_ACCESS_KEY'}}\ncandidates=10\nweight={weight}\ndeadline='{deadline}'\nspend_limit_microusd={cap}\nmax_call_cost_microusd=10\n", provider.endpoint)).unwrap();
+    std::fs::write(&path, format!("{text}\n[namespace.rerank]\nendpoint='{}'\nmodel='fixture-rerank'\napi_key={{env='FYRR_TEST_SECRET'}}\ncandidates=10\nweight={weight}\ndeadline='{deadline}'\nspend_limit_microusd={cap}\nmax_call_cost_microusd=10\n", provider.endpoint)).unwrap();
     // Retrieval settings are publication policy, including optional reranking.
     success(&path, &["writer", "commit"]);
     path
@@ -105,8 +102,8 @@ fn roots(body: &Value) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real executable and RustFS fixture; scripts/ci"]
-async fn tools_rerank_text_window_and_response_budget_are_authorized_on_real_s3() {
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn tools_rerank_text_window_and_response_budget_are_authorized_on_storage() {
     let provider = Provider::open().await;
     let (config, root, _) = tools::fixture();
     let configured = configured(&config, &provider, 1.0, 1000, "5s");
@@ -153,8 +150,8 @@ async fn tools_rerank_text_window_and_response_budget_are_authorized_on_real_s3(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real executable and RustFS fixture; scripts/ci"]
-async fn tools_rerank_default_and_success_on_real_s3() {
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn tools_rerank_default_and_success_on_storage() {
     let provider = Provider::open().await;
     let (config, root, _) = tools::fixture();
     let mut plain = Mcp::open(&config);
@@ -219,8 +216,8 @@ async fn tools_rerank_default_and_success_on_real_s3() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real executable and RustFS fixture; scripts/ci"]
-async fn tools_rerank_denied_and_listing_make_no_calls_on_real_s3() {
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn tools_rerank_denied_and_listing_make_no_calls_on_storage() {
     let provider = Provider::open().await;
     let (config, root, _) = tools::fixture();
     let enabled = configured(&config, &provider, 1.0, 1000, "5s");
@@ -262,8 +259,8 @@ async fn tools_rerank_denied_and_listing_make_no_calls_on_real_s3() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real executable, gated provider connection and RustFS; scripts/ci"]
-async fn tools_rerank_revoke_before_body_emission_sends_no_text_on_real_s3() {
+#[ignore = "real executable, gated provider connection and local storage; scripts/ci"]
+async fn tools_rerank_revoke_before_body_emission_sends_no_text_on_storage() {
     use std::sync::atomic::AtomicBool;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut provider = Provider::open().await;
@@ -377,8 +374,8 @@ async fn tools_rerank_revoke_before_body_emission_sends_no_text_on_real_s3() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real S3, MCP stdio and in-request admission rebuilding"]
-async fn tools_rerank_refresh_preserves_rebuilt_admission_on_real_s3() {
+#[ignore = "local storage, MCP stdio and in-request admission rebuilding"]
+async fn tools_rerank_refresh_preserves_rebuilt_admission_on_storage() {
     let provider = Provider::open().await;
     let (config, root, _) = tools::fixture();
     let config = configured(&config, &provider, 1.0, 1000, "5s");
@@ -386,7 +383,7 @@ async fn tools_rerank_refresh_preserves_rebuilt_admission_on_real_s3() {
         std::env::var_os("FYRR_ROUTING_TEST_BINARY").expect("reader libtest built by scripts/ci");
     let output = Command::new(binary)
         .args([
-            "serve::tests::embedding::rerank_refresh_preserves_rebuilt_admission_on_real_s3",
+            "serve::tests::embedding::rerank_refresh_preserves_rebuilt_admission_on_storage",
             "--exact",
             "--ignored",
             "--nocapture",

@@ -7,6 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[features]
+# Activated only by dev dependencies; never by a shipping build.
+test-store = []
+
 [dependencies]
 clap.workspace = true
 fyrr-core.workspace = true

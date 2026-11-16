@@ -40,7 +40,9 @@ trap cleanup EXIT
 
 fail() { die "quickstart: $*"; }
 
-cargo build --locked -p fyrr
+if [[ "${FYRR_CI_PREBUILT:-}" != 1 ]]; then
+  cargo build --locked -p fyrr
+fi
 export PATH="$ROOT/target/debug:$PATH" VIRTUAL_ENV="$ROOT/connectors/.venv"
 FYRR_IDENTITY_KEY="$(openssl rand -hex 32)"
 # The default mirror is $XDG_CACHE_HOME/fyrr/<namespace>; keep it in WORK.

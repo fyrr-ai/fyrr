@@ -225,8 +225,8 @@ fn in_every_lane(config: &Path, expected: &[&str]) {
 /// direct, group and shared-drive grants admit the reader, and each revoke
 /// removes the document from every retrieval lane.
 #[tokio::test]
-#[ignore = "real CLI, fake Drive and RustFS; scripts/ci"]
-async fn google_drive_sync_source_grants_and_revokes_in_every_lane_on_real_s3() {
+#[ignore = "real CLI, fake Drive and local storage; scripts/ci"]
+async fn google_drive_sync_source_grants_and_revokes_in_every_lane_on_storage() {
     let drive = Drive::start();
     let staff = "staff@example.test";
     let grant = format!("p-{READER}");
@@ -349,8 +349,8 @@ async fn google_drive_sync_source_grants_and_revokes_in_every_lane_on_real_s3() 
 /// batches resumes without exporting what was delivered, and a reset cursor
 /// re-scans without exporting anything published and without losing a delete.
 #[tokio::test]
-#[ignore = "real CLI, fake Drive and RustFS; scripts/ci"]
-async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_real_s3() {
+#[ignore = "real CLI, fake Drive and local storage; scripts/ci"]
+async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_storage() {
     let drive = Drive::start();
     drive.call("user", json!({"email":OWNER})).await;
     for row in 1..=7 {
@@ -470,8 +470,8 @@ async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_r
 /// a failed permission read keeps the last rights until the default validity
 /// deadline, then hides only this source until a read succeeds.
 #[tokio::test]
-#[ignore = "real CLI, fake Drive and RustFS; scripts/ci"]
-async fn google_drive_quarantine_and_permission_read_failure_deadline_on_real_s3() {
+#[ignore = "real CLI, fake Drive and local storage; scripts/ci"]
+async fn google_drive_quarantine_and_permission_read_failure_deadline_on_storage() {
     let drive = Drive::start();
     let place = json!({"drive":"drive-eng"});
     drive.call("user", json!({"email":OWNER})).await;

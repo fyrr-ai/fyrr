@@ -368,7 +368,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "real publication supplied by the dense_path status fixture"]
     // Exact count assertions below use a quiescent namespace.
-    async fn status_bounded_backlog_on_real_s3() {
+    async fn status_bounded_backlog_on_storage() {
         let config = fyrr_core::config::load(std::path::Path::new(
             &std::env::var("FYRR_TEST_STATUS_CONFIG").unwrap(),
         ))

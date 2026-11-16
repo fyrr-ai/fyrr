@@ -2,10 +2,9 @@
 # Builds, tests and measures the two images and both
 # provider install paths. Slow (a clean build compiles Lance in
 # release mode) and needs the network for base images, so it runs as
-# `scripts/ci --images`, not in every ci run.
+# `scripts/release` or directly as `scripts/images`.
 #
-#   scripts/images             build, test, check the image-size budgets
-#   scripts/images --record    ... and record the measured sizes in budgets.toml
+#   scripts/images             build, test and measure both images
 #   scripts/images --no-cache  build without the layer cache (cargo's cache
 #                              mounts stay; the first build on a host is clean)
 #
@@ -20,13 +19,11 @@ cd "$ROOT"
 # non-root containers. Their access must not depend on the caller's umask.
 umask 022
 
-RECORD=0
 NO_CACHE=()
 for arg in "$@"; do
   case "$arg" in
-    --record) RECORD=1 ;;
     --no-cache) NO_CACHE=(--no-cache) ;;
-    *) die "unknown argument $arg (use --record or --no-cache)" ;;
+    *) die "unknown argument $arg (use --no-cache)" ;;
   esac
 done
 
@@ -292,7 +289,7 @@ for service in reader writer dev-reader; do
   echo "ok   compose: $service exited 0"
 done
 
-# --- sizes and budgets ---------------------------------------------------------
+# --- sizes ---------------------------------------------------------
 declare -A size
 size[full]="$(docker image inspect -f '{{.Size}}' "$FULL")"
 size[reader_only]="$(docker image inspect -f '{{.Size}}' "$READER")"
@@ -301,10 +298,4 @@ size[reader_only]="$(docker image inspect -f '{{.Size}}' "$READER")"
   echo "reader_only $READER ${size[reader_only]}"
 } >"$OUT/sizes.txt"
 cat "$OUT/build-seconds.txt"
-if ((RECORD)); then
-  for key in full reader_only; do set_budget image_size "$key" "${size[$key]}"; done
-  log "recorded the image sizes in budgets.toml"
-fi
-status=0
-for key in full reader_only; do compare_budget image_size "$key" "${size[$key]}" || status=1; done
-exit "$status"
+cat "$OUT/sizes.txt"

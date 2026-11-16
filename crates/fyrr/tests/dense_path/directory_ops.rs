@@ -131,7 +131,7 @@ async fn state(config: &Path) -> ServingHead {
 
 #[tokio::test]
 #[ignore = "owned Keycloak, writer HTTP/MCP and RustFS; scripts/ci"]
-async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_real_s3() {
+async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_storage() {
     let (worker, commit, root) = fixture();
     publish_initial(&worker, &commit, &root);
     let service = Service::start(&commit, &root).await;
@@ -511,8 +511,8 @@ fn directory_command(config: &Path, token: Option<&str>) -> Output {
     command.output().unwrap()
 }
 #[tokio::test]
-#[ignore = "owned Keycloak admin API, CLI/MCP and RustFS; scripts/ci"]
-async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_real_s3() {
+#[ignore = "owned Keycloak admin API, CLI/MCP and local storage; scripts/ci"]
+async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_storage() {
     let endpoint = std::env::var("FYRR_TEST_KEYCLOAK_ENDPOINT").unwrap();
     let username = std::env::var("FYRR_TEST_KEYCLOAK_USERNAME").unwrap();
     let password = std::env::var("FYRR_TEST_KEYCLOAK_PASSWORD").unwrap();

@@ -207,7 +207,7 @@ async fn hold_cache_budget(
 
 #[tokio::test]
 #[ignore = "real writer publication supplied by the dense_path cache fixture"]
-async fn authorization_cache_budget_on_real_s3() {
+async fn authorization_cache_budget_on_storage() {
     let config_path = std::path::PathBuf::from(std::env::var_os("FYRR_TEST_CACHE_CONFIG").unwrap());
     let config = fyrr_core::config::load(&config_path).unwrap().config;
     let mut reader = PreparedReader::open(&config).await.unwrap();

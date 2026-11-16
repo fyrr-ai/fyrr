@@ -306,12 +306,23 @@ async fn running_reader_never_serves_a_replaced_namespace_incarnation(backend: B
 #[tokio::test]
 #[ignore = "real HTTP MCP executable, pinned JWKS and RustFS; scripts/ci"]
 async fn running_http_reader_never_serves_a_revoked_grant_of_a_replaced_namespace_on_real_s3() {
+    running_http_replacement(Backend::S3).await;
+}
+
+#[tokio::test]
+#[ignore = "real HTTP MCP executable and local storage; scripts/ci"]
+async fn running_http_reader_never_serves_a_revoked_grant_of_a_replaced_namespace_on_local_storage()
+{
+    running_http_replacement(Backend::Local).await;
+}
+
+async fn running_http_replacement(backend: Backend) {
     use super::coordination::worker_sync;
     use super::http_mcp::{Issuer, Reader, fixture_for_issuer};
     use super::incremental::{doc, input, publish};
-    let (_, issuer_root) = setup();
+    let (_, issuer_root) = setup_on(backend);
     let issuer = Issuer::new(&issuer_root).await;
-    let (worker, commit, root, _) = fixture_for_issuer(&issuer.url).await;
+    let (worker, commit, root, _) = fixture_for_issuer(&issuer.url, backend).await;
     std::fs::write(
         &worker,
         std::fs::read_to_string(&worker)

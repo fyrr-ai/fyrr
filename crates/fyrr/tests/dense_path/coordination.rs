@@ -1,4 +1,4 @@
-//! Real CLI crash boundaries against the owned RustFS, using the existing proxy.
+//! Real CLI crash boundaries against the local storage, using the existing proxy.
 use super::*;
 use crate::common::Sentinels;
 use std::sync::Arc;
@@ -243,7 +243,7 @@ pub(super) async fn pinned_count(config: &Path) -> usize {
 
 #[tokio::test]
 #[ignore = "real CLI and owned RustFS; scripts/ci"]
-async fn coordination_crash_boundaries_on_real_s3() {
+async fn coordination_crash_boundaries_on_storage() {
     // Distinct storage boundaries, not a cross-product. Lost successful responses
     // are replaced with a terminal transport failure to avoid SDK retry timing.
     let cases = [
@@ -382,7 +382,7 @@ async fn coordination_crash_boundaries_on_real_s3() {
 
 #[tokio::test]
 #[ignore = "real CLI and owned RustFS; scripts/ci"]
-async fn coordination_busy_and_expired_holder_on_real_s3() {
+async fn coordination_busy_and_expired_holder_on_storage() {
     for pause_after in [false, true] {
         let (worker, root) = setup();
         let text = std::fs::read_to_string(&worker).unwrap();
@@ -771,9 +771,151 @@ async fn coordination_foreign_native_commit_cannot_publish_head_on_real_s3() {
     assert!(fetched.to_string().contains("fixture document 0"));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real S3 conditional writes, pagination and visibility; scripts/ci"]
+async fn s3_conditional_writes_and_paginated_listing_are_visible() {
+    use futures::{StreamExt, TryStreamExt};
+    use object_store::{PutMode, PutOptions, UpdateVersion};
+    let (config, _root) = setup_on(Backend::S3);
+    let loaded = fyrr_core::config::load(&config).unwrap();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let key = namespace.clone().join("cas/head.json");
+    let create = |body: &'static [u8]| {
+        store.put_opts(
+            &key,
+            body.into(),
+            PutOptions {
+                mode: PutMode::Create,
+                ..Default::default()
+            },
+        )
+    };
+    let (first, second) = futures::future::join(create(b"first"), create(b"second")).await;
+    assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+    let loser = if first.is_ok() { &second } else { &first };
+    assert!(matches!(
+        loser,
+        Err(object_store::Error::AlreadyExists { .. } | object_store::Error::Precondition { .. })
+    ));
+    let current = store.head(&key).await.unwrap();
+    let version = UpdateVersion {
+        e_tag: current.e_tag,
+        version: current.version,
+    };
+    let update = |body: &'static [u8]| {
+        store.put_opts(
+            &key,
+            body.into(),
+            PutOptions {
+                mode: PutMode::Update(version.clone()),
+                ..Default::default()
+            },
+        )
+    };
+    let (first, second) = futures::future::join(update(b"new-first"), update(b"new-second")).await;
+    assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+    let loser = if first.is_ok() { &second } else { &first };
+    assert!(matches!(
+        loser,
+        Err(object_store::Error::Precondition { .. })
+    ));
+    let expected: &[u8] = if first.is_ok() {
+        b"new-first"
+    } else {
+        b"new-second"
+    };
+    assert_eq!(
+        store
+            .get(&key)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap()
+            .as_ref(),
+        expected
+    );
+
+    let prefix = namespace.join("listing");
+    futures::stream::iter(0..1005)
+        .map(|index| {
+            let store = store.clone();
+            let path = prefix.clone().join(format!("item-{index:04}"));
+            async move { store.put(&path, vec![(index % 256) as u8].into()).await }
+        })
+        .buffer_unordered(16)
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+    let pages = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = pages.clone();
+    let hook: corrections::BoundaryHook = Arc::new(move |request, _, after| {
+        if !after
+            && request.starts_with("GET ")
+            && request.contains("list-type=2")
+            && request.contains("listing")
+        {
+            observed
+                .lock()
+                .unwrap()
+                .push(request.contains("continuation-token="));
+        }
+        false
+    });
+    let endpoint = loaded.config.storage.endpoint.clone().unwrap();
+    let (proxy, guard) =
+        corrections::proxy_at_boundary(endpoint.clone(), Arc::new(AtomicBool::new(false)), hook);
+    let observed_config = config.with_file_name("listing-observed.toml");
+    std::fs::write(
+        &observed_config,
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .replace(&endpoint, &proxy),
+    )
+    .unwrap();
+    let observed_config = fyrr_core::config::load(&observed_config).unwrap();
+    let (observed, _) = fyrr_reader::storage::namespace_store(&observed_config.config).unwrap();
+    let objects: Vec<_> = observed.list(Some(&prefix)).try_collect().await.unwrap();
+    assert_eq!(
+        objects.len(),
+        1005,
+        "a fresh listing must see every completed PUT"
+    );
+    let keys: std::collections::BTreeSet<_> = objects
+        .iter()
+        .map(|object| object.location.to_string())
+        .collect();
+    assert_eq!(
+        keys.len(),
+        1005,
+        "continuation pages must neither repeat nor lose objects"
+    );
+    assert!(objects.iter().all(|object| object.e_tag.is_some()));
+    assert_eq!(
+        *pages.lock().unwrap(),
+        [false, true],
+        "actual S3 continuation requests"
+    );
+    for index in [0, 1004] {
+        let path = prefix.clone().join(format!("item-{index:04}"));
+        assert_eq!(
+            store
+                .get(&path)
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
+                .as_ref(),
+            &[(index % 256) as u8]
+        );
+    }
+    drop(guard);
+}
+
 #[test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
-fn coordination_status_bounded_backlog_on_real_s3() {
+fn coordination_status_bounded_backlog_on_storage() {
     let (worker, _, root) = super::incremental::fixture();
     let mut sentinels = Sentinels::new();
     let marker = sentinels.mark("status-private-cursor");
@@ -783,7 +925,7 @@ fn coordination_status_bounded_backlog_on_real_s3() {
             .expect("writer libtest built by scripts/ci"),
     )
     .args([
-        "envelopes::tests::status_bounded_backlog_on_real_s3",
+        "envelopes::tests::status_bounded_backlog_on_storage",
         "--exact",
         "--ignored",
         "--nocapture",

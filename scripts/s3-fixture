@@ -12,10 +12,13 @@
 #   scripts/s3-fixture stop     remove the container and its data directory
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-HASH="$(printf '%s' "$ROOT" | sha256sum | cut -c1-12)"
+INSTANCE="${FYRR_FIXTURE_ID:-}"
+[[ "$INSTANCE" =~ ^[a-zA-Z0-9_-]*$ ]] || die "invalid fixture identifier"
+HASH="$(printf '%s' "$ROOT${INSTANCE:+-$INSTANCE}" | sha256sum | cut -c1-12)"
 NAME="fyrr-s3-$HASH"
 LABEL="fyrr.worktree"
-DATA="${FYRR_S3_FIXTURE_DATA:-$ROOT/target/s3-fixture/data}"
+FIXTURE_ROOT="$ROOT/target/s3-fixture${INSTANCE:+-$INSTANCE}"
+DATA="${FYRR_S3_FIXTURE_DATA:-$FIXTURE_ROOT/data}"
 if [[ -n "${FYRR_S3_FIXTURE_DATA:-}" ]]; then
   DATA="$(realpath -m -- "$DATA")"
   [[ "$DATA" != "$ROOT" && "$DATA" != "$ROOT/"* ]] || die "external fixture data must be outside the checkout"
@@ -123,7 +126,7 @@ case "${1:-}" in
       log "removed $NAME"
     fi
     # Disposable default data owned by this worktree only. External data is retained.
-    rm -rf "$ROOT/target/s3-fixture"
+    rm -rf "$FIXTURE_ROOT"
     ;;
   *) die "usage: scripts/s3-fixture start|env|status|stop" ;;
 esac

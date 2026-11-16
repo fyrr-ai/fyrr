@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Assembles versioned release artifacts locally, from the same steps the
 # repository already uses: the pinned release builds of both binaries
-# (scripts/check-budgets measures these), the connector SDK wheel
+# and the connector SDK wheel
 # (docker/Dockerfile builds it the same way), and the two images as
 # scripts/images builds and tests them. This script uploads, pushes and tags
 # nothing; on a `v*` tag, .github/workflows/release.yml runs CI and then
@@ -80,7 +80,7 @@ binary_runtime() {
   printf '  rpath %s\n  runpath %s\n' "${rpath:-none}" "${runpath:-none}"
 }
 
-# --- binaries (the pinned release profile of budgets.toml) ------------------
+# --- binaries (the shipping release profile) ------------------
 log "building the full release binary"
 build_release -p fyrr
 cp "$ROOT/target/release/fyrr" "$DIR/fyrr-$VERSION-$PLATFORM"

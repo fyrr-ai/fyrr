@@ -1,17 +1,14 @@
-# Hosted CI: runs the repository's own `scripts/ci` unchanged on an x86-64
-# Ubuntu runner with Docker for the S3 (RustFS) and identity (Keycloak)
-# fixtures. `scripts/ci` keeps going after a failure, writes
-# target/ci-logs/<stamp>/summary.txt and lists any check it did not run as
-# `n/e` (not evaluated), never as passed; the summary is uploaded whether the
-# run passed or failed. Public repositories run the full check and images;
-# private repositories use the debug-only selection.
-# release.yml calls this workflow before it publishes anything.
+# One complete local/hosted entry point. Compiler actions are shared through
+# mr-boxington; bounded scenario concurrency and fixture ownership live in scripts/ci.
 name: ci
 
 on:
   push:
     branches: ["main"]
   pull_request:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
   workflow_call:
 
 permissions:
@@ -19,7 +16,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: never
-  CARGO_INCREMENTAL: "0"
 
 jobs:
   ci:
@@ -31,13 +27,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Free disk space for the Lance and image builds
+      - name: Free disk space for Cargo builds
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
           df -h "$GITHUB_WORKSPACE"
 
-      # The real-S3 maintenance cases run the S3 fixture (up to 4 GB) next to a
-      # large test process; swap keeps smaller runners from aborting on memory.
+      # External-service rows run real fixtures next to test processes; swap
+      # keeps smaller runners from aborting on memory.
       - name: Add swap
         run: |
           sudo fallocate -l 12G /fyrr-swapfile
@@ -54,43 +50,30 @@ jobs:
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
-      - name: Cache cargo registry, git checkouts and cargo-deny
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Shared Cargo compilation cache
+        uses: jdx/mr-boxington-action@88acf2bb50552c7c508cbac13e5f8c576b95b1de # v1
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            ~/.cargo/bin/cargo-deny
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'scripts/pins.env') }}
-          restore-keys: cargo-${{ runner.os }}-
+          version: '1.30.0'
+          backend: github
+          save-on-workflow-dispatch: 'true'
 
-      - name: Install the pinned cargo-deny
+      - name: Install checksum-verified cargo-deny
         run: |
           source scripts/pins.env
-          if ! cargo deny --version 2>/dev/null | grep -qx "cargo-deny $CARGO_DENY_VERSION"; then
-            cargo install --locked "cargo-deny@$CARGO_DENY_VERSION"
-          fi
+          archive="$RUNNER_TEMP/cargo-deny.tar.gz"
+          curl -fsSL --retry 3 -o "$archive" "$CARGO_DENY_URL"
+          echo "$CARGO_DENY_SHA256  $archive" | sha256sum -c --quiet -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" --strip-components=1 --wildcards '*/cargo-deny'
+          install -m 755 "$RUNNER_TEMP/cargo-deny" "$HOME/.cargo/bin/cargo-deny"
 
-      - name: Cache the build directory
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            target/debug
-            target/release
-            target/tools
-          key: target-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: target-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
-
-      # A fat-LTO release link needs about 9 GB of memory. Runners of private
-      # repositories have less, so there the release link, size and image
-      # checks are skipped and reported as not evaluated.
       - name: scripts/ci
         env:
           FYRR_CI_REVISION: ${{ github.sha }}
-          RUST_TEST_THREADS: "1"
-          CI_MODE: ${{ github.event.repository.private && '--debug-only' || '--images' }}
-        run: scripts/ci "$CI_MODE"
+        run: |
+          mkdir -p target/ci-measurements
+          /usr/bin/time -v -o target/ci-measurements/ci.time scripts/ci
+          du -sh target | tee target/ci-measurements/size.txt
+          mbx stats > target/ci-measurements/cache.txt
 
       - name: Show the summary
         if: always()
@@ -105,4 +88,6 @@ jobs:
             target/ci-logs/
             target/images/*.log
             target/images/*.txt
+            target/ci-measurements/
           if-no-files-found: error
+          retention-days: 7

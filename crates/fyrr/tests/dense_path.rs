@@ -112,8 +112,18 @@ enum Backend {
     Local,
 }
 
+impl Backend {
+    fn selected() -> Self {
+        match std::env::var("FYRR_TEST_BACKEND").as_deref() {
+            Ok("s3") => Self::S3,
+            Ok("local") | Err(_) => Self::Local,
+            Ok(value) => panic!("unknown test storage backend: {value}"),
+        }
+    }
+}
+
 fn setup() -> (PathBuf, FixtureRoot) {
-    setup_on(Backend::S3)
+    setup_on(Backend::selected())
 }
 
 fn setup_on(backend: Backend) -> (PathBuf, FixtureRoot) {
@@ -156,15 +166,15 @@ fn setup_at_on(root: PathBuf, backend: Backend) -> (PathBuf, FixtureRoot) {
                      access_key_id = {{ env = \"FYRR_TEST_S3_ACCESS_KEY_ID\" }}\n\
                      secret_access_key = {{ env = \"FYRR_TEST_S3_SECRET_ACCESS_KEY\" }}"
                 ),
-                "FYRR_TEST_S3_SECRET_ACCESS_KEY",
+                "FYRR_TEST_SECRET",
             )
         }
         Backend::Local => (
             format!(
-                "uri = \"file://{}\"",
+                "uri = \"file://{}\"\n# fyrr-test-store = local-storage",
                 root.with_file_name(format!("storage-{run_id}")).display()
             ),
-            "FYRR_TEST_LOCAL_SECRET",
+            "FYRR_TEST_SECRET",
         ),
     };
     let config = root.join("fyrr.toml");
@@ -218,7 +228,17 @@ paths = ["{}"]
 #[tokio::test]
 #[ignore = "real executable and RustFS fixture; scripts/ci"]
 async fn dense_path_and_namespace_contracts_on_real_s3() {
-    let (config, root) = setup();
+    dense_path_and_namespace_contracts(Backend::S3).await;
+}
+
+#[tokio::test]
+#[ignore = "real CLI on local storage; scripts/ci"]
+async fn dense_path_and_namespace_contracts_on_local_storage() {
+    dense_path_and_namespace_contracts(Backend::Local).await;
+}
+
+async fn dense_path_and_namespace_contracts(backend: Backend) {
+    let (config, root) = setup_on(backend);
     success(&config, &["writer", "namespace", "create"]);
     // Creation's policy and head must pass the same parser as reader admission.
     let loaded = fyrr_core::config::load(&config).expect("config");

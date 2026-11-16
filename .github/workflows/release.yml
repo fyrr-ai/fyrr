@@ -1,4 +1,4 @@
-# Release: on a `v*` tag, runs ci.yml (`scripts/ci --images`) and, only if it
+# Release: on a `v*` tag, runs ci.yml (`scripts/ci`) and, only if it
 # passes, assembles the artifacts with scripts/release (both
 # binaries, the connector SDK wheel, the contracts, both images and
 # SHA256SUMS), uploads them to a draft, pushes both images to GHCR, then
@@ -45,6 +45,13 @@ jobs:
       - name: Free disk space for the Lance and image builds
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
 
+      - name: Add swap for fat-LTO release links
+        run: |
+          sudo fallocate -l 12G /fyrr-swapfile
+          sudo chmod 600 /fyrr-swapfile
+          sudo mkswap /fyrr-swapfile >/dev/null
+          sudo swapon /fyrr-swapfile
+
       - name: Install the pinned Rust toolchain
         run: |
           channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
@@ -57,6 +64,12 @@ jobs:
         run: |
           source scripts/pins.env
           cargo install --locked "cargo-deny@$CARGO_DENY_VERSION"
+
+      - name: Shared Cargo compilation cache
+        uses: jdx/mr-boxington-action@88acf2bb50552c7c508cbac13e5f8c576b95b1de # v1
+        with:
+          version: '1.30.0'
+          backend: github
 
       - name: scripts/release
         env:

@@ -24,6 +24,8 @@ serde_json.workspace = true
 pyo3-build-config = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Instrumentation is absent from normal and shipping package builds.
+fyrr-reader = { workspace = true, features = ["test-store"] }
 serde.workspace = true
 toml.workspace = true
 axum.workspace = true

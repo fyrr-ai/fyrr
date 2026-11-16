@@ -2,8 +2,8 @@
 use super::*;
 
 #[tokio::test]
-#[ignore = "real S3 publication, native index verification and writer CLI errors"]
-async fn writer_verify_preserves_incompatible_index_on_real_s3() {
+#[ignore = "local storage publication, native index verification and writer CLI errors"]
+async fn writer_verify_preserves_incompatible_index_on_storage() {
     let (config, root, _) = super::tools::fixture();
     let original = fyrr_core::config::load(&config).unwrap().config;
     assert!(!original.namespace.fts_stem);

@@ -16,25 +16,25 @@ loader.exec_module(ci_cases)
 class OwnershipTests(unittest.TestCase):
     def test_missing_case(self):
         with self.assertRaisesRegex(ValueError, "unowned cases"):
-            ci_cases.validate({"unit": {"cases": ["a"]}}, {"a": False, "b": False})
+            ci_cases.validate({"units": {"cases": ["a"]}}, {"a": False, "b": False})
 
     def test_duplicate_owner(self):
         with self.assertRaisesRegex(ValueError, "duplicate owner"):
-            ci_cases.validate({"unit": {"cases": ["a"]}, "s3": {"cases": ["a"]}}, {"a": False})
+            ci_cases.validate({"units": {"cases": ["a"]}, "config": {"cases": ["a"]}}, {"a": False})
 
     def test_zero_case_row(self):
         with self.assertRaisesRegex(ValueError, "zero-case row"):
-            ci_cases.validate({"empty": {"cases": []}}, {})
+            ci_cases.validate({"units": {"cases": []}}, {})
 
     def test_named_child_requires_executed_parent(self):
         with self.assertRaisesRegex(ValueError, "parent is not executed"):
             ci_cases.validate(
-                {"unit": {"cases": ["a"], "children": {"b": ["c"]}}}, {"a": False, "b": True}
+                {"units": {"cases": ["a"], "children": {"b": ["c"]}}}, {"a": False, "b": True}
             )
 
     def test_named_child_has_one_owner(self):
         ci_cases.validate(
-            {"unit": {"cases": ["a", "c"], "children": {"b": ["a", "c"]}}},
+            {"units": {"cases": ["a", "c"], "children": {"b": ["a", "c"]}}},
             {"a": False, "b": True, "c": False},
         )
 

@@ -554,7 +554,7 @@ mod sequence_tests {
 
     #[tokio::test]
     #[ignore = "real S3 cached history; scripts/ci"]
-    async fn cached_history_checks_sequence_at_joins_on_real_s3() {
+    async fn cached_history_checks_sequence_at_joins_on_storage() {
         let config = fyrr_core::config::load(std::path::Path::new(
             &std::env::var_os("FYRR_TEST_HISTORY_CONFIG").unwrap(),
         ))

@@ -99,9 +99,9 @@ debug = false
 opt-level = 2
 
 [profile.release]
-# The binary-size budget (budgets.toml) is measured on this profile.
+# Shipping binaries use this profile; CI only builds debug artifacts.
 strip = "symbols"
 debug = false
-# Portable fat LTO for the same native, image and recorded-CI release build.
+# Portable fat LTO for the native and image release binaries.
 lto = "fat"
 codegen-units = 1

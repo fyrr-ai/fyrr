@@ -1,60 +1,79 @@
 #!/usr/bin/env bash
-# The one local CI command. Runs every check in order, keeps going after a
-# failure, and keeps full logs under target/ci-logs/<UTC timestamp>/:
-# ci.log (everything), one log per step, and summary.txt. A test step that
-# selects zero tests fails: a green run with nothing selected proves nothing.
+# The same complete test suite locally and on GitHub. Compile each variant
+# once, execute exact owned cases, and run bounded storage scenarios on isolated
+# fixtures. Keep going after failures; unselected/release-only checks are n/e.
+# Logs and per-step counts live under target/ci-logs/<stamp>/summary.txt.
 #
-# Steps: doctor, rustfmt, clippy (full workspace and reader-only builds), test-target
-# case ownership guard, unit tests, contract fixtures, configuration, schema drift,
-# tools/list golden, CLI and privacy sentinel (full and reader-only builds),
-# reference docs against both builds' --help, the config schema and the MCP fixtures,
-# the internal fyrr-eval tool, reader-only link check (dependency graph and linked binary), licenses and
-# advisories (cargo-deny), Python connector SDK, example provider (test kit),
-# example wheels installed without rebuilding fyrr, budgets, optional images,
-# the README quickstart (local storage by default, --s3 on its own fixture),
-# the real-executable rows on local storage,
-# independent real-S3 selections (RustFS fixture).
-#
-#   scripts/ci            the checks above
-#   scripts/ci --debug-only   exclude release link/size checks (reported n/e)
-#   scripts/ci --step=NAME    run named steps only (repeatable; others n/e)
-#   scripts/ci --images   also scripts/images: build both images, test the
-#                         derived image, mounted wheels and compose, check the
-#                         image-size budgets (slow; otherwise "not evaluated")
+# scripts/ci [--jobs=N] [--step=NAME ...]
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT"
 
-IMAGES=0
-DEBUG_ONLY=0
+row_name() {
+  case "$1" in
+    local-storage) printf '%s\n' "local storage" ;;
+    local-*) printf 'local: %s\n' "${1#local-}" ;;
+    s3-*) printf 'real S3: %s\n' "${1#s3-}" ;;
+    external-*) printf 'external: %s\n' "${1#external-}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
 ONLY_STEPS=0
+JOBS="${FYRR_CI_JOBS:-$(python3 - <<'JOBS'
+import os
+from pathlib import Path
+memory = dict((line.split(':')[0], int(line.split()[1]))
+              for line in Path('/proc/meminfo').read_text().splitlines())
+# Reserve 2 GiB for the host, allow up to 8 GiB of the configured swap, and
+# budget 4 GiB per fixture/row. Cargo builds finish before any rows start.
+capacity = memory['MemAvailable'] + min(memory['SwapFree'], 8 * 1024**2)
+limit = Path('/sys/fs/cgroup/memory.max')
+usage = Path('/sys/fs/cgroup/memory.current')
+if limit.exists() and limit.read_text().strip().isdigit():
+    available = max(0, int(limit.read_text()) - int(usage.read_text())) // 1024
+    capacity = min(capacity, available + min(memory['SwapFree'], 8 * 1024**2))
+print(max(1, min(6, len(os.sched_getaffinity(0)), (capacity - 2 * 1024**2) // (4 * 1024**2))))
+JOBS
+)}"
+SCENARIO_ROW=
 declare -A REQUESTED_STEPS=() SEEN_STEPS=()
 for arg in "$@"; do
   case "$arg" in
-    --images) IMAGES=1 ;;
-    --debug-only) DEBUG_ONLY=1 ;;
+    --jobs=*) JOBS="${arg#--jobs=}" ;;
+    --row=*)
+      SCENARIO_ROW="${arg#--row=}"
+      ONLY_STEPS=1
+      REQUESTED_STEPS["$(row_name "$SCENARIO_ROW")"]=1
+      JOBS=1
+      ;;
     --step=*)
       name="${arg#--step=}"
       [[ -n "$name" ]] || die "--step requires an exact step name"
       ONLY_STEPS=1
       REQUESTED_STEPS["$name"]=1
       ;;
-    *) die "unknown argument $arg (use --images, --debug-only or --step=NAME)" ;;
+    *) die "unknown argument $arg (use --jobs=N or --step=NAME)" ;;
   esac
 done
-if ((DEBUG_ONLY && IMAGES)); then
-  die "--debug-only cannot be combined with --images"
+[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer"
+if ((JOBS > 1)) && [[ -n "${FYRR_S3_FIXTURE_DATA:-}" ]]; then
+  die "parallel CI rows require private fixture data; unset FYRR_S3_FIXTURE_DATA or use --jobs=1"
 fi
+# Harness cases that inspect process-wide descriptors need serial execution.
+# Independent scenario rows run concurrently on private storage below.
+export RUST_TEST_THREADS="${RUST_TEST_THREADS:-1}"
 # The drift test rewrites goldens when this is set; CI must only compare.
 unset FYRR_UPDATE_GOLDEN
 
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-LOGS="$ROOT/target/ci-logs/$STAMP"
-mkdir -p "$LOGS"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+LOGS="${FYRR_CI_LOG_DIR:-$ROOT/target/ci-logs/$STAMP}"
+mkdir -p "$LOGS" "$ROOT/target/tmp"
 exec > >(tee "$LOGS/ci.log") 2>&1
 
 declare -a ROWS
 STEP=0
 FAILED=0
+BUILD_ATTEMPTED=0
 
 # step <name> <counts: cargo|pytest|none> <command...>
 step() {
@@ -102,9 +121,26 @@ step() {
   fi
 }
 
-case_step() {
-  step "$1" cargo "$ROOT/scripts/ci-cases" run "$2"
+ensure_build() {
+  if [[ "${FYRR_CI_PREBUILT:-}" != 1 ]]; then
+    ((BUILD_ATTEMPTED == 0)) || return 1
+    BUILD_ATTEMPTED=1
+    "$ROOT/scripts/ci-cases" build || return 1
+    export FYRR_CI_PREBUILT=1
+  fi
 }
+run_cases() { ensure_build && "$ROOT/scripts/ci-cases" run "$1"; }
+case_step() { step "$1" cargo run_cases "$2"; }
+ownership_check() { ensure_build && "$ROOT/scripts/ci-cases" check; }
+reference_docs() {
+  ensure_build && "$ROOT/scripts/check-docs" \
+    "$ROOT/target/ci-build/full/fyrr" "$ROOT/target/ci-build/reader/fyrr"
+}
+quickstart() {
+  ensure_build && "$ROOT/scripts/ci-cases" binary full >/dev/null &&
+    FYRR_CI_PREBUILT=1 "$ROOT/examples/quickstart/run" "$@"
+}
+reader_link_check() { ensure_build && "$ROOT/scripts/check-reader-only"; }
 
 FIXTURE_STARTED=0
 KEYCLOAK_STARTED=0
@@ -118,81 +154,101 @@ cleanup_fixture() {
 }
 trap cleanup_fixture EXIT
 
-# Locate a package's library test executable through Cargo's artifact metadata.
-test_binary() {
-  cargo test --locked -p "$1" --lib --no-run --message-format=json |
-    jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable'
-}
-
 # Functions run by `step` sit in a `||` context where `set -e` is off, so
 # every command is chained explicitly.
-real_s3_setup() {
-  if ! "$ROOT/scripts/s3-fixture" status | grep -q ' running '; then
-    FIXTURE_STARTED=1
-    "$ROOT/scripts/s3-fixture" start || {
-      "$ROOT/scripts/s3-fixture" stop && "$ROOT/scripts/s3-fixture" start
-    } || return 1
+scenario_setup() {
+  local row="$1" settings backend exports
+  settings="$("$ROOT/scripts/ci-cases" settings "$row")" || return 1
+  backend="$(jq -r .backend <<<"$settings")" || return 1
+  export FYRR_TEST_BACKEND="$backend"
+  if [[ "$backend" == s3 ]]; then
+    if ! "$ROOT/scripts/s3-fixture" status | grep -q ' running '; then
+      FIXTURE_STARTED=1
+      "$ROOT/scripts/s3-fixture" start || return 1
+    fi
+    exports="$("$ROOT/scripts/s3-fixture" env)" && eval "$exports" || return 1
+    export FYRR_TEST_SECRET="$FYRR_TEST_S3_SECRET_ACCESS_KEY"
+  else
+    unset FYRR_TEST_S3_BUCKET FYRR_TEST_S3_ACCESS_KEY_ID FYRR_TEST_S3_SECRET_ACCESS_KEY
+    export FYRR_TEST_LOCAL_SECRET=fyrr-local-test-secret
+    export FYRR_TEST_SECRET="$FYRR_TEST_LOCAL_SECRET"
+    # Existing request-boundary fixtures select a local operation controller.
+    export FYRR_TEST_S3_ENDPOINT=local-storage
+    export FYRR_TEST_ENCRYPTION_KEY
+    FYRR_TEST_ENCRYPTION_KEY="$(printf fyrr-local-test | sha256sum | cut -c1-64)" || return 1
   fi
-  if ! "$ROOT/scripts/keycloak-fixture" status >/dev/null 2>&1; then
-    KEYCLOAK_STARTED=1
-    "$ROOT/scripts/keycloak-fixture" start || {
-      "$ROOT/scripts/keycloak-fixture" stop && "$ROOT/scripts/keycloak-fixture" start
-    } || return 1
+  if jq -e '.services | index("keycloak") != null' <<<"$settings" >/dev/null; then
+    if ! "$ROOT/scripts/keycloak-fixture" status >/dev/null 2>&1; then
+      KEYCLOAK_STARTED=1
+      "$ROOT/scripts/keycloak-fixture" start || return 1
+    fi
+    exports="$("$ROOT/scripts/keycloak-fixture" env)" && eval "$exports" || return 1
   fi
-  local exports
-  FYRR_SCIM_HEALTH_TEST_BINARY="$(test_binary fyrr-writer)" || return 1
-  FYRR_ROUTING_TEST_BINARY="$(test_binary fyrr-reader)" || return 1
-  "$ROOT/scripts/s3-fixture" status &&
-    exports="$("$ROOT/scripts/s3-fixture" env)" &&
-    eval "$exports" &&
-    exports="$("$ROOT/scripts/keycloak-fixture" env)" &&
-    eval "$exports"
 }
 
-real_s3_selection() {
-  local ready="$1"
-  shift
-  if (( !ready )); then
-    echo "real-S3 fixture setup failed; see ci.log"
-    return 1
-  fi
-  "$@"
+run_scenario() {
+  scenario_setup "$1" && "$ROOT/scripts/ci-cases" run "$1"
 }
 
-real_s3() {
-  # Independent cases share a 4 GiB fixture. Keep them serial; concurrency
-  # remains inside each case, with its real worker and lease deadlines intact.
-  local -x RUST_TEST_THREADS=1 FYRR_SCIM_HEALTH_TEST_BINARY FYRR_ROUTING_TEST_BINARY
-  local ready=1 required=0 name
-  for name in "${!REQUESTED_STEPS[@]}"; do
-    [[ "$name" != "real S3: "* ]] || required=1
-  done
-  if ((!ONLY_STEPS || required)); then
-    real_s3_setup || ready=0
-  fi
-  local row
+scenarios() {
+  local -x FYRR_SCIM_HEALTH_TEST_BINARY FYRR_ROUTING_TEST_BINARY
+  local -a selected_rows=()
+  local row name line
   while IFS= read -r row; do
-    step "real S3: ${row#s3-}" cargo real_s3_selection "$ready" "$ROOT/scripts/ci-cases" run "$row"
-  done < <("$ROOT/scripts/ci-cases" rows s3)
-}
-
-# The real-executable rows on `file://` storage need no fixture, only the
-# fixed development secrets their configurations reference.
-local_storage() {
-  local -x RUST_TEST_THREADS=1 FYRR_ROUTING_TEST_BINARY FYRR_TEST_LOCAL_SECRET=fyrr-local-test-secret
-  local -x FYRR_TEST_ENCRYPTION_KEY
-  FYRR_TEST_ENCRYPTION_KEY="$(printf fyrr-local-test | sha256sum | cut -c1-64)" || return 1
-  FYRR_ROUTING_TEST_BINARY="$(test_binary fyrr-reader)" || return 1
-  "$ROOT/scripts/ci-cases" run local-storage
+    name="$(row_name "$row")"
+    if ((!ONLY_STEPS)) || [[ ${REQUESTED_STEPS["$name"]+selected} ]]; then
+      selected_rows+=("$row")
+    else
+      not_evaluated "$name" "not selected by --step"
+    fi
+  done < <("$ROOT/scripts/ci-cases" rows scenarios)
+  ((${#selected_rows[@]})) || return 0
+  if ! ensure_build; then
+    for row in "${selected_rows[@]}"; do
+      step "$(row_name "$row")" cargo false
+    done
+    return
+  fi
+  FYRR_SCIM_HEALTH_TEST_BINARY="$("$ROOT/scripts/ci-cases" binary full:fyrr-writer:lib:fyrr_writer)" || return 1
+  FYRR_ROUTING_TEST_BINARY="$("$ROOT/scripts/ci-cases" binary full:fyrr-reader:lib:fyrr_reader)" || return 1
+  if [[ -n "$SCENARIO_ROW" ]]; then
+    step "$(row_name "$SCENARIO_ROW")" cargo run_scenario "$SCENARIO_ROW"
+    return
+  fi
+  "$ROOT/scripts/ci-cases" binary full >/dev/null || return 1
+  log "running ${#selected_rows[@]} storage scenario rows with up to $JOBS workers"
+  printf '%s\0' "${selected_rows[@]}" >"$LOGS/scenario-rows.txt"
+  # Every worker has private local storage or labelled external fixtures.
+  # The full executable is immutable throughout this phase.
+  xargs -0 -r -P "$JOBS" -I{} bash -c '
+    row="$1"; directory="$2/$row"
+    mkdir -p "$directory"
+    FYRR_CI_LOG_DIR="$directory" FYRR_FIXTURE_ID="ci-$3-$row" FYRR_CI_PREBUILT=1 \
+      "$4/scripts/ci" "--row=$row" >"$directory/runner.log" 2>&1
+  ' _ {} "$LOGS" "$$" "$ROOT" <"$LOGS/scenario-rows.txt" ||
+    log "some scenario workers failed; see their row logs"
+  for row in "${selected_rows[@]}"; do
+    name="$(row_name "$row")"
+    STEP=$((STEP + 1))
+    SEEN_STEPS["$name"]=1
+    line="$(awk -v name="$name" 'index($0, name) == 1 && $0 ~ / (pass|FAIL) / {print}' "$LOGS/$row/summary.txt" 2>/dev/null)" || line=
+    if [[ -z "$line" ]]; then
+      FAILED=$((FAILED + 1))
+      ROWS+=("$(printf '%-38s %-5s %7s %7s %8s %6ss  %s' "$name" FAIL 0 0 0 0 "missing worker summary: ${LOGS#"$ROOT"/}/$row/runner.log")")
+    else
+      ROWS+=("$line")
+      [[ "$line" != *" FAIL "* ]] || FAILED=$((FAILED + 1))
+    fi
+  done
 }
 
 python_checks() {
   (cd "$ROOT/connectors" &&
     unset PYTHONPATH &&
     uv sync --locked --all-extras &&
+    uv run --locked --all-extras mypy &&
     uv run --locked --all-extras ruff check . ../crates/fyrr/tests/providers ../scripts/ci-cases ../scripts/check-docs &&
     uv run --locked --all-extras ruff format --check . ../crates/fyrr/tests/providers ../scripts/ci-cases ../scripts/check-docs &&
-    uv run --locked --all-extras mypy &&
     "$ROOT/scripts/ci-cases" run python-sdk)
 }
 
@@ -214,7 +270,7 @@ example_wheels() {
   uv build --wheel --quiet --out-dir "$wheels" "$ROOT/examples/markdown-provider" || return 1
   uv pip install --quiet --no-deps --python "$ROOT/connectors/.venv/bin/python" \
     --target "$site" "$wheels"/*.whl || return 1
-  cargo build --locked -p fyrr || return 1
+  ensure_build && "$ROOT/scripts/ci-cases" binary full >/dev/null || return 1
   config="$site/fyrr.toml"
   printf '%s\n' '[namespace]' 'name = "dev"' '[storage]' 'uri = "s3://fyrr-dev/dev"' \
     '[identity]' 'hashing_key = { env = "FYRR_EXAMPLE_HASHING_KEY" }' \
@@ -252,7 +308,7 @@ step "Rust source line length (reader)" none "$ROOT/scripts/check-line-length" \
   "$ROOT/crates/fyrr-core/src/layout"
 step "clippy (full workspace)" none cargo clippy --locked --workspace --all-targets -- -D warnings
 step "clippy (reader-only build)" none cargo clippy --locked -p fyrr -p fyrr-reader --no-default-features --all-targets -- -D warnings
-step "test-case ownership guard" none "$ROOT/scripts/ci-cases" check
+step "test-case ownership guard" none ownership_check
 case_step "unit tests" units
 case_step "native Lance pin checks" lance-pin
 case_step "contract fixtures" contracts
@@ -263,32 +319,16 @@ case_step "cli (full build)" cli-full
 case_step "cli (reader-only build)" cli-reader
 case_step "privacy sentinel (full build)" privacy-full
 case_step "privacy sentinel (reader-only build)" privacy-reader
-step "reference docs" none "$ROOT/scripts/check-docs"
+step "reference docs" none reference_docs
 case_step "fyrr-eval (internal tool)" eval
-if ((DEBUG_ONLY)); then
-  not_evaluated "reader-only link check" "release builds excluded by --debug-only"
-else
-  step "reader-only link check" none "$ROOT/scripts/check-reader-only"
-fi
+step "reader-only link check" none reader_link_check
 step "licenses and advisories" none cargo deny --locked check
 step "python connector SDK" pytest python_checks
 step "example provider (test kit)" pytest example_provider
 step "example wheels without rebuild" none example_wheels
-if ((DEBUG_ONLY)); then
-  not_evaluated "budgets" "release builds excluded by --debug-only"
-else
-  step "budgets" none "$ROOT/scripts/check-budgets"
-fi
-if ((IMAGES)); then
-  step "images (build, derived, compose)" none "$ROOT/scripts/images"
-else
-  not_evaluated "images (build, derived, compose)" "run scripts/ci --images"
-fi
-# Before real_s3: the quickstart starts and stops its own fixture.
-step "quickstart example (local storage)" none "$ROOT/examples/quickstart/run"
-step "quickstart example (S3)" none "$ROOT/examples/quickstart/run" --s3
-step "local storage" cargo local_storage
-real_s3
+not_evaluated "images (build, derived, compose)" "image checks run in scripts/release"
+step "quickstart example (local storage)" none quickstart
+scenarios
 
 for name in "${!REQUESTED_STEPS[@]}"; do
   if [[ ! ${SEEN_STEPS["$name"]+known} ]]; then

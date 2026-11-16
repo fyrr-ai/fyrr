@@ -1,4 +1,4 @@
-//! Pinned local issuer, real reader executable and RustFS: no model/API calls.
+//! Pinned local issuer, real reader executable and storage: no model/API calls.
 use super::coordination::{host_command, worker_sync};
 use super::*;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -299,8 +299,8 @@ impl Reader {
 }
 
 #[tokio::test]
-#[ignore = "real HTTP MCP and faulted real RustFS boundaries; scripts/ci"]
-async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_drain_on_real_s3() {
+#[ignore = "real HTTP MCP and faulted local storage boundaries; scripts/ci"]
+async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_drain_on_storage() {
     use std::sync::atomic::AtomicBool;
     let (_, issuer_root) = setup();
     let issuer = Issuer::new(&issuer_root).await;
@@ -385,7 +385,12 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
         })
     };
     let (endpoint, proxy) = super::corrections::proxy_transform(
-        loaded.config.storage.endpoint.clone().unwrap(),
+        loaded
+            .config
+            .storage
+            .endpoint
+            .clone()
+            .unwrap_or_else(|| "local-storage".into()),
         stop.clone(),
         transform,
         Some(hook),
@@ -396,7 +401,12 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     let text = std::fs::read_to_string(&worker)
         .unwrap()
         .replace(
-            loaded.config.storage.endpoint.as_deref().unwrap(),
+            loaded
+                .config
+                .storage
+                .endpoint
+                .as_deref()
+                .unwrap_or("local-storage"),
             &endpoint,
         )
         .replace(
@@ -925,15 +935,16 @@ impl Drop for Reader {
     }
 }
 async fn fixture(issuer: &Issuer) -> (PathBuf, PathBuf, FixtureRoot, DirectorySnapshot) {
-    fixture_for_issuer(&issuer.url).await
+    fixture_for_issuer(&issuer.url, Backend::selected()).await
 }
 pub(super) async fn fixture_for_issuer(
     issuer_url: &str,
+    backend: Backend,
 ) -> (PathBuf, PathBuf, FixtureRoot, DirectorySnapshot) {
     static NAMESPACE: AtomicUsize = AtomicUsize::new(0);
     let namespace = format!("http-fixture-{}", NAMESPACE.fetch_add(1, Ordering::SeqCst));
     let (worker, commit, root) =
-        super::incremental::fixture_host_in_namespace(768, true, &namespace);
+        super::incremental::fixture_host_at(768, true, &namespace, setup_on(backend));
     let loaded = fyrr_core::config::load(&commit).unwrap();
     let config = &loaded.config;
     let mut docs = Vec::new();
@@ -1008,8 +1019,8 @@ pub(super) async fn fixture_for_issuer(
     (worker, commit, root, snapshot)
 }
 #[tokio::test]
-#[ignore = "real HTTP MCP executable, pinned JWKS and RustFS; scripts/ci"]
-async fn identity_http_authentication_isolation_rate_limits_drain_and_refresh_on_real_s3() {
+#[ignore = "real HTTP MCP executable, pinned JWKS and local storage; scripts/ci"]
+async fn identity_http_authentication_isolation_rate_limits_drain_and_refresh_on_storage() {
     let (_, issuer_root) = setup();
     let issuer = Issuer::new(&issuer_root).await;
     let (worker, commit, root, mut snapshot) = fixture(&issuer).await;
@@ -1623,8 +1634,8 @@ async fn identity_http_authentication_isolation_rate_limits_drain_and_refresh_on
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real S3, native request failure and HTTP readiness"]
-async fn tools_failed_scheduler_refuses_readiness_on_real_s3() {
+#[ignore = "local storage, native request failure and HTTP readiness"]
+async fn tools_failed_scheduler_refuses_readiness_on_storage() {
     let (_, issuer_root) = setup();
     let issuer = Issuer::new(&issuer_root).await;
     let (_, config, root, _) = fixture(&issuer).await;
@@ -1638,7 +1649,7 @@ async fn tools_failed_scheduler_refuses_readiness_on_real_s3() {
         fyrr_writer::directory::subject_key(&loaded.config, &issuer.url, "subject-0").unwrap();
     let output = Command::new(std::env::var_os("FYRR_ROUTING_TEST_BINARY").unwrap())
         .args([
-            "http::scheduler_tests::readiness_refuses_failed_scheduler_on_real_s3",
+            "http::scheduler_tests::readiness_refuses_failed_scheduler_on_storage",
             "--exact",
             "--ignored",
             "--nocapture",

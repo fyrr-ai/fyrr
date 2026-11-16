@@ -97,8 +97,8 @@ fn synced(worker: &Path, args: &[&str]) -> Value {
 }
 
 #[tokio::test]
-#[ignore = "actual worker/reader and owned RustFS; coordinator Cargo slot"]
-async fn slack_fixed_windows_threads_quarantine_and_reconcile_on_real_s3() {
+#[ignore = "actual worker/reader and local storage; coordinator Cargo slot"]
+async fn slack_fixed_windows_threads_quarantine_and_reconcile_on_storage() {
     let fake = Fake::start();
     let (worker, commit, _root) = fixture(&fake, "fixed");
     let first = fake.call("post", json!({"text":"fixture document 0","seconds":400}));
@@ -153,8 +153,8 @@ async fn slack_fixed_windows_threads_quarantine_and_reconcile_on_real_s3() {
 }
 
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn slack_sync_silent_content_and_revoke_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn slack_sync_silent_content_and_revoke_on_storage() {
     let fake = Fake::start();
     let (worker, commit, _root) = fixture(&fake, "sync");
     fake.call(

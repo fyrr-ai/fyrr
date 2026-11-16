@@ -208,9 +208,9 @@ fn sync_fixture(config: &Path) {
 }
 
 #[tokio::test]
-#[ignore = "real executable and RustFS fixture; scripts/ci"]
+#[ignore = "real executable and local storage; scripts/ci"]
 #[allow(clippy::print_stderr)]
-async fn tools_fetch_filters_windows_and_cursors_on_real_s3() {
+async fn tools_fetch_filters_windows_and_cursors_on_storage() {
     let (config, root, text) = fixture();
     let mut client = Mcp::open(&config);
     let counts = body(client.call("list_filters", json!({})));
@@ -520,8 +520,8 @@ async fn tools_fetch_filters_windows_and_cursors_on_real_s3() {
 }
 
 #[tokio::test]
-#[ignore = "real executable and RustFS fixture; scripts/ci"]
-async fn tools_every_admitted_result_and_error_rechecks_identity_on_real_s3() {
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn tools_every_admitted_result_and_error_rechecks_identity_on_storage() {
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -668,8 +668,8 @@ async fn tools_every_admitted_result_and_error_rechecks_identity_on_real_s3() {
 }
 
 #[tokio::test]
-#[ignore = "real executable and RustFS fixture; scripts/ci"]
-async fn tools_agent_multiquery_text_and_fetch_list_on_real_s3() {
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn tools_agent_multiquery_text_and_fetch_list_on_storage() {
     let (config, root, text) = fixture();
     let mut client = Mcp::open(&config);
     let queries = ["fixture", "document 7", "authorized passage"];
@@ -947,8 +947,8 @@ async fn tools_agent_multiquery_text_and_fetch_list_on_real_s3() {
 }
 
 #[tokio::test]
-#[ignore = "real S3 locator index failure through MCP; scripts/ci"]
-async fn tools_fetch_refuses_unreadable_locator_index_on_real_s3() {
+#[ignore = "local storage locator index failure through MCP; scripts/ci"]
+async fn tools_fetch_refuses_unreadable_locator_index_on_storage() {
     use lance::index::DatasetIndexExt;
     use std::sync::{
         Arc,
@@ -966,8 +966,12 @@ async fn tools_fetch_refuses_unreadable_locator_index_on_real_s3() {
         .unwrap();
     let indexes = dataset.load_indices().await.unwrap();
     let (_, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let bucket = std::env::var("FYRR_TEST_S3_BUCKET").unwrap();
-    let encoded_ns = ns.as_ref().replace('(', "%28").replace(')', "%29");
+    let bucket = std::env::var("FYRR_TEST_S3_BUCKET").unwrap_or_else(|_| "local".into());
+    let encoded_ns = if Backend::selected() == Backend::S3 {
+        ns.as_ref().replace('(', "%28").replace(')', "%29")
+    } else {
+        ns.to_string()
+    };
     let prefixes: Vec<_> = indexes
         .iter()
         .filter(|index| index.name == "root_id_idx")

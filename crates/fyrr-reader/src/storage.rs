@@ -12,6 +12,23 @@ use std::sync::Arc;
 
 pub use lance::Dataset;
 
+#[cfg(all(feature = "test-store", not(debug_assertions)))]
+compile_error!("test-store must not be enabled in shipping builds");
+#[cfg(feature = "test-store")]
+#[path = "storage/test_store.rs"]
+pub mod test_store;
+
+pub fn native_store_params(
+    mirror: Option<Arc<dyn lance_io::object_store::WrappingObjectStore>>,
+) -> lance_io::object_store::ObjectStoreParams {
+    #[cfg(feature = "test-store")]
+    let mirror = test_store::native_wrapper(mirror);
+    lance_io::object_store::ObjectStoreParams {
+        object_store_wrapper: mirror,
+        ..Default::default()
+    }
+}
+
 /// Fixed diagnostics shared by reader and writer storage operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageError {
@@ -54,7 +71,10 @@ pub fn namespace_store(config: &Config) -> Result<(Arc<dyn ObjectStore>, Path), 
             let store =
                 local::LocalStore::open(&root).map_err(|_| StorageError::StorageUnavailable)?;
             let root = namespace(store.root().as_ref());
-            return Ok((Arc::new(store), root));
+            let store: Arc<dyn ObjectStore> = Arc::new(store);
+            #[cfg(feature = "test-store")]
+            let store = test_store::boundary::wrap(store);
+            return Ok((store, root));
         }
         None => return Err(StorageError::StorageConfigurationInvalid),
     };
@@ -185,10 +205,7 @@ pub async fn open_version(
         .as_ref()
         .map(|(_, mirror)| mirror.clone() as Arc<dyn lance_io::object_store::WrappingObjectStore>);
     let mut builder = DatasetBuilder::from_uri(uri)
-        .with_store_params(lance_io::object_store::ObjectStoreParams {
-            object_store_wrapper: wrapper,
-            ..Default::default()
-        })
+        .with_store_params(native_store_params(wrapper))
         .with_storage_options(options.into_map().into_iter().collect())
         .with_version(version);
     if let Some((session, _)) = &shared {

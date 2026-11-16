@@ -55,7 +55,7 @@ fn fetch(client: &mut tools::Mcp, root: &str) -> Value {
 
 #[tokio::test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
-async fn maintenance_pending_revoke_purge_and_verify_on_real_s3() {
+async fn maintenance_pending_revoke_purge_and_verify_on_storage() {
     let (worker, commit, root) = fixture();
     publish_initial(&worker, &commit, &root);
     std::fs::remove_file(root.join("sources/0.txt")).unwrap();
@@ -318,8 +318,8 @@ async fn maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery
 }
 
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn maintenance_restore_crash_boundaries_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn maintenance_restore_crash_boundaries_on_storage() {
     // Distinct storage boundaries, shared by the two native maintenance operations.
     // This is deliberately not a cross product of actions and failure windows.
     let cases = [
@@ -558,7 +558,7 @@ async fn restore_and_rollback_preserve_current_section_revocation() {
 }
 
 async fn retirement_fixture() -> (PathBuf, PathBuf, FixtureRoot) {
-    retirement_fixture_on(Backend::S3).await
+    retirement_fixture_on(Backend::selected()).await
 }
 
 /// The incremental fixture with its two documents published and readable.
@@ -579,8 +579,8 @@ async fn held_rows(config: &Path) -> usize {
 
 /// Retiring a source fences its further commits.
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn maintenance_retired_source_commits_are_fenced_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn maintenance_retired_source_commits_are_fenced_on_storage() {
     let (worker, commit, root) = retirement_fixture().await;
     // An envelope that is pending when the source is retired.
     input(
@@ -661,8 +661,8 @@ async fn maintenance_retired_source_commits_are_fenced_on_real_s3() {
 
 /// A retired source remains denied after restore.
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn maintenance_retired_source_survives_restore_and_rollback_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn maintenance_retired_source_survives_restore_and_rollback_on_storage() {
     let (worker, commit, root) = retirement_fixture().await;
     let first = publication(&worker).await.1.publication_id;
     input(
@@ -714,8 +714,8 @@ fn envelopes_of_incremental(
 
 /// Recovery starts from the serving head after an interrupted native delete.
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn maintenance_purge_killed_before_its_head_publication_converges_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn maintenance_purge_killed_before_its_head_publication_converges_on_storage() {
     let (worker, commit, _root) = retirement_fixture().await;
     let before_version = publication(&worker).await.1.lance_version;
     let before_rows = held_rows(&worker).await;
@@ -811,7 +811,7 @@ async fn maintenance_purge_killed_before_its_head_publication_converges_on_real_
 
 #[tokio::test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
-async fn maintenance_restore_discovers_authorization_after_failed_cursor_on_real_s3() {
+async fn maintenance_restore_discovers_authorization_after_failed_cursor_on_storage() {
     discovers_authorization_after_failed_cursor("restore").await;
 }
 
@@ -913,8 +913,8 @@ async fn discovers_authorization_after_failed_cursor(operation: &str) {
 }
 
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn maintenance_restore_changed_envelope_identity_fails_closed_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn maintenance_restore_changed_envelope_identity_fails_closed_on_storage() {
     use std::sync::atomic::AtomicUsize;
     let (_, commit, root) = fixture();
     let target = publication(&commit).await.1;
@@ -930,11 +930,20 @@ async fn maintenance_restore_changed_envelope_identity_fails_closed_on_real_s3()
             && lists.fetch_add(1, Ordering::SeqCst) == 3
         {
             super::corrections::rewrite_ok_body(response, |body| {
-                let mut text = String::from_utf8(body.clone()).unwrap();
-                let start = text.find("<ETag>").unwrap() + 6;
-                let end = start + text[start..].find("</ETag>").unwrap();
-                text.replace_range(start..end, "&quot;changed-immutable-object&quot;");
-                *body = text.into_bytes();
+                if let Ok(mut objects) = serde_json::from_slice::<
+                    Vec<fyrr_reader::storage::test_store::boundary::Metadata>,
+                >(body)
+                {
+                    objects.first_mut().unwrap().e_tag =
+                        Some(r#""changed-immutable-object""#.into());
+                    *body = serde_json::to_vec(&objects).unwrap();
+                } else {
+                    let mut text = String::from_utf8(body.clone()).unwrap();
+                    let start = text.find("<ETag>").unwrap() + 6;
+                    let end = start + text[start..].find("</ETag>").unwrap();
+                    text.replace_range(start..end, "&quot;changed-immutable-object&quot;");
+                    *body = text.into_bytes();
+                }
                 altered.store(true, Ordering::SeqCst);
                 true
             });
@@ -1121,9 +1130,9 @@ async fn maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror(back
 }
 
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
+#[ignore = "real CLI and local storage; scripts/ci"]
 #[allow(clippy::print_stderr)]
-async fn maintenance_restore_batched_authorization_boundaries_on_real_s3() {
+async fn maintenance_restore_batched_authorization_boundaries_on_storage() {
     let (worker, commit, root) = fixture();
     initial(&root);
     let mut seed: Value =
@@ -1304,7 +1313,7 @@ async fn maintenance_restore_batched_authorization_boundaries_on_real_s3() {
         }
         let output = probe
             .args([
-                "maintenance::restore_tests::restore_drains_restarts_and_caps_attempts_on_real_s3",
+                "maintenance::restore_tests::restore_drains_restarts_and_caps_attempts_on_storage",
                 "--exact",
                 "--ignored",
                 "--nocapture",
@@ -1369,6 +1378,16 @@ fn age_observations(request: &str, response: &mut Vec<u8>, expired: Option<&str>
                 changed = true;
             }
         } else if request.contains("list-type=")
+            && let Ok(mut objects) = serde_json::from_slice::<
+                Vec<fyrr_reader::storage::test_store::boundary::Metadata>,
+            >(body)
+        {
+            for object in &mut objects {
+                object.last_modified = "2010-01-01T00:00:00Z".parse().unwrap();
+            }
+            *body = serde_json::to_vec(&objects).unwrap();
+            changed = true;
+        } else if request.contains("list-type=")
             && let Ok(mut text) = String::from_utf8(body.clone())
         {
             let mut from = 0;
@@ -1387,7 +1406,7 @@ fn age_observations(request: &str, response: &mut Vec<u8>, expired: Option<&str>
 
 #[tokio::test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
-async fn maintenance_purge_window_and_restore_horizon_on_real_s3() {
+async fn maintenance_purge_window_and_restore_horizon_on_storage() {
     let (worker, commit, root) = fixture();
     publish_initial(&worker, &commit, &root);
     let old = publication(&commit).await.1;
@@ -1501,7 +1520,7 @@ async fn maintenance_purge_window_and_restore_horizon_on_real_s3() {
 
 #[tokio::test]
 #[ignore = "requires owned real-S3 fixture"]
-async fn maintenance_restore_rejected_authorization_freezes_freshness_on_real_s3() {
+async fn maintenance_restore_rejected_authorization_freezes_freshness_on_storage() {
     use super::incremental::{envelopes, rows};
     use fyrr_core::connector::SyncKind;
     use fyrr_core::envelope::EnvelopePayload;

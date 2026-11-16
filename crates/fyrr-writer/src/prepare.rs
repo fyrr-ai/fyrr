@@ -71,7 +71,7 @@ pub fn store_params(config: &Config) -> Result<ObjectStoreParams> {
                 .into_iter()
                 .collect(),
         ))),
-        ..Default::default()
+        ..fyrr_reader::storage::native_store_params(None)
     })
 }
 

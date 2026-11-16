@@ -3,7 +3,7 @@ use super::*;
 
 #[tokio::test]
 #[ignore = "real executable and RustFS fixture; scripts/ci"]
-async fn retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_real_s3() {
+async fn retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_storage() {
     let (config, root) = setup();
     // 2000 + 2000 + 400 = 4400 rows, with distinct dense distances and
     // no lexical query matches. One probe needs four eligible partitions.
@@ -242,7 +242,7 @@ async fn retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_real_s
         .expect("reader test binary built by real-S3 setup");
     let fallbacks = Command::new(test_binary)
         .args([
-            "search::routing_tests::routing_fallbacks_on_real_s3",
+            "search::routing_tests::routing_fallbacks_on_storage",
             "--exact",
             "--ignored",
             "--nocapture",
@@ -277,8 +277,8 @@ async fn retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_real_s
 }
 
 #[tokio::test]
-#[ignore = "real executable, reader libtest and RustFS fixture; scripts/ci"]
-async fn retrieval_publication_authorization_cache_budget_on_real_s3() {
+#[ignore = "real executable, reader libtest and local storage; scripts/ci"]
+async fn retrieval_publication_authorization_cache_budget_on_storage() {
     use fyrr_core::directory::{DirectoryGroup, DirectoryUser};
     let (config, root) = setup();
     let text = std::fs::read_to_string(&config).unwrap();
@@ -335,7 +335,7 @@ async fn retrieval_publication_authorization_cache_budget_on_real_s3() {
         .expect("reader libtest built by real-S3 setup");
     let output = Command::new(binary)
         .args([
-            "search::authorization_cache_tests::authorization_cache_budget_on_real_s3",
+            "search::authorization_cache_tests::authorization_cache_budget_on_storage",
             "--exact",
             "--ignored",
             "--nocapture",

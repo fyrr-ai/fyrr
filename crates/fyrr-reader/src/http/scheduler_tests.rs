@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real S3 publication, HTTP readiness and a failed native request task"]
-async fn readiness_refuses_failed_scheduler_on_real_s3() {
+async fn readiness_refuses_failed_scheduler_on_storage() {
     let path = std::env::var_os("FYRR_TEST_EMBED_CONFIG").expect("publication fixture config");
     let mut config = fyrr_core::config::load(std::path::Path::new(&path))
         .unwrap()

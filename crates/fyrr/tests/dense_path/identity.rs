@@ -117,8 +117,8 @@ pub(super) async fn artifact(config: &Path) -> (ServingHead, IdentityArtifact) {
 }
 
 #[tokio::test]
-#[ignore = "real writer and RustFS; scripts/ci"]
-async fn identity_scim_namespace_creation_and_import_never_attest_without_proof_on_real_s3() {
+#[ignore = "real writer and local storage; scripts/ci"]
+async fn identity_scim_namespace_creation_and_import_never_attest_without_proof_on_storage() {
     for (stdio, provider) in [
         (true, "none"),
         (false, "none"),
@@ -174,8 +174,8 @@ async fn identity_scim_namespace_creation_and_import_never_attest_without_proof_
 }
 
 #[tokio::test]
-#[ignore = "real writer/MCP and RustFS; scripts/ci"]
-async fn identity_alias_collision_link_revoke_and_idempotence_on_real_s3() {
+#[ignore = "real writer/MCP and local storage; scripts/ci"]
+async fn identity_alias_collision_link_revoke_and_idempotence_on_storage() {
     let (worker, commit, root) = fixture();
     initial(&root);
     let mut data: Value =
@@ -349,8 +349,8 @@ async fn identity_alias_collision_link_revoke_and_idempotence_on_real_s3() {
 }
 
 #[tokio::test]
-#[ignore = "real writer/MCP and RustFS; scripts/ci"]
-async fn identity_large_grants_are_complete_and_over_limit_is_subject_local_on_real_s3() {
+#[ignore = "real writer/MCP and local storage; scripts/ci"]
+async fn identity_large_grants_are_complete_and_over_limit_is_subject_local_on_storage() {
     let (worker, commit, root) = fixture();
     for path in [&worker, &commit] {
         let text = std::fs::read_to_string(path)
@@ -443,8 +443,8 @@ async fn identity_large_grants_are_complete_and_over_limit_is_subject_local_on_r
 }
 
 #[tokio::test]
-#[ignore = "real writer/MCP and RustFS; scripts/ci"]
-async fn identity_email_evidence_and_cross_issuer_bindings_on_real_s3() {
+#[ignore = "real writer/MCP and local storage; scripts/ci"]
+async fn identity_email_evidence_and_cross_issuer_bindings_on_storage() {
     let (worker, commit, root) = fixture();
     initial(&root);
     let mut data: Value =
@@ -556,7 +556,7 @@ async fn identity_email_evidence_and_cross_issuer_bindings_on_real_s3() {
 
 #[tokio::test]
 #[ignore = "slow real storage and RustFS; scripts/ci"]
-async fn identity_directory_keeps_lease_alive_during_slow_storage_on_real_s3() {
+async fn identity_directory_keeps_lease_alive_during_slow_storage_on_storage() {
     let (worker, commit, root) = fixture();
     publish_initial(&worker, &commit, &root);
     let loaded = fyrr_core::config::load(&commit).unwrap();

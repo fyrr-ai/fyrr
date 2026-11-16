@@ -9,7 +9,7 @@ fn configured(config: &Path, provider: &Provider, cap: u64) -> PathBuf {
     let text = configure_embedding(
         &std::fs::read_to_string(config).unwrap(),
         &format!(
-            "endpoint = '{}'\nreader_live = true\napi_key = {{env='FYRR_TEST_S3_SECRET_ACCESS_KEY'}}\ntimeout = '1s'\nmax_retries = 0\nspend = {{limit_microusd={cap},max_call_microusd=10}}",
+            "endpoint = '{}'\nreader_live = true\napi_key = {{env='FYRR_TEST_SECRET'}}\ntimeout = '1s'\nmax_retries = 0\nspend = {{limit_microusd={cap},max_call_microusd=10}}",
             provider.endpoint
         ),
     );
@@ -22,8 +22,8 @@ fn query(text: &str) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real executable, local fake embedding provider and RustFS; scripts/ci"]
-async fn tools_embedding_empty_admission_and_profile_mismatch_make_no_calls_on_real_s3() {
+#[ignore = "real executable, local fake embedding provider and local storage; scripts/ci"]
+async fn tools_embedding_empty_admission_and_profile_mismatch_make_no_calls_on_storage() {
     let provider = Provider::open().await;
     let (config, root, _) = tools::fixture();
     let live = configured(&config, &provider, 1000);
@@ -101,7 +101,7 @@ fn writer_config(
     let text = configure_embedding(
         &text,
         &format!(
-            "endpoint='{}'\ndimensions={dimensions}\nsend_dimensions=true\nbatch_size={batch}\nreader_live=true\nlocal_cache='{}'\napi_key={{env='FYRR_TEST_S3_SECRET_ACCESS_KEY'}}\nmax_retries=1\ntimeout='1s'\nspend={{limit_microusd={cap},max_call_microusd=10}}\nroles={{document={{input_type='document'}},query={{input_type='query'}}}}",
+            "endpoint='{}'\ndimensions={dimensions}\nsend_dimensions=true\nbatch_size={batch}\nreader_live=true\nlocal_cache='{}'\napi_key={{env='FYRR_TEST_SECRET'}}\nmax_retries=1\ntimeout='1s'\nspend={{limit_microusd={cap},max_call_microusd=10}}\nroles={{document={{input_type='document'}},query={{input_type='query'}}}}",
             provider.endpoint,
             root.join("writer-cache").display()
         ),
@@ -138,8 +138,8 @@ fn writer_sync(config: &Path, args: &[&str]) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real CLI worker, fake HTTP provider, RustFS and native reader sampler; scripts/ci"]
-async fn tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_real_s3() {
+#[ignore = "real CLI worker, fake HTTP provider, local storage and native reader sampler; scripts/ci"]
+async fn tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_storage() {
     let provider = Provider::open().await;
     let (config, root) = setup();
     let config = writer_config(&config, &root, &provider, 512, 100000, 32);
@@ -328,8 +328,8 @@ fn small_writer_fixture(provider: &Provider, cap: u64) -> (PathBuf, FixtureRoot)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real CLI worker, fake HTTP provider and RustFS; scripts/ci"]
-async fn tools_writer_embedding_failures_deadline_spend_and_no_partial_stage_on_real_s3() {
+#[ignore = "real CLI worker, fake HTTP provider and local storage; scripts/ci"]
+async fn tools_writer_embedding_failures_deadline_spend_and_no_partial_stage_on_storage() {
     let provider = Provider::open().await;
     for (mode, cap, code, calls) in [
         (3, 1000, "embedding_provider_unavailable", 2),
@@ -401,7 +401,7 @@ async fn tools_writer_embedding_failures_deadline_spend_and_no_partial_stage_on_
             assert!(!String::from_utf8_lossy(bytes).contains("PRIVATE_EMBEDDING_RESPONSE"));
             assert!(
                 !String::from_utf8_lossy(bytes)
-                    .contains(&std::env::var("FYRR_TEST_S3_SECRET_ACCESS_KEY").unwrap())
+                    .contains(&std::env::var("FYRR_TEST_SECRET").unwrap())
             );
         }
         std::fs::remove_dir_all(root).unwrap();
@@ -410,9 +410,9 @@ async fn tools_writer_embedding_failures_deadline_spend_and_no_partial_stage_on_
 
 #[tokio::test]
 #[ignore = "real S3, native reader and SDK; revocation during embedding"]
-async fn tools_embedding_wait_revocation_on_real_s3() {
+async fn tools_embedding_wait_revocation_on_storage() {
     parked_reader_test(
-        "serve::tests::embedding::embedding_wait_revocation_refuses_old_authorization_on_real_s3",
+        "serve::tests::embedding::embedding_wait_revocation_refuses_old_authorization_on_storage",
     );
 }
 
@@ -437,40 +437,40 @@ fn parked_reader_test(selection: &str) {
 
 #[test]
 #[ignore = "real S3 and stdio admission cancellation"]
-fn tools_cancelled_admission_rebuild_refuses_stale_mask_on_real_s3() {
+fn tools_cancelled_admission_rebuild_refuses_stale_mask_on_storage() {
     parked_reader_test(
-        "serve::tests::embedding::cancelled_admission_rebuild_cannot_reuse_stale_stdio_mask_on_real_s3",
+        "serve::tests::embedding::cancelled_admission_rebuild_cannot_reuse_stale_stdio_mask_on_storage",
     );
 }
 
 #[test]
 #[ignore = "real S3 and stdio admission deadline"]
-fn tools_timed_out_admission_rebuild_refuses_stale_mask_on_real_s3() {
+fn tools_timed_out_admission_rebuild_refuses_stale_mask_on_storage() {
     parked_reader_test(
-        "serve::tests::embedding::timed_out_admission_rebuild_cannot_reuse_stale_stdio_mask_on_real_s3",
+        "serve::tests::embedding::timed_out_admission_rebuild_cannot_reuse_stale_stdio_mask_on_storage",
     );
 }
 
 #[test]
 #[ignore = "real S3 and stdio directory freshness recovery"]
-fn tools_directory_recovery_refuses_admission_after_failed_refresh_on_real_s3() {
+fn tools_directory_recovery_refuses_admission_after_failed_refresh_on_storage() {
     parked_reader_test(
-        "serve::tests::embedding::failed_refresh_cannot_admit_a_stale_mask_after_directory_recovery_on_real_s3",
+        "serve::tests::embedding::failed_refresh_cannot_admit_a_stale_mask_after_directory_recovery_on_storage",
     );
 }
 
 #[test]
 #[ignore = "real S3 and stdio failure lifecycle"]
-fn tools_failed_scheduler_terminates_stdio_on_real_s3() {
+fn tools_failed_scheduler_terminates_stdio_on_storage() {
     parked_reader_test(
-        "serve::tests::embedding::stdio_terminates_after_scheduler_failure_on_real_s3",
+        "serve::tests::embedding::stdio_terminates_after_scheduler_failure_on_storage",
     );
 }
 
 #[test]
 #[ignore = "real S3 and MCP request-filter cancellation and worker reuse"]
-fn tools_request_filters_preserve_base_admission_on_real_s3() {
+fn tools_request_filters_preserve_base_admission_on_storage() {
     parked_reader_test(
-        "serve::tests::embedding::request_filters_preserve_base_admission_and_worker_reuse_on_real_s3",
+        "serve::tests::embedding::request_filters_preserve_base_admission_and_worker_reuse_on_storage",
     );
 }

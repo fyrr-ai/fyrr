@@ -115,10 +115,14 @@ fn bearer(headers: &axum::http::HeaderMap) {
         .get("authorization")
         .and_then(|value| value.to_str().ok());
     assert!(
-        ["FYRR_TEST_S3_SECRET_ACCESS_KEY", "FYRR_TEST_LOCAL_SECRET"]
-            .into_iter()
-            .filter_map(|variable| std::env::var(variable).ok())
-            .any(|secret| sent == Some(format!("Bearer {secret}").as_str())),
+        [
+            "FYRR_TEST_SECRET",
+            "FYRR_TEST_S3_SECRET_ACCESS_KEY",
+            "FYRR_TEST_LOCAL_SECRET"
+        ]
+        .into_iter()
+        .filter_map(|variable| std::env::var(variable).ok())
+        .any(|secret| sent == Some(format!("Bearer {secret}").as_str())),
         "embedding credential mismatch"
     );
 }

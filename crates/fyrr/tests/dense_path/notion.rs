@@ -1,4 +1,4 @@
-//! The bundled Notion provider through `fyrr writer sync` on the owned RustFS,
+//! The bundled Notion provider through `fyrr writer sync` on the local storage,
 //! against the synthetic Notion of `connectors/tests/notion/fake_notion.py`
 //! served over HTTP.
 //!
@@ -145,8 +145,8 @@ fn sorted(mut ids: Vec<String>) -> Vec<String> {
 }
 
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn notion_content_changes_quarantine_and_reconcile_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn notion_content_changes_quarantine_and_reconcile_on_storage() {
     let fake = Fake::start();
     let (worker, commit, _root) = fixture(&fake);
     let early = fake.page("early", "root", "fixture document 0");

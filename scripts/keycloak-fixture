@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Own only this worktree's pinned, loopback Keycloak. Never prune or touch other fixtures.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-HASH="$(printf '%s' "$ROOT" | sha256sum | cut -c1-12)"
+INSTANCE="${FYRR_FIXTURE_ID:-}"
+[[ "$INSTANCE" =~ ^[a-zA-Z0-9_-]*$ ]] || die "invalid fixture identifier"
+HASH="$(printf '%s' "$ROOT${INSTANCE:+-$INSTANCE}" | sha256sum | cut -c1-12)"
 NAME="fyrr-keycloak-$HASH"
-OUT="${FYRR_EVAL_ROOT:-$ROOT/target}/keycloak-fixture"
+OUT="${FYRR_EVAL_ROOT:-$ROOT/target}/keycloak-fixture${INSTANCE:+-$INSTANCE}"
 mkdir -p "$OUT"
 owned() {
   local label

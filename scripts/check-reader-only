@@ -3,13 +3,9 @@
 # image) links no writer crate, Python or PyO3, twice:
 # 1. dependency graph: no forbidden crate in the reader-only build's normal
 #    and build dependencies (a crate outside the graph cannot be linked);
-# 2. linked binary: the stripped release binary has no libpython in its
-#    dynamic section (DT_NEEDED).
-# Positive controls run the same checks against the full build, which must
-# contain fyrr-writer, PyO3 and arrow-pyarrow and need libpython, so both
-# checks are known to detect a violation.
-# Product crates declare no evaluation or test-store feature, and the
-# internal fyrr-eval tool is outside the graph.
+# 2. linked binary: the debug reader-only binary has no libpython in its
+#    dynamic section (DT_NEEDED), with the full debug binary as a control.
+# The internal evaluation tool remains outside the product dependency graph.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT"
 
@@ -43,32 +39,38 @@ packages = {p["name"]: p for p in json.load(sys.stdin)["packages"]}
 if "fyrr-eval" not in packages:
     sys.exit("control failed: the workspace has no fyrr-eval package")
 for name in ("fyrr", "fyrr-reader", "fyrr-writer", "fyrr-core"):
-    forbidden = {"evaluation", "test-store"} & packages[name]["features"].keys()
-    if forbidden:
-        sys.exit(f"FAIL: {name} declares forbidden features: {sorted(forbidden)}")
+    if "evaluation" in packages[name]["features"]:
+        sys.exit(f"FAIL: {name} declares an evaluation feature")
 ' || exit 1
-echo "ok: product crates have no evaluation/test-store features or fyrr-eval dependency"
+echo "ok: no product crate declares an evaluation feature or depends on fyrr-eval"
+
+# Development instrumentation must stay out of both shipping package graphs.
+for variant in full reader; do
+  flags=()
+  [[ "$variant" == full ]] || flags+=(--no-default-features)
+  features="$(cargo tree --locked -p fyrr -e normal,build --prefix none -f '{p} features={f}' "${flags[@]}")"
+  if grep -Eq 'features=([^ ]*,)?test-store(,|$)' <<<"$features"; then
+    die "$variant normal/build graph enables test-store"
+  fi
+done
+dev="$(cargo tree --locked -p fyrr -e normal,build,dev --prefix none -f '{p} features={f}')"
+grep -Eq '^fyrr-reader .*features=([^ ]*,)?test-store(,|$)' <<<"$dev" ||
+  die "control failed: the dev graph does not enable test-store"
+echo "ok: test-store is dev-only; both shipping graphs exclude it"
 
 needed() {
   readelf --dynamic "$1" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'
 }
 
-OUT="$ROOT/target/budget"
-mkdir -p "$OUT"
-# The full binary is the positive control for Python linkage.
-build_release -p fyrr --bin fyrr
-cp target/release/fyrr "$OUT/fyrr-full"
-build_release -p fyrr --no-default-features --bin fyrr
-cp target/release/fyrr "$OUT/fyrr-reader-only"
-
-full_needed="$(needed "$OUT/fyrr-full")"
-grep -q '^libpython' <<<"$full_needed" ||
-  die "control failed: the full binary needs no libpython ($(tr '\n' ' ' <<<"$full_needed")), so this check proves nothing"
-echo "control: the full binary needs $(grep '^libpython' <<<"$full_needed")"
-
-reader_needed="$(needed "$OUT/fyrr-reader-only")"
-if grep -qi 'python' <<<"$reader_needed"; then
-  echo "FAIL: the reader-only binary needs: $(tr '\n' ' ' <<<"$reader_needed")" >&2
-  exit 1
+[[ $# == 0 ]] || die "usage: scripts/check-reader-only"
+# The same artifacts used by CI's owned tests; graph and dynamic linkage do
+# not require optimization or LTO.
+if [[ "${FYRR_CI_PREBUILT:-}" != 1 ]]; then
+  "$ROOT/scripts/ci-cases" build
 fi
-echo "ok: the reader-only binary needs only: $(tr '\n' ' ' <<<"$reader_needed")"
+full_needed="$(needed "$ROOT/target/ci-build/full/fyrr")"
+grep -q '^libpython' <<<"$full_needed" || die "full debug control needs no libpython"
+reader_needed="$(needed "$ROOT/target/ci-build/reader/fyrr")"
+if grep -qi python <<<"$reader_needed"; then die "reader-only debug binary links Python"; fi
+echo "control: the full debug binary needs $(grep '^libpython' <<<"$full_needed")"
+echo "ok: the reader-only debug binary needs only: $(tr '\n' ' ' <<<"$reader_needed")"

@@ -3,8 +3,8 @@ use super::*;
 use futures::{StreamExt, TryStreamExt};
 
 #[tokio::test]
-#[ignore = "real S3 publication and corrupt immutable history; scripts/ci"]
-async fn history_cycles_are_refused_on_real_s3() {
+#[ignore = "local storage publication and corrupt immutable history; scripts/ci"]
+async fn history_cycles_are_refused_on_storage() {
     let (config, root, _) = super::tools::fixture();
     let loaded = fyrr_core::config::load(&config).unwrap().config;
     let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded).unwrap();
@@ -104,8 +104,8 @@ async fn history_cycles_are_refused_on_real_s3() {
 }
 
 #[tokio::test]
-#[ignore = "real S3 history and recovery boundary; scripts/ci"]
-async fn restore_history_checks_order_before_recovery_on_real_s3() {
+#[ignore = "local storage history and recovery boundary; scripts/ci"]
+async fn restore_history_checks_order_before_recovery_on_storage() {
     for command in ["restore", "maintain"] {
         for ancestor_sequence in [2, 3] {
             let (config, root, _) = super::tools::fixture();
@@ -202,11 +202,11 @@ async fn restore_history_checks_order_before_recovery_on_real_s3() {
 
 #[test]
 #[ignore = "real S3 cached history library path; scripts/ci"]
-fn cached_restore_history_checks_sequence_joins_on_real_s3() {
+fn cached_restore_history_checks_sequence_joins_on_storage() {
     let (config, _root, _) = super::tools::fixture();
     let output = Command::new(std::env::var_os("FYRR_SCIM_HEALTH_TEST_BINARY").unwrap())
         .args([
-            "commit::history::sequence_tests::cached_history_checks_sequence_at_joins_on_real_s3",
+            "commit::history::sequence_tests::cached_history_checks_sequence_at_joins_on_storage",
             "--exact",
             "--ignored",
             "--nocapture",

@@ -109,8 +109,8 @@ fn synced(worker: &Path, fake: &Fake, kinds: &[&str]) -> Value {
 }
 
 #[tokio::test]
-#[ignore = "real worker and owned RustFS; coordinator Cargo slot"]
-async fn github_fixed_replay_quarantine_scope_and_reconcile_on_real_s3() {
+#[ignore = "real worker and local storage; coordinator Cargo slot"]
+async fn github_fixed_replay_quarantine_scope_and_reconcile_on_storage() {
     let fake = Fake::start();
     let (worker, commit, _root) = fixture(&fake, "fixed");
     for number in 1..=3 {
@@ -169,8 +169,8 @@ async fn github_fixed_replay_quarantine_scope_and_reconcile_on_real_s3() {
 }
 
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn github_sync_silent_content_and_revoke_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn github_sync_silent_content_and_revoke_on_storage() {
     let fake = Fake::start();
     let (worker, commit, _root) = fixture(&fake, "sync");
     fake.topic(1, "fixture document 0");

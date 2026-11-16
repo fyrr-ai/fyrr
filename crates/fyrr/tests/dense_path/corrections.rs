@@ -1,5 +1,7 @@
 //! Durability, ACL revision and private-mirror regressions on RustFS.
 use super::*;
+#[path = "corrections/local.rs"]
+mod local;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{
     Arc, Mutex,
@@ -52,21 +54,34 @@ pub(super) fn proxy(
 // After a GET, bytes contain the real HTTP response for read-cost measurements;
 // write hooks retain the request body on both sides of their mutation boundary.
 pub(super) struct ProxyGuard {
-    wake: Option<std::net::SocketAddr>,
+    wake: Option<Wake>,
     pub(super) stop: Arc<AtomicBool>,
     pub(super) resume: Arc<AtomicBool>,
     pub(super) thread: Option<std::thread::JoinHandle<()>>,
+}
+enum Wake {
+    Tcp(std::net::SocketAddr),
+    Local(PathBuf),
 }
 impl Drop for ProxyGuard {
     fn drop(&mut self) {
         self.resume.store(true, Ordering::SeqCst);
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(address) = self.wake {
-            // A connection wakes blocking accept; the stop flag prevents dispatch.
-            let _ = TcpStream::connect_timeout(&address, Duration::from_secs(5));
+        match &self.wake {
+            Some(Wake::Tcp(address)) => {
+                let _ = TcpStream::connect_timeout(address, Duration::from_secs(5));
+            }
+            Some(Wake::Local(path)) => {
+                let _ = std::os::unix::net::UnixStream::connect(path);
+            }
+            None => {}
         }
-        if let Some(thread) = self.thread.take()
-            && let Err(panic) = thread.join()
+        let panic = self.thread.take().and_then(|thread| thread.join().err());
+        if let Some(Wake::Local(path)) = &self.wake {
+            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_dir(path.parent().unwrap());
+        }
+        if let Some(panic) = panic
             && !std::thread::panicking()
         {
             std::panic::resume_unwind(panic);
@@ -194,6 +209,91 @@ pub(super) fn proxy_transform(
     )
 }
 
+struct BoundaryState {
+    reject_cursor: Arc<AtomicBool>,
+    revoke_on_head: Arc<AtomicUsize>,
+    revoke_config: PathBuf,
+    retrieval_fault: Option<(Arc<HeadReads>, Arc<Mutex<usize>>)>,
+    heads: Option<Arc<HeadReads>>,
+    hook: Option<BoundaryHook>,
+    transform: Option<ResponseTransform>,
+    cursor_sequence: AtomicU64,
+}
+impl BoundaryState {
+    fn before(&self, request: &str, body: &[u8]) -> bool {
+        if self
+            .hook
+            .as_ref()
+            .is_some_and(|hook| hook(request, body, false))
+        {
+            return true;
+        }
+        if request.starts_with("PUT ")
+            && request.contains("/cursors/allowed-content.json")
+            && self.reject_cursor.load(Ordering::Relaxed)
+            && serde_json::from_slice::<Value>(body)
+                .ok()
+                .and_then(|v| v["sequence"].as_u64())
+                .is_some_and(|sequence| sequence > self.cursor_sequence.load(Ordering::SeqCst))
+        {
+            return true;
+        }
+        if request.starts_with("GET ") && request.contains("/head.json ") {
+            if let Some(heads) = &self.heads {
+                heads.start();
+            }
+            if let Some((heads, _)) = &self.retrieval_fault {
+                heads.start();
+            }
+            if self.revoke_on_head.load(Ordering::Relaxed) != 0
+                && self.revoke_on_head.fetch_sub(1, Ordering::Relaxed) == 1
+            {
+                success(&self.revoke_config, &["writer", "commit"]);
+            }
+        }
+        if let Some((heads, failures)) = &self.retrieval_fault
+            && (request.starts_with("GET ") || request.starts_with("HEAD "))
+            && request.contains("/dataset.lance/")
+            && heads.started() >= 2
+        {
+            let mut failures = failures.lock().unwrap();
+            if *failures == 0 {
+                success(&self.revoke_config, &["writer", "commit"]);
+            }
+            *failures += 1;
+            return true;
+        }
+        false
+    }
+    fn after(&self, request: &str, body: &[u8], response: &mut Vec<u8>) -> bool {
+        if request.starts_with("GET ")
+            && request.contains("/cursors/allowed-content.json")
+            && let Some(position) = response.windows(4).position(|b| b == b"\r\n\r\n")
+            && let Ok(value) = serde_json::from_slice::<Value>(&response[position + 4..])
+            && let Some(sequence) = value["sequence"].as_u64()
+        {
+            self.cursor_sequence.store(sequence, Ordering::SeqCst);
+        }
+        if self.hook.as_ref().is_some_and(|hook| {
+            hook(
+                request,
+                if request.starts_with("GET ") {
+                    response
+                } else {
+                    body
+                },
+                true,
+            )
+        }) {
+            return true;
+        }
+        if let Some(transform) = &self.transform {
+            transform(request, response);
+        }
+        false
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn proxy_with_hook(
     target: String,
@@ -206,11 +306,23 @@ fn proxy_with_hook(
     hook: Option<BoundaryHook>,
     transform: Option<ResponseTransform>,
 ) -> (String, ProxyGuard) {
+    let state = Arc::new(BoundaryState {
+        reject_cursor,
+        revoke_on_head,
+        revoke_config,
+        retrieval_fault,
+        heads,
+        hook,
+        transform,
+        cursor_sequence: AtomicU64::new(0),
+    });
+    if target == "local-storage" {
+        return local::controller(state, stop);
+    }
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let endpoint = format!("http://{address}");
     let worker_stop = stop.clone();
-    let cursor_sequence = Arc::new(AtomicU64::new(0));
     let thread = std::thread::spawn(move || {
         let mut workers = Vec::new();
         loop {
@@ -219,14 +331,7 @@ fn proxy_with_hook(
                 break;
             }
             let target = target.clone();
-            let reject = reject_cursor.clone();
-            let cursor_sequence = cursor_sequence.clone();
-            let revoke = revoke_on_head.clone();
-            let config = revoke_config.clone();
-            let fault = retrieval_fault.clone();
-            let heads = heads.clone();
-            let hook = hook.clone();
-            let transform = transform.clone();
+            let state = state.clone();
             workers.push(std::thread::spawn(move || {
                 socket.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
                 let mut client = BufReader::new(socket);
@@ -251,49 +356,21 @@ fn proxy_with_hook(
                 let request = &headers[0];
                 let mut body = vec![0; length];
                 std::io::Read::read_exact(&mut client, &mut body).unwrap();
-                if hook.as_ref().is_some_and(|hook| hook(request, &body, false)) {
-                    let _ = client.get_mut().write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); return;
-                }
-                if request.starts_with("PUT ") && request.contains("/cursors/allowed-content.json") && reject.load(Ordering::Relaxed)
-                    && serde_json::from_slice::<Value>(&body).ok().and_then(|v|v["sequence"].as_u64()).is_some_and(|sequence| sequence>cursor_sequence.load(Ordering::SeqCst)) {
-                    client.get_mut().write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap(); return;
-                }
-                if request.starts_with("GET ") && request.contains("/head.json ") {
-                    if let Some(heads) = &heads { heads.start(); }
-                    if let Some((heads, _)) = &fault { heads.start(); }
-                    let remaining = revoke.load(Ordering::Relaxed);
-                    if remaining != 0 && revoke.fetch_sub(1, Ordering::Relaxed) == 1 { success(&config, &["writer", "commit"]); }
-                }
-                if let Some((heads, failures)) = &fault
-                    && (request.starts_with("GET ") || request.starts_with("HEAD "))
-                    && request.contains("/dataset.lance/")
-                    && heads.started() >= 2 {
-                        // Open and query admission both completed. Land the identity
-                        // commit before returning a nonretryable native read failure.
-                        let mut failures = failures.lock().unwrap();
-                        if *failures == 0 { success(&config, &["writer", "commit"]); }
-                        *failures += 1;
-                        drop(failures);
-                        client.get_mut().write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
-                        return;
+                if state.before(request, &body) {
+                    let _ = client.get_mut().write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    return;
                 }
                 let mut upstream = TcpStream::connect(target.trim_start_matches("http://")).unwrap();
                 upstream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
                 for header in &headers { if !header.to_ascii_lowercase().starts_with("connection:") && header != "\r\n" { upstream.write_all(header.as_bytes()).unwrap(); } }
                 upstream.write_all(b"Connection: close\r\n\r\n").unwrap();
                 upstream.write_all(&body).unwrap();
-                if transform.is_some() || hook.is_some() || (request.starts_with("GET ") && request.contains("/cursors/allowed-content.json")) {
+                if state.transform.is_some() || state.hook.is_some() || (request.starts_with("GET ") && request.contains("/cursors/allowed-content.json")) {
                     let mut response = Vec::new();
                     std::io::Read::read_to_end(&mut upstream, &mut response).unwrap();
-                    if request.starts_with("GET ") && request.contains("/cursors/allowed-content.json")
-                        && let Some(position)=response.windows(4).position(|b|b==b"\r\n\r\n")
-                        && let Ok(value)=serde_json::from_slice::<Value>(&response[position+4..])
-                        && let Some(sequence)=value["sequence"].as_u64() {
-                        cursor_sequence.store(sequence,Ordering::SeqCst);
-                    }
-                    if hook.as_ref().is_some_and(|hook|hook(request, if request.starts_with("GET ") { &response } else { &body }, true)) {
+                    if state.after(request, &body, &mut response) {
                         let _ = client.get_mut().write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-                    } else { if let Some(transform)=&transform {transform(request,&mut response);} let _ = client.get_mut().write_all(&response); }
+                    } else { let _ = client.get_mut().write_all(&response); }
                 } else { let _ = std::io::copy(&mut upstream, client.get_mut()); }
             }));
         }
@@ -304,7 +381,7 @@ fn proxy_with_hook(
     (
         endpoint,
         ProxyGuard {
-            wake: Some(address),
+            wake: Some(Wake::Tcp(address)),
             stop,
             resume: Arc::new(AtomicBool::new(false)),
             thread: Some(thread),
@@ -314,7 +391,7 @@ fn proxy_with_hook(
 
 #[tokio::test]
 #[ignore = "real executable and RustFS fixture; scripts/ci"]
-async fn correction_durability_acl_and_private_mirror_on_real_s3() {
+async fn correction_durability_acl_and_private_mirror_on_storage() {
     let (config, root) = setup();
     let original = std::fs::read_to_string(&config).unwrap();
     let text = original
@@ -671,7 +748,7 @@ async fn correction_durability_acl_and_private_mirror_on_real_s3() {
     let mirror_directory = root.join("mirror").join(fyrr_reader::embedding::digest(
         format!(
             "{}:{}",
-            endpoint,
+            loaded.config.storage.endpoint.as_deref().unwrap_or(""),
             fyrr_reader::storage::dataset_uri(&loaded.config)
         )
         .as_bytes(),
@@ -726,19 +803,6 @@ async fn correction_durability_acl_and_private_mirror_on_real_s3() {
     assert!(
         !run(&unsafe_config, &["reader", "check"]).status.success(),
         "symlink mirror refused"
-    );
-    // Same namespace and bucket at another endpoint gets a different cache.
-    let before = std::fs::read_dir(root.join("mirror")).unwrap().count();
-    let alternate = root.join("alternate.toml");
-    std::fs::write(&alternate, changed_text.replace("127.0.0.1", "localhost")).unwrap();
-    success(
-        &alternate,
-        &["reader", "search", "fixture query", "--output", "content"],
-    );
-    assert_eq!(
-        std::fs::read_dir(root.join("mirror")).unwrap().count(),
-        before + 1,
-        "endpoint isolates mirror keys"
     );
     // A stale cache can lag several applied envelopes, including reset lineage.
     let latest_cursor: fyrr_core::connector::CursorState =
@@ -799,7 +863,7 @@ async fn correction_durability_acl_and_private_mirror_on_real_s3() {
 
 #[test]
 #[ignore = "final authorization on real executable/RustFS; scripts/ci"]
-fn correction_inflight_identity_change_on_real_s3() {
+fn correction_inflight_identity_change_on_storage() {
     let (config, root) = setup();
     let text = std::fs::read_to_string(&config).unwrap();
     let text = text
@@ -1176,4 +1240,41 @@ fn retrieval_error_revocation_cases() {
     for query in [Some("fixture query"), Some("fixture document"), None] {
         retrieval_error_during_identity_change(query);
     }
+}
+
+#[test]
+#[ignore = "real S3 endpoint identity in the private mirror; scripts/ci"]
+fn mirror_endpoint_isolation_on_real_s3() {
+    let (config, root) = setup_on(Backend::S3);
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .split("[[sources]]")
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("[[sources]]");
+    std::fs::write(&config, &text).unwrap();
+    let sources = root.join("sources");
+    std::fs::remove_dir_all(&sources).unwrap();
+    std::fs::create_dir(&sources).unwrap();
+    std::fs::write(sources.join("0.txt"), "fixture document 0").unwrap();
+    success(&config, &["writer", "namespace", "create"]);
+    assert!(run(&config, &["writer", "sync", "--full"]).status.success());
+    success(&config, &["writer", "commit"]);
+    success(
+        &config,
+        &["reader", "search", "fixture query", "--output", "content"],
+    );
+    // Same namespace and bucket at another endpoint gets a different cache.
+    let before = std::fs::read_dir(root.join("mirror")).unwrap().count();
+    let alternate = root.join("alternate.toml");
+    std::fs::write(&alternate, text.replace("127.0.0.1", "localhost")).unwrap();
+    success(
+        &alternate,
+        &["reader", "search", "fixture query", "--output", "content"],
+    );
+    assert_eq!(
+        std::fs::read_dir(root.join("mirror")).unwrap().count(),
+        before + 1,
+        "endpoint isolates mirror keys"
+    );
 }

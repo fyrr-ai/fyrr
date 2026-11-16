@@ -81,7 +81,7 @@ async fn restore_body_bound_precedes_native_materialization() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real CLI and RustFS fixture supplied by dense_path"]
-async fn restore_drains_restarts_and_caps_attempts_on_real_s3() {
+async fn restore_drains_restarts_and_caps_attempts_on_storage() {
     let worker = std::path::PathBuf::from(std::env::var_os("FYRR_TEST_RESTORE_WORKER").unwrap());
     let config_path =
         std::path::PathBuf::from(std::env::var_os("FYRR_TEST_RESTORE_CONFIG").unwrap());

@@ -99,8 +99,8 @@ fn synced(worker: &Path, args: &[&str]) -> Value {
 }
 
 #[tokio::test]
-#[ignore = "actual worker/reader and owned RustFS; coordinator Cargo slot"]
-async fn jira_fixed_issues_comments_quarantine_and_reconcile_on_real_s3() {
+#[ignore = "actual worker/reader and local storage; coordinator Cargo slot"]
+async fn jira_fixed_issues_comments_quarantine_and_reconcile_on_storage() {
     let fake = Fake::start();
     let (worker, commit, _root) = fixture(&fake, "fixed");
     for id in 101..104 {
@@ -153,8 +153,8 @@ async fn jira_fixed_issues_comments_quarantine_and_reconcile_on_real_s3() {
 }
 
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn jira_sync_silent_content_restricted_sections_and_revoke_on_real_s3() {
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn jira_sync_silent_content_restricted_sections_and_revoke_on_storage() {
     let fake = Fake::start();
     let (worker, commit, _root) = fixture(&fake, "sync");
     fake.call("issue",json!({"identity":101,"summary":"fixture document 0","description":null,"status":null,"issuetype":{"id":"1"},"reporter":null}));
