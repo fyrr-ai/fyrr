@@ -124,4 +124,3 @@ The [permission configuration](../examples/quickstart/permissions.toml)
 publishes handbook and payroll folders. Ada (`grp:engineering`) sees only
 the handbook; Grace (`grp:finance`) sees payroll. The runner verifies both
 identities; Ada's payroll fetch returns no documents.
-
