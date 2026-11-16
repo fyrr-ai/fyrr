@@ -93,7 +93,6 @@ struct KeycloakRead {
     client: reqwest::Client,
     base: reqwest::Url,
     token: String,
-    requests: usize,
 }
 impl std::fmt::Debug for KeycloakRead {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -102,10 +101,6 @@ impl std::fmt::Debug for KeycloakRead {
 }
 impl KeycloakRead {
     async fn count(&mut self, parts: &[&str]) -> Result<usize> {
-        self.requests += 1;
-        if self.requests > 10_000 {
-            return Err(WriterError::DirectoryPullLimit);
-        }
         let value = response_json(
             self.client
                 .get(append(&self.base, parts)?)
@@ -127,10 +122,6 @@ impl KeycloakRead {
         let url = append(&self.base, parts)?;
         let mut result = Vec::new();
         loop {
-            self.requests += 1;
-            if self.requests > 10_000 || result.len() >= 100_000 {
-                return Err(WriterError::DirectoryPullLimit);
-            }
             let first = result.len().to_string();
             let response = self
                 .client
@@ -154,6 +145,9 @@ impl KeycloakRead {
             }
             let done = page.len() < 100;
             result.extend(page);
+            if result.len() > 100_000 {
+                return Err(WriterError::DirectoryPullLimit);
+            }
             if done {
                 return Ok(result);
             }
@@ -223,7 +217,6 @@ async fn keycloak(config: &Config) -> Result<DirectorySnapshot> {
         client,
         base: append(&base_url, &["admin", "realms", realm])?,
         token,
-        requests: 0,
     };
     let user_count = api.count(&["users", "count"]).await?;
     let group_count = api.count(&["groups", "count"]).await?;
@@ -235,12 +228,17 @@ async fn keycloak(config: &Config) -> Result<DirectorySnapshot> {
     let user_keys = keycloak_users(config, &issuer, &users, &mut snapshot)?;
     let mut pending = api.pages(&["groups"]).await?;
     let mut groups = BTreeMap::<String, DirectoryGroup>::new();
+    let mut membership_count = 0usize;
     while let Some(raw) = pending.pop() {
         let id = text(&raw, "id")?.to_owned();
         if groups.contains_key(&id) || groups.len() >= 100_000 {
             return Err(WriterError::DirectoryPullFailed);
         }
         let children = api.pages(&["groups", &id, "children"]).await?;
+        membership_count += children.len();
+        if membership_count > 1_000_000 {
+            return Err(WriterError::DirectoryPullLimit);
+        }
         let token = hash_principal(config, "tok", &format!("grp:keycloak:{id}"))?;
         let mut members = Vec::new();
         for child in &children {
@@ -258,6 +256,10 @@ async fn keycloak(config: &Config) -> Result<DirectorySnapshot> {
     }
     for (id, key) in user_keys {
         let count = api.count(&["users", &id, "groups", "count"]).await?;
+        membership_count += count;
+        if membership_count > 1_000_000 {
+            return Err(WriterError::DirectoryPullLimit);
+        }
         let memberships = api.pages(&["users", &id, "groups"]).await?;
         let ids: BTreeSet<_> = memberships
             .iter()
@@ -406,4 +408,48 @@ fn keycloak_users(
         });
     }
     Ok(user_keys)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn collection_limit_allows_exact_capacity() {
+        use axum::{Json, Router, http::Uri, routing::get};
+        for capacity in [100_000usize, 100_001] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let app = Router::new().route(
+                "/",
+                get(move |uri: Uri| async move {
+                    let query: BTreeMap<_, _> =
+                        reqwest::Url::parse(&format!("http://localhost{uri}"))
+                            .unwrap()
+                            .query_pairs()
+                            .into_owned()
+                            .collect();
+                    let first: usize = query["first"].parse().unwrap();
+                    Json(vec![Value::Null; capacity.saturating_sub(first).min(100)])
+                }),
+            );
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let mut api = KeycloakRead {
+                client: reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(5))
+                    .build()
+                    .unwrap(),
+                base: format!("http://{address}").parse().unwrap(),
+                token: "fixture-token".into(),
+            };
+            let result = api.pages(&[]).await;
+            server.abort();
+            let _ = server.await;
+            if capacity == 100_000 {
+                assert_eq!(result.unwrap().len(), capacity);
+            } else {
+                assert!(matches!(result, Err(WriterError::DirectoryPullLimit)));
+            }
+        }
+    }
 }

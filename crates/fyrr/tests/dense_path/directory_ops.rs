@@ -483,6 +483,25 @@ async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_r
     }
 }
 
+async fn keycloak_token(client: &Client, endpoint: &str, username: &str, password: &str) -> String {
+    let response = client
+        .post(format!(
+            "{endpoint}/realms/master/protocol/openid-connect/token"
+        ))
+        .form(&[
+            ("client_id", "admin-cli"),
+            ("grant_type", "password"),
+            ("username", username),
+            ("password", password),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    body["access_token"].as_str().unwrap().to_owned()
+}
+
 fn directory_command(config: &Path, token: Option<&str>) -> Output {
     let mut command = host_command(config);
     command.args(["writer", "sync", "--directory"]);
@@ -498,22 +517,8 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
     let username = std::env::var("FYRR_TEST_KEYCLOAK_USERNAME").unwrap();
     let password = std::env::var("FYRR_TEST_KEYCLOAK_PASSWORD").unwrap();
     let client = Client::new();
-    let response = client
-        .post(format!(
-            "{endpoint}/realms/master/protocol/openid-connect/token"
-        ))
-        .form(&[
-            ("client_id", "admin-cli"),
-            ("grant_type", "password"),
-            ("username", username.as_str()),
-            ("password", password.as_str()),
-        ])
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let body: Value = response.json().await.unwrap();
-    let token = body["access_token"].as_str().unwrap();
+    let token_value = keycloak_token(&client, &endpoint, &username, &password).await;
+    let token = token_value.as_str();
     let realm = format!(
         "fyrr-directory-{}-{}",
         std::process::id(),
@@ -730,6 +735,42 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
         "authorization_unavailable"
     );
     drop(mcp);
+    let token_value = keycloak_token(&client, &endpoint, &username, &password).await;
+    let token = token_value.as_str();
+    // A valid realm may require more than ten thousand membership requests.
+    let users: Vec<_> = (0..3400)
+        .map(|index| {
+            let email = format!("bulk-{index}@example.test");
+            json!({"username":email,"email":email,"emailVerified":true,"enabled":true})
+        })
+        .collect();
+    assert_eq!(
+        client
+            .post(format!("{base}/partialImport"))
+            .bearer_auth(token)
+            .json(&json!({"ifResourceExists":"FAIL","users":users}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let token_value = keycloak_token(&client, &endpoint, &username, &password).await;
+    let token = token_value.as_str();
+    let before = state(&commit).await.freshness.directory;
+    let output = directory_command(&commit, Some(token));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        super::identity::artifact(&commit).await.1.principals.len(),
+        3400
+    );
+    assert!(state(&commit).await.freshness.directory > before);
+    let token_value = keycloak_token(&client, &endpoint, &username, &password).await;
+    let token = token_value.as_str();
     assert_eq!(
         client
             .delete(base)

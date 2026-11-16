@@ -47,6 +47,7 @@
       "full:fyrr-reader:lib:fyrr_reader/response_budget::tests::response_budget_cases",
       "full:fyrr-reader:lib:fyrr_reader/response_budget::tests::counters_include_hits_removed_when_their_digits_grow",
       "full:fyrr-reader:lib:fyrr_reader/response_budget::tests::wire_size_accounting_matches_serde_with_escaped_text_and_counters",
+      "full:fyrr-writer:lib:fyrr_writer/directory_pull::tests::collection_limit_allows_exact_capacity",
       "full:fyrr-writer:lib:fyrr_writer/batch::tests::contract_rows_convert_and_count",
       "full:fyrr-writer:lib:fyrr_writer/batch::tests::cursors_chain_and_bounds_hold",
       "full:fyrr-writer:lib:fyrr_writer/batch::tests::other_kinds_carry_no_rows",

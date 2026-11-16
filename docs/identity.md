@@ -50,6 +50,18 @@ Only a completed directory read advances directory freshness. Ordinary commits
 and `writer directory --snapshot` imports do not. With `provider = "none"`,
 imported snapshots remain usable without a directory freshness timestamp.
 
+Keycloak directory snapshots are bounded to 100,000 users, 100,000 groups
+and 1,000,000 combined user/group membership edges. Each user needs two
+membership count checks and a paged membership read, plus directory and
+group scans. The whole pull uses `--timeout` (default `10m`).
+
+A pull uses one access token and does not refresh it mid-read. Its remaining
+lifetime must exceed the read duration; increasing `--timeout` does not
+extend that lifetime. With `client_id`, configure the service-account
+client's token lifespan in Keycloak for the expected read duration. The
+short-lived admin-token example suits small realms. Partial or failed
+pulls publish no directory snapshot or freshness proof.
+
 ### `[identity.oidc]`
 
 | Key | Default | Meaning |
