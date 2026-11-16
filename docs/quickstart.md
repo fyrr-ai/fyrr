@@ -2,18 +2,27 @@
 
 Index a Markdown folder on your machine, then search and fetch it from
 Claude Code over MCP. No Docker, accounts or embedding keys are needed.
-Allow about ten minutes, mostly for the first build. You need Linux x86-64
-and the [build prerequisites](../CONTRIBUTING.md#build-host), except Docker.
+The first build downloads dependencies. You need Linux x86-64, git, curl,
+unzip, openssl, Python 3.11+, rustup, uv, a C compiler, jq, binutils and
+about 10 GiB free. Install Claude Code before connecting the client.
 Run the commands from the repository root in one shell.
 
 ## 1. Build and start toy embeddings
 
 ```sh
-scripts/doctor --local
+git clone https://github.com/fyrr-ai/fyrr.git
+cd fyrr
 export PATH="$HOME/.cargo/bin:$PATH"
+scripts/doctor --local
 cargo build --locked -p fyrr
 export PATH="$PWD/target/debug:$PATH" VIRTUAL_ENV="$PWD/connectors/.venv"
 python3 examples/quickstart/toy-embeddings.py &
+FYRR_TOY_EMBEDDINGS_PID=$!
+for attempt in $(seq 1 50); do
+  curl -fsS -o /dev/null http://127.0.0.1:8089/v1/models && break
+  sleep 0.2
+done
+kill -0 "$FYRR_TOY_EMBEDDINGS_PID" && curl -fsS -o /dev/null http://127.0.0.1:8089/v1/models
 ```
 
 The toy service matches words. For semantic results, choose an
@@ -32,7 +41,7 @@ python3 - "$HOME" "$FYRR_CONFIG" <<'PY'
 from pathlib import Path
 import json, sys
 text = Path("examples/quickstart/fyrr.toml").read_text()
-uri = (Path(sys.argv[1]) / ".local/share/fyrr/notes").as_uri()
+uri = (Path(sys.argv[1]).resolve() / ".local/share/fyrr/notes").as_uri()
 text = text.replace('"file:///home/you/.local/share/fyrr/notes"', json.dumps(uri))
 Path(sys.argv[2]).write_text(text)
 PY
@@ -65,7 +74,8 @@ Start Claude anywhere and ask:
 > and quote the documentation.
 
 Claude calls `search` and `fetch`. The default mirror is
-`~/.cache/fyrr/notes`. `--scope user` registers fyrr for all your projects;
+`$XDG_CACHE_HOME/fyrr/notes` when `XDG_CACHE_HOME` is absolute, otherwise
+`$HOME/.cache/fyrr/notes`. `--scope user` registers fyrr for all your projects;
 other MCP clients use the same executable, arguments and environment.
 
 ## Optional: see permissions in action
@@ -75,7 +85,7 @@ Docker; `examples/quickstart/run --s3` checks the same flow on the fixture.
 The [permission configuration](../examples/quickstart/permissions.toml)
 publishes handbook and payroll folders. Ada (`grp:engineering`) sees only
 the handbook; Grace (`grp:finance`) sees payroll. The runner verifies both
-identities and refuses Ada's payroll fetch.
+identities; Ada's payroll fetch returns no documents.
 
 ## 4. Add Slack or another connector
 
@@ -91,15 +101,16 @@ readers = ["usr:me"]
 include = ["general", "eng-*"]
 [sources.settings]
 workspace_id = "T0123ABCD"
-token = { env = "SLACK_USER_TOKEN" }
+token = { env = "FYRR_SLACK_TOKEN" }
 ```
 
 ```sh
-export SLACK_USER_TOKEN="xoxp-…"
+(cd connectors && uv sync --locked --extra slack)
+export FYRR_SLACK_TOKEN="xoxp-…"
 fyrr writer sync && fyrr writer commit
 ```
 
 See [Slack](connectors/slack.md) for token scopes and channel rules, or the
 [connectors index](connectors/README.md). Only the writer needs the token;
-Claude sees publications within 30 seconds. Stop toy embeddings with
-`kill %1`; remove the client entry with `claude mcp remove fyrr --scope user`.
+the reader checks for publications automatically. Stop toy embeddings with
+`kill "$FYRR_TOY_EMBEDDINGS_PID"`; remove the client entry with `claude mcp remove fyrr --scope user`.
