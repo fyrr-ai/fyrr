@@ -216,6 +216,42 @@ async fn mirror_population_crash_boundaries_recover_verified_bytes() {
             );
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
+        if stage == "downloaded" {
+            let cache = root.join("mirror");
+            let mirror = MirrorStore::new(cache.clone(), 1024).unwrap();
+            std::fs::write(
+                root.join("source/namespace/dataset.lance/data/other.lance"),
+                b"other",
+            )
+            .unwrap();
+            let target = Arc::new(
+                object_store::local::LocalFileSystem::new_with_prefix(root.join("source")).unwrap(),
+            );
+            let store = mirror.wrap("namespace", target);
+            let started = std::time::Instant::now();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                store.get(&Path::from("namespace/dataset.lance/data/other.lance")),
+            )
+            .await;
+            // Kill before asserting so a failure cannot leave a paused child.
+            if result.is_err() {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("unrelated object blocked behind a paused download");
+            }
+            assert_eq!(result.unwrap().unwrap().bytes().await.unwrap(), "other");
+            assert!(started.elapsed() < std::time::Duration::from_secs(1));
+            mirror.evict_unpinned().await.unwrap();
+            assert!(
+                std::fs::read_dir(&cache).unwrap().any(|entry| entry
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext == "partial")),
+                "startup and sweep preserve the active download"
+            );
+        }
         child.kill().unwrap();
         child.wait().unwrap();
         let cache = root.join("mirror");

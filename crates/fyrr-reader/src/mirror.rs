@@ -314,7 +314,7 @@ impl MirrorStore {
                         return Err(StorageUnavailable);
                     }
                     if Self::cache_name(&entry.file_name().to_string_lossy(), ".partial") {
-                        Self::remove_partial(&entry.path()).map_err(|_| StorageUnavailable)?;
+                        Self::remove_idle_partial(&entry.path()).map_err(|_| StorageUnavailable)?;
                     }
                 }
             }
@@ -379,7 +379,10 @@ impl MirrorStore {
         Ok(file)
     }
     async fn host_lock(&self) -> std::io::Result<std::fs::File> {
-        let file = Self::private_file(&self.directory.join("mirror.lock"), true)?;
+        Self::lock_file(&self.directory.join("mirror.lock")).await
+    }
+    async fn lock_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+        let file = Self::private_file(path, true)?;
         loop {
             match file.try_lock() {
                 Ok(()) => return Ok(file),
@@ -481,10 +484,9 @@ impl MirrorStore {
         for entry in std::fs::read_dir(&self.directory)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
-            // The host lock excludes every live download. Cancelled and crashed
-            // partials can therefore be removed without following any links.
+            // A per-object lock protects active downloads outside the global lock.
             if Self::cache_name(&name, ".partial") {
-                Self::remove_partial(&entry.path())?;
+                Self::remove_idle_partial(&entry.path())?;
             }
             if Self::cache_name(&name, ".blob") && !allowed.contains(&name) {
                 expired.insert(entry.path());
@@ -502,6 +504,14 @@ impl MirrorStore {
             Verifications::forget(&file);
         }
         Ok(())
+    }
+    fn remove_idle_partial(path: &std::path::Path) -> std::io::Result<()> {
+        let lock = Self::private_file(&path.with_extension("download"), true)?;
+        match lock.try_lock() {
+            Ok(()) => Self::remove_partial(path),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(()),
+            Err(std::fs::TryLockError::Error(error)) => Err(error),
+        }
     }
     fn remove_partial(file: &std::path::Path) -> std::io::Result<()> {
         match std::fs::symlink_metadata(file) {

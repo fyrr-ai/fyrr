@@ -53,7 +53,10 @@ impl ObjectStore for MirrorStore {
             self.record(&counters, Io::Hit, 1);
             return Ok(result);
         }
-        // Hits and local reads never hold the miss/eviction lock.
+        // Same-object downloads are single-flight across processes.
+        let _object = Self::lock_file(&file.with_extension("download"))
+            .await
+            .map_err(|_| Self::failure())?;
         let _lock = self.lock.lock().await;
         let _host = self.host_lock().await.map_err(|_| Self::failure())?;
         if let Some((opened, metadata)) = self
@@ -65,25 +68,35 @@ impl ObjectStore for MirrorStore {
             self.record(&counters, Io::Hit, 1);
             return Ok(result);
         }
+        drop(_host);
+        drop(_lock);
         self.record(&counters, Io::Request, 1);
         let metadata = self.target().head(location).await?;
         if metadata.size > self.max_bytes {
             return self.pass_through(location, options, &counters).await;
         }
+        let _lock = self.lock.lock().await;
+        let _host = self.host_lock().await.map_err(|_| Self::failure())?;
+        let temporary = file.with_extension("partial");
+        Self::remove_partial(&temporary).map_err(|_| Self::failure())?;
         if !self.make_room(metadata.size)? {
+            drop(_host);
+            drop(_lock);
             self.record(&counters, Io::Request, 1);
             let result = self.target().get_opts(location, options).await?;
             self.record(&counters, Io::Bytes, result.range.end - result.range.start);
             return Ok(result);
         }
-        let temporary = file.with_extension("partial");
-        Self::remove_partial(&temporary).map_err(|_| Self::failure())?;
         let mut output = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(&temporary)
             .map_err(|_| Self::failure())?;
+        // Sparse length reserves capacity across all processes before downloading.
+        output.set_len(metadata.size).map_err(|_| Self::failure())?;
+        drop(_host);
+        drop(_lock);
         self.record(&counters, Io::Request, 1);
         let mut stream = self.target().get(location).await?.into_stream();
         let mut hasher = Sha256::new();
@@ -105,6 +118,8 @@ impl ObjectStore for MirrorStore {
         }
         #[cfg(test)]
         tests::pause("downloaded");
+        let _lock = self.lock.lock().await;
+        let _host = self.host_lock().await.map_err(|_| Self::failure())?;
         let checksum = file.with_extension("checksum");
         // Readers never trust a checksum until it matches the complete immutable blob.
         let mut proof = Self::private_file(&checksum, true).map_err(|_| Self::failure())?;
@@ -163,7 +178,7 @@ impl ObjectStore for MirrorStore {
 }
 
 impl MirrorStore {
-    // The caller retains the process and host miss locks through the download.
+    // The caller holds global locks; active partial lengths reserve incoming bytes.
     fn make_room(&self, incoming: u64) -> Result<bool> {
         let pinned_files = self.live_files().map_err(|_| Self::failure())?;
         let mut entries = Vec::new();
@@ -172,6 +187,23 @@ impl MirrorStore {
             let entry = entry.map_err(|_| Self::failure())?;
             let name = entry.file_name();
             let name = name.to_string_lossy();
+            if Self::cache_name(&name, ".partial") {
+                let path = entry.path();
+                let lock = Self::private_file(&path.with_extension("download"), true)
+                    .map_err(|_| Self::failure())?;
+                match lock.try_lock() {
+                    Ok(()) => Self::remove_partial(&path).map_err(|_| Self::failure())?,
+                    Err(std::fs::TryLockError::WouldBlock) => {
+                        let metadata = path.symlink_metadata().map_err(|_| Self::failure())?;
+                        if !Self::owned_private_file(&metadata) {
+                            return Err(Self::failure());
+                        }
+                        used += metadata.len();
+                    }
+                    Err(_) => return Err(Self::failure()),
+                }
+                continue;
+            }
             if !Self::cache_name(&name, ".blob") {
                 continue;
             }
