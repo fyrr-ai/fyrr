@@ -316,6 +316,8 @@ type SharedReaderResources = (
     Arc<MirrorStore>,
     Arc<std::sync::Mutex<AuthorizationCache>>,
     Arc<embedding::QueryEmbeddings>,
+    crate::storage::ArtifactCache<PolicyArtifact>,
+    crate::storage::ArtifactCache<IdentityArtifact>,
 );
 
 /// The SQL predicate and mask belong to one completed request-filter scan.
@@ -339,7 +341,7 @@ pub struct PreparedReader {
     pub manifest: ContentManifest,
     pub(crate) head: ServingHead,
     policy: Arc<PolicyArtifact>,
-    policy_cache: crate::storage::ArtifactCache<PolicyArtifact>,
+    pub(crate) policy_cache: crate::storage::ArtifactCache<PolicyArtifact>,
     identity: Arc<IdentityArtifact>,
     pub(crate) identity_cache: crate::storage::ArtifactCache<IdentityArtifact>,
     scope: scope::RequestScope,

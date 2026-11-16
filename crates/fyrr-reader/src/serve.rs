@@ -97,6 +97,8 @@ struct PreparationContext {
     budget: crate::generation::MemoryPool,
     control_backend: Arc<dyn object_store::ObjectStore>,
     control_root: object_store::path::Path,
+    policy_cache: crate::storage::ArtifactCache<fyrr_core::publication::PolicyArtifact>,
+    identity_cache: crate::storage::ArtifactCache<fyrr_core::identity::IdentityArtifact>,
 }
 struct RequestTiming {
     arrived: Instant,

@@ -171,6 +171,8 @@ pub(super) fn prepare_version(
                     context.mirror.clone(),
                     context.cache.clone(),
                     context.query_embeddings.clone(),
+                    context.policy_cache.clone(),
+                    context.identity_cache.clone(),
                 )),
                 context.budget.clone(),
             )

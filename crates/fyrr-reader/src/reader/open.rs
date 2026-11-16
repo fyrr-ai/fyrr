@@ -34,30 +34,45 @@ impl PreparedReader {
             .mirror_directory(&ProcessEnvironment)
             .ok_or(StorageConfigurationInvalid)?;
         MirrorStore::private_directory(&mirror_path).map_err(|_| StorageUnavailable)?;
-        let (shared_session, mirror, admission_cache, query_embeddings) =
-            if let Some((session, mirror, cache, queries)) = shared {
-                (session.upgrade(), mirror, cache, queries)
-            } else {
-                (
-                    None,
-                    Arc::new(MirrorStore::new(
-                        mirror_path.join(digest(
-                            format!(
-                                "{}:{}",
-                                config.storage.endpoint.as_deref().unwrap_or(""),
-                                dataset_uri(config)
-                            )
-                            .as_bytes(),
-                        )),
-                        config.reader.mirror_max_bytes,
-                    )?),
-                    Arc::new(std::sync::Mutex::new(AuthorizationCache::default())),
-                    embedding::QueryEmbeddings::new(
-                        &config.embedding,
-                        preparation_budget.permits.clone(),
-                    )?,
-                )
-            };
+        let (
+            shared_session,
+            mirror,
+            admission_cache,
+            query_embeddings,
+            policy_cache,
+            identity_cache,
+        ) = if let Some((session, mirror, cache, queries, policies, identities)) = shared {
+            (
+                session.upgrade(),
+                mirror,
+                cache,
+                queries,
+                policies,
+                identities,
+            )
+        } else {
+            (
+                None,
+                Arc::new(MirrorStore::new(
+                    mirror_path.join(digest(
+                        format!(
+                            "{}:{}",
+                            config.storage.endpoint.as_deref().unwrap_or(""),
+                            dataset_uri(config)
+                        )
+                        .as_bytes(),
+                    )),
+                    config.reader.mirror_max_bytes,
+                )?),
+                Arc::new(std::sync::Mutex::new(AuthorizationCache::default())),
+                embedding::QueryEmbeddings::new(
+                    &config.embedding,
+                    preparation_budget.permits.clone(),
+                )?,
+                Arc::default(),
+                Arc::default(),
+            )
+        };
         mirror.bind_dataset(&dataset_uri(config))?;
         let control_backend = store;
         let store = mirror.wrap("control", control_backend.clone());
@@ -82,12 +97,32 @@ impl PreparedReader {
             return Err(EmbeddingProfileMismatch);
         }
         let mirror = Arc::new(mirror.for_publication(&manifest));
-        let policy = artifact::<PolicyArtifact>(store.as_ref(), &root, &head.policy)
-            .await
-            .map_err(|_| AuthorizationUnavailable)?;
-        let identity = artifact::<IdentityArtifact>(store.as_ref(), &root, &head.identity)
-            .await
-            .map_err(|_| AuthorizationUnavailable)?;
+        let policy = {
+            let mut cached = policy_cache.lock().await;
+            if cached
+                .as_ref()
+                .is_none_or(|(pointer, _)| pointer != &head.policy)
+            {
+                let policy = artifact::<PolicyArtifact>(store.as_ref(), &root, &head.policy)
+                    .await
+                    .map_err(|_| AuthorizationUnavailable)?;
+                *cached = Some((head.policy.clone(), Arc::new(policy)));
+            }
+            cached.as_ref().ok_or(AuthorizationUnavailable)?.1.clone()
+        };
+        let identity = {
+            let mut cached = identity_cache.lock().await;
+            if cached
+                .as_ref()
+                .is_none_or(|(pointer, _)| pointer != &head.identity)
+            {
+                let identity = artifact::<IdentityArtifact>(store.as_ref(), &root, &head.identity)
+                    .await
+                    .map_err(|_| AuthorizationUnavailable)?;
+                *cached = Some((head.identity.clone(), Arc::new(identity)));
+            }
+            cached.as_ref().ok_or(AuthorizationUnavailable)?.1.clone()
+        };
         if config.reader.http.is_none() {
             Self::predicate(config, &identity, &policy, None)?;
         }
@@ -102,16 +137,6 @@ impl PreparedReader {
             )
             .await?;
         let indexes = verify_indices(&dataset, &manifest, config).await?;
-        let policy = Arc::new(policy);
-        let identity = Arc::new(identity);
-        let policy_cache = Arc::new(tokio::sync::Mutex::new(Some((
-            head.policy.clone(),
-            policy.clone(),
-        ))));
-        let identity_cache = Arc::new(tokio::sync::Mutex::new(Some((
-            head.identity.clone(),
-            identity.clone(),
-        ))));
         let mut reader = Self {
             #[cfg(test)]
             test_hooks: Arc::default(),
