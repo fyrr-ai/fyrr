@@ -72,6 +72,7 @@ pub(super) struct LocalStore {
     root: Path,
     lock: PathBuf,
     directory: Arc<File>,
+    root_identity: (u64, u64),
     cleanup_directories: Option<Arc<std::sync::Mutex<std::collections::BTreeSet<PathBuf>>>>,
 }
 
@@ -106,11 +107,14 @@ impl LocalStore {
                 "network file systems are not supported",
             ));
         }
+        let directory = Arc::new(File::open(root)?);
+        let metadata = directory.metadata()?;
         Ok(Self {
             inner: Arc::new(LocalFileSystem::new().with_fsync(true)),
             root: Path::from_absolute_path(root).map_err(std::io::Error::other)?,
             lock: root.join(LOCK),
-            directory: Arc::new(File::open(root)?),
+            directory,
+            root_identity: (metadata.dev(), metadata.ino()),
             cleanup_directories: None,
         })
     }
@@ -406,13 +410,7 @@ impl LocalStore {
         let root_path = self.lock.parent().expect("storage root");
         let current_root =
             std::fs::symlink_metadata(root_path).map_err(|error| failure(&target, error))?;
-        let opened_root = self
-            .directory
-            .metadata()
-            .map_err(|error| failure(&target, error))?;
-        if !current_root.is_dir()
-            || current_root.dev() != opened_root.dev()
-            || current_root.ino() != opened_root.ino()
+        if !current_root.is_dir() || (current_root.dev(), current_root.ino()) != self.root_identity
         {
             return Err(failure(
                 &target,
