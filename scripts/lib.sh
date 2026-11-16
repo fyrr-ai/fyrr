@@ -19,6 +19,19 @@ PROTOC_DIR="$ROOT/target/tools/protoc"
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+# Keep output paths inside this checkout while sharing compiler actions across
+# worktrees. Never let an unrelated build collect a running test's executables.
+export MBX_TARGET_VIEWS=0
+export MBX_GC_MAX_SIZE="${MBX_GC_MAX_SIZE:-10GiB}"
+export MBX_GC_MIN_FREE_SIZE="${MBX_GC_MIN_FREE_SIZE:-12GiB}"
+export MBX_SUMMARY="${MBX_SUMMARY:-short}"
+cargo() {
+  case "${1:-}" in
+    build|test|check|clippy) mbx "$@" ;;
+    *) "$CARGO_BIN/cargo" "$@" ;;
+  esac
+}
+
 # Fetch the pinned protoc into target/tools once; verify its checksum.
 ensure_protoc() {
   local bin="$PROTOC_DIR/bin/protoc"

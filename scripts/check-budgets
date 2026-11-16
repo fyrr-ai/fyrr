@@ -31,9 +31,15 @@ binary_size() {
 declare -A measured
 measured[dependencies.full]="$(dependency_count)"
 measured[dependencies.reader_only]="$(dependency_count --no-default-features)"
-log "building release binaries for the size budget"
-measured[binary_size.full]="$(binary_size full)"
-measured[binary_size.reader_only]="$(binary_size reader-only --no-default-features)"
+if [[ "${1:-}" == --prebuilt ]]; then
+  # Only the release orchestrator opts into the artifacts it just verified.
+  measured[binary_size.full]="$(stat -c %s "$OUT/fyrr-full")"
+  measured[binary_size.reader_only]="$(stat -c %s "$OUT/fyrr-reader-only")"
+else
+  log "building release binaries for the size budget"
+  measured[binary_size.full]="$(binary_size full)"
+  measured[binary_size.reader_only]="$(binary_size reader-only --no-default-features)"
+fi
 
 if [[ "${1:-}" == "--record" ]]; then
   for key in "${!measured[@]}"; do

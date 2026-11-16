@@ -50,12 +50,15 @@ log "assembling fyrr $VERSION in ${DIR#"$ROOT"/}"
 "$ROOT/scripts/doctor" >"$DIR/doctor.log" 2>&1 || { tail -n 20 "$DIR/doctor.log"; die "scripts/doctor failed"; }
 
 # --- binaries (the pinned release profile of budgets.toml) ------------------
-log "building the full release binary"
-build_release -p fyrr
-cp "$ROOT/target/release/fyrr" "$DIR/fyrr-$VERSION-$PLATFORM"
-log "building the reader-only release binary"
-build_release -p fyrr --no-default-features
-cp "$ROOT/target/release/fyrr" "$DIR/fyrr-reader-$VERSION-$PLATFORM"
+log "verifying release feature isolation and binary budgets"
+"$ROOT/scripts/check-reader-only" --release >"$DIR/reader-only.log" 2>&1 || {
+  tail -n 30 "$DIR/reader-only.log"; die "release reader-only verification failed"
+}
+"$ROOT/scripts/check-budgets" --prebuilt >"$DIR/budgets.log" 2>&1 || {
+  cat "$DIR/budgets.log"; die "release budgets failed"
+}
+cp "$ROOT/target/budget/fyrr-full" "$DIR/fyrr-$VERSION-$PLATFORM"
+cp "$ROOT/target/budget/fyrr-reader-only" "$DIR/fyrr-reader-$VERSION-$PLATFORM"
 chmod 0755 "$DIR/fyrr-$VERSION-$PLATFORM" "$DIR/fyrr-reader-$VERSION-$PLATFORM"
 "$DIR/fyrr-$VERSION-$PLATFORM" --version | grep -q 'full build' || die "the full binary does not report the full build"
 "$DIR/fyrr-reader-$VERSION-$PLATFORM" --version | grep -q 'reader-only build' || die "the reader binary does not report the reader-only build"

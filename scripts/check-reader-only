@@ -56,6 +56,23 @@ needed() {
 
 OUT="$ROOT/target/budget"
 mkdir -p "$OUT"
+if [[ "${1:-}" != --release ]]; then
+  [[ $# == 0 ]] || die "usage: scripts/check-reader-only [--release]"
+  # CI already compiled both CLI variants. Graph and DT_NEEDED checks do not
+  # need optimization or LTO; the release artifact feature proof runs on tags.
+  if [[ "${FYRR_CI_PREBUILT:-}" != 1 ]]; then
+    "$ROOT/scripts/ci-cases" build
+  fi
+  full_needed="$(needed "$ROOT/target/ci-build/full/fyrr")"
+  grep -q '^libpython' <<<"$full_needed" || die "full debug control needs no libpython"
+  reader_needed="$(needed "$ROOT/target/ci-build/reader/fyrr")"
+  if grep -qi python <<<"$reader_needed"; then die "reader-only debug binary links Python"; fi
+  echo "control: the full debug binary needs $(grep '^libpython' <<<"$full_needed")"
+  echo "ok: the reader-only debug binary needs only: $(tr '\n' ' ' <<<"$reader_needed")"
+  echo "release artifact feature isolation: n/e (scripts/release)"
+  exit 0
+fi
+[[ $# == 1 ]] || die "usage: scripts/check-reader-only [--release]"
 # Controls run first so the final CLI artifact has normal release features.
 build_release -p fyrr --features fyrr-reader/test-store --bin fyrr --message-format=json > "$OUT/test-store-artifacts.jsonl"
 build_release -p fyrr --bin fyrr --message-format=json > "$OUT/full-artifacts.jsonl"

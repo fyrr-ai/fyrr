@@ -37,6 +37,12 @@ for component in rustfmt clippy; do
   fi
 done
 
+if [[ "$(mbx --version 2>/dev/null)" == "mbx 1.30.0" ]]; then
+  ok "mr-boxington 1.30.0 (mise.toml)"
+else
+  bad "mr-boxington 1.30.0 missing; run: mise install"
+fi
+
 if deny_version="$(cargo deny --version 2>/dev/null)" && [[ "$deny_version" == "cargo-deny $CARGO_DENY_VERSION" ]]; then
   ok "$deny_version"
 else

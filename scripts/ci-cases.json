@@ -213,8 +213,7 @@
     "cases": [
       "full:fyrr-reader:test:real_s3/lance_dataset_round_trips_through_real_s3"
     ],
-    "seconds": 15,
-    "quick": true
+    "seconds": 15
   },
   "cli-full": {
     "cases": [
@@ -265,8 +264,7 @@
         "full:fyrr:test:dense_path/block4::unverified_attestation_does_not_renew_authorization"
       ]
     },
-    "seconds": 90,
-    "quick": true
+    "seconds": 90
   },
   "s3-coordination": {
     "cases": [
@@ -398,8 +396,7 @@
       "full:fyrr:test:dense_path/mirror_identity::running_http_reader_never_serves_a_revoked_grant_of_a_replaced_namespace_on_real_s3",
       "full:fyrr:test:dense_path/mirror_identity::running_reader_never_serves_a_replaced_namespace_incarnation_on_real_s3"
     ],
-    "seconds": 30,
-    "quick": true
+    "seconds": 30
   },
   "s3-identity": {
     "cases": [
@@ -1380,14 +1377,7 @@
       "python:connectors/tests/test_sdk_contracts.py::test_testkit_requires_a_minimum_in_the_installed_series[next-series]",
       "python:connectors/tests/test_sdk_contracts.py::test_testkit_requires_a_minimum_in_the_installed_series[oldest]",
       "python:connectors/tests/test_sdk_contracts.py::test_testkit_requires_a_minimum_in_the_installed_series[stable-series]",
-      "python:connectors/tests/test_sdk_contracts.py::test_testkit_validation_stays_active_with_optimized_python",
-      "python:connectors/tests/test_ci_plan.py::test_shards_execute_every_s3_owner_once[1]",
-      "python:connectors/tests/test_ci_plan.py::test_shards_execute_every_s3_owner_once[4]",
-      "python:connectors/tests/test_ci_plan.py::test_shards_execute_every_s3_owner_once[6]",
-      "python:connectors/tests/test_ci_plan.py::test_quick_gate_is_a_nonempty_subset_of_the_full_suite",
-      "python:connectors/tests/test_ci_plan.py::test_invalid_shards_are_rejected[0/6]",
-      "python:connectors/tests/test_ci_plan.py::test_invalid_shards_are_rejected[7/6]",
-      "python:connectors/tests/test_ci_plan.py::test_invalid_shards_are_rejected[1/0]"
+      "python:connectors/tests/test_sdk_contracts.py::test_testkit_validation_stays_active_with_optimized_python"
     ]
   },
   "python-example": {

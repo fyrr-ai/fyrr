@@ -1,72 +1,54 @@
 #!/usr/bin/env bash
-# The one local CI command. Runs every check in order, keeps going after a
-# failure, and keeps full logs under target/ci-logs/<UTC timestamp>/:
-# ci.log (everything), one log per step, and summary.txt. A test step that
-# selects zero tests fails: a green run with nothing selected proves nothing.
+# The same complete test suite locally and on GitHub. Compile each variant
+# once, execute exact owned cases, and run bounded real-S3 rows on isolated
+# fixtures. Keep going after failures; unselected/release-only checks are n/e.
+# Logs and per-step counts live under target/ci-logs/<stamp>/summary.txt.
 #
-# Steps: doctor, rustfmt, clippy (full workspace and reader-only builds), test-target
-# case ownership guard, unit tests, contract fixtures, configuration, schema drift,
-# tools/list golden, CLI and privacy sentinel (full and reader-only builds),
-# reference docs against both builds' --help, the config schema and the MCP fixtures,
-# the internal fyrr-eval tool, reader-only link check (dependency graph and linked binary), licenses and
-# advisories (cargo-deny), Python connector SDK, example provider (test kit),
-# example wheels installed without rebuilding fyrr, budgets, optional images,
-# the README quickstart (local storage by default, --s3 on its own fixture),
-# the real-executable rows on local storage,
-# independent real-S3 selections (RustFS fixture).
-#
-#   scripts/ci            the checks above
-#   scripts/ci --debug-only   exclude release link/size checks (reported n/e)
-#   scripts/ci --step=NAME    run named steps only (repeatable; others n/e)
-#   scripts/ci --images   also scripts/images: build both images, test the
-#                         derived image, mounted wheels and compose, check the
-#                         image-size budgets (slow; otherwise "not evaluated")
+# scripts/ci [--jobs=N] [--step=NAME ...]
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT"
 
-IMAGES=0
-DEBUG_ONLY=0
 ONLY_STEPS=0
-QUICK=0
-GROUP=all
-SHARD=
+JOBS="${FYRR_CI_JOBS:-$(python3 - <<'JOBS'
+import os
+from pathlib import Path
+memory = dict((line.split(':')[0], int(line.split()[1]))
+              for line in Path('/proc/meminfo').read_text().splitlines())
+# Reserve 2 GiB for the host, allow up to 8 GiB of the configured swap, and
+# budget 4 GiB per fixture/row. Cargo builds finish before any rows start.
+capacity = memory['MemAvailable'] + min(memory['SwapFree'], 8 * 1024**2)
+print(max(1, min(6, len(os.sched_getaffinity(0)), (capacity - 2 * 1024**2) // (4 * 1024**2))))
+JOBS
+)}"
+S3_ROW=
 declare -A REQUESTED_STEPS=() SEEN_STEPS=()
 for arg in "$@"; do
   case "$arg" in
-    --images) IMAGES=1 ;;
-    --debug-only) DEBUG_ONLY=1 ;;
-    --quick) QUICK=1; DEBUG_ONLY=1 ;;
-    --group=*) GROUP="${arg#--group=}" ;;
-    --shard=*) SHARD="${arg#--shard=}"; GROUP=s3 ;;
+    --jobs=*) JOBS="${arg#--jobs=}" ;;
+    --s3-row=*)
+      S3_ROW="${arg#--s3-row=}"
+      ONLY_STEPS=1
+      REQUESTED_STEPS["real S3: ${S3_ROW#s3-}"]=1
+      JOBS=1
+      ;;
     --step=*)
       name="${arg#--step=}"
       [[ -n "$name" ]] || die "--step requires an exact step name"
       ONLY_STEPS=1
       REQUESTED_STEPS["$name"]=1
       ;;
-    *) die "unknown argument $arg (use --images, --debug-only, --quick, --group=NAME, --shard=K/N or --step=NAME)" ;;
+    *) die "unknown argument $arg (use --jobs=N or --step=NAME)" ;;
   esac
 done
-if ((DEBUG_ONLY && IMAGES)); then
-  die "--debug-only cannot be combined with --images"
-fi
-case "$GROUP" in all|build|lint|python|core|docs|s3|release) ;; *) die "unknown group: $GROUP" ;; esac
-declare -A SELECTED_S3=()
-row_args=()
-((!QUICK)) || row_args+=(--quick)
-[[ -z "$SHARD" ]] || row_args+=("--shard=$SHARD")
-selected_rows="$("$ROOT/scripts/ci-cases" rows s3 "${row_args[@]}")" || die "invalid S3 selection"
-while IFS= read -r row; do
-  [[ -z "$row" ]] || SELECTED_S3["real S3: ${row#s3-}"]=1
-done <<<"$selected_rows"
+[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer"
+# Harness cases that inspect process-wide descriptors need serial execution.
+# Independent real-S3 rows run concurrently on separate fixtures below.
+export RUST_TEST_THREADS="${RUST_TEST_THREADS:-1}"
 # The drift test rewrites goldens when this is set; CI must only compare.
 unset FYRR_UPDATE_GOLDEN
-# Some unit cases inspect process-wide descriptors. Match the hosted runner's
-# serial harness policy locally as well; rows have their own child concurrency.
-export RUST_TEST_THREADS="${RUST_TEST_THREADS:-1}"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-LOGS="$ROOT/target/ci-logs/$STAMP"
+LOGS="${FYRR_CI_LOG_DIR:-$ROOT/target/ci-logs/$STAMP}"
 mkdir -p "$LOGS" "$ROOT/target/tmp"
 exec > >(tee "$LOGS/ci.log") 2>&1
 
@@ -74,48 +56,13 @@ declare -a ROWS
 STEP=0
 FAILED=0
 
-selected() {
-  local name="$1" group
-  if ((ONLY_STEPS)) && [[ ! ${REQUESTED_STEPS["$name"]+selected} ]]; then return 1; fi
-  case "$name" in
-    "real S3: "*) group=s3; [[ ${SELECTED_S3["$name"]+selected} ]] || return 1 ;;
-    "build test executables"|"test-case ownership guard") group=build ;;
-    rustfmt|"Rust source line length (reader)"|clippy*|"licenses and advisories") group=lint ;;
-    "python connector SDK"|"example provider (test kit)") group=python ;;
-    "reference docs"|"example wheels without rebuild"|quickstart*) group=docs ;;
-    "reader-only link check"|budgets|images*) group=release ;;
-    doctor) return 0 ;;
-    *) group=core ;;
-  esac
-  if ((QUICK)) && [[ "$name" == "quickstart example (S3)" ]]; then return 1; fi
-  [[ "$GROUP" == all || "$GROUP" == "$group" ]]
-}
-
-ensure_build() {
-  if [[ "${FYRR_CI_PREBUILT:-}" != 1 ]]; then
-    "$ROOT/scripts/ci-cases" build || return 1
-    export FYRR_CI_PREBUILT=1
-  fi
-}
-
-ownership_check() { ensure_build && "$ROOT/scripts/ci-cases" check; }
-run_cases() { ensure_build && "$ROOT/scripts/ci-cases" run "$1"; }
-reference_docs() {
-  ensure_build && "$ROOT/scripts/check-docs" \
-    "$ROOT/target/ci-build/full/fyrr" "$ROOT/target/ci-build/reader/fyrr"
-}
-quickstart() {
-  ensure_build && "$ROOT/scripts/ci-cases" binary full >/dev/null &&
-    FYRR_CI_PREBUILT=1 "$ROOT/examples/quickstart/run" "$@"
-}
-
 # step <name> <counts: cargo|pytest|none> <command...>
 step() {
   local name="$1" kind="$2"
   shift 2
   SEEN_STEPS["$name"]=1
-  if ! selected "$name"; then
-    not_evaluated "$name" "not selected by this group, quick gate, shard or --step"
+  if ((ONLY_STEPS)) && [[ ! ${REQUESTED_STEPS["$name"]+selected} ]]; then
+    not_evaluated "$name" "not selected by --step"
     return
   fi
   STEP=$((STEP + 1))
@@ -155,9 +102,24 @@ step() {
   fi
 }
 
-case_step() {
-  step "$1" cargo run_cases "$2"
+ensure_build() {
+  if [[ "${FYRR_CI_PREBUILT:-}" != 1 ]]; then
+    "$ROOT/scripts/ci-cases" build || return 1
+    export FYRR_CI_PREBUILT=1
+  fi
 }
+run_cases() { ensure_build && "$ROOT/scripts/ci-cases" run "$1"; }
+case_step() { step "$1" cargo run_cases "$2"; }
+ownership_check() { ensure_build && "$ROOT/scripts/ci-cases" check; }
+reference_docs() {
+  ensure_build && "$ROOT/scripts/check-docs" \
+    "$ROOT/target/ci-build/full/fyrr" "$ROOT/target/ci-build/reader/fyrr"
+}
+quickstart() {
+  ensure_build && "$ROOT/scripts/ci-cases" binary full >/dev/null &&
+    FYRR_CI_PREBUILT=1 "$ROOT/examples/quickstart/run" "$@"
+}
+reader_link_check() { ensure_build && "$ROOT/scripts/check-reader-only"; }
 
 FIXTURE_STARTED=0
 KEYCLOAK_STARTED=0
@@ -181,7 +143,7 @@ real_s3_setup() {
       "$ROOT/scripts/s3-fixture" stop && "$ROOT/scripts/s3-fixture" start
     } || return 1
   fi
-  if ! "$ROOT/scripts/keycloak-fixture" status >/dev/null 2>&1; then
+  if [[ "${FYRR_CI_NEEDS_KEYCLOAK:-1}" == 1 ]] && ! "$ROOT/scripts/keycloak-fixture" status >/dev/null 2>&1; then
     KEYCLOAK_STARTED=1
     "$ROOT/scripts/keycloak-fixture" start || {
       "$ROOT/scripts/keycloak-fixture" stop && "$ROOT/scripts/keycloak-fixture" start
@@ -190,11 +152,11 @@ real_s3_setup() {
   local exports
   FYRR_SCIM_HEALTH_TEST_BINARY="$("$ROOT/scripts/ci-cases" binary full:fyrr-writer:lib:fyrr_writer)" || return 1
   FYRR_ROUTING_TEST_BINARY="$("$ROOT/scripts/ci-cases" binary full:fyrr-reader:lib:fyrr_reader)" || return 1
-  "$ROOT/scripts/s3-fixture" status &&
-    exports="$("$ROOT/scripts/s3-fixture" env)" &&
-    eval "$exports" &&
-    exports="$("$ROOT/scripts/keycloak-fixture" env)" &&
-    eval "$exports"
+  exports="$("$ROOT/scripts/s3-fixture" env)" && eval "$exports" || return 1
+  if [[ "${FYRR_CI_NEEDS_KEYCLOAK:-1}" == 1 ]]; then
+    exports="$("$ROOT/scripts/keycloak-fixture" env)" && eval "$exports" || return 1
+  fi
+
 }
 
 real_s3_selection() {
@@ -208,20 +170,56 @@ real_s3_selection() {
 }
 
 real_s3() {
-  # Independent cases share a 4 GiB fixture. Keep them serial; concurrency
-  # remains inside each case, with its real worker and lease deadlines intact.
   local -x RUST_TEST_THREADS=1 FYRR_SCIM_HEALTH_TEST_BINARY FYRR_ROUTING_TEST_BINARY
-  local ready=1 required=0 name
-  for name in "${!SELECTED_S3[@]}"; do
-    if selected "$name"; then required=1; fi
-  done
-  if ((required)); then
-    real_s3_setup || ready=0
-  fi
-  local row
+  local -a selected_rows=()
+  local row name line
   while IFS= read -r row; do
-    step "real S3: ${row#s3-}" cargo real_s3_selection "$ready" "$ROOT/scripts/ci-cases" run "$row"
+    name="real S3: ${row#s3-}"
+    if ((!ONLY_STEPS)) || [[ ${REQUESTED_STEPS["$name"]+selected} ]]; then
+      selected_rows+=("$row")
+    else
+      not_evaluated "$name" "not selected by --step"
+    fi
   done < <("$ROOT/scripts/ci-cases" rows s3)
+  ((${#selected_rows[@]})) || return 0
+  if [[ -n "$S3_ROW" ]]; then
+    local ready=1
+    local -x FYRR_CI_NEEDS_KEYCLOAK=0
+    [[ "$S3_ROW" != s3-identity ]] || FYRR_CI_NEEDS_KEYCLOAK=1
+    real_s3_setup || ready=0
+    step "real S3: ${S3_ROW#s3-}" cargo real_s3_selection "$ready" "$ROOT/scripts/ci-cases" run "$S3_ROW"
+    return
+  fi
+  if ! ensure_build; then
+    for row in "${selected_rows[@]}"; do
+      step "real S3: ${row#s3-}" cargo real_s3_selection 0 false
+    done
+    return
+  fi
+  "$ROOT/scripts/ci-cases" binary full >/dev/null || return 1
+  log "running ${#selected_rows[@]} real-S3 rows with up to $JOBS independent fixtures"
+  # Every worker has an immutable full build, private fixture names/data and
+  # logs. xargs waits for all workers even when one returns a failure.
+  printf '%s\0' "${selected_rows[@]}" >"$LOGS/s3-rows.txt"
+  if ! xargs -0 -r -P "$JOBS" -I{} bash -c '
+    row="$1"; directory="$2/$row"
+    mkdir -p "$directory"
+    FYRR_CI_LOG_DIR="$directory" FYRR_FIXTURE_ID="ci-$3-$row" FYRR_CI_PREBUILT=1 \
+      "$4/scripts/ci" "--s3-row=$row" >"$directory/runner.log" 2>&1
+  ' _ {} "$LOGS" "$$" "$ROOT" <"$LOGS/s3-rows.txt"; then
+    FAILED=$((FAILED + 1))
+  fi
+  for row in "${selected_rows[@]}"; do
+    STEP=$((STEP + 1))
+    SEEN_STEPS["real S3: ${row#s3-}"]=1
+    line="$(grep -E '^real S3: .* (pass|FAIL) ' "$LOGS/$row/summary.txt" 2>/dev/null)" || line=
+    if [[ -z "$line" ]]; then
+      FAILED=$((FAILED + 1))
+      ROWS+=("$(printf '%-38s %-5s %7s %7s %8s %6ss  %s' "real S3: ${row#s3-}" FAIL 0 0 0 0 "missing worker summary: ${LOGS#"$ROOT"/}/$row/runner.log")")
+    else
+      ROWS+=("$line")
+    fi
+  done
 }
 
 # The real-executable rows on `file://` storage need no fixture, only the
@@ -294,7 +292,6 @@ not_evaluated() {
 
 log "fyrr ci: logs in ${LOGS#"$ROOT"/}"
 step "doctor" none "$ROOT/scripts/doctor"
-step "build test executables" none ensure_build
 step "rustfmt" none cargo fmt --all --check
 step "Rust source line length (reader)" none "$ROOT/scripts/check-line-length" \
   "$ROOT/crates/fyrr-reader/src" "$ROOT/crates/fyrr-core/src/layout.rs" \
@@ -314,25 +311,14 @@ case_step "privacy sentinel (full build)" privacy-full
 case_step "privacy sentinel (reader-only build)" privacy-reader
 step "reference docs" none reference_docs
 case_step "fyrr-eval (internal tool)" eval
-if ((DEBUG_ONLY)); then
-  not_evaluated "reader-only link check" "release builds excluded by --debug-only"
-else
-  step "reader-only link check" none "$ROOT/scripts/check-reader-only"
-fi
+step "reader-only link check" none reader_link_check
+not_evaluated "release feature isolation" "scripts/release checks release artifacts"
 step "licenses and advisories" none cargo deny --locked check
 step "python connector SDK" pytest python_checks
 step "example provider (test kit)" pytest example_provider
 step "example wheels without rebuild" none example_wheels
-if ((DEBUG_ONLY)); then
-  not_evaluated "budgets" "release builds excluded by --debug-only"
-else
-  step "budgets" none "$ROOT/scripts/check-budgets"
-fi
-if ((IMAGES)); then
-  step "images (build, derived, compose)" none "$ROOT/scripts/images"
-else
-  not_evaluated "images (build, derived, compose)" "run scripts/ci --images"
-fi
+not_evaluated "budgets" "release size checks run in scripts/release"
+not_evaluated "images (build, derived, compose)" "image checks run in scripts/release"
 # Before real_s3: the quickstart starts and stops its own fixture.
 step "quickstart example (local storage)" none quickstart
 step "quickstart example (S3)" none quickstart --s3

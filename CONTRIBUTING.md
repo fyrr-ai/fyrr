@@ -12,7 +12,7 @@ GNU utilities. Other platforms are not tested.
 
 Prerequisites: git, curl, unzip, openssl, Python 3, Docker with the compose
 plugin, rustup, uv,
-cargo-deny 0.20.2, binutils (`readelf`), jq, a C compiler, and about 10 GiB
+cargo-deny 0.20.2, mise with `mise install` (mr-boxington 1.30.0), binutils (`readelf`), jq, a C compiler, and about 10 GiB
 of free space for `target/`.
 
 ```sh
@@ -61,66 +61,67 @@ providers`. The Python SDK has its own tests:
 
 ```sh
 scripts/ci              # every check
-scripts/ci --images     # also builds and tests both images (slow)
-scripts/ci --debug-only # excludes release link/size checks (reported n/e)
+scripts/ci --jobs=2     # bound concurrent real-S3 rows (default: CPU/memory based)
 scripts/ci --step=configuration "--step=schema drift" # exact names; others n/e
-scripts/ci --quick      # PR gate: core checks and three real-S3 smoke rows
-scripts/ci --debug-only --shard=2/6 # one balanced real-S3 shard
-scripts/ci --debug-only --group=python # the same group used by hosted CI
 ```
 
 `scripts/ci` runs doctor, rustfmt, clippy for the workspace and the
 reader-only build, the test-case ownership guard, unit, contract,
 configuration, schema, CLI and privacy tests in both builds, the `fyrr-eval`
-tests, the reader-only link check, `cargo deny`, the Python SDK and example
-provider, budgets, the README quickstart on S3 and on local storage
+tests, the debug reader-only link check, `cargo deny`, the Python SDK and example
+provider, the README quickstart on S3 and on local storage
 (`examples/quickstart/run [--s3]`), the local-storage row and the real-S3
 rows against local fixtures. It keeps going after a failure and writes
 `target/ci-logs/<UTC stamp>/` with one log per step and `summary.txt`.
 
-Test executables are built once per full/reader feature set. The inventory
-and every Rust row use those exact executables, including child campaigns;
-rows never change Cargo's feature unification or rebuild dependencies. Both
-CLI variants are preserved separately and restored to Cargo's embedded
-binary path before each row. Keep one CI process per checkout.
+Compilation runs through the pinned mr-boxington (`mbx`) shared action
+store. Shell build helpers call `mbx` with rustup's Cargo first on `PATH`;
+`ci-cases` uses the same route. Plain Cargo is used for graph/metadata,
+formatting and advisory commands that do not compile. Each test feature set
+is built once; the ownership inventory and exact row selectors execute
+those artifacts directly. The full and reader CLI binaries are preserved
+separately and restored to Cargo's embedded executable path before each row.
 
-Hosted CI runs build/ownership, lint and Python concurrently. Core tests,
-docs/quickstarts and S3 jobs download the build job's compressed executable
-artifact and do not compile Rust. Build and worker jobs must use the same
-Ubuntu version and checkout path because Rust embeds executable and fixture
-paths. `FYRR_CI_PREBUILT=1` explicitly selects that artifact and fails if its
-manifest is absent. Local runs build first by default.
-`scripts/ci-cases archive` creates `target/ci-tests.tar.zst` without packaging
-Cargo's dependency tree or test output.
+Real-S3 rows run in a bounded pool, longest estimated rows first. Each row
+has a private RustFS fixture and data directory; only the identity row starts
+Keycloak. The default is at most six rows, bounded by CPUs, available memory
+and configured swap. `--jobs=N` or `FYRR_CI_JOBS=N` overrides it. Rows are
+serial within a fixture. Keep one CI process per checkout; separate
+worktrees share compiler results without sharing writable Cargo outputs.
 
-Pull requests run all non-release checks, local storage, the local quickstart,
-and `s3-native-lance-roundtrip`, `s3-block4` and `s3-namespace-contracts`.
-The S3 quickstart and all other S3 rows run on main, nightly and manual full
-runs. Every build checks ownership of the entire inventory, including cases
-outside the PR gate. S3 rows use the estimated `seconds` weights in
-`scripts/ci-cases.json` to partition into disjoint balanced shards; `quick`
-marks smoke rows. The SDK tests verify the partition for one, four and six
-shards. Workers use independent fixtures and run their rows serially.
-Groups are `build`, `lint`, `python`, `core`, `docs`, `s3` and `release`.
-No flags still selects every group locally. Checks outside a selection are
-reported as `n/e`.
+The same complete suite runs locally, on PRs, main, nightly and manual
+workflow runs. There is no separate fast gate. GitHub uses the pinned
+`jdx/mr-boxington-action` with its GitHub cache backend. Default-branch pushes
+save; PRs restore only. Trusted manual runs may also save, allowing cache
+validation on a branch. Target snapshots and the action store are distinct:
+local worktrees share the action store under `~/.cache/mbx` (or
+`MBX_CACHE_DIR`), while the action restores a pruned target snapshot on
+hosted runners.
 
-Debug dependency caches are keyed by the locked graph, toolchain and compiler
-settings, without a commit SHA. The cache action removes workspace binaries,
-incremental output and unused dependencies before saving. Build and clippy
-use separate caches; executable artifacts expire after one day. Release,
-budget and image jobs run only on public repositories on main or tags;
-private repositories report these checks as `n/e`.
+Repository scripts disable managed target relocation: this checkout owns
+its `target/`, including fixtures and logs. This also keeps another build's
+cache collection from evicting executables during direct test execution.
+The shared action store defaults to a 10 GiB budget and 12 GiB minimum free
+space (`MBX_GC_MAX_SIZE`, `MBX_GC_MIN_FREE_SIZE` override these). For other
+projects, mbx's managed targets can also collect old worktree outputs;
+this repository retains its own target directories. Never share a writable
+`CARGO_TARGET_DIR` between worktrees.
+
+Fat-LTO release links, release artifact feature-isolation checks, binary
+budgets and image tests run in `scripts/release` on tags. CI retains the
+normal dependency-graph checks and proves that its debug reader-only
+binary has no Python dependency, with the full debug binary as a positive
+control. CI reports the release-only rows as `n/e`.
 
 Read `summary.txt` the way CI does:
 
 - a test step that selected zero tests **fails**;
-- a check that did not run is `n/e` (not evaluated), never passed; without
-  `--images` the images row is `n/e`;
+- a check that did not run is `n/e` (not evaluated), never passed;
+  release-only rows are `n/e`;
 - report the per-step passed, failed and ignored counts with your change.
 
 Changes to `docker/`, the SDK's packaging, provider install paths or
-anything that moves image size need `scripts/ci --images`.
+anything that moves image size need `scripts/images` in addition to CI.
 
 | Script | What it does |
 | --- | --- |
@@ -130,7 +131,7 @@ anything that moves image size need `scripts/ci --images`.
 | `scripts/check-reader-only` | Proves the reader-only build links no writer, Python or PyO3. |
 | `scripts/check-budgets [--record]` | Dependency counts and release binary sizes against `budgets.toml`. |
 | `scripts/images [--record]` | Builds, tests and measures both images. |
-| `scripts/release` | Assembles versioned local release artifacts with SHA-256 sums; it publishes nothing itself (see [Releasing](#releasing)). |
+| `scripts/release` | Verifies release isolation and budgets, then assembles versioned local release artifacts with SHA-256 sums; it publishes nothing itself (see [Releasing](#releasing)). |
 
 Run a single real-S3 row like this:
 
@@ -194,6 +195,6 @@ not create.
 
 `scripts/release` uploads nothing. Pushing a `v*` tag that matches the
 workspace version in `Cargo.toml` starts `.github/workflows/release.yml`: it
-runs CI (`scripts/ci --images`) and, only if CI passes, publishes the output
+runs CI (`scripts/ci`) and, only if CI passes, publishes the output
 of `scripts/release` as a GitHub release and pushes both images to GHCR.
 When tagging, rename `[Unreleased]` in `CHANGELOG.md` to `[X.Y.Z] - YYYY-MM-DD`.
