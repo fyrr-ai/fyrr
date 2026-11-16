@@ -111,8 +111,10 @@ visibility, and mirror/storage identity. Each has a private RustFS fixture
 and data directory. The Keycloak integration row uses local storage and a
 private real Keycloak fixture. `scripts/ci-cases plan` lists every case and
 its owner/backend; child cases stay owned with the parent that executes them.
-The default is at most six cases, bounded by CPUs, available memory
-and configured swap, reserving memory for concurrent core gates.
+The default is bounded by CPUs and available RAM, allowing 2 GiB per case
+and reserving 4 GiB for concurrent core gates and external services. Swap
+is not counted as working memory. Per-case results include sampled peak
+process-tree RSS (shared pages may be counted twice; containers are separate).
 `--jobs=N` or `FYRR_CI_JOBS=N` overrides it. Each case owns its fixture.
 Keep one top-level CI process per checkout; separate
 worktrees share compiler results without sharing writable Cargo outputs.

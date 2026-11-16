@@ -317,6 +317,38 @@ async def pool(manifest, logs, jobs, rows):
     capacity = asyncio.Semaphore(jobs)
     started = time.monotonic()
     results = collections.defaultdict(list)
+    active = {}
+    peaks = collections.defaultdict(int)
+
+    async def sample_memory():
+        # Sum resident memory over each owned process tree. Shared pages can be
+        # counted twice; this is a conservative sizing signal, not physical PSS.
+        page_kib = os.sysconf("SC_PAGE_SIZE") // 1024
+        while True:
+            processes = {}
+            for entry in Path("/proc").iterdir():
+                if not entry.name.isdigit():
+                    continue
+                try:
+                    fields = (entry / "stat").read_text().rsplit(") ", 1)[1].split()
+                    processes[int(entry.name)] = (
+                        int(fields[1]),
+                        int(fields[21]) * page_kib,
+                    )
+                except (FileNotFoundError, ProcessLookupError, PermissionError):
+                    continue
+            totals = collections.defaultdict(int)
+            for pid, (_, rss) in processes.items():
+                ancestor = pid
+                while ancestor in processes and ancestor not in active:
+                    ancestor = processes[ancestor][0]
+                if ancestor in active:
+                    totals[active[ancestor]] += rss
+            for case, rss in totals.items():
+                peaks[case] = max(peaks[case], rss)
+            await asyncio.sleep(0.5)
+
+    sampler = asyncio.create_task(sample_memory())
     task = asyncio.current_task()
     asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
 
@@ -347,6 +379,7 @@ async def pool(manifest, logs, jobs, rows):
                     stderr=asyncio.subprocess.STDOUT,
                     start_new_session=True,
                 )
+                active[process.pid] = case
                 try:
                     code = await process.wait()
                 finally:
@@ -360,6 +393,7 @@ async def pool(manifest, logs, jobs, rows):
                             await process.wait()
                         except ProcessLookupError:
                             await process.wait()
+                    active.pop(process.pid, None)
             duration = time.monotonic() - began
             title = row_title(row)
             summary = directory / "summary.txt"
@@ -381,6 +415,7 @@ async def pool(manifest, logs, jobs, rows):
             result = {
                 "row": row,
                 "case": case,
+                "peak_rss_kib": peaks[case],
                 "status": status,
                 "passed": passed,
                 "failed": failed,
@@ -393,7 +428,14 @@ async def pool(manifest, logs, jobs, rows):
             results[row].append(result)
             print("ci-scenario " + json.dumps(result), flush=True)
 
-    await asyncio.gather(*(execute(row, case) for row, case in selected))
+    try:
+        await asyncio.gather(*(execute(row, case) for row, case in selected))
+    finally:
+        sampler.cancel()
+        try:
+            await sampler
+        except asyncio.CancelledError:
+            pass
     for row in rows:
         items = results[row]
         status = "pass" if all(item["status"] == "pass" for item in items) else "FAIL"

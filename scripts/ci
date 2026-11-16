@@ -24,15 +24,16 @@ import os
 from pathlib import Path
 memory = dict((line.split(':')[0], int(line.split()[1]))
               for line in Path('/proc/meminfo').read_text().splitlines())
-# Reserve 4 GiB for the host and concurrent core gates, allow up to 8 GiB of swap, and
-# budget 4 GiB per fixture/row. Cargo builds finish before any rows start.
-capacity = memory['MemAvailable'] + min(memory['SwapFree'], 8 * 1024**2)
+# Reserve 4 GiB for core gates and Docker fixtures. Representative case process trees
+# peaked below 0.5 GiB; allow 2 GiB per worker for larger cases and shared-page
+# overcounting. Do not treat swap as available working memory.
+capacity = memory['MemAvailable']
 limit = Path('/sys/fs/cgroup/memory.max')
 usage = Path('/sys/fs/cgroup/memory.current')
 if limit.exists() and limit.read_text().strip().isdigit():
     available = max(0, int(limit.read_text()) - int(usage.read_text())) // 1024
-    capacity = min(capacity, available + min(memory['SwapFree'], 8 * 1024**2))
-print(max(1, min(6, len(os.sched_getaffinity(0)), (capacity - 4 * 1024**2) // (4 * 1024**2))))
+    capacity = min(capacity, available)
+print(max(1, min(len(os.sched_getaffinity(0)), (capacity - 4 * 1024**2) // (2 * 1024**2))))
 JOBS
 )}"
 SCENARIO_ROW=
