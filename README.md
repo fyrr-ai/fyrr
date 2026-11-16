@@ -49,43 +49,12 @@ database or cluster to operate.
 
 ## Quick start
 
-Search a folder of Markdown from Claude Code, using a private directory
-on your machine. No Docker, accounts or embedding keys are needed. You need
-Linux x86-64 and the [build prerequisites](CONTRIBUTING.md#build-host), except
-Docker. Run from the repository root in one shell:
-
-```sh
-scripts/doctor --local
-export PATH="$HOME/.cargo/bin:$PATH"
-cargo build --locked -p fyrr
-export PATH="$PWD/target/debug:$PATH" VIRTUAL_ENV="$PWD/connectors/.venv"
-python3 examples/quickstart/toy-embeddings.py &  # word matching, no model
-
-mkdir -p "$HOME/.config/fyrr"
-export FYRR_CONFIG="$HOME/.config/fyrr/quickstart.toml"
-python3 - "$HOME" "$FYRR_CONFIG" <<'PYCONFIG'
-from pathlib import Path
-import json, sys
-text = Path("examples/quickstart/fyrr.toml").read_text()
-uri = (Path(sys.argv[1]) / ".local/share/fyrr/notes").as_uri()
-text = text.replace('"file:///home/you/.local/share/fyrr/notes"', json.dumps(uri))
-Path(sys.argv[2]).write_text(text)
-PYCONFIG
-export FYRR_IDENTITY_KEY="${FYRR_IDENTITY_KEY:-$(openssl rand -hex 32)}"  # keep for future sessions
-fyrr config check
-fyrr writer namespace create && fyrr writer sync && fyrr writer commit
-
-claude mcp add fyrr --scope user \
-  -e FYRR_IDENTITY_KEY="$FYRR_IDENTITY_KEY" \
-  -- "$PWD/target/debug/fyrr" --config "$FYRR_CONFIG" reader serve
-```
-
-Ask Claude to "use fyrr search and fetch to find where the reader keeps its
-mirror". [The quickstart](docs/quickstart.md) explains how to choose your own
-Markdown folder, add Slack and see Ada/Grace permissions in action.
-`examples/quickstart/run` verifies the local flow without Docker;
-`examples/quickstart/run --s3` verifies it on the S3 fixture. For a
-shared/production deployment using S3, see [deployment](docs/deployment.md).
+Follow the [quickstart](docs/quickstart.md) to search a Markdown folder from
+Claude Code using a private local directory. It needs Linux x86-64 and the
+[build prerequisites](CONTRIBUTING.md#build-host), except Docker; no accounts
+or embedding keys are needed. The guide also covers adding Slack and trying
+Ada/Grace permissions. For shared deployments, see
+[deployment](docs/deployment.md).
 
 ## When not to use fyrr
 
@@ -109,7 +78,7 @@ shared/production deployment using S3, see [deployment](docs/deployment.md).
 
 | Page | Content |
 | --- | --- |
-| [Quickstart](docs/quickstart.md) | The quick start above, step by step |
+| [Quickstart](docs/quickstart.md) | Build, configure and search a local folder |
 | [How fyrr works](docs/architecture.md) | Terms, publication, authorization and retrieval |
 | [Security model](docs/security.md), [HTTP login and users](docs/http-users.md) | Trust boundaries, permissions, secrets; enrolling HTTP users |
 | [Deployment](docs/deployment.md), [Operations](docs/operations.md) | Production setup, images, scheduling; monitoring, restore, upgrades |
