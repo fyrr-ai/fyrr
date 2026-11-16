@@ -103,27 +103,33 @@ test('first-ask and repeated-query latency have independent controls and diagnos
   assert(!diagnostic.includes('data-system="onyx"'));
   assert(!diagnostic.includes('data-system="pipeshub"'));
 });
-test('ingest overview derives throughput only from completed timed ingests', () => {
+test('ingest overview uses the reported throughput and never infers a missing rate', () => {
   const data = structuredClone(fixture);
   data.benchmark.documents = 20_000;
-  data.systems[0].metrics.ingest_seconds = { status: 'measured', value: 1200, unit: 'seconds', n: 1 };
-  data.systems[1].metrics.ingest_seconds = { status: 'partial', value: 600, unit: 'seconds', n: 1 };
-  data.systems[2].metrics.ingest_seconds = { status: 'measured', value: 0, unit: 'seconds', n: 1 };
+  data.systems[0].metrics.ingest_wall_s = { status: 'measured', value: 1200, unit: 'seconds', n: 1 };
+  data.systems[0].metrics.ingest_docs_per_min = { status: 'measured', value: 777, unit: 'docs/min', n: 1 };
+  data.systems[1].metrics.ingest_wall_s = { status: 'partial', value: 600, unit: 'seconds', n: 1 };
+  data.systems[2].metrics.ingest_wall_s = { status: 'measured', value: 0, unit: 'seconds', n: 1 };
   const html = renderScoreboard(parseResults(data));
-  assert(html.includes('data-score-metric="ingest_seconds"'));
+  assert(html.includes('data-score-metric="ingest_wall_s"'));
   assert(html.includes('1,200 s'));
-  assert(html.includes('1,000 docs/min'));
+  assert(html.includes('777 docs/min'));
+  assert(!html.includes('1,000 docs/min'));
   assert(!html.includes('2,000 docs/min'));
   assert(!html.includes('Infinity'));
   assert.equal((html.match(/n\/e docs\/min/g) ?? []).length, 2);
   assert(!html.includes('fyrr@jev-rerank'));
+  data.systems[0].metrics.ingest_docs_per_min.value = 0;
+  assert(renderScoreboard(data).includes('0 docs/min'));
+  data.systems[0].metrics.ingest_docs_per_min.status = 'partial';
+  assert(renderScoreboard(data).includes('0 docs/min *'));
 });
 test('ingest story stacks only exposed elapsed stages within total wall time', () => {
   const data = structuredClone(fixture);
   const system = data.systems[0];
-  system.metrics.ingest_seconds = { status: 'measured', value: 1200, unit: 'seconds', n: 1 };
+  system.metrics.ingest_wall_s = { status: 'measured', value: 1200, unit: 'seconds', n: 1 };
   system.metrics.embedding_cost_usd = { status: 'measured', value: 2, unit: 'USD', n: 1 };
-  data.website.metrics.ingest_preprocessing_seconds = { key: 'ingest_preprocessing_seconds', label: 'Preprocessing', unit: 'seconds', group: 'ingest', direction: 'lower_is_better', ci: null, stage_of: 'ingest_seconds', stage_order: 0 };
+  data.website.metrics.ingest_preprocessing_seconds = { key: 'ingest_preprocessing_seconds', label: 'Preprocessing', unit: 'seconds', group: 'ingest', direction: 'lower_is_better', ci: null, stage_of: 'ingest_wall_s', stage_order: 0 };
   system.metrics.ingest_preprocessing_seconds = { status: 'measured', value: 300, unit: 'seconds', n: 1 };
   const html = renderStories(parseResults(data));
   assert(html.includes('Indexes fast.'));

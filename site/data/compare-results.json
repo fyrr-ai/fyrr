@@ -237,8 +237,8 @@
         "tier": "secondary",
         "ci": null
       },
-      "ingest_seconds": {
-        "key": "ingest_seconds",
+      "ingest_wall_s": {
+        "key": "ingest_wall_s",
         "label": "Time to searchable index",
         "unit": "seconds",
         "group": "ingest",
@@ -252,7 +252,7 @@
         "unit": "USD",
         "group": "cost",
         "direction": "lower_is_better",
-        "tier": "primary",
+        "tier": "secondary",
         "ci": null
       },
       "service_count": {
@@ -429,6 +429,16 @@
           "method": "percentile request bootstrap"
         },
         "description": "Fresh query caches; every question asked once after one unrelated index warm-up. Includes embedding-provider time."
+      },
+      "ingest_docs_per_min": {
+        "key": "ingest_docs_per_min",
+        "label": "Ingest throughput",
+        "unit": "docs/min",
+        "group": "ingest",
+        "direction": "higher_is_better",
+        "tier": "primary",
+        "ci": null,
+        "description": "Completed indexed documents divided by submission-to-searchable wall minutes; derived by the benchmark runner."
       }
     },
     "products": {
@@ -696,7 +706,7 @@
     "overview_metrics": [
       "recall_at_10",
       "first_ask_c1_p50_ms",
-      "ingest_seconds",
+      "ingest_wall_s",
       "monthly_cost_usd",
       "service_count",
       "idle_rss_bytes"
@@ -707,7 +717,7 @@
       "service_count": "Services",
       "idle_rss_bytes": "Memory",
       "first_ask_c1_p50_ms": "Speed \u00b7 first ask",
-      "ingest_seconds": "Ingest"
+      "ingest_wall_s": "Ingest"
     },
     "stories": [
       {
@@ -735,7 +745,7 @@
         "description": "Time to index the 20,000 documents, from a fresh index and vector cache until searchable. Lower wall time is better; installation is excluded. Embedding cost is reported separately.",
         "group": "ingest",
         "metrics": [
-          "ingest_seconds"
+          "ingest_wall_s"
         ]
       },
       {
@@ -1014,7 +1024,7 @@
           "provider_calls": 0,
           "artifact": "runtime/fyrr-full/latency.jsonl"
         },
-        "ingest_seconds": {
+        "ingest_wall_s": {
           "status": "n/e",
           "value": null,
           "unit": "seconds",
@@ -1130,6 +1140,19 @@
           "ci95": null,
           "notes": [
             "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "ingest_docs_per_min": {
+          "status": "n/e",
+          "value": null,
+          "unit": "docs/min",
+          "n": 0,
+          "expected": 1,
+          "attempted": 0,
+          "missing": 1,
+          "ci95": null,
+          "notes": [
+            "Awaiting measured ingest throughput from the benchmark runner."
           ]
         }
       },
@@ -1853,7 +1876,7 @@
             "Placeholder: no measurement has been run."
           ]
         },
-        "ingest_seconds": {
+        "ingest_wall_s": {
           "status": "n/e",
           "value": null,
           "unit": "seconds",
@@ -1999,6 +2022,19 @@
           "ci95": null,
           "notes": [
             "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "ingest_docs_per_min": {
+          "status": "n/e",
+          "value": null,
+          "unit": "docs/min",
+          "n": 0,
+          "expected": 1,
+          "attempted": 0,
+          "missing": 1,
+          "ci95": null,
+          "notes": [
+            "Awaiting measured ingest throughput from the benchmark runner."
           ]
         }
       },
@@ -2149,7 +2185,7 @@
             "Placeholder: no measurement has been run."
           ]
         },
-        "ingest_seconds": {
+        "ingest_wall_s": {
           "status": "n/e",
           "value": null,
           "unit": "seconds",
@@ -2295,6 +2331,19 @@
           "ci95": null,
           "notes": [
             "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "ingest_docs_per_min": {
+          "status": "n/e",
+          "value": null,
+          "unit": "docs/min",
+          "n": 0,
+          "expected": 1,
+          "attempted": 0,
+          "missing": 1,
+          "ci95": null,
+          "notes": [
+            "Awaiting measured ingest throughput from the benchmark runner."
           ]
         }
       },
@@ -2548,7 +2597,7 @@
             "No Jev variant measurement yet."
           ]
         },
-        "ingest_seconds": {
+        "ingest_wall_s": {
           "status": "n/e",
           "value": null,
           "unit": "seconds",
@@ -2676,6 +2725,19 @@
           "ci95": null,
           "notes": [
             "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "ingest_docs_per_min": {
+          "status": "n/e",
+          "value": null,
+          "unit": "docs/min",
+          "n": 0,
+          "expected": 1,
+          "attempted": 0,
+          "missing": 1,
+          "ci95": null,
+          "notes": [
+            "Awaiting measured ingest throughput from the benchmark runner."
           ]
         }
       },

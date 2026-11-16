@@ -72,10 +72,12 @@ navigation, data coverage, overflow, uncertainty details, JSON downloads,
 and static map and lighthouse frames with reduced motion. The site uses
 one dark palette, with no light-theme variant.
 
-The overview includes fresh ingest wall time and completed documents per minute.
+The overview reads fresh ingest wall time (`ingest_wall_s`) and throughput
+(`ingest_docs_per_min`) from the results JSON. It does not infer a missing rate.
 The “Indexes fast” chart shows embedding cost as a secondary line. Optional metric
-catalogue fields `stage_of: "ingest_seconds"` and `stage_order` describe disjoint
-elapsed stages in seconds. Cumulative or overlapping work must not use `stage_of`.
+catalogue fields `stage_of: "ingest_wall_s"` and `stage_order` describe disjoint
+submission-to-searchable elapsed stages in seconds. Setup time and cumulative or
+overlapping work must not use `stage_of`.
 Exposed stages are stacked only when they fit within the measured total; remaining
 time is labelled “Other / unreported”. Per-stage measurements stay in details.
 
