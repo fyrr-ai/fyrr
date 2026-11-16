@@ -14,6 +14,41 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
+/// Stop between renewals, never by cancelling a conditional write whose
+/// response may be lost after the store has already committed it.
+pub(crate) struct Renewal {
+    stop: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Renewal {
+    pub(crate) fn spawn<F, Fut>(interval: Duration, mut renew: F) -> Self
+    where
+        F: FnMut() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = bool> + Send,
+    {
+        let (stop, mut stopping) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut stopping => break,
+                    () = tokio::time::sleep(interval) => {}
+                }
+                if !renew().await {
+                    break;
+                }
+            }
+        });
+        Self { stop, task }
+    }
+
+    pub(crate) async fn stop(self) -> Result<()> {
+        let _ = self.stop.send(());
+        self.task.await.map_err(|_| WriterError::RuntimeUnavailable)
+    }
+}
+
 pub(crate) fn new_lease(
     previous: Option<&Lease>,
     now: DateTime<Utc>,
@@ -86,9 +121,10 @@ impl LeaseGuard {
         let lease = Self::acquire(config).await.map_err(E::from)?;
         let keepalive = lease.keepalive();
         let result = body(lease.clone()).await;
-        keepalive.abort();
-        let _ = keepalive.await;
-        let release = lease.release().await;
+        let release = match keepalive.stop().await {
+            Ok(()) => lease.release().await,
+            Err(error) => Err(error),
+        };
         if result.is_ok() {
             release.map_err(E::from)?;
         }
@@ -212,15 +248,15 @@ impl LeaseGuard {
         }
     }
 
-    pub fn keepalive(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+    pub(crate) fn keepalive(self: &Arc<Self>) -> Renewal {
         let guard = self.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(guard.ttl / 3).await;
+        Renewal::spawn(guard.ttl / 3, move || {
+            let guard = guard.clone();
+            async move {
                 let mut state = guard.state.lock().await;
                 if guard.live(&state).is_err() {
                     state.failed = true;
-                    break;
+                    return false;
                 }
                 let mut head = state.head.clone();
                 if let Some(lease) = &mut head.lease {
@@ -233,9 +269,10 @@ impl LeaseGuard {
                     .await
                     .is_err()
                 {
-                    break;
+                    return false;
                 }
                 state.renewed = Instant::now();
+                true
             }
         })
     }
@@ -263,3 +300,6 @@ impl LeaseGuard {
         self.write(&mut state, head, HeadWriteStage::Release).await
     }
 }
+
+#[cfg(test)]
+pub(crate) mod tests;

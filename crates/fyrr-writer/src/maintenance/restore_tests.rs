@@ -244,8 +244,7 @@ async fn restore_drains_restarts_and_caps_attempts_on_storage() {
             let lease = LeaseGuard::acquire(&config).await.unwrap();
             let keepalive = lease.keepalive();
             let drained = restore_boundary(&config, &lease).await;
-            keepalive.abort();
-            let _ = keepalive.await;
+            keepalive.stop().await.unwrap();
             lease.release().await.unwrap();
             assert_eq!(drained, Err(WriterError::RestoreAuthorizationChanged));
             assert_eq!(

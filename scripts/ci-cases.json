@@ -112,7 +112,9 @@
       "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::cached_identity_never_skips_token_or_directory_expiry",
       "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::invalid_identity_digest_never_reuses_cached_grants",
       "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::identity_namespace_and_generation_must_match_the_fresh_head",
-      "full:fyrr-reader:lib:fyrr_reader/storage::tests::ec2_metadata_opt_out_preserves_other_credential_sources"
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::ec2_metadata_opt_out_preserves_other_credential_sources",
+      "full:fyrr-writer:lib:fyrr_writer/lease::tests::namespace_renewal_finishes_before_release_on_local_storage",
+      "full:fyrr-writer:lib:fyrr_writer/sync_lease::tests::cursor_renewal_finishes_before_release_on_local_storage"
     ],
     "children": {
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::lance_append_child_process": [
@@ -278,7 +280,8 @@
     "seconds": 60,
     "cases": [
       "full:fyrr:test:dense_path/coordination::coordination_stale_publish_preserves_authoritative_head_on_real_s3",
-      "full:fyrr:test:dense_path/coordination::coordination_foreign_native_commit_cannot_publish_head_on_real_s3"
+      "full:fyrr:test:dense_path/coordination::coordination_foreign_native_commit_cannot_publish_head_on_real_s3",
+      "full:fyrr-writer:lib:fyrr_writer/lease::tests::renewals_finish_before_release_on_real_s3"
     ]
   },
   "local-correction-durability": {

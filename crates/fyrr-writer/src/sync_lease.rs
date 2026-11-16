@@ -36,10 +36,15 @@ impl CursorLease {
         let lease = rt
             .block_on(Self::acquire(config, source, kind))
             .map_err(ScopeError::Lease)?;
-        let renewal = rt.spawn(lease.clone().renew());
+        let renewal = {
+            let _entered = rt.enter();
+            lease.keepalive()
+        };
         let result = body(&lease);
-        renewal.abort();
-        let release = rt.block_on(lease.release());
+        let release = rt.block_on(async {
+            renewal.stop().await?;
+            lease.release().await
+        });
         if result.is_ok() {
             release.map_err(ScopeError::Lease)?;
         }
@@ -157,47 +162,74 @@ impl CursorLease {
         .map_err(|_| WriterError::SyncLeaseLost)?;
         Ok(())
     }
-    pub async fn renew(self: Arc<Self>) {
-        loop {
-            tokio::time::sleep(self.ttl / 3).await;
-            let mut held = self.held.lock().await;
-            if !self.live(&held) {
-                return;
-            }
-            let mut state = held.0.clone();
-            let Ok(ttl) = chrono::Duration::from_std(self.ttl) else {
-                return;
-            };
-            state
-                .lease
-                .as_mut()
-                .unwrap_or_else(|| unreachable!("live cursor lease"))
-                .expires_at = Utc::now() + ttl;
-            match cas_put(
-                self.store.as_ref(),
-                &self.path,
-                &state,
-                PutMode::Update(held.1.clone()),
-            )
-            .await
-            {
-                Ok(result) => *held = (state, result, Instant::now()),
-                Err(_) => {
-                    held.0
-                        .lease
-                        .as_mut()
-                        .unwrap_or_else(|| unreachable!("live cursor lease"))
-                        .expires_at = Utc::now();
-                    return;
+    pub(crate) fn keepalive(self: &Arc<Self>) -> crate::lease::Renewal {
+        let lease = self.clone();
+        crate::lease::Renewal::spawn(self.ttl / 3, move || {
+            let lease = lease.clone();
+            async move {
+                let mut held = lease.held.lock().await;
+                if !lease.live(&held) {
+                    return false;
                 }
+                let mut state = held.0.clone();
+                let Ok(ttl) = chrono::Duration::from_std(lease.ttl) else {
+                    return false;
+                };
+                state
+                    .lease
+                    .as_mut()
+                    .unwrap_or_else(|| unreachable!("live cursor lease"))
+                    .expires_at = Utc::now() + ttl;
+                match cas_put(
+                    lease.store.as_ref(),
+                    &lease.path,
+                    &state,
+                    PutMode::Update(held.1.clone()),
+                )
+                .await
+                {
+                    Ok(result) => *held = (state, result, Instant::now()),
+                    Err(_) => {
+                        held.0
+                            .lease
+                            .as_mut()
+                            .unwrap_or_else(|| unreachable!("live cursor lease"))
+                            .expires_at = Utc::now();
+                        return false;
+                    }
+                }
+                true
             }
-        }
+        })
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    pub(crate) async fn renewal_finishes_before_release(config: &Config) {
+        let mut lease = CursorLease::acquire(config, "renewal", SyncKind::Content)
+            .await
+            .unwrap();
+        let (store, entered, resume) = crate::lease::tests::delayed_store(lease.store.clone());
+        Arc::get_mut(&mut lease).unwrap().store = store;
+        let renewal = lease.keepalive();
+        crate::lease::tests::finish_held_renewal(renewal, entered, resume).await;
+        lease.release().await.unwrap();
+        let next = CursorLease::acquire(config, "renewal", SyncKind::Content)
+            .await
+            .expect("the completed renewal must not leave the cursor leased");
+        assert!(next.state().await.unwrap().lease.unwrap().epoch > 1);
+        next.release().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cursor_renewal_finishes_before_release_on_local_storage() {
+        let (config, root) = crate::lease::tests::local_config("cursor-renewal");
+        renewal_finishes_before_release(&config).await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     #[ignore = "real cursor lease and RustFS; scripts/ci"]
