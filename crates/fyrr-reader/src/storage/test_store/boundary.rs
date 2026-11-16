@@ -70,8 +70,7 @@ impl Client {
                     let mut arguments = std::env::args_os();
                     arguments
                         .find(|arg| arg == "--config")
-                        .and_then(|_| arguments.next())
-                        .or_else(|| std::env::var_os("FYRR_TEST_STORE_CONFIG"))?
+                        .and_then(|_| arguments.next())?
                 };
                 let text = std::fs::read_to_string(path).ok()?;
                 let socket = text
