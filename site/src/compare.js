@@ -45,8 +45,10 @@
     });
   });
   function ratios(cells, direction, heatmap, unit, metricKey) {
+    var metadata = results.website.metrics[metricKey];
+    var comparable = !metadata || metadata.comparable !== false && metadata.scope !== 'fyrr-only';
     var entries = cells.map(function (cell) {
-      var system = metricKey && results.systems.find(function (item) { return (!item.variant || item.variant === 'default' ? item.id : item.id + '@' + item.variant) === cell.dataset.system; });
+      var system = !heatmap && metricKey && results.systems.find(function (item) { return (!item.variant || item.variant === 'default' ? item.id : item.id + '@' + item.variant) === cell.dataset.system; });
       var metric = system ? system.metrics[metricKey] : null;
       return { cell: cell, data: metric ? {
         status: metric.status, value: metric.value, n: metric.n, expected: metric.expected,
@@ -73,6 +75,7 @@
       cell.style.removeProperty('--heat');
       if (!label) return;
       label.classList.remove('is-best');
+      if (!comparable) { label.textContent = 'diagnostic · unranked'; return; }
       if (!measured.includes(entry) || !direction) { label.textContent = data.status === 'partial' ? 'partial · unranked' : cell.classList.contains('score-cell') ? '' : 'n/e comparison'; return; }
       var divisor = direction === 'higher_is_better' ? data.value : best;
       var ratio = data.value === best ? 1 : divisor === 0 ? Infinity : (direction === 'higher_is_better' ? best : data.value) / divisor;
@@ -129,7 +132,7 @@
     });
     document.querySelectorAll('[data-detail-metric]').forEach(function (row) {
       row.hidden = !metrics.includes(row.dataset.detailMetric) || row.dataset.detailMetric !== detailMetric.value || !row.querySelector('th').textContent.toLowerCase().includes(detailSearch.value.toLowerCase()) || !systems.length;
-      ratios(Array.from(row.querySelectorAll('td[data-system]')).filter(function (cell) { return !cell.hidden; }), row.dataset.direction, true, results.website.metrics[row.dataset.detailMetric] && results.website.metrics[row.dataset.detailMetric].unit);
+      ratios(Array.from(row.querySelectorAll('td[data-system]')).filter(function (cell) { return !cell.hidden; }), row.dataset.direction, true, results.website.metrics[row.dataset.detailMetric] && results.website.metrics[row.dataset.detailMetric].unit, row.dataset.detailMetric);
     });
     document.getElementById('selection-status').textContent = systems.length ? metrics.length ? systems.length + ' systems · ' + metrics.length + ' metrics selected.' : 'No metrics selected.' : 'No systems selected.';
     var url = new URL(location.href);
