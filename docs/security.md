@@ -112,7 +112,7 @@ link. An inactive canonical user is denied everywhere. The keys are in
 - Error messages, logs, cursors, telemetry and status output never carry
   document text, titles, identities, e-mail addresses, query text or secret
   values. `crates/fyrr/tests/privacy.rs` plants markers in all of these and
-  asserts that no CLI path prints or writes them.
+  asserts that the CLI paths it drives do not print or write them.
 - Directory snapshots, membership batches, SCIM state and stored provider
   credentials are encrypted with AES-256-GCM under `identity.encryption_key`.
   This covers those writer inputs only, not published content.
@@ -125,7 +125,7 @@ link. An inactive canonical user is denied everywhere. The keys are in
 ## Worker isolation
 
 All Python runs in `fyrr writer __worker` child processes, one per source
-and sync kind, with a timeout that also kills descendants, a memory limit
+(provider discovery uses its own worker), with a timeout that also kills descendants, a memory limit
 (`writer.worker_memory_max_bytes`), no core dumps and provider stdout and
 stderr discarded. Results return over a size-capped socket with fixed
 diagnostic codes, never Python exception text. A crash or hang fails only

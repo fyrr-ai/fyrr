@@ -16,8 +16,8 @@ response (names, descriptions, input and output schemas, annotations);
 generated from the Rust types and compared in CI. Terms such as publication
 and pin are defined in [How fyrr works](architecture.md#terms).
 
-Every tool definition and every successful tool response carries the MCP
-contract version in `_meta["fyrr/schema_version"]` and
+Every tool definition carries the MCP contract version in
+`_meta["fyrr/schema_version"]`; every successful response carries it in
 `metadata.schema_version` (currently `2.0`). Returned text is data, not instructions.
 
 ## Transport
@@ -49,7 +49,7 @@ empty result is not an error. Scores only order results.
 | `limit` | 1–75 documents, default 50. With `queries`, per query, default and maximum 20. |
 | `output` | `metadata`, `excerpt` (default) or `content`: what text each hit carries. |
 | `order` | `relevance` (default) or `updated_at`. |
-| `text_hits` | 0–75: only the top `text_hits` hits carry text, the rest metadata only. With `queries`, per query before deduplication. |
+| `text_hits` | 0–75, capped at the effective `limit` and forbidden with `output: "metadata"`: only the top `text_hits` hits carry text, the rest metadata only. With `queries`, per query before deduplication. |
 | `excerpt_chars` | 1–1200: caps the excerpt length. |
 | `sources`, `source_types`, `projects`, `authors` | Exact-match filters, 1–64 values of 1–512 characters each. An unknown value gives an empty result. |
 | `updated_after`, `updated_before` | RFC 3339 instants; exclusive bounds. |
@@ -81,8 +81,9 @@ record. Each document carries the same metadata as a hit plus
 `connector_map` (connector-specific metadata) and `records`
 (`record_id`, `revision`, `text`).
 
-A `window` (`record_id`, `revision`, `start`, `end`, optional `context`)
-returns one span of one record. Offsets count codepoints; `context` is
+A `window` (`record_id`, `revision`, `start`, and exactly one of `end` or
+`context`) returns one span of one record. A top-level `window` also needs
+`source_id` and `root_id`. Offsets count codepoints; `context` is
 0–65536. If the record's text changed, the response sets `document_changed`
 and returns no span. An unknown or denied record returns an ordinary empty
 result, even for an out-of-range offset.
@@ -105,7 +106,7 @@ Its only argument is `deadline_ms`, 1–300000 as for `search`.
 
 ## Errors
 
-A failed call returns `isError: true` with a structured error
+A failed tool call returns `isError: true` with a structured error
 (`schemas/mcp-tool-error.schema.json`) that holds only `code`, `message` and
 `retryable`.
 
@@ -119,10 +120,11 @@ A failed call returns `isError: true` with a structured error
 | `cancelled` | no | The request was cancelled. |
 | `stale_cursor` | no | The cursor is expired, belongs to another subject or its content version changed. |
 | `busy` | yes | The namespace concurrency cap, queue or per-call work budget is exhausted. |
-| `rate_limited` | yes | A per-user or per-group request limit was reached. |
+| `rate_limited` | yes | HTTP boundary only: 429 when a request limit is reached. |
 
-Only Streamable HTTP applies request limits, so only it returns
-`rate_limited`. Error messages never contain document text, identities or
+HTTP boundary refusals (authentication, rate, size and connection limits)
+are HTTP statuses with a body `{"error":"<code>"}`, not tool results.
+`rate_limited` appears only as HTTP 429. Error messages never contain document text, identities or
 query text.
 
 ## Response metadata
@@ -132,11 +134,11 @@ Every successful tool response carries `metadata`:
 | Field | Meaning |
 | --- | --- |
 | `publication_id`, `content_version`, `committed_at` | The publication the request was pinned to. |
-| `degraded` | Lanes that did not contribute: `dense` (no query embedding), `lexical`, `rerank`. |
+| `degraded` | Lanes that did not contribute: `dense` (no query embedding), `rerank`; `lexical` is reserved. |
 | `hidden_sources` | Up to 64 source IDs hidden because their permission or membership freshness expired, among those with at least one row the caller could otherwise read. |
 | `stale_version` | The reader served an older pin than the live head allows (`per-request` mode). |
 | `omitted_bytes` | Bytes clipped from the response. |
-| `telemetry` | `cache` (`hot`, `warm`, `cold`), `queue_wait_ms`, per-stage microseconds in `stage_us`, S3 requests and bytes per stage, candidate counts, `unindexed_rows_scanned`, `filter_rows_scanned`, `embedding_memory_hits`, `embedding_provider_calls`, `routing_strategy`, `routing_fallback`, `rerank_us`. |
+| `telemetry` | `cache` (`hot`, `warm`; `cold` is reserved), `queue_wait_ms`, per-stage microseconds in `stage_us`, S3 requests and bytes per stage, candidate counts, `unindexed_rows_scanned`, `filter_rows_scanned`, `embedding_memory_hits`, `embedding_provider_calls`, `routing_strategy`, `routing_fallback`, `rerank_us`. |
 
 Stage timers are inclusive of their children, so `stage_us` values must not
 be summed; `total` starts when the complete input frame arrives and ends

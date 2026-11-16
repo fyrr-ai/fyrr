@@ -3,7 +3,7 @@
 > **In short**
 >
 > - fyrr has two halves, a writer and a reader, that share nothing but an S3
->   prefix.
+>   prefix or a local directory.
 > - This page defines the terms the other pages use and explains publication,
 >   authorization and retrieval.
 > - Read it when you want to know what happens between a sync and a search
@@ -63,9 +63,10 @@ on a single host a [local directory](configuration.md#local-storage):
 Published versions are retained for `writer.purge_window` and can be
 restored; see [operations](operations.md#restore-and-rollback).
 
-Every artifact carries a `major.minor` contract version. A reader refuses an
-unknown major, and a publication whose retrieval policy it does not match,
-with `incompatible_index`. The exact formats are generated into `schemas/`
+Every artifact carries a `major.minor` contract version. An unknown major
+is refused with `publication_invalid` at startup or
+`authorization_unavailable` on a live request. A publication whose indexes
+or retrieval policy do not match is refused with `incompatible_index`. The exact formats are generated into `schemas/`
 and `fixtures/`.
 
 ## Authorization
@@ -78,8 +79,10 @@ hashed reader tokens it holds.
 Every `search`, `fetch` and `list_filters` call passes three gates:
 
 1. **Admission.** The reader reads the live serving head, policy and
-   identity. Any of them missing, malformed or from another namespace
-   refuses the request with `authorization_unavailable`, as does a subject
+   identity. A malformed head, a head from another namespace, or missing or
+   malformed policy or identity refuses with `authorization_unavailable`.
+   An unreadable head or expired pin gives `storage_unavailable` on stdio.
+   Admission also refuses a subject
    that is not in the identity artifact or holds more than
    `identity.max_tokens_per_user` reader tokens, and an expired directory
    read (`identity.validity_deadline`) when a directory provider is

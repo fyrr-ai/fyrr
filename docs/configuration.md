@@ -90,8 +90,8 @@ Docker. It is for a single host:
   The next mutation removes any temporary control object left by a crashed
   writer, including before purge. Use local file systems only, never NFS,
   SMB or FUSE. A root detected as
-  NFS, SMB/CIFS, Ceph or 9p is refused with `storage_unavailable`. Detection
-  is partial: AFS, FUSE, virtiofs and Lustre are not detected and
+  NFS, SMB/CIFS, AFS, Ceph or 9p is refused with `storage_unavailable`. Detection
+  is partial: FUSE, virtiofs and Lustre are not detected and
   remain unsupported, as do other remote or synchronized file systems.
 - The URI is canonical: absolute, without host, query, `.`, `..` or empty
   segments, with reserved characters such as spaces percent-encoded
@@ -123,12 +123,12 @@ The provider must implement the OpenAI-compatible embeddings protocol.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `endpoint` | required | Base URL of the embeddings API (`…/v1`). |
-| `model` | `BAAI/bge-m3` | 1–512 characters. |
+| `model` | `BAAI/bge-m3` | 1–512 UTF-8 bytes. |
 | `dimensions` | `1024` | 1–8192; must match the model. |
 | `send_dimensions` | `false` | Send `dimensions` in the request. |
-| `prefix` | `""` | At most 4096 characters, applied to documents and queries alike. |
-| `roles.document.prefix`, `roles.query.prefix` | absent | Role-specific prefix of at most 4096 characters, after the shared one. |
-| `roles.document.input_type`, `roles.query.input_type` | absent | 1–128 characters, sent as `input_type` only when configured. |
+| `prefix` | `""` | At most 4096 UTF-8 bytes, applied to documents and queries alike. |
+| `roles.document.prefix`, `roles.query.prefix` | absent | Role-specific prefix of at most 4096 UTF-8 bytes, after the shared one. |
+| `roles.document.input_type`, `roles.query.input_type` | absent | 1–128 UTF-8 bytes, sent as `input_type` only when configured. |
 | `api_key` | absent | `{ env = "VAR" }`. |
 | `batch_size` | `32` | 1–2048 documents per request. |
 | `timeout` | `30s` | Per request; must be greater than zero. |

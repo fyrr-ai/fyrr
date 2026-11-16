@@ -27,10 +27,11 @@ in the [security model](security.md).
 | `oidc` | absent | OIDC settings for HTTP MCP, see below. |
 | `directory` | see below | Canonical directory. |
 
-`validity_deadline` must be at least the longest permission, member or
-directory interval plus `writer.commit.coalescing_timer`, the reader version
-check interval and a five-minute margin; `config check` prints the required
-value.
+`validity_deadline` must cover the longest permission/member interval or
+`identity.directory.sync_interval` (even with `provider = "none"`), plus
+`writer.commit.coalescing_timer`, a five-minute margin and, only in
+`interval` mode, `reader.version_check_interval`. `config check` prints
+the required value.
 
 ### `[identity.directory]`
 

@@ -6,8 +6,8 @@
 >   response size; `[reader.http]` turns on Streamable HTTP MCP.
 > - `[writer]` sets retention windows, document and envelope limits, commit
 >   groups, maintenance, backpressure and `writer serve`.
-> - Every key but the two required `[reader.http]` ones has a default or may
->   stay absent.
+> - Keys have defaults or may stay absent, except `listen` and `public_url`
+>   in `[reader.http]` and `listen` and `operator_token` in `[writer.serve.admin]`.
 
 Durations and byte sizes are written as described under
 [secrets](configuration.md#secrets). The `[reader]` keys for search depth

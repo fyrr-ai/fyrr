@@ -32,7 +32,7 @@ exits 69 and says to use the full image.
 
 | Command | Effect |
 | --- | --- |
-| `config check [--no-env]` | Validates the file, its cross-field rules and, in the full build, every source against the installed provider's schema; then checks that every referenced environment variable is set unless `--no-env`. Prints warnings and errors with key paths; exit 78 on error. |
+| `config check [--no-env]` | Validates the file, its cross-field rules and, in the full build, every source against the installed provider's schema; then checks that every referenced environment variable is set unless `--no-env`. Prints warnings and errors with key paths; exit 78 on invalid configuration, or 1 when installed providers cannot be discovered. |
 | `config show` | Prints every effective value with its origin (`default`, `file`, `env`), sorted by key. Secret fields are redacted; in the reader-only build, or when a provider is unknown or refused, a source's whole `settings` and `scope` are redacted. |
 | `config schema` | Prints the configuration JSON Schema; the full build embeds each installed provider's `settings` and `scope` schema and applies it to `sources[]` by `type`. |
 

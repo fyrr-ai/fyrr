@@ -38,9 +38,8 @@ unresolved rejections and the latest applied complete reads. If one pass
 is insufficient, repeated invocations still make cleanup progress.
 Cleanup does not remove receipts.
 
-Recent or otherwise protected envelopes remain subject to the aggregate
-active-operation limit: roughly 32,000 retained envelope objects when
-other working sets are small. If a protected log approaches that size,
+Recent or protected envelopes count toward the bounded active-operation
+working set. If the command reports `restore_history_summary_limit`,
 lower `writer.max_envelope_age` (default `3d`, also the pending-envelope
 expiry) or lengthen the source sync intervals.
 
@@ -62,7 +61,8 @@ expiry) or lengthen the source sync intervals.
 ## Reader refresh
 
 Readers check the serving head every `reader.version_check_interval` (30 s),
-or at once on `SIGHUP` or HTTP `POST /admin/refresh`. A new version is
+or on `SIGHUP`, or HTTP `POST /admin/refresh` when
+`reader.http.operator_credential` is set (rate-limited to once per five seconds). A new version is
 prepared in the background and activated between requests; a failed
 preparation keeps the old version and retries. A pinned version older than
 `writer.purge_window` stops serving. When the namespace at the reader's
@@ -146,7 +146,10 @@ through `writer serve` with its administration listener before
 `reader check`.
 
 Then point writers and readers at the new file. Keep the old file for
-cleanup: after preparing a verified export,
+cleanup: first copy every namespace object byte-for-byte into an export
+directory, preserving paths relative to the namespace root. The delete
+command checks each saved object against storage before unpublishing:
+
 `fyrr --config fyrr-old.toml writer namespace delete --export EXPORT_DIR`
 unpublishes the old namespace; its objects stay in storage until you remove
 that namespace's objects ([CLI](cli.md)).

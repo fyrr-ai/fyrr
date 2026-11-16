@@ -10,7 +10,7 @@ Builds and tests are supported on **Linux x86-64**: the pinned tools
 (`scripts/pins.env`) are Linux x86-64 binaries and the scripts use Bash and
 GNU utilities. Other platforms are not tested.
 
-Prerequisites: git, curl, unzip, openssl, Python 3, Docker with the compose
+Prerequisites: git, curl, unzip, openssl, Python 3.11 or newer, Docker with the compose
 plugin, rustup, uv,
 cargo-deny 0.20.2, mise with `mise install` (mr-boxington 1.30.0), binutils (`readelf`), jq, a C compiler, and about 10 GiB
 of free space for `target/`.
@@ -20,10 +20,10 @@ scripts/doctor           # all checks, including Docker
 scripts/doctor --local   # local development without Docker
 ```
 
-`scripts/doctor` checks all of that and prepares the pinned tools: the Rust
-toolchain from `rust-toolchain.toml`, a checksum-verified protoc in
-`target/tools`, the uv-managed Python and the locked `connectors/.venv` that
-the full build links against, and the S3 fixture image. It is idempotent.
+`scripts/doctor` checks the pinned Rust toolchain and components and prepares
+checksum-verified protoc in `target/tools`, uv-managed Python and the locked
+`connectors/.venv`. Default mode also prepares the S3 fixture image. Local
+mode warns about missing CI-only mbx and cargo-deny. It is idempotent.
 
 ## Building
 
@@ -73,7 +73,8 @@ scripts/ci --step="reference docs" # standalone reference-doc verification
 
 `scripts/ci` runs doctor, rustfmt, clippy for the workspace and the
 reader-only build, the test-case ownership guard, unit, contract,
-configuration, schema, CLI and privacy tests in both builds, the debug
+configuration and schema tests in the full build, CLI and privacy tests in
+both builds, the debug
 reader-only link check, `cargo deny`, the Python SDK and example
 provider, the quickstart on local storage, local-storage scenarios,
 and a small external-services set against owned RustFS and Keycloak fixtures.

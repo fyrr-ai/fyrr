@@ -6,7 +6,7 @@ The single source for documentation remains the repository's `docs/*.md`.
 
 ## Build and preview
 
-Use Bun 1.4.4 (recorded in `package.json`) and Node.js 22.20 or newer:
+Use Bun 1.4.4 (recorded in `package.json`) and a Node.js version supported by the site dependencies:
 
 ```sh
 cd site
