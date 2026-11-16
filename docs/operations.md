@@ -146,3 +146,7 @@ ones refuses the new publication with `incompatible_index`.
 If a commit reports `head_cas_failed`, the publication may still have become
 visible. `fyrr writer commit --receipt ENVELOPE_ID` checks without writing,
 and a normal commit retry resumes the pending work.
+
+If a sync reports `sync_lease_lost`, it can no longer prove ownership of its
+source cursor lease, so the run stops using that lease rather than advancing
+the cursor without ownership.

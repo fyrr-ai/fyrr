@@ -869,7 +869,7 @@ async fn correction_durability_acl_and_private_mirror_on_storage() {
 }
 
 #[test]
-#[ignore = "final authorization on real executable/RustFS; scripts/ci"]
+#[ignore = "final authorization on real executable/local-storage; scripts/ci"]
 fn correction_inflight_identity_change_on_storage() {
     let (config, root) = setup();
     let text = std::fs::read_to_string(&config).unwrap();
@@ -937,6 +937,7 @@ fn correction_inflight_identity_change_on_storage() {
     writeln!(input, "{request}").unwrap();
     line.clear();
     output.read_line(&mut line).unwrap();
+    assert_eq!(revoke.load(Ordering::SeqCst), 0, "revocation hook fired");
     assert!(line.contains("authorization_unavailable"), "{line}");
     writeln!(input, "{request}").unwrap();
     line.clear();
@@ -955,6 +956,7 @@ fn correction_inflight_identity_change_on_storage() {
     writeln!(input, "{request}").unwrap();
     line.clear();
     output.read_line(&mut line).unwrap();
+    assert_eq!(revoke.load(Ordering::SeqCst), 0, "no-op commit hook fired");
     assert_eq!(
         serde_json::from_str::<Value>(&line).unwrap()["result"]["isError"],
         false
@@ -966,6 +968,7 @@ fn correction_inflight_identity_change_on_storage() {
     // The CLI uses the same semantic output boundary.
     revoke.store(1, Ordering::SeqCst);
     let refused = run(&proxied, &arguments);
+    assert_eq!(revoke.load(Ordering::SeqCst), 0, "CLI revocation hook fired");
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("authorization_unavailable"));
     assert!(refused.stdout.is_empty(), "no stale CLI result is printed");

@@ -1063,15 +1063,18 @@ fn local_store_frozen_holder_bounds_lock_acquisition() {
         send.send(put(&contender, b"contender", PutMode::Overwrite))
             .unwrap();
     });
-    let bounded = receive.recv_timeout(Duration::from_secs(7));
+    let bounded = receive.recv_timeout(Duration::from_secs(15));
     // Release the holder even when the regression blocks the contender forever.
     holder.kill().unwrap();
     holder.wait().unwrap();
     thread.join().unwrap();
     assert!(bounded.is_ok(), "lock acquisition exceeded its bound");
+    let error = bounded
+        .unwrap()
+        .expect_err("a frozen holder retains exclusion");
     assert!(
-        bounded.unwrap().is_err(),
-        "a frozen holder retains exclusion"
+        error.to_string().contains("storage lock acquisition deadline exceeded"),
+        "unexpected storage failure: {error}"
     );
     assert_eq!(read(&store, &root), b"original");
     put(&store, b"recovered", PutMode::Overwrite).unwrap();

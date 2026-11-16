@@ -81,7 +81,9 @@ and `fixtures/`.
 
 A `file://` root stores the same namespace objects and Lance dataset as S3.
 Writers use `.fyrr-storage.lock`, atomic renames and durable version counters
-in extended attributes. Missing or damaged version metadata is refused;
+in extended attributes. Lock contention beyond five seconds fails the write
+with `storage_unavailable`, `head_cas_failed` or `sync_lease_lost`, depending
+on the operation. Missing or damaged version metadata is refused;
 existing namespaces require their original lock file. Publishing the serving
 head flushes the filesystem; Lance uses an atomic create-exclusive link.
 The next mutation reaps crashed control writes. Maintenance and confirmed

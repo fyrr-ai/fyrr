@@ -100,12 +100,6 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
     tokio::time::timeout(Duration::from_secs(10), hooks.scheduler_failed.notified())
         .await
         .expect("scheduler records the failed request and closes admission");
-    assert!(
-        tokio::time::timeout(Duration::from_secs(10), service.refresh())
-            .await
-            .unwrap()
-            .is_err()
-    );
     let after = client.get(format!("{url}/readyz")).send().await.unwrap();
     assert_eq!(
         after.status(),
@@ -115,6 +109,12 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
     assert_eq!(
         after.json::<serde_json::Value>().await.unwrap()["ready"],
         false
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(10), service.refresh())
+            .await
+            .unwrap()
+            .is_err()
     );
     server.abort();
 }

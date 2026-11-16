@@ -549,7 +549,7 @@
       },
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_frozen_holder_bounds_lock_acquisition": {
         "tier": "quick",
-        "seconds": 0.3
+        "seconds": 5.1
       }
     },
     "children": {
