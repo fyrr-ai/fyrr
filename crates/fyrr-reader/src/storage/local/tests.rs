@@ -541,6 +541,18 @@ async fn local_store_root_is_private_and_behaves_like_s3() {
     );
     assert_eq!(native_get.bytes().await.unwrap(), b"native data".as_slice());
 
+    // A retained handle must not validate an absolute path through a replaced root.
+    let moved = root.with_extension("moved");
+    std::fs::rename(&root, &moved).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    assert!(store.get(&native_path).await.is_err());
+    std::fs::remove_dir(&root).unwrap();
+    std::os::unix::fs::symlink(&moved, &root).unwrap();
+    assert!(store.get(&native_path).await.is_err());
+    std::fs::remove_file(&root).unwrap();
+    std::fs::rename(&moved, &root).unwrap();
+    assert!(store.get(&native_path).await.is_ok());
+
     // An existing root must be private, owned and not a symlink.
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(LocalStore::open(&root).is_err());

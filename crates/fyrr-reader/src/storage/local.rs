@@ -71,6 +71,7 @@ pub(super) struct LocalStore {
     inner: Arc<LocalFileSystem>,
     root: Path,
     lock: PathBuf,
+    directory: Arc<File>,
     cleanup_directories: Option<Arc<std::sync::Mutex<std::collections::BTreeSet<PathBuf>>>>,
 }
 
@@ -109,6 +110,7 @@ impl LocalStore {
             inner: Arc::new(LocalFileSystem::new().with_fsync(true)),
             root: Path::from_absolute_path(root).map_err(std::io::Error::other)?,
             lock: root.join(LOCK),
+            directory: Arc::new(File::open(root)?),
             cleanup_directories: None,
         })
     }
@@ -399,17 +401,58 @@ impl LocalStore {
             return Err(unsupported("path outside the namespace"));
         }
         let target = self.inner.path_to_filesystem(location)?;
-        for ancestor in target.ancestors() {
-            match std::fs::symlink_metadata(ancestor) {
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    return Err(failure(
-                        &target,
-                        std::io::Error::other("symlink in storage path"),
-                    ));
+        // The handle stays bound to the opened root. Refuse path replacement;
+        // absolute-path I/O must still resolve to that same private directory.
+        let root_path = self.lock.parent().expect("storage root");
+        let current_root =
+            std::fs::symlink_metadata(root_path).map_err(|error| failure(&target, error))?;
+        let opened_root = self
+            .directory
+            .metadata()
+            .map_err(|error| failure(&target, error))?;
+        if !current_root.is_dir()
+            || current_root.dev() != opened_root.dev()
+            || current_root.ino() != opened_root.ino()
+        {
+            return Err(failure(
+                &target,
+                std::io::Error::other("storage root changed"),
+            ));
+        }
+        let relative = target
+            .strip_prefix(self.lock.parent().expect("storage root"))
+            .map_err(|_| unsupported("path outside the namespace"))?;
+        let mut relative_ancestor = PathBuf::new();
+        let mut components = relative.components().peekable();
+        while let Some(component) = components.next() {
+            let std::path::Component::Normal(name) = component else {
+                return Err(unsupported("path outside the namespace"));
+            };
+            relative_ancestor.push(name);
+            // Every prefix is checked in this operation. The root descriptor
+            // anchors lookup, and NOFOLLOW rejects each prefix's final symlink.
+            match rustix::fs::statat(
+                &self.directory,
+                &relative_ancestor,
+                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+            ) {
+                Ok(metadata) => {
+                    let kind = rustix::fs::FileType::from_raw_mode(metadata.st_mode);
+                    if kind == rustix::fs::FileType::Symlink {
+                        return Err(failure(
+                            &target,
+                            std::io::Error::other("symlink in storage path"),
+                        ));
+                    }
+                    if components.peek().is_some() && kind != rustix::fs::FileType::Directory {
+                        return Err(failure(
+                            &target,
+                            std::io::Error::from(ErrorKind::NotADirectory),
+                        ));
+                    }
                 }
-                Ok(_) => {}
-                Err(error) if error.kind() == ErrorKind::NotFound => {}
-                Err(error) => return Err(failure(&target, error)),
+                Err(rustix::io::Errno::NOENT) => break,
+                Err(error) => return Err(failure(&target, error.into())),
             }
         }
         Ok(target)
@@ -479,6 +522,17 @@ impl LocalStore {
         let mut objects = Vec::with_capacity(listed.len());
         for object in listed {
             if self.is_internal(&object.location) {
+                continue;
+            }
+            if self.is_native_file(&object.location) {
+                // Native files use the listing metadata and have no version xattr.
+                // Validate containment for this listing operation, without reopening
+                // every immutable file merely to reconstruct the same metadata.
+                match self.target(&object.location) {
+                    Ok(_) => objects.push(object),
+                    Err(Error::NotFound { .. }) => {}
+                    Err(error) => return Err(error),
+                }
                 continue;
             }
             match self.get_blocking(object.location, GetOptions::default()) {
