@@ -1,4 +1,4 @@
-//! Slice 4 directory operations through the CLI, HTTP, MCP, Keycloak and RustFS.
+//! Directory operations through the CLI, HTTP, MCP, Keycloak and RustFS.
 use super::coordination::{host_command, publication};
 use super::incremental::{fixture, publish, publish_initial};
 use super::tools::Mcp;
@@ -515,7 +515,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
     let body: Value = response.json().await.unwrap();
     let token = body["access_token"].as_str().unwrap();
     let realm = format!(
-        "fyrr-slice4-{}-{}",
+        "fyrr-directory-{}-{}",
         std::process::id(),
         chrono::Utc::now().timestamp_micros()
     );

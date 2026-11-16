@@ -1,4 +1,4 @@
-//! Slice-3 lifecycle proofs through independent CLI hosts and the owned RustFS.
+//! Maintenance and restore lifecycle proofs through independent CLI hosts and owned RustFS.
 use super::coordination::{command, host_command, publication, worker_sync};
 use super::corrections::proxied;
 use super::incremental::{

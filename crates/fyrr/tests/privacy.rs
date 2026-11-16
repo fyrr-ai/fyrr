@@ -248,7 +248,7 @@ fn dense_reader_and_namespace_paths_keep_identity_and_query_values_private() {
                 ("AWS_EC2_METADATA_DISABLED", "true"),
             ],
         );
-        assert_clean(&sentinels, &result, &sandbox, "slice-1 public paths");
+        assert_clean(&sentinels, &result, &sandbox, "public output paths");
     }
 }
 
