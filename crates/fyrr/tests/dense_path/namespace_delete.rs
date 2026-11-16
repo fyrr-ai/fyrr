@@ -286,3 +286,81 @@ async fn delete_refuses_active_source_worker_on_local_storage() {
     );
     source.release().await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "real CLI detects a late worker PUT after export listing"]
+async fn delete_refuses_envelope_arriving_after_export_listing() {
+    use futures::TryStreamExt;
+    let setup = setup_on(Backend::Local);
+    for row in 8..768 {
+        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
+    }
+    let (worker, commit, root) = incremental::fixture_host_at(8, true, "dense-fixture", setup);
+    let config = fyrr_core::config::load(&commit).unwrap().config;
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&config).unwrap();
+    let export = root.join("export");
+    export_namespace(store.as_ref(), &namespace, &export).await;
+    let (gate, hook) = corrections::RequestGate::new(|request, _, after| {
+        after && request.starts_with("GET ") && request.contains("/dataset.lance/data/")
+    });
+    let (endpoint, proxy) = corrections::proxy_at_boundary(
+        "local-storage".into(),
+        Arc::new(AtomicBool::new(false)),
+        hook,
+    );
+    let fault = corrections::proxied(&commit, &endpoint);
+    let process = CommitProcess::spawn_command(
+        &fault,
+        &[
+            "writer",
+            "namespace",
+            "delete",
+            "--export",
+            export.to_str().unwrap(),
+        ],
+        Arc::new(AtomicBool::new(false)),
+    );
+    gate.entered();
+    let mut envelope = incremental::envelopes(&worker)
+        .await
+        .into_iter()
+        .next()
+        .unwrap()
+        .1;
+    envelope.sequence += 100;
+    envelope.envelope_id = fyrr_core::envelope::envelope_id(
+        &envelope.namespace,
+        &envelope.source_id,
+        envelope.kind,
+        envelope.sequence,
+        envelope.rejection_generation,
+        envelope.cursor.start.as_deref(),
+    );
+    store
+        .put(
+            &namespace
+                .clone()
+                .join("envelopes")
+                .join(format!("{}.json", envelope.envelope_id)),
+            write_contract(&envelope).into(),
+        )
+        .await
+        .unwrap();
+    gate.release();
+    assert!(!process.finish_bounded().status.success());
+    assert!(
+        fyrr_reader::storage::optional_head(&config)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let remaining: Vec<_> = store
+        .list(Some(&namespace.join("envelopes")))
+        .try_collect()
+        .await
+        .unwrap();
+    assert!(remaining.iter().any(|entry| entry.location.filename()
+        == Some(format!("{}.json", envelope.envelope_id).as_str())));
+    drop(gate);
+    drop(proxy);
+}

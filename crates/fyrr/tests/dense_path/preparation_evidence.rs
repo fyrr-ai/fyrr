@@ -139,5 +139,13 @@ async fn preparation_reuses_bodies_but_discovers_new_envelopes_on_local_storage(
         lists >= 3,
         "each kind must discover fresh envelopes: {lists}"
     );
+    assert!(
+        injected.load(Ordering::SeqCst),
+        "late-envelope injection did not execute"
+    );
+    assert!(
+        seen_late.load(Ordering::SeqCst),
+        "late envelope was not discovered"
+    );
     drop(proxy);
 }

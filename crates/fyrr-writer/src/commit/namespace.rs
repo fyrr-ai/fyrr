@@ -223,6 +223,24 @@ pub async fn delete(
     LeaseGuard::with(config, |lease| async move {
         fence_sources(config, store.as_ref(), &root, &lease).await?;
         let objects: Vec<_> = store.list(Some(&root)).try_collect().await?;
+        let verified: BTreeMap<_, _> = objects
+            .iter()
+            .filter(|object| {
+                object.location != root.clone().join(DELETE_FENCE)
+                    && object.location != root.clone().join("head.json")
+            })
+            .map(|object| {
+                (
+                    object.location.clone(),
+                    (
+                        object.e_tag.clone(),
+                        object.version.clone(),
+                        object.size,
+                        object.last_modified,
+                    ),
+                )
+            })
+            .collect();
         for object in objects {
             if object.location == root.clone().join(DELETE_FENCE) {
                 continue;
@@ -247,6 +265,30 @@ pub async fn delete(
             if !matches {
                 return Err(WriterError::ExportInvalid);
             }
+        }
+        // A worker stalled past lease expiry may finish an already admitted PUT.
+        // Its immutable envelope must be included in this verified export.
+        let current: Vec<_> = store.list(Some(&root)).try_collect().await?;
+        let current: BTreeMap<_, _> = current
+            .into_iter()
+            .filter(|object| {
+                object.location != root.clone().join(DELETE_FENCE)
+                    && object.location != root.clone().join("head.json")
+            })
+            .map(|object| {
+                (
+                    object.location,
+                    (
+                        object.e_tag,
+                        object.version,
+                        object.size,
+                        object.last_modified,
+                    ),
+                )
+            })
+            .collect();
+        if current != verified {
+            return Err(WriterError::ExportInvalid);
         }
         lease.delete_head(config).await?;
         Ok(serde_json::json!({"deleted":true,"retained_data":true}))

@@ -44,6 +44,23 @@ impl Index {
     }
 
     fn open(scratch: PathBuf, remove_directory: bool) -> Result<Self> {
+        let result = Self::open_inner(scratch.clone(), remove_directory);
+        if result.is_err() && remove_directory {
+            let _ = std::fs::remove_dir_all(scratch);
+        }
+        result
+    }
+
+    pub(crate) fn is_valid(&self) -> bool {
+        self.db.lock().is_ok_and(|db| db.is_some())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn invalidate(&self) {
+        let _: Result<()> = self.with_db(|_| Err(ERROR));
+    }
+
+    fn open_inner(scratch: PathBuf, remove_directory: bool) -> Result<Self> {
         check_space(&scratch, 8 * 1024 * 1024)?;
         let db = crate::scratch::open(&scratch, "history", |_| {})?;
         db.execute_batch(
@@ -70,6 +87,9 @@ impl Index {
         let result = operation(opened.as_ref().ok_or(ERROR)?);
         if result.is_err() {
             *opened = None;
+            if self.remove_directory {
+                let _ = std::fs::remove_dir_all(&self.scratch);
+            }
         }
         result
     }
@@ -404,5 +424,20 @@ mod tests {
             }
         })
         .await;
+    }
+    #[test]
+    fn command_index_errors_remove_their_private_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let (config, root) = crate::lease::tests::local_config("scratch-error-cleanup");
+        let index = Index::command(&config).unwrap();
+        let directory = index.scratch.clone();
+        index.invalidate();
+        assert!(!index.is_valid());
+        assert!(!directory.exists());
+        let directory = crate::scratch::command_directory(&config).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(Index::open(directory.clone(), true).is_err());
+        assert!(!directory.exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

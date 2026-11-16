@@ -27,7 +27,9 @@ pub(crate) fn directory(config: &Config, purpose: &str) -> Result<PathBuf> {
 /// Worker commands do not hold a namespace lease and never remove another index.
 pub(crate) fn command_directory(config: &Config) -> Result<PathBuf> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let scratch = base(config)?.join(format!(
+    let base = base(config)?;
+    reap_dead_commands(&base)?;
+    let scratch = base.join(format!(
         "command-{}-{}-{}",
         std::process::id(),
         fyrr_core::clock::now().timestamp_nanos_opt().ok_or(ERROR)?,
@@ -35,6 +37,52 @@ pub(crate) fn command_directory(config: &Config) -> Result<PathBuf> {
     ));
     create(&scratch)?;
     Ok(scratch)
+}
+
+fn reap_dead_commands(base: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(base).map_err(|_| ERROR)? {
+        let entry = entry.map_err(|_| ERROR)?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let parts: Vec<_> = name.split('-').collect();
+        if parts.len() != 4
+            || parts[0] != "command"
+            || parts[2].parse::<i64>().is_err()
+            || parts[3].parse::<u64>().is_err()
+        {
+            continue;
+        }
+        let Ok(pid) = parts[1].parse::<u32>() else {
+            continue;
+        };
+        if pid == 0 {
+            continue;
+        }
+        // PID reuse conservatively retains a directory until that process exits.
+        match std::fs::symlink_metadata(format!("/proc/{pid}")) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => continue,
+        }
+        let meta = match entry.path().symlink_metadata() {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err(ERROR),
+        };
+        if meta.is_dir()
+            && meta.uid() == rustix::process::geteuid().as_raw()
+            && meta.mode() & 0o077 == 0
+        {
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(ERROR),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn base(config: &Config) -> Result<PathBuf> {
@@ -115,4 +163,27 @@ pub(crate) fn open(scratch: &Path, purpose: &str, created: impl Fn(&Path)) -> Re
     drop(file);
     removed.map_err(|_| ERROR)?;
     opened.map_err(|_| ERROR)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn command_start_reaps_dead_owners_and_preserves_live_owners() {
+        let (config, root) = crate::lease::tests::local_config("scratch-reap");
+        let base = base(&config).unwrap();
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        let dead = base.join(format!("command-{pid}-1-0"));
+        let live = base.join(format!("command-{}-2-0", std::process::id()));
+        create(&dead).unwrap();
+        create(&live).unwrap();
+        let own = command_directory(&config).unwrap();
+        assert!(!dead.exists());
+        assert!(live.exists());
+        std::fs::remove_dir(live).unwrap();
+        std::fs::remove_dir(own).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

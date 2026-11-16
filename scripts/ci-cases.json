@@ -534,6 +534,14 @@
       "full:fyrr-writer:lib:fyrr_writer/maintenance::local_staging::tests::staging_cursor_scan_runtime_io_measurement": {
         "tier": "full",
         "seconds": 2.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/scratch::tests::command_start_reaps_dead_owners_and_preserves_live_owners": {
+        "tier": "quick",
+        "seconds": 0.02
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::command_index_errors_remove_their_private_directory": {
+        "tier": "quick",
+        "seconds": 0.02
       }
     },
     "children": {
@@ -983,6 +991,10 @@
       "full:fyrr:test:dense_path/worker_io_probe::revision_callback_thread_progress_measurement_on_local_storage": {
         "tier": "full",
         "seconds": 10.0
+      },
+      "full:fyrr:test:dense_path/namespace_delete::delete_refuses_envelope_arriving_after_export_listing": {
+        "tier": "full",
+        "seconds": 5
       }
     },
     "backend": "local"

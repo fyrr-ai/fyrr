@@ -29,7 +29,7 @@ impl CommandEvidence {
         if self
             .snapshot
             .as_ref()
-            .is_some_and(|old| old.identity == identity)
+            .is_some_and(|old| old.identity == identity && old.index.is_valid())
         {
             return Ok(());
         }
@@ -309,6 +309,19 @@ mod tests {
                 .get::<u64>(Evidence::Preparation, "body")
                 .unwrap(),
             Some(1)
+        );
+        evidence.snapshot.as_ref().unwrap().index.invalidate();
+        evidence.refresh(&config, &rt, &head).unwrap();
+        assert!(evidence.snapshot.as_ref().unwrap().index.is_valid());
+        assert_eq!(
+            evidence
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .index
+                .get::<u64>(Evidence::Preparation, "body")
+                .unwrap(),
+            None
         );
         head.incarnation.push('x');
         evidence.refresh(&config, &rt, &head).unwrap();
