@@ -507,6 +507,71 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
             gate.store(n, Ordering::SeqCst);
         }
     };
+    if let Some(report) = std::env::var_os("FYRR_TEST_IO_REPORT") {
+        let mut samples = Vec::new();
+        for (id, subject) in [
+            (9000, "subject-2"),
+            (9001, "subject-2"),
+            (9002, "subject-3"),
+        ] {
+            arm(usize::MAX).await;
+            let access = issuer.token(subject, json!({}), json!({}));
+            let started = std::time::Instant::now();
+            let result = reader.search_task(&access, id, 10000).await.unwrap();
+            let head_gets = heads.load(Ordering::SeqCst);
+            gate.store(0, Ordering::SeqCst);
+            assert_ne!(result["isError"], true, "{result}");
+            samples.push(json!({
+                "head_gets": head_gets,
+                "elapsed_us": started.elapsed().as_micros(),
+                "telemetry": result["structuredContent"]["metadata"]["telemetry"],
+            }));
+        }
+        let mut unread = Vec::new();
+        let mut statuses = Vec::new();
+        for id in 9100..9106 {
+            let response = reader
+                .rpc(
+                    &token,
+                    id,
+                    "tools/call",
+                    json!({
+                        "name":"search", "arguments":{"query":"fixture query","deadline_ms":10000}
+                    }),
+                )
+                .await;
+            statuses.push(response.status().as_u16());
+            unread.push(response);
+        }
+        let result = reader.search_task(&token, 9200, 10000).await.unwrap();
+        drop(unread);
+        reader.stop().await;
+        let checked_config = root.join("http-per-request.toml");
+        let checked_text = std::fs::read_to_string(&config)
+            .unwrap()
+            .replace("[reader]\n", "[reader]\nversion_check='per-request'\n");
+        std::fs::write(&checked_config, checked_text).unwrap();
+        reader = Reader::start(&checked_config, &root, &issuer, 1000, 1000).await;
+        while active_heads.load(Ordering::SeqCst) != 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        heads.store(0, Ordering::SeqCst);
+        let checked = reader.search_task(&token, 9300, 10000).await.unwrap();
+        let checked_heads = heads.load(Ordering::SeqCst);
+        assert_ne!(checked["isError"], true, "{checked}");
+        let report_value = json!({
+            "searches": samples,
+            "application_unread_responses": statuses.len(),
+            "per_request_version_check_head_gets": checked_heads,
+            "http_statuses": statuses,
+            "following_search_is_error": result["isError"],
+            "scope":"four-document local fixture; application-unread small responses, not TCP write saturation"
+        });
+        std::fs::write(report, serde_json::to_vec_pretty(&report_value).unwrap()).unwrap();
+        reader.stop().await;
+        drop(proxy_guard);
+        return;
+    }
     arm(2).await;
     let deadline = reader.search_task(&token, 1, 1000);
     blocked(&entered).await;
