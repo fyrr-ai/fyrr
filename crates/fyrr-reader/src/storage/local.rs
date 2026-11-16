@@ -206,7 +206,25 @@ impl LocalStore {
         {
             return Err(std::io::Error::other("storage lock is not private"));
         }
-        file.lock()?;
+        // A stopped writer may retain this lock indefinitely. Never park a
+        // storage worker behind it: contention must fail closed within a bound.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        loop {
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() {
+                        return Err(std::io::Error::new(
+                            ErrorKind::WouldBlock,
+                            "storage lock acquisition deadline exceeded",
+                        ));
+                    }
+                    std::thread::sleep(remaining.min(std::time::Duration::from_millis(5)));
+                }
+                Err(std::fs::TryLockError::Error(error)) => return Err(error),
+            }
+        }
         if file.metadata()?.len() == 0 {
             match read_version(&file) {
                 Ok(0) => {} // A crash before the initialization marker was written.

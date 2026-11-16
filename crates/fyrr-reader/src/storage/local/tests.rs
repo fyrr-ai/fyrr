@@ -1029,3 +1029,52 @@ fn local_native_process_restart_preserves_unpublished_reference() {
     assert_eq!(std::fs::read(native).unwrap(), b"native");
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn local_store_frozen_holder_bounds_lock_acquisition() {
+    let root = scratch("frozen-holder");
+    let store = LocalStore::open(&root).unwrap();
+    put(&store, b"original", PutMode::Create).unwrap();
+    let marker = root.join("locked");
+    let expected = current(&store);
+    let result = root.join("holder-result");
+    let mut holder = child(
+        &root,
+        "update",
+        &[
+            ("FYRR_TEST_LOCAL_PAUSE_LOCKED", marker.as_os_str()),
+            ("FYRR_TEST_LOCAL_PAYLOAD", "holder".as_ref()),
+            ("FYRR_TEST_LOCAL_EXPECTED", expected.as_ref()),
+            ("FYRR_TEST_LOCAL_RESULT", result.as_os_str()),
+        ],
+    );
+    let started = std::time::Instant::now();
+    while !marker.exists() {
+        if started.elapsed() >= Duration::from_secs(30) {
+            holder.kill().unwrap();
+            holder.wait().unwrap();
+            panic!("holder did not reach the locked mutation");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let contender = store.clone();
+    let (send, receive) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        send.send(put(&contender, b"contender", PutMode::Overwrite))
+            .unwrap();
+    });
+    let bounded = receive.recv_timeout(Duration::from_secs(2));
+    // Release the holder even when the regression blocks the contender forever.
+    holder.kill().unwrap();
+    holder.wait().unwrap();
+    thread.join().unwrap();
+    assert!(bounded.is_ok(), "lock acquisition exceeded its bound");
+    assert!(
+        bounded.unwrap().is_err(),
+        "a frozen holder retains exclusion"
+    );
+    assert_eq!(read(&store, &root), b"original");
+    put(&store, b"recovered", PutMode::Overwrite).unwrap();
+    assert_eq!(read(&store, &root), b"recovered");
+    std::fs::remove_dir_all(root).unwrap();
+}

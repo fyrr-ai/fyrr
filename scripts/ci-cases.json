@@ -546,6 +546,10 @@
       "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::command_index_errors_remove_their_private_directory": {
         "tier": "quick",
         "seconds": 0.02
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_frozen_holder_bounds_lock_acquisition": {
+        "tier": "quick",
+        "seconds": 0.3
       }
     },
     "children": {
@@ -567,7 +571,8 @@
           "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_crash_before_publication_keeps_the_old_object",
           "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_updates_are_compare_and_swap_across_processes",
           "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_cleanup_process_restart_converges_and_preserves_referenced_objects",
-          "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_native_process_restart_preserves_unpublished_reference"
+          "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_native_process_restart_preserves_unpublished_reference",
+          "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_frozen_holder_bounds_lock_acquisition"
         ]
       },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::mirror_population_child_process": {
