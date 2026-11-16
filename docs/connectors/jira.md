@@ -113,7 +113,7 @@ user-picker holders add per-issue users.
 | Comment readable only through a reporter, assignee or picker field | deliberately omitted (under-shared) |
 | Public or anonymous Browse | refused under `sync`; use `fixed` |
 | Unknown holder type or unknown comment visibility | grants nobody (under-shared) |
-| Malformed scheme, incomplete member page | the permission pass fails; last rights stay until the freshness deadline |
+| Malformed scheme, incomplete member page | the permission pass fails; last rights stay until the [freshness deadline](../architecture.md#terms) |
 
 User tokens are `usr:atlassian.net:<cloud-id>:<accountId>`; groups are
 synthetic policy groups per project, level and visibility target. There is

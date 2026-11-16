@@ -12,7 +12,7 @@
 ## What you get
 
 - Every user connects their own MCP client to one URL and signs in with the
-  identity provider; fyrr serves each of them only what they may read.
+  identity [provider](architecture.md#terms); fyrr serves each of them only what they may read.
 - Users, groups and deactivations come from the directory on a schedule; a
   deactivated user is refused at the next published pull.
 - One reader process serves everyone; readers and writers share only S3.
@@ -84,7 +84,7 @@ fyrr writer serve                 # keeps running: sources and the directory on 
 `writer serve` pulls the directory every `identity.directory.sync_interval`
 (15 minutes) and publishes each change at once; [scheduling](deployment.md#scheduling)
 shows the cron alternative. Every enabled user with a verified e-mail in
-`verified_domains` becomes a canonical user.
+`verified_domains` becomes a [canonical user](architecture.md#terms).
 
 Start the reader on the reader host, behind a TLS-terminating proxy that
 keeps the public `Host` header:

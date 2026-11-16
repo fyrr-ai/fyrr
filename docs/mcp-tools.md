@@ -57,7 +57,7 @@ empty result is not an error. Scores only order results.
 | `exclude` | 1–100 `{ source_id, root_id }` pairs to leave out. |
 | `deadline_ms` | 1–300000; default 10 s. |
 
-Each hit has `source_id`, `root_id`, `record_id`, `revision`, `source_uri`,
+Each hit has `source_id`, [`root_id`](architecture.md#terms), [`record_id`](architecture.md#terms), `revision`, `source_uri`,
 `source_type`, `title`, `author`, `team`, `project`, `status`, `labels`,
 `created_at`, `updated_at`, `score`, an `excerpt` (`text`, `start`, `end` in
 codepoints of that record) or `content`, and with `queries` a

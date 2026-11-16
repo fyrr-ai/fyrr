@@ -28,11 +28,20 @@ on a single host a [local directory](configuration.md#local-storage):
 | source | One `[[sources]]` entry: a connector type, what it syncs (`scope`) and how its readers are decided (`permissions`). |
 | reader token | A user or group grant on a row: `usr:<id>` or `grp:<id>`. Stored only as an HMAC digest. Not to be confused with OIDC access tokens, which authenticate HTTP callers. |
 | publication | One immutable, published version of the namespace: the Lance content plus the policy and identity it is served with. |
-| serving head | The single S3 object that names the current publication, policy and identity. Each commit replaces it in one conditional write. |
+| serving head | The single control object that names the current publication, policy and identity. Each commit replaces it in one conditional write. |
 | pin | The publication one request reads from start to finish. |
 | envelope | A durable batch a sync has validated and embedded, waiting for the committer to publish it. |
 | mirror | The reader's local cache of immutable published files (`reader.mirror_path`). |
 | admission | The reader's check, at the start of every request, that the caller is known and the pinned publication may be served. |
+
+| Lance | The table storage and retrieval engine used for published text, vectors and indexes. |
+| `root_id` / `record_id` | A source's stable document ID / the ID of one text record within that document. |
+| principal / canonical user | The deployment's user identity to which source accounts and authenticated subjects are linked. |
+| committer | The writer holding the namespace lease while publishing prepared work. |
+| incarnation | A new identity assigned when a namespace is created, distinguishing it from earlier namespaces at the same URI. |
+| freshness deadline | The maximum age of a successful permission, membership or directory read before its grants stop being served (`identity.validity_deadline`). |
+| quarantine | Withholding an invalid document revision while retaining its last good published revision, if any. |
+| provider | A connector provider reads source content and access rights; a directory provider supplies canonical users and groups; an embeddings or reranker provider processes text for retrieval. |
 
 ## Publication
 

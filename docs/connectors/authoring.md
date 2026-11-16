@@ -2,7 +2,7 @@
 
 > **In short**
 >
-> - A provider is an ordinary Python distribution that depends on
+> - A [provider](../architecture.md#terms) is an ordinary Python distribution that depends on
 >   `fyrr-connectors` and registers an entry point in the group
 >   `fyrr.connectors`.
 > - This page covers the package layout, the connector class, sync kinds,
@@ -14,8 +14,8 @@ A provider is an ordinary Python distribution that depends on
 `fyrr-connectors` and registers one entry point per provider name in the
 group `fyrr.connectors`. fyrr's full build discovers installed providers,
 validates their metadata against the published provider schema, refuses a
-provider built for another SDK series, and runs one sync kind of one source
-per isolated worker process. `examples/markdown-provider` is a complete,
+provider built for another SDK series, and runs each source
+in an isolated worker process. `examples/markdown-provider` is a complete,
 tested example.
 
 ## Package layout
@@ -113,11 +113,11 @@ class overrides.
 A document never spans batches; keep every batch within `context.limits`.
 A failed read must raise, not yield partial results: a partial permission
 or membership read leaves the last applied rights in place until the
-source's freshness deadline, which is the safe outcome.
+source's [freshness deadline](../architecture.md#terms), which is the safe outcome.
 
 ## Documents
 
-`Upsert` replaces every record of a `root_id`; `Delete` removes them.
+`Upsert` replaces every record of a [`root_id`](../architecture.md#terms); `Delete` removes them.
 
 ```python
 Upsert(
@@ -187,7 +187,7 @@ or e-mail addresses, and scope them to the tenant
 ## Cursors
 
 Cursors are opaque strings of at most 16 KiB. Put only positions in them
-(timestamps, IDs, page tokens, digests); never principals, text or secrets.
+(timestamps, IDs, page tokens, digests); never [principals](../architecture.md#terms), text or secrets.
 Yield intermediate batches with the previous safe cursor and advance only
 when a pass completed; a changed scope must restart from `None`.
 

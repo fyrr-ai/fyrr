@@ -46,7 +46,7 @@ root_pages = ["11111111-2222-3333-4444-555555555555"]   # page IDs, dashes optio
 Authors use `created_by.name` when present, otherwise null.
 
 - A document is a page under a root (a sub-page at any block depth, a row
-  of a database under a root, and the pages beneath those). `root_id` is
+  of a database under a root, and the pages beneath those). [`root_id`](../architecture.md#terms) is
   the dashed page ID; `source_type` is `notion-page` or `notion-row`;
   `project` is the root page's title; `connector_map` holds the page, root
   and database IDs.

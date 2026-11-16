@@ -17,10 +17,10 @@ in [operations](operations.md).
 
 A deployment is one S3 namespace, any number of writer processes and any
 number of reader processes. S3 is the only coordination channel: writers on
-different hosts take expiring leases per source and sync kind, one committer
+different hosts take expiring leases per source and sync kind, one [committer](architecture.md#terms)
 at a time holds the namespace lease, and readers only read.
 
-- **Writer hosts** run the full build (or the `fyrr` image) with the provider
+- **Writer hosts** run the full build (or the `fyrr` image) with the [provider](architecture.md#terms)
   packages and their credentials.
 - **Reader hosts** run the reader-only build (or the `fyrr-reader` image):
   one stdio process per user, or one HTTP service for many users. They need
@@ -152,7 +152,7 @@ set; pass the variables with `-e` and drop it to check them too.
 
 `scripts/images` builds and tests both images, including a real publication
 on the local S3 fixture and `docker/compose.yaml`. The first build compiles
-Lance in release mode and takes a while.
+[Lance](architecture.md#terms) in release mode and takes a while.
 
 ### Providers in the image
 

@@ -24,7 +24,7 @@ readers) and `fixed`.
 3. Put the service-account key JSON in an environment variable.
 4. Install the `google-drive` extra (`fyrr-connectors[google-drive]`:
    `google-auth`, `requests`, `openpyxl`); the `fyrr` image has it.
-   Without it `fyrr writer providers` refuses the provider.
+   Without it `fyrr writer providers` refuses the [provider](../architecture.md#terms).
 
 ## Configuration
 
@@ -59,7 +59,7 @@ source that already synced needs `fyrr writer sync --full`.
 
 ## Documents
 
-- One document per Google-native file in scope: `root_id` is the file ID,
+- One document per Google-native file in scope: [`root_id`](../architecture.md#terms) is the file ID,
   `source_type` is `google-doc`, `google-sheet` or `google-slides`, the
   author is the owner (else the last modifier) and `project` the shared
   drive's name.
@@ -92,7 +92,7 @@ Under `sync`, each in-scope file's complete permission list is read
 | `domain` link-only; `anyone` | nobody |
 | deleted, expiring or view-restricted permissions | nobody |
 | shared-drive membership | the drive as a container grant, only when the API shows every member's access inherited from the drive and no limited-access folder sits above the file; otherwise membership grants are dropped (over-restricted) |
-| unreadable or partial permission list | the permission pass fails; last rights stay until the freshness deadline |
+| unreadable or partial permission list | the permission pass fails; last rights stay until the [freshness deadline](../architecture.md#terms) |
 
 The member snapshot comes from the Directory: users by lower-cased primary
 e-mail, marked verified corporate (so they link to the canonical directory

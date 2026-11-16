@@ -2,7 +2,7 @@
 
 > **In short**
 >
-> - What fyrr trusts and what a deployment must protect itself: provider code,
+> - What fyrr trusts and what a deployment must protect itself: [provider](architecture.md#terms) code,
 >   the embeddings and reranker services, the bucket and the reader mirror.
 > - How reader tokens, subjects, permission modes and freshness deadlines
 >   decide who may read what, and when a revocation reaches readers.
@@ -25,7 +25,7 @@ Serving many users over HTTP is in [HTTP login and users](http-users.md).
   candidate documents and the query. Choose these services as you would any
   processor of the documents.
 - **S3 and the reader mirror hold readable content.** Document text,
-  metadata and vectors are stored in Lance files under `storage.uri`, and
+  metadata and vectors are stored in [Lance](architecture.md#terms) files under `storage.uri`, and
   readers cache them in `reader.mirror_path`. fyrr does not encrypt them;
   protect the bucket and the mirror host with your own access control and
   storage encryption. Anyone who can read the bucket can read every
@@ -95,7 +95,7 @@ plan for:
 
 ## Canonical directory
 
-`identity.directory.provider` selects where canonical users and groups come
+`identity.directory.provider` selects where [canonical users](architecture.md#terms) and groups come
 from: `none`, a `snapshot` file, a `keycloak` realm, or `scim` pushes to the
 writer's SCIM 2.0 endpoint. Source users link to canonical users through
 explicit account links in the directory snapshot, or through an e-mail

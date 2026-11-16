@@ -70,7 +70,7 @@ enabled. Leave it unset on EC2 when using the instance's role.
 uri = "file:///var/lib/fyrr"
 ```
 
-A `file://` root keeps the namespace, the same objects and Lance dataset as
+A `file://` root keeps the namespace, the same objects and [Lance](architecture.md#terms) dataset as
 on S3, in a directory, for trying fyrr out or personal use without S3 or
 Docker. It is for a single host:
 
@@ -118,7 +118,7 @@ namespace on the other storage instead.
 
 ## `[embedding]`
 
-The provider must implement the OpenAI-compatible embeddings protocol.
+The [provider](architecture.md#terms) must implement the OpenAI-compatible embeddings protocol.
 
 | Key | Default | Meaning |
 | --- | --- | --- |

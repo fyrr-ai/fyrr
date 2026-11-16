@@ -5,10 +5,10 @@
 > - Six bundled providers: local files, Google Drive, Notion, GitHub, Slack
 >   and Jira; the table links each one's page.
 > - The rules every source shares, such as `sync` and `fixed` permissions,
->   reconcile listings and quarantine.
+>   reconcile listings and [quarantine](../architecture.md#terms).
 > - For a source of your own, see [writing a provider](authoring.md).
 
-A connector provider is a Python package that fyrr's full build discovers
+A connector [provider](../architecture.md#terms) is a Python package that fyrr's full build discovers
 through the `fyrr.connectors` entry point group and runs in isolated worker
 processes. The bundled providers ship in the `fyrr-connectors` package and
 in the `fyrr` image; each cloud provider needs its optional extra

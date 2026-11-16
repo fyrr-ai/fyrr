@@ -19,7 +19,7 @@ subcommand accepts `--help`.
 
 Exit status: `0` success, `1` failure (also a `sync` with any failed source),
 `2` usage error, `69` command unavailable in this build, `75` another
-committer holds the namespace lease, `78` invalid configuration. Usage
+[committer](architecture.md#terms) holds the namespace lease, `78` invalid configuration. Usage
 errors name the argument and the usage line; they never echo what was typed.
 
 Terms such as serving head, publication and envelope are defined in
@@ -32,7 +32,7 @@ exits 69 and says to use the full image.
 
 | Command | Effect |
 | --- | --- |
-| `config check [--no-env]` | Validates the file, its cross-field rules and, in the full build, every source against the installed provider's schema; then checks that every referenced environment variable is set unless `--no-env`. Prints warnings and errors with key paths; exit 78 on invalid configuration, or 1 when installed providers cannot be discovered. |
+| `config check [--no-env]` | Validates the file, its cross-field rules and, in the full build, every source against the installed [provider](architecture.md#terms)'s schema; then checks that every referenced environment variable is set unless `--no-env`. Prints warnings and errors with key paths; exit 78 on invalid configuration, or 1 when installed providers cannot be discovered. |
 | `config show` | Prints every effective value with its origin (`default`, `file`, `env`), sorted by key. Secret fields are redacted; in the reader-only build, or when a provider is unknown or refused, a source's whole `settings` and `scope` are redacted. |
 | `config schema` | Prints the configuration JSON Schema; the full build embeds each installed provider's `settings` and `scope` schema and applies it to `sources[]` by `type`. |
 
@@ -57,7 +57,7 @@ The writer runs every provider in isolated `__worker` child processes. The
 | `writer namespace delete [--export DIR]` | Without `--export` prints the deletion plan; with a verified export directory unpublishes the namespace. Retained objects are not purged. |
 | `writer sync [SOURCES…] [--kind KIND]… [--full] [--dry-run] [--due] [--jobs N] [--timeout DURATION]` | Runs one worker per source (default: all configured sources), at most `--jobs` (default 4, 1–256) at once, each killed after `--timeout` (default `10m`). `--kind` selects `content`, `permissions`, `members` or `reconcile` (repeatable; default: every kind the provider implements and the connection type uses). `--full` prepares whole sources (bulk load). `--dry-run` runs the providers and validates their output without writing. `--due` runs only kinds whose configured interval has passed. |
 | `writer sync --directory [--due] [--timeout DURATION]` | Pulls one complete directory snapshot from the configured directory provider instead of connector sources. |
-| `writer commit [--stage-timings]` | Acquires the namespace lease and publishes pending envelopes in bounded groups. Prints the latest publication (ID, Lance version, envelope IDs); a recovery-only publication has no envelope IDs. `--stage-timings` writes bounded stage timings to stderr. A competing committer exits 75 at once. |
+| `writer commit [--stage-timings]` | Acquires the namespace lease and publishes pending envelopes in bounded groups. Prints the latest publication (ID, [Lance](architecture.md#terms) version, envelope IDs); a recovery-only publication has no envelope IDs. `--stage-timings` writes bounded stage timings to stderr. A competing committer exits 75 at once. |
 | `writer commit --receipt ENVELOPE_ID` | Looks up the receipt of an earlier publication by envelope ID; writes nothing. |
 | `writer serve [--jobs N] [--timeout DURATION]` | Foreground scheduler: runs due source workers and directory pulls, at most `--jobs` (default 4, 1–256) at once, each killed after `--timeout` (default `10m`), and commits after each coalescing timer (`writer.commit.coalescing_timer`, default 60 s). `writer.serve.committer = false` keeps syncing without publishing. `SIGINT`/`SIGTERM` stops the workers, finishes the current commit group and releases the lease. |
 | `writer status` | Prints envelope and pending-envelope counts, quarantined entries per reason, the directory's identity generation and age, per-source permission freshness and a value-free `warnings` list, relative to the printed `content_sequence`. Counts are exact in a quiescent namespace. |

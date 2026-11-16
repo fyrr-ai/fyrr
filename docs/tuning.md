@@ -57,7 +57,7 @@ slots total at most 75.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `endpoint` | required | HTTPS endpoint of the reranker (loopback HTTP is allowed for a local provider). |
+| `endpoint` | required | HTTPS endpoint of the reranker (loopback HTTP is allowed for a local [provider](architecture.md#terms)). |
 | `model` | required | Model name sent to the provider. |
 | `api_key` | absent | `{ env = "VAR" }`. |
 | `candidates` | required | Authorized composed documents to rerank before the request limit (1–75). |

@@ -36,7 +36,7 @@ and memory are under [advanced tuning](tuning.md#advanced-tuning).
 | `public_url` | required | URL path must be `/mcp`; 1–2048 characters: the `https://…/mcp` URL clients use (plain HTTP only on loopback); the `Host` header must match its authority on every route except `/readyz`. |
 | `operator_credential` | absent | `{ env = "VAR" }` for `POST /admin/refresh`; separate from OIDC access tokens. Absent, the route is not served (404); readers still pick up new versions through `version_check`. |
 | `authorization_cache_subjects` | `64` | 1–1024 subjects whose admission is cached (LRU, 128 MiB accounted bound). |
-| `user_requests_per_minute` | `120` | At least 1, per canonical user; linked subjects share it. |
+| `user_requests_per_minute` | `120` | At least 1, per [canonical user](architecture.md#terms); linked subjects share it. |
 | `group_requests_per_minute` | `120` | At least 1, per published group membership. |
 
 ## `[writer]`
@@ -45,11 +45,11 @@ and memory are under [advanced tuning](tuning.md#advanced-tuning).
 | --- | --- | --- |
 | `purge_window` | `1d` | Deleted or revoked content leaves old versions and mirrors within it. Must exceed `version_grace`. |
 | `version_grace` | `1h` | Minimum retention of a version after it stopped serving. Must exceed 300 s plus `reader.max_preparation`. |
-| `max_envelope_age` | `3d` | Older pending envelopes are rejected, forcing a re-scan. At most 6 days: Lance keeps unreferenced files for 7 days. |
+| `max_envelope_age` | `3d` | Older pending envelopes are rejected, forcing a re-scan. At most 6 days: [Lance](architecture.md#terms) keeps unreferenced files for 7 days. |
 | `document_max_bytes` | `8MiB` | Larger documents are quarantined. |
 | `envelope_max_rows` | `50000` | At least 1. Provider content batches are further capped by `writer.commit.group_max_rows` and 256. |
 | `envelope_max_bytes` | `256MiB` | Must exceed every document size limit. |
-| `worker_memory_max_bytes` | `2GiB` | Committed-memory ceiling of one provider worker (`RLIMIT_DATA`). |
+| `worker_memory_max_bytes` | `2GiB` | Committed-memory ceiling of one [provider](architecture.md#terms) worker (`RLIMIT_DATA`). |
 | `credentials` | `{}` | Maps a provider's environment reference to a stored credential name (`fyrr writer credential`). |
 
 ### `[writer.commit]`
@@ -69,5 +69,5 @@ and memory are under [advanced tuning](tuning.md#advanced-tuning).
 | `maintenance.step_max_duration` | `5m` | Time budget of one lease-held maintenance step. |
 | `backpressure.max_pending_content_envelopes` | `1000` | At least 1. Content sync pauses above it; permissions and members still publish. |
 | `backpressure.max_pending_content_bytes` | `16GiB` | |
-| `serve.committer` | `true` | Run the committer role in `writer serve`; off keeps polling and leaves publication to batch `commit` jobs. |
+| `serve.[committer](architecture.md#terms)` | `true` | Run the committer role in `writer serve`; off keeps polling and leaves publication to batch `commit` jobs. |
 | `serve.admin` | absent | Writer administration listener: `listen`, `operator_token = { env = "VAR" }`, `tls_terminated` (required for a non-loopback listener). Needs `identity.encryption_key`. |

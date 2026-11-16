@@ -32,7 +32,7 @@ prefix. Do not assume arbitrary recursive `**` glob semantics.
 ## Documents
 
 - Every regular file beneath a path that matches an `include` pattern is
-  one document. With one path the `root_id` is the relative path; with
+  one document. With one path the [`root_id`](../architecture.md#terms) is the relative path; with
   several it is `<path index>/<relative path>`. Symlinks are skipped, and
   directories are walked without following links.
 - A file that is not valid UTF-8 or exceeds `document_max_bytes` is

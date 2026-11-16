@@ -100,7 +100,7 @@ Under `sync`:
 | Slack Connect or Enterprise Grid shared channel | refused under `sync`; opt in under `fixed` |
 | Direct or group message | refused in both modes |
 | Bot | no grant |
-| Unknown identity, incomplete membership page | no grant; the permission pass fails and the last rights stay until the freshness deadline |
+| Unknown identity, incomplete membership page | no grant; the permission pass fails and the last rights stay until the [freshness deadline](../architecture.md#terms) |
 
 Membership comes from one complete paged snapshot per channel plus the
 complete user list; the user list over 16,384 full members fails closed.

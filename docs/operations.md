@@ -113,7 +113,7 @@ fyrr writer source purge SOURCE_ID --confirm  # retires and deletes
 ```
 
 Retirement is final: every reader denies the source on its next request and
-the committer rejects its envelopes. Purge also removes its rows, envelopes
+the [committer](architecture.md#terms) rejects its envelopes. Purge also removes its rows, envelopes
 and cursors; each step is idempotent, so an interrupted purge is run again.
 
 ## Upgrades
