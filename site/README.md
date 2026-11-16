@@ -73,7 +73,9 @@ and static map and lighthouse frames with reduced motion. The site uses
 one dark palette, with no light-theme variant.
 
 The comparison opens with a default-system scoreboard, followed by three
-short chart sections and the product trade-offs. The detailed notebook is
+short chart sections and the product trade-offs. Primary speed is first-ask
+latency with fresh query caches; repeated-query timings are secondary. The
+detailed notebook is
 collapsed initially; its links open the relevant section. System and
 metric chips recompute the view. Selection links preserve filters, tabs,
 question search and the notebook's open state. Higher-is-better scores

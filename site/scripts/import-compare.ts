@@ -1,6 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { readResults, parseResults, resultsPath, runKey } from '../lib/compare';
+import { parseResults, resultsPath, runKey } from '../lib/compare';
 
 const input = process.argv[2];
 if (!input) throw new Error('Usage: bun scripts/import-compare.ts <benchmark-results.json>');
@@ -9,7 +9,8 @@ if (path.basename(path.dirname(input)) === 'results') {
   const artifactRoot = path.dirname(path.dirname(path.resolve(input))) + '/';
   incoming = JSON.parse(JSON.stringify(incoming).replaceAll(artifactRoot, ''));
 }
-const current = await readResults();
+if (incoming.synthetic_design_preview || incoming.benchmark?.publishable === false || Array.isArray(incoming.systems) && incoming.systems.some((system: { config?: { smoke_only?: boolean } }) => system.config?.smoke_only)) throw new Error('Synthetic, smoke and nonpublishable fixtures cannot be imported.');
+const current = parseResults(JSON.parse(await readFile(resultsPath, 'utf8')));
 if (incoming.schema_version !== '1.1' || !incoming.website?.metrics || !incoming.protocol) throw new Error('Expected the benchmark schema 1.1 envelope, protocol and metric catalogue.');
 // Retain reviewed editorial copy while replacing measurements and provenance.
 // Import always stays draft until the data and editorial statements are reviewed.

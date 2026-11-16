@@ -49,7 +49,19 @@
     "model_cache_sha256": "9fa7311a55c45da4512407f00cc089a267e171fc81e44f8b799a3d0b537cabd6",
     "limitations": [
       "Selectable model IDs pinned; immutable subscription snapshots are not exposed"
-    ]
+    ],
+    "latency_primary": {
+      "track": "first-ask",
+      "status": "planned",
+      "questions": 250,
+      "concurrency": [
+        1,
+        8
+      ],
+      "query_caches": "fresh",
+      "index_warmup": "one unrelated question",
+      "provider_time": "included"
+    }
   },
   "website": {
     "headline_metric": "recall_at_10",
@@ -64,9 +76,9 @@
       {
         "id": "speed",
         "number": "02",
-        "label": "Warm search latency",
-        "title": "Every wait, accounted for.",
-        "description": "End-to-end search, including native query embedding and cache behavior. Answer generation is outside this interval."
+        "label": "Search latency",
+        "title": "The first question counts.",
+        "description": "First-ask latency includes a fresh embedding-provider call path. Repeated-query timings are secondary and preserve native cache behavior."
       },
       {
         "id": "footprint",
@@ -195,7 +207,7 @@
         "unit": "ms",
         "group": "speed",
         "direction": "lower_is_better",
-        "tier": "primary",
+        "tier": "secondary",
         "ci": null
       },
       "warm_c1_p95_ms": {
@@ -204,7 +216,7 @@
         "unit": "ms",
         "group": "speed",
         "direction": "lower_is_better",
-        "tier": "primary",
+        "tier": "secondary",
         "ci": null
       },
       "warm_c8_p50_ms": {
@@ -213,7 +225,7 @@
         "unit": "ms",
         "group": "speed",
         "direction": "lower_is_better",
-        "tier": "primary",
+        "tier": "secondary",
         "ci": null
       },
       "warm_c8_p95_ms": {
@@ -222,7 +234,7 @@
         "unit": "ms",
         "group": "speed",
         "direction": "lower_is_better",
-        "tier": "primary",
+        "tier": "secondary",
         "ci": null
       },
       "ingest_seconds": {
@@ -365,6 +377,58 @@
         "direction": "lower_is_better",
         "tier": "secondary",
         "ci": null
+      },
+      "first_ask_c1_p50_ms": {
+        "key": "first_ask_c1_p50_ms",
+        "label": "First-ask p50 \u00b7 concurrency 1",
+        "unit": "ms",
+        "group": "speed",
+        "direction": "lower_is_better",
+        "tier": "primary",
+        "ci": {
+          "confidence": 0.95,
+          "method": "percentile request bootstrap"
+        },
+        "description": "Fresh query caches; every question asked once after one unrelated index warm-up. Includes embedding-provider time."
+      },
+      "first_ask_c1_p95_ms": {
+        "key": "first_ask_c1_p95_ms",
+        "label": "First-ask p95 \u00b7 concurrency 1",
+        "unit": "ms",
+        "group": "speed",
+        "direction": "lower_is_better",
+        "tier": "primary",
+        "ci": {
+          "confidence": 0.95,
+          "method": "percentile request bootstrap"
+        },
+        "description": "Fresh query caches; every question asked once after one unrelated index warm-up. Includes embedding-provider time."
+      },
+      "first_ask_c8_p50_ms": {
+        "key": "first_ask_c8_p50_ms",
+        "label": "First-ask p50 \u00b7 concurrency 8",
+        "unit": "ms",
+        "group": "speed",
+        "direction": "lower_is_better",
+        "tier": "primary",
+        "ci": {
+          "confidence": 0.95,
+          "method": "percentile request bootstrap"
+        },
+        "description": "Fresh query caches; every question asked once after one unrelated index warm-up. Includes embedding-provider time."
+      },
+      "first_ask_c8_p95_ms": {
+        "key": "first_ask_c8_p95_ms",
+        "label": "First-ask p95 \u00b7 concurrency 8",
+        "unit": "ms",
+        "group": "speed",
+        "direction": "lower_is_better",
+        "tier": "primary",
+        "ci": {
+          "confidence": 0.95,
+          "method": "percentile request bootstrap"
+        },
+        "description": "Fresh query caches; every question asked once after one unrelated index warm-up. Includes embedding-provider time."
       }
     },
     "products": {
@@ -471,7 +535,7 @@
       },
       {
         "label": "Speed protocol",
-        "text": "Planned: one warm-up over all 250 questions, then three seed-shuffled passes at concurrency 1 and 8. Repeated-query warm-cache latency, not novel-query embedding cost. Report p50/p95, failures and native caching behavior. Timed runs require a quiet host."
+        "text": "Primary: ask each of the 250 questions once per fresh service at concurrency 1 and 8, after one unrelated index warm-up. Fresh query caches; embedding-provider time included; percentile bootstrap intervals. Repeated-query warm timings remain a separate secondary track. Timed runs require a quiet host."
       },
       {
         "label": "Hardware, versions & measurement date",
@@ -631,17 +695,17 @@
     "variant_note": "Optional extra: fyrr + Jev reranker uses jev-1.14.0 through a benchmark adapter. It is excluded from the headline, adds reranking latency and per-query provider cost, and remains n/e until measured. Adapter and public artifact links are not published yet.",
     "overview_metrics": [
       "recall_at_10",
-      "warm_c1_p50_ms",
+      "first_ask_c1_p50_ms",
       "monthly_cost_usd",
       "service_count",
       "idle_rss_bytes"
     ],
     "overview_labels": {
       "recall_at_10": "Quality",
-      "warm_c1_p50_ms": "Speed",
       "monthly_cost_usd": "Monthly cost",
       "service_count": "Services",
-      "idle_rss_bytes": "Memory"
+      "idle_rss_bytes": "Memory",
+      "first_ask_c1_p50_ms": "Speed \u00b7 first ask"
     },
     "stories": [
       {
@@ -656,11 +720,11 @@
       {
         "id": "story-speed",
         "title": "Get to the evidence quickly.",
-        "description": "Warm search at concurrency 1: the median wait and the slower tail. Lower is better; answer generation is outside this clock.",
+        "description": "First-ask search at concurrency 1: median and tail latency with fresh query caches. Each question is asked once after an unrelated index warm-up; embedding-provider time is included.",
         "group": "speed",
         "metrics": [
-          "warm_c1_p50_ms",
-          "warm_c1_p95_ms"
+          "first_ask_c1_p50_ms",
+          "first_ask_c1_p95_ms"
         ]
       },
       {
@@ -1004,6 +1068,58 @@
           "missing": 1,
           "ci95": null,
           "artifact": "runtime/fyrr-full/footprint.json"
+        },
+        "first_ask_c1_p50_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "first_ask_c1_p95_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "first_ask_c8_p50_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "first_ask_c8_p95_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
+          ]
         }
       },
       "footprint": {
@@ -1821,6 +1937,58 @@
           "notes": [
             "Placeholder: no measurement has been run."
           ]
+        },
+        "first_ask_c1_p50_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "first_ask_c1_p95_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "first_ask_c8_p50_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "first_ask_c8_p95_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
+          ]
         }
       },
       "footprint": {},
@@ -2064,6 +2232,58 @@
           "ci95": null,
           "notes": [
             "Placeholder: no measurement has been run."
+          ]
+        },
+        "first_ask_c1_p50_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "first_ask_c1_p95_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "first_ask_c8_p50_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "first_ask_c8_p95_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
           ]
         }
       },
@@ -2393,6 +2613,58 @@
           "ci95": null,
           "notes": [
             "No Jev variant measurement yet."
+          ]
+        },
+        "first_ask_c1_p50_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "first_ask_c1_p95_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "first_ask_c8_p50_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
+          ]
+        },
+        "first_ask_c8_p95_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "First-ask protocol planned; no measurement yet."
           ]
         }
       },

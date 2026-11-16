@@ -93,10 +93,14 @@ try {
       await panel.scrollIntoViewIfNeeded();
       await assertBarWidths(page);
     }
-    const c8 = page.getByRole('tab', { name: 'Concurrency 8' });
+    const c8 = page.locator('#tab-first_ask_c8_p50_ms');
     await c8.click();
     assert.equal(await c8.getAttribute('aria-selected'), 'true');
-    assert(await page.locator('#view-warm_c8_p50_ms').isVisible());
+    assert(await page.locator('#view-first_ask_c8_p50_ms').isVisible());
+    const repeatC8 = page.locator('#tab-repeat-warm_c8_p50_ms');
+    await repeatC8.click();
+    assert(await page.locator('#view-repeat-warm_c8_p50_ms').isVisible());
+    assert.equal(await c8.getAttribute('aria-selected'), 'true', 'First-ask and repeated-query concurrency controls are independent');
     const recall = page.locator('#detail-retrieval').getByRole('tab', { name: 'nDCG@10', exact: true });
     await recall.click();
     await recall.press('Home');
@@ -108,7 +112,7 @@ try {
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), await page.locator('.permalink input').inputValue());
     await page.reload();
     assert.equal(await page.locator('[data-select-system][value="fyrr"]').isChecked(), false, 'Permalink restores systems');
-    assert.equal(await page.getByRole('tab', { name: 'Concurrency 8' }).getAttribute('aria-selected'), 'true', 'Permalink restores concurrency');
+    assert.equal(await page.locator('#tab-first_ask_c8_p50_ms').getAttribute('aria-selected'), 'true', 'Permalink restores concurrency');
     await page.locator('[data-select-system][value="fyrr"]').check();
     if (results.systems.some(system => system.variant === 'jev-rerank')) {
       const variant = page.locator('[data-select-system][value="fyrr@jev-rerank"]');
