@@ -82,9 +82,11 @@ fyrr writer serve                 # keeps running: sources and the directory on 
 ```
 
 `writer serve` pulls the directory every `identity.directory.sync_interval`
-(15 minutes) and publishes each change at once; [scheduling](deployment.md#scheduling)
-shows the cron alternative. Every enabled user with a verified e-mail in
-`verified_domains` becomes a [canonical user](architecture.md#terms).
+(15 minutes) and publishes changes by the next successful pull and commit;
+a membership change made during a pull may wait for the following pull.
+[Scheduling](deployment.md#scheduling) shows the cron alternative. Every enabled
+user with a verified e-mail in `verified_domains` becomes a
+[canonical user](architecture.md#terms).
 
 Start the reader on the reader host, behind a TLS-terminating proxy that
 keeps the public `Host` header:
