@@ -16,6 +16,7 @@ from typing import Any
 
 from ..connector import EmailVerification, SourceGroup, SourceUser
 from ..validate import MAX_READERS
+from .bounds import Budget
 from .export import clean
 
 PERMISSION_FIELDS = (
@@ -106,9 +107,11 @@ def principals(
 ) -> tuple[list[SourceUser], list[SourceGroup]]:
     """Directory users and groups (direct members; fyrr expands nesting), plus
     one `domain:<domain>` group per domain holding its active users."""
+    budget = Budget()
     people: list[SourceUser] = []
     domains: dict[str, list[str]] = {}
     for user in users:
+        budget.add(user)
         address = _principal(user.get("primaryEmail"))
         if address is None:
             continue
@@ -136,11 +139,13 @@ def principals(
                 refs.update(everyone)
             elif kind in ("USER", "GROUP") and member_address:
                 refs.add(f"{'usr' if kind == 'USER' else 'grp'}:{member_address}")
+            if len(refs) > MAX_READERS:
+                raise ValueError("google_drive_group_too_large")
+        budget.add([address, sorted(refs)], edges=len(refs))
         found.append(SourceGroup(id=address, members=sorted(refs)))
-    found += [
-        SourceGroup(id=f"domain:{domain}", members=sorted(domains[domain]))
-        for domain in sorted(domains)
-    ]
+    for domain in sorted(domains):
+        budget.add([domain, domains[domain]], edges=len(domains[domain]))
+        found.append(SourceGroup(id=f"domain:{domain}", members=sorted(domains[domain])))
     if any(len(group.members) > MAX_READERS for group in found):
         raise ValueError("google_drive_group_too_large")
     return people, found

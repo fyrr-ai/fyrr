@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from itertools import chain, islice
 from typing import Any
 from urllib.parse import quote
 
@@ -531,15 +532,16 @@ class GoogleDrive(Connector[Settings, Scope]):
         users, found = principals(bounded(self._directory_users()), groups)
         for group in found:
             budget.add([group.id, group.members], edges=len(group.members))
-        entries = [*users, *found]
+        total = len(users) + len(found)
+        entries = iter(chain(users, found))
         snapshot_id = hashlib.sha256(f"{cursor}:{time.time_ns()}".encode()).hexdigest()
         # A failed Directory read raised above: no part exists, nothing is applied.
-        for part, start in enumerate(range(0, max(len(entries), 1), MEMBER_ROWS)):
-            page = entries[start : start + MEMBER_ROWS]
+        for part, start in enumerate(range(0, max(total, 1), MEMBER_ROWS)):
+            page = list(islice(entries, MEMBER_ROWS))
             yield PrincipalBatch(
                 snapshot_id=snapshot_id,
                 part=part,
-                last=start + MEMBER_ROWS >= len(entries),
+                last=start + MEMBER_ROWS >= total,
                 users=[entry for entry in page if isinstance(entry, SourceUser)],
                 groups=[entry for entry in page if isinstance(entry, SourceGroup)],
                 cursor=f"{snapshot_id}:{part}",

@@ -328,3 +328,14 @@ def test_retry_after_over_remaining_budget_fails_without_sleep(monkeypatch):
     with pytest.raises(ValueError, match="budget"):
         next(attempts)
     assert sleeps == []
+
+
+def test_members_over_aggregate_limit_emit_no_snapshot(drive, index, monkeypatch):
+    from fyrr_connectors.google_drive import bounds
+
+    monkeypatch.setattr(bounds, "MAX_BYTES", 0)
+    batches = []
+    with pytest.raises(ValueError, match="google_drive_aggregate_limit"):
+        for batch in index.run("members", "sync", owners=[ALICE]):
+            batches.append(batch)
+    assert batches == []
