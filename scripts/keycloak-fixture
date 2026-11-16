@@ -21,7 +21,7 @@ case "${1:-}" in
         printf 'KC_BOOTSTRAP_ADMIN_USERNAME=fixture-admin\nKC_BOOTSTRAP_ADMIN_PASSWORD=%s\n' "$password" > "$OUT/bootstrap.env"
       fi)
       docker run -d --name "$NAME" --label "fyrr.worktree=$ROOT" \
-        --memory 4g --memory-swap 4g -p 127.0.0.1::8080 --env-file "$OUT/bootstrap.env" \
+        --memory 4g --memory-swap 4g -p "127.0.0.1:$(fixture_port_range):8080" --env-file "$OUT/bootstrap.env" \
         -e KC_LOG_LEVEL=error "$KEYCLOAK_IMAGE" start-dev >/dev/null
     elif [[ "$(docker inspect -f '{{.State.Running}}' "$NAME")" != true ]]; then
       docker start "$NAME" >/dev/null

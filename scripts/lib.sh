@@ -22,6 +22,21 @@ worktree_image_tag() { printf 'wt-%s\n' "$(printf '%s' "$ROOT" | sha256sum | cut
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+# Keep fixture listeners outside Linux's outbound ephemeral ports. Rootless
+# Docker's port manager can otherwise race an outbound socket after allocation.
+# Docker still selects and binds one port from the supplied host range.
+fixture_port_range() {
+  local first last
+  read -r first last < /proc/sys/net/ipv4/ip_local_port_range
+  if ((last < 65535)); then
+    printf '%s-65535\n' "$((last + 1))"
+  elif ((first > 1024)); then
+    printf '1024-%s\n' "$((first - 1))"
+  else
+    die "no unprivileged listener range outside outbound ephemeral ports"
+  fi
+}
+
 # Keep output paths inside this checkout while sharing compiler actions across
 # worktrees. Never let an unrelated build collect a running test's executables.
 export MBX_TARGET_VIEWS=0

@@ -77,10 +77,10 @@ start() {
     else
       user="$(id -u):$(id -g)"
     fi
-    # Docker allocates and binds the port; a connect probe misses outbound sockets.
+    # Docker allocates and binds outside the outbound ephemeral range.
     docker run -d --name "$NAME" --label "$LABEL=$ROOT" --user "$user" \
       --memory "$MEMORY" --memory-swap "$MEMORY" \
-      -p "127.0.0.1::9000" \
+      -p "127.0.0.1:$(fixture_port_range):9000" \
       -e RUSTFS_ACCESS_KEY="$ACCESS_KEY" -e RUSTFS_SECRET_KEY="$SECRET_KEY" \
       -e RUSTFS_OBS_LOG_DIRECTORY= -e RUSTFS_OBS_LOGGER_LEVEL=warn \
       -v "$DATA:/data" "$RUSTFS_IMAGE" >/dev/null
