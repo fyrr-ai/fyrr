@@ -470,6 +470,10 @@
       "full:fyrr-writer:lib:fyrr_writer/embedding::tests::local_cache_crash_boundaries_recover_as_misses": {
         "tier": "quick",
         "seconds": 0.1
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::verified_descriptor_never_serves_a_swapped_or_rewritten_blob": {
+        "tier": "quick",
+        "seconds": 0.1
       }
     },
     "children": {

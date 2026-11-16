@@ -247,3 +247,87 @@ async fn mirror_population_crash_boundaries_recover_verified_bytes() {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[tokio::test]
+async fn verified_descriptor_never_serves_a_swapped_or_rewritten_blob() {
+    let root = std::env::temp_dir().join(format!(
+        "fyrr-mirror-descriptor-{}-{}",
+        std::process::id(),
+        fyrr_core::clock::now().timestamp_micros()
+    ));
+    let source = root.join("source");
+    std::fs::create_dir_all(source.join("namespace/dataset.lance/data")).unwrap();
+    std::fs::write(
+        source.join("namespace/dataset.lance/data/file.lance"),
+        b"immutable file",
+    )
+    .unwrap();
+    let cache = root.join("mirror");
+    let mirror = MirrorStore::new(cache.clone(), 1024).unwrap();
+    let target = Arc::new(object_store::local::LocalFileSystem::new_with_prefix(source).unwrap());
+    let store = mirror.wrap("namespace", target);
+    let path = Path::from("namespace/dataset.lance/data/file.lance");
+    assert_eq!(
+        store.get(&path).await.unwrap().bytes().await.unwrap(),
+        "immutable file"
+    );
+    let blob = cache.join(format!(
+        "{}.blob",
+        &digest(format!("namespace:{path}").as_bytes())[7..]
+    ));
+    let gate = mirror.verified_read.clone();
+    gate.enabled.store(true, Ordering::SeqCst);
+    let reading = tokio::spawn({
+        let store = store.clone();
+        let path = path.clone();
+        async move { store.get(&path).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), gate.entered.notified())
+        .await
+        .unwrap();
+    let replacement = blob.with_extension("replacement");
+    std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&replacement)
+        .unwrap()
+        .write_all(b"corrupted file")
+        .unwrap();
+    std::fs::rename(replacement, &blob).unwrap();
+    gate.release.add_permits(1);
+    assert_eq!(
+        reading.await.unwrap().unwrap().bytes().await.unwrap(),
+        "immutable file",
+        "serve the verified inode, not the replacement path"
+    );
+    assert_eq!(
+        store.get(&path).await.unwrap().bytes().await.unwrap(),
+        "immutable file",
+        "the replacement must be fetched again"
+    );
+    // Rewrite the same inode after checksum memoization; its new fingerprint
+    // must force verification and refetch rather than trusting the old memo.
+    std::fs::write(&blob, b"corrupted file").unwrap();
+    assert_eq!(
+        store.get(&path).await.unwrap().bytes().await.unwrap(),
+        "immutable file"
+    );
+    let external = root.join("external");
+    std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&external)
+        .unwrap()
+        .write_all(b"corrupted file")
+        .unwrap();
+    std::fs::remove_file(&blob).unwrap();
+    std::os::unix::fs::symlink(&external, &blob).unwrap();
+    assert!(
+        store.get(&path).await.is_err(),
+        "a symlink must never be followed"
+    );
+    assert_eq!(std::fs::read(external).unwrap(), b"corrupted file");
+    std::fs::remove_dir_all(root).unwrap();
+}

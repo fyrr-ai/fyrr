@@ -619,7 +619,7 @@ fn version_tag(version: u128) -> String {
 
 /// The e-tag `LocalFileSystem` reports for the same file, so reads and
 /// conditional writes compare equal values.
-fn e_tag(meta: &Metadata) -> String {
+pub(crate) fn e_tag(meta: &Metadata) -> String {
     format!(
         "\"{:x}-{:x}-{:x}\"",
         meta.ino(),

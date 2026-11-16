@@ -23,6 +23,8 @@ use std::sync::{
 pub struct MirrorStore {
     #[cfg(test)]
     pub(crate) sample_read: Arc<crate::serve::TestGate>,
+    #[cfg(test)]
+    verified_read: Arc<crate::serve::TestGate>,
     directory: PathBuf,
     max_bytes: u64,
     target: Option<Arc<dyn ObjectStore>>,
@@ -322,6 +324,8 @@ impl MirrorStore {
         Ok(Self {
             #[cfg(test)]
             sample_read: Arc::default(),
+            #[cfg(test)]
+            verified_read: Arc::default(),
             directory,
             max_bytes,
             target: None,
@@ -531,6 +535,79 @@ impl MirrorStore {
             source: "storage_unavailable".into(),
         }
     }
+    /// The descriptor returned here is the descriptor whose fingerprint was checked.
+    async fn open_verified_blob(
+        &self,
+        path: &std::path::Path,
+    ) -> std::io::Result<Option<(std::fs::File, std::fs::Metadata)>> {
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(
+                (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32,
+            )
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let metadata = file.metadata()?;
+        if !Self::owned_private_file(&metadata) {
+            return Err(std::io::Error::other("storage_unavailable"));
+        }
+        let fingerprint = CachedFile::of(&metadata);
+        let known = crate::sync::lock(&self.verified).get(path) == Some(&fingerprint);
+        if !known {
+            if !self.verified_file(path).await? {
+                return Ok(None);
+            }
+            // Verification can join another caller's path lookup. Accept it only
+            // when it verified this opened inode and it did not change meanwhile.
+            let after = file.metadata()?;
+            if !Self::owned_private_file(&after) {
+                return Err(std::io::Error::other("storage_unavailable"));
+            }
+            if CachedFile::of(&after) != fingerprint
+                || crate::sync::lock(&self.verified).get(path) != Some(&fingerprint)
+            {
+                return Ok(None);
+            }
+        }
+        #[cfg(test)]
+        self.verified_read.wait_once().await;
+        Ok(Some((file, metadata)))
+    }
+
+    fn blob_result(
+        location: &Path,
+        path: PathBuf,
+        options: GetOptions,
+        file: std::fs::File,
+        metadata: std::fs::Metadata,
+    ) -> Result<GetResult> {
+        let meta = ObjectMeta {
+            location: location.clone(),
+            last_modified: metadata.modified().map_err(|_| Self::failure())?.into(),
+            size: metadata.len(),
+            e_tag: Some(crate::storage::local_file_e_tag(&metadata)),
+            version: None,
+        };
+        let range = match options.range {
+            Some(range) => range.as_range(meta.size).map_err(|source| Error::Generic {
+                store: "fyrr immutable mirror",
+                source: Box::new(source),
+            })?,
+            None => 0..meta.size,
+        };
+        Ok(GetResult {
+            payload: GetResultPayload::File(file, path),
+            meta,
+            range,
+            attributes: Default::default(),
+            extensions: Default::default(),
+        })
+    }
+
     fn file_fingerprint(path: &std::path::Path) -> std::io::Result<Option<CachedFile>> {
         match std::fs::symlink_metadata(path) {
             Ok(meta) if Self::owned_private_file(&meta) => Ok(Some(CachedFile::of(&meta))),

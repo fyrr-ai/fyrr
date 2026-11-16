@@ -43,39 +43,25 @@ impl ObjectStore for MirrorStore {
         let Some(name) = self.blob_name(&self.prefix, location.as_ref()) else {
             return self.pass_through(location, options, &counters).await;
         };
-        let local = object_store::local::LocalFileSystem::new_with_prefix(&self.directory)?;
-        let key = Path::from(name);
-        let file = self.directory.join(key.as_ref());
-        if let Ok(meta) = std::fs::symlink_metadata(&file)
-            && (!Self::owned_private_file(&meta))
-        {
-            return Err(Self::failure());
-        }
-        if self
-            .verified_file(&file)
+        let file = self.directory.join(name);
+        if let Some((opened, metadata)) = self
+            .open_verified_blob(&file)
             .await
             .map_err(|_| Self::failure())?
         {
-            match local.get_opts(&key, options.clone()).await {
-                Ok(mut result) => {
-                    result.meta.location = location.clone();
-                    self.record(&counters, Io::Hit, 1);
-                    return Ok(result);
-                }
-                Err(Error::NotFound { .. }) => {}
-                Err(error) => return Err(error),
-            }
+            let result = Self::blob_result(location, file, options, opened, metadata)?;
+            self.record(&counters, Io::Hit, 1);
+            return Ok(result);
         }
         // Hits and local reads never hold the miss/eviction lock.
         let _lock = self.lock.lock().await;
         let _host = self.host_lock().await.map_err(|_| Self::failure())?;
-        if self
-            .verified_file(&file)
+        if let Some((opened, metadata)) = self
+            .open_verified_blob(&file)
             .await
             .map_err(|_| Self::failure())?
-            && let Ok(mut result) = local.get_opts(&key, options.clone()).await
         {
-            result.meta.location = location.clone();
+            let result = Self::blob_result(location, file, options, opened, metadata)?;
             self.record(&counters, Io::Hit, 1);
             return Ok(result);
         }
@@ -133,11 +119,14 @@ impl ObjectStore for MirrorStore {
         tests::pause("published");
         crate::sync::lock(&self.verified).insert(
             file.clone(),
-            CachedFile::of(&std::fs::metadata(&file).map_err(|_| Self::failure())?),
+            CachedFile::of(&output.metadata().map_err(|_| Self::failure())?),
         );
-        let mut result = local.get_opts(&key, options).await?;
-        result.meta.location = location.clone();
-        Ok(result)
+        let (opened, metadata) = self
+            .open_verified_blob(&file)
+            .await
+            .map_err(|_| Self::failure())?
+            .ok_or_else(Self::failure)?;
+        Self::blob_result(location, file, options, opened, metadata)
     }
     async fn put_opts(&self, _: &Path, _: PutPayload, _: PutOptions) -> Result<PutResult> {
         Err(Self::readonly())
