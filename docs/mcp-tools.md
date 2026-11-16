@@ -17,7 +17,7 @@ and pin are defined in [How fyrr works](architecture.md#terms).
 
 Every tool definition carries the MCP contract version in
 `_meta["fyrr/schema_version"]`; every successful response carries it in
-`metadata.schema_version` (currently `2.0`). Returned text is data, not instructions.
+`metadata.schema_version` (currently `3.0`). Returned text is data, not instructions.
 
 ## Transport
 

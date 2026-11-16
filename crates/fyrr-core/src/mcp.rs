@@ -19,7 +19,7 @@ use crate::limits::mcp::*;
 use crate::version::SchemaVersion;
 
 /// The MCP tool schema version, reported in tool `_meta` and every response.
-pub const MCP_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(2, 0);
+pub const MCP_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(3, 0);
 
 /// `tools/list` must stay within this many bytes of compact JSON.
 pub const TOOLS_LIST_MAX_BYTES: usize = 16 * 1024;
@@ -400,12 +400,6 @@ pub struct Telemetry {
     pub rerank_us: Option<u64>,
     pub cache: CacheState,
     pub queue_wait_ms: u64,
-    /// Query vectors loaded from the bounded process cache.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub embedding_memory_hits: u64,
-    /// Provider HTTP attempts, including model probes and retries.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub embedding_provider_calls: u64,
     /// Effective centroid route; mixed means different routes across index deltas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_strategy: Option<RoutingMethod>,

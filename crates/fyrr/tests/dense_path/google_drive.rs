@@ -157,13 +157,10 @@ pub(super) fn lanes(
                 json!([])
             }
         );
-        if !has_readable_documents {
-            assert_eq!(
-                body["metadata"]["telemetry"]["embedding_provider_calls"]
-                    .as_u64()
-                    .unwrap_or(0),
-                0,
-                "empty admission makes no embedding request"
+        for field in ["embedding_memory_hits", "embedding_provider_calls"] {
+            assert!(
+                body["metadata"]["telemetry"].get(field).is_none(),
+                "shared embedding cache activity must remain private"
             );
         }
         let found = body["hits"]

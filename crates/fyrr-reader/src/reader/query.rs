@@ -217,8 +217,6 @@ impl PreparedReader {
             &mut completion,
             &mut telemetry,
         )?;
-        telemetry.embedding_memory_hits = vectors.memory_hits;
-        telemetry.embedding_provider_calls = vectors.provider.calls;
         if vectors.provider_us != 0 {
             telemetry
                 .stage_us

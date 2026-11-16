@@ -36,7 +36,6 @@ impl std::fmt::Debug for QueryEmbeddings {
 
 pub(crate) struct QueryWork {
     pub(crate) vectors: Vec<Result<Vec<f32>>>,
-    pub(crate) memory_hits: u64,
     pub(crate) provider: ProviderStats,
     pub(crate) provider_us: u64,
     keys: Vec<String>,
@@ -131,7 +130,6 @@ impl QueryEmbeddings {
         };
         let mut work = QueryWork {
             vectors: Vec::with_capacity(queries.len()),
-            memory_hits: 0,
             provider: ProviderStats::default(),
             provider_us: 0,
             keys: Vec::with_capacity(queries.len()),
@@ -148,9 +146,6 @@ impl QueryEmbeddings {
                 .entries
                 .get(&key)
                 .map(|entry| entry.vector.clone());
-            if cached.is_some() {
-                work.memory_hits += 1;
-            }
             work.keys.push(key);
             work.vectors.push(cached.ok_or(EmbeddingUnavailable));
         }
