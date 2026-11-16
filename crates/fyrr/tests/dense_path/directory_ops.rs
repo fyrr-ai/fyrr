@@ -484,6 +484,7 @@ async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_s
 }
 
 async fn keycloak_token(client: &Client, endpoint: &str, username: &str, password: &str) -> String {
+    use base64::Engine;
     let response = client
         .post(format!(
             "{endpoint}/realms/master/protocol/openid-connect/token"
@@ -499,7 +500,15 @@ async fn keycloak_token(client: &Client, endpoint: &str, username: &str, passwor
         .unwrap();
     assert_eq!(response.status(), 200);
     let body: Value = response.json().await.unwrap();
-    body["access_token"].as_str().unwrap().to_owned()
+    let token = body["access_token"].as_str().unwrap();
+    let claims: Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(token.split('.').nth(1).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(claims["iss"], format!("{endpoint}/realms/master"));
+    token.to_owned()
 }
 
 fn directory_command(config: &Path, token: Option<&str>) -> Output {
@@ -517,8 +526,9 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
     let username = std::env::var("FYRR_TEST_KEYCLOAK_USERNAME").unwrap();
     let password = std::env::var("FYRR_TEST_KEYCLOAK_PASSWORD").unwrap();
     let client = Client::new();
-    let token_value = keycloak_token(&client, &endpoint, &username, &password).await;
-    let token = token_value.as_str();
+    // Dense setup and the large import can outlive an admin access token.
+    // Authenticate each operation with Keycloak; keep real token lifetimes.
+    let fresh_token = async || keycloak_token(&client, &endpoint, &username, &password).await;
     let realm = format!(
         "fyrr-directory-{}-{}",
         std::process::id(),
@@ -528,7 +538,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
     assert_eq!(
         client
             .post(format!("{endpoint}/admin/realms"))
-            .bearer_auth(token)
+            .bearer_auth(fresh_token().await)
             .json(&json!({"realm":realm,"enabled":true,"sslRequired":"none"}))
             .send()
             .await
@@ -544,7 +554,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
         assert_eq!(
             client
                 .post(format!("{base}/users"))
-                .bearer_auth(token)
+                .bearer_auth(fresh_token().await)
                 .json(
                     &json!({"username":email,"email":email,"emailVerified":verified,"enabled":true})
                 )
@@ -557,7 +567,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
     }
     let users: Value = client
         .get(format!("{base}/users"))
-        .bearer_auth(token)
+        .bearer_auth(fresh_token().await)
         .send()
         .await
         .unwrap()
@@ -574,7 +584,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
         .unwrap();
     let response = client
         .post(format!("{base}/groups"))
-        .bearer_auth(token)
+        .bearer_auth(fresh_token().await)
         .json(&json!({"name":"parent"}))
         .send()
         .await
@@ -589,7 +599,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
         .to_owned();
     let response = client
         .post(format!("{base}/groups/{parent}/children"))
-        .bearer_auth(token)
+        .bearer_auth(fresh_token().await)
         .json(&json!({"name":"child"}))
         .send()
         .await
@@ -605,7 +615,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
     assert_eq!(
         client
             .put(format!("{base}/users/{uid}/groups/{child}"))
-            .bearer_auth(token)
+            .bearer_auth(fresh_token().await)
             .send()
             .await
             .unwrap()
@@ -624,7 +634,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
         )
         .unwrap();
     }
-    let output = directory_command(&commit, Some(token));
+    let output = directory_command(&commit, Some(&fresh_token().await));
     assert!(
         output.status.success(),
         "{}",
@@ -641,7 +651,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
     let mut compressed = Mcp::open(&clock.config);
     for _ in 0..4 {
         let before = state(&commit).await;
-        let result = directory_command(&commit, Some(token));
+        let result = directory_command(&commit, Some(&fresh_token().await));
         assert!(result.status.success());
         let next = state(&commit).await;
         assert!(next.freshness.directory > before.freshness.directory);
@@ -663,8 +673,13 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
     // A valid HTTP short page is not completion: retain real Keycloak counts,
     // but truncate a directory page. No publication or proof may result.
     for truncated in ["users", "groups", "memberships"] {
-        use std::sync::{Arc, atomic::AtomicBool};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
         let select = truncated.to_owned();
+        let observed = Arc::new(AtomicBool::new(false));
+        let captured = observed.clone();
         let transform: super::corrections::ResponseTransform =
             Arc::new(move |request, response| {
                 let route = request.split_whitespace().nth(1).unwrap_or_default();
@@ -677,6 +692,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
                 if request.starts_with("GET ") && truncate && response.starts_with(b"HTTP/1.1 200")
                 {
                     super::corrections::rewrite_ok_body(response, |body| {
+                        captured.store(true, Ordering::SeqCst);
                         *body = b"[]".to_vec();
                         true
                     });
@@ -701,10 +717,18 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
             );
         std::fs::write(&truncated_config, config_text).unwrap();
         let before = state(&commit).await;
+        // Keycloak derives its issuer from the request origin. Authenticate
+        // through the same proxy as the directory read, keeping the configured
+        // subject issuer at the real endpoint above.
+        let proxy_token = keycloak_token(&client, &proxy, &username, &password).await;
         assert!(
-            !directory_command(&truncated_config, Some(token))
+            !directory_command(&truncated_config, Some(&proxy_token))
                 .status
                 .success()
+        );
+        assert!(
+            observed.load(Ordering::SeqCst),
+            "the authenticated {truncated} response was actually truncated"
         );
         assert_eq!(state(&commit).await.identity, before.identity);
         assert_eq!(state(&commit).await.freshness, before.freshness);
@@ -720,7 +744,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
     assert_eq!(
         client
             .put(format!("{base}/users/{uid}"))
-            .bearer_auth(token)
+            .bearer_auth(fresh_token().await)
             .json(&json!({"enabled":false}))
             .send()
             .await
@@ -728,15 +752,17 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
             .status(),
         204
     );
-    assert!(directory_command(&commit, Some(token)).status.success());
+    assert!(
+        directory_command(&commit, Some(&fresh_token().await))
+            .status
+            .success()
+    );
     publish(&commit);
     assert_eq!(
         fixture_hits(&mut mcp)["structuredContent"]["code"],
         "authorization_unavailable"
     );
     drop(mcp);
-    let token_value = keycloak_token(&client, &endpoint, &username, &password).await;
-    let token = token_value.as_str();
     // A valid realm may require more than ten thousand membership requests.
     let users: Vec<_> = (0..3400)
         .map(|index| {
@@ -747,7 +773,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
     assert_eq!(
         client
             .post(format!("{base}/partialImport"))
-            .bearer_auth(token)
+            .bearer_auth(fresh_token().await)
             .json(&json!({"ifResourceExists":"FAIL","users":users}))
             .send()
             .await
@@ -755,10 +781,8 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
             .status(),
         200
     );
-    let token_value = keycloak_token(&client, &endpoint, &username, &password).await;
-    let token = token_value.as_str();
     let before = state(&commit).await.freshness.directory;
-    let output = directory_command(&commit, Some(token));
+    let output = directory_command(&commit, Some(&fresh_token().await));
     assert!(
         output.status.success(),
         "{}",
@@ -769,12 +793,10 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
         3400
     );
     assert!(state(&commit).await.freshness.directory > before);
-    let token_value = keycloak_token(&client, &endpoint, &username, &password).await;
-    let token = token_value.as_str();
     assert_eq!(
         client
             .delete(base)
-            .bearer_auth(token)
+            .bearer_auth(fresh_token().await)
             .send()
             .await
             .unwrap()
