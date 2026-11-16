@@ -346,7 +346,11 @@ if [[ -n "$CASE_ROW" ]]; then
   finish_summary
   exit
 fi
-step "doctor" none "$ROOT/scripts/doctor"
+if [[ "$TIER" == quick ]]; then
+  step "doctor" none "$ROOT/scripts/doctor" --local
+else
+  step "doctor" none "$ROOT/scripts/doctor"
+fi
 if ((!ONLY_STEPS)); then step "build test executables" none ensure_build; fi
 cases_start
 step "rustfmt" none cargo fmt --all --check

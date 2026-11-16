@@ -102,6 +102,8 @@ jobs:
           name: ci-logs-${{ github.sha }}
           path: |
             target/ci-logs/
+            target/images/*.log
+            target/images/*.txt
             target/ci-measurements/
           if-no-files-found: error
           retention-days: 7

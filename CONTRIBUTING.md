@@ -138,13 +138,14 @@ The same entry point selects its cases from `scripts/ci-cases.json` locally
 and on GitHub. Every case has one owner and a `tier`: `quick` cases run in
 both tiers; `full` cases run only in the full tier. Their measured `seconds`
 control longest-first scheduling. Named children explicitly inherit the earliest
-tier of their executing parents. The ownership gate always checks all 911 cases,
-including those excluded from a quick run. The approved split is 814 quick
+tier of their executing parents. The ownership gate always checks all 908 cases,
+including those excluded from a quick run. The approved split is 811 quick
 cases and 97 additional full cases.
 
 Run `scripts/ci --quick` before a PR. It runs all core gates, CLI and privacy
 cases, the Python SDK and example, local quickstart, and the local scenarios
 for permission filtering, revocation, fail-closed authorization and CAS/leases.
+Its `doctor --local` preflight does not require Docker or fetch service images.
 The full `scripts/ci` is required when changing storage, connectors or
 maintenance; it adds the remaining local scenarios, providers, real S3,
 Keycloak and long maintenance/history campaigns. Cases excluded by the tier
