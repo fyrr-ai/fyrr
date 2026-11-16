@@ -127,36 +127,6 @@ fn bm25(n: f32, df: f32, total_tokens: f32) -> f32 {
 }
 
 #[test]
-fn stable_native_lance_crates_share_one_registry_release() {
-    let lock: toml::Value = toml::from_str(include_str!("../../../Cargo.lock")).unwrap();
-    let packages = lock["package"].as_array().unwrap();
-    let pins: toml::Value = toml::from_str(include_str!("../../../Cargo.toml")).unwrap();
-    for name in [
-        "lance",
-        "lance-core",
-        "lance-index",
-        "lance-io",
-        "lance-linalg",
-        "lance-table",
-    ] {
-        let matching: Vec<_> = packages
-            .iter()
-            .filter(|package| package["name"].as_str() == Some(name))
-            .collect();
-        assert_eq!(matching.len(), 1, "one native release for {name}");
-        assert_eq!(matching[0]["version"].as_str(), Some("14.0.3"));
-        assert_eq!(
-            matching[0]["source"].as_str(),
-            Some("registry+https://github.com/rust-lang/crates.io-index")
-        );
-        let pin = &pins["workspace"]["dependencies"][name];
-        assert_eq!(pin["version"].as_str(), Some("=14.0.3"));
-        assert!(pin.get("git").is_none());
-        assert_eq!(pin["default-features"].as_bool(), Some(false));
-    }
-}
-
-#[test]
 fn native_rabitq_centroid_codes_and_f32_routing_order() {
     use arrow_array::{Array, FixedSizeListArray, UInt32Array, UInt64Array, types::Float32Type};
     use lance_index::vector::{

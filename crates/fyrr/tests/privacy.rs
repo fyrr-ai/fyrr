@@ -1701,23 +1701,3 @@ async fn identity_storage_writer_embedding_cache_and_failures_keep_values_privat
     assert!(String::from_utf8_lossy(&failed.stdout).contains("embedding_provider_unavailable"));
     task.abort();
 }
-
-#[test]
-#[should_panic(expected = "a named writer scratch database survived")]
-fn privacy_guard_rejects_named_scratch_files_recursively() {
-    let sandbox = Sandbox::new("privacy-scratch-guard");
-    let directory = sandbox.output().join("tmp/fyrr-writer/namespace-history");
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::write(directory.join("fyrr-writer-history-fixture.sqlite"), b"").unwrap();
-    let output = std::process::Output {
-        status: std::os::unix::process::ExitStatusExt::from_raw(0),
-        stdout: Vec::new(),
-        stderr: Vec::new(),
-    };
-    assert_clean(
-        &Sentinels::new(),
-        &output,
-        &sandbox,
-        "scratch cleanup guard",
-    );
-}

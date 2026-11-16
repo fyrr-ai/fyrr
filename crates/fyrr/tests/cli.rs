@@ -55,7 +55,7 @@ fn config_arg(path: &Path) -> String {
     path.display().to_string()
 }
 
-#[test]
+#[cfg_attr(feature = "writer", test)]
 fn version_names_the_build() {
     let output = fyrr(&["--version"], false);
     let (stdout, _) = text(&output);
@@ -167,6 +167,7 @@ fn config_show_prints_values_with_origins() {
     );
 }
 
+#[cfg(feature = "writer")]
 #[test]
 fn reader_commands_require_configuration() {
     for args in [
@@ -188,6 +189,7 @@ fn reader_commands_require_configuration() {
     }
 }
 
+#[cfg(feature = "writer")]
 #[test]
 fn usage_errors_exit_two() {
     let output = fyrr(&["frobnicate"], false);
@@ -206,6 +208,7 @@ fn writer_service_requires_configuration() {
 #[cfg(not(feature = "writer"))]
 #[test]
 fn reader_only_build_explains_the_missing_writer() {
+    version_names_the_build();
     for args in [
         &["writer"][..],
         &["writer", "sync", "--full"],

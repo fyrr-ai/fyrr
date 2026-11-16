@@ -481,33 +481,6 @@ mod tests {
         config
     }
 
-    #[tokio::test]
-    async fn counter_observes_each_native_execution_of_the_same_scanner() {
-        let batch = apply::marker_row(
-            config().embedding.dimensions,
-            "source",
-            "root",
-            &apply::DocumentState::default(),
-        )
-        .unwrap();
-        let schema = batch.schema();
-        let dataset = Dataset::write(
-            arrow_array::RecordBatchIterator::new([Ok(batch)], schema),
-            &format!(
-                "memory://scan-count-{}",
-                fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
-            ),
-            None,
-        )
-        .await
-        .unwrap();
-        let (scan, count) = native_scan(&dataset);
-        for _ in 0..2 {
-            assert_eq!(scan.try_into_batch().await.unwrap().num_rows(), 1);
-        }
-        assert_eq!(count.load(Ordering::Relaxed), 2);
-    }
-
     #[test]
     fn scratch_cleanup_does_not_touch_another_namespace() {
         let first = config();

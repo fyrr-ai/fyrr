@@ -2621,7 +2621,6 @@ dependencies = [
  "sha2",
  "tokio",
  "tokio-util",
- "toml",
  "url",
 ]
 

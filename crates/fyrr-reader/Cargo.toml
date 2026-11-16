@@ -48,7 +48,6 @@ tokio-util.workspace = true
 
 [dev-dependencies]
 fyrr-core = { workspace = true, features = ["test-clock"] }
-toml.workspace = true
 
 [lints]
 workspace = true

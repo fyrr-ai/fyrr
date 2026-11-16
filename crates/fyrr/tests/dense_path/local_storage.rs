@@ -291,16 +291,23 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
     let mut previous = template.publication_id.clone();
     // Valid immutable history, without thousands of unnecessary native writes.
     // Lifetime receipt evidence exceeds the former aggregate 65,536-entry cap.
-    let mut seed = Vec::with_capacity(33_550);
-    for offset in 1..=550_u64 {
+    // The invariant is the aggregate receipt count, not publication depth.
+    // Four individually valid manifests remain below the former 65,536-ID
+    // limit, but their 70,400 distinct IDs cross it together. Keep all 33,000
+    // real envelope objects to cross the 32,768 active-object boundary too.
+    const PUBLICATIONS: u64 = 4;
+    const RECEIPTS_PER_PUBLICATION: u64 = 17_600;
+    assert!(PUBLICATIONS * RECEIPTS_PER_PUBLICATION > 65_536);
+    let mut seed = Vec::with_capacity(33_000 + PUBLICATIONS as usize);
+    for offset in 1..=PUBLICATIONS {
         let mut manifest = template.clone();
         manifest.sequence += offset;
         manifest.publication_id = format!("pub-{:032x}", 1_000_000 + offset);
         manifest.previous_publication_id = Some(previous);
         manifest.envelope_ids.clear();
-        for id in 0..128_u64 {
+        for id in 0..RECEIPTS_PER_PUBLICATION {
             let mut envelope = member.clone();
-            envelope.sequence = 1_000_000 + offset * 128 + id;
+            envelope.sequence = 1_000_000 + offset * RECEIPTS_PER_PUBLICATION + id;
             envelope.envelope_id = fyrr_core::envelope::envelope_id(
                 &envelope.namespace,
                 &envelope.source_id,
@@ -314,7 +321,7 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
                 payload.read_at = envelope.created_at;
             }
             envelope.validate().unwrap();
-            if (offset - 1) * 128 + id < 33_000 {
+            if (offset - 1) * RECEIPTS_PER_PUBLICATION + id < 33_000 {
                 let path = namespace
                     .clone()
                     .join("envelopes")
@@ -345,7 +352,7 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
         pointer.manifest = format!("publications/{previous}.json");
         pointer.sequence = manifest.sequence;
     }
-    assert_eq!(seed.len(), 33_550);
+    assert_eq!(seed.len(), 33_000 + PUBLICATIONS as usize);
     fyrr_reader::storage::test_store::seed_local_fixture(&loaded.config, seed).unwrap();
     store
         .put(&namespace.join("head.json"), write_contract(&head).into())

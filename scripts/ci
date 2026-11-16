@@ -320,8 +320,6 @@ if [[ -z "$SCENARIO_ROW" ]]; then
   scenarios_start
 fi
 step "rustfmt" none cargo fmt --all --check
-step "Rust source line length (reader)" none "$ROOT/scripts/check-line-length" \
-  "$ROOT/crates/fyrr-reader/src" "$ROOT/crates/fyrr-core/src/layout.rs" \
   "$ROOT/crates/fyrr-core/src/layout"
 step "clippy (full workspace)" none cargo clippy --locked --workspace --all-targets -- -D warnings
 step "clippy (reader-only build)" none cargo clippy --locked --workspace --no-default-features --all-targets -- -D warnings

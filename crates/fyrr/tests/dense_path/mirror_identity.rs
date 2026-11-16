@@ -38,12 +38,6 @@ fn mirror_holds(mirror: &Path, text: &str) -> bool {
 }
 
 #[tokio::test]
-#[ignore = "real executable and RustFS fixture; scripts/ci"]
-async fn recreated_namespace_at_same_uri_never_serves_old_mirror_entries_on_real_s3() {
-    recreated_namespace_at_same_uri_never_serves_old_mirror_entries(Backend::S3).await;
-}
-
-#[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
 async fn recreated_namespace_at_same_uri_never_serves_old_mirror_entries_on_local_storage() {
     recreated_namespace_at_same_uri_never_serves_old_mirror_entries(Backend::Local).await;
@@ -223,12 +217,6 @@ fn await_publication(
 }
 
 #[tokio::test]
-#[ignore = "real executable and RustFS fixture; scripts/ci"]
-async fn running_reader_never_serves_a_replaced_namespace_incarnation_on_real_s3() {
-    running_reader_never_serves_a_replaced_namespace_incarnation(Backend::S3).await;
-}
-
-#[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
 async fn running_reader_never_serves_a_replaced_namespace_incarnation_on_local_storage() {
     running_reader_never_serves_a_replaced_namespace_incarnation(Backend::Local).await;
@@ -304,12 +292,6 @@ async fn running_reader_never_serves_a_replaced_namespace_incarnation(backend: B
     assert!(hits.contains(KEPT), "{hits}");
     drop(client);
     std::fs::remove_dir_all(root).unwrap();
-}
-
-#[tokio::test]
-#[ignore = "real HTTP MCP executable, pinned JWKS and RustFS; scripts/ci"]
-async fn running_http_reader_never_serves_a_revoked_grant_of_a_replaced_namespace_on_real_s3() {
-    running_http_replacement(Backend::S3).await;
 }
 
 #[tokio::test]

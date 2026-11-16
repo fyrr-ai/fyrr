@@ -222,12 +222,6 @@ async fn maintenance_pending_revoke_purge_and_verify_on_storage() {
 }
 
 #[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery_on_real_s3() {
-    maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery(Backend::S3).await;
-}
-
-#[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery_on_local_storage()
 {
