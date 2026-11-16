@@ -696,6 +696,7 @@
     "overview_metrics": [
       "recall_at_10",
       "first_ask_c1_p50_ms",
+      "ingest_seconds",
       "monthly_cost_usd",
       "service_count",
       "idle_rss_bytes"
@@ -705,7 +706,8 @@
       "monthly_cost_usd": "Monthly cost",
       "service_count": "Services",
       "idle_rss_bytes": "Memory",
-      "first_ask_c1_p50_ms": "Speed \u00b7 first ask"
+      "first_ask_c1_p50_ms": "Speed \u00b7 first ask",
+      "ingest_seconds": "Ingest"
     },
     "stories": [
       {
@@ -725,6 +727,15 @@
         "metrics": [
           "first_ask_c1_p50_ms",
           "first_ask_c1_p95_ms"
+        ]
+      },
+      {
+        "id": "story-ingest",
+        "title": "Indexes fast.",
+        "description": "Time to index the 20,000 documents, from a fresh index and vector cache until searchable. Lower wall time is better; installation is excluded. Embedding cost is reported separately.",
+        "group": "ingest",
+        "metrics": [
+          "ingest_seconds"
         ]
       },
       {

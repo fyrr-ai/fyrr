@@ -19,6 +19,13 @@ async function assertBarWidths(page) {
     return Math.abs(bar.getBoundingClientRect().width / bar.parentElement.getBoundingClientRect().width - parseFloat(bar.style.getPropertyValue('--w')) / 100) > .01;
   }).length);
   assert.equal(errors, 0, 'Each rendered bar must match value/axis within 1% after reveal');
+  const stackErrors = await page.locator('.bar > i:has(.ingest-segment):visible').evaluateAll(bars => bars.filter(bar => {
+    const bounds = bar.getBoundingClientRect();
+    if (!bounds.width || bounds.top >= innerHeight || bounds.bottom <= 0) return false;
+    const width = Array.from(bar.children).reduce((sum, stage) => sum + stage.getBoundingClientRect().width, 0);
+    return Math.abs(width / bounds.width - 1) > .01;
+  }).length);
+  assert.equal(stackErrors, 0, 'Ingest stages must fill their measured total within 1%');
 }
 let cases = 0;
 try {
@@ -50,6 +57,9 @@ try {
     if (results.draft && !results.synthetic_design_preview) assert.equal(await page.locator('.bar i, .whisker').count(), 0, 'Placeholder must never draw fabricated bars');
     assert.equal(await page.locator('.synthetic-watermark').count(), results.synthetic_design_preview ? 1 : 0);
     assert.equal(await page.locator('.score-row:visible').first().locator('.score-cell:visible').count(), results.website.overview_metrics.length, 'Every overview column is selected initially');
+    assert.equal(await page.locator('.score-row:visible .score-cell[data-score-metric="ingest_seconds"] .score-rate').count(), results.systems.filter(system => !system.variant || system.variant === 'default').length, 'Every default row exposes ingest throughput');
+    assert.equal(await page.locator('#story-ingest .metric-panel').count(), 1, 'Ingest story has one wall-time chart');
+    assert.equal(await page.locator('#story-ingest .ingest-cost').count(), results.systems.filter(system => !system.variant || system.variant === 'default').length, 'Embedding cost is a secondary line for each default product');
     const suffix = `${width}${motion === 'reduce' ? '-reduced' : ''}`;
     if (width === 390) {
       const last = await page.locator('.score-row:visible').last().boundingBox();
@@ -77,6 +87,9 @@ try {
     await page.waitForTimeout(1500);
     await assertBarWidths(page);
     await page.screenshot({ path: `${report}/speed-${suffix}.png` });
+    await page.locator('#story-ingest').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
+    await assertBarWidths(page);
+    await page.screenshot({ path: `${report}/ingest-${suffix}.png` });
     await page.locator('#story-footprint').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await page.waitForTimeout(1500);
     await page.screenshot({ path: `${report}/footprint-${suffix}.png` });

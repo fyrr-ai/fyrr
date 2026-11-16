@@ -33,7 +33,7 @@ export type Results = {
   }[];
   website: {
     headline_metric: string; groups: Group[];
-    metrics: Record<string, { key: string; label: string; unit: string; group: string; direction: 'higher_is_better' | 'lower_is_better'; ci: Record<string, unknown> | null; tier?: 'primary' | 'secondary'; scope?: string; description?: string }>;
+    metrics: Record<string, { key: string; label: string; unit: string; group: string; direction: 'higher_is_better' | 'lower_is_better'; ci: Record<string, unknown> | null; tier?: 'primary' | 'secondary'; scope?: string; description?: string; stage_of?: string; stage_order?: number }>;
     products: Record<string, Product>;
     features?: Feature[];
     variant_note?: string;
@@ -110,6 +110,10 @@ export function parseResults(data: unknown): Results {
     groups.add(String(group.id));
   }
   for (const [key, meta] of Object.entries(w.metrics)) requireField(object(meta) && meta.key === key && typeof meta.label === 'string' && typeof meta.unit === 'string' && (groups.has(String(meta.group)) || meta.group === 'cost') && ['higher_is_better', 'lower_is_better'].includes(String(meta.direction)) && (meta.ci === null || object(meta.ci)) && (meta.scope === undefined || typeof meta.scope === 'string') && (meta.description === undefined || typeof meta.description === 'string'), 'metric presentation metadata');
+  for (const meta of Object.values(w.metrics)) {
+    if (object(meta) && meta.stage_of !== undefined) requireField(meta.stage_of === 'ingest_seconds' && meta.unit === 'seconds' && meta.group === 'ingest', 'ingest stages must be elapsed seconds');
+    if (object(meta) && meta.stage_order !== undefined) requireField(count(meta.stage_order), 'ingest stage order');
+  }
   for (const product of Object.values(w.products)) {
     requireField(object(product) && typeof product.type === 'string' && strings(product.pros) && strings(product.cons) && Array.isArray(product.sources), 'product presentation metadata');
     for (const source of product.sources) requireField(object(source) && typeof source.label === 'string' && typeof source.url === 'string', 'product source');
@@ -199,6 +203,11 @@ export function relativeValue(value: number, best: number, direction: string) {
 function sampleSet(metric: Metric | undefined) {
   return metric?.sample_ids?.length ? createHash('sha256').update([...metric.sample_ids].sort().join('\n')).digest('hex') : '';
 }
+function ingestRate(results: Results, metric: Metric | undefined) {
+  const documents = results.benchmark.documents;
+  return finite(documents) && documents > 0 && metric?.status === 'measured' && metric.value != null && metric.value > 0
+    ? `${format(documents * 60 / metric.value, 'docs/min')} docs/min` : 'n/e docs/min';
+}
 function axisScale(value: number, unit: string) {
   if (unit === 'fraction') return { max: 1, step: .25 };
   if (!value) return { max: 0, step: 0 };
@@ -217,7 +226,7 @@ export function headlineVerdict(results: Results) {
   const complete = cells.every(metric => metric?.status === 'measured' && metric.value !== null && metric.missing === 0 && metric.expected === metric.n && metric.attempted === metric.n && metric.ci95 && metric.sample_ids);
   const sameSamples = complete && new Set(cells.map(metric => [...metric.sample_ids!].sort().join('\n'))).size === 1;
   if (results.draft || !sameSamples || new Set(cells.map(metric => metric.n)).size !== 1 || !meta) {
-    return 'Retrieval, speed and operating cost are still being measured on the same frozen dataset.';
+    return 'Retrieval, search speed, ingest and operating cost are still being measured on the same frozen dataset.';
   }
   const values = cells.map(metric => metric.value!);
   const best = meta.direction === 'higher_is_better' ? Math.max(...values) : Math.min(...values);
@@ -226,7 +235,7 @@ export function headlineVerdict(results: Results) {
   return `${winners[0]} has the ${meta.direction === 'higher_is_better' ? 'highest' : 'lowest'} observed ${meta.label.toLowerCase()} at ${format(best, cells[0].unit)}; uncertainty and trade-offs are shown below.`;
 }
 
-export function renderMetric(results: Results, key: string, options: { tailKey?: string; axisMax?: number } = {}) {
+export function renderMetric(results: Results, key: string, options: { tailKey?: string; axisMax?: number; ingest?: boolean } = {}) {
   const meta = results.website.metrics[key];
   if (meta?.scope === 'fyrr-only') results = { ...results, systems: results.systems.filter(system => system.id === 'fyrr') };
   const cells = results.systems.map(system => system.metrics[key]);
@@ -239,11 +248,25 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
   const pct = (value: number) => max ? `${value / max * 100}%` : '0%';
   const caption = results.draft ? 'Preliminary / placeholder data. No published scores or rankings.' : 'Whiskers show 95% confidence intervals where available. Partial results cannot establish a product win.';
   const title = options.tailKey ? key.startsWith('first_ask_') ? 'First-ask search latency' : 'Repeated-query search latency' : meta?.label ?? name(key);
+  // stage_of denotes disjoint elapsed-time segments, never cumulative work in parallel.
+  const stages = options.ingest ? Object.values(results.website.metrics).filter(stage => stage.stage_of === key).sort((a, b) => (a.stage_order ?? 0) - (b.stage_order ?? 0)) : [];
+  function stageBreakdown(system: Results['systems'][number]) {
+    const total = system.metrics[key];
+    const exposed = stages.flatMap(stage => {
+      const metric = system.metrics[stage.key];
+      return metric?.status === 'measured' && metric.value != null ? [{ label: stage.label, value: metric.value }] : [];
+    });
+    const sum = exposed.reduce((sum, stage) => sum + stage.value, 0);
+    if (!exposed.length) return { segments: [], note: 'Stage breakdown n/e; total wall time only.' };
+    if (total?.status !== 'measured' || total.value == null || sum > total.value) return { segments: [], note: 'Stages cannot be stacked against this wall time; see individual stage measurements in details.' };
+    if (sum < total.value) exposed.push({ label: 'Other / unreported', value: total.value - sum });
+    return { segments: exposed, note: exposed.map(stage => `${stage.label}: ${format(stage.value, 'seconds')} s`).join(' · ') };
+  }
   function detailsFor(system: Results['systems'][number], metric: Metric | undefined, label: string) {
     if (!metric) return `<li>${escape(runLabel(results, system))} · ${escape(label)}: n/e · metric absent from this run.</li>`;
     return `<li>${escape(runLabel(results, system))} · ${escape(label)}: ${escape(metric.status)} · valid ${metric.n} / attempted ${metric.attempted ?? 'n/e'} · missing ${metric.missing ?? 'n/e'}${metric.ci95 ? ` · 95% CI ${format(metric.ci95[0], unit)}–${format(metric.ci95[1], unit)}` : ' · 95% CI n/e'}${metric.method ? ` · ${escape(metric.method)}` : ''}${metric.notes?.length ? ` · ${escape(metric.notes.join(' '))}` : ''}${metric.artifact ? ` · ${escape(metric.artifact)}` : ''}</li>`;
   }
-  const details = results.systems.map((system, index) => detailsFor(system, cells[index], meta?.label ?? key) + (options.tailKey ? detailsFor(system, tails[index], 'p95') : '')).join('');
+  const details = results.systems.map((system, index) => detailsFor(system, cells[index], meta?.label ?? key) + (options.tailKey ? detailsFor(system, tails[index], 'p95') : '') + (options.ingest ? `<li>${escape(runLabel(results, system))} · ${escape(stageBreakdown(system).note)}</li>` : '')).join('');
   const rows = results.systems.map((system, index) => {
     const metric = cells[index], tail = tails[index];
     const hasValue = metric?.value !== null && metric?.value !== undefined;
@@ -253,13 +276,16 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
     const best = meta?.direction === 'higher_is_better' ? Math.max(...measured.map(cell => cell.value)) : Math.min(...measured.map(cell => cell.value));
     const ratio = metric?.status === 'measured' && metric.value !== null && meta ? relativeValue(metric.value, best, meta.direction) : null;
     const relative = ratio === null ? metric?.status === 'partial' ? 'partial · unranked' : 'n/e comparison' : unit === 'fraction' && meta?.direction === 'higher_is_better' ? metric!.value === best ? 'highest evaluated' : `${((metric!.value! - best) * 100).toFixed(1)} pp` : `×${Number.isFinite(ratio) ? ratio.toFixed(2) : '∞'}${ratio === 1 ? ' evaluated' : ''}`;
+    const breakdown = stageBreakdown(system);
+    const cost = system.metrics.embedding_cost_usd;
     return `<div class="chart-row${system.id === 'fyrr' ? ' is-fyrr' : ''}" data-system="${escape(runKey(system))}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-missing="${metric?.missing ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-expected="${metric?.expected ?? ''}" data-samples="${sampleSet(metric)}" role="listitem">
       <span class="product-name"><a href="/compare/runs/${escape(system.id)}--${escape(system.variant ?? 'default')}.json" title="Download this run JSON">${escape(runLabel(results, system))}</a></span>
       <div class="bar${system.id === 'fyrr' ? ' bar--fyrr' : ''}${hasValue ? '' : ' is-empty'}" aria-hidden="true">
-        ${hasValue ? `<i style="--w:${pct(metric.value!)}"></i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}
+        ${hasValue ? `<i style="--w:${pct(metric.value!)}">${breakdown.segments.map((stage, i) => `<span class="ingest-segment" style="width:${metric.value ? stage.value / metric.value * 100 : 0}%;--stage-shade:${Math.min(i * .18, .72)}" title="${escape(stage.label)}: ${escape(format(stage.value, 'seconds'))} s"></span>`).join('')}</i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}
         ${tail?.value != null ? `<b class="tail-tick" style="left:${pct(tail.value)}"></b>${tail.ci95 ? `<b class="whisker whisker--tail" style="--low:${pct(tail.ci95[0])};--high:${pct(tail.ci95[1])}"></b>` : ''}` : ''}
       </div>
-      <span class="chart-value"><span class="primary-value">${options.tailKey ? `<span class="sr-only">p50 </span>` : ''}${value}</span>${options.tailKey ? `<small class="tail-value">p95 ${tailValue}</small>` : ''}<small class="relative">${relative}</small></span>
+      <span class="chart-value"><span class="primary-value">${options.tailKey ? `<span class="sr-only">p50 </span>` : ''}${value}${key === 'ingest_seconds' && hasValue ? ' s' : ''}</span>${options.tailKey ? `<small class="tail-value">p95 ${tailValue}</small>` : ''}${key === 'ingest_seconds' ? `<small class="ingest-rate">${escape(ingestRate(results, metric))}</small>` : ''}<small class="relative">${relative}</small></span>
+      ${options.ingest ? `<small class="ingest-cost" data-secondary-metric="embedding_cost_usd">Embedding cost: ${cost?.value != null ? `${escape(format(cost.value, cost.unit))}${cost.status === 'partial' ? ' *' : ''}` : cost?.status === 'invalid' ? 'invalid' : 'n/e'}</small>` : ''}
     </div>`;
   }).join('');
   return `<figure class="panel metric-panel rv" data-metric="${escape(key)}" data-direction="${escape(meta?.direction ?? '')}"${options.tailKey ? ` data-companion="${escape(options.tailKey)}"` : ''}>
@@ -268,6 +294,7 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
       <p class="metric-sub">${escape(unit === 'fraction' ? 'Score · full scale 0–100%' : unit === 'bytes' ? 'Memory / storage · scaled to MiB or GiB' : unit)}${available.length ? '' : ' · awaiting measurements'}</p>
       ${meta?.description ? `<p class="metric-sub">${escape(meta.description)}</p>` : ''}
       ${options.tailKey ? '<p class="chart-legend"><span><i></i> p50 bar</span><span><b></b> p95 tick</span><span>Whiskers: 95% CI</span></p>' : ''}
+      ${options.ingest ? `<p class="metric-sub">${escape(finite(results.benchmark.documents) ? format(results.benchmark.documents, 'documents') : 'n/e')} documents · fresh index to searchable. Stacks show exposed, disjoint elapsed stages; other time is labelled unreported. Stage breakdowns are in details.</p>` : ''}
       <div class="chart${options.tailKey ? ' chart--latency' : ''}" role="list" aria-label="${escape(title)} by product">${rows}</div>
       ${max ? `<div class="axis" aria-hidden="true">${Array.from({ length: Math.round(max / axis.step) + 1 }, (_, i) => `<span>${unit === 'fraction' ? `${Math.round(i * axis.step * 100)}%` : format(i * axis.step, unit)}</span>`).join('')}</div>` : '<p class="axis-pending">n/e · no measured scale</p>'}
       <p class="chart-caption">${caption}</p>
@@ -309,7 +336,7 @@ export function renderScoreboard(results: Results) {
       const metric = system.metrics[key], max = scales.get(key) ?? 0;
       const unit = metric?.unit ?? results.website.metrics[key]?.unit ?? '';
       const pct = (value: number) => `${max ? value / max * 100 : 0}%`;
-      return `<div class="score-cell" data-score-metric="${escape(key)}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-expected="${metric?.expected ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-missing="${metric?.missing ?? ''}" data-samples="${sampleSet(metric)}"><span class="score-label">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span><span class="score-value">${metric?.value != null ? format(metric.value, unit) + (unit === 'ms' ? ' ms' : '') + (metric.status === 'partial' ? ' *' : '') : metric?.status === 'invalid' ? 'invalid' : 'n/e'}</span><div class="bar${system.id === 'fyrr' ? ' bar--fyrr' : ''}${metric?.value != null ? '' : ' is-empty'}" aria-hidden="true">${metric?.value != null ? `<i style="--w:${pct(metric.value)}"></i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}</div><small class="relative"></small></div>`;
+      return `<div class="score-cell" data-score-metric="${escape(key)}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-expected="${metric?.expected ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-missing="${metric?.missing ?? ''}" data-samples="${sampleSet(metric)}"><span class="score-label">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span><span class="score-value">${metric?.value != null ? format(metric.value, unit) + (unit === 'ms' ? ' ms' : unit === 'seconds' ? ' s' : '') + (metric.status === 'partial' ? ' *' : '') : metric?.status === 'invalid' ? 'invalid' : 'n/e'}</span>${key === 'ingest_seconds' ? `<small class="score-rate">${escape(ingestRate(results, metric))}</small>` : ''}<div class="bar${system.id === 'fyrr' ? ' bar--fyrr' : ''}${metric?.value != null ? '' : ' is-empty'}" aria-hidden="true">${metric?.value != null ? `<i style="--w:${pct(metric.value)}"></i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}</div><small class="relative"></small></div>`;
     }).join('')}</div>`).join('')}
     <p class="score-note">n/e = not evaluated. Each column shares a zero-based scale; quality spans 0–100%. <a href="#details">Intervals, samples &amp; assumptions ↘</a></p></div><p class="overview-empty note" hidden>The overview compares default variants. Select a default system to see it.</p>`;
 }
@@ -317,7 +344,7 @@ export function renderScoreboard(results: Results) {
 export function renderStories(results: Results) {
   const baseline = { ...results, systems: results.systems.filter(system => !system.variant || system.variant === 'default') };
   return (results.website.stories ?? []).map((story, index) => {
-    const chart = story.group === 'speed' ? renderMetric(baseline, story.metrics[0], { tailKey: story.metrics[1] }) : story.metrics.length === 1 ? renderMetric(baseline, story.metrics[0]) : renderMetricSet(baseline, story.group, story.metrics, `${story.id}-`);
+    const chart = story.group === 'ingest' ? renderMetric(baseline, story.metrics[0], { ingest: true }) : story.group === 'speed' ? renderMetric(baseline, story.metrics[0], { tailKey: story.metrics[1] }) : story.metrics.length === 1 ? renderMetric(baseline, story.metrics[0]) : renderMetricSet(baseline, story.group, story.metrics, `${story.id}-`);
     return `<section class="section story-section" id="${escape(story.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">0${index + 1} / ${escape(results.website.groups.find(group => group.id === story.group)?.label ?? story.group)}</p><h2>${escape(story.title)}</h2><p class="sub">${escape(story.description)}</p></div>${story.group === 'footprint' ? architecture : ''}${chart}<a class="text-link" href="#detail-${escape(story.group)}">${escape(results.website.groups.find(group => group.id === story.group)?.label ?? 'Full')} details <span aria-hidden="true">↘</span></a></div></section>`;
   }).join('');
 }

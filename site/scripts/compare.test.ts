@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readResults, parseResults, assertPublishable, headlineVerdict, renderMetric, renderSections, renderProducts, relativeValue } from '../lib/compare';
+import { readResults, parseResults, assertPublishable, headlineVerdict, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, relativeValue } from '../lib/compare';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -102,6 +102,42 @@ test('first-ask and repeated-query latency have independent controls and diagnos
   assert(diagnostic.includes('No cross-product comparison'));
   assert(!diagnostic.includes('data-system="onyx"'));
   assert(!diagnostic.includes('data-system="pipeshub"'));
+});
+test('ingest overview derives throughput only from completed timed ingests', () => {
+  const data = structuredClone(fixture);
+  data.benchmark.documents = 20_000;
+  data.systems[0].metrics.ingest_seconds = { status: 'measured', value: 1200, unit: 'seconds', n: 1 };
+  data.systems[1].metrics.ingest_seconds = { status: 'partial', value: 600, unit: 'seconds', n: 1 };
+  data.systems[2].metrics.ingest_seconds = { status: 'measured', value: 0, unit: 'seconds', n: 1 };
+  const html = renderScoreboard(parseResults(data));
+  assert(html.includes('data-score-metric="ingest_seconds"'));
+  assert(html.includes('1,200 s'));
+  assert(html.includes('1,000 docs/min'));
+  assert(!html.includes('2,000 docs/min'));
+  assert(!html.includes('Infinity'));
+  assert.equal((html.match(/n\/e docs\/min/g) ?? []).length, 2);
+  assert(!html.includes('fyrr@jev-rerank'));
+});
+test('ingest story stacks only exposed elapsed stages within total wall time', () => {
+  const data = structuredClone(fixture);
+  const system = data.systems[0];
+  system.metrics.ingest_seconds = { status: 'measured', value: 1200, unit: 'seconds', n: 1 };
+  system.metrics.embedding_cost_usd = { status: 'measured', value: 2, unit: 'USD', n: 1 };
+  data.website.metrics.ingest_preprocessing_seconds = { key: 'ingest_preprocessing_seconds', label: 'Preprocessing', unit: 'seconds', group: 'ingest', direction: 'lower_is_better', ci: null, stage_of: 'ingest_seconds', stage_order: 0 };
+  system.metrics.ingest_preprocessing_seconds = { status: 'measured', value: 300, unit: 'seconds', n: 1 };
+  const html = renderStories(parseResults(data));
+  assert(html.includes('Indexes fast.'));
+  assert(html.includes('class="ingest-segment" style="width:25%'));
+  assert(html.includes('class="ingest-segment" style="width:75%'));
+  assert(html.includes('Other / unreported: 900 s'));
+  assert(html.includes('Embedding cost: $2'));
+  assert(html.includes('Stage breakdown n/e; total wall time only.'));
+  system.metrics.ingest_preprocessing_seconds.value = 1500;
+  const overlapping = renderStories(parseResults(data));
+  assert(!overlapping.includes('class="ingest-segment"'));
+  assert(overlapping.includes('Stages cannot be stacked against this wall time'));
+  data.website.metrics.ingest_preprocessing_seconds.unit = 'ms';
+  assert.throws(() => parseResults(data), /ingest stages must be elapsed seconds/);
 });
 test('deploy guard rejects draft even when the local preview opt-in is set', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fyrr-site-draft-'));

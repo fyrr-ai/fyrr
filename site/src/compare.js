@@ -104,6 +104,7 @@
     var hasOverview = Array.from(overview.querySelectorAll('.score-row')).some(function (row) { return !row.hidden; });
     overview.hidden = !hasOverview;
     document.querySelector('.overview-empty').hidden = hasOverview;
+    document.querySelectorAll('[data-secondary-metric]').forEach(function (line) { line.hidden = !metrics.includes(line.dataset.secondaryMetric); });
     document.querySelectorAll('.metric-panel').forEach(function (panel) {
       var chosen = metrics.includes(panel.dataset.metric) || metrics.includes(panel.dataset.companion);
       panel.hidden = !chosen || !systems.length;
