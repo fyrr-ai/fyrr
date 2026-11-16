@@ -5,6 +5,7 @@ import collections
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -12,28 +13,91 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "scripts/ci-cases.json"
+BUILD = ROOT / "target/ci-build/manifest.json"
+
+
+def build():
+    """One Cargo selection per variant; all rows execute these exact artifacts."""
+    result = {"root": str(ROOT), "tests": {}, "binaries": {}}
+    for variant, args in [
+        ("full", ["--workspace", "--lib", "--bins", "--tests"]),
+        (
+            "reader",
+            [
+                "-p",
+                "fyrr",
+                "--no-default-features",
+                "--test",
+                "cli",
+                "--test",
+                "privacy",
+            ],
+        ),
+    ]:
+        messages = output(
+            ["cargo", "test", "--locked", *args, "--no-run", "--message-format=json"]
+        )
+        for line in messages.splitlines():
+            item = json.loads(line)
+            if item.get("reason") != "compiler-artifact" or not item.get("executable"):
+                continue
+            target = item["target"]
+            package = tomllib.loads(Path(item["manifest_path"]).read_text())["package"][
+                "name"
+            ]
+            if item["profile"]["test"]:
+                group = f"{variant}:{package}:{target['kind'][0]}:{target['name']}"
+                result["tests"][group] = {
+                    "path": str(Path(item["executable"]).relative_to(ROOT)),
+                    "cwd": str(Path(item["manifest_path"]).parent.relative_to(ROOT)),
+                }
+            elif target["name"] == "fyrr":
+                # Cargo's reader build replaces target/debug/fyrr. Preserve both;
+                # CARGO_BIN_EXE_fyrr in the harnesses still points to that path.
+                destination = BUILD.parent / variant / "fyrr"
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary = destination.with_suffix(".tmp")
+                shutil.copy2(item["executable"], temporary)
+                temporary.replace(destination)
+                result["binaries"][variant] = str(destination.relative_to(ROOT))
+            elif target["name"] == "fyrr-eval":
+                result["binaries"]["eval"] = str(
+                    Path(item["executable"]).relative_to(ROOT)
+                )
+    if not {"full", "reader", "eval"} <= result["binaries"].keys():
+        raise ValueError("Cargo did not produce every required binary")
+    BUILD.write_text(json.dumps(result, indent=2) + "\n")
+
+
+def artifacts():
+    if os.environ.get("FYRR_CI_PREBUILT") != "1":
+        build()
+    result = json.loads(BUILD.read_text())
+    if result["root"] != str(ROOT):
+        raise ValueError(
+            "test binaries require the same checkout path as the build job"
+        )
+    return result
+
+
+def activate(variant, compiled):
+    """Restore the binary path embedded by Cargo in this variant's harnesses."""
+    destination = ROOT / "target/debug/fyrr"
+    source = ROOT / compiled["binaries"][variant]
+    if not destination.exists() or not os.path.samefile(source, destination):
+        destination.unlink(missing_ok=True)
+        os.link(source, destination)
+    return str(destination)
 
 
 def output(command, cwd=ROOT):
     return subprocess.check_output(command, cwd=cwd, text=True)
 
 
-def rust_inventory(args, build):
-    artifacts = output(["cargo", "test", "--locked", *args, "--no-run", "--message-format=json"])
+def rust_inventory(compiled):
     cases = {}
-    for line in artifacts.splitlines():
-        item = json.loads(line)
-        if (
-            item.get("reason") != "compiler-artifact"
-            or not item["profile"]["test"]
-            or not item.get("executable")
-        ):
-            continue
-        target = item["target"]
-        package = tomllib.loads(Path(item["manifest_path"]).read_text())["package"]["name"]
-        kind = target["kind"][0]
-        group = f"{build}:{package}:{kind}:{target['name']}"
-        binary = item["executable"]
+    for group, item in compiled["tests"].items():
+        binary = str(ROOT / item["path"])
         ignored = {
             s.removesuffix(": test")
             for s in output([binary, "--list", "--ignored"]).splitlines()
@@ -46,31 +110,16 @@ def rust_inventory(args, build):
     return cases
 
 
-def fyrr_binary():
-    """Builds the full fyrr binary and returns its path."""
-    messages = output(["cargo", "build", "--locked", "-p", "fyrr", "--message-format=json"])
-    for line in messages.splitlines():
-        item = json.loads(line)
-        if (
-            item.get("reason") == "compiler-artifact"
-            and item["target"]["name"] == "fyrr"
-            and item.get("executable")
-        ):
-            return item["executable"]
-    raise RuntimeError("cargo build -p fyrr produced no fyrr executable")
-
-
 def inventory():
-    cases = rust_inventory(["--workspace", "--lib", "--bins", "--tests"], "full")
-    cases.update(
-        rust_inventory(
-            ["-p", "fyrr", "--no-default-features", "--test", "cli", "--test", "privacy"], "reader"
-        )
-    )
-    for directory, args in [("connectors", ["--all-extras"]), ("examples/markdown-provider", [])]:
+    cases = rust_inventory(artifacts())
+    for directory, args in [
+        ("connectors", ["--all-extras"]),
+        ("examples/markdown-provider", []),
+    ]:
         output(["uv", "sync", "--locked", *args], ROOT / directory)
         listing = output(
-            ["uv", "run", "--locked", *args, "pytest", "--collect-only", "-q"], ROOT / directory
+            ["uv", "run", "--locked", *args, "pytest", "--collect-only", "-q"],
+            ROOT / directory,
         )
         for line in listing.splitlines():
             if "::" in line and not line.startswith(" "):
@@ -98,10 +147,32 @@ def validate(manifest, actual):
     missing = actual.keys() - owners.keys()
     stale = owners.keys() - actual.keys()
     if missing or stale:
-        raise ValueError(f"unowned cases: {sorted(missing)}\nstale cases: {sorted(stale)}")
+        raise ValueError(
+            f"unowned cases: {sorted(missing)}\nstale cases: {sorted(stale)}"
+        )
     for row, spec in manifest.items():
-        print(f"{row}: {len(spec['cases'])} cases, {len(spec.get('children', {}))} named children")
+        print(
+            f"{row}: {len(spec['cases'])} cases, {len(spec.get('children', {}))} named children"
+        )
     print(f"ownership: {len(owners)} executable cases, each with exactly one owner")
+
+
+def s3_rows(manifest, quick=False, shard=None):
+    rows = [row for row in manifest if row.startswith("s3-")]
+    if quick:
+        rows = [row for row in rows if manifest[row].get("quick")]
+    if shard:
+        index, count = map(int, shard.split("/"))
+        if not 1 <= index <= count:
+            raise ValueError("shard must be K/N with 1 <= K <= N")
+        bins = [[] for _ in range(count)]
+        totals = [0] * count
+        for row in sorted(rows, key=lambda r: -manifest[r]["seconds"]):
+            selected = min(range(count), key=totals.__getitem__)
+            bins[selected].append(row)
+            totals[selected] += manifest[row]["seconds"]
+        rows = bins[index - 1]
+    return rows
 
 
 def run(spec):
@@ -109,7 +180,9 @@ def run(spec):
         raise ValueError("external campaign requires its own configured runner")
     groups = collections.defaultdict(list)
     for case in spec["cases"]:
-        group, name = case.split("/", 1) if not case.startswith("python:") else (None, None)
+        group, name = (
+            case.split("/", 1) if not case.startswith("python:") else (None, None)
+        )
         if group is None:
             directory = (
                 "connectors"
@@ -123,6 +196,7 @@ def run(spec):
             groups[f"python:{directory}:{parent}"].append(name)
         else:
             groups[group].append(name)
+    compiled = artifacts() if any(not g.startswith("python:") for g in groups) else None
     for group, names in groups.items():
         if group.startswith("python:"):
             directory = group.split(":")[1]
@@ -130,19 +204,21 @@ def run(spec):
             command = ["uv", "run", "--locked", *extras, "pytest", *names]
             cwd = ROOT / directory
         else:
-            build, package, kind, target = group.split(":")
-            command = ["cargo", "test", "--locked", "-p", package]
-            if build == "reader":
-                command.append("--no-default-features")
-            command += ["--lib"] if kind == "lib" else [f"--{kind}", target]
-            command += ["--", "--include-ignored", "--exact", *names]
-            cwd = ROOT
+            activate(group.split(":")[0], compiled)
+            item = compiled["tests"][group]
+            command = [str(ROOT / item["path"]), "--include-ignored", "--exact", *names]
+            cwd = ROOT / item["cwd"]
         env = dict(os.environ)
         if group.startswith("full:fyrr-eval:"):
             # The tool's real-S3 cases drive the full fyrr binary.
-            env["FYRR_BINARY"] = fyrr_binary()
+            env["FYRR_BINARY"] = str(ROOT / compiled["binaries"]["full"])
         process = subprocess.Popen(
-            command, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+            command,
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
         lines = []
         for line in process.stdout:
@@ -158,12 +234,35 @@ def run(spec):
         else:
             counts = re.findall(r"test result: ok\. (\d+) passed;", transcript)
         if not counts or int(counts[-1]) != len(names):
-            raise ValueError(f"{group}: expected {len(names)} passed cases, got {counts}")
+            raise ValueError(
+                f"{group}: expected {len(names)} passed cases, got {counts}"
+            )
 
 
 def main():
     os.chdir(ROOT)
     mode = sys.argv[1]
+    if mode == "build":
+        build()
+        return
+    if mode == "archive":
+        compiled = artifacts()
+        paths = {"target/ci-build", compiled["binaries"]["eval"]}
+        paths.update(item["path"] for item in compiled["tests"].values())
+        subprocess.run(
+            ["tar", "--zstd", "-cf", "target/ci-tests.tar.zst", *sorted(paths)],
+            check=True,
+        )
+        return
+    if mode == "binary":
+        compiled = artifacts()
+        name = sys.argv[2]
+        print(
+            activate(name, compiled)
+            if name in ("full", "reader")
+            else ROOT / compiled["tests"][name]["path"]
+        )
+        return
     if mode == "inventory":
         print(json.dumps(inventory(), indent=2, sort_keys=True))
         return
@@ -171,9 +270,20 @@ def main():
     if mode == "check":
         validate(manifest, inventory())
     elif mode == "rows":
-        for row in manifest:
-            if row.startswith(sys.argv[2] + "-"):
-                print(row)
+        shard = next(
+            (
+                arg.removeprefix("--shard=")
+                for arg in sys.argv[3:]
+                if arg.startswith("--shard=")
+            ),
+            None,
+        )
+        rows = (
+            s3_rows(manifest, "--quick" in sys.argv, shard)
+            if sys.argv[2] == "s3"
+            else [row for row in manifest if row.startswith(sys.argv[2] + "-")]
+        )
+        print("\n".join(rows))
     elif mode == "run":
         spec = manifest[sys.argv[2]]
         if not spec["cases"]:

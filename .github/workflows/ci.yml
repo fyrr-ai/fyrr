@@ -1,107 +1,184 @@
-# Hosted CI: runs the repository's own `scripts/ci` unchanged on an x86-64
-# Ubuntu runner with Docker for the S3 (RustFS) and identity (Keycloak)
-# fixtures. `scripts/ci` keeps going after a failure, writes
-# target/ci-logs/<stamp>/summary.txt and lists any check it did not run as
-# `n/e` (not evaluated), never as passed; the summary is uploaded whether the
-# run passed or failed. One job runs the full check and image selection.
-# release.yml calls this workflow before it publishes anything.
+# Every job calls the same local entry point. Rust workers consume the exact
+# build artifact; only build and lint compile the debug dependency graph.
 name: ci
 
 on:
   push:
     branches: ["main"]
   pull_request:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+    inputs:
+      quick:
+        description: Run the PR gate instead of the full suite
+        type: boolean
+        default: false
   workflow_call:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: "0"
+  CARGO_BUILD_JOBS: "2"
+  RUST_TEST_THREADS: "1"
+  FYRR_CI_REVISION: ${{ github.sha }}
 
 jobs:
-  ci:
-    name: scripts/ci
+  build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Free disk space for the Lance and image builds
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
-          df -h "$GITHUB_WORKSPACE"
-
-      # The real-S3 maintenance cases run the S3 fixture (up to 4 GB) next to a
-      # large test process; swap keeps smaller runners from aborting on memory.
-      - name: Add swap
-        run: |
-          sudo fallocate -l 12G /fyrr-swapfile
-          sudo chmod 600 /fyrr-swapfile
-          sudo mkswap /fyrr-swapfile >/dev/null
-          sudo swapon /fyrr-swapfile
-          free -g
-
-      - name: Install the pinned Rust toolchain
-        run: |
-          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
-          rustup toolchain install "$channel" --profile minimal --component rustfmt,clippy
-          rustup default "$channel"
-
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-
-      - name: Cache cargo registry, git checkouts and cargo-deny
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: ./.github/actions/ci-setup # zizmor: ignore[self-repository]
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            ~/.cargo/bin/cargo-deny
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'scripts/pins.env') }}
-          restore-keys: cargo-${{ runner.os }}-
-
-      - name: Install the pinned cargo-deny
-        run: |
-          source scripts/pins.env
-          if ! cargo deny --version 2>/dev/null | grep -qx "cargo-deny $CARGO_DENY_VERSION"; then
-            cargo install --locked "cargo-deny@$CARGO_DENY_VERSION"
-          fi
-
-      - name: Cache the build directory
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          memory: 'true'
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          path: |
-            target/debug
-            target/release
-            target/tools
-          key: target-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: target-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+          shared-key: tests
+      - name: Build and prove test ownership
+        run: |
+          mkdir -p target/ci-measurements
+          /usr/bin/time -v -o target/ci-measurements/build.time scripts/ci --debug-only --group=build
+          FYRR_CI_PREBUILT=1 scripts/ci-cases archive
+          du -sh target/debug target/ci-build target/ci-tests.tar.zst | tee target/ci-measurements/size.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-tests
+          path: target/ci-tests.tar.zst
+          compression-level: 0
+          retention-days: 1
+      - uses: ./.github/actions/ci-logs # zizmor: ignore[self-repository]
+        if: always()
+        with:
+          name: build
 
-      # A fat-LTO release link needs about 9 GB of memory. Runners of private
-      # repositories have less, so there the release link, size and image
-      # checks are skipped and reported as not evaluated.
-      - name: scripts/ci
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup # zizmor: ignore[self-repository]
+        with:
+          memory: 'true'
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: clippy
+      - run: scripts/ci --debug-only --group=lint
+      - uses: ./.github/actions/ci-logs # zizmor: ignore[self-repository]
+        if: always()
+        with:
+          name: lint
+
+  python:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup # zizmor: ignore[self-repository]
+      - run: scripts/ci --debug-only --group=python
+      - uses: ./.github/actions/ci-logs # zizmor: ignore[self-repository]
+        if: always()
+        with:
+          name: python
+
+  checks:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [core, docs]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      FYRR_CI_PREBUILT: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup # zizmor: ignore[self-repository]
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ci-tests
+          path: target
+      - run: tar --zstd -xf target/ci-tests.tar.zst
+      - name: Core tests or docs and quickstarts
         env:
-          FYRR_CI_REVISION: ${{ github.sha }}
-          RUST_TEST_THREADS: "1"
-          CI_MODE: ${{ github.event.repository.private && '--debug-only' || '--images' }}
-        run: scripts/ci "$CI_MODE"
-
-      - name: Show the summary
+          GROUP: ${{ matrix.group }}
+          QUICK: ${{ (github.event_name == 'pull_request' || inputs.quick == true) && '--quick' || '--debug-only' }}
+        run: scripts/ci "$QUICK" "--group=$GROUP"
+      - uses: ./.github/actions/ci-logs # zizmor: ignore[self-repository]
         if: always()
-        run: cat target/ci-logs/*/summary.txt
-
-      - name: Upload the logs
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ci-logs-${{ github.sha }}
-          path: |
-            target/ci-logs/
-            target/images/*.log
-            target/images/*.txt
-          if-no-files-found: error
+          name: ${{ matrix.group }}
+
+  s3:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON((github.event_name == 'pull_request' || inputs.quick == true) && '[1]' || '[1,2,3,4,5,6]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      FYRR_CI_PREBUILT: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup # zizmor: ignore[self-repository]
+        with:
+          memory: 'true'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ci-tests
+          path: target
+      - run: tar --zstd -xf target/ci-tests.tar.zst
+      - name: Real S3 rows on an independent fixture
+        env:
+          SHARD: ${{ matrix.shard }}
+          QUICK: ${{ (github.event_name == 'pull_request' || inputs.quick == true) && 'true' || 'false' }}
+        run: |
+          if [[ "$QUICK" == true ]]; then
+            scripts/ci --quick --group=s3
+          else
+            scripts/ci --debug-only "--shard=$SHARD/6"
+          fi
+      - uses: ./.github/actions/ci-logs # zizmor: ignore[self-repository]
+        if: always()
+        with:
+          name: s3-${{ matrix.shard }}
+
+  release-checks:
+    if: >-
+      !github.event.repository.private && github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup # zizmor: ignore[self-repository]
+        with:
+          memory: 'true'
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: release
+      - run: scripts/ci --images --group=release
+      - uses: ./.github/actions/ci-logs # zizmor: ignore[self-repository]
+        if: always()
+        with:
+          name: release
