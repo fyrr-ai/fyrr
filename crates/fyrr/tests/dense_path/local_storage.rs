@@ -297,7 +297,7 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
     // real envelope objects to cross the 32,768 active-object boundary too.
     const PUBLICATIONS: u64 = 4;
     const RECEIPTS_PER_PUBLICATION: u64 = 17_600;
-    assert!(PUBLICATIONS * RECEIPTS_PER_PUBLICATION > 65_536);
+    const { assert!(PUBLICATIONS * RECEIPTS_PER_PUBLICATION > 65_536) };
     let mut seed = Vec::with_capacity(33_000 + PUBLICATIONS as usize);
     for offset in 1..=PUBLICATIONS {
         let mut manifest = template.clone();

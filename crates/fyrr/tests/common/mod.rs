@@ -53,6 +53,7 @@ pub fn fyrr() -> Command {
     command
         .env_remove("FYRR_CONFIG")
         .env_remove("PYTHONHOME")
+        .env("AWS_EC2_METADATA_DISABLED", "true")
         .env("PYTHONDONTWRITEBYTECODE", "1");
     if cfg!(feature = "writer") {
         let venv = repo().join("connectors/.venv");
@@ -174,7 +175,6 @@ impl Sandbox {
             .env("XDG_DATA_HOME", run.join("home/.local/share"))
             // The identity keys `config_with` references; callers may override them.
             // CLI sandboxes never use the real host's EC2 instance profile.
-            .env("AWS_EC2_METADATA_DISABLED", "true")
             .env("FYRR_IDENTITY_KEY", SANDBOX_IDENTITY_KEY)
             .env("FYRR_ENCRYPTION_KEY", SANDBOX_ENCRYPTION_KEY);
         for (key, value) in env {
