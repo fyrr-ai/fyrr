@@ -202,11 +202,15 @@ fn read_vector(path: &Path, dimensions: u32) -> Result<Option<Vec<f32>>> {
         .len()
         != expected
     {
-        return Err(WriterError::EmbeddingLocalCacheInvalid);
+        return Ok(None);
     }
     let mut bytes = vec![0; crate::narrow_usize(expected)];
-    file.read_exact(&mut bytes)
-        .map_err(|_| WriterError::EmbeddingLocalCacheUnavailable)?;
+    if let Err(error) = file.read_exact(&mut bytes) {
+        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            return Ok(None);
+        }
+        return Err(WriterError::EmbeddingLocalCacheUnavailable);
+    }
     let key = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -216,13 +220,15 @@ fn read_vector(path: &Path, dimensions: u32) -> Result<Option<Vec<f32>>> {
         || bytes[8..12] != dimensions.to_le_bytes()
         || bytes[12..HEADER_BYTES] != *checksum(key, dimensions, payload).as_bytes()
     {
-        return Err(WriterError::EmbeddingLocalCacheInvalid);
+        return Ok(None);
     }
     let vector = payload
         .chunks_exact(4)
         .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
         .collect::<Vec<_>>();
-    validate(&vector, dimensions).map_err(|_| WriterError::EmbeddingLocalCacheInvalid)?;
+    if validate(&vector, dimensions).is_err() {
+        return Ok(None);
+    }
     Ok(Some(vector))
 }
 
@@ -300,7 +306,7 @@ impl LocalCache {
         self.trim(size)?;
         let temporary = self.root.join(format!(".{}-{}", std::process::id(), key));
         let path = self.root.join(key);
-        let result = (|| {
+        let result: Result<()> = (|| {
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -312,14 +318,27 @@ impl LocalCache {
                 .and_then(|()| file.write_all(hash.as_bytes()))
                 .and_then(|()| file.write_all(&bytes))
                 .map_err(|_| WriterError::EmbeddingLocalCacheUnavailable)?;
-            file.sync_all()
+            #[cfg(test)]
+            tests::pause("written");
+            // Reconstructible cache: restart validates the complete entry before use.
+            fs::rename(&temporary, &path)
                 .map_err(|_| WriterError::EmbeddingLocalCacheUnavailable)?;
-            fs::rename(&temporary, &path).map_err(|_| WriterError::EmbeddingLocalCacheUnavailable)
+            #[cfg(test)]
+            tests::pause("published");
+            Ok(())
         })();
         if result.is_err() {
             let _ = fs::remove_file(temporary);
         }
         result?;
+        self.files.retain(|(existing, previous_size)| {
+            if existing == &path {
+                self.bytes -= previous_size;
+                false
+            } else {
+                true
+            }
+        });
         self.bytes += size;
         self.files.push_back((path, size));
         Ok(())
@@ -330,6 +349,76 @@ impl LocalCache {
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    pub(super) fn pause(stage: &str) {
+        if std::env::var("FYRR_TEST_VECTOR_STAGE").as_deref() == Ok(stage) {
+            fs::write(std::env::var_os("FYRR_TEST_VECTOR_MARKER").unwrap(), b"").unwrap();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "child of embedding cache crash test"]
+    fn local_cache_write_child_process() {
+        let root = PathBuf::from(std::env::var_os("FYRR_TEST_VECTOR_ROOT").unwrap());
+        LocalCache::open(root)
+            .unwrap()
+            .write(&"a".repeat(64), &[0.25; 512])
+            .unwrap();
+    }
+
+    #[test]
+    fn local_cache_crash_boundaries_recover_as_misses() {
+        for stage in ["written", "published"] {
+            let scratch = Scratch::new();
+            let marker = scratch.0.with_extension("paused");
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "--ignored",
+                    "embedding::tests::local_cache_write_child_process",
+                ])
+                .env("FYRR_TEST_VECTOR_ROOT", &scratch.0)
+                .env("FYRR_TEST_VECTOR_STAGE", stage)
+                .env("FYRR_TEST_VECTOR_MARKER", &marker)
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            let start = std::time::Instant::now();
+            while !marker.exists() {
+                assert!(
+                    start.elapsed() < std::time::Duration::from_secs(30),
+                    "{stage} boundary"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            child.kill().unwrap();
+            child.wait().unwrap();
+            fs::remove_file(&marker).unwrap();
+            let key = "a".repeat(64);
+            if stage == "published" {
+                fs::write(scratch.0.join(&key), b"torn").unwrap();
+            }
+            let mut cache = LocalCache::open(scratch.0.clone()).unwrap();
+            assert_eq!(read_vector(&scratch.0.join(&key), 512).unwrap(), None);
+            cache.write(&key, &[0.5; 512]).unwrap();
+            drop(cache);
+            let cache = LocalCache::open(scratch.0.clone()).unwrap();
+            assert_eq!(cache.files.len(), 1);
+            assert_eq!(
+                read_vector(&scratch.0.join(&key), 512).unwrap(),
+                Some(vec![0.5; 512])
+            );
+            // Same-sized corruption must also be a miss, even with a valid header.
+            let path = scratch.0.join(&key);
+            let mut bytes = fs::read(&path).unwrap();
+            *bytes.last_mut().unwrap() ^= 1;
+            fs::write(&path, bytes).unwrap();
+            assert_eq!(read_vector(&path, 512).unwrap(), None);
+        }
+    }
 
     struct Scratch(PathBuf);
     impl Scratch {
@@ -376,15 +465,19 @@ mod tests {
             read_vector(&scratch.0.join(&key), 512).unwrap(),
             Some(vec![0.125; 512])
         );
-        assert_eq!(
-            read_vector(&scratch.0.join(&key), 1024),
-            Err(WriterError::EmbeddingLocalCacheInvalid)
-        );
+        assert_eq!(read_vector(&scratch.0.join(&key), 1024), Ok(None));
         fs::write(scratch.0.join(&key), [0u8; 2048]).unwrap();
+        assert_eq!(read_vector(&scratch.0.join(&key), 512), Ok(None));
+        drop(cache);
+        let mut cache = LocalCache::open(scratch.0.clone()).unwrap();
+        cache.write(&key, &[0.25; 512]).unwrap();
+        assert_eq!(cache.files.len(), 1);
         assert_eq!(
-            read_vector(&scratch.0.join(&key), 512),
-            Err(WriterError::EmbeddingLocalCacheInvalid)
+            read_vector(&scratch.0.join(&key), 512).unwrap(),
+            Some(vec![0.25; 512])
         );
+        fs::remove_file(scratch.0.join(&key)).unwrap();
+        assert_eq!(read_vector(&scratch.0.join(&key), 512).unwrap(), None);
     }
 
     #[test]

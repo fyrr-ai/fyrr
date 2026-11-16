@@ -466,6 +466,10 @@
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::mirror_population_crash_boundaries_recover_verified_bytes": {
         "tier": "quick",
         "seconds": 0.1
+      },
+      "full:fyrr-writer:lib:fyrr_writer/embedding::tests::local_cache_crash_boundaries_recover_as_misses": {
+        "tier": "quick",
+        "seconds": 0.1
       }
     },
     "children": {
@@ -494,6 +498,12 @@
         "tier": "quick",
         "parents": [
           "full:fyrr-reader:lib:fyrr_reader/mirror::tests::mirror_population_crash_boundaries_recover_verified_bytes"
+        ]
+      },
+      "full:fyrr-writer:lib:fyrr_writer/embedding::tests::local_cache_write_child_process": {
+        "tier": "quick",
+        "parents": [
+          "full:fyrr-writer:lib:fyrr_writer/embedding::tests::local_cache_crash_boundaries_recover_as_misses"
         ]
       }
     }
