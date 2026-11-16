@@ -18,7 +18,7 @@ pub(super) fn replacement_matches(
         && restore_sequence >= rejected.restore_sequence
 }
 
-mod index;
+pub(crate) mod index;
 use index::{Evidence, Index};
 
 #[derive(Debug)]

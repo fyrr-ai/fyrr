@@ -176,6 +176,7 @@ pub fn prepared_sync(
         })
         .map_err(|_| WriterError::ProviderInvalid)?;
         let mut reports = Vec::new();
+        let mut evidence = prepared::CommandEvidence::default();
         let mut failed = false;
         for kind in kinds {
             match prepared_kind(
@@ -185,6 +186,7 @@ pub fn prepared_sync(
                 full,
                 due || (requested.is_empty() && kind == SyncKind::Reconcile),
                 permission_stream,
+                &mut evidence,
             ) {
                 Ok(value) => {
                     failed |= value.get("error").is_some();

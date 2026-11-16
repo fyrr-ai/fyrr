@@ -8,22 +8,41 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 #[derive(Clone, Copy)]
-pub(super) enum Evidence {
+pub(crate) enum Evidence {
     Manifest,
     Applied,
     Rejected,
     Identity,
     Marker,
+    Preparation,
 }
 
 #[derive(Debug)]
-pub(super) struct Index {
+pub(crate) struct Index {
     db: Mutex<Option<Connection>>,
     scratch: PathBuf,
+    remove_directory: bool,
+}
+impl Drop for Index {
+    fn drop(&mut self) {
+        if let Ok(db) = self.db.get_mut() {
+            *db = None;
+        }
+        if self.remove_directory {
+            let _ = std::fs::remove_dir(&self.scratch);
+        }
+    }
 }
 impl Index {
-    pub(super) fn new(config: &Config) -> Result<Self> {
-        let scratch = crate::scratch::directory(config, "history")?;
+    pub(crate) fn new(config: &Config) -> Result<Self> {
+        Self::open(crate::scratch::directory(config, "history")?, false)
+    }
+
+    pub(crate) fn command(config: &Config) -> Result<Self> {
+        Self::open(crate::scratch::command_directory(config)?, true)
+    }
+
+    fn open(scratch: PathBuf, remove_directory: bool) -> Result<Self> {
         check_space(&scratch, 8 * 1024 * 1024)?;
         let db = crate::scratch::open(&scratch, "history", |_| {})?;
         db.execute_batch(
@@ -40,6 +59,7 @@ impl Index {
         Ok(Self {
             db: Mutex::new(Some(db)),
             scratch,
+            remove_directory,
         })
     }
 
@@ -78,7 +98,7 @@ impl Index {
         Ok(())
     }
 
-    pub(super) fn get<T: DeserializeOwned>(&self, kind: Evidence, key: &str) -> Result<Option<T>> {
+    pub(crate) fn get<T: DeserializeOwned>(&self, kind: Evidence, key: &str) -> Result<Option<T>> {
         self.with_db(|db| {
             let value: Option<Vec<u8>> = db
                 .query_row(
@@ -94,7 +114,7 @@ impl Index {
         })
     }
 
-    pub(super) fn contains(&self, kind: Evidence, key: &str) -> Result<bool> {
+    pub(crate) fn contains(&self, kind: Evidence, key: &str) -> Result<bool> {
         self.with_db(|db| {
             db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM evidence WHERE kind=?1 AND key=?2)",
@@ -105,7 +125,7 @@ impl Index {
         })
     }
 
-    pub(super) fn put(
+    pub(crate) fn put(
         &self,
         kind: Evidence,
         key: &str,
@@ -126,7 +146,7 @@ impl Index {
         })
     }
 
-    pub(super) fn begin(&self) -> Result<()> {
+    pub(crate) fn begin(&self) -> Result<()> {
         self.with_db(|db| {
             db.execute("DELETE FROM staged", [])
                 .map(|_| ())
@@ -134,7 +154,7 @@ impl Index {
         })
     }
 
-    pub(super) fn promote(&self) -> Result<()> {
+    pub(crate) fn promote(&self) -> Result<()> {
         // No rollback with journal_mode=OFF. A failed promotion poisons the index;
         // consumers only resume after every row has been promoted successfully.
         self.with_db(|db| {
@@ -175,7 +195,7 @@ impl Index {
         })
     }
 
-    pub(super) fn next_rejected(&self, after: &str) -> Result<Option<String>> {
+    pub(crate) fn next_rejected(&self, after: &str) -> Result<Option<String>> {
         self.with_db(|db| {
             db.query_row(
                 "SELECT key FROM evidence WHERE kind=?1 AND key>?2 ORDER BY key LIMIT 1",

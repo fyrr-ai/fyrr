@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 mod group;
-mod history;
+pub(crate) mod history;
 mod namespace;
 mod publication;
 
@@ -76,28 +76,72 @@ pub async fn published_ids(
     config: &Config,
     head: &ServingHead,
 ) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+    let evidence = published_evidence(config, head).await?;
+    Ok((evidence.applied, evidence.rejected))
+}
+
+pub(crate) struct PublishedEvidence {
+    pub(crate) applied: BTreeSet<String>,
+    pub(crate) rejected: BTreeSet<String>,
+    rewinds: Vec<String>,
+}
+
+pub(crate) async fn published_evidence(
+    config: &Config,
+    head: &ServingHead,
+) -> Result<PublishedEvidence> {
     let (store, root) = namespace_store(config)?;
-    let mut applied = BTreeSet::new();
-    let mut rejected: BTreeSet<_> = head.rejected_envelope_ids.iter().cloned().collect();
-    // Every ancestor's receipts remain authoritative after subsequent publications.
+    let mut evidence = PublishedEvidence {
+        applied: BTreeSet::new(),
+        rejected: head.rejected_envelope_ids.iter().cloned().collect(),
+        rewinds: Vec::new(),
+    };
     let mut chain = fyrr_reader::storage::manifest_chain(
         store,
         root,
         head.content.as_ref().map(|p| p.manifest.clone()),
     );
+    let mut latest = true;
     while let Some(publication) = chain.try_next().await? {
-        applied.extend(publication.envelope_ids);
-        rejected.extend(publication.rejected_envelope_ids);
+        if latest {
+            evidence.rewinds.clone_from(&publication.cursor_rewinds);
+            latest = false;
+        }
+        evidence.applied.extend(publication.envelope_ids);
+        evidence.rejected.extend(publication.rejected_envelope_ids);
     }
-    Ok((applied, rejected))
+    Ok(evidence)
 }
 
 pub(crate) async fn rejection_markers(
     config: &Config,
     head: &ServingHead,
 ) -> Result<Vec<RejectionMarker>> {
-    let (_, rejected) = published_ids(config, head).await?;
-    rejection_markers_from_ids(config, head, &rejected).await
+    let evidence = published_evidence(config, head).await?;
+    markers_from_evidence(config, &evidence).await
+}
+
+pub(crate) async fn markers_from_evidence(
+    config: &Config,
+    evidence: &PublishedEvidence,
+) -> Result<Vec<RejectionMarker>> {
+    let (store, root) = namespace_store(config)?;
+    let mut markers = Vec::new();
+    for path in evidence
+        .rejected
+        .iter()
+        .map(|id| format!("rejections/{id}.json"))
+        .chain(evidence.rewinds.iter().cloned())
+    {
+        markers.push(
+            fyrr_reader::storage::read_contract(
+                store.as_ref(),
+                &Path::from(format!("{root}/{path}")),
+            )
+            .await?,
+        );
+    }
+    Ok(markers)
 }
 
 async fn rejection_markers_from_ids(
@@ -185,6 +229,61 @@ pub(crate) async fn unconsumed_rejections_from_reads(
         }
     }
     Ok(unresolved)
+}
+
+/// One operation-scoped discovery for envelope retention and native-file protection.
+pub(crate) struct CleanupEvidence {
+    pub(crate) applied: BTreeSet<String>,
+    pub(crate) rejected: BTreeSet<String>,
+    pub(crate) unresolved: BTreeSet<String>,
+    pub(crate) envelopes: Vec<(Path, PreparedEnvelope)>,
+}
+
+pub(crate) async fn cleanup_evidence(
+    config: &Config,
+    head: &ServingHead,
+) -> Result<CleanupEvidence> {
+    let evidence = published_evidence(config, head).await?;
+    let (store, root) = namespace_store(config)?;
+    let paths: Vec<_> = store
+        .list(Some(&root.join("envelopes")))
+        .try_collect()
+        .await?;
+    let paths: Vec<_> = paths.into_iter().map(|object| object.location).collect();
+    let envelopes = read_envelopes(config, &paths).await?;
+    let reads = envelopes
+        .iter()
+        .filter(|(path, _)| {
+            path.filename()
+                .and_then(|n| n.strip_suffix(".json"))
+                .is_some_and(|id| evidence.applied.contains(id) && !evidence.rejected.contains(id))
+        })
+        .map(|(_, envelope)| envelope)
+        .collect::<Vec<_>>();
+    let unresolved = markers_from_evidence(config, &evidence)
+        .await?
+        .into_iter()
+        .filter(|marker| {
+            !reads.iter().any(|e| {
+                history::replacement_matches(
+                    marker,
+                    &e.source_id,
+                    e.kind,
+                    e.rejection_generation,
+                    e.restore_sequence,
+                ) && crate::apply::complete_read(e)
+            })
+        })
+        .map(|marker| marker.envelope_id)
+        .collect();
+    let mut applied = evidence.applied;
+    applied.extend(evidence.rejected.iter().cloned());
+    Ok(CleanupEvidence {
+        applied,
+        rejected: evidence.rejected,
+        unresolved,
+        envelopes,
+    })
 }
 
 /// A receipt is a projection of a published manifest, never a stored artifact.

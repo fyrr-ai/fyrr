@@ -494,6 +494,10 @@
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::verified_descriptor_never_serves_a_swapped_or_rewritten_blob": {
         "tier": "quick",
         "seconds": 0.1
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::prepared::state::tests::command_evidence_discards_bodies_when_head_identity_changes": {
+        "tier": "quick",
+        "seconds": 0.01
       }
     },
     "children": {
@@ -925,6 +929,10 @@
         "seconds": 10.0
       },
       "full:fyrr:test:dense_path/namespace_delete::delete_refuses_active_source_worker_on_local_storage": {
+        "tier": "full",
+        "seconds": 10.0
+      },
+      "full:fyrr:test:dense_path/preparation_evidence::preparation_reuses_bodies_but_discovers_new_envelopes_on_local_storage": {
         "tier": "full",
         "seconds": 10.0
       }

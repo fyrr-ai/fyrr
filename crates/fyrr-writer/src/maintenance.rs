@@ -11,7 +11,7 @@ mod restore_index;
 use chrono::Utc;
 use futures::TryStreamExt;
 use fyrr_core::config::Config;
-use fyrr_core::envelope::{EnvelopePayload, PreparedEnvelope, RejectionMarker};
+use fyrr_core::envelope::{EnvelopePayload, RejectionMarker};
 use fyrr_core::publication::{CommitLineage, ContentManifest, ServingHead};
 use fyrr_reader::storage::{dataset_uri, namespace_store, pinned, read_contract};
 use lance::Dataset;
@@ -358,15 +358,14 @@ async fn cleanup_versions(
     // Native cleanup doesn't know prepared envelopes. Filter its candidates under
     // the namespace lease; protect every remaining log fragment, including rejects.
     let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
-    let (paths, applied) = commit::envelope_paths(config, &head).await?;
-    let unresolved: BTreeSet<_> = commit::unconsumed_rejections(config, &head, &[])
-        .await?
-        .into_iter()
-        .map(|m| m.envelope_id)
-        .collect();
+    let commit::CleanupEvidence {
+        applied,
+        unresolved,
+        envelopes,
+        ..
+    } = commit::cleanup_evidence(config, &head).await?;
     let mut protected = BTreeSet::new();
-    for path in paths {
-        let envelope: PreparedEnvelope = read_contract(store.as_ref(), &path).await?;
+    for (_, envelope) in envelopes {
         if applied.contains(&envelope.envelope_id) && !unresolved.contains(&envelope.envelope_id) {
             continue;
         }

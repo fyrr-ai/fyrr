@@ -22,6 +22,7 @@ mod callbacks;
 mod content;
 mod revisions;
 mod state;
+pub(super) use state::CommandEvidence;
 
 struct Preparation<'a> {
     config: &'a fyrr_core::config::Config,
@@ -39,6 +40,7 @@ pub(super) fn prepared_kind(
     full: bool,
     due: bool,
     permission_stream: bool,
+    evidence: &mut CommandEvidence,
 ) -> Result<serde_json::Value> {
     let config = loaded.config.clone();
     let source = config
@@ -65,7 +67,7 @@ pub(super) fn prepared_kind(
         let head = rt
             .block_on(fyrr_reader::storage::optional_head(&config))?
             .ok_or(WriterError::NamespaceUnavailable)?;
-        let mut pending = preparation.scan(&head)?;
+        let mut pending = preparation.scan(evidence, &head)?;
         let dataset = if head.content.is_some() {
             Some(Arc::new(
                 rt.block_on(fyrr_reader::storage::pinned(&config, &head))?,
@@ -94,11 +96,11 @@ pub(super) fn prepared_kind(
             content_sequence: p.sequence,
             lance_version: p.lance_version,
         });
-        let (mut state, skip_not_due) = preparation.cursor_state(&head, &pending, due)?;
+        let (mut state, skip_not_due) = preparation.cursor_state(&pending, due)?;
         if skip_not_due {
             return Ok(default_report(ReportDefaults::NotDue(kind)));
         }
-        preparation.backpressure(&head, full)?;
+        preparation.backpressure(&pending, full)?;
         if full {
             state.cursor = None;
         }

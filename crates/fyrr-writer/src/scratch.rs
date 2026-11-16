@@ -10,6 +10,34 @@ pub(crate) const ERROR: WriterError = WriterError::RestoreWorkingSpaceExhausted;
 
 /// Called under the namespace lease; purposes have independent lifetimes.
 pub(crate) fn directory(config: &Config, purpose: &str) -> Result<PathBuf> {
+    let base = base(config)?;
+    let scratch = base.join(format!(
+        "{}-{purpose}",
+        fyrr_reader::embedding::digest(fyrr_reader::storage::dataset_uri(config).as_bytes())
+    ));
+    match std::fs::remove_dir_all(&scratch) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(ERROR),
+    }
+    create(&scratch)?;
+    Ok(scratch)
+}
+
+/// Worker commands do not hold a namespace lease and never remove another index.
+pub(crate) fn command_directory(config: &Config) -> Result<PathBuf> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let scratch = base(config)?.join(format!(
+        "command-{}-{}-{}",
+        std::process::id(),
+        fyrr_core::clock::now().timestamp_nanos_opt().ok_or(ERROR)?,
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    create(&scratch)?;
+    Ok(scratch)
+}
+
+fn base(config: &Config) -> Result<PathBuf> {
     let base = if let Some(directory) = std::env::var_os("TMPDIR") {
         PathBuf::from(directory)
     } else {
@@ -31,20 +59,14 @@ pub(crate) fn directory(config: &Config, purpose: &str) -> Result<PathBuf> {
     {
         return Err(ERROR);
     }
-    let scratch = base.join(format!(
-        "{}-{purpose}",
-        fyrr_reader::embedding::digest(fyrr_reader::storage::dataset_uri(config).as_bytes())
-    ));
-    match std::fs::remove_dir_all(&scratch) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err(ERROR),
-    }
+    Ok(base)
+}
+
+fn create(scratch: &Path) -> Result<()> {
     std::fs::DirBuilder::new()
         .mode(0o700)
-        .create(&scratch)
-        .map_err(|_| ERROR)?;
-    Ok(scratch)
+        .create(scratch)
+        .map_err(|_| ERROR)
 }
 
 pub(crate) fn check_space(scratch: &Path, bytes: u64) -> Result<()> {
