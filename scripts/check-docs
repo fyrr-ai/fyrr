@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail when the reference docs disagree with the code.
 
-  scripts/check-docs                       build both binaries, then check
+  scripts/ci --step="reference docs"       build both variants and check
   scripts/check-docs FULL_BIN READER_BIN   check against prebuilt binaries
 
 docs/cli.md: every command and subcommand of both builds, their flags,
@@ -20,7 +20,6 @@ fixtures/mcp/error-codes.json.
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tomllib
@@ -518,27 +517,12 @@ def check_mcp_tools():
 # --- binaries -------------------------------------------------------------------
 
 
-def build():
-    """Builds both variants and returns copies of their binaries."""
-    cargo_bin = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo")) / "bin"
-    env = {**os.environ, "PATH": f"{cargo_bin}{os.pathsep}{os.environ['PATH']}"}
-    out = ROOT / "target/check-docs"
-    binaries = []
-    for variant, args in [("full", []), ("reader-only", ["--no-default-features"])]:
-        subprocess.run(
-            ["cargo", "build", "--locked", "-p", "fyrr", *args],
-            cwd=ROOT,
-            env=env,
-            check=True,
-        )
-        # Keep the name `fyrr`: clap prints the invoked name in usage lines.
-        (out / variant).mkdir(parents=True, exist_ok=True)
-        binaries.append(shutil.copy2(ROOT / "target/debug/fyrr", out / variant / "fyrr"))
-    return binaries
-
-
 def main():
-    full, reader = sys.argv[1:3] if len(sys.argv) == 3 else build()
+    if len(sys.argv) != 3:
+        sys.exit(
+            'usage: scripts/check-docs FULL_BIN READER_BIN (or scripts/ci --step="reference docs")'
+        )
+    full, reader = sys.argv[1:3]
     check_cli(str(full), str(reader))
     check_configuration(str(full))
     check_mcp_tools()

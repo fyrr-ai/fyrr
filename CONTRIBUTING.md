@@ -68,6 +68,7 @@ scripts/ci              # full suite: storage, connectors or maintenance changes
 scripts/ci --images     # release tier: full suite plus image checks
 scripts/ci --jobs=2     # bound concurrent Rust cases (default: CPU/memory based)
 scripts/ci --step=configuration "--step=schema drift" # exact names; others n/e
+scripts/ci --step="reference docs" # standalone reference-doc verification
 ```
 
 `scripts/ci` runs doctor, rustfmt, clippy for the workspace and the
