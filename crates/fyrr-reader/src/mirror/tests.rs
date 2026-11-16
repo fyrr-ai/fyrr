@@ -448,3 +448,39 @@ async fn oversized_objects_use_direct_ranges_after_first_read() {
     assert_eq!(after.bytes - before.bytes, 2);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[tokio::test]
+async fn retired_request_drops_schedule_one_sweep() {
+    let directory = std::env::temp_dir().join(format!(
+        "fyrr-mirror-retired-{}-{}",
+        std::process::id(),
+        fyrr_core::clock::now().timestamp_micros()
+    ));
+    let mirror = Arc::new(MirrorStore::new(directory.clone(), 1024).unwrap());
+    mirror
+        .bind_dataset("s3://bucket/namespace/dataset.lance")
+        .unwrap();
+    let lease = mirror.pin(&[]).await.unwrap();
+    let requests = (0..100)
+        .map(|_| lease.request().unwrap())
+        .collect::<Vec<_>>();
+    lease.retire();
+    drop(requests);
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while mirror.sweep_runs.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // Queue a barrier after the spawned cleanup and check the entire burst.
+    mirror.evict_unpinned().await.unwrap();
+    assert_eq!(mirror.sweep_runs.load(Ordering::SeqCst), 2);
+    // A later request in the same retired generation cannot queue another sweep.
+    drop(lease.request().unwrap());
+    tokio::task::yield_now().await;
+    assert_eq!(mirror.sweep_runs.load(Ordering::SeqCst), 2);
+    drop(lease);
+    tokio::task::yield_now().await;
+    std::fs::remove_dir_all(directory).unwrap();
+}

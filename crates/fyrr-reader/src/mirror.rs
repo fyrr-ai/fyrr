@@ -25,6 +25,8 @@ pub struct MirrorStore {
     pub(crate) sample_read: Arc<crate::serve::TestGate>,
     #[cfg(test)]
     verified_read: Arc<crate::serve::TestGate>,
+    #[cfg(test)]
+    sweep_runs: Arc<AtomicU64>,
     directory: PathBuf,
     max_bytes: u64,
     oversized: Arc<std::sync::Mutex<std::collections::BTreeSet<PathBuf>>>,
@@ -132,6 +134,7 @@ pub(crate) struct MirrorLease {
 
     released: AtomicBool,
     retired: AtomicBool,
+    sweep_requested: AtomicBool,
     pub(crate) expiry: tokio_util::sync::CancellationToken,
 }
 /// An active request retains the kernel pin independently of idle expiry.
@@ -145,6 +148,7 @@ impl Drop for MirrorRequest {
         self.holder.take();
         if (self.lease.retired.load(Ordering::SeqCst) || self.lease.expired())
             && let Ok(runtime) = tokio::runtime::Handle::try_current()
+            && !self.lease.sweep_requested.swap(true, Ordering::SeqCst)
         {
             let mirror = self.lease.mirror.clone();
             runtime.spawn(async move {
@@ -327,6 +331,8 @@ impl MirrorStore {
             sample_read: Arc::default(),
             #[cfg(test)]
             verified_read: Arc::default(),
+            #[cfg(test)]
+            sweep_runs: Arc::default(),
             directory,
             max_bytes,
             oversized: Arc::default(),
@@ -469,6 +475,7 @@ impl MirrorStore {
             holder: std::sync::Mutex::new(Some(Arc::new(holder))),
             released: AtomicBool::new(false),
             retired: AtomicBool::new(false),
+            sweep_requested: AtomicBool::new(false),
             expiry: tokio_util::sync::CancellationToken::new(),
         }))
     }
@@ -476,6 +483,8 @@ impl MirrorStore {
         self.sweep(false).await
     }
     async fn sweep(&self, preserve_last_cache: bool) -> std::io::Result<()> {
+        #[cfg(test)]
+        self.sweep_runs.fetch_add(1, Ordering::SeqCst);
         let _lock = self.lock.lock().await;
         let _host = self.host_lock().await?;
         let allowed = self.live_files()?;
