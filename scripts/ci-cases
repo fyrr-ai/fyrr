@@ -142,6 +142,8 @@ def validate(manifest, actual):
                 raise ValueError(f"unknown external service: {row}")
         if spec.get("kind") not in {"rust", "python"} or not spec.get("title"):
             raise ValueError(f"row needs its execution kind and title: {row}")
+        if spec["kind"] == "python" and row not in {"python-sdk", "python-example"}:
+            raise ValueError(f"row has no Python check in scripts/ci: {row}")
         if any(case.startswith("python:") != (spec["kind"] == "python") for case in spec["cases"]):
             raise ValueError(f"case does not match its row kind: {row}")
         if not spec["cases"]:
