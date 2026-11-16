@@ -1,11 +1,12 @@
-//! The full build links libpython dynamically through PyO3. An rpath
-//! to the interpreter's library directory lets development binaries run
-//! without LD_LIBRARY_PATH; in the image it is /usr/local/lib, already on the
-//! loader path. The reader-only build has no Python and no rpath.
+//! Development builds locate libpython through an interpreter-specific rpath.
+//! Release builds use the runtime loader's search path.
+//! Reader-only builds link no Python.
 
 #[allow(clippy::print_stdout)]
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     #[cfg(feature = "writer")]
-    pyo3_build_config::add_libpython_rpath_link_args();
+    if std::env::var("PROFILE").as_deref() != Ok("release") {
+        pyo3_build_config::add_libpython_rpath_link_args();
+    }
 }

@@ -17,5 +17,5 @@ reader_only = 122663200
 [image_size]
 # Bytes of the images as `docker image inspect -f '{{.Size}}'` reports them
 # (containerd image store): fyrr (full build, Python, SDK) and fyrr-reader.
-full = 673234410
+full = 673234193
 reader_only = 215341009

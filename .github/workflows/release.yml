@@ -63,6 +63,26 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: scripts/release --version "${TAG#v}" --out dist
 
+      - name: Check release binaries in supported runtime images
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          dir="$PWD/dist/fyrr-$version"
+          image_tag="$(awk '$1 == "image_tag" {print $2}' "$dir/manifest.txt")"
+          for image in fyrr fyrr-reader; do
+            docker run --rm --entrypoint /release-fyrr \
+              --mount "type=bind,src=$dir/$image-$version-linux-x86_64,dst=/release-fyrr,readonly" \
+              "$image:$image_tag" --version
+          done
+          providers="$(docker run --rm --entrypoint /release-fyrr \
+            --mount "type=bind,src=$dir/fyrr-$version-linux-x86_64,dst=/release-fyrr,readonly" \
+            "fyrr:$image_tag" writer providers)"
+          printf '%s\n' "$providers"
+          for provider in local-files google-drive notion github slack jira; do
+            grep -qE "^$provider[[:space:]].*[[:space:]]ok$" <<<"$providers"
+          done
+
       - name: Upload the release artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

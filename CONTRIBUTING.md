@@ -171,8 +171,10 @@ after pushing both images to GHCR; reruns resume the draft or leave an
 already published release unchanged. Release logs stay under
 `target/release-logs/<version>/`, outside the downloadable artifacts. Image
 archives retain checkout-owned tags, recorded as `image_tag` in
-`manifest.txt`. After downloading the artifacts, verify and load the full
-image with:
+`manifest.txt`. Bare binaries use the host ABI; their measured runtime
+requirements are recorded in the same manifest (see
+[downloadable binaries](docs/deployment.md#downloadable-binaries)).
+After downloading the artifacts, verify and load the full image with:
 
 ```sh
 sha256sum --check SHA256SUMS

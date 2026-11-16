@@ -39,6 +39,13 @@ if [[ -z "$VERSION" ]]; then
 fi
 [[ "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$ ]] || die "version must be a bounded identifier"
 COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unavailable)"
+if tree_status="$(git -C "$ROOT" status --porcelain 2>/dev/null)"; then
+  [[ -z "$tree_status" ]] && TREE_STATE=clean || TREE_STATE=dirty
+else
+  TREE_STATE=unavailable
+fi
+BUILD_OS="$(if [[ -r /etc/os-release ]]; then (source /etc/os-release; printf '%s %s' "${ID:-unknown}" "${VERSION_ID:-unknown}"); else echo unavailable; fi)"
+BUILD_GLIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null || echo unavailable)"
 PLATFORM="linux-x86_64"
 DIR="$OUT/fyrr-$VERSION"
 LOGS="$ROOT/target/release-logs/$VERSION"
@@ -51,6 +58,28 @@ log "assembling fyrr $VERSION in ${DIR#"$ROOT"/}"
 
 "$ROOT/scripts/doctor" >"$LOGS/doctor.log" 2>&1 || { tail -n 20 "$LOGS/doctor.log"; die "scripts/doctor failed"; }
 
+# Runtime facts come from the exported ELF, not the build host's libc version.
+binary_runtime() {
+  local binary="$1" dynamic headers symbols glibc interpreter needed rpath runpath
+  dynamic="$(LC_ALL=C readelf --dynamic "$binary")" || return 1
+  headers="$(LC_ALL=C readelf --program-headers --wide "$binary")" || return 1
+  symbols="$(LC_ALL=C readelf --version-info "$binary")" || return 1
+  glibc="$(sed -nE 's/.*Name: GLIBC_([0-9.]+).*/\1/p' <<<"$symbols" | sort -Vu | tail -n1)" || return 1
+  interpreter="$(sed -nE 's/.*Requesting program interpreter: ([^]]*)].*/\1/p' <<<"$headers")" || return 1
+  needed="$(sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' <<<"$dynamic" | paste -sd, -)" || return 1
+  rpath="$(sed -n 's/.*(RPATH).*\[\(.*\)\]/\1/p' <<<"$dynamic")" || return 1
+  runpath="$(sed -n 's/.*(RUNPATH).*\[\(.*\)\]/\1/p' <<<"$dynamic")" || return 1
+  if [[ -n "$rpath$runpath" ]]; then
+    echo "release binary $(basename "$binary") embeds a runtime search path" >&2
+    return 1
+  fi
+  printf 'binary_runtime %s\n' "$(basename "$binary")"
+  printf '  glibc_symbols_max %s\n' "${glibc:-none}"
+  printf '  interpreter %s\n' "${interpreter:-none}"
+  printf '  needed %s\n' "${needed:-none}"
+  printf '  rpath %s\n  runpath %s\n' "${rpath:-none}" "${runpath:-none}"
+}
+
 # --- binaries (the pinned release profile of budgets.toml) ------------------
 log "building the full release binary"
 build_release -p fyrr
@@ -59,7 +88,13 @@ log "building the reader-only release binary"
 build_release -p fyrr --no-default-features
 cp "$ROOT/target/release/fyrr" "$DIR/fyrr-reader-$VERSION-$PLATFORM"
 chmod 0755 "$DIR/fyrr-$VERSION-$PLATFORM" "$DIR/fyrr-reader-$VERSION-$PLATFORM"
-"$DIR/fyrr-$VERSION-$PLATFORM" --version | grep -q 'full build' || die "the full binary does not report the full build"
+full_runtime="$(binary_runtime "$DIR/fyrr-$VERSION-$PLATFORM")" || die "cannot inspect full binary runtime"
+reader_runtime="$(binary_runtime "$DIR/fyrr-reader-$VERSION-$PLATFORM")" || die "cannot inspect reader binary runtime"
+build_python="${PYO3_PYTHON:-$ROOT/connectors/.venv/bin/python}"
+python_lib="$("$build_python" -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR") or "")')" || die "cannot locate the build interpreter library"
+[[ -n "$python_lib" ]] || die "the selected build interpreter has no library directory"
+LD_LIBRARY_PATH="$python_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+  "$DIR/fyrr-$VERSION-$PLATFORM" --version | grep -q 'full build' || die "the full binary does not report the full build"
 "$DIR/fyrr-reader-$VERSION-$PLATFORM" --version | grep -q 'reader-only build' || die "the reader binary does not report the reader-only build"
 
 # --- the connector SDK wheel ------------------------------------------------
@@ -92,6 +127,12 @@ fi
   echo "fyrr $VERSION"
   echo "commit $COMMIT"
   echo "platform $PLATFORM"
+  echo "binary_build host"
+  echo "working_tree $TREE_STATE"
+  echo "build_os $BUILD_OS"
+  echo "build_libc $BUILD_GLIBC"
+  echo "$full_runtime"
+  echo "$reader_runtime"
   echo "built_at $(date -u +%FT%TZ)"
   echo "rustc $(rustc --version)"
   echo "sdk $(basename "$wheel")"

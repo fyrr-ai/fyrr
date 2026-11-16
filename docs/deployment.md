@@ -105,6 +105,28 @@ and a writer that runs on its own.
    with `fyrr reader check` or `/readyz`, which answers health probes under
    any `Host` with the status code alone.
 
+## Downloadable binaries
+
+Bare release binaries are dynamically linked Linux x86-64 executables.
+Their `binary_runtime` sections in `manifest.txt` list the maximum required
+GLIBC symbol version, ELF interpreter and shared libraries. Local assembly
+inherits the build host's ABI; official releases use the Ubuntu 24.04
+release job. The manifest records the actual build provenance and runtime
+requirements. A GLIBC version alone does not guarantee compatibility:
+the interpreter and all required libraries must also be available.
+
+The full binary additionally needs the matching CPython shared library
+listed in `needed` (3.13 in the standard build) and the matching connector
+SDK wheel with its provider extras. Install these in a
+Python environment, expose its library directory through the system loader
+or `LD_LIBRARY_PATH`, and set `VIRTUAL_ENV` when using that environment's
+providers. Release binaries embed no RPATH or RUNPATH. The `fyrr` image
+includes this runtime and the bundled providers.
+
+The release job executes the exported binaries in the pinned runtime
+images before uploading artifacts; it also checks SDK provider
+discovery. Reader-only binaries require no Python.
+
 ## Images
 
 `docker/Dockerfile` builds both images from the repository root; every base
@@ -114,7 +136,7 @@ image is pinned by digest. Both carry the `LICENSE` and `NOTICE` files under
 | Target | Base | User | Content |
 | --- | --- | --- | --- |
 | `fyrr-reader` | distroless `cc-debian13:nonroot` | 65532 | the reader-only binary; no Python, no shell |
-| `fyrr` | `python:3.13.15-slim-trixie` | 10001 | the full binary, the connector SDK with the bundled providers' extras, and `fyrr-entrypoint` |
+| `fyrr` | `python:3.13.17-slim-trixie` | 10001 | the full binary, the connector SDK with the bundled providers' extras, and `fyrr-entrypoint` |
 
 ```sh
 docker build --file docker/Dockerfile --target fyrr-reader --tag fyrr-reader:local .
