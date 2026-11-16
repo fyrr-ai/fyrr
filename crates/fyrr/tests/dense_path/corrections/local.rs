@@ -262,3 +262,101 @@ async fn local_native_observer_preserves_warm_mirror_reads() {
     drop(reader);
     drop(controller);
 }
+
+#[tokio::test]
+#[ignore = "genuine bulk fixture files and subsequent LocalStore CAS; scripts/ci"]
+async fn bulk_fixture_versions_remain_private_and_support_later_cas() {
+    use object_store::{PutMode, PutOptions, UpdateVersion};
+    use std::os::unix::fs::PermissionsExt;
+    let (config, _root) = setup_on(Backend::Local);
+    let loaded = fyrr_core::config::load(&config).unwrap();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let a = namespace.clone().join("fixture").join("a.json");
+    let b = namespace.join("fixture").join("b.json");
+    fyrr_reader::storage::test_store::seed_local_fixture(
+        &loaded.config,
+        vec![
+            (a.clone(), b"first".to_vec()),
+            (b.clone(), b"second".to_vec()),
+        ],
+    )
+    .unwrap();
+    let first = store.get(&a).await.unwrap();
+    let original = first.meta.e_tag.clone();
+    assert_eq!(first.bytes().await.unwrap().as_ref(), b"first");
+    let second = store.get(&b).await.unwrap();
+    let other = second.meta.e_tag.clone();
+    assert_ne!(original, other);
+    assert_eq!(second.bytes().await.unwrap().as_ref(), b"second");
+    let Some(fyrr_core::config::StorageBackend::Local { root }) = loaded.config.storage.backend()
+    else {
+        unreachable!();
+    };
+    let directory = root.join("namespaces/dense-fixture/fixture");
+    assert_eq!(
+        std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    for name in ["a.json", "b.json"] {
+        assert_eq!(
+            std::fs::metadata(directory.join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    let changed = store
+        .put_opts(
+            &a,
+            b"changed".to_vec().into(),
+            PutOptions {
+                mode: PutMode::Update(UpdateVersion {
+                    e_tag: original.clone(),
+                    version: None,
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_ne!(changed.e_tag, original);
+    assert_ne!(changed.e_tag, other);
+    assert!(matches!(
+        store
+            .put_opts(
+                &a,
+                b"stale".to_vec().into(),
+                PutOptions {
+                    mode: PutMode::Update(UpdateVersion {
+                        e_tag: original,
+                        version: None
+                    }),
+                    ..Default::default()
+                }
+            )
+            .await,
+        Err(object_store::Error::Precondition { .. })
+    ));
+    store.delete(&b).await.unwrap();
+    let recreated = store
+        .put_opts(
+            &b,
+            b"second".to_vec().into(),
+            PutOptions {
+                mode: PutMode::Create,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        recreated.e_tag, other,
+        "normal puts must not reuse a reserved version"
+    );
+    assert_eq!(
+        store.get(&a).await.unwrap().bytes().await.unwrap().as_ref(),
+        b"changed"
+    );
+}

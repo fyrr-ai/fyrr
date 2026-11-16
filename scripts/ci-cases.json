@@ -237,7 +237,8 @@
       "full:fyrr:test:dense_path/corrections::local::local_operation_boundaries_preserve_durability_and_release_killed_writers",
       "full:fyrr:test:dense_path/corrections::local::local_native_observer_preserves_warm_mirror_reads",
       "full:fyrr:test:dense_path/dense_path_and_namespace_contracts_on_local_storage",
-      "full:fyrr:test:dense_path/mirror_identity::running_http_reader_never_serves_a_revoked_grant_of_a_replaced_namespace_on_local_storage"
+      "full:fyrr:test:dense_path/mirror_identity::running_http_reader_never_serves_a_revoked_grant_of_a_replaced_namespace_on_local_storage",
+      "full:fyrr:test:dense_path/corrections::local::bulk_fixture_versions_remain_private_and_support_later_cas"
     ],
     "backend": "local"
   },

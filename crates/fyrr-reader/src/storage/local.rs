@@ -619,3 +619,7 @@ impl ObjectStore for LocalStore {
 #[cfg(test)]
 #[path = "local/tests.rs"]
 mod tests;
+
+#[cfg(feature = "test-store")]
+#[path = "local/fixture.rs"]
+pub(super) mod fixture;

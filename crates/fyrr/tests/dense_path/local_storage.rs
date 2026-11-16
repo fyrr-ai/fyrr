@@ -291,6 +291,7 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
     let mut previous = template.publication_id.clone();
     // Valid immutable history, without thousands of unnecessary native writes.
     // Lifetime receipt evidence exceeds the former aggregate 65,536-entry cap.
+    let mut seed = Vec::with_capacity(33_550);
     for offset in 1..=550_u64 {
         let mut manifest = template.clone();
         manifest.sequence += offset;
@@ -318,10 +319,7 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
                     .clone()
                     .join("envelopes")
                     .join(format!("{}.json", envelope.envelope_id));
-                store
-                    .put(&path, write_contract(&envelope).into())
-                    .await
-                    .unwrap();
+                seed.push((path.clone(), write_contract(&envelope)));
                 if cleaned_replay.is_none() {
                     cleaned_replay = Some((
                         path.clone(),
@@ -334,22 +332,21 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
             manifest.envelope_ids.push(envelope.envelope_id);
         }
         manifest.validate().unwrap();
-        store
-            .put(
-                &object_store::path::Path::from(format!(
-                    "{namespace}/publications/{}.json",
-                    manifest.publication_id
-                )),
-                write_contract(&manifest).into(),
-            )
-            .await
-            .unwrap();
+        seed.push((
+            object_store::path::Path::from(format!(
+                "{namespace}/publications/{}.json",
+                manifest.publication_id
+            )),
+            write_contract(&manifest),
+        ));
         previous = manifest.publication_id;
         let pointer = head.content.as_mut().unwrap();
         pointer.publication_id = previous.clone();
         pointer.manifest = format!("publications/{previous}.json");
         pointer.sequence = manifest.sequence;
     }
+    assert_eq!(seed.len(), 33_550);
+    fyrr_reader::storage::test_store::seed_local_fixture(&loaded.config, seed).unwrap();
     store
         .put(&namespace.join("head.json"), write_contract(&head).into())
         .await

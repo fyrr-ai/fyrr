@@ -15,3 +15,17 @@ pub(super) fn native_wrapper(
     wrappers.extend(mirror);
     Some(Arc::new(ChainedWrappingObjectStore::new(wrappers)))
 }
+
+/// Seed new control objects in an inert fixture, before starting any CLI.
+/// Each object has a genuine private file, durable version xattr and contents.
+pub fn seed_local_fixture(
+    config: &fyrr_core::config::Config,
+    entries: Vec<(object_store::path::Path, Vec<u8>)>,
+) -> std::io::Result<()> {
+    let Some(fyrr_core::config::StorageBackend::Local { root }) = config.storage.backend() else {
+        return Err(std::io::Error::other(
+            "fixture seeding requires local storage",
+        ));
+    };
+    super::local::fixture::seed(&root, config.namespace.name.as_str(), entries)
+}
