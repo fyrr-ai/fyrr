@@ -2,7 +2,7 @@
 # pip; fyrr itself is not rebuilt. Build with the wheels as the context:
 #   docker build -f examples/derived-image/Dockerfile \
 #     --build-arg FYRR_IMAGE=fyrr:<tag> -t my-fyrr target/example-wheels
-ARG FYRR_IMAGE=fyrr:latest
+ARG FYRR_IMAGE=fyrr:local
 FROM ${FYRR_IMAGE}
 USER root
 RUN --mount=type=bind,source=.,target=/wheels \
