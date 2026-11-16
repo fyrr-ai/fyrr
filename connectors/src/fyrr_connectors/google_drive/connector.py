@@ -30,6 +30,7 @@ from ..connector import (
     SourceGroup,
     SourceUser,
 )
+from .bounds import Budget
 from .client import DIRECTORY, ApiError, Client
 from .config import MIME_TYPES, Scope, Settings
 from .export import FORMATS, Unexportable, clean
@@ -299,10 +300,12 @@ class GoogleDrive(Connector[Settings, Scope]):
         # Every listed ID: another owner's file can be listed by each user it
         # is shared with, and the catch-up must know what is still missing.
         seen: set[str] = set()
+        budget = Budget()
 
         def take(feed: Feed, file: dict[str, Any]) -> bool:
             if file["id"] in seen or not feed.owns(file) or not self._folders.contain(feed, file):
                 return False
+            budget.add(file["id"])
             seen.add(file["id"])
             roots.append(file["id"])
             return True
@@ -500,20 +503,34 @@ class GoogleDrive(Connector[Settings, Scope]):
 
     def members(self, cursor: str | None) -> Iterator[PrincipalBatch]:
         self._connect(sync_only=True)
+        budget = Budget()
+
+        def bounded(values, *, edges=False):
+            for value in values:
+                budget.add(value, edges=int(edges))
+                yield value
+
         groups = {
             group["email"]: list(
-                self._directory(
-                    f"groups/{quote(group['email'], safe='@')}/members",
-                    "members",
-                    maxResults=200,
-                    fields="email,type",
+                bounded(
+                    self._directory(
+                        f"groups/{quote(group['email'], safe='@')}/members",
+                        "members",
+                        maxResults=200,
+                        fields="email,type",
+                    ),
+                    edges=True,
                 )
             )
-            for group in self._directory(
-                "groups", "groups", customer="my_customer", maxResults=200, fields="email"
+            for group in bounded(
+                self._directory(
+                    "groups", "groups", customer="my_customer", maxResults=200, fields="email"
+                )
             )
         }
-        users, found = principals(self._directory_users(), groups)
+        users, found = principals(bounded(self._directory_users()), groups)
+        for group in found:
+            budget.add([group.id, group.members], edges=len(group.members))
         entries = [*users, *found]
         snapshot_id = hashlib.sha256(f"{cursor}:{time.time_ns()}".encode()).hexdigest()
         # A failed Directory read raised above: no part exists, nothing is applied.

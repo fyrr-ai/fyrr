@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import threading
 import json
+import threading
 import zlib
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
@@ -22,6 +22,7 @@ from functools import partial
 from typing import Any
 
 from ..validate import MAX_CURSOR_BYTES
+from .bounds import Budget
 from .client import ApiError, Client
 from .config import ALL_DRIVES, Scope
 
@@ -309,6 +310,7 @@ class Folders:
     def __init__(self, client: Client, folders: Sequence[str]) -> None:
         self._client = client
         self._lock = threading.RLock()
+        self._budget = Budget()
         self._folders = frozenset(folders)
         self._parents: dict[tuple[str, str], str | None] = {}
         #: Whether the folder disables inherited permissions; None: unreadable.
@@ -322,6 +324,8 @@ class Folders:
             """The folder's parent. With `limits` its inheritance flag is read
             too: only the permission mapping asks for it."""
             key = (feed.subject, folder)
+            if key not in self._parents:
+                self._budget.add(key)
             if key not in self._parents or (limits and key not in self._limits):
                 fields = "parents,inheritedPermissionsDisabled" if limits else "parents"
                 try:
@@ -335,6 +339,7 @@ class Folders:
                         raise
                     body = {}
                     self._limits[key] = None
+                self._budget.add(body)
                 self._parents[key] = (body.get("parents") or [None])[0]
             return self._parents[key]
 
@@ -342,6 +347,7 @@ class Folders:
         with self._lock:
             """Take a folder's parent from its current resource (a change entry)."""
             key = (feed.subject, folder["id"])
+            self._budget.add(folder)
             self._parents[key] = (folder.get("parents") or [None])[0]
             if "inheritedPermissionsDisabled" in folder:
                 self._limits[key] = bool(folder["inheritedPermissionsDisabled"])

@@ -272,3 +272,26 @@ def test_worker_sessions_are_owned_by_each_thread(monkeypatch):
         sessions = list(pool.map(worker, ["alice", "bob"]))
     assert sessions[0] is not sessions[1]
     assert len(opened) == 2
+
+
+@pytest.mark.parametrize("limit", ["MAX_ENTRIES", "MAX_EDGES", "MAX_BYTES"])
+def test_aggregate_limits_abort(limit, monkeypatch):
+    from fyrr_connectors.google_drive import bounds
+
+    monkeypatch.setattr(bounds, limit, 1)
+    budget = bounds.Budget()
+    with pytest.raises(ValueError, match="google_drive_aggregate_limit"):
+        budget.add("large", edges=2)
+        budget.add("large", edges=2)
+
+
+def test_listing_over_aggregate_limit_never_completes(drive, index, monkeypatch):
+    from fyrr_connectors.google_drive import bounds
+
+    drive.put("doc", owner=ALICE)
+    monkeypatch.setattr(bounds, "MAX_ENTRIES", 0)
+    batches = []
+    with pytest.raises(ValueError, match="google_drive_aggregate_limit"):
+        for batch in index.run("reconcile", "sync", owners=[ALICE]):
+            batches.append(batch)
+    assert all(not getattr(batch, "complete", False) for batch in batches)
