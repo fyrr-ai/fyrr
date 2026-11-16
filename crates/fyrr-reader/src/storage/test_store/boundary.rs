@@ -142,6 +142,23 @@ impl Operation {
     }
 }
 
+/// A named request boundary after retrieval and before the live authorization read.
+/// Background preparation never emits this event.
+pub(crate) async fn authorization_output() -> Result<()> {
+    let Some(client) = Client::current() else {
+        return Ok(());
+    };
+    let mut operation = client.operation().await?;
+    let path = Path::from("authorization-output");
+    operation
+        .observe("AUTHORIZE", &path, false, 0, &[], None)
+        .await?;
+    operation
+        .observe("AUTHORIZE", &path, true, 200, &[], None)
+        .await?;
+    Ok(())
+}
+
 /// Observe the real conditional local mutation without implementing it here.
 pub(crate) async fn conditional_delete(
     path: &Path,

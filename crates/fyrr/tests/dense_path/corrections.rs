@@ -891,15 +891,15 @@ fn correction_inflight_identity_change_on_storage() {
     let revoke = Arc::new(AtomicUsize::new(0));
     let stop = Arc::new(AtomicBool::new(false));
     let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
-    let (proxied_endpoint, thread) = proxy(
-        endpoint.clone(),
-        Arc::new(AtomicBool::new(false)),
-        revoke.clone(),
-        revoked,
-        stop.clone(),
-        None,
-        None,
-    );
+    assert_eq!(endpoint, "local-storage", "owned by the local CI row");
+    let armed = revoke.clone();
+    let hook: BoundaryHook = Arc::new(move |request, _, after| {
+        if !after && request.starts_with("AUTHORIZE ") && armed.swap(0, Ordering::SeqCst) != 0 {
+            success(&revoked, &["writer", "commit"]);
+        }
+        false
+    });
+    let (proxied_endpoint, thread) = proxy_at_boundary(endpoint.clone(), stop.clone(), hook);
     let proxied = root.join("proxy.toml");
     std::fs::write(&proxied, text.replace(&endpoint, &proxied_endpoint)).unwrap();
     let mut child = Command::new(crate::common::binary())
@@ -924,9 +924,9 @@ fn correction_inflight_identity_change_on_storage() {
             .len(),
         1
     );
-    // The second head GET occurs after retrieval. The subject remains known
-    // with a nonempty token set, so the changed-generation branch is exercised.
-    revoke.store(2, Ordering::Relaxed);
+    // Publish only after this request completes retrieval, before its final live check.
+    // Background warm preparation can read the head but cannot consume this boundary.
+    revoke.store(1, Ordering::SeqCst);
     writeln!(input, "{request}").unwrap();
     line.clear();
     output.read_line(&mut line).unwrap();
@@ -944,7 +944,7 @@ fn correction_inflight_identity_change_on_storage() {
         0
     );
     // A no-op commit during final refresh changes freshness alone and succeeds.
-    revoke.store(2, Ordering::Relaxed);
+    revoke.store(1, Ordering::SeqCst);
     writeln!(input, "{request}").unwrap();
     line.clear();
     output.read_line(&mut line).unwrap();
@@ -956,8 +956,8 @@ fn correction_inflight_identity_change_on_storage() {
     assert!(child.wait().unwrap().success());
     success(&config, &["writer", "commit"]);
     let arguments = ["reader", "search", "dense-only query"];
-    // CLI admission opens the head once, followed by the query's two GETs.
-    revoke.store(3, Ordering::Relaxed);
+    // The CLI uses the same semantic output boundary.
+    revoke.store(1, Ordering::SeqCst);
     let refused = run(&proxied, &arguments);
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("authorization_unavailable"));
