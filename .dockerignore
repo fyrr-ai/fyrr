@@ -8,7 +8,6 @@
 !rust-toolchain.toml
 !.cargo/
 !crates/
-!eval/
 !connectors/
 !scripts/lib.sh
 !scripts/pins.env
@@ -22,7 +21,6 @@ crates/*/tests/
 crates/*/src/**/tests/
 crates/*/src/**/tests.rs
 crates/*/src/**/*_tests.rs
-eval/tests/
 connectors/tests/
 **/.env
 **/.env.*

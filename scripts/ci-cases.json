@@ -3796,24 +3796,6 @@
       }
     }
   },
-  "eval": {
-    "title": "fyrr-eval (internal tool)",
-    "kind": "rust",
-    "cases": {
-      "full:fyrr-eval:test:cli/stage_files_are_new_files_under_an_external_root": {
-        "tier": "quick",
-        "seconds": 0.043
-      },
-      "full:fyrr-eval:test:cli/errors_keep_query_values_and_paths_private": {
-        "tier": "quick",
-        "seconds": 0.104
-      },
-      "full:fyrr-eval:test:cli/frozen_provider_binds_files_roles_and_keeps_inputs_read_only": {
-        "tier": "quick",
-        "seconds": 0.305
-      }
-    }
-  },
   "local-writer-provider": {
     "title": "local: writer-provider",
     "kind": "rust",

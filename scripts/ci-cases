@@ -93,9 +93,7 @@ def build():
                 shutil.copy2(item["executable"], temporary)
                 temporary.replace(destination)
                 result["binaries"][variant] = str(destination.relative_to(ROOT))
-            elif target["name"] == "fyrr-eval":
-                result["binaries"]["eval"] = str(Path(item["executable"]).relative_to(ROOT))
-    if not {"full", "reader", "eval"} <= result["binaries"].keys():
+    if not {"full", "reader"} <= result["binaries"].keys():
         raise ValueError("Cargo did not produce every required binary")
     BUILD.write_text(json.dumps(result, indent=2) + "\n")
 
@@ -120,15 +118,10 @@ def rust_inventory(compiled):
     cases = {}
     for group, item in compiled["tests"].items():
         binary = str(ROOT / item["path"])
-        ignored = {
-            s.removesuffix(": test")
-            for s in output([binary, "--list", "--ignored"]).splitlines()
-            if s.endswith(": test")
-        }
         for line in output([binary, "--list"]).splitlines():
             if line.endswith(": test"):
                 name = line.removesuffix(": test")
-                cases[f"{group}/{name}"] = name in ignored
+                cases[f"{group}/{name}"] = False
     return cases
 
 
@@ -240,9 +233,6 @@ def run(spec):
         env = dict(os.environ)
         if not group.startswith("python:"):
             env["FYRR_GATE_BINARY"] = str(ROOT / compiled["binaries"][group.split(":")[0]])
-        if group.startswith("full:fyrr-eval:"):
-            # The tool's real-S3 cases drive the full fyrr binary.
-            env["FYRR_BINARY"] = str(ROOT / compiled["binaries"]["full"])
         process = subprocess.Popen(
             command,
             cwd=cwd,
@@ -492,7 +482,7 @@ def main():
         name = sys.argv[2]
         print(
             ROOT / compiled["binaries"][name]
-            if name in ("full", "reader", "eval")
+            if name in ("full", "reader")
             else ROOT / compiled["tests"][name]["path"]
         )
         return

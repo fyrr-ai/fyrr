@@ -2569,23 +2569,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fyrr-eval"
-version = "0.1.0"
-dependencies = [
- "axum",
- "clap",
- "fyrr-core",
- "fyrr-reader",
- "hex",
- "reqwest 0.12.28",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
-]
-
-[[package]]
 name = "fyrr-reader"
 version = "0.1.0"
 dependencies = [

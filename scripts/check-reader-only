@@ -5,7 +5,6 @@
 #    and build dependencies (a crate outside the graph cannot be linked);
 # 2. linked binary: the debug reader-only binary has no libpython in its
 #    dynamic section (DT_NEEDED), with the full debug binary as a control.
-# The internal evaluation tool remains outside the product dependency graph.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT"
 
@@ -29,20 +28,6 @@ if offenders="$(grep -E "$FORBIDDEN" <<<"$reader")"; then
   exit 1
 fi
 echo "ok: the reader-only build's graph ($(grep -c . <<<"$reader") packages) contains no fyrr-writer, Python or PyO3 crate"
-
-if grep -q '^fyrr-eval ' <<<"$full"; then
-  die "the full build's graph contains fyrr-eval"
-fi
-cargo metadata --locked --no-deps --format-version 1 | python3 -c '
-import json, sys
-packages = {p["name"]: p for p in json.load(sys.stdin)["packages"]}
-if "fyrr-eval" not in packages:
-    sys.exit("control failed: the workspace has no fyrr-eval package")
-for name in ("fyrr", "fyrr-reader", "fyrr-writer", "fyrr-core"):
-    if "evaluation" in packages[name]["features"]:
-        sys.exit(f"FAIL: {name} declares an evaluation feature")
-' || exit 1
-echo "ok: no product crate declares an evaluation feature or depends on fyrr-eval"
 
 # Development instrumentation must stay out of both shipping package graphs.
 for variant in full reader; do

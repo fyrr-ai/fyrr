@@ -332,6 +332,7 @@ pub struct PreparedReader {
     pub(crate) test_hooks: Arc<crate::serve::TestHooks>,
     /// Per-lane stage keys of the current search while recording
     /// (`record_stages`); `None` otherwise.
+    #[cfg(test)]
     stage_trace: Option<serde_json::Value>,
     pub(crate) config: Config,
     pub(crate) dataset: Arc<Dataset>,

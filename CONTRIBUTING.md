@@ -55,7 +55,6 @@ annotations; PyArrow's untyped API remains covered by Arrow contract tests.
 | `crates/fyrr-writer` | Full build only: provider discovery, Python workers, batch validation, committer, maintenance, directory and SCIM. |
 | `crates/fyrr` | The `fyrr` binary; feature `writer` (default) is the full build. |
 | `connectors/` | Python package `fyrr-connectors`: provider API, test kit and the bundled providers. |
-| `eval/` | `fyrr-eval`, an internal quality-measurement tool; never released. |
 | `examples/` | The quickstart (configuration, documents and `run`), an independently built provider wheel and a derived-image Dockerfile. |
 | `schemas/`, `fixtures/` | Generated JSON Schemas, golden contract documents and MCP goldens. |
 | `docker/` | `Dockerfile` (targets `fyrr-reader` and `fyrr`), entry point, `compose.yaml`. |
@@ -73,8 +72,8 @@ scripts/ci --step=configuration "--step=schema drift" # exact names; others n/e
 
 `scripts/ci` runs doctor, rustfmt, clippy for the workspace and the
 reader-only build, the test-case ownership guard, unit, contract,
-configuration, schema, CLI and privacy tests in both builds, the `fyrr-eval`
-tests, the debug reader-only link check, `cargo deny`, the Python SDK and example
+configuration, schema, CLI and privacy tests in both builds, the debug
+reader-only link check, `cargo deny`, the Python SDK and example
 provider, the README quickstart on local storage, local-storage scenarios,
 and a small external-services set against owned RustFS and Keycloak fixtures.
 It keeps going after a failure and writes

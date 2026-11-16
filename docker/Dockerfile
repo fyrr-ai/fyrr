@@ -34,15 +34,13 @@ RUN bash -c 'source scripts/lib.sh && ensure_protoc'
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY .cargo .cargo
 COPY crates crates
-# A workspace member; the images never build it.
-COPY eval eval
 # Worktrees can supply source mtimes older than the shared Cargo cache.
 # Refresh workspace inputs under the cache lock; versioned dependencies stay cached.
 RUN --mount=type=cache,id=fyrr-cargo-registry,sharing=locked,target=/usr/local/cargo/registry \
     --mount=type=cache,id=fyrr-cargo-git,sharing=locked,target=/usr/local/cargo/git \
     --mount=type=cache,id=fyrr-cargo-target,sharing=locked,target=/cache/target \
     bash -c 'source scripts/lib.sh; mkdir -p /out; \
-    find crates eval -type f -exec touch {} +; \
+    find crates -type f -exec touch {} +; \
     build_release -p fyrr; \
     cp /cache/target/release/fyrr /out/fyrr; \
     build_release -p fyrr --no-default-features; \

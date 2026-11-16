@@ -5,7 +5,7 @@ INSTANCE="${FYRR_FIXTURE_ID:-}"
 [[ "$INSTANCE" =~ ^[a-zA-Z0-9_-]*$ ]] || die "invalid fixture identifier"
 HASH="$(printf '%s' "$ROOT${INSTANCE:+-$INSTANCE}" | sha256sum | cut -c1-12)"
 NAME="fyrr-keycloak-$HASH"
-OUT="${FYRR_EVAL_ROOT:-$ROOT/target}/keycloak-fixture${INSTANCE:+-$INSTANCE}"
+OUT="$ROOT/target/keycloak-fixture${INSTANCE:+-$INSTANCE}"
 mkdir -p "$OUT"
 owned() {
   local label

@@ -65,9 +65,6 @@ done
 export FYRR_CI_TIER="$TIER"
 [[ -z "$CASE_ID" || -n "$CASE_ROW" ]] || die "--case requires --row"
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer"
-if ((JOBS > 1)) && [[ -n "${FYRR_S3_FIXTURE_DATA:-}" ]]; then
-  die "parallel CI rows require private fixture data; unset FYRR_S3_FIXTURE_DATA or use --jobs=1"
-fi
 # Harness cases that inspect process-wide descriptors need serial execution.
 # Independent Rust cases run concurrently on private storage below.
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-1}"

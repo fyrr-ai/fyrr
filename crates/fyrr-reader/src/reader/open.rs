@@ -105,6 +105,7 @@ impl PreparedReader {
         let mut reader = Self {
             #[cfg(test)]
             test_hooks: Arc::default(),
+            #[cfg(test)]
             stage_trace: None,
             config: config.clone(),
             dataset,
@@ -310,6 +311,7 @@ impl PreparedReader {
             let mut worker = Self {
                 #[cfg(test)]
                 test_hooks,
+                #[cfg(test)]
                 stage_trace: None,
                 config: config.clone(),
                 dataset,

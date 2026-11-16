@@ -9,15 +9,17 @@ impl PreparedReader {
     }
     /// Records the stage keys of the next search for `take_stages`: the
     /// dense and lexical candidates (`[source, root, record, score]`) and
-    /// the composed order (`[source, root, record]`). For quality
-    /// measurement and tests; never part of a search response.
-    pub fn record_stages(&mut self) {
+    /// the composed order (`[source, root, record]`) for tests.
+    #[cfg(test)]
+    pub(crate) fn record_stages(&mut self) {
         self.stage_trace = Some(serde_json::Value::Null);
     }
     /// The stage keys recorded since `record_stages`; stops recording.
-    pub fn take_stages(&mut self) -> Option<serde_json::Value> {
+    #[cfg(test)]
+    pub(crate) fn take_stages(&mut self) -> Option<serde_json::Value> {
         self.stage_trace.take()
     }
+    #[cfg(test)]
     fn trace_stages(&mut self, trace: impl FnOnce(&mut serde_json::Value)) {
         if let Some(stages) = &mut self.stage_trace {
             trace(stages);
@@ -384,6 +386,7 @@ impl PreparedReader {
             let (lexical, fetched, bound_hits) = lexical?;
             telemetry.lexical_candidates_fetched += fetched;
             telemetry.lexical_tie_bound_hits += bound_hits;
+            #[cfg(test)]
             self.trace_stages(|stages| {
                 let keys = |rows: &[Candidate]| {
                     rows.iter()
@@ -421,6 +424,7 @@ impl PreparedReader {
                     .map_or(k, |rerank| k.max(rerank.candidates)),
                 &self.config.namespace.retrieval,
             )?;
+            #[cfg(test)]
             self.trace_stages(|stages| {
                 stages["composition"] = serde_json::json!(
                     selected
