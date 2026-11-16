@@ -74,6 +74,11 @@ async fn interrupted_partial_recovers_without_following_symlinks() {
         store.get(&path).await.unwrap().bytes().await.unwrap(),
         "immutable file"
     );
+    assert_eq!(
+        mirror.totals().requests,
+        1,
+        "cold population needs only GET"
+    );
     assert!(!partial.exists());
     std::fs::rename(&blob, &partial).unwrap();
     std::fs::write(&partial, b"interrupted rename").unwrap();

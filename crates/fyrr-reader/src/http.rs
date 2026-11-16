@@ -506,6 +506,7 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     let admission = Arc::new(admission::Admission::new(
         reader.control_store.clone(),
         reader.control_root.clone(),
+        reader.identity_cache.clone(),
     ));
     let service = crate::serve::start(reader).await?;
     let state = HttpState {

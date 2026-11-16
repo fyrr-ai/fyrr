@@ -74,7 +74,8 @@ impl ObjectStore for MirrorStore {
         drop(_host);
         drop(_lock);
         self.record(&counters, Io::Request, 1);
-        let metadata = self.target().head(location).await?;
+        let download = self.target().get(location).await?;
+        let metadata = download.meta.clone();
         if metadata.size > self.max_bytes {
             {
                 let mut oversized = crate::sync::lock(&self.oversized);
@@ -108,8 +109,7 @@ impl ObjectStore for MirrorStore {
         output.set_len(metadata.size).map_err(|_| Self::failure())?;
         drop(_host);
         drop(_lock);
-        self.record(&counters, Io::Request, 1);
-        let mut stream = self.target().get(location).await?.into_stream();
+        let mut stream = download.into_stream();
         let mut hasher = Sha256::new();
         let mut written = 0u64;
         while let Some(chunk) = stream.next().await {

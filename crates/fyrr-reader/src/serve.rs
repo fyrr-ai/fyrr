@@ -95,6 +95,8 @@ struct PreparationContext {
     query_embeddings: Arc<crate::embedding::QueryEmbeddings>,
     cache: Arc<std::sync::Mutex<crate::search::AuthorizationCache>>,
     budget: crate::generation::MemoryPool,
+    control_backend: Arc<dyn object_store::ObjectStore>,
+    control_root: object_store::path::Path,
 }
 struct RequestTiming {
     arrived: Instant,

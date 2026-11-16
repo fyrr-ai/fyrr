@@ -102,6 +102,16 @@ impl PreparedReader {
             )
             .await?;
         let indexes = verify_indices(&dataset, &manifest, config).await?;
+        let policy = Arc::new(policy);
+        let identity = Arc::new(identity);
+        let policy_cache = Arc::new(tokio::sync::Mutex::new(Some((
+            head.policy.clone(),
+            policy.clone(),
+        ))));
+        let identity_cache = Arc::new(tokio::sync::Mutex::new(Some((
+            head.identity.clone(),
+            identity.clone(),
+        ))));
         let mut reader = Self {
             #[cfg(test)]
             test_hooks: Arc::default(),
@@ -115,6 +125,8 @@ impl PreparedReader {
             head,
             policy,
             identity,
+            policy_cache,
+            identity_cache,
             scope: scope::RequestScope::new(config.reader.http.is_some()),
             admission_cache,
             admission_build_us: 0,
@@ -271,6 +283,8 @@ impl PreparedReader {
         let head = self.head.clone();
         let hidden_sources = self.hidden_sources.clone();
         let policy = self.policy.clone();
+        let policy_cache = self.policy_cache.clone();
+        let identity_cache = self.identity_cache.clone();
         let identity = self.identity.clone();
         let scope = self.scope.without_admission();
         let admission_cache = self.admission_cache.clone();
@@ -319,6 +333,8 @@ impl PreparedReader {
                 head: head.clone(),
                 hidden_sources: hidden_sources.clone(),
                 reported_hidden_sources: Vec::new(),
+                policy_cache: policy_cache.clone(),
+                identity_cache: identity_cache.clone(),
                 policy: policy.clone(),
                 identity: identity.clone(),
                 scope: scope.clone(),

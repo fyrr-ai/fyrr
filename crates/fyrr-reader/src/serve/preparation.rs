@@ -104,7 +104,8 @@ pub(super) fn prepare_version(
                     .map_err(|_| AuthorizationUnavailable)?
                     .retain_content(*version);
             }
-            let (store, root) = crate::storage::namespace_store(config)?;
+            let store = context.control_backend.clone();
+            let root = context.control_root.clone();
             let store = context.mirror.wrap("control", store);
             let head: fyrr_core::publication::ServingHead =
                 crate::storage::read_contract(store.as_ref(), &root.clone().join("head.json"))

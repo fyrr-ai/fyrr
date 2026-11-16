@@ -16,6 +16,9 @@ use std::sync::Arc;
 
 pub use lance::Dataset;
 
+/// One digest-verified immutable artifact shared by a serving generation.
+pub(crate) type ArtifactCache<T> = Arc<tokio::sync::Mutex<Option<(GenerationPointer, Arc<T>)>>>;
+
 #[cfg(all(feature = "test-store", not(debug_assertions)))]
 compile_error!("test-store must not be enabled in shipping builds");
 #[cfg(feature = "test-store")]

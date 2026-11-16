@@ -8,14 +8,18 @@ use object_store::{ObjectStore, path::Path};
 pub(super) struct Admission {
     store: Arc<dyn ObjectStore>,
     root: Path,
-    cached_identity: Mutex<Option<(GenerationPointer, Arc<IdentityArtifact>)>>,
+    cached_identity: crate::storage::ArtifactCache<IdentityArtifact>,
 }
 impl Admission {
-    pub(super) fn new(store: Arc<dyn ObjectStore>, root: Path) -> Self {
+    pub(super) fn new(
+        store: Arc<dyn ObjectStore>,
+        root: Path,
+        cached_identity: crate::storage::ArtifactCache<IdentityArtifact>,
+    ) -> Self {
         Self {
             store,
             root,
-            cached_identity: Mutex::new(None),
+            cached_identity,
         }
     }
     pub(super) async fn head(&self) -> Result<ServingHead, ReaderError> {
@@ -32,7 +36,9 @@ impl Admission {
         if let Some((bound, identity)) = cached.as_ref()
             && bound == pointer
         {
-            if identity.namespace != config.namespace.name {
+            if identity.namespace != config.namespace.name
+                || identity.generation != pointer.generation
+            {
                 return Err(AuthorizationUnavailable);
             }
             return Ok(identity.clone());
@@ -148,6 +154,7 @@ mod tests {
             let admission = Admission::new(
                 mirror.wrap("control", remote.clone()),
                 Path::from("namespace"),
+                Arc::default(),
             );
             let mut test = Self {
                 config,
@@ -212,6 +219,27 @@ mod tests {
             test.mirror.totals().requests - reads,
             1,
             "only the mutable head is read again"
+        );
+        let shared = Admission::new(
+            test.admission.store.clone(),
+            test.admission.root.clone(),
+            test.admission.cached_identity.clone(),
+        );
+        let before = test.mirror.totals().requests;
+        let identity = shared
+            .identity(&test.config, &test.head.identity)
+            .await
+            .unwrap();
+        let cached = test
+            .admission
+            .identity(&test.config, &test.head.identity)
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(&identity, &cached));
+        assert_eq!(
+            test.mirror.totals().requests,
+            before,
+            "shared generation adds no artifact GET"
         );
     }
 

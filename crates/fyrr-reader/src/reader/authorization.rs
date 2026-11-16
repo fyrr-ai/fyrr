@@ -501,9 +501,17 @@ impl PreparedReader {
             return Err(AuthorizationUnavailable);
         }
         if policy_changed {
-            self.policy = artifact(store.as_ref(), root, &current.policy)
-                .await
-                .map_err(|_| AuthorizationUnavailable)?;
+            let mut cached = self.policy_cache.lock().await;
+            if cached
+                .as_ref()
+                .is_none_or(|(pointer, _)| pointer != &current.policy)
+            {
+                let policy = artifact(store.as_ref(), root, &current.policy)
+                    .await
+                    .map_err(|_| AuthorizationUnavailable)?;
+                *cached = Some((current.policy.clone(), Arc::new(policy)));
+            }
+            self.policy = cached.as_ref().ok_or(AuthorizationUnavailable)?.1.clone();
         }
         let hidden_sources = Self::hidden(&self.config, &current, &self.policy)?;
         let changed = hidden_sources != self.hidden_sources
@@ -526,10 +534,17 @@ impl PreparedReader {
                 cache.entries.retain(|(key, _)| &key.subject != subject);
                 cache.entries.shrink_to_fit();
             }
-            let identity: IdentityArtifact = artifact(store.as_ref(), root, &current.identity)
-                .await
-                .map_err(|_| AuthorizationUnavailable)?;
-            self.identity = identity;
+            let mut cached = self.identity_cache.lock().await;
+            if cached
+                .as_ref()
+                .is_none_or(|(pointer, _)| pointer != &current.identity)
+            {
+                let identity = artifact(store.as_ref(), root, &current.identity)
+                    .await
+                    .map_err(|_| AuthorizationUnavailable)?;
+                *cached = Some((current.identity.clone(), Arc::new(identity)));
+            }
+            self.identity = cached.as_ref().ok_or(AuthorizationUnavailable)?.1.clone();
         }
         // Changed inputs cannot certify the old mask if validation fails.
         if changed {

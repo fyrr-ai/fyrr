@@ -27,6 +27,8 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
     let publication = Arc::new(tokio::sync::RwLock::new(template.readiness_state()));
     let served = publication.clone();
     let context = PreparationContext {
+        control_backend: template.control_backend.clone(),
+        control_root: template.control_root.clone(),
         reranker: template.reranker.clone(),
         #[cfg(test)]
         test_hooks: template.test_hooks.clone(),
