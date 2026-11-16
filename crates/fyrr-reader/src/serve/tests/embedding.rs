@@ -373,7 +373,7 @@ async fn failed_refresh_cannot_admit_a_stale_mask_after_directory_recovery_on_st
     let (store, root) = crate::storage::namespace_store(&config).unwrap();
     let head_path = root.join("head.json");
     let mut head: ServingHead = read_contract(store.as_ref(), &head_path).await.unwrap();
-    head.freshness.directory = Some(chrono::Utc::now());
+    head.freshness.directory = Some(fyrr_core::clock::now());
     store
         .put(&head_path, fyrr_core::write_contract(&head).into())
         .await
@@ -418,7 +418,7 @@ async fn failed_refresh_cannot_admit_a_stale_mask_after_directory_recovery_on_st
 
     // An unchanged directory read can refresh its proof without changing identity.
     // Publish that exact state transition through the real fixture object store.
-    head.freshness.directory = Some(chrono::Utc::now());
+    head.freshness.directory = Some(fyrr_core::clock::now());
     assert_eq!(head.identity, admitted.identity);
     assert_eq!(head.policy, admitted.policy);
     assert_eq!(head.content, admitted.content);
@@ -429,7 +429,7 @@ async fn failed_refresh_cannot_admit_a_stale_mask_after_directory_recovery_on_st
     assert!(crate::storage::directory_fresh(
         &config,
         head.freshness.directory,
-        chrono::Utc::now()
+        fyrr_core::clock::now()
     ));
     store
         .put(&head_path, fyrr_core::write_contract(&head).into())

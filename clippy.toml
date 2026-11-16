@@ -1,0 +1,4 @@
+disallowed-methods = [
+  { path = "chrono::Utc::now", reason = "Use fyrr_core::clock::now for wall-clock decisions." },
+  { path = "std::time::SystemTime::now", reason = "Use fyrr_core::clock::now for wall-clock decisions." },
+]

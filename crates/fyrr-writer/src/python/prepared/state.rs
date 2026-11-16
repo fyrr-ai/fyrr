@@ -129,7 +129,7 @@ impl Preparation<'_> {
             && markers.is_empty()
             && state.sequence > 0
             && interval.is_some_and(|i| {
-                (chrono::Utc::now() - state.updated_at)
+                (fyrr_core::clock::now() - state.updated_at)
                     .to_std()
                     .is_ok_and(|elapsed| elapsed < i.as_duration())
             })

@@ -3,7 +3,6 @@
 use crate::lease::LeaseGuard;
 use crate::prepare::{chunk_identity, put_immutable, store_params};
 use crate::{Result, WriterError};
-use chrono::Utc;
 use futures::TryStreamExt;
 use fyrr_core::config::{Config, ProcessEnvironment};
 use fyrr_core::envelope::*;
@@ -392,7 +391,7 @@ async fn commit_group_with_rejections(
     // rejection becomes visible. Valid authorization reads still precede content.
     // Source fairness applies after priority; valid sequences stay ordered within a kind.
     // Keep age priorities fixed while the sorter compares envelopes.
-    let now = Utc::now();
+    let now = fyrr_core::clock::now();
     pending.sort_by_key(|e| {
         (
             if e.kind.is_authorization()
@@ -692,7 +691,7 @@ fn stage(enabled: bool, name: &str, start: std::time::Instant) {
         eprintln!(
             "writer_stage stage={name} elapsed_us={} end_us={}",
             start.elapsed().as_micros(),
-            Utc::now().timestamp_micros()
+            fyrr_core::clock::now().timestamp_micros()
         );
     }
 }

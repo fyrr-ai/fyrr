@@ -1,6 +1,5 @@
 //! Envelope diagnostics and bounded cleanup; the immutable log remains cursor authority.
 use crate::{Result, WriterError};
-use chrono::Utc;
 use futures::{StreamExt, TryStreamExt};
 use fyrr_core::config::Config;
 use fyrr_core::envelope::{EnvelopePayload, PreparedEnvelope};
@@ -123,7 +122,7 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     let (directory_age_ms, directory_warning) = match head.freshness.directory {
         None => (None, Some("directory_freshness_missing")),
         Some(at) => {
-            let age = Utc::now()
+            let age = fyrr_core::clock::now()
                 .signed_duration_since(at)
                 .to_std()
                 .unwrap_or_default();
@@ -282,7 +281,7 @@ pub(crate) async fn cleanup_held(
                     id.clone(),
                 ))
             })
-            || (Utc::now() - envelope.created_at)
+            || (fyrr_core::clock::now() - envelope.created_at)
                 .to_std()
                 .is_ok_and(|age| age < config.writer.max_envelope_age.as_duration())
         {
@@ -463,7 +462,7 @@ mod tests {
             manifest.previous_publication_id = Some(manifest.publication_id.clone());
             manifest.sequence += 1;
             manifest.publication_id = format!("status-proof-{}", manifest.sequence);
-            manifest.committed_at = Utc::now();
+            manifest.committed_at = fyrr_core::clock::now();
             manifest.envelope_ids = ids[applied].to_vec();
             manifest.rejected_envelope_ids = ids[rejected].to_vec();
             let path = format!("publications/{}.json", manifest.publication_id);

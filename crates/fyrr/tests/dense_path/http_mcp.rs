@@ -93,7 +93,7 @@ impl Issuer {
         for (k, v) in header_patch.as_object().unwrap() {
             header[k] = v.clone();
         }
-        let now = chrono::Utc::now().timestamp();
+        let now = fyrr_core::clock::now().timestamp();
         let mut claims = json!({"iss":self.url,"aud":"fyrr-http-test","scope":"fyrr:read","sub":subject,"iat":now,"nbf":now-1,"exp":now+600});
         for (k, v) in patch.as_object().unwrap() {
             claims[k] = v.clone();
@@ -374,7 +374,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
                     for source in &mut head.freshness.sources {
                         if source.source_id == "incremental" {
                             source.permissions_read_at =
-                                chrono::Utc::now() - chrono::Duration::hours(2);
+                                fyrr_core::clock::now() - chrono::Duration::hours(2);
                             source.members_read_at = Some(source.permissions_read_at);
                         }
                     }
@@ -579,7 +579,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     arm(3).await;
     let expiring = issuer.token(
         "subject-0",
-        json!({"exp":chrono::Utc::now().timestamp()+2}),
+        json!({"exp":fyrr_core::clock::now().timestamp()+2}),
         json!({}),
     );
     let expired = reader.search_task(&expiring, 8, 10000);
@@ -602,7 +602,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     blocked(&entered).await;
     held.entered();
     snapshot.users[1].active = false;
-    snapshot.built_at = chrono::Utc::now();
+    snapshot.built_at = fyrr_core::clock::now();
     std::fs::write(root.join("http-directory.json"), write_contract(&snapshot)).unwrap();
     assert!(
         host_command(&commit)
@@ -645,7 +645,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     held.entered();
     snapshot.users[0].subjects.clear();
     snapshot.users[2].subjects.push(subject.clone());
-    snapshot.built_at = chrono::Utc::now();
+    snapshot.built_at = fyrr_core::clock::now();
     std::fs::write(root.join("http-directory.json"), write_contract(&snapshot)).unwrap();
     assert!(
         host_command(&commit)
@@ -716,7 +716,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     // Deliberately outlast the former two-second timer before publishing.
     tokio::time::sleep(Duration::from_secs(3)).await;
     snapshot.users[2].subjects.retain(|s| s != &subject);
-    snapshot.built_at = chrono::Utc::now();
+    snapshot.built_at = fyrr_core::clock::now();
     std::fs::write(root.join("http-directory.json"), write_contract(&snapshot)).unwrap();
     assert!(
         host_command(&commit)
@@ -757,7 +757,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     snapshot.users[0].subjects.push(
         fyrr_writer::directory::subject_key(&loaded.config, &issuer.url, "subject-linked").unwrap(),
     );
-    snapshot.built_at = chrono::Utc::now();
+    snapshot.built_at = fyrr_core::clock::now();
     std::fs::write(root.join("http-directory.json"), write_contract(&snapshot)).unwrap();
     assert!(
         host_command(&commit)
@@ -1083,7 +1083,10 @@ async fn identity_http_authentication_isolation_rate_limits_drain_and_refresh_on
         (json!({"aud":[]}), json!({})),
         (json!({"scope":"other"}), json!({})),
         (json!({"exp":1}), json!({})),
-        (json!({"nbf":chrono::Utc::now().timestamp()+600}), json!({})),
+        (
+            json!({"nbf":fyrr_core::clock::now().timestamp()+600}),
+            json!({}),
+        ),
         (json!({}), json!({"typ":"JWT"})),
         (json!({}), json!({"alg":"HS256"})),
         (json!({}), json!({"alg":"none"})),
@@ -1465,7 +1468,7 @@ async fn identity_http_authentication_isolation_rate_limits_drain_and_refresh_on
     assert_eq!(refreshed["publication_id"], updated["publication_id"]);
     // Revocation is published by the real pull and observed by the running process.
     snapshot.users[0].active = false;
-    snapshot.built_at = chrono::Utc::now();
+    snapshot.built_at = fyrr_core::clock::now();
     std::fs::write(root.join("http-directory.json"), write_contract(&snapshot)).unwrap();
     assert!(
         host_command(&commit)

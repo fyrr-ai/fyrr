@@ -110,11 +110,21 @@ visibility, and mirror/storage identity. Each has a private RustFS fixture
 and data directory. The Keycloak integration row uses local storage and a
 private real Keycloak fixture. `scripts/ci-cases plan` lists every case and
 its owner/backend; child cases stay owned with the parent that executes them.
-The default is at most six rows, bounded by CPUs, available memory
+The default is at most six cases, bounded by CPUs, available memory
 and configured swap, reserving memory for concurrent core gates.
 `--jobs=N` or `FYRR_CI_JOBS=N` overrides it. Each case owns its fixture.
 Keep one top-level CI process per checkout; separate
 worktrees share compiler results without sharing writable Cargo outputs.
+
+Instrumented tests enable `fyrr-core/test-clock` through dev dependencies.
+`fyrr_core::clock::now()` reads a forward-only offset from the private
+`FYRR_TEST_CLOCK_FILE` shared by one scenario parent and all its CLI children.
+Expiry and recovery tests advance that wall clock after their observed
+storage boundary. Monotonic time, Tokio scheduling, lease-renewal intervals,
+operation deadlines, JWKS trust and rate windows remain real.
+Normal/build dependency graphs exclude both `test-clock` and `test-store`,
+and those features refuse builds without debug assertions. The release
+script also rejects a binary containing the test-clock environment hook.
 
 The same complete suite runs locally, on PRs, main, nightly and manual
 workflow runs. There is no separate fast gate. GitHub uses the pinned

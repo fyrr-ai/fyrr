@@ -441,7 +441,7 @@ async fn unverified_attestation_does_not_renew_authorization() {
             .is_empty()
     );
     let mut head = publication(&commit).await.0;
-    head.freshness.directory = Some(chrono::Utc::now() - chrono::Duration::hours(2));
+    head.freshness.directory = Some(fyrr_core::clock::now() - chrono::Duration::hours(2));
     store
         .put(
             &ns.clone().join("head.json"),
@@ -664,7 +664,7 @@ async fn delta_shutdown_finishes_only_current_group_on_storage() {
     );
     assert!(
         head.lease
-            .is_none_or(|lease| lease.expires_at <= chrono::Utc::now()),
+            .is_none_or(|lease| lease.expires_at <= fyrr_core::clock::now()),
         "shutdown must release the namespace lease"
     );
     let loaded = fyrr_core::config::load(&commit).unwrap();

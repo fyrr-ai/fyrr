@@ -126,7 +126,7 @@ fn setup_on(backend: Backend) -> (PathBuf, FixtureRoot) {
     let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
         "dense-{}-{}-{:?}",
         std::process::id(),
-        chrono::Utc::now().timestamp_micros(),
+        fyrr_core::clock::now().timestamp_micros(),
         std::thread::current().id()
     ));
     setup_at_on(root, backend)
@@ -469,7 +469,7 @@ async fn dense_path_and_namespace_contracts(backend: Backend) {
     assert!(!unread.status.success());
     assert!(String::from_utf8_lossy(&unread.stderr).contains("authorization_unavailable"));
     let mut expired = head.clone();
-    expired.freshness.directory = Some(chrono::Utc::now() - chrono::Duration::days(2));
+    expired.freshness.directory = Some(fyrr_core::clock::now() - chrono::Duration::days(2));
     write_head(store.as_ref(), &path, &expired).await;
     let static_result = success(&config, &["reader", "search", "fixture query"]);
     assert!(!static_result["hits"].as_array().unwrap().is_empty());
@@ -489,7 +489,7 @@ async fn dense_path_and_namespace_contracts(backend: Backend) {
             .await
             .expect("identity");
     let mut expired_identity = identity.clone();
-    expired_identity.built_at = chrono::Utc::now() + chrono::Duration::days(2);
+    expired_identity.built_at = fyrr_core::clock::now() + chrono::Duration::days(2);
     let mut expired_head = head.clone();
     expired_head.identity.digest = digest(&write_contract(&expired_identity));
     store
@@ -597,7 +597,7 @@ async fn dense_path_and_namespace_contracts(backend: Backend) {
             .await
             .unwrap();
     let mut expired = head.clone();
-    expired.freshness.directory = Some(chrono::Utc::now() - chrono::Duration::hours(2));
+    expired.freshness.directory = Some(fyrr_core::clock::now() - chrono::Duration::hours(2));
     store
         .put(
             &path.clone().join("head.json"),

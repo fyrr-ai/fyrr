@@ -60,7 +60,7 @@ impl Admission {
         ReaderError,
     > {
         let head = self.head().await?;
-        let now = chrono::Utc::now();
+        let now = fyrr_core::clock::now();
         if head.namespace != config.namespace.name
             || subject.expires <= now.timestamp()
             || !crate::storage::directory_fresh(config, head.freshness.directory, now)
@@ -141,7 +141,7 @@ mod tests {
             let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
                 "../../target/http-admission-{}-{}",
                 std::process::id(),
-                chrono::Utc::now().timestamp_nanos_opt().unwrap()
+                fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
             ));
             let mirror = crate::mirror::MirrorStore::new(directory.clone(), 1024 * 1024).unwrap();
             let remote = Arc::new(object_store::memory::InMemory::new());
@@ -160,7 +160,7 @@ mod tests {
                 subject: crate::auth::AuthenticatedSubject {
                     key,
                     identity: None,
-                    expires: chrono::Utc::now().timestamp() + 600,
+                    expires: fyrr_core::clock::now().timestamp() + 600,
                 },
             };
             test.publish_identity().await;
@@ -231,12 +231,12 @@ mod tests {
         test.authorize().await.unwrap();
         test.subject.expires = 0;
         assert_eq!(test.authorize().await, Err(AuthorizationUnavailable));
-        test.subject.expires = chrono::Utc::now().timestamp() + 600;
+        test.subject.expires = fyrr_core::clock::now().timestamp() + 600;
         test.config.identity.directory.provider = fyrr_core::config::DirectoryProvider::Snapshot;
-        test.head.freshness.directory = Some(chrono::Utc::now() - chrono::Duration::days(30));
+        test.head.freshness.directory = Some(fyrr_core::clock::now() - chrono::Duration::days(30));
         test.publish_head().await;
         assert_eq!(test.authorize().await, Err(AuthorizationUnavailable));
-        test.head.freshness.directory = Some(chrono::Utc::now());
+        test.head.freshness.directory = Some(fyrr_core::clock::now());
         test.publish_head().await;
         test.authorize().await.unwrap();
     }

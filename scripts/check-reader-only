@@ -49,14 +49,16 @@ for variant in full reader; do
   flags=()
   [[ "$variant" == full ]] || flags+=(--no-default-features)
   features="$(cargo tree --locked -p fyrr -e normal,build --prefix none -f '{p} features={f}' "${flags[@]}")"
-  if grep -Eq 'features=([^ ]*,)?test-store(,|$)' <<<"$features"; then
-    die "$variant normal/build graph enables test-store"
+  if grep -Eq 'features=([^ ]*,)?(test-store|test-clock)(,|$)' <<<"$features"; then
+    die "$variant normal/build graph enables test-store or test-clock"
   fi
 done
 dev="$(cargo tree --locked -p fyrr -e normal,build,dev --prefix none -f '{p} features={f}')"
 grep -Eq '^fyrr-reader .*features=([^ ]*,)?test-store(,|$)' <<<"$dev" ||
   die "control failed: the dev graph does not enable test-store"
-echo "ok: test-store is dev-only; both shipping graphs exclude it"
+grep -Eq '^fyrr-core .*features=([^ ]*,)?test-clock(,|$)' <<<"$dev" ||
+  die "control failed: the dev graph does not enable test-clock"
+echo "ok: test-store and test-clock are dev-only; both shipping graphs exclude them"
 
 needed() {
   readelf --dynamic "$1" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'

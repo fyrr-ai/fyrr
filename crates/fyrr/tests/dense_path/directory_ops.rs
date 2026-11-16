@@ -522,7 +522,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
     let realm = format!(
         "fyrr-directory-{}-{}",
         std::process::id(),
-        chrono::Utc::now().timestamp_micros()
+        fyrr_core::clock::now().timestamp_micros()
     );
     let base = format!("{endpoint}/admin/realms/{realm}");
     assert_eq!(
@@ -807,7 +807,7 @@ impl DirectoryClock {
                     let mut value: Value = serde_json::from_slice(body).unwrap();
                     assert!(value["freshness"]["directory"].is_string());
                     value["freshness"]["directory"] = json!(
-                        (chrono::Utc::now()
+                        (fyrr_core::clock::now()
                             - chrono::Duration::minutes(observed.load(Ordering::Relaxed)))
                         .to_rfc3339()
                     );

@@ -15,7 +15,7 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
     let subject = crate::auth::AuthenticatedSubject {
         key: std::env::var("FYRR_TEST_SCHEDULER_SUBJECT").unwrap(),
         identity: Some(reader.head.identity.clone()),
-        expires: chrono::Utc::now().timestamp() + 600,
+        expires: fyrr_core::clock::now().timestamp() + 600,
     };
     let admission = Arc::new(admission::Admission::new(
         reader.control_store.clone(),

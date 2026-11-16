@@ -17,7 +17,7 @@ pub(crate) async fn attest_directory(
     let Some(applied_at) = applied_sync else {
         return Ok(false);
     };
-    let now = chrono::Utc::now();
+    let now = fyrr_core::clock::now();
     if config.identity.directory.provider != DirectoryProvider::Scim
         || applied_at > now
         || (now - applied_at)
@@ -33,7 +33,7 @@ pub(crate) async fn attest_directory(
             if head.freshness.directory.is_some_and(|v| v >= applied_at) {
                 return Ok(false);
             }
-            head.updated_at = chrono::Utc::now();
+            head.updated_at = fyrr_core::clock::now();
             if (head.updated_at - applied_at)
                 .to_std()
                 .map_err(|_| WriterError::DirectoryHealthInvalid)?
@@ -160,7 +160,7 @@ pub async fn run(
             },
             _ = timer.tick(), if loaded.config.writer.serve.committer => {
                 let proof = if let Some((_, health)) = &admin { *health.lock().await } else { None };
-                let proof = proof.filter(|at| chrono::Utc::now().signed_duration_since(*at).to_std().is_ok_and(|age|age <= loaded.config.identity.directory.sync_interval.as_duration()));
+                let proof = proof.filter(|at| fyrr_core::clock::now().signed_duration_since(*at).to_std().is_ok_and(|age|age <= loaded.config.identity.directory.sync_interval.as_duration()));
                 if attest_directory(&loaded.config, proof).await.is_err() {
                     eprintln!("writer_service event=directory_attestation_failed");
                 }
@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(
             attest_directory(
                 config,
-                Some(chrono::Utc::now() - chrono::Duration::hours(2))
+                Some(fyrr_core::clock::now() - chrono::Duration::hours(2))
             )
             .await,
             Err(WriterError::DirectoryHealthInvalid)
@@ -221,13 +221,13 @@ mod tests {
         assert_eq!(
             attest_directory(
                 config,
-                Some(chrono::Utc::now() + chrono::Duration::hours(2))
+                Some(fyrr_core::clock::now() + chrono::Duration::hours(2))
             )
             .await,
             Err(WriterError::DirectoryHealthInvalid)
         );
         // Only this test endpoint supplies a successful applied push.
-        let test_health_source = || Some(chrono::Utc::now());
+        let test_health_source = || Some(fyrr_core::clock::now());
         let lease = crate::lease::LeaseGuard::acquire(config).await.unwrap();
         assert_eq!(
             attest_directory(config, test_health_source()).await,

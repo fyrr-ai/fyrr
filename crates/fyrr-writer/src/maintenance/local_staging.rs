@@ -20,7 +20,7 @@ async fn uploading(config: &Config) -> Result<bool> {
         let cursor: CursorState = read_contract(store.as_ref(), &meta.location).await?;
         if cursor
             .lease
-            .is_some_and(|lease| lease.expires_at > chrono::Utc::now())
+            .is_some_and(|lease| lease.expires_at > fyrr_core::clock::now())
         {
             return Ok(true);
         }
@@ -43,7 +43,7 @@ pub(crate) async fn plan(config: &Config) -> Result<Vec<PathBuf>> {
     let max_files = crate::narrow_usize(config.writer.commit.group_max_rows);
     tokio::task::spawn_blocking(move || {
         let start = Instant::now();
-        let now = SystemTime::now();
+        let now = std::time::SystemTime::from(fyrr_core::clock::now());
         let mut directories = vec![dataset];
         let mut files = Vec::new();
         while let Some(directory) = directories.pop() {
@@ -112,7 +112,7 @@ pub(crate) async fn remove(
         if uploading(config).await? {
             break;
         }
-        if old(&path, SystemTime::now())? {
+        if old(&path, std::time::SystemTime::from(fyrr_core::clock::now()))? {
             match std::fs::remove_file(path) {
                 Ok(()) => removed += 1,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

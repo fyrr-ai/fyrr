@@ -409,10 +409,11 @@ async fn maintenance_restore_crash_boundaries_on_storage() {
             failed.sequence > before.sequence,
             boundary == "/head.json" && after
         );
-        let remaining = (head.lease.unwrap().expires_at - chrono::Utc::now())
+        let remaining = (head.lease.unwrap().expires_at - fyrr_core::clock::now())
             .to_std()
             .unwrap_or_default();
-        std::thread::sleep(remaining + Duration::from_millis(50));
+        // The crashed holder is gone; advance its persisted lease deadline.
+        fyrr_core::clock::advance(remaining + Duration::from_millis(50)).unwrap();
         // A different host recovers any orphan through Restore, then does the requested work.
         command(&commit, &args);
         assert_eq!(command(&commit, &["writer", "verify"])["verified"], true);
@@ -793,10 +794,11 @@ async fn maintenance_purge_killed_before_its_head_publication_converges_on_stora
     assert!(!readable(&fetch(&mut tools::Mcp::open(&worker), "a")));
     // Wait for the recorded lease, including any renewal before the crash.
     let head = publication(&commit).await.0;
-    let remaining = (head.lease.unwrap().expires_at - chrono::Utc::now())
+    let remaining = (head.lease.unwrap().expires_at - fyrr_core::clock::now())
         .to_std()
         .unwrap_or_default();
-    tokio::time::sleep(remaining + Duration::from_millis(50)).await;
+    // The killed purge holder must expire before recovery takes ownership.
+    fyrr_core::clock::advance(remaining + Duration::from_millis(50)).unwrap();
     let again = command(
         &commit,
         &["writer", "source", "purge", "incremental", "--confirm"],
@@ -1366,14 +1368,14 @@ fn age_observations(request: &str, response: &mut Vec<u8>, expired: Option<&str>
         if request.contains("/publications/") {
             if let Ok(mut value) = serde_json::from_slice::<Value>(body) {
                 value["committed_at"] =
-                    json!((chrono::Utc::now() - chrono::Duration::hours(25)).to_rfc3339());
+                    json!((fyrr_core::clock::now() - chrono::Duration::hours(25)).to_rfc3339());
                 *body = serde_json::to_vec(&value).unwrap();
                 changed = true;
             }
         } else if expired.is_some_and(|id| request.contains(id)) {
             if let Ok(mut value) = serde_json::from_slice::<Value>(body) {
                 value["created_at"] =
-                    json!((chrono::Utc::now() - chrono::Duration::days(4)).to_rfc3339());
+                    json!((fyrr_core::clock::now() - chrono::Duration::days(4)).to_rfc3339());
                 *body = serde_json::to_vec(&value).unwrap();
                 changed = true;
             }
@@ -1554,7 +1556,7 @@ async fn maintenance_restore_rejected_authorization_freezes_freshness_on_storage
                     && matches!(&envelope.payload, EnvelopePayload::Members(p) if !p.complete_read))
             {
                 rejected_id = envelope.envelope_id.clone();
-                envelope.created_at = chrono::Utc::now() - chrono::Duration::days(4);
+                envelope.created_at = fyrr_core::clock::now() - chrono::Duration::days(4);
                 store
                     .put(&path, fyrr_core::write_contract(&envelope).into())
                     .await
@@ -1575,7 +1577,7 @@ async fn maintenance_restore_rejected_authorization_freezes_freshness_on_storage
             .iter_mut()
             .find(|f| f.source_id == "incremental")
             .unwrap();
-        old.permissions_read_at = chrono::Utc::now() - chrono::Duration::hours(2);
+        old.permissions_read_at = fyrr_core::clock::now() - chrono::Duration::hours(2);
         old.members_read_at = Some(old.permissions_read_at);
         let old = old.clone();
         store

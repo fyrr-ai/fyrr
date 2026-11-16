@@ -142,7 +142,7 @@ impl LeaseGuard {
         if head.namespace != config.namespace.name {
             return Err(WriterError::PublicationNamespaceInvalid);
         }
-        let now = Utc::now();
+        let now = fyrr_core::clock::now();
         if let Some(lease) = &head.lease
             && lease.expires_at > now
         {
@@ -199,7 +199,7 @@ impl LeaseGuard {
                 .head
                 .lease
                 .as_ref()
-                .is_none_or(|l| l.expires_at <= Utc::now())
+                .is_none_or(|l| l.expires_at <= fyrr_core::clock::now())
         {
             return Err(WriterError::LeaseLost);
         }
@@ -260,7 +260,7 @@ impl LeaseGuard {
                 }
                 let mut head = state.head.clone();
                 if let Some(lease) = &mut head.lease {
-                    lease.expires_at = Utc::now()
+                    lease.expires_at = fyrr_core::clock::now()
                         + chrono::Duration::from_std(guard.ttl)
                             .unwrap_or_else(|_| unreachable!("acquisition validated the TTL"));
                 }
@@ -295,7 +295,7 @@ impl LeaseGuard {
         state.expected = expected;
         // Retain the epoch after release so the next holder cannot reuse it.
         if let Some(lease) = &mut head.lease {
-            lease.expires_at = Utc::now();
+            lease.expires_at = fyrr_core::clock::now();
         }
         self.write(&mut state, head, HeadWriteStage::Release).await
     }

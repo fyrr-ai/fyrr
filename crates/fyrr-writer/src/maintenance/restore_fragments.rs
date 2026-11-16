@@ -118,7 +118,7 @@ mod tests {
             arrow_array::RecordBatchIterator::new([Ok(batch.clone())], batch.schema()),
             &format!(
                 "memory://fragment-identity-{}",
-                Utc::now().timestamp_nanos_opt().unwrap()
+                fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
             ),
             None,
         )

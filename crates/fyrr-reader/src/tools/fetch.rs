@@ -23,7 +23,7 @@ impl PreparedReader {
         if cursor.scope().namespace != self.config.namespace.name
             || cursor.scope().subject != subject
             || cursor.scope().content_version != self.manifest.lance_version
-            || cursor.scope().expires <= Utc::now().timestamp()
+            || cursor.scope().expires <= fyrr_core::clock::now().timestamp()
             || self
                 .head
                 .content
@@ -65,7 +65,7 @@ impl PreparedReader {
                 namespace: self.config.namespace.name.clone(),
                 subject: self.principal()?,
                 content_version: self.manifest.lance_version,
-                expires: Utc::now().timestamp() + 900,
+                expires: fyrr_core::clock::now().timestamp() + 900,
             };
             let position = CursorPosition {
                 after: (String::new(), String::new(), String::new()),

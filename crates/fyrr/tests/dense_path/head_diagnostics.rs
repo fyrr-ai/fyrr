@@ -21,7 +21,7 @@ fn conditional_head_failure_classifies_untrusted_storage_error_on_real_s3() {
                 fyrr_core::parse_contract(body).unwrap();
             if head
                 .lease
-                .is_some_and(|lease| lease.expires_at <= chrono::Utc::now())
+                .is_some_and(|lease| lease.expires_at <= fyrr_core::clock::now())
             {
                 *watch.lock().unwrap() = Some(std::thread::current().id());
             }

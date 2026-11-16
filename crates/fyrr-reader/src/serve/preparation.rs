@@ -130,7 +130,7 @@ pub(super) fn prepare_version(
                 }
                 cancel_warm.cancel();
                 pin.retire();
-                let age = (chrono::Utc::now() - *committed)
+                let age = (fyrr_core::clock::now() - *committed)
                     .to_std()
                     .unwrap_or_default();
                 pin.expire(age, config.writer.purge_window.as_duration());

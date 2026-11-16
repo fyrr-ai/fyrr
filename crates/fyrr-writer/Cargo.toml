@@ -36,6 +36,7 @@ reqwest.workspace = true
 ring.workspace = true
 
 [dev-dependencies]
+fyrr-core = { workspace = true, features = ["test-clock"] }
 syn = { version = "=2.0.119", features = ["full", "visit"] }
 proc-macro2 = "1"
 arrow-buffer.workspace = true

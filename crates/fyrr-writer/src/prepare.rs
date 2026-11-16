@@ -12,7 +12,6 @@ use arrow_array::{
     TimestampMicrosecondArray, UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema};
-use chrono::Utc;
 use fyrr_core::config::{Config, PermissionsMode, ProcessEnvironment};
 use fyrr_core::connector::{
     CONNECTOR_CONTRACT_VERSION, ChangeOp, ConnectorBatch, CursorState, DocumentChange, SyncKind,
@@ -147,7 +146,7 @@ pub async fn recover_cursor(
         // A durable --full envelope starts at None even if S3 retained the
         // preceding nonempty cursor. Sequence, rather than start, is authoritative.
         state.cursor.clone_from(end);
-        state.updated_at = Utc::now();
+        state.updated_at = fyrr_core::clock::now();
         lease.write(state.clone()).await?;
     }
 }
@@ -311,7 +310,7 @@ pub fn initial_cursor(config: &Config, source: &str, kind: SyncKind) -> CursorSt
         sequence: 0,
         rejection_generation: 0,
         restore_sequence: 0,
-        updated_at: Utc::now(),
+        updated_at: fyrr_core::clock::now(),
         lease: None,
     }
 }
@@ -427,7 +426,7 @@ async fn non_content_page(
                     .collect::<Result<_, _>>()?;
             }
             EnvelopePayload::Permissions(PermissionsPayload {
-                read_at: Utc::now(),
+                read_at: fyrr_core::clock::now(),
                 complete_read,
                 documents,
                 container_grants,
@@ -445,7 +444,7 @@ async fn non_content_page(
             )
             .await?;
             EnvelopePayload::Members(MembersPayload {
-                read_at: Utc::now(),
+                read_at: fyrr_core::clock::now(),
                 complete_read,
                 snapshot_id: part.snapshot_id.clone(),
                 snapshot_object: object,
@@ -477,7 +476,7 @@ async fn non_content_page(
         cursor: batch.cursor.clone(),
         advances_cursor,
         base_head: base,
-        created_at: Utc::now(),
+        created_at: fyrr_core::clock::now(),
         payload,
     };
     lease.state().await?;
@@ -491,7 +490,7 @@ async fn non_content_page(
     if advances_cursor {
         state.cursor = Some(batch.cursor.end.clone());
     }
-    state.updated_at = Utc::now();
+    state.updated_at = fyrr_core::clock::now();
     lease.write(state.clone()).await
 }
 

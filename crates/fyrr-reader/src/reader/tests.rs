@@ -43,7 +43,7 @@ async fn lexical_mask_fixture() -> LexicalFixture {
         .join(format!(
             "lexical-mask-{}-{}",
             std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap()
+            fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
         ));
     let mut dataset = Dataset::write(
         RecordBatchIterator::new(vec![Ok(batch)], schema.clone()),
@@ -255,7 +255,7 @@ async fn recall_at_10_accepts_authorized_boundary_ties_in_opposite_lane_order() 
         .join(format!(
             "recall-ties-{}-{}",
             std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap()
+            fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
         ));
     let dataset = Dataset::write(
         RecordBatchIterator::new(vec![Ok(batch)], schema),

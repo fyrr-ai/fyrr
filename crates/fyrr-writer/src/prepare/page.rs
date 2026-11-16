@@ -83,7 +83,7 @@ pub(super) async fn content_page(
         cursor: batch.cursor.clone(),
         advances_cursor,
         base_head,
-        created_at: Utc::now(),
+        created_at: fyrr_core::clock::now(),
         payload: EnvelopePayload::Content(ContentPayload {
             embedding: identity(&config.embedding),
             chunk_profile: chunk_identity(),
@@ -99,7 +99,7 @@ pub(super) async fn content_page(
         state.cursor = Some(batch.cursor.end.clone());
     }
     state.sequence = sequence;
-    state.updated_at = Utc::now();
+    state.updated_at = fyrr_core::clock::now();
     lease.write(state.clone()).await?;
     Ok(quarantined_count)
 }

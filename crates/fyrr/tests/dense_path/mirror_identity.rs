@@ -136,7 +136,10 @@ fn sync_texts(config: &Path, root: &FixtureRoot, texts: &[(&str, &str)]) {
 async fn export_and_delete(config: &Path, root: &FixtureRoot) {
     let loaded = fyrr_core::config::load(config).unwrap();
     let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let export = root.join(format!("export-{}", chrono::Utc::now().timestamp_micros()));
+    let export = root.join(format!(
+        "export-{}",
+        fyrr_core::clock::now().timestamp_micros()
+    ));
     let objects: Vec<_> = store.list(Some(&namespace)).try_collect().await.unwrap();
     for object in objects {
         let file = export.join(fyrr_reader::storage::relative_path(

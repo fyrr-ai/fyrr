@@ -151,7 +151,7 @@ pub async fn publish(config: &Config, snapshot: &DirectorySnapshot) -> Result<se
     snapshot
         .validate()
         .map_err(|_| WriterError::DirectorySnapshotInvalid)?;
-    if snapshot.namespace != config.namespace.name || snapshot.built_at > chrono::Utc::now() {
+    if snapshot.namespace != config.namespace.name || snapshot.built_at > fyrr_core::clock::now() {
         return Err(WriterError::DirectorySnapshotInvalid);
     }
     crate::lease::LeaseGuard::with(config, |lease| async move {
@@ -170,11 +170,11 @@ pub(crate) async fn publish_held(
     snapshot
         .validate()
         .map_err(|_| WriterError::DirectorySnapshotInvalid)?;
-    if snapshot.namespace != config.namespace.name || snapshot.built_at > chrono::Utc::now() {
+    if snapshot.namespace != config.namespace.name || snapshot.built_at > fyrr_core::clock::now() {
         return Err(WriterError::DirectorySnapshotInvalid);
     }
     if let Some(at) = proof {
-        let age = chrono::Utc::now()
+        let age = fyrr_core::clock::now()
             .signed_duration_since(at)
             .to_std()
             .map_err(|_| WriterError::DirectoryHealthInvalid)?;
@@ -203,7 +203,7 @@ pub(crate) async fn publish_held(
                 let next = head.freshness.directory.map_or(at, |old| old.max(at));
                 if head.freshness.directory != Some(next) {
                     head.freshness.directory = Some(next);
-                    head.updated_at = chrono::Utc::now();
+                    head.updated_at = fyrr_core::clock::now();
                     lease.publish(head.clone()).await?;
                 }
             }
@@ -250,7 +250,8 @@ pub(crate) async fn publish_held(
         .generation
         .checked_add(1)
         .ok_or(WriterError::IdentityGenerationOverflow)?;
-    let configured = crate::commit::configured_identity(config, generation, chrono::Utc::now())?;
+    let configured =
+        crate::commit::configured_identity(config, generation, fyrr_core::clock::now())?;
     let next = crate::membership::build(config, &inputs, &head, &[], configured, None).await?;
     if next.principals == current.principals
         && next.tokens == current.tokens
@@ -264,7 +265,7 @@ pub(crate) async fn publish_held(
     head.identity =
         crate::prepare::put_generation(store.as_ref(), &root, "identity", generation, &next)
             .await?;
-    head.updated_at = chrono::Utc::now();
+    head.updated_at = fyrr_core::clock::now();
     if let Some(at) = proof {
         head.freshness.directory = Some(head.freshness.directory.map_or(at, |old| old.max(at)));
     }
@@ -304,7 +305,7 @@ mod tests {
             schema_version: DirectorySnapshot::VERSION,
             namespace: "test".into(),
             provider: "scim".into(),
-            built_at: chrono::Utc::now(),
+            built_at: fyrr_core::clock::now(),
             hashing: fyrr_core::identity::HashingScheme {
                 algorithm: "hmac-sha256".into(),
                 key_id: "namespace-v1".into(),

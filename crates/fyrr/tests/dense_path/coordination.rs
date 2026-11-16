@@ -320,13 +320,14 @@ async fn coordination_crash_boundaries_on_storage() {
             },
             "{name}"
         );
-        // A killed process cannot release its lease. Wait for the actual S3
-        // expiry, never edit the lease to manufacture takeover.
+        // A killed process cannot release its lease. Advance the shared wall
+        // clock past its persisted deadline; never rewrite the head or lease.
         let (held, _) = publication(&committer).await;
-        let remaining = (held.lease.unwrap().expires_at - chrono::Utc::now())
+        let remaining = (held.lease.unwrap().expires_at - fyrr_core::clock::now())
             .to_std()
             .unwrap_or_default();
-        std::thread::sleep(remaining + Duration::from_millis(50));
+        // The crashed holder is gone; advance its persisted lease deadline.
+        fyrr_core::clock::advance(remaining + Duration::from_millis(50)).unwrap();
         let retry = host_commit(&committer);
         assert!(
             retry.status.success(),
@@ -430,10 +431,11 @@ async fn coordination_busy_and_expired_holder_on_storage() {
         assert!(busy_started.elapsed() < Duration::from_secs(1));
         assert!(String::from_utf8_lossy(&busy.stderr).contains("writer_busy holder=holder-"));
         let (held, _) = publication(&committer).await;
-        let remaining = (held.lease.unwrap().expires_at - chrono::Utc::now())
+        let remaining = (held.lease.unwrap().expires_at - fyrr_core::clock::now())
             .to_std()
             .unwrap_or_default();
-        std::thread::sleep(remaining + Duration::from_millis(50));
+        // The stopped holder cannot renew; advance its persisted lease deadline.
+        fyrr_core::clock::advance(remaining + Duration::from_millis(50)).unwrap();
         let takeover = host_commit(&committer);
         assert!(
             takeover.status.success(),
@@ -626,10 +628,11 @@ async fn coordination_live_holder_is_busy_then_fenced_after_expiry(backend: Back
     let held = store.get(&path).await.unwrap().bytes().await.unwrap();
     assert_eq!(parse_contract::<ServingHead>(&held).unwrap(), saved);
 
-    let remaining = (saved.lease.as_ref().unwrap().expires_at - chrono::Utc::now())
+    let remaining = (saved.lease.as_ref().unwrap().expires_at - fyrr_core::clock::now())
         .to_std()
         .unwrap_or_default();
-    std::thread::sleep(remaining + Duration::from_millis(50));
+    // This holder has no keepalive; advance its persisted lease deadline.
+    fyrr_core::clock::advance(remaining + Duration::from_millis(50)).unwrap();
     let takeover = host_commit(&config);
     assert!(
         takeover.status.success(),
@@ -721,7 +724,7 @@ async fn coordination_foreign_native_commit_cannot_publish_head_on_real_s3() {
     assert_eq!(stored, pending);
     let held = publication(&committer).await.0;
     assert_eq!(held.content, before.content);
-    assert!(held.lease.as_ref().unwrap().expires_at > chrono::Utc::now());
+    assert!(held.lease.as_ref().unwrap().expires_at > fyrr_core::clock::now());
     let mut native = fyrr_reader::storage::open_version(
         &fyrr_reader::storage::dataset_uri(&loaded.config),
         loaded
@@ -744,7 +747,7 @@ async fn coordination_foreign_native_commit_cannot_publish_head_on_real_s3() {
     let lease = still_held.lease.as_ref().unwrap();
     assert_eq!(lease.holder, held.lease.as_ref().unwrap().holder);
     assert_eq!(lease.epoch, held.lease.as_ref().unwrap().epoch);
-    assert!(lease.expires_at > chrono::Utc::now());
+    assert!(lease.expires_at > fyrr_core::clock::now());
     gate.release();
     let output = process.finish_bounded();
     let stderr = String::from_utf8_lossy(&output.stderr);

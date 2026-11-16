@@ -113,7 +113,7 @@ impl Preparation<'_> {
                         .as_ref()
                         .and_then(|m| m.updated_at)
                         .is_some_and(|updated| {
-                            updated < chrono::Utc::now() - chrono::Duration::days(days as i64)
+                            updated < fyrr_core::clock::now() - chrono::Duration::days(days as i64)
                         })
                 })
             {

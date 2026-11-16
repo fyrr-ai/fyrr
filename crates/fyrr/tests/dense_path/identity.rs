@@ -24,7 +24,7 @@ pub(super) fn snapshot(config: &fyrr_core::config::Config, provider: &str) -> Di
         schema_version: <DirectorySnapshot as fyrr_core::Contract>::VERSION,
         namespace: config.namespace.name.clone(),
         provider: provider.into(),
-        built_at: chrono::Utc::now(),
+        built_at: fyrr_core::clock::now(),
         hashing: fyrr_core::identity::HashingScheme {
             algorithm: "hmac-sha256".into(),
             key_id: "namespace-v1".into(),
@@ -294,7 +294,7 @@ async fn identity_alias_collision_link_revoke_and_idempotence_on_storage() {
     collision.active = false;
     collision.aliases = canonical.aliases.clone();
     directory.users.push(collision);
-    directory.built_at = chrono::Utc::now();
+    directory.built_at = fyrr_core::clock::now();
     applied(&commit, &root, &directory);
     assert_eq!(
         fixture_hits(&mut client)["structuredContent"]["hits"]
@@ -308,7 +308,7 @@ async fn identity_alias_collision_link_revoke_and_idempotence_on_storage() {
         user: principal_hash(config, "key", "u"),
         principal: canonical.key.clone(),
     });
-    directory.built_at = chrono::Utc::now();
+    directory.built_at = fyrr_core::clock::now();
     applied(&commit, &root, &directory);
     assert_eq!(
         fixture_hits(&mut client)["structuredContent"]["hits"]
@@ -322,7 +322,7 @@ async fn identity_alias_collision_link_revoke_and_idempotence_on_storage() {
         user: principal_hash(config, "key", "u"),
         principal: directory.users[1].key.clone(),
     });
-    directory.built_at = chrono::Utc::now();
+    directory.built_at = fyrr_core::clock::now();
     applied(&commit, &root, &directory);
     assert_eq!(
         fixture_hits(&mut client)["structuredContent"]["hits"]
@@ -336,7 +336,7 @@ async fn identity_alias_collision_link_revoke_and_idempotence_on_storage() {
         "stale directory cannot restore grants"
     );
     directory.users[0].active = false;
-    directory.built_at = chrono::Utc::now();
+    directory.built_at = fyrr_core::clock::now();
     applied(&commit, &root, &directory);
     assert_eq!(
         fixture_hits(&mut client)["structuredContent"]["code"],
@@ -380,7 +380,7 @@ async fn identity_large_grants_are_complete_and_over_limit_is_subject_local_on_s
             token: principal_hash(config, "tok", "grp:allow"),
             members: vec![other.key.clone()],
         });
-        directory.built_at = chrono::Utc::now();
+        directory.built_at = fyrr_core::clock::now();
         let receipt = measured_publication(&commit, &root, &directory);
         let (_, identity) = artifact(&commit).await;
         let principal = identity
@@ -434,7 +434,7 @@ async fn identity_large_grants_are_complete_and_over_limit_is_subject_local_on_s
     let lease = fyrr_writer::lease::LeaseGuard::acquire(config)
         .await
         .unwrap();
-    directory.built_at = chrono::Utc::now();
+    directory.built_at = fyrr_core::clock::now();
     let busy = import(&commit, &root, &directory);
     assert_eq!(busy.status.code(), Some(75));
     lease.release().await.unwrap();
@@ -520,7 +520,7 @@ async fn identity_email_evidence_and_cross_issuer_bindings_on_storage() {
         publish(&commit);
         assert_eq!(count(&mut client), expected, "email evidence: {evidence}");
     }
-    directory.built_at = chrono::Utc::now();
+    directory.built_at = fyrr_core::clock::now();
     directory.links.push(AccountLink {
         source: "incremental".into(),
         user: principal_hash(config, "key", "u"),

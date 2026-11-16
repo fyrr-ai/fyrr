@@ -432,7 +432,7 @@ async fn readiness(State(state): State<HttpState>) -> Response {
     let Ok(head) = state.admission.head().await else {
         return error(StatusCode::SERVICE_UNAVAILABLE, PublicationUnavailable);
     };
-    let now = chrono::Utc::now();
+    let now = fyrr_core::clock::now();
     if head.namespace != state.config.namespace.name
         || !crate::storage::directory_fresh(&state.config, head.freshness.directory, now)
     {

@@ -3,7 +3,7 @@ use super::*;
 pub(crate) fn configured_identity(
     config: &Config,
     generation: u64,
-    now: chrono::DateTime<Utc>,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Result<IdentityArtifact> {
     // Even an empty HTTP-only namespace must have its HMAC key available.
     hash_principal(config, "key", "")?;
@@ -47,7 +47,7 @@ pub async fn create(config: &Config) -> Result<()> {
     if fyrr_reader::storage::optional_head(config).await?.is_some() {
         return Ok(());
     }
-    let now = Utc::now();
+    let now = fyrr_core::clock::now();
     let mut incarnation = [0; 16];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut incarnation)
         .map_err(|_| WriterError::RuntimeUnavailable)?;

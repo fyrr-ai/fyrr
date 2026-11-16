@@ -544,7 +544,7 @@ impl Scheduler {
                 .is_none_or(|current| !Arc::ptr_eq(&current.generation_id, &reader.generation_id))
         {
             Err(SampleSkip::Cancelled)
-        } else if expires.is_some_and(|expiry| expiry <= chrono::Utc::now().timestamp()) {
+        } else if expires.is_some_and(|expiry| expiry <= fyrr_core::clock::now().timestamp()) {
             Err(SampleSkip::AuthorizationChanged)
         } else {
             result

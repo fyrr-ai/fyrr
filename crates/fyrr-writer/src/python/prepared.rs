@@ -131,7 +131,7 @@ pub(super) fn prepared_kind(
         let Some(cache) = &embedding else {
             return Ok(default_report(ReportDefaults::Kind { kind, stats }));
         };
-        state.updated_at = chrono::Utc::now();
+        state.updated_at = fyrr_core::clock::now();
         rt.block_on(lease.write(state.clone()))?;
         Ok(serde_json::json!({
             "kind": kind,

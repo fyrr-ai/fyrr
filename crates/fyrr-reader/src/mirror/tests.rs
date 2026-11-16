@@ -5,7 +5,7 @@ async fn mutable_control_reads_through_native_named_storage_prefix() {
     let directory = std::env::temp_dir().join(format!(
         "fyrr-mirror-control-{}-{}",
         std::process::id(),
-        chrono::Utc::now().timestamp_micros()
+        fyrr_core::clock::now().timestamp_micros()
     ));
     let mirror = MirrorStore::new(directory.clone(), 1024).unwrap();
     mirror
@@ -45,7 +45,7 @@ async fn interrupted_partial_recovers_without_following_symlinks() {
     let directory = std::env::temp_dir().join(format!(
         "fyrr-mirror-partial-{}-{}",
         std::process::id(),
-        chrono::Utc::now().timestamp_micros()
+        fyrr_core::clock::now().timestamp_micros()
     ));
     let source = directory.join("source");
     std::fs::create_dir_all(source.join("namespace/dataset.lance/data")).unwrap();
@@ -102,7 +102,7 @@ async fn version_manifest_entries_are_bound_to_their_publication() {
     let directory = std::env::temp_dir().join(format!(
         "fyrr-mirror-versions-{}-{}",
         std::process::id(),
-        chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
     ));
     let mut mirror = MirrorStore::new(directory.clone(), 1024).unwrap();
     mirror

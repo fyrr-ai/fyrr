@@ -87,7 +87,7 @@ pub(super) async fn execute(
     let outcome = if job
         .subject
         .as_ref()
-        .is_some_and(|s| s.expires <= chrono::Utc::now().timestamp())
+        .is_some_and(|s| s.expires <= fyrr_core::clock::now().timestamp())
     {
         Err(AuthorizationUnavailable)
     } else {

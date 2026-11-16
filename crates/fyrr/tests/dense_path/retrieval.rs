@@ -327,7 +327,7 @@ async fn retrieval_publication_authorization_cache_budget_on_storage() {
     );
     assert!(run(&config, &["writer", "sync"]).status.success());
     success(&config, &["writer", "commit"]);
-    directory.built_at = chrono::Utc::now();
+    directory.built_at = fyrr_core::clock::now();
     directory.users[0].active = false;
     directory.groups[0].members.remove(0);
     std::fs::write(root.join("cache-revoke.json"), write_contract(&directory)).unwrap();

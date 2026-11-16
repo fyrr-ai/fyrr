@@ -1046,16 +1046,8 @@ fn correction_live_mcp_expires_without_commit() {
         serde_json::from_str::<Value>(&line).unwrap()["result"]["isError"],
         false
     );
-    let began = std::time::Instant::now();
-    while began.elapsed() < Duration::from_secs(361) {
-        std::thread::sleep(Duration::from_secs(1));
-        if began.elapsed().as_secs().is_multiple_of(60) {
-            eprintln!(
-                "freshness expiry: {} seconds without commit",
-                began.elapsed().as_secs()
-            );
-        }
-    }
+    // No commit or directory read occurs while the live reader loses freshness.
+    fyrr_core::clock::advance(Duration::from_secs(361)).unwrap();
     writeln!(input, "{request}").unwrap();
     line.clear();
     output.read_line(&mut line).unwrap();

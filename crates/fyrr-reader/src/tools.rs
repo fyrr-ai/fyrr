@@ -6,7 +6,6 @@ use crate::search::{PreparedReader, column, ids, strings};
 use crate::storage::{hash_principal, sql};
 use crate::telemetry::micros;
 use arrow_array::{Array, RecordBatch, UInt64Array};
-use chrono::Utc;
 use futures::TryStreamExt;
 use fyrr_core::connector::DocumentMetadata;
 use fyrr_core::limits::mcp::{FETCH_MAX_CONTENT_BYTES, FETCH_MAX_DOCUMENTS, FETCH_MAX_RECORDS};

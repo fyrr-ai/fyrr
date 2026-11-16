@@ -59,7 +59,7 @@ pub(crate) fn open(scratch: &Path, purpose: &str, created: impl Fn(&Path)) -> Re
     let path = scratch.join(format!(
         "fyrr-writer-{purpose}-{}-{}.sqlite",
         std::process::id(),
-        chrono::Utc::now().timestamp_nanos_opt().ok_or(ERROR)?
+        fyrr_core::clock::now().timestamp_nanos_opt().ok_or(ERROR)?
     ));
     // Do not let SQLite create a named file while probing a deleted inode.
     let anonymous = rustix::fs::open(

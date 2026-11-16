@@ -556,7 +556,7 @@ async fn rejected_authorization(kind: SyncKind) {
                 && matches!(&envelope.payload, EnvelopePayload::Members(p) if !p.complete_read))
         {
             rejected_id = envelope.envelope_id.clone();
-            envelope.created_at = chrono::Utc::now() - chrono::Duration::days(4);
+            envelope.created_at = fyrr_core::clock::now() - chrono::Duration::days(4);
             store
                 .put(&path, fyrr_core::write_contract(&envelope).into())
                 .await
@@ -577,7 +577,7 @@ async fn rejected_authorization(kind: SyncKind) {
         .iter_mut()
         .find(|f| f.source_id == "incremental")
         .unwrap();
-    old.permissions_read_at = chrono::Utc::now() - chrono::Duration::hours(2);
+    old.permissions_read_at = fyrr_core::clock::now() - chrono::Duration::hours(2);
     old.members_read_at = Some(old.permissions_read_at);
     let old = old.clone();
     store
@@ -838,7 +838,7 @@ async fn rejected_authorization(kind: SyncKind) {
         .max()
         .unwrap()
         + 1;
-    late.created_at = chrono::Utc::now();
+    late.created_at = fyrr_core::clock::now();
     late.envelope_id = fyrr_core::envelope::envelope_id(
         &late.namespace,
         &late.source_id,
@@ -997,7 +997,7 @@ async fn incremental_delta_expired_source_isolated_on_storage() {
     });
     identity.principals.sort_by(|a, b| a.key.cmp(&b.key));
     identity.generation += 1;
-    identity.built_at = chrono::Utc::now();
+    identity.built_at = fyrr_core::clock::now();
     let hash = digest(&fyrr_core::write_contract(&identity));
     let object = format!("identity/{}-{}.json", identity.generation, &hash[7..]);
     fyrr_writer::prepare::put_immutable(
@@ -1045,9 +1045,9 @@ async fn incremental_delta_expired_source_isolated_on_storage() {
             .iter_mut()
             .find(|f| f.source_id == "incremental")
             .unwrap();
-        fresh.permissions_read_at = chrono::Utc::now();
-        fresh.members_read_at = Some(chrono::Utc::now());
-        let expired = chrono::Utc::now() - chrono::Duration::hours(2);
+        fresh.permissions_read_at = fyrr_core::clock::now();
+        fresh.members_read_at = Some(fyrr_core::clock::now());
+        let expired = fyrr_core::clock::now() - chrono::Duration::hours(2);
         match kind {
             SyncKind::Permissions => fresh.permissions_read_at = expired,
             _ => fresh.members_read_at = Some(expired),

@@ -81,7 +81,7 @@ pub(crate) async fn commit_one(
         && (!policy_changed || head.content.is_none())
         && !fts_merge_needed
     {
-        head.updated_at = Utc::now();
+        head.updated_at = fyrr_core::clock::now();
         lease.publish(head.clone()).await?;
         return Ok(head.content.map_or(0, |p| p.lance_version));
     }
@@ -114,14 +114,14 @@ pub(crate) async fn commit_one(
         ..
     } = work;
     let Some(mut dataset) = dataset else {
-        head.updated_at = Utc::now();
+        head.updated_at = fyrr_core::clock::now();
         head.rejected_envelope_ids = rejected;
         lease.publish(head).await?;
         return Ok(0);
     };
     if !verify_content(config, &dataset, &head, &envelopes, &mut rejected, sequence).await? {
         head.rejected_envelope_ids = rejected;
-        head.updated_at = Utc::now();
+        head.updated_at = fyrr_core::clock::now();
         lease.publish(head).await?;
         return Ok(0);
     }
@@ -244,7 +244,7 @@ async fn accept_envelopes(
             Some(WriterError::SourceRetired.as_str())
         } else if let Some(reason) = markers.refusal(&envelope) {
             Some(reason)
-        } else if (Utc::now() - envelope.created_at)
+        } else if (fyrr_core::clock::now() - envelope.created_at)
             .to_std()
             .is_ok_and(|age| age > config.writer.max_envelope_age.as_duration())
         {
@@ -295,7 +295,7 @@ async fn refresh_identity(
         .generation
         .checked_add(1)
         .ok_or(WriterError::IdentityGenerationOverflow)?;
-    let configured = configured_identity(config, identity_generation, Utc::now())?;
+    let configured = configured_identity(config, identity_generation, fyrr_core::clock::now())?;
     let member_paths = history
         .map(|h| {
             h.envelopes

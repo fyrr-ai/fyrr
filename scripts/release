@@ -88,6 +88,11 @@ log "building the reader-only release binary"
 build_release -p fyrr --no-default-features
 cp "$ROOT/target/release/fyrr" "$DIR/fyrr-reader-$VERSION-$PLATFORM"
 chmod 0755 "$DIR/fyrr-$VERSION-$PLATFORM" "$DIR/fyrr-reader-$VERSION-$PLATFORM"
+for binary in "$DIR/fyrr-$VERSION-$PLATFORM" "$DIR/fyrr-reader-$VERSION-$PLATFORM"; do
+  if LC_ALL=C grep -aFq 'FYRR_TEST_CLOCK_FILE' "$binary"; then
+    die "shipping binary contains the test clock hook"
+  fi
+done
 full_runtime="$(binary_runtime "$DIR/fyrr-$VERSION-$PLATFORM")" || die "cannot inspect full binary runtime"
 reader_runtime="$(binary_runtime "$DIR/fyrr-reader-$VERSION-$PLATFORM")" || die "cannot inspect reader binary runtime"
 build_python="${PYO3_PYTHON:-$ROOT/connectors/.venv/bin/python}"

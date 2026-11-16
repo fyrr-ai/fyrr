@@ -354,7 +354,7 @@ async fn rerank_inner(
                     || !crate::storage::directory_fresh(
                         &config_snapshot,
                         current.freshness.directory,
-                        chrono::Utc::now(),
+                        fyrr_core::clock::now(),
                     )
                 {
                     refused_guard.store(true, Ordering::Release);

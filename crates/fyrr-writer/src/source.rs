@@ -6,7 +6,6 @@
 //! Lance versions leave within the purge window like any deleted content.
 use crate::{Result, WriterError};
 use crate::{apply, commit, lease::LeaseGuard, maintenance, prepare};
-use chrono::Utc;
 use fyrr_core::Contract;
 use fyrr_core::config::Config;
 use fyrr_core::connector::SyncKind;
@@ -102,7 +101,7 @@ async fn mark(config: &Config, lease: &LeaseGuard, source: &str, purged: bool) -
     if !known && policy.retired_sources.len() >= MAX_RETIRED_SOURCES {
         return Err(WriterError::RetiredSourcesFull);
     }
-    let now = Utc::now();
+    let now = fyrr_core::clock::now();
     let entry = policy
         .retired_sources
         .entry(source.to_owned())

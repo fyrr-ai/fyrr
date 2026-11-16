@@ -46,7 +46,7 @@ pub(crate) fn base(config: &Config, provider: &str) -> DirectorySnapshot {
         schema_version: DirectorySnapshot::VERSION,
         namespace: config.namespace.name.clone(),
         provider: provider.into(),
-        built_at: chrono::Utc::now(),
+        built_at: fyrr_core::clock::now(),
         hashing: HashingScheme {
             algorithm: "hmac-sha256".into(),
             key_id: "namespace-v1".into(),
@@ -310,7 +310,7 @@ async fn read_snapshot(config: &Config) -> Result<DirectorySnapshot> {
     }
     let mut snapshot: DirectorySnapshot =
         fyrr_core::parse_contract(&bytes).map_err(|_| WriterError::DirectorySnapshotInvalid)?;
-    snapshot.built_at = chrono::Utc::now();
+    snapshot.built_at = fyrr_core::clock::now();
     snapshot.state = None;
     Ok(snapshot)
 }
@@ -321,7 +321,7 @@ pub async fn pull(config: &Config, due: bool, timeout: std::time::Duration) -> R
     if due {
         let head = &started;
         if head.freshness.directory.is_some_and(|at| {
-            chrono::Utc::now()
+            fyrr_core::clock::now()
                 .signed_duration_since(at)
                 .to_std()
                 .is_ok_and(|age| age < config.identity.directory.sync_interval.as_duration())
@@ -340,7 +340,7 @@ pub async fn pull(config: &Config, due: bool, timeout: std::time::Duration) -> R
         .await
         .map_err(|_| WriterError::DirectoryPullTimeout)??;
     crate::lease::LeaseGuard::with(config, |lease| async move {
-        snapshot.built_at = chrono::Utc::now();
+        snapshot.built_at = fyrr_core::clock::now();
 
         async {
             // An overlapping publisher invalidates the read, even if this older read

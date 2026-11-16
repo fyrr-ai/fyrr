@@ -317,10 +317,10 @@ async fn retained(config: &Config, head: &ServingHead) -> Result<Vec<ContentMani
     let mut keep = Vec::new();
     while let Some(manifest) = chain.try_next().await? {
         if retired.is_some_and(|at| {
-            (Utc::now() - at)
+            (fyrr_core::clock::now() - at)
                 .to_std()
                 .is_ok_and(|age| age >= config.writer.version_grace.as_duration())
-                && (Utc::now() - manifest.committed_at)
+                && (fyrr_core::clock::now() - manifest.committed_at)
                     .to_std()
                     .is_ok_and(|age| age >= config.writer.purge_window.as_duration())
         }) {
@@ -586,7 +586,7 @@ pub(crate) async fn purge_warnings(
             .as_duration()
             .saturating_sub(config.writer.version_grace.as_duration());
         let old = |instant: chrono::DateTime<Utc>| {
-            (Utc::now() - instant)
+            (fyrr_core::clock::now() - instant)
                 .to_std()
                 .is_ok_and(|age| age >= threshold)
         };

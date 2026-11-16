@@ -24,7 +24,7 @@ fn scratch(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "fyrr-local-{name}-{}-{}",
         std::process::id(),
-        SystemTime::now()
+        std::time::SystemTime::from(fyrr_core::clock::now())
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos()

@@ -28,7 +28,7 @@ impl PreparedReader {
             || self.head.policy != sample.policy
             || sample
                 .expires
-                .is_some_and(|expiry| expiry <= Utc::now().timestamp())
+                .is_some_and(|expiry| expiry <= fyrr_core::clock::now().timestamp())
         {
             return Err(SampleSkip::AuthorizationChanged);
         }

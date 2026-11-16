@@ -1,7 +1,6 @@
 //! Per-source/per-kind cursor CAS: the lease fences cursor writes, not content publication.
 use crate::lease::{cas_put, new_lease, version_of};
 use crate::{Result, WriterError};
-use chrono::Utc;
 use fyrr_core::config::Config;
 use fyrr_core::connector::{CursorState, SyncKind};
 use fyrr_core::parse_contract;
@@ -57,7 +56,7 @@ impl CursorLease {
                 .0
                 .lease
                 .as_ref()
-                .is_some_and(|l| l.expires_at > Utc::now())
+                .is_some_and(|l| l.expires_at > fyrr_core::clock::now())
     }
 
     pub async fn acquire(config: &Config, source: &str, kind: SyncKind) -> Result<Arc<Self>> {
@@ -84,7 +83,7 @@ impl CursorLease {
         {
             return Err(WriterError::CursorInvalid);
         }
-        let now = Utc::now();
+        let now = fyrr_core::clock::now();
         if state.lease.as_ref().is_some_and(|l| l.expires_at > now) {
             return Err(WriterError::SyncBusy);
         }
@@ -128,7 +127,7 @@ impl CursorLease {
             .lease
             .as_mut()
             .unwrap_or_else(|| unreachable!("live cursor lease"))
-            .expires_at = Utc::now()
+            .expires_at = fyrr_core::clock::now()
             + chrono::Duration::from_std(self.ttl).map_err(|_| WriterError::LeaseInvalid)?;
         let result = cas_put(
             self.store.as_ref(),
@@ -151,7 +150,7 @@ impl CursorLease {
             .lease
             .as_mut()
             .ok_or(WriterError::SyncLeaseLost)?
-            .expires_at = Utc::now();
+            .expires_at = fyrr_core::clock::now();
         cas_put(
             self.store.as_ref(),
             &self.path,
@@ -179,7 +178,7 @@ impl CursorLease {
                     .lease
                     .as_mut()
                     .unwrap_or_else(|| unreachable!("live cursor lease"))
-                    .expires_at = Utc::now() + ttl;
+                    .expires_at = fyrr_core::clock::now() + ttl;
                 match cas_put(
                     lease.store.as_ref(),
                     &lease.path,
@@ -194,7 +193,7 @@ impl CursorLease {
                             .lease
                             .as_mut()
                             .unwrap_or_else(|| unreachable!("live cursor lease"))
-                            .expires_at = Utc::now();
+                            .expires_at = fyrr_core::clock::now();
                         return false;
                     }
                 }
@@ -241,7 +240,7 @@ pub(crate) mod tests {
         let root = std::env::temp_dir().join(format!(
             "fyrr-cursor-scope-{}-{}",
             std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap(),
+            fyrr_core::clock::now().timestamp_nanos_opt().unwrap(),
         ));
         config.storage.uri = format!("file://{}", root.display());
         for (index, (operation_failed, release_failed)) in

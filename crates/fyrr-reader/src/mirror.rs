@@ -433,7 +433,9 @@ impl MirrorStore {
             format!(
                 "{}:{}:{}",
                 std::process::id(),
-                chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+                fyrr_core::clock::now()
+                    .timestamp_nanos_opt()
+                    .unwrap_or_default(),
                 SERIAL.fetch_add(1, Ordering::Relaxed)
             )
             .as_bytes(),

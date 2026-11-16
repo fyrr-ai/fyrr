@@ -495,7 +495,7 @@ mod tests {
             arrow_array::RecordBatchIterator::new([Ok(batch)], schema),
             &format!(
                 "memory://scan-count-{}",
-                Utc::now().timestamp_nanos_opt().unwrap()
+                fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
             ),
             None,
         )

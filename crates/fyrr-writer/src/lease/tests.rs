@@ -126,7 +126,7 @@ pub(crate) fn local_config(name: &str) -> (Config, std::path::PathBuf) {
     let root = std::env::temp_dir().join(format!(
         "fyrr-{name}-{}-{}",
         std::process::id(),
-        Utc::now().timestamp_nanos_opt().unwrap()
+        fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
     ));
     let config = fyrr_core::config::parse(&format!(
         "[namespace]\nname='{name}'\n[storage]\nuri='file://{}'\n\
@@ -184,7 +184,7 @@ async fn renewals_finish_before_release_on_real_s3() {
         "s3://{}/renewal-{}-{}",
         std::env::var("FYRR_TEST_S3_BUCKET").unwrap(),
         std::process::id(),
-        Utc::now().timestamp_nanos_opt().unwrap()
+        fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
     );
     config.storage.endpoint = Some(std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap());
     config.storage.allow_http = true;

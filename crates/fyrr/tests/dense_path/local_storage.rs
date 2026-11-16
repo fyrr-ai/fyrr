@@ -145,7 +145,7 @@ async fn local_storage_publishes_and_serves_with_permission_filtering() {
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
 async fn local_storage_reaps_abandoned_uploads_but_protects_live_staging() {
-    use std::time::{Duration, SystemTime};
+    use std::time::Duration;
     let (config, _root) = setup_on(Backend::Local);
     let text = std::fs::read_to_string(&config).unwrap();
     // Keep this lifecycle proof small while writing real Lance document data.
@@ -173,7 +173,7 @@ async fn local_storage_reaps_abandoned_uploads_but_protects_live_staging() {
     let abandoned = data.join("killed-upload.lance#123");
     let young = data.join("live-upload.lance#456");
     let ordinary = data.join("keep#not-digits");
-    let old = SystemTime::now() - Duration::from_secs(1200);
+    let old = std::time::SystemTime::from(fyrr_core::clock::now()) - Duration::from_secs(1200);
     for path in [&abandoned, &young, &ordinary] {
         std::fs::copy(&original, path).unwrap();
     }
@@ -259,7 +259,7 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
         fixture_dir.join(format!(
             "fyrr-history-{}-{}",
             std::process::id(),
-            chrono::Utc::now().timestamp_micros()
+            fyrr_core::clock::now().timestamp_micros()
         )),
         Backend::Local,
     );
@@ -309,7 +309,7 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
                 envelope.rejection_generation,
                 envelope.cursor.start.as_deref(),
             );
-            envelope.created_at = chrono::Utc::now() - chrono::Duration::days(4);
+            envelope.created_at = fyrr_core::clock::now() - chrono::Duration::days(4);
             if let fyrr_core::envelope::EnvelopePayload::Members(payload) = &mut envelope.payload {
                 payload.read_at = envelope.created_at;
             }

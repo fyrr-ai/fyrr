@@ -9,7 +9,7 @@ fn only_an_absent_directory_needs_no_freshness_proof() {
     ))
     .unwrap()
     .config;
-    let now = chrono::Utc::now();
+    let now = fyrr_core::clock::now();
     let deadline =
         chrono::Duration::from_std(config.identity.validity_deadline.as_duration()).unwrap();
     for provider in [

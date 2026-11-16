@@ -98,9 +98,9 @@ pub(crate) async fn publish(
         sequence,
         previous_publication_id: head.content.as_ref().map(|p| p.publication_id.clone()),
         lance_version: dataset.version().version,
-        committed_at: Utc::now(),
+        committed_at: fyrr_core::clock::now(),
         maintenance_completed_at: if maintenance_completed {
-            Some(Utc::now())
+            Some(fyrr_core::clock::now())
         } else {
             previous_manifest
                 .as_ref()
@@ -135,7 +135,7 @@ pub(crate) async fn publish(
         manifest: manifest_path,
         committed_at: manifest.committed_at,
     });
-    head.updated_at = Utc::now();
+    head.updated_at = fyrr_core::clock::now();
     verify_lineage(dataset, &lineage).await?;
     #[cfg(test)]
     crate::maintenance::restore_test_publication();

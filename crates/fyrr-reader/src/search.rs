@@ -11,7 +11,6 @@ use crate::retrieval::{Candidate, compose};
 use crate::routing::{CentroidRouter, RoutingFallback, strategy};
 use crate::storage::*;
 use arrow_array::{Array, Float32Array, RecordBatch, StringArray, UInt32Array, UInt64Array};
-use chrono::Utc;
 use futures::TryStreamExt;
 use fyrr_core::config::{Config, ProcessEnvironment, RoutingStrategy};
 use fyrr_core::identity::IdentityArtifact;

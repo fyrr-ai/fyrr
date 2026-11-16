@@ -65,7 +65,7 @@ async fn restore_body_bound_precedes_native_materialization() {
         arrow_array::RecordBatchIterator::new([Ok(batch)], schema),
         &format!(
             "memory://restore-body-{}",
-            Utc::now().timestamp_nanos_opt().unwrap()
+            fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
         ),
         None,
     )

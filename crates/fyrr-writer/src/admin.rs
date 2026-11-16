@@ -121,7 +121,7 @@ async fn handle(State(state): State<Arc<AdminState>>, request: Request) -> Respo
     let permit = Arc::new(permit);
     let response = process_request(State(state.clone()), request, permit.clone()).await;
     if scim && response.status().is_success() {
-        let processed = chrono::Utc::now();
+        let processed = fyrr_core::clock::now();
         // Authentication and validation succeeded and the entire operation completed.
         // Reads and no-op reconciliation count; errors and listener uptime do not.
         if let Err(e) = crate::serve::attest_directory(&state.config, Some(processed)).await {

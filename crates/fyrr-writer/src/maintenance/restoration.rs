@@ -87,7 +87,7 @@ pub(super) async fn restore_held(
         retained.get(1)
     }
     .filter(|m| {
-        (Utc::now() - m.committed_at)
+        (fyrr_core::clock::now() - m.committed_at)
             .to_std()
             .is_ok_and(|age| age < config.writer.purge_window.as_duration())
     })

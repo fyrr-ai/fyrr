@@ -256,7 +256,7 @@ impl PreparedReader {
         if subject.identity.as_ref() != Some(&self.head.identity) {
             return Err(AuthorizationUnavailable);
         }
-        if subject.expires <= Utc::now().timestamp() {
+        if subject.expires <= fyrr_core::clock::now().timestamp() {
             return Err(AuthorizationUnavailable);
         }
         let principal = self
@@ -271,7 +271,7 @@ impl PreparedReader {
     }
     pub(crate) fn expire_pin(&self) {
         self.mirror_pin.expire(
-            (Utc::now() - self.manifest.committed_at)
+            (fyrr_core::clock::now() - self.manifest.committed_at)
                 .to_std()
                 .unwrap_or_default(),
             self.config.writer.purge_window.as_duration(),
@@ -294,7 +294,7 @@ impl PreparedReader {
     }
 
     pub(crate) fn authorization(&self) -> Result<()> {
-        let now = Utc::now();
+        let now = fyrr_core::clock::now();
         if !Self::same_lineage(
             &self.head,
             &self.manifest.publication_id,
@@ -357,7 +357,7 @@ impl PreparedReader {
     }
 
     pub(crate) fn expired_sources(config: &Config, head: &ServingHead) -> Result<BTreeSet<String>> {
-        let now = Utc::now();
+        let now = fyrr_core::clock::now();
         let deadline = chrono::Duration::from_std(config.identity.validity_deadline.as_duration())
             .map_err(|_| AuthorizationUnavailable)?;
         Ok(config

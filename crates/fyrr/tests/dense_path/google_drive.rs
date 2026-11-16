@@ -423,7 +423,8 @@ async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_s
         .collect();
     assert_eq!(handed, ["doc-1", "doc-2"]);
 
-    tokio::time::sleep(Duration::from_secs(7)).await;
+    // The killed worker cannot renew its cursor lease; expire it before resume.
+    fyrr_core::clock::advance(Duration::from_secs(7)).unwrap();
     drive.synced(&worker, &["--kind", "content"]);
     publish(&commit);
     let all: Vec<_> = (1..=7).map(|row| format!("doc-{row}")).collect();
@@ -580,7 +581,7 @@ async fn google_drive_quarantine_and_permission_read_failure_deadline_on_storage
             .iter_mut()
             .find(|fresh| fresh.source_id == "drive")
             .unwrap()
-            .permissions_read_at = chrono::Utc::now() - chrono::Duration::minutes(minutes);
+            .permissions_read_at = fyrr_core::clock::now() - chrono::Duration::minutes(minutes);
         write_head(store.as_ref(), &namespace, &head).await;
         let found = search();
         let expected = if hidden { json!(["drive"]) } else { json!([]) };
