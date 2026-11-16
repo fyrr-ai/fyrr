@@ -502,6 +502,18 @@
       "full:fyrr-writer:lib:fyrr_writer/python::prepared::revisions::tests::pending_revision_overflow_keeps_exact_unsigned_overlays_without_rescans": {
         "tier": "quick",
         "seconds": 2.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_retry_after_exceeding_budget_never_admits_another_paid_attempt": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_retry_after_waits_before_a_successful_paid_retry": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::retry_after_accepts_http_date_forms_and_saturates_numeric_overflow": {
+        "tier": "quick",
+        "seconds": 0.001
       }
     },
     "children": {

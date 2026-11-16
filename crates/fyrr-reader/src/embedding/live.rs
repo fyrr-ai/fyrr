@@ -4,11 +4,14 @@ use super::{EmbeddingError::*, Result};
 use crate::provider::BodyError;
 use fyrr_core::config::{EmbeddingConfig, EmbeddingRole, ProcessEnvironment};
 use serde::Deserialize;
+use std::hash::BuildHasher;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
+use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -63,6 +66,20 @@ struct Item {
 struct Response {
     model: Option<String>,
     data: Vec<Item>,
+}
+
+fn retry_after_delay(value: &str) -> Option<Duration> {
+    let value = value.trim();
+    if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        // An overflowing delay is still a request to wait beyond any operation
+        // budget, never permission to fall back to an early retry.
+        return Some(Duration::from_secs(value.parse().unwrap_or(u64::MAX)));
+    }
+    let at = httpdate::parse_http_date(value).ok()?;
+    Some(
+        at.duration_since(fyrr_core::clock::now().into())
+            .unwrap_or(Duration::ZERO),
+    )
 }
 
 impl EmbeddingClient {
@@ -148,7 +165,8 @@ impl EmbeddingClient {
         body: Option<&serde_json::Value>,
         maximum: usize,
         stats: &mut ProviderStats,
-    ) -> Result<(u16, Vec<u8>)> {
+        deadline: Instant,
+    ) -> Result<(u16, Vec<u8>, Option<Duration>)> {
         let url = reqwest::Url::parse(&format!(
             "{}/{}",
             self.config.endpoint.trim_end_matches('/'),
@@ -174,6 +192,9 @@ impl EmbeddingClient {
                 .map_err(|_| EmbeddingCredentialsUnavailable)?;
             request = request.bearer_auth(secret.expose());
         }
+        if Instant::now() >= deadline {
+            return Err(EmbeddingTimeout);
+        }
         self.reserve(stats)?;
         stats.calls += 1;
         if body.is_some() {
@@ -192,7 +213,12 @@ impl EmbeddingClient {
             })?;
             let status = response.status().as_u16();
             if status != 200 {
-                return Ok((status, Vec::new()));
+                let retry_after = response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(retry_after_delay);
+                return Ok((status, Vec::new(), retry_after));
             }
             let bytes = crate::provider::bounded_body(response, maximum)
                 .await
@@ -200,7 +226,7 @@ impl EmbeddingClient {
                     BodyError::Transport => EmbeddingProviderUnavailable,
                     BodyError::TooLarge => EmbeddingResponseInvalid,
                 })?;
-            Ok((status, bytes))
+            Ok((status, bytes, None))
         }
         .await;
         let elapsed = crate::telemetry::micros(start.elapsed());
@@ -214,22 +240,39 @@ impl EmbeddingClient {
         body: Option<&serde_json::Value>,
         maximum: usize,
         stats: &mut ProviderStats,
+        deadline: Instant,
     ) -> Result<(u16, Vec<u8>)> {
         let mut last = EmbeddingProviderUnavailable;
         for attempt in 0..=self.config.max_retries {
-            match self.request(path, body, maximum, stats).await {
-                Ok((status, _)) if status == 429 || status >= 500 => {
-                    last = EmbeddingProviderUnavailable;
-                }
-                Ok(response) => return Ok(response),
-                Err(code @ (EmbeddingProviderUnavailable | EmbeddingTimeout)) => last = code,
-                Err(code) => return Err(code),
+            if Instant::now() >= deadline {
+                return Err(EmbeddingTimeout);
             }
+            let retry_after = match self.request(path, body, maximum, stats, deadline).await {
+                Ok((status, _, retry_after)) if status == 429 || status >= 500 => {
+                    last = EmbeddingProviderUnavailable;
+                    retry_after
+                }
+                Ok((status, bytes, _)) => return Ok((status, bytes)),
+                Err(code @ (EmbeddingProviderUnavailable | EmbeddingTimeout)) => {
+                    last = code;
+                    None
+                }
+                Err(code) => return Err(code),
+            };
             if attempt < self.config.max_retries {
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    50 * (1u64 << attempt.min(5)),
-                ))
-                .await;
+                let backoff_ms = 50 * (1u64 << attempt.min(5));
+                let jitter_ms = std::collections::hash_map::RandomState::new().hash_one(attempt)
+                    % (backoff_ms / 2 + 1);
+                let delay = retry_after
+                    .unwrap_or_default()
+                    .max(Duration::from_millis(backoff_ms))
+                    .checked_add(Duration::from_millis(jitter_ms))
+                    .ok_or(EmbeddingTimeout)?;
+                let wake = Instant::now()
+                    .checked_add(delay)
+                    .filter(|wake| *wake < deadline)
+                    .ok_or(EmbeddingTimeout)?;
+                tokio::time::sleep_until(wake).await;
             }
         }
         Err(last)
@@ -237,33 +280,46 @@ impl EmbeddingClient {
     /// Verify at writer startup using the document role. Reader embedding calls
     /// verify after authorization using their requested role.
     pub async fn verify_model(&self, stats: &mut ProviderStats) -> Result<()> {
-        self.verify_model_for(Role::Document, stats).await
+        self.verify_model_for(
+            Role::Document,
+            stats,
+            Instant::now() + self.config.timeout.as_duration(),
+        )
+        .await
     }
-    async fn verify_model_for(&self, role: Role, stats: &mut ProviderStats) -> Result<()> {
+    async fn verify_model_for(
+        &self,
+        role: Role,
+        stats: &mut ProviderStats,
+        deadline: Instant,
+    ) -> Result<()> {
         if self.config.spend.is_none() {
             return Err(EmbeddingSpendLimitRequired);
         }
-        match tokio::time::timeout(
-            self.config.timeout.as_duration(),
-            self.verify_model_inner(role, stats),
-        )
-        .await
+        match tokio::time::timeout_at(deadline, self.verify_model_inner(role, stats, deadline))
+            .await
         {
             Ok(result) => result,
             Err(_) => Err(EmbeddingTimeout),
         }
     }
-    async fn verify_model_inner(&self, role: Role, stats: &mut ProviderStats) -> Result<()> {
+    async fn verify_model_inner(
+        &self,
+        role: Role,
+        stats: &mut ProviderStats,
+        deadline: Instant,
+    ) -> Result<()> {
         let mut verified = self.verified.lock().await;
         if *verified {
             return Ok(());
         }
         let _memory = self.reserve_memory(4 * 1024 * 1024 * 8)?;
         let (status, bytes) = self
-            .send("embeddings/models", None, 4 * 1024 * 1024, stats)
+            .send("embeddings/models", None, 4 * 1024 * 1024, stats, deadline)
             .await?;
         let (status, bytes) = if status == 404 {
-            self.send("models", None, 4 * 1024 * 1024, stats).await?
+            self.send("models", None, 4 * 1024 * 1024, stats, deadline)
+                .await?
         } else {
             (status, bytes)
         };
@@ -272,7 +328,7 @@ impl EmbeddingClient {
             // embedding; the response's model, dimension and vector are checked.
             // The fixed input contains no document or query text.
             drop(_memory);
-            self.post_embeddings(&["fyrr model verification"], role, stats)
+            self.post_embeddings(&["fyrr model verification"], role, stats, deadline)
                 .await?;
             *verified = true;
             return Ok(());
@@ -303,15 +359,14 @@ impl EmbeddingClient {
     ) -> Result<Vec<Vec<f32>>> {
         let start = std::time::Instant::now();
         let before = stats.elapsed_us;
-        let result = match tokio::time::timeout(
-            self.config.timeout.as_duration(),
-            self.embed_inner(texts, role, stats),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(EmbeddingTimeout),
-        };
+        let deadline = Instant::now() + self.config.timeout.as_duration();
+        let result =
+            match tokio::time::timeout_at(deadline, self.embed_inner(texts, role, stats, deadline))
+                .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(EmbeddingTimeout),
+            };
         let elapsed = crate::telemetry::micros(start.elapsed());
         let recorded = stats.elapsed_us.saturating_sub(before);
         self.elapsed_us
@@ -324,6 +379,7 @@ impl EmbeddingClient {
         texts: &[&str],
         role: Role,
         stats: &mut ProviderStats,
+        deadline: Instant,
     ) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
@@ -346,14 +402,15 @@ impl EmbeddingClient {
         if input_bytes > 64 * 1024 * 1024 {
             return Err(EmbeddingBatchInvalid);
         }
-        self.verify_model_for(role, stats).await?;
-        self.post_embeddings(texts, role, stats).await
+        self.verify_model_for(role, stats, deadline).await?;
+        self.post_embeddings(texts, role, stats, deadline).await
     }
     async fn post_embeddings(
         &self,
         texts: &[&str],
         role: Role,
         stats: &mut ProviderStats,
+        deadline: Instant,
     ) -> Result<Vec<Vec<f32>>> {
         let input_bytes = texts
             .iter()
@@ -377,7 +434,9 @@ impl EmbeddingClient {
         if self.config.send_dimensions {
             body["dimensions"] = self.config.dimensions.into();
         }
-        let (status, bytes) = self.send("embeddings", Some(&body), maximum, stats).await?;
+        let (status, bytes) = self
+            .send("embeddings", Some(&body), maximum, stats, deadline)
+            .await?;
         if status != 200 {
             return Err(EmbeddingProviderUnavailable);
         }

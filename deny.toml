@@ -22,6 +22,8 @@ ignore = [
 ]
 
 [licenses]
+# httpdate 1.0.3: MIT OR Apache-2.0, advisories clear in the offline check.
+# Direct HTTP-date parsing uses the version already carried by Hyper.
 # constant_time_eq 0.6.1: CC0-1.0 OR MIT-0 OR Apache-2.0; no advisory
 # (cargo deny check). Version 0.4.2 remains transitively through blake3.
 # aws-smithy-schema 1.2: Apache-2.0; no advisory (cargo deny check).

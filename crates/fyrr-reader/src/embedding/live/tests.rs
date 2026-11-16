@@ -4,6 +4,7 @@ use axum::{
     Json, Router,
     extract::State,
     http::StatusCode,
+    response::IntoResponse,
     routing::{get, post},
 };
 use fyrr_core::config::SpendConfig;
@@ -14,6 +15,8 @@ struct Fake {
     no_catalog: std::sync::atomic::AtomicBool,
     posts: Mutex<Vec<serde_json::Value>>,
     probes: AtomicU64,
+    retry_after: Mutex<Option<String>>,
+    attempts: Mutex<Vec<std::time::Instant>>,
     entered: tokio::sync::Notify,
     release: tokio::sync::Semaphore,
 }
@@ -24,6 +27,8 @@ impl Default for Fake {
             no_catalog: false.into(),
             posts: Mutex::default(),
             probes: AtomicU64::new(0),
+            retry_after: Mutex::new(None),
+            attempts: Mutex::new(Vec::new()),
             entered: tokio::sync::Notify::new(),
             release: tokio::sync::Semaphore::new(0),
         }
@@ -45,6 +50,10 @@ async fn server() -> Server {
         Json(body): Json<serde_json::Value>,
     ) -> (StatusCode, Json<serde_json::Value>) {
         fake.posts.lock().unwrap().push(body.clone());
+        fake.attempts
+            .lock()
+            .unwrap()
+            .push(std::time::Instant::now());
         let case = fake.case.load(Ordering::Relaxed);
         if case == 10 {
             fake.entered.notify_one();
@@ -106,12 +115,29 @@ async fn server() -> Server {
         )
     }
 
+    async fn with_retry_after(
+        State(fake): State<Arc<Fake>>,
+        Json(body): Json<serde_json::Value>,
+    ) -> axum::response::Response {
+        let (status, body) = embeddings(State(fake.clone()), Json(body)).await;
+        let retry = fake.retry_after.lock().unwrap().take();
+        match retry {
+            Some(header) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(axum::http::header::RETRY_AFTER, header)],
+                body,
+            )
+                .into_response(),
+            None => (status, body).into_response(),
+        }
+    }
+
     let fake = Arc::new(Fake::default());
 
     let router = Router::new()
         .route("/embeddings/models", get(models))
         .route("/models", get(models))
-        .route("/embeddings", post(embeddings))
+        .route("/embeddings", post(with_retry_after))
         .with_state(fake.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -375,4 +401,82 @@ async fn live_deadline_retains_reservation_and_never_returns_provider_errors() {
     assert_eq!(stats.reserved_microusd, 1);
     assert_eq!(client.stats().reserved_microusd, 2);
     server.fake.release.add_permits(1);
+}
+
+#[allow(clippy::print_stdout)] // Emit paid-attempt counts for before/after evidence.
+#[tokio::test]
+async fn live_retry_after_exceeding_budget_never_admits_another_paid_attempt() {
+    let mut observations = Vec::new();
+    let date = (fyrr_core::clock::now() + chrono::TimeDelta::seconds(5))
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string();
+    for header in ["5".to_owned(), date] {
+        let server = server().await;
+        let mut config = config(&server);
+        config.timeout = serde_json::from_value(serde_json::json!("1s")).unwrap();
+        config.max_retries = 2;
+        let client = EmbeddingClient::new(&config, None).unwrap();
+        client
+            .verify_model(&mut ProviderStats::default())
+            .await
+            .unwrap();
+        *server.fake.retry_after.lock().unwrap() = Some(header);
+        let mut stats = ProviderStats::default();
+        let result = client
+            .embed(&["rate limited"], Role::Query, &mut stats)
+            .await;
+        observations.push((
+            result.map(|_| ()),
+            stats.embedding_calls,
+            stats.reserved_microusd,
+        ));
+    }
+    println!("retry-after budget: {observations:?}");
+    assert!(observations.iter().all(|(result, calls, reserved)| *result
+        == Err(EmbeddingError::EmbeddingTimeout)
+        && *calls == 1
+        && *reserved == 1));
+}
+
+#[tokio::test]
+async fn live_retry_after_waits_before_a_successful_paid_retry() {
+    let server = server().await;
+    let mut config = config(&server);
+    config.timeout = serde_json::from_value(serde_json::json!("3s")).unwrap();
+    config.max_retries = 1;
+    let client = EmbeddingClient::new(&config, None).unwrap();
+    client
+        .verify_model(&mut ProviderStats::default())
+        .await
+        .unwrap();
+    *server.fake.retry_after.lock().unwrap() = Some("1".into());
+    let mut stats = ProviderStats::default();
+    client
+        .embed(&["retry once"], Role::Query, &mut stats)
+        .await
+        .unwrap();
+    let attempts = server.fake.attempts.lock().unwrap();
+    assert_eq!(attempts.len(), 2);
+    assert!(attempts[1].duration_since(attempts[0]) >= std::time::Duration::from_secs(1));
+    assert_eq!(stats.embedding_calls, 2);
+    assert_eq!(stats.reserved_microusd, 2);
+}
+
+#[test]
+fn retry_after_accepts_http_date_forms_and_saturates_numeric_overflow() {
+    assert_eq!(retry_after_delay("0"), Some(Duration::ZERO));
+    assert_eq!(retry_after_delay(" 5 "), Some(Duration::from_secs(5)));
+    assert_eq!(
+        retry_after_delay("999999999999999999999999999999"),
+        Some(Duration::from_secs(u64::MAX))
+    );
+    assert_eq!(retry_after_delay("-1"), None);
+    assert_eq!(retry_after_delay("untrusted invalid header"), None);
+    for date in [
+        "Sun, 06 Nov 1994 08:49:37 GMT",
+        "Sunday, 06-Nov-94 08:49:37 GMT",
+        "Sun Nov  6 08:49:37 1994",
+    ] {
+        assert_eq!(retry_after_delay(date), Some(Duration::ZERO));
+    }
 }

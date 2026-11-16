@@ -2586,6 +2586,7 @@ dependencies = [
  "half",
  "hex",
  "hmac",
+ "httpdate",
  "hyper",
  "hyper-util",
  "jsonwebtoken",

@@ -33,6 +33,7 @@ lance-core.workspace = true
 lance-table.workspace = true
 lance-io.workspace = true
 lance-linalg.workspace = true
+httpdate.workspace = true
 hmac.workspace = true
 constant_time_eq.workspace = true
 tokio.workspace = true
