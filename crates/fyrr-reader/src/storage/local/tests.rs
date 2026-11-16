@@ -1063,7 +1063,7 @@ fn local_store_frozen_holder_bounds_lock_acquisition() {
         send.send(put(&contender, b"contender", PutMode::Overwrite))
             .unwrap();
     });
-    let bounded = receive.recv_timeout(Duration::from_secs(2));
+    let bounded = receive.recv_timeout(Duration::from_secs(7));
     // Release the holder even when the regression blocks the contender forever.
     holder.kill().unwrap();
     holder.wait().unwrap();

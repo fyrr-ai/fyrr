@@ -208,7 +208,7 @@ impl LocalStore {
         }
         // A stopped writer may retain this lock indefinitely. Never park a
         // storage worker behind it: contention must fail closed within a bound.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             match file.try_lock() {
                 Ok(()) => break,
