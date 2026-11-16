@@ -400,12 +400,13 @@ impl MirrorStore {
             if !Self::cache_name(&entry.file_name().to_string_lossy(), ".lease") {
                 continue;
             }
-            let mut file = Self::private_file(&entry.path(), false)?;
+            let file = Self::private_file(&entry.path(), false)?;
             match file.try_lock() {
                 Ok(()) => std::fs::remove_file(entry.path())?,
                 Err(std::fs::TryLockError::WouldBlock) => {
                     // Immutable, derived pin inventory, never publication or authorization state.
-                    let paths: Vec<String> = serde_json::from_reader(&mut file)?;
+                    let paths: Vec<String> =
+                        serde_json::from_reader(std::io::BufReader::new(file))?;
                     if paths.iter().any(|p| !Self::cache_name(p, ".blob")) {
                         return Err(std::io::Error::other("storage_unavailable"));
                     }

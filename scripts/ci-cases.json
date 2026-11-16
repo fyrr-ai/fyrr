@@ -95,6 +95,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::lease_inventory_buffering_bounds_underlying_reads": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::prewarm_rejects_manifest_size_mismatch": {
         "tier": "quick",
         "seconds": 0.01

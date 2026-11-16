@@ -358,3 +358,35 @@ async fn prewarm_rejects_manifest_size_mismatch() {
     assert!(mirror.prewarm(store, &files).await.is_ok());
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn lease_inventory_buffering_bounds_underlying_reads() {
+    struct Counted<'a> {
+        bytes: &'a [u8],
+        reads: &'a std::cell::Cell<usize>,
+    }
+    impl std::io::Read for Counted<'_> {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            self.reads.set(self.reads.get() + 1);
+            std::io::Read::read(&mut self.bytes, output)
+        }
+    }
+    let paths = vec![format!("{}.blob", "a".repeat(64)); 1000];
+    let bytes = serde_json::to_vec(&paths).unwrap();
+    let reads = std::cell::Cell::new(0);
+    let raw: Vec<String> = serde_json::from_reader(Counted {
+        bytes: &bytes,
+        reads: &reads,
+    })
+    .unwrap();
+    let before = reads.replace(0);
+    let buffered: Vec<String> = serde_json::from_reader(std::io::BufReader::new(Counted {
+        bytes: &bytes,
+        reads: &reads,
+    }))
+    .unwrap();
+    assert_eq!(raw, buffered);
+    assert_eq!(buffered, paths);
+    assert!(before >= bytes.len());
+    assert!(reads.get() <= bytes.len().div_ceil(8192) + 1);
+}
