@@ -994,26 +994,32 @@ async fn maintenance_restore_refuses_envelope_replaced_after_listing_on_real_s3(
         path.as_ref().replace('(', "%28").replace(')', "%29")
     );
     let gate_get = get.clone();
-    // Skip the two startup-cleanup LISTs; gate history's conditional GET.
-    let listed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let gate_listed = listed.clone();
-    let (gate, hook) = super::corrections::RequestGate::new(move |request, _, after| {
-        !after && request == gate_get && gate_listed.load(Ordering::SeqCst) >= 3
+    // Cleanup reads this envelope unconditionally. Select history's conditional
+    // read itself, regardless of how many cleanup enumerations precede it.
+    let selected = Arc::new(AtomicBool::new(false));
+    let gate_selected = selected.clone();
+    let (gate, hook) = super::corrections::RequestGate::new(move |request, headers, after| {
+        let matches = !after
+            && request == gate_get
+            && String::from_utf8_lossy(headers)
+                .lines()
+                .any(|line| line.to_ascii_lowercase().starts_with("if-match:"));
+        if matches {
+            gate_selected.store(true, Ordering::SeqCst);
+        }
+        matches
     });
     let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
     let statuses = observed.clone();
-    let key = path.to_string();
     let transform = Arc::new(move |request: &str, response: &mut Vec<u8>| {
-        let text = String::from_utf8_lossy(response);
-        if request.contains("list-type=2") && text.contains(&key) {
-            assert!(text.starts_with("HTTP/1.1 200 "));
-            listed.fetch_add(1, Ordering::SeqCst);
-        }
-        if request == get && listed.load(Ordering::SeqCst) >= 3 {
-            statuses
-                .lock()
-                .unwrap()
-                .push(text.lines().next().unwrap().to_owned());
+        if request == get && selected.load(Ordering::SeqCst) {
+            statuses.lock().unwrap().push(
+                String::from_utf8_lossy(response)
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .to_owned(),
+            );
         }
     });
     let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();

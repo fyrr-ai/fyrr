@@ -356,7 +356,14 @@ fn proxy_with_hook(
                 let request = &headers[0];
                 let mut body = vec![0; length];
                 std::io::Read::read_exact(&mut client, &mut body).unwrap();
-                if state.before(request, &body) {
+                // GET hooks inspect request headers before dispatch and the real
+                // response afterwards; write hooks retain their request body.
+                let observation = if request.starts_with("GET ") {
+                    headers.concat().into_bytes()
+                } else {
+                    body.clone()
+                };
+                if state.before(request, &observation) {
                     let _ = client.get_mut().write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     return;
                 }
