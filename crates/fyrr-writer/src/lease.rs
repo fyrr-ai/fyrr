@@ -268,6 +268,9 @@ impl LeaseGuard {
                 state.status = HeadStatus::Failed;
                 Err(match error {
                     object_store::Error::Precondition { .. } => WriterError::HeadCasFailed,
+                    object_store::Error::NotSupported { .. } => {
+                        WriterError::ConditionalDeleteUnsupported
+                    }
                     _ => WriterError::StorageUnavailable,
                 })
             }

@@ -542,6 +542,10 @@
       "full:fyrr-writer:lib:fyrr_writer/commit::history::index::tests::command_index_errors_remove_their_private_directory": {
         "tier": "quick",
         "seconds": 0.02
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::conditional::tests::capability_probe_rejects_ignored_conditions_and_reuses_store_transport": {
+        "tier": "quick",
+        "seconds": 0.1
       }
     },
     "children": {

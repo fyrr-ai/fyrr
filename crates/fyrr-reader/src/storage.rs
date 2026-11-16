@@ -15,6 +15,8 @@ use object_store::{
 use std::sync::Arc;
 
 pub use lance::Dataset;
+#[path = "storage/conditional.rs"]
+mod conditional;
 
 /// One digest-verified immutable artifact shared by a serving generation.
 pub(crate) type ArtifactCache<T> = Arc<tokio::sync::Mutex<Option<(GenerationPointer, Arc<T>)>>>;
@@ -163,7 +165,7 @@ pub fn namespace_store(config: &Config) -> Result<(Arc<dyn ObjectStore>, Path), 
             Ok((store, root))
         }
         Some(StorageBackend::S3 { .. }) => {
-            let (store, root) = s3_namespace_store(config)?;
+            let (store, root, _) = s3_namespace_store(config)?;
             Ok((Arc::new(store), root))
         }
         None => Err(StorageError::StorageConfigurationInvalid),
@@ -172,7 +174,14 @@ pub fn namespace_store(config: &Config) -> Result<(Arc<dyn ObjectStore>, Path), 
 
 fn s3_namespace_store(
     config: &Config,
-) -> Result<(object_store::aws::AmazonS3, Path), StorageError> {
+) -> Result<
+    (
+        object_store::aws::AmazonS3,
+        Path,
+        object_store::client::HttpClient,
+    ),
+    StorageError,
+> {
     let Some(StorageBackend::S3 { bucket, prefix }) = config.storage.backend() else {
         return Err(StorageError::StorageConfigurationInvalid);
     };
@@ -191,7 +200,9 @@ fn s3_namespace_store(
     let instance_disabled = std::env::var("AWS_EC2_METADATA_DISABLED")
         .is_ok_and(|value| value.eq_ignore_ascii_case("true"))
         && uses_instance_credentials(&builder);
+    let transport = conditional::Transport::default();
     let store = builder
+        .with_http_connector(transport.clone())
         .build()
         .map_err(|_| StorageError::StorageConfigurationInvalid)?;
     if instance_disabled {
@@ -200,7 +211,10 @@ fn s3_namespace_store(
     let root = Path::from(prefix)
         .join("namespaces")
         .join(config.namespace.name.as_str());
-    Ok((store, root))
+    let client = transport
+        .client()
+        .map_err(|_| StorageError::StorageConfigurationInvalid)?;
+    Ok((store, root, client))
 }
 
 /// Delete only the current namespace head matching the holder's CAS token.
@@ -209,7 +223,6 @@ pub async fn delete_head_if_match(
     config: &Config,
     expected: &object_store::UpdateVersion,
 ) -> object_store::Result<()> {
-    use object_store::signer::{HeaderName, HeaderValue, Method, SignedUrlOptions, Signer};
     let failure = || object_store::Error::Generic {
         store: "fyrr namespace head",
         source: "conditional head deletion failed".into(),
@@ -235,46 +248,8 @@ pub async fn delete_head_if_match(
             }
         }
         Some(StorageBackend::S3 { .. }) => {
-            let (store, root) = s3_namespace_store(config).map_err(|_| failure())?;
-            let path = root.join("head.json");
-            let header = HeaderValue::from_str(tag).map_err(|_| failure())?;
-            let options = SignedUrlOptions::new()
-                .with_signed_header(HeaderName::from_static("if-match"), header.clone());
-            let url = store
-                .signed_url_opts(
-                    Method::DELETE,
-                    &path,
-                    std::time::Duration::from_secs(30),
-                    &options,
-                )
-                .await
-                .map_err(|_| failure())?;
-            // Never include the signed URL or transport error in diagnostics.
-            let client = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .map_err(|_| failure())?;
-            let status = client
-                .delete(url)
-                .header(reqwest::header::IF_MATCH, header)
-                .send()
-                .await
-                .map_err(|_| failure())?
-                .status();
-            if status.is_success() {
-                return Ok(());
-            }
-            if status == reqwest::StatusCode::PRECONDITION_FAILED
-                || status == reqwest::StatusCode::CONFLICT
-            {
-                return Err(object_store::Error::Precondition {
-                    path: path.to_string(),
-                    source: "namespace head changed".into(),
-                });
-            }
-            Err(failure())
+            let (store, root, client) = s3_namespace_store(config).map_err(|_| failure())?;
+            conditional::delete_head(&store, &client, &root, tag).await
         }
         None => Err(failure()),
     }

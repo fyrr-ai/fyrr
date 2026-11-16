@@ -128,6 +128,7 @@ writer_errors! {
     DeleteStageFailed => ("delete_stage_failed", false),
     DocumentInvalid => ("document_invalid", false),
     DocumentRevisionMissing => ("document_revision_missing", false),
+    ConditionalDeleteUnsupported => ("conditional_delete_unsupported", false),
     ExportInvalid => ("export_invalid", false),
     FileInventoryUnavailable => ("file_inventory_unavailable", false),
     ForeignLineage => ("foreign_lineage", false),
