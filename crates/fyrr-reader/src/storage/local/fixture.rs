@@ -67,7 +67,7 @@ pub(in crate::storage) fn seed(
             .map(|chunk| {
                 scope.spawn(move || -> std::io::Result<()> {
                     for target in chunk {
-                        open_object(target)?.sync_all()?;
+                        open_object(target)?.0.sync_all()?;
                     }
                     Ok(())
                 })

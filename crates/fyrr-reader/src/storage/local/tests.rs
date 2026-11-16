@@ -57,7 +57,7 @@ fn read(store: &LocalStore, root: &std::path::Path) -> Vec<u8> {
 
 fn current(store: &LocalStore) -> String {
     let path = store.inner.path_to_filesystem(&object(store)).unwrap();
-    version_tag(read_version(&open_object(&path).unwrap()).unwrap())
+    version_tag(read_version(&open_object(&path).unwrap().0).unwrap())
 }
 
 /// Same-size payloads exercise versions independently of file size.

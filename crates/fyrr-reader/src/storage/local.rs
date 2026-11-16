@@ -131,8 +131,8 @@ impl LocalStore {
                 return Err(std::io::Error::other("native file outside dataset"));
             }
             let target = self.target(&location).map_err(std::io::Error::other)?;
-            let opened = open_object(&target)?;
-            if opened.metadata()?.len() != file.size_bytes {
+            let (opened, metadata) = open_object(&target)?;
+            if metadata.len() != file.size_bytes {
                 return Err(std::io::Error::other("native file size changed"));
             }
             opened.sync_all()?;
@@ -331,7 +331,7 @@ impl LocalStore {
                 Some(tag)
                     if *tag
                         == version_tag(
-                            read_version(&open_object(target).map_err(io)?).map_err(io)?,
+                            read_version(&open_object(target).map_err(io)?.0).map_err(io)?,
                         ) => {}
                 Some(_) => {
                     return Err(Error::Precondition {
@@ -475,8 +475,7 @@ impl LocalStore {
     fn get_blocking(&self, location: Path, options: GetOptions) -> Result<GetResult> {
         let target = self.target(&location)?;
         let io = |error| failure(&target, error);
-        let file = open_object(&target).map_err(io)?;
-        let metadata = file.metadata().map_err(io)?;
+        let (file, metadata) = open_object(&target).map_err(io)?;
         let mut meta = ObjectMeta {
             location,
             last_modified: metadata.modified().map_err(io)?.into(),
@@ -581,15 +580,16 @@ impl LocalStore {
     }
 }
 
-fn open_object(path: &std::path::Path) -> std::io::Result<File> {
+fn open_object(path: &std::path::Path) -> std::io::Result<(File, Metadata)> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
         .open(path)?;
-    if !file.metadata()?.is_file() {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
         return Err(std::io::Error::other("not a regular file"));
     }
-    Ok(file)
+    Ok((file, metadata))
 }
 
 fn read_version(file: &File) -> std::io::Result<u128> {
