@@ -3729,6 +3729,62 @@
       "python:connectors/tests/test_release.py::test_release_retry_finishes_before_publication[publish]": {
         "tier": "quick",
         "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_changed_files_request_count": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_aggregate_limits_abort[MAX_BYTES]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_aggregate_limits_abort[MAX_EDGES]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_aggregate_limits_abort[MAX_ENTRIES]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_listing_over_aggregate_limit_never_completes": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_members_over_aggregate_limit_emit_no_snapshot": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_retry_after_over_remaining_budget_fails_without_sleep": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_shared_retry_after_parser[-1-None]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_shared_retry_after_parser[7-7]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_shared_retry_after_parser[Wed, 21 Oct 2015 07:27:00 GMT-0]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_shared_retry_after_parser[Wed, 21 Oct 2015 07:28:00 GMT-10]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_shared_retry_after_parser[nan-None]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_shared_retry_after_parser[soon-None]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_client.py::test_worker_sessions_are_owned_by_each_thread": {
+        "tier": "quick",
+        "seconds": null
       }
     }
   },
