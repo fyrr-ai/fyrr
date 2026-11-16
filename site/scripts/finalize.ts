@@ -6,9 +6,11 @@ const read = (name: string) => readFile(`src/${name}`, 'utf8');
 const base = await read('base.css');
 const sections = await read('sections.css');
 const header = await read('header.html');
-const scripts = await Promise.all(['lighthouse.js', 'chart.js', 'live.js', 'fog.js', 'ships.js', 'page.js'].map(read));
+const footer = await read('footer.html');
+const scripts = await Promise.all(['lighthouse.js', 'chart.js', 'live.js', 'fog.js', 'ships.js', 'sea.js', 'page.js'].map(read));
 const home = (await read('page.html')).replace('/*BASE*/', base).replace('/*SECTIONS*/', sections)
   .replace('<!--HEADER-->', header.replaceAll('{ROOT}', ''))
+  .replace('<!--FOOTER-->', footer)
   .replace('<!--SCRIPTS-->', scripts.map(code => `<script>\n${code}</script>\n`).join(''));
 await writeFile('dist/index.html', home);
 await writeFile('dist/404.html', (await read('404.html')).replace('/*BASE*/', base)

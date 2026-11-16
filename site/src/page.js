@@ -96,7 +96,7 @@
   watchFog(document.querySelectorAll('.stage__fog'));
 
   /* ---------- a few ships on the open water at the end of the page ---------- */
-  sailShips(document.getElementById('sea'), function (width) { return width < 640 ? 3 : 5; });
+  startSea(document.getElementById('sea'));
 
   /* ---------- numbers count up when they come into view ---------- */
   function countUp(el) {
