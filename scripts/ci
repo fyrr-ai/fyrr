@@ -307,7 +307,7 @@ step "Rust source line length (reader)" none "$ROOT/scripts/check-line-length" \
   "$ROOT/crates/fyrr-reader/src" "$ROOT/crates/fyrr-core/src/layout.rs" \
   "$ROOT/crates/fyrr-core/src/layout"
 step "clippy (full workspace)" none cargo clippy --locked --workspace --all-targets -- -D warnings
-step "clippy (reader-only build)" none cargo clippy --locked -p fyrr -p fyrr-reader --no-default-features --all-targets -- -D warnings
+step "clippy (reader-only build)" none cargo clippy --locked --workspace --no-default-features --all-targets -- -D warnings
 step "test-case ownership guard" none ownership_check
 case_step "unit tests" units
 case_step "native Lance pin checks" lance-pin

@@ -39,22 +39,23 @@ CORE_ROWS = {
 def build():
     """One Cargo selection per variant; all rows execute these exact artifacts."""
     result = {"root": str(ROOT), "tests": {}, "binaries": {}}
-    for variant, args in [
-        ("full", ["--workspace", "--lib", "--bins", "--tests"]),
-        (
-            "reader",
+    for variant in ("full", "reader"):
+        # Keep the workspace's dependency feature union identical. Selecting only
+        # the reader package would rebuild Lance through different regex/JSON/
+        # numeric features inherited from the writer's dependencies.
+        args = ["--workspace", "--lib", "--bins", "--tests"]
+        if variant == "reader":
+            args.append("--no-default-features")
+        messages = output(
             [
-                "-p",
-                "fyrr",
-                "--no-default-features",
-                "--test",
-                "cli",
-                "--test",
-                "privacy",
-            ],
-        ),
-    ]:
-        messages = output(["mbx", "test", "--locked", *args, "--no-run", "--message-format=json-render-diagnostics"])
+                "mbx",
+                "test",
+                "--locked",
+                *args,
+                "--no-run",
+                "--message-format=json-render-diagnostics",
+            ]
+        )
         for line in messages.splitlines():
             item = json.loads(line)
             if item.get("reason") != "compiler-artifact" or not item.get("executable"):
@@ -62,6 +63,12 @@ def build():
             target = item["target"]
             package = tomllib.loads(Path(item["manifest_path"]).read_text())["package"]["name"]
             if item["profile"]["test"]:
+                if variant == "reader" and (
+                    package != "fyrr"
+                    or target["kind"] != ["test"]
+                    or target["name"] not in {"cli", "privacy"}
+                ):
+                    continue
                 group = f"{variant}:{package}:{target['kind'][0]}:{target['name']}"
                 result["tests"][group] = {
                     "path": str(Path(item["executable"]).relative_to(ROOT)),
