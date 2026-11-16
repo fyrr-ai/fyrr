@@ -86,9 +86,10 @@ is built once; the ownership inventory and exact row selectors execute
 those artifacts directly. The full and reader CLI binaries are preserved
 separately. Each harness receives its immutable variant path, so concurrent
 cases never replace another case's executable.
-The scripts default `CARGO_INCREMENTAL=0` on every host so mbx can share
-compiler actions between worktrees rather than retaining private incremental
-state. An explicit caller setting overrides that default.
+The scripts default `CARGO_INCREMENTAL=0`, `MBX_LEARNED_INCREMENTAL=0` and
+`MBX_EAGER_INCREMENTAL=0` on every host so mbx shares compiler actions between
+worktrees. Cargo's setting alone does not disable mbx's learned private
+incremental state. Explicit caller settings override these defaults.
 Build invocations give mbx exclusive control of `RUSTC_WRAPPER`; an inherited
 wrapper is cleared for those commands because mbx cannot stack Rust wrappers.
 

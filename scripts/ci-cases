@@ -22,6 +22,8 @@ os.environ["MBX_TARGET_VIEWS"] = "0"
 os.environ.setdefault("MBX_GC_MAX_SIZE", "10GiB")
 os.environ.setdefault("MBX_GC_MIN_FREE_SIZE", "12GiB")
 os.environ.setdefault("CARGO_INCREMENTAL", "0")
+os.environ.setdefault("MBX_LEARNED_INCREMENTAL", "0")
+os.environ.setdefault("MBX_EAGER_INCREMENTAL", "0")
 MANIFEST = ROOT / "scripts/ci-cases.json"
 BUILD = ROOT / "target/ci-build/manifest.json"
 CORE_ROWS = {

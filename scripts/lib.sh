@@ -31,6 +31,10 @@ export MBX_SUMMARY="${MBX_SUMMARY:-short}"
 # Share compiler actions across worktrees instead of private incremental state.
 # Use the same default locally and on hosted runners.
 export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
+# mbx can learn private incremental state even when Cargo incremental is off.
+# Use shared compiler results on every host, including edited local worktrees.
+export MBX_LEARNED_INCREMENTAL="${MBX_LEARNED_INCREMENTAL:-0}"
+export MBX_EAGER_INCREMENTAL="${MBX_EAGER_INCREMENTAL:-0}"
 cargo() {
   case "${1:-}" in
     # mbx supplies the one rustc wrapper for this build; wrappers cannot stack.
