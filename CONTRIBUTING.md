@@ -91,8 +91,11 @@ state. An explicit caller setting overrides that default.
 Build invocations give mbx exclusive control of `RUSTC_WRAPPER`; an inherited
 wrapper is cleared for those commands because mbx cannot stack Rust wrappers.
 
-Scenario rows run in a bounded pool, longest estimated rows first. Domain
-scenarios use real local storage, including crash and lost-response tests
+Scenario rows run in a bounded pool, longest estimated rows first.
+Row estimates in `scripts/ci-cases.json` come from measured CI summaries.
+Each Rust parent completion also emits a `ci-case` JSON record with its UTC
+timestamp and elapsed time; serial harnesses include the per-case duration.
+Domain scenarios use real local storage, including crash and lost-response tests
 through a test-only operation observer. The observer delegates operations to
 the real store, including native Lance I/O below the reader mirror, and is
 excluded from shipping builds. It does not emulate S3.

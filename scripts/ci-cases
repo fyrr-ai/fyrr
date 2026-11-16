@@ -2,12 +2,14 @@
 """Enumerate executable cases and run the committed, disjoint CI ownership rows."""
 
 import collections
+import datetime
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -222,9 +224,37 @@ def run(spec):
             stderr=subprocess.STDOUT,
         )
         lines = []
+        started = last_finished = time.monotonic()
+        pending = None
         for line in process.stdout:
             print(line, end="", flush=True)
             lines.append(line)
+            if group.startswith("python:"):
+                continue
+            # libtest runs serially by default. A parent may print its child
+            # harness output between `test NAME ...` and a standalone `ok`.
+            header = re.match(r"^test (\S+) \.\.\. ?(.*)$", line.rstrip())
+            if header and header[1] in names:
+                pending = header[1]
+                status = header[2]
+            elif line.strip() in {"ok", "FAILED"}:
+                status = line.strip()
+            else:
+                continue
+            if pending is None or status not in {"ok", "FAILED"}:
+                continue
+            finished = time.monotonic()
+            event = {
+                "case": f"{group}/{pending}",
+                "status": status,
+                "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "elapsed_seconds": round(finished - started, 3),
+            }
+            if env.get("RUST_TEST_THREADS", "1") == "1":
+                event["seconds"] = round(finished - last_finished, 3)
+            print("ci-case " + json.dumps(event), flush=True)
+            last_finished = finished
+            pending = None
         if process.wait():
             raise RuntimeError(
                 f"{group}: {len(names)} selected cases, process exited {process.returncode}"
