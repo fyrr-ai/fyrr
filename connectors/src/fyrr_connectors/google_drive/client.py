@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 
@@ -82,15 +83,19 @@ class Client:
         except ValueError:
             raise ValueError("google_drive_service_account_invalid") from None
         self._endpoint = endpoint
-        self._sessions: dict[tuple[str, str], requests.Session] = {}
+        self._local = threading.local()
 
     def _session(self, subject: str, api: str) -> requests.Session:
-        if (subject, api) not in self._sessions:
-            # One feed is read at a time: keep only its user's connections.
-            for session in self._sessions.values():
+        sessions = getattr(self._local, "sessions", None)
+        if sessions is None:
+            sessions = self._local.sessions = {}
+        if (subject, api) not in sessions:
+            # Only this worker owns these connections and may close them.
+            for session in sessions.values():
                 session.close()
-            self._sessions = {(subject, api): authorized_session(self._key, subject, api)}
-        return self._sessions[subject, api]
+            sessions.clear()
+            sessions[subject, api] = authorized_session(self._key, subject, api)
+        return sessions[subject, api]
 
     def _request[T](
         self,

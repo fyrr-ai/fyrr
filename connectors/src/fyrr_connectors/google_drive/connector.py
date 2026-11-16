@@ -420,7 +420,7 @@ class GoogleDrive(Connector[Settings, Scope]):
         tokens, inherits = readers(listed, drive, feed.drive_id)
         if drive is not None and not inherits:
             # A member left since the drive was read, or a limited-access folder.
-            drive = drives[feed.drive_id or ""] = frozenset(
+            drive = frozenset(
                 permission["id"] for permission in self._drive_permissions(feed.drive_id or "")
             )
             tokens, inherits = readers(listed, drive, feed.drive_id)

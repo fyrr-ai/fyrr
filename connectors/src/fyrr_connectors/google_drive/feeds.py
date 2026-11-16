@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import threading
 import json
 import zlib
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -307,6 +308,7 @@ class Folders:
 
     def __init__(self, client: Client, folders: Sequence[str]) -> None:
         self._client = client
+        self._lock = threading.RLock()
         self._folders = frozenset(folders)
         self._parents: dict[tuple[str, str], str | None] = {}
         #: Whether the folder disables inherited permissions; None: unreadable.
@@ -316,58 +318,62 @@ class Folders:
         return bool(self._folders)
 
     def _parent(self, feed: Feed, folder: str, limits: bool = False) -> str | None:
-        """The folder's parent. With `limits` its inheritance flag is read
-        too: only the permission mapping asks for it."""
-        key = (feed.subject, folder)
-        if key not in self._parents or (limits and key not in self._limits):
-            fields = "parents,inheritedPermissionsDisabled" if limits else "parents"
-            try:
-                body = self._client.get(
-                    feed.subject, f"files/{folder}", fields=fields, supportsAllDrives="true"
-                )
-                if limits:
-                    self._limits[key] = bool(body.get("inheritedPermissionsDisabled"))
-            except ApiError as error:
-                if error.transient or error.status not in (403, 404):
-                    raise
-                body = {}
-                self._limits[key] = None
-            self._parents[key] = (body.get("parents") or [None])[0]
-        return self._parents[key]
+        with self._lock:
+            """The folder's parent. With `limits` its inheritance flag is read
+            too: only the permission mapping asks for it."""
+            key = (feed.subject, folder)
+            if key not in self._parents or (limits and key not in self._limits):
+                fields = "parents,inheritedPermissionsDisabled" if limits else "parents"
+                try:
+                    body = self._client.get(
+                        feed.subject, f"files/{folder}", fields=fields, supportsAllDrives="true"
+                    )
+                    if limits:
+                        self._limits[key] = bool(body.get("inheritedPermissionsDisabled"))
+                except ApiError as error:
+                    if error.transient or error.status not in (403, 404):
+                        raise
+                    body = {}
+                    self._limits[key] = None
+                self._parents[key] = (body.get("parents") or [None])[0]
+            return self._parents[key]
 
     def learn(self, feed: Feed, folder: dict[str, Any]) -> None:
-        """Take a folder's parent from its current resource (a change entry)."""
-        key = (feed.subject, folder["id"])
-        self._parents[key] = (folder.get("parents") or [None])[0]
-        if "inheritedPermissionsDisabled" in folder:
-            self._limits[key] = bool(folder["inheritedPermissionsDisabled"])
-        else:
-            self._limits.pop(key, None)
+        with self._lock:
+            """Take a folder's parent from its current resource (a change entry)."""
+            key = (feed.subject, folder["id"])
+            self._parents[key] = (folder.get("parents") or [None])[0]
+            if "inheritedPermissionsDisabled" in folder:
+                self._limits[key] = bool(folder["inheritedPermissionsDisabled"])
+            else:
+                self._limits.pop(key, None)
 
     def limited(self, feed: Feed, file: dict[str, Any]) -> bool:
-        """Whether a folder above the file disables inherited permissions (a
-        limited-access folder), or cannot be read: the drive's members are
-        then not known to reach the file."""
-        parent = (file.get("parents") or [None])[0]
-        for _ in range(MAX_DEPTH):
-            if parent is None or parent == feed.drive_id:
-                return False
-            above = self._parent(feed, parent, limits=True)
-            if self._limits[feed.subject, parent] is not False:
-                return True
-            parent = above
-        return True
+        with self._lock:
+            """Whether a folder above the file disables inherited permissions (a
+            limited-access folder), or cannot be read: the drive's members are
+            then not known to reach the file."""
+            parent = (file.get("parents") or [None])[0]
+            for _ in range(MAX_DEPTH):
+                if parent is None or parent == feed.drive_id:
+                    return False
+                above = self._parent(feed, parent, limits=True)
+                if self._limits[feed.subject, parent] is not False:
+                    return True
+                parent = above
+            return True
 
     def contain(self, feed: Feed, file: dict[str, Any]) -> bool:
-        if not self._folders:
-            return True
-        if file.get("mimeType") == FOLDER and file["id"] in self._folders:
-            return True
-        parent = (file.get("parents") or [None])[0]
-        for _ in range(MAX_DEPTH):
-            if parent is None:
-                return False
-            if parent in self._folders:
+        with self._lock:
+            if not self._folders:
                 return True
-            parent = self._parent(feed, parent)
-        return False
+            if file.get("mimeType") == FOLDER and file["id"] in self._folders:
+                return True
+            parent = (file.get("parents") or [None])[0]
+            for _ in range(MAX_DEPTH):
+                if parent is None:
+                    return False
+                if parent in self._folders:
+                    return True
+                parent = self._parent(feed, parent)
+            return False

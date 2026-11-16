@@ -237,3 +237,38 @@ def test_non_json_server_errors_keep_the_retry_policy(drive, monkeypatch):
     assert _client().get(ALICE, "files", corpora="user") == {"files": []}
     assert len(calls) == 3
     assert len(drive.sleeps) == 2
+
+
+def test_worker_sessions_are_owned_by_each_thread(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    barrier = Barrier(2)
+    opened = []
+
+    class Session:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    def factory(*_):
+        session = Session()
+        opened.append(session)
+        return session
+
+    monkeypatch.setattr(client, "authorized_session", factory)
+    shared = _client()
+
+    def worker(subject):
+        first = shared._session(subject, client.DRIVE)
+        barrier.wait(timeout=5)
+        assert not first.closed
+        assert shared._session(subject, client.DRIVE) is first
+        barrier.wait(timeout=5)
+        return first
+
+    with ThreadPoolExecutor(2) as pool:
+        sessions = list(pool.map(worker, ["alice", "bob"]))
+    assert sessions[0] is not sessions[1]
+    assert len(opened) == 2
