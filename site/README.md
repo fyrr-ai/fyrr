@@ -113,7 +113,7 @@ retrieval result exists. Its non-default marker, source, and any observed defaul
 ingest baseline/projection stay visible. Projections never enter measured bars.
 A variant catalogue may include `description` and `metric_prefixes` to scope
 notebook rows. The sized C8 variant changes only `reader.concurrency=8`, reuses
-the default index and is excluded from C1, ingestion and answer metrics.
+the default index and is excluded from C1, ingestion and retrieval metrics.
 Each run also exports its own JSON under `/compare/runs/`.
 The public boundary rejects private reranker and superseded pre-release evidence,
 including variant, protocol and pricing metadata. Only the final measured release
@@ -125,7 +125,7 @@ No metric is sorted to favor a product. Hero clauses and story titles are derive
 from complete comparable evidence: observed quality gaps/intervals, C1 latency,
 ingest wall time and a complete monthly cost model. Cost claims require explicit
 assumptions, components and no missing inputs; the visible cost cards show measured
-peak memory, selected instance, storage, embedding and LLM enrichment inputs. Retrieval is primary; answer quality is secondary and does not block primary measurements.
+peak memory, selected instance, storage, embedding and LLM enrichment inputs. Public results cover retrieval, latency, ingest, footprint and cost. Shared answer scoring and its model/protocol artifacts remain private.
 
 Import a new benchmark envelope with:
 

@@ -22,12 +22,12 @@ test('draft data cannot be published, even by removing the draft flag', () => {
   assert.throws(() => parseResults(missing), /draft flag/);
 });
 test('unavailable metrics have no bars and are never encoded as zero', () => {
-  const html = renderMetric(fixture, 'answer_correctness');
+  const html = renderMetric(fixture, 'recall_at_10');
   assert.equal((html.match(/class="bar(?: bar--fyrr)? is-empty"/g) ?? []).length, fixture.systems.filter(system => system.variant !== 'concurrency-8').length);
   assert(!html.includes('<i style='));
   assert(html.includes('n/e'));
   const bad = structuredClone(fixture);
-  bad.systems[0].metrics.answer_correctness.value = 0;
+  bad.systems[0].metrics.recall_at_10.value = 0;
   assert.throws(() => parseResults(bad), /value must match status/);
 });
 test('new systems and metrics render without a layout change', () => {
@@ -43,9 +43,9 @@ test('new systems and metrics render without a layout change', () => {
 test('higher competitor scores draw longer bars with exact intervals', () => {
   const measured = structuredClone(fixture);
   measured.systems.forEach((system, index) => {
-    system.metrics.answer_correctness = { status: index === 2 ? 'partial' : 'measured', value: index === 0 ? .4 : .8, unit: 'fraction', n: 10, attempted: 12, missing: 2, ci95: index === 0 ? [.3, .5] : [.7, .9] };
+    system.metrics.recall_at_10 = { status: index === 2 ? 'partial' : 'measured', value: index === 0 ? .4 : .8, unit: 'fraction', n: 10, attempted: 12, missing: 2, ci95: index === 0 ? [.3, .5] : [.7, .9] };
   });
-  const html = renderMetric(parseResults(measured), 'answer_correctness');
+  const html = renderMetric(parseResults(measured), 'recall_at_10');
   assert(html.includes('--w:40%'));
   assert(html.includes('--w:80%'));
   assert(html.includes('--low:70%;--high:90%'));
@@ -56,9 +56,9 @@ test('higher competitor scores draw longer bars with exact intervals', () => {
 });
 test('inconsistent units, samples and uncertainty fail at the boundary', () => {
   for (const change of [
-    (data: typeof fixture) => { data.systems[1].metrics.answer_correctness.unit = 'ms'; },
-    (data: typeof fixture) => { data.systems[0].metrics.answer_correctness.missing = 1; },
-    (data: typeof fixture) => { data.systems[0].metrics.answer_correctness.ci95 = [.2, .3]; },
+    (data: typeof fixture) => { data.systems[1].metrics.recall_at_10.unit = 'ms'; },
+    (data: typeof fixture) => { data.systems[0].metrics.recall_at_10.missing = 1; },
+    (data: typeof fixture) => { data.systems[0].metrics.recall_at_10.ci95 = [.2, .3]; },
   ]) {
     const bad = structuredClone(fixture);
     change(bad);
@@ -288,7 +288,7 @@ test('sized C8 variant stays separate from default wins and out of unmeasured tr
   assert(c8.includes('reader.concurrency=8'));
   assert(c8.includes('valid 200 / attempted 250 · missing 50'));
   assert(c8.includes('partial · unranked'));
-  for (const key of ['first_ask_c1_p50_ms', 'warm_c1_p50_ms', 'ingest_wall_s', 'answer_correctness', 'recall_at_10']) assert(!renderMetric(data, key).includes('data-system="fyrr@concurrency-8"'));
+  for (const key of ['first_ask_c1_p50_ms', 'warm_c1_p50_ms', 'ingest_wall_s', 'embedding_cost_usd', 'recall_at_10']) assert(!renderMetric(data, key).includes('data-system="fyrr@concurrency-8"'));
   assert(!renderScoreboard(data).includes('fyrr@concurrency-8'));
   assert(!renderStories(data).includes('fyrr@concurrency-8'));
   data.draft = false;
@@ -380,6 +380,22 @@ test('private rows and provenance cannot enter public views or imported JSON', (
     assert.equal(readFileSync(canonical, 'utf8'), before);
     assert(!/\bjev\b|c2a34a3/i.test(JSON.stringify(fixture)));
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+test('answer scoring and its protocol or artifact metadata cannot enter public data', () => {
+  for (const mutate of [
+    (data: typeof fixture) => { data.systems[0].metrics.answer_correctness = { status: 'n/e', value: null, unit: 'fraction', n: 0 }; },
+    (data: typeof fixture) => { data.protocol.judge = { model: 'private-test-model' }; },
+    (data: typeof fixture) => { data.protocol.secondary_execution = {}; },
+    (data: typeof fixture) => { Object.assign(data.systems[0], { source_slices: { example: { metrics: { native_answer_completeness: {} } } } }); },
+    (data: typeof fixture) => { data.details = [{ id: 'a', label: 'a', kind: 'question', metric: 'answer_completeness', results: {} }]; },
+    (data: typeof fixture) => { data.systems[0].artifacts = { outputs: 'raw/answers.jsonl' }; },
+  ]) {
+    const data = structuredClone(fixture);
+    mutate(data);
+    assert.throws(() => parseResults(data), /private answer/);
+  }
+  assert(!renderSections(fixture).includes('id="quality"'));
+  assert(!Object.keys(fixture.website.metrics).some(key => /^(?:answer_|native_answer)/.test(key)));
 });
 test('import retains partial C8 measurements and refusals despite conservative readiness flags', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fyrr-site-partial-'));
