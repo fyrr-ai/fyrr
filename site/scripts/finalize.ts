@@ -35,8 +35,7 @@ const notebookHash = createHash('sha256').update(notebook).digest('hex').slice(0
 const notebookPath = `/compare/notebook-${notebookHash}.json`;
 const notebookGzip = gzipSync(notebook, { level: 9 });
 await writeFile(`dist${notebookPath}`, notebook);
-await writeFile(`dist${notebookPath}.gz`, notebookGzip);
-const initialData = { ...clientResults(comparison, true), notebook: { url: `${notebookPath}.gz`, fallback: notebookPath } };
+const initialData = { ...clientResults(comparison, true), notebook: { url: notebookPath } };
 const measuredReview = !comparison.synthetic_design_preview && comparison.systems.some(system => Object.values(system.metrics).some(metric => metric.status === 'measured'));
 const compare = (await read('compare.html')).replace('/*BASE*/', base)
   .replace('<!--FAVICON-->', home.match(/<link rel="icon"[^>]+>/)![0])
@@ -59,9 +58,12 @@ const compare = (await read('compare.html')).replace('/*BASE*/', base)
   .replace('<!--PRODUCTS-->', renderProducts(comparison))
   .replace('<!--METHODOLOGY-->', renderMethodology(comparison, true))
   .replace('<!--SCRIPTS-->', compareScripts.map(code => `<script>\n${code}</script>\n`).join(''));
-await writeFile('dist/compare/index.html', compare);
 const bytes = Buffer.from(compare);
-console.log(`Comparison HTML: ${bytes.length} bytes; gzip ${gzipSync(bytes, { level: 9 }).length}; brotli ${brotliCompressSync(bytes, { params: { [constants.BROTLI_PARAM_QUALITY]: 5 } }).length}. Inline chart data: ${Buffer.byteLength(JSON.stringify(initialData))} bytes. Notebook on demand: ${notebookGzip.length} gzip bytes.`);
+const htmlGzip = gzipSync(bytes, { level: 9 });
+const htmlBrotli = brotliCompressSync(bytes, { params: { [constants.BROTLI_PARAM_QUALITY]: 5 } });
+if (bytes.length > 500_000 || htmlGzip.length > 96_000) throw new Error('Comparison first response exceeds its 500 KB HTML / 96 KB gzip budget. Keep detailed data deferred.');
+await writeFile('dist/compare/index.html', compare);
+console.log(`Comparison HTML: ${bytes.length} bytes; gzip ${htmlGzip.length}; brotli ${htmlBrotli.length}. Inline chart data: ${Buffer.byteLength(JSON.stringify(initialData))} bytes. Notebook on demand: ${notebookGzip.length} gzip bytes; HTTP Brotli/gzip negotiated by the static asset runtime.`);
 
 await writeFile('dist/compare/results.json', JSON.stringify(comparison, null, 2) + '\n');
 await mkdir('dist/compare/runs', { recursive: true });

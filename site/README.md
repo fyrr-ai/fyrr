@@ -210,9 +210,8 @@ interrupted-ingest diagnostic rates are labelled and never receive metric bars.
 The first response renders the overview and all story charts with small chart/filter
 inputs. Per-question tables, notebook charts and full provenance live in a
 content-hashed JSON payload, fetched only when their section opens (or an optional
-run is selected). Modern browsers fetch its gzip file and decompress it with
-`DecompressionStream`; older browsers use the ordinary JSON representation and
-HTTP compression. A failed load exposes a retry and never substitutes empty scores.
+run is selected). The static-asset runtime negotiates Brotli or gzip for the JSON response;
+standard browser fetch handles decompression. A failed load exposes a retry and never substitutes empty scores.
 The raw results and per-run JSON downloads retain the complete reviewed data.
 
 Resume evidence distinguishes fully searchable completion from
@@ -223,3 +222,7 @@ This does not change a valid retrieval or latency metric into an incomplete-samp
 metric, or exclude any question. Searchability is displayed alongside search and
 in the overview; canonical ingest time/rate stay n/e when their clock is invalid.
 Accepted and searchable fractions use submitted documents as their denominator.
+
+The build rejects comparison HTML above 500 KB or 96 KB gzip. The unit budget
+also limits inline chart inputs; browser verification proves that initial and
+static story views fetch no notebook data, and covers lazy loading and retry.

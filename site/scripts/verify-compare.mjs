@@ -1,6 +1,5 @@
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
-import { gzipSync } from 'node:zlib';
 import { mkdir, readFile } from 'node:fs/promises';
 
 const base = process.env.SITE_URL ?? 'http://127.0.0.1:8486';
@@ -56,11 +55,12 @@ try {
   for (const [width, motion] of [[1440, 'no-preference'], [390, 'no-preference'], [390, 'reduce']]) {
     const context = await browser.newContext({ viewport: { width, height: 960 }, reducedMotion: motion, permissions: ['clipboard-read', 'clipboard-write'] });
     const page = await context.newPage();
-    if (motion === 'reduce') await page.addInitScript(() => { window.DecompressionStream = undefined; });
     page.setDefaultNavigationTimeout(Number(process.env.SITE_BROWSER_TIMEOUT_MS ?? 30_000));
     const errors = [];
     const notebookRequests = [];
+    const notebookResponses = [];
     page.on('request', request => { if (/notebook-.*\.json(?:\.gz)?$/.test(new URL(request.url()).pathname)) notebookRequests.push(request.url()); });
+    page.on('response', response => { if (/notebook-.*\.json$/.test(new URL(response.url()).pathname)) notebookResponses.push(response); });
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
     const response = await page.goto(`${base}/compare`);
@@ -193,17 +193,19 @@ try {
     await page.locator('#products').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await page.screenshot({ path: `${report}/products-${suffix}.png` });
     assert.equal(notebookRequests.length, 0, 'Story interactions do not load per-question data');
-    if (width === 1440) await page.route('**/notebook-*.json.gz', route => route.fulfill({ status: 200, contentType: 'application/gzip', body: gzipSync('{"version":0}') }));
+    if (width === 1440) await page.route('**/notebook-*.json', route => route.fulfill({ status: 200, contentType: 'application/json', body: '{"version":0}' }));
     await page.locator('#details > summary').click();
     if (width === 1440) {
       await page.locator('#details[data-load-state="failed"]').waitFor();
       assert(await page.locator('#notebook-retry').isVisible());
       assert.equal(await page.locator('#results').count(), 0, 'An invalid payload must not masquerade as missing scores');
-      await page.unroute('**/notebook-*.json.gz');
+      await page.unroute('**/notebook-*.json');
       await page.locator('#notebook-retry').click();
     }
     await page.locator('#details[data-load-state="ready"]').waitFor();
     assert.equal(notebookRequests.length, width === 1440 ? 2 : 1, 'One successful notebook request, with explicit retry after failure');
+    const transport = await notebookResponses.at(-1).allHeaders();
+    assert(['br', 'gzip'].includes(transport['content-encoding']), 'Notebook JSON must be compressed by the real static-asset runtime');
     const covered = await page.locator('#results .metric-panel').evaluateAll(panels => [...new Set(panels.flatMap(panel => [panel.dataset.metric, panel.dataset.companion].filter(Boolean)))]);
     assert.deepEqual(covered.sort(), [...keys].sort());
     await page.locator('#detail').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
@@ -292,8 +294,12 @@ try {
     await details.locator('summary').click();
     assert(await details.getAttribute('open') !== null);
     await page.screenshot({ path: `${report}/uncertainty-${suffix}.png` });
-    await page.getByRole('link', { name: 'Download results JSON' }).click();
-    assert.equal(JSON.parse(await page.locator('body').innerText()).draft, results.draft);
+    const [download] = await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === '/compare/results.json'),
+      page.getByRole('link', { name: 'Download results JSON' }).click(),
+    ]);
+    assert.equal(download.status(), 200);
+    assert.deepEqual(await download.json(), results, 'The complete download preserves every reviewed result');
     if (motion === 'reduce') {
       await page.goto(`${base}/compare`);
       await page.evaluate(() => document.fonts.ready);
