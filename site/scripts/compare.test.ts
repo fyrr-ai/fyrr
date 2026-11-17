@@ -25,6 +25,38 @@ for (const system of fixture.systems) for (const metric of Object.values(system.
   metric.status = 'n/e'; metric.value = null; metric.n = 0; metric.expected = 0;
   metric.attempted = 0; metric.missing = 0; metric.ci95 = null; metric.sample_ids = [];
 }
+test('approved measured results publish while draft, synthetic and smoke guards remain active', async () => {
+  const data = await readResults();
+  assert.equal(data.draft, false);
+  assert.equal((data.benchmark.website_import as { review_status: string }).review_status, 'owner-approved');
+  assert.doesNotThrow(() => assertPublishable(data));
+  for (const change of [
+    (bad: Results) => { bad.draft = true; },
+    (bad: Results) => { bad.synthetic_design_preview = true; },
+    (bad: Results) => { bad.benchmark.publishable = false; },
+    (bad: Results) => { bad.systems[0].config.smoke_only = true; },
+  ]) {
+    const bad = structuredClone(data); change(bad);
+    assert.throws(() => assertPublishable(bad), /blocked|never|cannot be published/);
+  }
+  const method = renderMethodology(data);
+  assert(method.includes('available on request; public hosting pending'));
+  assert(method.includes('private fyrr-ai repository'));
+  assert(!method.includes('https://github.com/fyrr-ai/fyrr-benchmark'));
+});
+test('always-on service display excludes scheduled jobs and generic TLS without changing raw counts', async () => {
+  const data = await readResults(), before = JSON.stringify(data.systems);
+  const board = renderScoreboard(data), chart = renderMetric(data, 'service_count');
+  for (const [id, value] of [['fyrr', 1], ['onyx', 12], ['pipeshub@parallel-partitions', 15]] as const) {
+    assert(new RegExp(`data-system="${id}"[^>]*data-overview-deployment="true"[^>]*data-status="measured" data-value="${value}"`).test(chart));
+  }
+  assert(board.includes('reader; writer = scheduled job; plus S3'));
+  assert(chart.includes('Always-on product services'));
+  assert(chart.includes('always-on services the product ships and requires'));
+  assert(renderSupportingDetails(data).includes('TLS-proxy allowance without counting it as a fyrr service'));
+  assert.equal(JSON.stringify(data.systems), before);
+  assert.equal(data.systems.find(system => system.id === 'pipeshub')!.metrics.service_count.value, 8, 'Native local footprint remains a separate measured fact');
+});
 test('draft data cannot be published, even by removing the draft flag', () => {
   assert.throws(() => assertPublishable(fixture), /placeholder/);
   assert.throws(() => parseResults({ ...fixture, draft: false }), /hashes|measurements/);
@@ -275,7 +307,7 @@ test('overview separates documented deployment counts, cost bounds and diagnosti
   pipes.default_ingest_baseline = { docs_per_min: 7.8042, projected_20000_seconds: 153763, notes: ['Interrupted 1k diagnostic'] };
   pipes.ingest_diagnostics = [{ configuration_id: 'full-final-segment1', comparable: false, docs_per_min: 70.5662 }, { configuration_id: 'full-final-segment2', comparable: false, docs_per_min: 87.3404 }, { configuration_id: 'default', comparable: false, ...pipes.default_ingest_baseline }];
   const html = renderScoreboard(data);
-  assert(html.includes('data-overview-deployment="true" data-status="measured" data-value="3"'));
+  assert(html.includes('data-overview-deployment="true" data-status="measured" data-value="1"'));
   assert(html.includes('data-overview-deployment="true" data-status="measured" data-value="15"'));
   assert(html.includes('plus S3'));
   assert(html.includes('≥ $2,552'));

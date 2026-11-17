@@ -33,6 +33,16 @@ async function assertBarWidths(page) {
   }).length);
   assert.equal(crowdedAxes, 0, 'Visible compact axis labels must not overlap');
 }
+async function assertNavigation(page) {
+  const layout = await page.locator('.header__row').evaluate(row => {
+    const logo = row.querySelector('.logo').getBoundingClientRect();
+    const links = Array.from(row.querySelectorAll('.nav__item--keep,.nav__gh')).filter(link => link.getClientRects().length).map(link => ({ text: link.textContent.trim(), left: link.getBoundingClientRect().left, right: link.getBoundingClientRect().right, height: link.getBoundingClientRect().height }));
+    return { width: innerWidth, logoRight: logo.right, links };
+  });
+  assert(layout.links.some(link => link.text === 'Compare'));
+  assert(layout.links.some(link => link.text === 'Use cases'));
+  assert(layout.links.every(link => link.left >= layout.logoRight + 4 && link.right <= layout.width && (link.text === 'GitHub' || link.height <= 24)), 'Shared navigation stays on one line and clear of the logo');
+}
 let cases = 0;
 async function assertDiagnosticsUnranked(page) {
   const errors = await page.locator('.relative').evaluateAll((labels, metrics) => labels.filter(label => {
@@ -81,6 +91,18 @@ try {
     await assertBarWidths(page);
     await assertDiagnosticsUnranked(page);
     assert.equal(await page.locator('.draft-notice').count(), results.draft ? 1 : 0);
+    if (!results.draft) {
+      assert.equal(await page.getByText(/Preliminary|owner review pending/i).count(), 0, 'Published page has no review banner or preliminary captions');
+      assert.equal(await page.locator('meta[name="robots"][content*="noindex"]').count(), 0, 'Approved publication is indexable');
+    }
+    assert(await page.getByRole('link', { name: 'Use cases', exact: true }).isVisible());
+    await assertNavigation(page);
+    for (const [id, count] of [['fyrr', 1], ['onyx', 12], ['pipeshub@parallel-partitions', 15]]) {
+      const row = page.locator(`.score-row[data-system="${id}"]`);
+      if (await row.count()) assert.equal(await row.locator('[data-score-metric="service_count"]').getAttribute('data-value'), String(count));
+    }
+    assert.match(await page.locator('.score-row[data-system="fyrr"] [data-score-metric="service_count"] .score-secondary').textContent(), /reader; writer = scheduled job; plus S3/);
+
     assert.equal(await page.locator('.product-card').count(), new Set(results.systems.map(system => system.id)).size);
     assert.equal(await page.locator('#detail-quality').count(), 0, 'Answer scoring is excluded');
     assert(!Object.keys(results.website.metrics).some(key => /^(?:answer_|native_answer)/.test(key)));
@@ -257,6 +279,10 @@ try {
     assert.equal(notebookRequests.length, width === 1440 ? 2 : 1, 'One successful notebook request, with explicit retry after failure');
     const transport = await notebookResponses.at(-1).allHeaders();
     assert(['br', 'gzip'].includes(transport['content-encoding']), 'Notebook JSON must be compressed by the real static-asset runtime');
+    for (const [id, count] of [['fyrr', 1], ['onyx', 12], ['pipeshub@parallel-partitions', 15]]) {
+      const row = page.locator(`#detail-footprint [data-metric="service_count"] .chart-row[data-system="${id}"]`);
+      if (await row.count()) assert.equal(await row.getAttribute('data-value'), String(count), 'Services chart matches the overview definition');
+    }
     const covered = await page.locator('#results .metric-panel').evaluateAll(panels => [...new Set(panels.flatMap(panel => [panel.dataset.metric, panel.dataset.companion].filter(Boolean)))]);
     assert.deepEqual(covered.sort(), [...keys].sort());
     await page.locator('#detail').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
@@ -374,6 +400,20 @@ try {
     await page.goto(`${base}/`);
     assert(await page.getByRole('link', { name: 'Compare', exact: true }).isVisible(), 'Homepage links to Compare on mobile too');
     assert.equal(await page.locator('#serverless a[href="/docs/lambda"]').count(), 1);
+    assert(await page.getByRole('link', { name: 'Use cases', exact: true }).isVisible());
+    await assertNavigation(page);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Merged homepage navigation fits');
+    await page.getByRole('link', { name: 'Use cases', exact: true }).click();
+    await page.locator('h1').waitFor();
+    assert(await page.getByRole('link', { name: 'Compare', exact: true }).isVisible());
+    assert(await page.getByRole('link', { name: 'Use cases', exact: true }).isVisible());
+    await assertNavigation(page);
+    await page.waitForFunction(() => {
+      const canvas = document.querySelector('.step__sea');
+      return canvas && canvas.width > 0 && canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data.some((value, index) => index % 4 === 3 && value > 0);
+    });
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Use cases remains functional after replay');
+
     assert.deepEqual(errors, [], `Browser errors at ${width}/${motion}`);
     await context.close();
     cases++;

@@ -16,13 +16,11 @@ bun run typecheck
 bun run preview
 ```
 
-The comparison currently contains measured results pending owner review. `bun run build`
-rejects it before exporting the site. For local design review, run
-`bun run build:preview`, then `bun run preview`. The page shows a prominent
-review notice and is marked `noindex`. Measured values are shown; unavailable
-results remain n/e.
-Both deployment commands reject drafts, including an old draft export left
-in `dist/`; the local preview opt-in cannot bypass the deployment guard.
+The canonical comparison results are approved for publication. `bun run build`
+validates and exports them without a preview opt-in. Draft, synthetic and smoke
+fixtures remain blocked by production builds and both deployment commands,
+including stale draft exports. For an intentional local draft review, use
+`bun run build:preview`; that page carries a visible notice and `noindex`.
 
 The deployable directory is `site/dist`. Preview uses the actual Cloudflare
 Workers Static Assets runtime at `http://localhost:8486`, including its HTML
@@ -203,7 +201,7 @@ to that digest. Larger bundles stay outside the site until hosting is decided.
 Do not place evidence in generated `public/`; content preparation replaces it.
 
 The overview rounds numbers for reading. It derives deployment-component counts
-from the production model (including the scheduled writer and TLS proxy), keeping
+from always-on product roles (excluding the scheduled writer and generic TLS termination), keeping
 measured resident-process counts in the notebook. Known cost subtotals and
 interrupted-ingest diagnostic rates are labelled and never receive metric bars.
 

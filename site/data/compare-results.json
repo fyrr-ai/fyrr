@@ -21,9 +21,10 @@
     },
     "website_import": {
       "source_sha256": "c54ad89edb2d34e836b842d3827faecd7d01641c4f6b197b33e0872e55bfedf8",
-      "review_status": "owner-review-pending",
+      "review_status": "owner-approved",
       "metrics_modified": false
-    }
+    },
+    "repository_visibility": "private"
   },
   "protocol": {
     "harness_python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
@@ -334,7 +335,9 @@
         "direction": "lower_is_better",
         "tier": "primary",
         "ci": null,
-        "description": "Processes/containers resident during the measured query window. Scheduled writer jobs and production TLS proxy components are counted separately in the overview."
+        "description": "Raw count of processes/containers resident during the measured local query window. The website displays always-on product-service counts using documented deployment roles; these differ from the local PipesHub measurement.",
+        "display_label": "Always-on product services",
+        "display_description": "The Services column counts always-on services the product ships and requires: fyrr 1 reader, Onyx 12, PipesHub 15. The fyrr writer runs as a scheduled job; its index is on S3. Generic TLS termination and managed infrastructure are listed separately, and the TLS-proxy cost allowance is not counted as a fyrr service. Raw local resident-process counts remain in the run JSON; the documented production PipesHub profile differs from its measured local stack."
       },
       "idle_rss_bytes": {
         "key": "idle_rss_bytes",
@@ -1072,7 +1075,7 @@
     "methodology": [
       {
         "label": "Status & scope",
-        "text": "Measured results, pending owner review. Fyrr and Onyx completed their accepted-document ingest protocols. PipesHub retrieval and latency use 19,998 searchable of 20,000 accepted documents, with two duplicate copies pending; all 250 questions and original gold labels are retained. Its canonical ingest clock is unavailable after a harness stop/resume, and its full production cost is n/e. This synthetic English subset has incomplete relevance labels and reduced context; it cannot establish production performance."
+        "text": "Measured results, approved for publication. Fyrr and Onyx completed their accepted-document ingest protocols. PipesHub retrieval and latency use 19,998 searchable of 20,000 accepted documents, with two duplicate copies pending; all 250 questions and original gold labels are retained. Its canonical ingest clock is unavailable after a harness stop/resume, and its full production cost is n/e. This synthetic English subset has incomplete relevance labels and reduced context; it cannot establish production performance."
       },
       {
         "label": "Subset derivation",
@@ -1096,7 +1099,7 @@
       },
       {
         "label": "Cost assumptions",
-        "text": "Main monthly cost prices each product’s documented production deployment on AWS Frankfurt for 20,000 documents, 100,000 searches per month and 1% changed daily. Required replicas and managed services are itemized with deployment and price sources. Unknown required costs leave the total n/e, with a known subtotal shown separately. The measured single-host minimum uses matched light/C1 and team/C8 capacity references; the Lambda trial is an independent projection. These price models do not establish an AWS capacity or availability guarantee."
+        "text": "Main monthly cost prices each product’s documented production deployment on AWS Frankfurt for 20,000 documents, 100,000 searches per month and 1% changed daily. Required replicas and managed services are itemized with deployment and price sources. Unknown required costs leave the total n/e, with a known subtotal shown separately. The measured single-host minimum uses matched light/C1 and team/C8 capacity references; the Lambda trial is an independent projection. These price models do not establish an AWS capacity or availability guarantee. Service counts exclude scheduled writer jobs and generic TLS termination; the cost model may still budget for them."
       },
       {
         "label": "Headline wording",
@@ -1104,7 +1107,11 @@
       },
       {
         "label": "Reproducibility artifacts",
-        "text": "The final results reproduce from the archived retrieval scorer: all 30 aggregate means and sample counts matched (n=235 across five quality rows). The secret-checked, MIT-attributed evidence bundle is 43,603,541 bytes, above this site’s 20 MB limit. It remains in the benchmark repository pending a hosting decision; no public download URL is claimed. SHA256: dd0bf0f454acb5fc617a716cbc819eca6e85ef5639e6f6ee1d2c4fd26bfdca66."
+        "text": "Raw evidence bundle (43.6 MB, SHA-256 dd0bf0f454acb5fc617a716cbc819eca6e85ef5639e6f6ee1d2c4fd26bfdca66) available on request; public hosting pending. Kept in a private fyrr-ai repository. Independent replay of the archived scorer reproduced all 30 aggregate means and sample counts (n=235 across five quality rows)."
+      },
+      {
+        "label": "Service count definition",
+        "text": "The Services column counts always-on services the product ships and requires: fyrr 1 reader, Onyx 12, PipesHub 15. The fyrr writer runs as a scheduled job; its index is on S3. Generic TLS termination and managed infrastructure are listed separately, and the TLS-proxy cost allowance is not counted as a fyrr service. Raw local resident-process counts remain in the run JSON; the documented production PipesHub profile differs from its measured local stack."
       }
     ],
     "features": [
@@ -143979,5 +143986,5 @@
     }
   ],
   "publication_ready_primary": false,
-  "draft": true
+  "draft": false
 }
