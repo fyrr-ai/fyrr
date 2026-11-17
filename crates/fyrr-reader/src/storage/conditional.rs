@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 pub(super) struct Transport(Arc<Mutex<Option<HttpClient>>>);
 impl HttpConnector for Transport {
     fn connect(&self, options: &ClientOptions) -> object_store::Result<HttpClient> {
-        let client = ReqwestConnector::default().connect(options)?;
+        let client = super::diagnostics::transport(ReqwestConnector::default().connect(options)?);
         // The builder's last connection is the store transport, after credential
         // transports. Reuse it with every configured CA, proxy and TLS option.
         *self.0.lock().map_err(|_| failure())? = Some(client.clone());
@@ -32,7 +32,7 @@ fn failure() -> object_store::Error {
         source: "conditional head deletion failed".into(),
     }
 }
-async fn delete(
+async fn delete_unobserved(
     store: &AmazonS3,
     client: &HttpClient,
     path: &Path,
@@ -65,6 +65,21 @@ async fn delete(
     Ok(response.status().as_u16())
 }
 
+async fn delete(
+    store: &AmazonS3,
+    client: &HttpClient,
+    path: &Path,
+    tag: &str,
+) -> object_store::Result<u16> {
+    super::diagnostics::observe(
+        "DELETE_CONDITIONAL",
+        path,
+        false,
+        delete_unobserved(store, client, path, tag),
+    )
+    .await
+}
+
 pub(super) async fn delete_head(
     store: &AmazonS3,
     client: &HttpClient,
@@ -83,7 +98,8 @@ pub(super) async fn delete_head(
     let probe = root
         .clone()
         .join(format!(".conditional-delete-probe-{nonce}"));
-    let created = store
+    let boundary = super::diagnostics::wrap(Arc::new(store.clone()), false, root);
+    let created = boundary
         .put_opts(
             &probe,
             b"fyrr conditional DELETE capability".to_vec().into(),
@@ -101,7 +117,7 @@ pub(super) async fn delete_head(
     };
     // Never probe the head: a server ignoring If-Match may delete the probe.
     let capability = delete(store, client, &probe, wrong).await;
-    store.delete(&probe).await.map_err(|_| failure())?;
+    boundary.delete(&probe).await.map_err(|_| failure())?;
     if capability? != 412 {
         return Err(object_store::Error::NotSupported {
             source: "S3 conditional DELETE capability probe must return HTTP 412".into(),

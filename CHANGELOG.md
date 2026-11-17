@@ -46,6 +46,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- Opt-in ObjectStore boundary diagnostics in a private JSONL file, including
+  hashed keys, fixed error codes, latency, and observed S3 HTTP status/retries.
+  Native transport facts that the boundary cannot observe remain null.
+
 - MCP tools `search`, `fetch` and `list_filters`, served over stdio for one
   user or over Streamable HTTP with per-user OIDC tokens.
 - Permission-aware hybrid retrieval: full-text and vector candidates are

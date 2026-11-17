@@ -1701,3 +1701,116 @@ async fn identity_storage_writer_embedding_cache_and_failures_keep_values_privat
     assert!(String::from_utf8_lossy(&failed.stdout).contains("embedding_provider_unavailable"));
     task.abort();
 }
+
+#[test]
+fn object_store_diagnostics_hash_keys_and_keep_cli_inputs_private() {
+    use std::io::{Read, Write};
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::time::Duration;
+    let mut sentinels = Sentinels::new();
+    let sandbox = Sandbox::new("privacy-object-diagnostics");
+    let key = sentinels.mark("object-key");
+    let query = sentinels.mark("object-query");
+    let secret = sentinels.mark("object-secret");
+    let storage = sandbox.input("storage-path", "").with_file_name(&key);
+    std::fs::create_dir(&storage).unwrap();
+    std::fs::set_permissions(&storage, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let config = sandbox.input("fyrr.toml", &format!(
+        "[namespace]\nname='private-diagnostics'\n[storage]\nuri='file://{}'\n[embedding]\nendpoint='http://127.0.0.1:9/v1'\napi_key={{env='DIAGNOSTIC_SECRET'}}\n[identity]\nhashing_key={{env='DIAGNOSTIC_SECRET'}}\n", storage.display()
+    ));
+    let log = sandbox.output().join("object-store.jsonl");
+    let args = ["reader", "search", &query];
+    let disabled = sandbox.configured(&config, args, &[("DIAGNOSTIC_SECRET", &secret)]);
+    assert_clean(&sentinels, &disabled, &sandbox, "diagnostics disabled");
+    assert!(!log.exists());
+    let enabled = sandbox.configured(
+        &config,
+        args,
+        &[
+            ("DIAGNOSTIC_SECRET", &secret),
+            ("FYRR_OBJECT_STORE_DIAGNOSTICS", log.to_str().unwrap()),
+        ],
+    );
+    assert_clean(&sentinels, &enabled, &sandbox, "diagnostics enabled");
+    let text =
+        std::fs::read_to_string(log).expect("the real ObjectStore boundary emits diagnostics");
+    let records: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(!records.is_empty());
+    assert!(
+        records
+            .iter()
+            .any(|record| record["method"] == "GET" && record["error_code"] == "not_found")
+    );
+
+    // Exercise the configured S3 factory and its actual HTTP transport as well.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    listener.set_nonblocking(true).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopped = stop.clone();
+    let body = sentinels.mark("remote-error-body");
+    let server = std::thread::spawn(move || {
+        while !stopped.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0; 4096];
+                    while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                        let count = stream.read(&mut buffer).unwrap();
+                        if count == 0 || request.len() + count > 65536 {
+                            return false;
+                        }
+                        request.extend_from_slice(&buffer[..count]);
+                    }
+                    write!(stream, "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+                    return true;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => return false,
+            }
+        }
+        false
+    });
+    let remote_config = sandbox.input("remote.toml", &format!(
+        "[namespace]\nname='private-diagnostics'\n[storage]\nuri='s3://private-diagnostics/{key}'\nendpoint='{endpoint}'\nallow_http=true\naccess_key_id={{env='DIAGNOSTIC_SECRET'}}\nsecret_access_key={{env='DIAGNOSTIC_SECRET'}}\n[embedding]\nendpoint='http://127.0.0.1:9/v1'\n[identity]\nhashing_key={{env='DIAGNOSTIC_SECRET'}}\n"
+    ));
+    let remote_log = sandbox.output().join("remote-object-store.jsonl");
+    let remote = sandbox.configured(
+        &remote_config,
+        args,
+        &[
+            ("DIAGNOSTIC_SECRET", &secret),
+            (
+                "FYRR_OBJECT_STORE_DIAGNOSTICS",
+                remote_log.to_str().unwrap(),
+            ),
+        ],
+    );
+    stop.store(true, Ordering::SeqCst);
+    assert!(
+        server.join().unwrap(),
+        "the real CLI reached the loopback object store"
+    );
+    assert_clean(&sentinels, &remote, &sandbox, "S3 diagnostics enabled");
+    let text = std::fs::read_to_string(remote_log).unwrap();
+    let records: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(records.iter().any(|record| record["method"] == "GET"
+        && record["error_code"] == "not_found"
+        && record["http_status"] == 404
+        && record["retry_count"] == 0));
+}

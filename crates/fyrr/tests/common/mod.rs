@@ -52,6 +52,7 @@ pub fn fyrr() -> Command {
     let mut command = Command::new(binary());
     command
         .env_remove("FYRR_CONFIG")
+        .env_remove("FYRR_OBJECT_STORE_DIAGNOSTICS")
         .env_remove("PYTHONHOME")
         .env("AWS_EC2_METADATA_DISABLED", "true")
         .env("PYTHONDONTWRITEBYTECODE", "1");

@@ -22,6 +22,11 @@ Exit status: `0` success, `1` failure (also a `sync` with any failed source),
 [committer](architecture.md#terms) holds the namespace lease, `78` invalid configuration. Usage
 errors name the argument and the usage line; they never echo what was typed.
 
+For storage failures, opt into private JSONL operation diagnostics with
+`FYRR_OBJECT_STORE_DIAGNOSTICS=/absolute/private/objects.jsonl`; see
+[object-store diagnostics](operations.md#object-store-diagnostics) for fields,
+privacy rules and unavailable transport facts.
+
 Terms such as serving head, publication and envelope are defined in
 [How fyrr works](architecture.md#terms).
 

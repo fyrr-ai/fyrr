@@ -159,3 +159,54 @@ and a normal commit retry resumes the pending work.
 If a sync reports `sync_lease_lost`, it can no longer prove ownership of its
 source cursor lease, so the run stops using that lease rather than advancing
 the cursor without ownership.
+
+
+## Object-store diagnostics
+
+Set `FYRR_OBJECT_STORE_DIAGNOSTICS` to an absolute JSONL file path before starting
+any reader or writer process. It is off by default. The parent directory must
+already exist; use a private operator-owned directory. A new file is mode 0600.
+Existing files must be regular, owned by the process user, have no group/other
+permissions, and have one hard link; symlinks are refused. Invalid destinations
+emit only `object_store_diagnostics=unavailable` and leave storage behavior
+unchanged. Workers inherit the destination, so source sync diagnostics survive
+the suppression of provider stdout/stderr. Logs append across processes and
+restarts. Arrange rotation and retention outside fyrr; restart processes after
+renaming the active log.
+
+```sh
+install -d -m 700 /var/log/fyrr
+FYRR_OBJECT_STORE_DIAGNOSTICS=/var/log/fyrr/objects.jsonl fyrr writer sync --directory
+```
+
+Each completed boundary operation records `method`, `key_sha256`,
+`http_status`, `error_code`, `retry_count` and `latency_us`. Only the SHA-256 of
+the object key or operation prefix is retained: no full keys or raw prefixes,
+URLs, query strings, headers, bodies, credentials, backend error strings or
+provider messages. Error codes are a fixed vocabulary (`not_found`,
+`permission_denied`, `precondition`, `transport_timeout`, `storage_error`, etc.),
+not arbitrary service error text. The hash supports correlating repeated access;
+it is not encryption and may allow guessing predictable keys.
+
+Control-store S3 operations report the actual last observed HTTP status and
+repeated HTTP request count, including retries that eventually succeed. List
+operations count repeated requests per page, not page count as retries. Request
+identity accounting is bounded to 1024 distinct requests per operation; beyond
+that, retry count is null.
+Local operations have `http_status: null` and `retry_count: 0`. Native Lance
+stores own their transport and do not expose retry/status facts at the wrapper;
+those fields remain `null`, including successful operations. `DELETE_STREAM`
+preserves backend batching and logs the hashed namespace/native-root prefix;
+its retry count is null for remote stores because repeated bulk requests cannot
+be separated from retries without inspecting bodies. `null` means
+unavailable, never zero retries or an inferred HTTP success code. A transport
+failure before a response also has a null status.
+
+Streamed GETs and lists log completion, errors, or `cancelled` when dropped
+early, including body consumption in latency and retry accounting. They remain
+streaming without buffering. HEAD and file-handle payloads complete when the
+underlying ObjectStore method returns. Multipart creation, parts, completion and abort are separate
+operations. Latency covers the named boundary phase, including retries, rather
+than an invented per-attempt duration. Diagnostics do not enable additional
+retries. Failure to write the diagnostic destination does not change a storage
+operation's result.
