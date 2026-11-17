@@ -437,7 +437,7 @@
     "methodology": [
       {
         "label": "Status & scope",
-        "text": "Placeholder fixture. No benchmark has been published here. Every numerical result is n/e. The frozen EnterpriseRAG-derived subset is synthetic and English, with incomplete relevance labels and context loss; it cannot establish production performance."
+        "text": "Placeholder EnterpriseRAG comparison. No benchmark has been published here; comparison scores are n/e. The separate Lambda experiment has its own small synthetic corpus and projection inputs. The frozen EnterpriseRAG-derived subset is synthetic and English, with incomplete relevance labels and context loss; it cannot establish production performance."
       },
       {
         "label": "Subset derivation",
@@ -678,7 +678,83 @@
           "recall_at_10"
         ]
       }
-    ]
+    ],
+    "lambda_projection": {
+      "id": "aws-lambda-300-docs-2026-11-17",
+      "status": "projection",
+      "experimental": true,
+      "region": "eu-central-1",
+      "architecture": "x86_64",
+      "date": "2026-11-17",
+      "docs_path": "/docs/lambda",
+      "reader_commit": "c2a34a3db86a9568e4e9754c86a4da46f100cdae",
+      "documents": 300,
+      "memory_mib": 1024,
+      "index_bytes": 1076222,
+      "warm_execution_median_ms": 134.42000000000002,
+      "warm_billed_ms": 135,
+      "warm_n": 30,
+      "warm_client_median_ms": 289.0088378917426,
+      "warm_client_n": 15,
+      "cold_client_ms": [
+        35756.33890600875,
+        2197.629000991583,
+        2304.662272101268
+      ],
+      "cold_billed_allowance_ms": 5494,
+      "cold_fraction": 0.01,
+      "control_reads": 2,
+      "cold_extra_reads": 50,
+      "request_volumes": [
+        10000,
+        100000,
+        1000000
+      ],
+      "prices": {
+        "lambda_gb_second_usd": 1.66667e-05,
+        "lambda_request_usd": 2e-07,
+        "s3_get_usd": 4.3e-07,
+        "s3_storage_gb_month_usd": 0.0245
+      },
+      "sources": [
+        {
+          "label": "AWS Lambda pricing",
+          "url": "https://aws.amazon.com/lambda/pricing/",
+          "date": "2026-11-17"
+        },
+        {
+          "label": "Amazon S3 pricing",
+          "url": "https://aws.amazon.com/s3/pricing/",
+          "date": "2026-11-17"
+        }
+      ],
+      "evidence_sha256": {
+        "REPORT.md": "e530264479048ba350337d50dc376cdc3c882b812d600441254fefc51b8ba406",
+        "artifacts/summary.json": "3b094d51be29da6fc7609b802024027c743191e2bd6de1d0dde047a13eedb885",
+        "artifacts/s3-final-inventory.txt": "6e050f1068279910cf0e5cebea9bf48246a0b07bc1f3bb970e76b5e78d08d859",
+        "artifacts/lambda-pricing-api.json": "d3065b5c2944c0264d511dd7a19ef7b057d8daed9252132b8255b846da2a9afe",
+        "artifacts/support-pricing-api.json": "0d44e533a503fada05cfa4e66c115e97ac66be4ee3d8c1bba24a32aff1e84b87"
+      },
+      "notes": [
+        "Separate synthetic 300-document trial, with deterministic in-container embeddings and a synthetic identity service. Real provider and identity latency are additional.",
+        "Warm execution and billed duration are Lambda-reported medians over 30 searches; client-observed warm latency is the varied-query median over 15 requests.",
+        "All three cold client observations are retained, including the 35.756-second outlier. Its Lambda-reported billed duration was 5.494 seconds; the additional client delay was not isolated.",
+        "The warm-only model is a billing projection. The alternative assumes 1% cold invocations, each billed for 5.494 seconds (the maximum billed duration among the three cold trials), plus 50 additional S3 reads. Neither cold fraction nor higher-volume capacity was measured.",
+        "Index storage uses the captured trial-prefix inventory: 60 objects, 1,076,222 bytes. Storage is modelled in 1,024^3-byte GB-months.",
+        "No free tier, discount or provisioned concurrency. The trial used 512 MiB ephemeral storage and reserved concurrency two; a four-request cold burst produced two successes and two throttles."
+      ],
+      "excluded": [
+        "scheduled writer",
+        "real identity service",
+        "embedding and reranking calls",
+        "logs",
+        "container-image storage",
+        "secret retrieval",
+        "network egress",
+        "gateway or custom domain",
+        "taxes"
+      ]
+    }
   },
   "systems": [
     {

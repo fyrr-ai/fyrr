@@ -61,6 +61,13 @@ try {
     assert.deepEqual(await page.locator('.score-head [data-score-metric]').evaluateAll(cells => cells.map(cell => cell.dataset.scoreMetric)), ['monthly_cost_usd', 'service_count', 'idle_rss_bytes', 'first_ask_c1_p50_ms', 'ingest_wall_s', 'recall_at_10'], 'Overview leads with cost');
     assert.deepEqual(await page.locator('.story-section').evaluateAll(sections => sections.map(section => section.id)), ['story-footprint', 'story-speed', 'story-ingest', 'story-quality'], 'Stories lead with cost');
     assert(await page.locator('#story-footprint').evaluate(element => element.classList.contains('story-section--lead')));
+    if (results.website.lambda_projection) {
+      assert.equal(await page.locator('#lambda-projection').count(), 1);
+      assert.equal(await page.locator('#lambda-projection .metric-panel').count(), 0, 'Lambda projection never becomes a benchmark chart');
+      assert.match(await page.locator('#lambda-projection').innerText(), /35\.756 s/);
+      assert.match(await page.locator('#lambda-projection').innerText(), /300 synthetic documents/);
+      assert.equal(await page.locator('#lambda-projection a[href="/docs/lambda"]').count(), 1);
+    }
     const keys = new Set(results.systems.flatMap(system => Object.keys(system.metrics)));
     const covered = await page.locator('#results .metric-panel').evaluateAll(panels => [...new Set(panels.flatMap(panel => [panel.dataset.metric, panel.dataset.companion].filter(Boolean)))]);
     assert.deepEqual(covered.sort(), [...keys].sort());
@@ -143,6 +150,7 @@ try {
     await page.locator('#story-footprint').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await page.waitForTimeout(1500);
     await page.screenshot({ path: `${report}/footprint-${suffix}.png` });
+    if (results.website.lambda_projection) await page.locator('#lambda-projection').screenshot({ path: `${report}/lambda-${suffix}.png` });
     await page.locator('#products').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await page.screenshot({ path: `${report}/products-${suffix}.png` });
     await page.locator('#details > summary').click();
@@ -222,6 +230,7 @@ try {
     }
     await page.goto(`${base}/`);
     assert(await page.getByRole('link', { name: 'Compare', exact: true }).isVisible(), 'Homepage links to Compare on mobile too');
+    assert.equal(await page.locator('#serverless a[href="/docs/lambda"]').count(), 1);
     assert.deepEqual(errors, [], `Browser errors at ${width}/${motion}`);
     await context.close();
     cases++;

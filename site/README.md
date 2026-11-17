@@ -101,6 +101,13 @@ question search and the notebook's open state. Higher-is-better scores
 show percentage-point gaps; time, cost and footprint show ratios to the
 best selected complete result.
 
+The cost story also contains a separately labelled experimental Lambda projection
+from a 300-document synthetic trial. It never supplies benchmark scores, the
+monthly-cost metric or the verdict. It keeps all cold samples and explicitly
+separates in-function execution from client-observed time. Inputs, dated AWS
+prices and evidence hashes are in the same results JSON. The approved trial image
+provenance is the sole exception to the private pre-release reference guard.
+
 ## Comparison data
 
 `data/compare-results.json` is the single data source for `/compare`.
