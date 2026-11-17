@@ -80,13 +80,26 @@ and `fixtures/`.
 ## Local storage
 
 A `file://` root stores the same namespace objects and Lance dataset as S3.
-Writers use `.fyrr-storage.lock`, atomic renames and durable version counters
-in extended attributes. Lock contention beyond five seconds fails the write
-with `storage_unavailable`, `head_cas_failed` or `sync_lease_lost`, depending
-on the operation. Missing or damaged version metadata is refused;
-existing namespaces require their original lock file. Publishing the serving
-head flushes the filesystem; Lance uses an atomic create-exclusive link.
-The next mutation reaps crashed control writes. Maintenance and confirmed
+Each write stages its object in `.fyrr-storage.stage.d/`, flushes it, gives
+it its name with an atomic rename and flushes the directory before it
+reports success. An object's version is a random 128-bit tag in an extended
+attribute; an object without one is refused.
+
+Writes to different objects never wait for each other. Creating an object
+takes no lock. Replacing or removing one (the serving head, a lease, a
+cursor) locks that object only for the comparison and the rename, never
+while flushing. A process stopped inside that step blocks later changes to
+that one object: they wait up to five seconds and then fail with
+`storage_unavailable`, `head_cas_failed` or `sync_lease_lost`, depending on
+the operation.
+
+A reader can see an object before its writer has flushed the directory, so a
+writer that publishes a reference to something it only observed flushes it
+first. Lance uses an atomic create-exclusive link. Staging files of a killed
+writer are removed by later writes and by every delete; a stopped writer
+keeps its file. `.fyrr-storage.lock` remains in the root and stops earlier
+releases, which serialized all writes through it, from writing there.
+Maintenance and confirmed
 source purge reap abandoned multipart uploads (`name#digits`), protecting
 files younger than ten minutes and namespaces with live source leases;
 purge plans count them as `namespace_staging_files`. Reader mirrors copy immutable files and preserve
