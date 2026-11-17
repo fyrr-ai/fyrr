@@ -241,3 +241,37 @@ def test_local_files_grants_every_configured_reader(tmp_path) -> None:
     )
     with pytest.raises(ValueError, match="local_files_readers_invalid"):
         testkit.run_sync("local-files", "content", scope={"paths": [str(tmp_path)]}, readers=())
+
+
+def test_local_files_normalizes_controls_without_changing_raw_revision_identity(tmp_path) -> None:
+    import hashlib
+
+    readers = ("grp:engineering",)
+    raw = b"alpha\0beta\x01gamma\tline\nnext\rline\x1fend"
+    path = tmp_path / "notes.txt"
+    path.write_bytes(raw)
+    result = testkit.run_sync(
+        "local-files", "content", scope={"paths": [str(tmp_path)]}, readers=readers
+    )
+    [change] = result.documents[0]["body"]["changes"]
+    assert change["sections"][0]["text"] == "alpha beta gamma\tline\nnext\rline end"
+    fingerprint = hashlib.sha256()
+    for token in sorted(readers):
+        encoded = token.encode("utf-8")
+        fingerprint.update(len(encoded).to_bytes(8, "big"))
+        fingerprint.update(encoded)
+    fingerprint.update(raw)
+    assert change["source_revision"] == fingerprint.hexdigest()
+    # The same extracted text from different source bytes remains a new revision.
+    path.write_bytes(raw.replace(b"\0", b" "))
+    other = testkit.run_sync(
+        "local-files", "content", scope={"paths": [str(tmp_path)]}, readers=readers
+    ).documents[0]["body"]["changes"][0]
+    assert other["sections"] == change["sections"]
+    assert other["source_revision"] != change["source_revision"]
+    # Invalid input still takes the explicit quarantine path, never normalization.
+    path.write_bytes(b"invalid\xff")
+    invalid = testkit.run_sync(
+        "local-files", "content", scope={"paths": [str(tmp_path)]}, readers=readers
+    ).documents[0]["body"]["changes"][0]
+    assert invalid["sections"][0]["text"] == "\0"

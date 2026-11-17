@@ -30,6 +30,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   counters and provider-stage timing from responses to prevent disclosure of
   shared cache activity; search responses also suppress explicit durations.
 
+### Fixed
+
+- Local-file extraction replaces NUL and other non-whitespace C0 controls with
+  spaces instead of quarantining otherwise valid UTF-8 text. Raw-byte source
+  revisions remain unchanged.
+
 ### Added
 
 - MCP tools `search`, `fetch` and `list_filters`, served over stdio for one

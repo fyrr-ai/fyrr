@@ -17,6 +17,15 @@ fn mode(path: &Path) -> u32 {
 #[ignore = "real executable and local storage; scripts/ci"]
 async fn local_storage_publishes_and_serves_with_permission_filtering() {
     let (config, root) = setup_on(Backend::Local);
+    // Extraction keeps a valid text document searchable despite embedded controls.
+    std::fs::write(
+        root.join("sources/0.txt"),
+        "fixture document 0\0normalized\u{1}tail",
+    )
+    .unwrap();
+    let vector = root.embedding.vector("fixture document 0");
+    root.embedding
+        .insert_both("fixture document 0 normalized tail", vector);
     // Exercise URI decoding all the way through control storage, Lance and
     // mirror cache keys, rather than testing only paths without spaces.
     let text = std::fs::read_to_string(&config).unwrap();
@@ -93,7 +102,11 @@ async fn local_storage_publishes_and_serves_with_permission_filtering() {
         .as_array()
         .unwrap_or_else(|| panic!("fetch returned no documents: {allowed}"));
     assert_eq!(documents.len(), 1, "{allowed}");
-    assert!(allowed.to_string().contains("fixture document 0"));
+    assert!(
+        allowed
+            .to_string()
+            .contains("fixture document 0 normalized tail")
+    );
     let denied = client.call("fetch", json!({"source_id": "denied", "root_id": "0.txt"}));
     assert_eq!(denied["isError"], false, "{denied}");
     assert_eq!(

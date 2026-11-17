@@ -109,7 +109,16 @@ class LocalFiles(Connector[NoConfig, LocalFilesScope]):
                 if known.get(root) == revision:
                     continue
                 try:
-                    text = "\0" if oversized else data.decode("utf-8")
+                    # Normalize extracted text, never the bytes used for source revisions.
+                    # Keep tabs and line boundaries; replace other C0 controls
+                    # with spaces so words on either side do not concatenate.
+                    text = (
+                        "\0"
+                        if oversized
+                        else data.decode("utf-8").translate(
+                            {code: " " for code in range(32) if code not in (9, 10, 13)}
+                        )
+                    )
                 except UnicodeDecodeError:
                     text = "\0"
                 changes.append(
