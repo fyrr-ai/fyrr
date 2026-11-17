@@ -86,3 +86,101 @@ async fn committer_busy_remains_closed_on_storage() {
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).ends_with("error: committer_busy\n"));
 }
+
+#[tokio::test]
+#[ignore = "real worker timeout, durable envelopes and cached vectors; scripts/ci"]
+async fn prepared_timeout_names_flag_and_rerun_preserves_durable_work_on_storage() {
+    use futures::TryStreamExt;
+    use fyrr_core::connector::CursorState;
+    use fyrr_reader::storage::{namespace_store, read_contract};
+    use std::time::Duration;
+
+    let fixture = Fixture::new("sentinel-review", "timeout-resume");
+    let output = fixture.run(&[
+        "writer",
+        "sync",
+        "--full",
+        "--kind",
+        "content",
+        "--timeout",
+        "5s",
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("timeout after 5000ms; increase --timeout"),
+        "{stderr}"
+    );
+    assert!(output.stdout.is_empty());
+    let config = fyrr_core::config::load(&fixture.config).unwrap().config;
+    let (store, root) = namespace_store(&config).unwrap();
+    let cursor: CursorState = read_contract(
+        store.as_ref(),
+        &root.clone().join("cursors").join("fixture-content.json"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(cursor.cursor.as_deref(), Some("done"));
+    let before: Vec<_> = store
+        .list(Some(&root.clone().join("envelopes")))
+        .try_collect()
+        .await
+        .unwrap();
+    assert!(
+        !before.is_empty(),
+        "the timed-out worker left durable prepared work"
+    );
+    let requests = fixture._embedding.state.requests.lock().unwrap().len();
+    assert!(requests > 0);
+    let remaining = (cursor.lease.unwrap().expires_at - fyrr_core::clock::now())
+        .to_std()
+        .unwrap_or_default();
+    fyrr_core::clock::advance(remaining + Duration::from_millis(50)).unwrap();
+    let resumed = fixture.run(&["writer", "sync", "--kind", "content"]);
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert_eq!(
+        fixture._embedding.state.requests.lock().unwrap().len(),
+        requests
+    );
+    let after: Vec<_> = store
+        .list(Some(&root.clone().join("envelopes")))
+        .try_collect()
+        .await
+        .unwrap();
+    assert_eq!(
+        before.len(),
+        after.len(),
+        "resuming an advanced cursor does not duplicate envelopes"
+    );
+    // Force a replay from the beginning: existing vectors remain reusable.
+    let text = std::fs::read_to_string(&fixture.config)
+        .unwrap()
+        .replace("mode='timeout-resume'", "mode='resume'");
+    std::fs::write(&fixture.config, text).unwrap();
+    let replayed = fixture.run(&["writer", "sync", "--full", "--kind", "content"]);
+    assert!(
+        replayed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replayed.stderr)
+    );
+    assert_eq!(
+        fixture._embedding.state.requests.lock().unwrap().len(),
+        requests
+    );
+    let committed = fixture.run(&["writer", "commit"]);
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+    let verified = fixture.run(&["writer", "verify"]);
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+}

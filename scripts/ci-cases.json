@@ -4102,6 +4102,10 @@
       "full:fyrr-writer:lib:fyrr_writer/sync_lease::tests::scoped_cursor_lease_preserves_error_priority_on_storage": {
         "tier": "quick",
         "seconds": 1.519
+      },
+      "full:fyrr:test:writer_provider/prepared_timeout_names_flag_and_rerun_preserves_durable_work_on_storage": {
+        "tier": "quick",
+        "seconds": 8.0
       }
     }
   },

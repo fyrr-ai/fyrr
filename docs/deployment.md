@@ -204,5 +204,25 @@ Several `sync` processes may run at once, but not on the same source and
 kind: the second one reports `sync_busy` for it and exits 1. `commit`,
 `maintain` and `sync --directory` share the namespace lease, so whichever
 starts second exits 75 at once (see the [exit statuses](cli.md)). A killed
-worker repeats at most one batch, because a cursor advances only after its
-envelope is durable.
+worker resumes from its durable cursor after its source/kind lease expires
+(up to `writer.commit.lease_ttl` after the last renewal). A cursor advances only
+after its envelope is durable; an interrupted current batch can be replayed.
+Completed envelopes remain pending and can be committed independently. Replayed
+text can reuse vectors already persisted in `embedding.local_cache`; in-flight
+embedding requests may still have been billed and are not refunded. Provider
+cursor semantics also apply: local-files scans the tree again and skips known
+raw-byte revisions. `--full` deliberately resets the provider cursor, but keeps
+durable envelopes and reusable vectors.
+
+The per-source worker limit stays `--timeout 10m` for all syncs, including
+`--full`. For an initial embedding-heavy corpus, allow enough time explicitly:
+
+```sh
+fyrr writer sync --full --timeout 1h
+fyrr writer commit
+```
+
+A timeout exits 1 with `worker_failure: timeout after <N>ms; increase --timeout`.
+Only the configured duration is printed; provider exceptions remain private.
+Restart with a larger timeout after the lease expires; do not delete pending
+envelopes or the vector cache.

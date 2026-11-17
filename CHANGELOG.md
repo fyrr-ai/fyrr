@@ -36,6 +36,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Fixed
 
+- Prepared sync timeout errors name the elapsed worker limit and `--timeout`,
+  including deadline exhaustion during cleanup. Deployment guidance covers
+  larger initial loads, durable envelopes, source leases and vector-cache reuse.
+
 - Local-file extraction replaces NUL and other non-whitespace C0 controls with
   spaces instead of quarantining otherwise valid UTF-8 text. Raw-byte source
   revisions remain unchanged.

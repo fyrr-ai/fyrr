@@ -386,6 +386,8 @@ class ReviewConnector(Connector):
             os._exit(0)
         if mode == "allocate":
             bytearray(3 << 30)
+        if mode == "timeout-resume" and cursor == "done":
+            return
         schema = DOCUMENT_CHANGES_SCHEMA
         row = {
             "op": "upsert",
@@ -409,6 +411,8 @@ class ReviewConnector(Connector):
         if mode == "text-huge":
             row["sections"] = [{"text": "x" * (64 << 20)}]
         yield ContentBatch(changes=pa.RecordBatch.from_pylist([row], schema=schema), cursor="done")
+        if mode == "timeout-resume":
+            time.sleep(60)
 
 
 def review_info() -> dict:
