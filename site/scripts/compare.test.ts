@@ -12,6 +12,14 @@ fixture.draft = true;
 fixture.synthetic_design_preview = false;
 fixture.benchmark.publishable = true;
 fixture.details = [];
+// Test cases own their observations; release imports must not change test order,
+// promote actual costs into dummy runs or replace the unavailable default fixture.
+fixture.systems = ['fyrr', 'onyx', 'pipeshub'].map(id => {
+  const source = fixture.systems.find(system => system.id === id)!;
+  return { id, name: source.name, variant: 'default', version: {}, config: {}, date: '', metrics: structuredClone(source.metrics), footprint: {}, notes: [] };
+});
+fixture.systems.push({ ...structuredClone(fixture.systems[0]), variant: 'concurrency-8' });
+
 for (const system of fixture.systems) for (const metric of Object.values(system.metrics)) {
   metric.status = 'n/e'; metric.value = null; metric.n = 0; metric.expected = 0;
   metric.attempted = 0; metric.missing = 0; metric.ci95 = null; metric.sample_ids = [];
@@ -89,6 +97,16 @@ test('inconsistent units, samples and uncertainty fail at the boundary', () => {
     assert.throws(() => parseResults(bad), /Invalid comparison/);
   }
 });
+test('fractional scores tolerate only machine round-off and preserve raw observations', () => {
+  const data = structuredClone(fixture);
+  data.systems[0].metrics.ndcg_at_10 = { status: 'measured', value: 1.0000000000000002, unit: 'fraction', n: 1, ci95: [1, 1.0000000000000002] };
+  const parsed = parseResults(data);
+  assert.equal(parsed.systems[0].metrics.ndcg_at_10.value, 1.0000000000000002);
+  assert.equal(relativeValue(1, 1.0000000000000002, 'higher_is_better'), 1);
+  assert.equal(relativeValue(.999999, 1, 'higher_is_better') === 1, false);
+  data.systems[0].metrics.ndcg_at_10.value = 1.000001;
+  assert.throws(() => parseResults(data), /fraction range/);
+});
 test('headline follows complete retrieval evidence and stays neutral on mismatched samples', () => {
   const data = structuredClone(fixture);
   data.draft = false;
@@ -99,7 +117,7 @@ test('headline follows complete retrieval evidence and stays neutral on mismatch
   data.systems[1].metrics.recall_at_10.sample_ids = ['a', 'different'];
   assert(headlineVerdict(data).startsWith('Search quality is still being measured'));
   data.systems[1].metrics.recall_at_10.status = 'partial';
-  assert(headlineVerdict(data).startsWith('Search quality is still being measured'));
+  assert(!headlineVerdict(data).includes('10.0 pp behind Onyx'), 'Partial results cannot establish a winner');
 });
 test('cost-led narrative makes only supported claims and lets competitors win', () => {
   const data = structuredClone(fixture);
@@ -116,6 +134,11 @@ test('cost-led narrative makes only supported claims and lets competitors win', 
   });
   const verdict = headlineVerdict(data);
   assert.equal(verdict, 'Similar search quality. A fraction of the estimated running cost. Faster queries and indexing.');
+  const scoped = structuredClone(data);
+  scoped.draft = true; scoped.systems[0].version = { version: 'test' }; scoped.systems[0].date = '2026-11-17';
+  for (const metric of Object.values(scoped.systems.find(system => system.id === 'pipeshub')!.metrics)) Object.assign(metric, { status: 'n/e', value: null, n: 0, expected: 0, attempted: 0, missing: 0, ci95: null, sample_ids: [] });
+  assert.equal(headlineVerdict(scoped), verdict, 'n/e products are disclosed separately and do not erase measured comparisons');
+
   const stories = renderStories(data);
   assert(stories.indexOf('id="story-footprint"') < stories.indexOf('id="story-speed"'));
   assert(stories.indexOf('id="story-speed"') < stories.indexOf('id="story-ingest"'));
@@ -149,6 +172,15 @@ test('cost-led narrative makes only supported claims and lets competitors win', 
   assert(revised.includes('Monthly operating cost is not yet estimated'));
   assert(!revised.includes('Similar'));
   assert(!renderStories(data).includes('Costs a fraction to run.'));
+});
+test('measured review data gets a factual headline without claiming a win over missing products', () => {
+  const data = structuredClone(fixture);
+  const own = data.systems[0]; own.version = { version: 'test' }; own.date = '2026-11-17';
+  for (const [key, value] of Object.entries({ recall_at_10: .9, first_ask_c1_p50_ms: 100, ingest_wall_s: 600, monthly_cost_usd: 40 })) Object.assign(own.metrics[key], { status: 'measured', value, n: 1, expected: 1, attempted: 1, missing: 0 });
+  const verdict = headlineVerdict(data);
+  assert(verdict.includes('90.0% recall@10. 100 ms new-question p50. 10 min to index. $40/month estimated production cost.'));
+  assert(verdict.includes('PipesHub: 20k run incomplete'));
+  assert(!/faster|cheaper|similar/i.test(verdict));
 });
 test('light and team cost assumptions stay separate and expose capacity pass criteria', () => {
   const data = structuredClone(fixture);
@@ -198,6 +230,22 @@ test('documented production costs retain unknown required items and keep the min
   assert(!firstCard.includes('class="cost-total">$42'));
   assert(renderScoreboard(data).includes('Minimum to run: $10'));
   assert.equal(data.systems[0].metrics.monthly_cost_usd.value, null, 'The minimum never fills the main cost metric');
+});
+test('overview separates documented deployment counts, cost bounds and diagnostic ingest from measurements', () => {
+  const data = structuredClone(fixture);
+  data.systems[0].footprint.monthly_cost_estimate = { component_counts: { always_on_reader_instances: 1, scheduled_writer_role: 1, tls_proxy_processes: 1 } };
+  const pipes = data.systems.find(system => system.id === 'pipeshub')!;
+  pipes.footprint.monthly_cost_estimate = { status: 'partial', total_usd: null, known_subtotal_usd: 2551.517, component_counts: { app_pods_min: 2, dind_sidecars: 2, proxy_sidecars: 2, mongodb_members: 3, redis_members: 2, qdrant_nodes: 3, neo4j_community_nodes: 1 } };
+  pipes.default_ingest_baseline = { docs_per_min: 7.8042, projected_20000_seconds: 153763, notes: ['Interrupted 1k diagnostic'] };
+  const html = renderScoreboard(data);
+  assert(html.includes('data-overview-deployment="true" data-status="measured" data-value="3"'));
+  assert(html.includes('data-overview-deployment="true" data-status="measured" data-value="15"'));
+  assert(html.includes('reader + writer job + TLS proxy; plus S3'));
+  assert(html.includes('≥ $2,552/month'));
+  assert(html.includes('Known subtotal; enrichment n/e'));
+  assert(html.includes('7.8 docs/min'));
+  assert(html.includes('Diagnostic · projected ~43 h for 20k'));
+  for (const key of ['service_count', 'monthly_cost_usd', 'ingest_wall_s']) assert.equal(pipes.metrics[key].value, null, 'Raw measurements are never overwritten by deployment or diagnostic display values');
 });
 test('zero is a measured result, ratios handle zero baselines and axes stay round', () => {
   const data = structuredClone(fixture);
@@ -278,7 +326,7 @@ test('noncomparable diagnostics cannot produce ratios, heatmap winners or a head
   assert(headlineVerdict(parsed).includes('does not establish a product ranking'));
   // Execute the actual browser ranking function with a minimal DOM surface.
   const source = readFileSync('src/compare.js', 'utf8');
-  const start = source.indexOf('  function ratios(');
+  const start = source.indexOf('  function equalValue(');
   const end = source.indexOf('\n  function update()', start);
   assert(start > 0 && end > start);
   const clientRatios = new Function('results', source.slice(start, end) + '\nreturn ratios;')(data);
@@ -306,7 +354,7 @@ test('ingest overview uses the reported throughput and never infers a missing ra
   data.systems[2].metrics.ingest_wall_s = { status: 'measured', value: 0, unit: 'seconds', n: 1 };
   const html = renderScoreboard(parseResults(data));
   assert(html.includes('data-score-metric="ingest_wall_s"'));
-  assert(html.includes('1,200 s'));
+  assert(html.includes('20.0 min'));
   assert(html.includes('777 docs/min'));
   assert(!html.includes('1,000 docs/min'));
   assert(!html.includes('2,000 docs/min'));
@@ -372,7 +420,7 @@ test('ingest discloses accepted coverage and rejects inconsistent rejection coun
   const parsed = parseResults(data);
   const expected = '19,999 / 20,000 accepted · 1 rejected';
   assert(renderScoreboard(parsed).includes(expected));
-  assert(renderScoreboard(parsed).includes('999.95 docs/min'));
+  assert(renderScoreboard(parsed).includes('1,000 docs/min'));
   const story = renderStories(parsed);
   assert(story.includes(expected));
   assert(story.includes('until every accepted document is searchable'));
@@ -452,7 +500,7 @@ test('an authorized completed alternative represents its product once with visib
   assert(board.includes('/compare/runs/pipeshub--parallel-partitions.json'));
   assert(board.includes('FAIR_SCHEDULING_PARALLEL_PARTITIONS=true, non-default'));
   assert(board.includes('10 docs/min observed over 60 s'));
-  assert(board.includes('PROJECTED 120,000 s'));
+  assert(board.includes('PROJECTED 33.33 h'));
   assert(board.includes('intentionally interrupted 1k smoke index; rate sample only'));
   assert.equal(original.metrics.ingest_wall_s.status, 'n/e');
   assert(!board.includes('data-value="120000"'));

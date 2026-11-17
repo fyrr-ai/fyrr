@@ -25,14 +25,16 @@ if (comparison.benchmark.evidence_archive) {
   await cp(`data/evidence/${archive.url.split('/').at(-1)}`, `dist${archive.url}`);
 }
 const compareScripts = await Promise.all(['lighthouse.js', 'chart.js', 'live.js', 'sea.js', 'compare.js'].map(read));
+const measuredReview = !comparison.synthetic_design_preview && comparison.systems.some(system => Object.values(system.metrics).some(metric => metric.status === 'measured'));
 const compare = (await read('compare.html')).replace('/*BASE*/', base)
   .replace('<!--FAVICON-->', home.match(/<link rel="icon"[^>]+>/)![0])
   .replace('/*COMPARE*/', await read('compare.css'))
   .replace('<!--HEADER-->', header.replaceAll('{ROOT}', '/').replace('href="/compare"', 'href="/compare" aria-current="page"'))
   .replace('<!--FOOTER-->', footer.replace(/href="docs\//g, 'href="/docs/'))
-  .replace('<!--NOTICE-->', comparison.draft ? '<aside class="draft-notice" aria-label="Data status"><div class="wrap"><span>PRELIMINARY / PLACEHOLDER DATA · EnterpriseRAG results pending</span><a href="#methodology">Read the planned method ↗</a></div></aside>' : '')
+  .replace('<!--NOTICE-->', comparison.draft ? `<aside class="draft-notice" aria-label="Data status"><div class="wrap"><span>${measuredReview ? 'PRELIMINARY MEASURED RESULTS · Owner review pending' : 'PRELIMINARY / PLACEHOLDER DATA · EnterpriseRAG results pending'}</span><a href="#methodology">Read the method ↗</a></div></aside>` : '')
   .replace('<!--ROBOTS-->', comparison.draft ? '<meta name="robots" content="noindex,nofollow">' : '')
   .replace('<!--VERDICT-->', escape(headlineVerdict(comparison)))
+  .replace('<!--COMPARISON-SCOPE-->', comparison.systems.some(system => system.id === 'pipeshub' && system.metrics.recall_at_10?.value == null) ? 'Compared where measured. PipesHub: 20k run not completed; see notes.' : 'Compared on complete measurements for each metric.')
   .replace('<!--SYNTHETIC-->', comparison.synthetic_design_preview ? '<div class="synthetic-watermark">SYNTHETIC DESIGN PREVIEW<br><small>INVENTED VALUES · NO BENCHMARK CLAIMS</small></div>' : '')
   .replace('<!--SCOREBOARD-->', renderScoreboard(comparison))
   .replace('<!--STORIES-->', renderStories(comparison))

@@ -4,6 +4,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 
 const base = process.env.SITE_URL ?? 'http://127.0.0.1:8486';
 const report = process.env.REPORT_DIR ?? 'shots/compare';
+const elementShotStyle = '.header,.skip{visibility:hidden!important}';
 const results = JSON.parse(await readFile(process.env.COMPARE_PREVIEW_RESULTS ?? 'data/compare-results.json', 'utf8'));
 await mkdir(report, { recursive: true });
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH, args: ['--no-sandbox'] });
@@ -76,7 +77,7 @@ try {
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Page overflow at ${width}`);
     const overflowing = await page.locator('.panel, .product-card').evaluateAll(elements => elements.filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.className));
     assert.deepEqual(overflowing, [], `Panel overflow at ${width}`);
-    if (results.draft && !results.synthetic_design_preview) assert.equal(await page.locator('.bar i, .whisker').count(), 0, 'Placeholder must never draw fabricated bars');
+    if (results.draft && !results.synthetic_design_preview && !results.systems.some(system => Object.values(system.metrics).some(metric => metric.status === 'measured'))) assert.equal(await page.locator('.bar i, .whisker').count(), 0, 'Placeholder must never draw fabricated bars');
     assert.equal(await page.locator('.synthetic-watermark').count(), results.synthetic_design_preview ? 1 : 0);
     assert.equal(await page.locator('.score-row:visible').first().locator('.score-cell:visible').count(), results.website.overview_metrics.length, 'Every overview column is selected initially');
     const headlineKeys = await page.locator('.score-row').evaluateAll(rows => rows.map(row => row.dataset.system));
@@ -85,6 +86,8 @@ try {
     assert.equal(new Set(headlineRuns.map(system => system.id)).size, headlineRuns.length, 'Exactly one headline representative per product');
     assert.equal(headlineRuns.length, new Set(results.systems.map(system => system.id)).size);
     assert.equal(await page.locator('.score-row:visible .score-cell[data-score-metric="ingest_wall_s"] .score-rate').count(), headlineRuns.length, 'Every representative row exposes ingest throughput');
+    const memoryRuns = headlineRuns.filter(system => system.metrics.idle_rss_bytes?.status === 'measured');
+    if (memoryRuns.length > 1 && memoryRuns.every(system => { const metric = system.metrics.idle_rss_bytes; return metric.n === metric.expected && metric.n === metric.attempted && metric.missing === 0; })) assert.equal(await page.locator('.score-row:visible .score-cell[data-score-metric="idle_rss_bytes"] .is-best').count(), 1, 'Independent memory sampling windows can differ in count without becoming incomplete');
     assert.equal(await page.locator('#story-ingest .metric-panel').count(), 1, 'Ingest story has one wall-time chart');
     assert.equal(await page.locator('#story-ingest .ingest-cost').count(), headlineRuns.length, 'Embedding cost is a secondary line for each representative product');
     assert.equal(await page.locator('#cost-production > .cost-assumptions-grid > .cost-card').count(), headlineRuns.length, 'Production cost assumptions accompany every representative');
@@ -119,6 +122,7 @@ try {
       assert.equal(await page.locator('.score-row[data-system="fyrr"] .score-cell[data-score-metric="recall_at_10"] .relative').textContent(), '-7.0 pp');
     }
     await page.screenshot({ path: `${report}/hero-${suffix}.png` });
+    await page.locator('.scoreboard').screenshot({ path: `${report}/overview-${suffix}.png`, style: elementShotStyle });
     for (const panel of await page.locator('.story-section .metric-panel:visible').all()) {
       await panel.scrollIntoViewIfNeeded();
       await assertBarWidths(page);
@@ -130,7 +134,7 @@ try {
     });
     await page.screenshot({ path: `${report}/footer-${suffix}.png` });
     await page.evaluate(() => window.scrollTo(0, 0));
-    await page.screenshot({ path: `${report}/full-${suffix}.png`, fullPage: true });
+    await page.screenshot({ path: `${report}/full-${suffix}.png`, fullPage: true, style: '.skip{visibility:hidden!important}' });
     await page.locator('.comparison-controls').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await page.screenshot({ path: `${report}/controls-${suffix}.png` });
     await page.locator('#story-speed').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
@@ -141,7 +145,7 @@ try {
       await panel.scrollIntoViewIfNeeded();
       await assertBarWidths(page);
     }
-    await page.locator('#story-speed-c1').screenshot({ path: `${report}/speed-pair-${suffix}.png` });
+    await page.locator('#story-speed-c1').screenshot({ path: `${report}/speed-pair-${suffix}.png`, style: elementShotStyle });
     const queryBefore = await page.locator('.score-row .score-cell[data-score-metric="first_ask_c1_p50_ms"] .score-value').allTextContents();
     await page.locator('#story-speed-tab-c8').click();
     assert.equal(await page.locator('#story-speed-c8 .metric-panel:visible').count(), 2, 'One concurrency toggle switches both timing measures');
@@ -152,9 +156,11 @@ try {
     await page.locator('#story-ingest').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await assertBarWidths(page);
     await page.screenshot({ path: `${report}/ingest-${suffix}.png` });
+    for (const diagnostic of await page.locator('.ingest-diagnostics').all()) await diagnostic.screenshot({ path: `${report}/ingest-diagnostics-${suffix}.png`, style: elementShotStyle });
     await page.locator('#story-footprint').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await page.waitForTimeout(1500);
     await page.screenshot({ path: `${report}/footprint-${suffix}.png` });
+    await page.locator('#cost-production').screenshot({ path: `${report}/production-cost-${suffix}.png`, style: elementShotStyle });
     const overviewBeforeTeam = await page.locator('.score-row').allTextContents();
     await page.locator('#minimum-cost-details > summary').click();
     await page.locator('#cost-tab-team').click();
@@ -162,9 +168,9 @@ try {
     assert.equal(await page.locator('#cost-light').isVisible(), false);
     assert.deepEqual(await page.locator('.score-row').allTextContents(), overviewBeforeTeam, 'Team cost view cannot replace headline values');
     await page.locator('#cost-tab-light').click();
-    await page.locator('#minimum-cost-details').screenshot({ path: `${report}/minimum-cost-${suffix}.png` });
+    await page.locator('#minimum-cost-details').screenshot({ path: `${report}/minimum-cost-${suffix}.png`, style: elementShotStyle });
     await page.locator('#minimum-cost-details > summary').click();
-    if (results.website.lambda_projection) await page.locator('#lambda-projection').screenshot({ path: `${report}/lambda-${suffix}.png` });
+    if (results.website.lambda_projection) await page.locator('#lambda-projection').screenshot({ path: `${report}/lambda-${suffix}.png`, style: elementShotStyle });
     await page.locator('#products').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await page.screenshot({ path: `${report}/products-${suffix}.png` });
     await page.locator('#details > summary').click();
@@ -212,6 +218,31 @@ try {
       for (const id of ['view-first_ask_c1_p50_ms', 'detail-ingest', 'detail-retrieval']) assert.equal(await page.locator(`#${id} .chart-row[data-system="fyrr@concurrency-8"]`).count(), 0, 'Sized C8 row cannot imply an unmeasured track');
       assert.equal(await page.locator('.hero-evidence [data-system="fyrr@concurrency-8"]').count(), 0);
       await sized.uncheck();
+    }
+    for (const variant of results.systems.filter(system => results.variants?.[system.variant]?.experimental)) {
+      const key = variant.id + '@' + variant.variant;
+      const input = page.locator(`[data-select-system][value="${key}"]`);
+      assert.equal(await input.isChecked(), false, 'Experimental runs are optional');
+      await input.check();
+      assert(await page.locator(`#view-first_ask_c8_p50_ms .chart-row[data-system="${key}"]`).isVisible());
+      assert.match(await page.locator(`#view-first_ask_c8_p50_ms .chart-row[data-system="${key}"] .product-name`).textContent(), /experimental/);
+      assert.equal(await page.locator(`.hero-evidence [data-system="${key}"]`).count(), 0, 'Experiments never replace headline rows');
+      await input.uncheck();
+    }
+    const roundoffTie = results.details?.find(row => row.kind === 'question' && row.metric === 'ndcg_at_10' && (!row.variant || row.variant === 'default') && row.results.fyrr?.value != null && row.results.onyx?.value != null && row.results.fyrr.value !== row.results.onyx.value && Math.abs(row.results.fyrr.value - row.results.onyx.value) <= 8 * Number.EPSILON);
+    if (roundoffTie) {
+      for (const input of await page.locator('[data-select-system]').all()) if (!['fyrr', 'onyx'].includes(await input.inputValue())) await input.uncheck();
+      await page.locator('#detail-metric').selectOption('ndcg_at_10');
+      await page.locator('#tab-question').click();
+      await page.locator('#detail-search').fill(roundoffTie.label);
+      const row = page.locator('#detail-question tr[data-detail-metric="ndcg_at_10"]:visible');
+      assert.equal(await row.count(), 1);
+      assert.equal(await row.locator('.is-winner').count(), 2, 'Machine round-off is a tie, not a manufactured win');
+      assert.equal((await row.locator('.relative:visible').allTextContents()).filter(text => text === 'best · tied').length, 2);
+      await page.locator('#detail-search').fill('');
+      await page.locator('#detail-metric').selectOption(results.website.headline_metric);
+      await page.locator('#tab-category').click();
+      for (const input of await page.locator('[data-select-system]').all()) if (input && await input.evaluate(element => element.defaultChecked)) await input.check();
     }
     await page.locator('.metrics-select summary').click();
     for (const p of [50, 95]) await page.locator(`[data-select-metric][value="first_ask_c8_p${p}_ms"]`).uncheck();

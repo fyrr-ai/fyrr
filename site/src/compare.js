@@ -44,11 +44,12 @@
       });
     });
   });
+  function equalValue(value, other) { return Math.abs(value - other) <= 8 * Number.EPSILON * Math.max(1, Math.abs(value), Math.abs(other)); }
   function ratios(cells, direction, heatmap, unit, metricKey) {
     var metadata = results.website.metrics[metricKey];
     var comparable = !metadata || metadata.comparable !== false && !(metadata.scope && metadata.scope.endsWith('-only'));
     var entries = cells.map(function (cell) {
-      var system = !heatmap && metricKey && results.systems.find(function (item) { return (!item.variant || item.variant === 'default' ? item.id : item.id + '@' + item.variant) === cell.dataset.system; });
+      var system = !heatmap && cell.dataset.overviewDeployment !== 'true' && metricKey && results.systems.find(function (item) { return (!item.variant || item.variant === 'default' ? item.id : item.id + '@' + item.variant) === cell.dataset.system; });
       var metric = system ? system.metrics[metricKey] : null;
       return { cell: cell, data: metric ? {
         status: metric.status, value: metric.value, n: metric.n, expected: metric.expected,
@@ -64,10 +65,10 @@
     var measured = entries.filter(function (entry) { return entry.data.status === 'measured' && entry.data.value !== null; });
     var values = measured.map(function (entry) { return entry.data.value; });
     var best = direction === 'higher_is_better' ? Math.max.apply(null, values) : Math.min.apply(null, values);
-    var ties = values.filter(function (value) { return value === best; }).length > 1;
-    var complete = measured.length === entries.length && entries.length > 1 && entries.every(function (entry) {
-      var data = entry.data, first = entries[0].data;
-      return data.missing === 0 && data.n === data.attempted && data.n === data.expected && data.n === first.n && (unit !== 'fraction' || data.samples && data.samples === first.samples);
+    var ties = values.filter(function (value) { return equalValue(value, best); }).length > 1;
+    var complete = measured.length > 1 && measured.every(function (entry) {
+      var data = entry.data, first = measured[0].data;
+      return data.missing === 0 && data.n === data.attempted && data.n === data.expected && (unit !== 'fraction' || data.n === first.n && data.samples && data.samples === first.samples);
     });
     entries.forEach(function (entry) {
       var cell = entry.cell, data = entry.data, label = cell.querySelector('.relative');
@@ -78,14 +79,14 @@
       if (!comparable) { label.textContent = 'diagnostic · unranked'; return; }
       if (!measured.includes(entry) || !direction) { label.textContent = data.status === 'partial' ? 'partial · unranked' : cell.classList.contains('score-cell') ? '' : 'n/e comparison'; return; }
       var divisor = direction === 'higher_is_better' ? data.value : best;
-      var ratio = data.value === best ? 1 : divisor === 0 ? Infinity : (direction === 'higher_is_better' ? best : data.value) / divisor;
+      var ratio = equalValue(data.value, best) ? 1 : divisor === 0 ? Infinity : (direction === 'higher_is_better' ? best : data.value) / divisor;
       var winner = ratio === 1 && complete;
       if (unit === 'fraction' && direction === 'higher_is_better') {
         var gap = (data.value - best) * 100;
         var gapLabel = gap !== 0 && Math.abs(gap) < .05 ? gap.toLocaleString('en', { maximumSignificantDigits: 2 }) : gap.toFixed(1);
-        label.textContent = ratio === 1 ? (winner ? 'best' + (ties ? ' · tied' : '') : 'highest evaluated') : gapLabel + ' pp';
+        label.textContent = ratio === 1 ? (winner ? 'best' + (ties ? ' · tied' : '') : 'incomplete · unranked') : gapLabel + ' pp';
       } else {
-        label.textContent = '×' + (Number.isFinite(ratio) ? ratio.toFixed(2) : '∞') + (ratio === 1 ? (winner ? ' best' + (ties ? ' · tied' : '') : ' evaluated') : '');
+        label.textContent = '×' + (Number.isFinite(ratio) ? ratio.toFixed(2) : '∞') + (ratio === 1 ? (winner ? ' best' + (ties ? ' · tied' : '') : ' · incomplete') : '');
       }
       label.classList.toggle('is-best', winner);
       if (heatmap && winner) cell.classList.add('is-winner');
@@ -173,7 +174,7 @@
   var motion = matchMedia('(prefers-reduced-motion: reduce)');
   var reveal = new IntersectionObserver(function (entries) {
     entries.forEach(function (entry) { if (entry.isIntersecting) { entry.target.classList.add('is-in'); reveal.unobserve(entry.target); } });
-  }, { threshold: .12 });
+  }, { threshold: 0 });
   document.querySelectorAll('.rv').forEach(function (panel) { if (motion.matches) panel.classList.add('is-in'); else reveal.observe(panel); });
   var canvas = document.getElementById('compare-map');
   var labels = document.getElementById('map-labels');
