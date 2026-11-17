@@ -44,6 +44,7 @@ h2 { font-size: clamp(34px, 4vw, 48px); line-height: 1.08; font-weight: 400; let
 .chart-row { display: grid; grid-template-columns: 82px minmax(0, 1fr) 100px; align-items: center; column-gap: 12px; padding: 12px 0; font-size: 13px; }
 .chart-row.is-fyrr .product-name, .chart-row.is-fyrr .chart-value { color: var(--yellow); }
 .product-name { overflow-wrap: anywhere; }
+.run-note { display: block; margin-top: 6px; font-size: 10px; line-height: 15px; color: var(--fg-dim); }
 .product-name a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .chart-value { text-align: right; font-variant-numeric: tabular-nums; }
 .bar { position: relative; height: 12px; background: #171717; }

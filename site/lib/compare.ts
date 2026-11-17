@@ -22,7 +22,7 @@ export type Results = {
   schema_version: '1.1';
   draft: boolean;
   synthetic_design_preview?: boolean;
-  variants?: Record<string, { label: string; headline: boolean; reranker: Record<string, unknown> | null }>;
+  variants?: Record<string, { label: string; headline: boolean; reranker: Record<string, unknown> | null; description?: string; metric_prefixes?: string[] }>;
   details?: { id: string; label: string; kind: 'category' | 'question'; metric: string; variant?: string; results: Record<string, Metric> }[];
   benchmark: Record<string, unknown>;
   protocol: Record<string, unknown>;
@@ -50,6 +50,10 @@ const count = (value: unknown) => Number.isInteger(value) && Number(value) >= 0;
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 export const runKey = (system: { id: string; variant?: string }) => !system.variant || system.variant === 'default' ? system.id : `${system.id}@${system.variant}`;
 const runLabel = (results: Results, system: Results['systems'][number]) => !system.variant || system.variant === 'default' ? system.name : results.variants?.[system.variant]?.label ?? `${system.name} (${name(system.variant)})`;
+function supportsMetric(results: Results, system: Results['systems'][number], key: string) {
+  const prefixes = results.variants?.[system.variant ?? 'default']?.metric_prefixes;
+  return !prefixes || prefixes.some(prefix => key.startsWith(prefix));
+}
 function productSystems(results: Results) {
   const products = new Map<string, Results['systems'][number]>();
   for (const system of results.systems) if (!products.has(system.id) || !system.variant || system.variant === 'default') products.set(system.id, system);
@@ -134,7 +138,7 @@ export function parseResults(data: unknown): Results {
   }
   if (data.variants !== undefined) {
     requireField(object(data.variants), 'variants catalogue');
-    for (const [key, variant] of Object.entries(data.variants)) requireField(/^[a-z][a-z0-9_-]*$/.test(key) && object(variant) && typeof variant.label === 'string' && typeof variant.headline === 'boolean' && (variant.reranker === null || object(variant.reranker)), 'variant metadata');
+    for (const [key, variant] of Object.entries(data.variants)) requireField(/^[a-z][a-z0-9_-]*$/.test(key) && object(variant) && typeof variant.label === 'string' && typeof variant.headline === 'boolean' && (variant.reranker === null || object(variant.reranker)) && (variant.description === undefined || typeof variant.description === 'string') && (variant.metric_prefixes === undefined || strings(variant.metric_prefixes) && variant.metric_prefixes.length > 0 && variant.metric_prefixes.every(prefix => /^[a-z][a-z0-9_]*$/.test(prefix))), 'variant metadata');
   }
   const keys = new Set(data.systems.flatMap(system => Object.keys(system.metrics)));
   requireField(keys.has(w.headline_metric), 'headline metric must exist');
@@ -240,7 +244,7 @@ export function headlineVerdict(results: Results) {
 
 export function renderMetric(results: Results, key: string, options: { tailKey?: string; axisMax?: number; ingest?: boolean } = {}) {
   const meta = results.website.metrics[key];
-  if (meta?.scope === 'fyrr-only') results = { ...results, systems: results.systems.filter(system => system.id === 'fyrr') };
+  results = { ...results, systems: results.systems.filter(system => supportsMetric(results, system, key) && (meta?.scope !== 'fyrr-only' || system.id === 'fyrr')) };
   const cells = results.systems.map(system => system.metrics[key]);
   const unit = cells.find(Boolean)?.unit ?? meta?.unit ?? '';
   const tails = options.tailKey ? results.systems.map(system => system.metrics[options.tailKey!]) : [];
@@ -282,7 +286,7 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
     const breakdown = stageBreakdown(system);
     const cost = system.metrics.embedding_cost_usd;
     return `<div class="chart-row${system.id === 'fyrr' ? ' is-fyrr' : ''}" data-system="${escape(runKey(system))}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-missing="${metric?.missing ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-expected="${metric?.expected ?? ''}" data-samples="${sampleSet(metric)}" role="listitem">
-      <span class="product-name"><a href="/compare/runs/${escape(system.id)}--${escape(system.variant ?? 'default')}.json" title="Download this run JSON">${escape(runLabel(results, system))}</a></span>
+      <span class="product-name"><a href="/compare/runs/${escape(system.id)}--${escape(system.variant ?? 'default')}.json" title="Download this run JSON">${escape(runLabel(results, system))}</a>${results.variants?.[system.variant ?? 'default']?.description ? `<small class="run-note">${escape(results.variants[system.variant ?? 'default'].description)}</small>` : ''}</span>
       <div class="bar${system.id === 'fyrr' ? ' bar--fyrr' : ''}${hasValue ? '' : ' is-empty'}" aria-hidden="true">
         ${hasValue ? `<i style="--w:${pct(metric.value!)}">${breakdown.segments.map((stage, i) => `<span class="ingest-segment" style="width:${metric.value ? stage.value / metric.value * 100 : 0}%;--stage-shade:${Math.min(i * .18, .72)}" title="${escape(stage.label)}: ${escape(format(stage.value, 'seconds'))} s"></span>`).join('')}</i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}
         ${tail?.value != null ? `<b class="tail-tick" style="left:${pct(tail.value)}"></b>${tail.ci95 ? `<b class="whisker whisker--tail" style="--low:${pct(tail.ci95[0])};--high:${pct(tail.ci95[1])}"></b>` : ''}` : ''}
@@ -314,7 +318,7 @@ function renderMetricSet(results: Results, group: string, keys: string[], prefix
   const present = views.filter(view => keys.includes(view.key) || Boolean(view.tailKey && keys.includes(view.tailKey)));
   if (!present.length) return '';
   const max = latency ? Math.max(0, ...results.systems.flatMap(system => keys.flatMap(key => {
-    const metric = system.metrics[key];
+    const metric = supportsMetric(results, system, key) ? system.metrics[key] : undefined;
     return metric?.value != null ? [metric.value, metric.ci95?.[1] ?? 0] : [];
   }))) * 1.1 : undefined;
   return `<div class="metric-set" data-metric-set><div class="metric-tabs" role="tablist" aria-label="${prefix ? `${prefix}metric` : latency ? 'Search concurrency' : 'Retrieval metric'}">${present.map((view, index) => `<button type="button" role="tab" id="tab-${prefix}${escape(view.key)}" aria-controls="view-${prefix}${escape(view.key)}" aria-selected="${index === 0}" tabindex="${index === 0 ? '0' : '-1'}">${escape(view.label)}</button>`).join('')}</div>${present.map((view, index) => `<div role="tabpanel" id="view-${prefix}${escape(view.key)}" aria-labelledby="tab-${prefix}${escape(view.key)}"${index ? ' hidden' : ''}>${renderMetric(results, view.key, { tailKey: view.tailKey, axisMax: max })}</div>`).join('')}</div>`;
