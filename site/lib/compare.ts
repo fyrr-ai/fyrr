@@ -282,22 +282,68 @@ function axisScale(value: number, unit: string) {
 const scopeProduct = (meta: Results['website']['metrics'][string] | undefined) => meta?.scope?.endsWith('-only') ? meta.scope.slice(0, -5) : null;
 const canCompare = (meta: Results['website']['metrics'][string] | undefined) => meta?.comparable !== false && !scopeProduct(meta);
 
-export function headlineVerdict(results: Results) {
-  results = { ...results, systems: headlineSystems(results) };
-  const key = results.website.headline_metric;
-  const meta = results.website.metrics[key];
-  if (!canCompare(meta)) return `${meta?.label ?? 'This metric'} is a diagnostic; it does not establish a product ranking.`;
-  const cells = results.systems.map(system => system.metrics[key]);
-  const complete = cells.every(metric => metric?.status === 'measured' && metric.value !== null && metric.missing === 0 && metric.expected === metric.n && metric.attempted === metric.n && metric.ci95 && metric.sample_ids);
-  const sameSamples = complete && new Set(cells.map(metric => [...metric.sample_ids!].sort().join('\n'))).size === 1;
-  if (results.draft || !sameSamples || new Set(cells.map(metric => metric.n)).size !== 1 || !meta) {
-    return 'Retrieval, search speed, ingest and operating cost are still being measured on the same frozen dataset.';
+function comparisonNarrative(results: Results) {
+  const systems = headlineSystems(results);
+  const own = systems.find(system => system.id === 'fyrr');
+  const peers = systems.filter(system => system.id !== 'fyrr');
+  const pending = { quality: 'Search quality is still being measured', query: 'Query speed is still being measured', ingest: 'Indexing time is still being measured', cost: 'Monthly operating cost is not yet estimated', comparable: false, fasterQueries: false, fasterIngest: false, cheaper: false, fractionOfCost: false };
+  if (results.draft || !own || !peers.length) return pending;
+  const result = { ...pending };
+  const label = (system: Results['systems'][number]) => system.name + (system.variant && system.variant !== 'default' ? ' (non-default configuration)' : '');
+  function complete(key: string, paired = false, ci = false) {
+    const cells = systems.map(system => system.metrics[key]);
+    return canCompare(results.website.metrics[key]) && cells.every(metric => metric?.status === 'measured' && metric.value != null && metric.n > 0 && metric.n === metric.expected && metric.n === metric.attempted && metric.missing === 0 && (!ci || metric.ci95)) && new Set(cells.map(metric => metric.n)).size === 1 && (!paired || cells.every(metric => metric.sample_ids?.length) && new Set(cells.map(metric => [...metric.sample_ids!].sort().join('\n'))).size === 1);
   }
-  const values = cells.map(metric => metric.value!);
-  const best = meta.direction === 'higher_is_better' ? Math.max(...values) : Math.min(...values);
-  const winners = values.flatMap((value, index) => value === best ? [results.systems[index].name + (results.systems[index].variant && results.systems[index].variant !== 'default' ? ' (non-default configuration)' : '')] : []);
-  if (winners.length > 1) return `${winners.join(' and ')} tie on observed ${meta.label.toLowerCase()} at ${format(best, cells[0].unit)}; uncertainty and trade-offs are shown below.`;
-  return `${winners[0]} has the ${meta.direction === 'higher_is_better' ? 'highest' : 'lowest'} observed ${meta.label.toLowerCase()} at ${format(best, cells[0].unit)}; uncertainty and trade-offs are shown below.`;
+  const qualityKey = results.website.headline_metric;
+  if (complete(qualityKey, true, true)) {
+    const best = peers.reduce((best, peer) => peer.metrics[qualityKey].value! > best.metrics[qualityKey].value! ? peer : best);
+    const ownMetric = own.metrics[qualityKey], peerMetric = best.metrics[qualityKey];
+    const gap = (ownMetric.value! - peerMetric.value!) * 100;
+    const overlap = ownMetric.ci95![1] > peerMetric.ci95![0] && peerMetric.ci95![1] > ownMetric.ci95![0];
+    result.comparable = Math.abs(gap) <= 2 + 1e-10 || overlap;
+    const gapLabel = gap !== 0 && Math.abs(gap) < .05 ? Math.abs(gap).toLocaleString('en', { maximumSignificantDigits: 2 }) : Math.abs(gap).toFixed(1);
+    const comparison = gap === 0 ? `tied with ${label(best)}` : `${gapLabel} pp ${gap > 0 ? 'ahead of' : 'behind'} ${label(best)}`;
+    result.quality = result.comparable ? `Comparable observed search quality (${comparison}${Math.abs(gap) > 2 ? '; 95% intervals overlap' : ''})` : `${results.website.metrics[qualityKey].label} is ${comparison}`;
+  }
+  const queryKey = 'first_ask_c1_p50_ms';
+  if (complete(queryKey, false, true)) {
+    const fastest = peers.reduce((best, peer) => peer.metrics[queryKey].value! < best.metrics[queryKey].value! ? peer : best);
+    const value = own.metrics[queryKey].value!, rival = fastest.metrics[queryKey].value!;
+    result.fasterQueries = value < rival;
+    const separated = result.fasterQueries && peers.every(peer => own.metrics[queryKey].ci95![1] < peer.metrics[queryKey].ci95![0]);
+    result.query = separated ? 'Faster queries' : result.fasterQueries ? 'Lower observed median query latency' : value === rival ? `Median query latency ties ${label(fastest)}` : `${label(fastest)} has lower observed median query latency`;
+  }
+  if (complete('ingest_wall_s')) {
+    const fastest = peers.reduce((best, peer) => peer.metrics.ingest_wall_s.value! < best.metrics.ingest_wall_s.value! ? peer : best);
+    const value = own.metrics.ingest_wall_s.value!, rival = fastest.metrics.ingest_wall_s.value!;
+    result.fasterIngest = value < rival;
+    result.ingest = result.fasterIngest ? 'Faster measured indexing' : value === rival ? `Indexing time ties ${label(fastest)}` : `${label(fastest)} has lower measured indexing time`;
+  }
+  if (complete('monthly_cost_usd') && systems.every(system => {
+    const model = system.footprint.monthly_cost_estimate;
+    if (!object(model) || !object(model.assumptions) || !object(model.components)) return false;
+    const assumptions = model.assumptions, components = model.components;
+    const reference = systems[0].footprint.monthly_cost_estimate;
+    if (!object(reference) || !object(reference.assumptions)) return false;
+    const common = reference.assumptions;
+    const sameWorkload = ['hours', 'documents', 'searches_month', 'updated_documents_daily_fraction'].every(key => finite(assumptions[key]) && Number(assumptions[key]) >= 0 && assumptions[key] === common[key]);
+    const ram = assumptions.instance_ram_gib ?? assumptions.ram_gib;
+    const peak = system.metrics.load_rss_peak_bytes;
+    return sameWorkload && ['measured', 'estimated'].includes(String(model.status)) && model.total_usd === system.metrics.monthly_cost_usd.value && Array.isArray(model.missing) && model.missing.length === 0 && finite(ram) && peak?.status === 'measured' && peak.value != null && ram * 1024 ** 3 >= peak.value && ['compute_usd_month', 'storage_usd_month', 'embedding_usd_per_document', 'llm_enrichment_usd_per_document'].every(key => finite(components[key]) && Number(components[key]) >= 0) && Array.isArray(model.sources) && model.sources.length > 0;
+  })) {
+    const cheapest = peers.reduce((best, peer) => peer.metrics.monthly_cost_usd.value! < best.metrics.monthly_cost_usd.value! ? peer : best);
+    const value = own.metrics.monthly_cost_usd.value!, rival = cheapest.metrics.monthly_cost_usd.value!;
+    result.cheaper = value < rival;
+    result.fractionOfCost = result.cheaper && value / rival <= .5;
+    result.cost = result.fractionOfCost ? `A fraction of the estimated running cost (${format(value / rival, 'fraction')} of the cheapest alternative)` : result.cheaper ? 'Lower estimated monthly running cost' : value === rival ? `Estimated monthly running cost ties ${label(cheapest)}` : `${label(cheapest)} has lower estimated monthly running cost`;
+  }
+  return result;
+}
+export function headlineVerdict(results: Results) {
+  const meta = results.website.metrics[results.website.headline_metric];
+  if (!canCompare(meta)) return `${meta?.label ?? 'This metric'} is a diagnostic; it does not establish a product ranking.`;
+  const narrative = comparisonNarrative(results);
+  return [narrative.quality, narrative.query, narrative.ingest, narrative.cost].join('. ') + '.';
 }
 
 export function renderMetric(results: Results, key: string, options: { tailKey?: string; axisMax?: number; ingest?: boolean } = {}) {
@@ -412,10 +458,32 @@ export function renderScoreboard(results: Results) {
 
 export function renderStories(results: Results) {
   const baseline = { ...results, systems: headlineSystems(results) };
+  const narrative = comparisonNarrative(results);
   return (results.website.stories ?? []).map((story, index) => {
     const chart = story.group === 'ingest' ? renderMetric(baseline, story.metrics[0], { ingest: true }) : story.group === 'speed' ? renderMetric(baseline, story.metrics[0], { tailKey: story.metrics[1] }) : story.metrics.length === 1 ? renderMetric(baseline, story.metrics[0]) : renderMetricSet(baseline, story.group, story.metrics, `${story.id}-`);
-    return `<section class="section story-section" id="${escape(story.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">0${index + 1} / ${escape(results.website.groups.find(group => group.id === story.group)?.label ?? story.group)}</p><h2>${escape(story.title)}</h2><p class="sub">${escape(story.description)}</p></div>${story.group === 'footprint' ? architecture : ''}${chart}<a class="text-link" href="#detail-${escape(story.group)}">${escape(results.website.groups.find(group => group.id === story.group)?.label ?? 'Full')} details <span aria-hidden="true">↘</span></a></div></section>`;
+    const title = story.group === 'footprint' ? narrative.fractionOfCost ? 'Costs a fraction to run.' : narrative.cheaper ? 'Lower estimated running cost.' : 'What it costs to run.' : story.group === 'speed' ? narrative.fasterQueries ? 'Answers fast.' : 'Time to the evidence.' : story.group === 'ingest' ? narrative.fasterIngest ? 'Indexes fast.' : 'Indexing time.' : story.group === 'retrieval' ? `Finds the right documents${narrative.comparable ? ' (comparable)' : ''}.` : story.title;
+    return `<section class="section story-section${index === 0 && story.group === 'footprint' ? ' story-section--lead' : ''}" id="${escape(story.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">0${index + 1} / ${escape(results.website.groups.find(group => group.id === story.group)?.label ?? story.group)}</p><h2>${escape(title)}</h2><p class="sub">${escape(story.description)}</p></div>${story.group === 'footprint' ? architecture : ''}${chart}${story.group === 'footprint' ? renderCostAssumptions(baseline) : ''}<a class="text-link" href="#detail-${escape(story.group)}">${escape(results.website.groups.find(group => group.id === story.group)?.label ?? 'Full')} details <span aria-hidden="true">↘</span></a></div></section>`;
   }).join('');
+}
+function renderCostAssumptions(results: Results) {
+  const fact = (value: unknown, unit: string) => finite(value) ? escape(format(value, unit)) + (unit === 'GiB' ? ' GiB' : '') : typeof value === 'string' ? escape(value) : 'n/e';
+  return `<aside class="cost-assumptions"><h3>What the estimate includes</h3><p class="note">Instance size must follow measured memory. Hosting, storage and API usage are separate inputs; unknown inputs stay n/e. Document enrichment is separate from embeddings and from one-time ingestion.</p><div class="cost-assumptions-grid">${results.systems.map(system => {
+    const model = object(system.footprint.monthly_cost_estimate) ? system.footprint.monthly_cost_estimate : {};
+    const assumptions = object(model.assumptions) ? model.assumptions : {};
+    const components = object(model.components) ? model.components : {};
+    const peak = system.metrics.load_rss_peak_bytes;
+    const facts = [
+      ['Measured peak memory', peak?.value != null ? escape(format(peak.value, peak.unit)) : 'n/e'],
+      ['Instance', fact(assumptions.instance_name, '')],
+      ['Instance memory', fact(assumptions.instance_ram_gib ?? assumptions.ram_gib, 'GiB')],
+      ['Compute / month', fact(components.compute_usd_month, 'USD')],
+      ['Storage / month', fact(components.storage_usd_month, 'USD')],
+      ['Embedding / accepted document', fact(components.embedding_usd_per_document, 'USD')],
+      ['LLM enrichment / accepted document', fact(components.llm_enrichment_usd_per_document, 'USD')],
+    ];
+    const sources = Array.isArray(model.sources) ? model.sources : [];
+    return `<article class="cost-card" data-system="${escape(runKey(system))}"><h4>${escape(runLabel(results, system))}</h4><dl>${facts.map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join('')}</dl>${Array.isArray(model.missing) && model.missing.length ? `<p class="note">Missing: ${escape(model.missing.join('; '))}</p>` : ''}${Array.isArray(model.notes) && model.notes.length ? `<p class="note">${escape(model.notes.join(' '))}</p>` : ''}<p class="note">Scenario: ${fact(assumptions.hours, '')} h/month · ${fact(assumptions.documents, '')} documents · ${fact(assumptions.searches_month, '')} searches/month · ${fact(assumptions.updated_documents_daily_fraction, 'fraction')} documents updated daily.</p>${sources.map(source => object(source) && typeof source.url === 'string' ? `<p class="note"><a href="${link(source.url)}">${escape(source.label ?? 'Price source')} ↗</a>${typeof source.date === 'string' ? ` · ${escape(source.date)}` : ''}</p>` : '').join('')}<details><summary>Workload, prices &amp; full calculation</summary><pre>${escape(JSON.stringify(model, null, 2))}</pre></details></article>`;
+  }).join('')}</div></aside>`;
 }
 
 export function renderSections(results: Results, prefix = '') {

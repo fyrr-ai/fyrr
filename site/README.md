@@ -88,8 +88,9 @@ time is labelled “Other / unreported”. Per-stage measurements stay in detail
 Metrics marked `comparable: false` show diagnostic values without ratios or win
 labels. This also applies to scoped engine diagnostics and filtered selections.
 
-The comparison opens with a one-row-per-product scoreboard, followed by four
-short chart sections and the product trade-offs. Primary speed is first-ask
+The comparison opens with a one-row-per-product scoreboard ordered by monthly
+cost, services, memory, query speed, ingest and quality, followed by four
+short chart sections: cost, query speed, ingest and quality. Product trade-offs follow. Primary speed is first-ask
 latency with fresh query caches; repeated-query timings are secondary. The
 detailed notebook is collapsed initially; its links open the relevant section. System and
 metric chips recompute the view. Selection links preserve filters, tabs,
@@ -120,7 +121,11 @@ version/commit and configuration belong in public results.
 Unavailable/invalid measurements have null values. Partial values carry
 an asterisk and cannot establish a product win. Fraction axes cover
 0–100%; other axes start at zero and include the full confidence interval.
-No metric is sorted to favor a product. Retrieval is primary; answer quality is secondary and does not block primary measurements.
+No metric is sorted to favor a product. Hero clauses and story titles are derived
+from complete comparable evidence: observed quality gaps/intervals, C1 latency,
+ingest wall time and a complete monthly cost model. Cost claims require explicit
+assumptions, components and no missing inputs; the visible cost cards show measured
+peak memory, selected instance, storage, embedding and LLM enrichment inputs. Retrieval is primary; answer quality is secondary and does not block primary measurements.
 
 Import a new benchmark envelope with:
 
