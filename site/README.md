@@ -144,8 +144,9 @@ an asterisk and cannot establish a product win. Fraction axes cover
 No metric is sorted to favor a product. Hero clauses and story titles are derived
 from complete comparable evidence: observed quality gaps/intervals, C1 latency,
 ingest wall time and a complete monthly cost model. Cost claims require a complete documented-production model, matched workload,
-priced required line items and no missing inputs; the visible cost cards show measured
-peak memory, selected instance, storage, embedding and LLM enrichment inputs. Public results cover retrieval, latency, ingest, footprint and cost. Shared answer scoring and its model/protocol artifacts remain private.
+priced required line items and no missing inputs. The production cards show documented
+resources and managed services; the separate minimum shows measured capacity and
+peak memory. Both disclose storage, embedding and LLM enrichment inputs. Public results cover retrieval, latency, ingest, footprint and cost. Shared answer scoring and its model/protocol artifacts remain private.
 
 Import a new benchmark envelope with:
 
@@ -191,3 +192,9 @@ or resolved configurations; use environment-variable names only.
 Keep the homepage's procedural map, copy and responsive layout.
 Documentation code blocks use build-time Shiki highlighting and copy the
 original text. Never commit `.content/`, `.source/`, `.next/` or `dist/`.
+
+A reviewed evidence bundle under 20 MB belongs in `data/evidence/`, with
+`benchmark.evidence_archive` recording its local `/compare/evidence/` URL,
+SHA256 and byte length. Build and deploy verification compare the actual bytes
+to that digest. Larger bundles stay outside the site until hosting is decided.
+Do not place evidence in generated `public/`; content preparation replaces it.

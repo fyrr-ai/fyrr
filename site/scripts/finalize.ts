@@ -1,8 +1,9 @@
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { readResults, assertPublishable, escape, headlineVerdict, renderScoreboard, renderStories, renderFeatures, renderSections, renderProducts, renderMethodology, renderControls, renderDetailView } from '../lib/compare';
+import { readResults, verifyEvidenceArchive, assertPublishable, escape, headlineVerdict, renderScoreboard, renderStories, renderFeatures, renderSections, renderProducts, renderMethodology, renderControls, renderDetailView } from '../lib/compare';
 
 const comparison = await readResults();
 if (process.env.SITE_ALLOW_DRAFT_COMPARE !== '1') assertPublishable(comparison);
+await verifyEvidenceArchive(comparison);
 
 await rm('dist', { recursive: true, force: true });
 await cp('out', 'dist', { recursive: true });
@@ -18,6 +19,11 @@ const home = (await read('page.html')).replace('/*BASE*/', base).replace('/*SECT
   .replace('<!--SCRIPTS-->', scripts.map(code => `<script>\n${code}</script>\n`).join(''));
 await writeFile('dist/index.html', home);
 await mkdir('dist/compare', { recursive: true });
+if (comparison.benchmark.evidence_archive) {
+  const archive = comparison.benchmark.evidence_archive as { url: string };
+  await mkdir('dist/compare/evidence', { recursive: true });
+  await cp(`data/evidence/${archive.url.split('/').at(-1)}`, `dist${archive.url}`);
+}
 const compareScripts = await Promise.all(['lighthouse.js', 'chart.js', 'live.js', 'sea.js', 'compare.js'].map(read));
 const compare = (await read('compare.html')).replace('/*BASE*/', base)
   .replace('<!--FAVICON-->', home.match(/<link rel="icon"[^>]+>/)![0])
