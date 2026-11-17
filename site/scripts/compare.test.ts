@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readResults, parseResults, assertPublishable, headlineVerdict, comparisonScope, headlineSystems, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderDetailView, renderControls, renderLambdaProjection, lambdaProjectionCost, renderMethodology, renderProvenance, clientResults, verifyEvidenceArchive, relativeValue } from '../lib/compare';
+import { type Results, readResults, parseResults, assertPublishable, headlineVerdict, comparisonScope, headlineSystems, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderDetailView, renderControls, renderLambdaProjection, lambdaProjectionCost, renderMethodology, renderProvenance, clientResults, verifyEvidenceArchive, relativeValue } from '../lib/compare';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -583,6 +583,27 @@ test('a missing ingest clock cannot hide independent search evidence or verified
     assert.throws(() => parseResults(data), /verified inventory and late probe/);
   }
 });
+test('ordinary complete and unverified ingest states reconcile without gating other metrics', () => {
+  const data = structuredClone(fixture), run = data.systems[0];
+  run.ingest_coverage = { submitted: 20000, accepted: 19999, rejected: 1, rejected_documents: ['rejected'], searchable: 19999, pending: 0, pending_documents: [] };
+  for (const key of ['ingest_wall_s', 'ingest_docs_per_min']) Object.assign(run.metrics[key], { status: 'measured', value: 100, n: 1, expected: 1, attempted: 1, missing: 0, sample_ids: ['ingest'] });
+  run.ingest_completion = { status: 'verified_complete', canonical_timing_valid: true, artifact: 'runtime/test/ingest.json', verified_inventory: true, verified_searchable: true, all_accepted_searchable: true, searchable: 19999, pending: 0, resume_evidence: null };
+  assert.equal(parseResults(data).systems[0].ingest_completion?.status, 'verified_complete');
+  for (const mutate of [
+    (state: Results['systems'][number]) => { assert(state.ingest_completion?.status === 'verified_complete'); state.ingest_completion.searchable = 20000; },
+    (state: Results['systems'][number]) => { assert(state.ingest_completion); Object.assign(state.ingest_completion, { canonical_timing_valid: false }); },
+    (state: Results['systems'][number]) => { state.metrics.ingest_wall_s.value = null; state.metrics.ingest_wall_s.status = 'n/e'; },
+  ]) {
+    const bad = structuredClone(data); mutate(bad.systems[0]);
+    assert.throws(() => parseResults(bad), /completion|searchability|timing/);
+  }
+  run.ingest_completion = { status: 'not_verified', canonical_timing_valid: false, artifact: 'runtime/test/ingest.json', verified_inventory: false, verified_searchable: false, all_accepted_searchable: false, searchable: null, pending: null, resume_evidence: null };
+  for (const key of ['ingest_wall_s', 'ingest_docs_per_min']) Object.assign(run.metrics[key], { status: 'n/e', value: null, n: 0, expected: 0, attempted: 0, missing: 0, sample_ids: [] });
+  run.metrics.first_ask_c8_p50_ms = { status: 'measured', value: 10, unit: 'ms', n: 1, expected: 1, attempted: 1, missing: 0 };
+  assert.equal(parseResults(data).systems[0].metrics.first_ask_c8_p50_ms.status, 'measured');
+  run.ingest_completion.verified_searchable = true as false;
+  assert.throws(() => parseResults(data), /unverified completion/);
+});
 test('partial input coverage retains measured search scores and discloses pending documents', () => {
   const data = structuredClone(fixture);
   const run = { ...structuredClone(data.systems.find(system => system.id === 'pipeshub')!), variant: 'parallel-partitions', headline_note: 'Non-default parallel scheduling; partial searchability disclosed.', notes: ['Same question set and gold; pending duplicate copies are not excluded from scoring.'] };
@@ -598,6 +619,7 @@ test('partial input coverage retains measured search scores and discloses pendin
   }
   data.variants!['parallel-partitions'] = { label: 'PipesHub parallel scheduling', headline: true, systems: ['pipeshub'], reranker: null, description: run.headline_note, source_url: 'https://example.test/config' };
   data.systems.push(run);
+  run.background_activity = { enrichment_active: true, boundaries: [{ phase: 'measurement', boundary: 'start', completed: 10, pending: 19990, failed: 0 }, { phase: 'measurement', boundary: 'end', completed: 20, pending: 19980, failed: 0 }] };
   const parsed = parseResults(data);
   const selected = headlineSystems(parsed).find(system => system.id === 'pipeshub')!;
   assert.equal(selected.variant, 'parallel-partitions');
@@ -608,6 +630,8 @@ test('partial input coverage retains measured search scores and discloses pendin
   assert.equal(selected.metrics.searchable_coverage_fraction.value, .9999);
   for (const html of [renderScoreboard(parsed), renderMetric(parsed, 'recall_at_10'), renderMetric(parsed, 'first_ask_c1_p50_ms')]) {
     assert(html.includes('Partial searchability'));
+    assert(html.includes('Background document enrichment active'));
+    assert(html.includes('Enrichment completed: 10 → 20'));
     assert(html.includes('99.99% searchable versus 100.0% accepted'));
     assert(html.includes('19,998 / 20,000 submitted; 2 pending'));
   }
@@ -616,10 +640,10 @@ test('partial input coverage retains measured search scores and discloses pendin
   for (const mutate of [
     (system: (typeof fixture.systems)[number]) => { system.ingest_coverage!.pending = 3; },
     (system: (typeof fixture.systems)[number]) => { system.ingest_coverage!.pending_documents = []; },
-    (system: (typeof fixture.systems)[number]) => { system.ingest_completion!.resume_evidence.native_inventory_count = 20000; },
-    (system: (typeof fixture.systems)[number]) => { system.ingest_completion!.resume_evidence.documents = 20000; },
+    (system: (typeof fixture.systems)[number]) => { system.ingest_completion!.resume_evidence!.native_inventory_count = 20000; },
+    (system: (typeof fixture.systems)[number]) => { system.ingest_completion!.resume_evidence!.documents = 20000; },
     (system: (typeof fixture.systems)[number]) => { system.ingest_completion!.verified_searchable = true; },
-    (system: (typeof fixture.systems)[number]) => { system.ingest_completion!.resume_evidence.late_probe_verified = false as true; },
+    (system: (typeof fixture.systems)[number]) => { system.ingest_completion!.resume_evidence!.late_probe_verified = false as true; },
     (system: (typeof fixture.systems)[number]) => { system.metrics.ingest_wall_s = { status: 'measured', value: 1, unit: 'seconds', n: 1, expected: 1, attempted: 1, missing: 0 }; },
   ]) {
     const bad = structuredClone(data);

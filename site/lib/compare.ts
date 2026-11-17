@@ -16,7 +16,10 @@ export type Metric = {
   notes?: string[];
 };
 type ResumeEvidence = Record<string, unknown> & { submitted: number; accepted: number; rejected: number; documents: number; native_inventory_verified: true; native_inventory_count: number; late_probe_verified: true };
-type IngestCompletion = { canonical_timing_valid: false; artifact: string } & (
+type IngestCompletion =
+  | { status: 'verified_complete'; canonical_timing_valid: true; artifact: string; verified_searchable: true; verified_inventory: true; all_accepted_searchable: true; searchable: number; pending: 0; resume_evidence: null }
+  | { status: 'not_verified'; canonical_timing_valid: false; artifact: string; verified_searchable: false; verified_inventory: false; all_accepted_searchable: false; searchable: null; pending: null; resume_evidence: null }
+  | { canonical_timing_valid: false; artifact: string } & (
   { status: 'verified_complete_after_resume'; verified_searchable: true; verified_inventory?: true; all_accepted_searchable?: true; resume_evidence: ResumeEvidence }
   | { status: 'verified_partial_coverage'; verified_inventory: true; verified_searchable: false; all_accepted_searchable: false; searchable: number; pending: number; resume_evidence: ResumeEvidence & { searchable: number; pending: number; pending_documents: unknown[] } }
 );
@@ -50,6 +53,7 @@ export type Results = {
     headline_note?: string;
     default_ingest_baseline?: { docs_per_min?: number | null; interval_seconds?: number | null; newly_completed_documents?: number | null; projected_20000_seconds?: number | null; artifact?: string; notes?: string[] };
     ingest_diagnostics?: (Record<string, unknown> & { configuration_id: string; comparable: false; docs_per_min?: number | null; interval_seconds?: number | null; newly_completed_documents?: number | null; projected_20000_seconds?: number | null; notes?: string[] })[];
+    background_activity?: { enrichment_active: boolean; boundaries: { phase: string; boundary: string; completed: number; pending: number; failed: number }[] };
     ingest_completion?: IngestCompletion;
     ingest_coverage?: { submitted: number | null; accepted: number | null; rejected: number | null; rejected_documents: unknown[]; searchable?: number | null; pending?: number | null; pending_documents?: unknown[] };
   }[];
@@ -190,6 +194,10 @@ export function parseResults(data: unknown): Results {
         requireField(['docs_per_min', 'interval_seconds', 'projected_20000_seconds'].every(key => diagnostic[key] == null || finite(diagnostic[key]) && Number(diagnostic[key]) >= 0) && (diagnostic.newly_completed_documents == null || count(diagnostic.newly_completed_documents)) && (diagnostic.notes === undefined || strings(diagnostic.notes)), `${system.id} ingest diagnostic observations`);
       }
     }
+    if (system.background_activity !== undefined) {
+      const activity = system.background_activity;
+      requireField(object(activity) && typeof activity.enrichment_active === 'boolean' && Array.isArray(activity.boundaries) && activity.boundaries.every(row => object(row) && typeof row.phase === 'string' && ['start', 'end'].includes(String(row.boundary)) && ['completed', 'pending', 'failed'].every(key => count(row[key]))), `${system.id} background enrichment boundaries`);
+    }
     if (system.ingest_coverage !== undefined) {
       const coverage = system.ingest_coverage;
       requireField(object(coverage) && ['submitted', 'accepted', 'rejected'].every(key => coverage[key] === null || count(coverage[key])) && Array.isArray(coverage.rejected_documents), `${system.id} ingest coverage counts`);
@@ -204,7 +212,19 @@ export function parseResults(data: unknown): Results {
   }
   for (const system of data.systems) if (system.ingest_completion !== undefined) {
     const completion = system.ingest_completion;
-    requireField(object(completion) && ['verified_complete_after_resume', 'verified_partial_coverage'].includes(String(completion.status)) && completion.canonical_timing_valid === false && typeof completion.artifact === 'string' && object(completion.resume_evidence), `${system.id} verified resume completion`);
+    requireField(object(completion) && typeof completion.artifact === 'string', `${system.id} ingest completion metadata`);
+    if (completion.status === 'verified_complete') {
+      requireField(completion.canonical_timing_valid === true && completion.verified_searchable === true && completion.verified_inventory === true && completion.all_accepted_searchable === true && completion.resume_evidence === null && count(completion.searchable) && completion.pending === 0, `${system.id} verified completion state`);
+      requireField(object(system.ingest_coverage) && completion.searchable === system.ingest_coverage.accepted && (system.ingest_coverage.searchable === undefined || completion.searchable === system.ingest_coverage.searchable) && (system.ingest_coverage.pending === undefined || system.ingest_coverage.pending === 0), `${system.id} completed searchability must match accepted documents`);
+      requireField(['ingest_wall_s', 'ingest_docs_per_min'].every(key => object(system.metrics[key]) && system.metrics[key].status === 'measured' && finite(system.metrics[key].value)), `${system.id} complete canonical ingest timing`);
+      continue;
+    }
+    if (completion.status === 'not_verified') {
+      requireField(completion.canonical_timing_valid === false && completion.verified_searchable === false && completion.verified_inventory === false && completion.all_accepted_searchable === false && completion.searchable === null && completion.pending === null && completion.resume_evidence === null, `${system.id} unverified completion state`);
+      requireField(['ingest_wall_s', 'ingest_docs_per_min'].every(key => object(system.metrics[key]) && system.metrics[key].value === null), `${system.id} unverified ingest timing`);
+      continue;
+    }
+    requireField(['verified_complete_after_resume', 'verified_partial_coverage'].includes(String(completion.status)) && completion.canonical_timing_valid === false && typeof completion.artifact === 'string' && object(completion.resume_evidence), `${system.id} verified resume completion`);
     const evidence = completion.resume_evidence;
     requireField(evidence.native_inventory_verified === true && evidence.late_probe_verified === true && ['submitted', 'accepted', 'rejected', 'documents', 'native_inventory_count'].every(key => count(evidence[key])) && Number(evidence.accepted) + Number(evidence.rejected) === evidence.submitted, `${system.id} resume completion needs verified inventory and late probe`);
     if (completion.status === 'verified_partial_coverage') {
@@ -365,10 +385,14 @@ function renderRunNotes(results: Results, system: Results['systems'][number], cl
   const unavailable = missing ? `<small class="${className} unavailable-reason">${escape(missingMeasurements.join(' and '))}: n/e. See the run’s interruption and configuration notes.</small>` : '';
   const searchability = searchabilityCounts(system);
   const partial = searchability && searchability.pending > 0 ? `<small class="${className} partial-coverage">Partial searchability: ${format(searchability.searchable / searchability.submitted, 'fraction')} searchable versus ${format(searchability.accepted / searchability.submitted, 'fraction')} accepted (${format(searchability.searchable, 'documents')} / ${format(searchability.submitted, 'documents')} submitted; ${format(searchability.pending, 'documents')} pending).${hasSearchEvidence(results, system) ? ' Search measured at this coverage.' : ''}</small>` : '';
+  const activity = system.background_activity;
+  const start = activity?.boundaries.find(row => row.phase === 'measurement' && row.boundary === 'start');
+  const end = activity?.boundaries.find(row => row.phase === 'measurement' && row.boundary === 'end');
+  const background = activity?.enrichment_active ? `<small class="${className} background-activity">Background document enrichment active during search measurements.${start && end ? ` Enrichment completed: ${format(start.completed, 'documents')} → ${format(end.completed, 'documents')}; pending: ${format(start.pending, 'documents')} → ${format(end.pending, 'documents')}; failed: ${format(start.failed, 'documents')} → ${format(end.failed, 'documents')}.` : ''}</small>` : '';
   const baseline = system.default_ingest_baseline;
   const expanded = includeBaseline && (note.length > 220 || missing || baseline?.notes?.length) ? `<details class="${className} run-notes-expanded"><summary>Full configuration &amp; interruption notes</summary>${note ? `<p>${escape(note)}</p>` : ''}${system.notes.map(note => `<p>${escape(note)}</p>`).join('')}${baseline?.notes?.map(note => `<p>${escape(note)}</p>`).join('') ?? ''}</details>` : '';
-  if (!baseline || !includeBaseline) return marker + unavailable + partial + expanded;
-  return marker + unavailable + partial + `<small class="${className} default-ingest-baseline">Default ingest sample (interrupted 1k): ${baseline.docs_per_min != null ? `${escape(format(baseline.docs_per_min, 'docs/min'))} docs/min observed${baseline.interval_seconds != null ? ` over ${escape(format(baseline.interval_seconds, 'seconds'))} s` : ''}` : 'steady rate n/e'}; 20k: ${baseline.projected_20000_seconds != null ? `PROJECTED ${(baseline.projected_20000_seconds / 3600).toFixed(2)} h` : 'projection n/e'}. Default 20k not completed. Sampling limitations are below.</small>` + expanded;
+  if (!baseline || !includeBaseline) return marker + unavailable + partial + background + expanded;
+  return marker + unavailable + partial + background + `<small class="${className} default-ingest-baseline">Default ingest sample (interrupted 1k): ${baseline.docs_per_min != null ? `${escape(format(baseline.docs_per_min, 'docs/min'))} docs/min observed${baseline.interval_seconds != null ? ` over ${escape(format(baseline.interval_seconds, 'seconds'))} s` : ''}` : 'steady rate n/e'}; 20k: ${baseline.projected_20000_seconds != null ? `PROJECTED ${(baseline.projected_20000_seconds / 3600).toFixed(2)} h` : 'projection n/e'}. Default 20k not completed. Sampling limitations are below.</small>` + expanded;
 }
 
 function renderIngestDiagnostics(results: Results) {
