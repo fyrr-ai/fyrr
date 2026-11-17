@@ -51,6 +51,7 @@ h2 { font-size: clamp(34px, 4vw, 48px); line-height: 1.08; font-weight: 400; let
 .bar > i:has(.ingest-segment) { display: flex; }
 .ingest-segment { display: block; height: 100%; background: rgb(0 0 0 / var(--stage-shade)); border-left: 1px solid #0008; }
 .ingest-segment:first-child { border-left: 0; }
+.ingest-coverage { grid-column: 1 / -1; text-align: right; margin-top: 6px; font-size: 10px; color: var(--fg-muted); }
 .ingest-cost { grid-column: 2 / -1; text-align: right; margin-top: 6px; font-size: 10px; color: var(--fg-dim); }
 .bar.is-empty { background: repeating-linear-gradient(90deg, #282828 0 1px, transparent 1px 8px); height: 1px; }
 .bar i { display: block; height: 100%; width: var(--w); background: #4a4a4a; transform-origin: 0 50%; }
@@ -180,6 +181,7 @@ summary { cursor: pointer; padding-block: 6px; }
 .score-cell { min-width: 0; font-variant-numeric: tabular-nums; }
 .score-label { display: none; }
 .score-rate { display: block; color: var(--fg-dim); font-size: 10px; line-height: 14px; margin-top: 2px; }
+.score-coverage { display: block; font-size: 9px; line-height: 12px; margin-top: 3px; color: var(--fg-muted); overflow-wrap: anywhere; }
 .score-value { display: block; font-size: 17px; line-height: 22px; }
 .score-cell .bar { height: 6px; margin-top: 10px; }
 .score-cell .bar.is-empty { height: 1px; margin-block: 12px 3px; }

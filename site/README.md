@@ -74,6 +74,10 @@ one dark palette, with no light-theme variant.
 
 The overview reads fresh ingest wall time (`ingest_wall_s`) and throughput
 (`ingest_docs_per_min`) from the results JSON. It does not infer a missing rate.
+Ingest ends when every accepted document is searchable. Accepted/submitted and
+rejected counts stay visible beside timing; raw rejection details remain in
+provenance. The benchmark derives throughput from accepted documents, not submitted
+documents. Coverage counts and rejection-list length must reconcile.
 The “Indexes fast” chart shows embedding cost as a secondary line. Optional metric
 catalogue fields `stage_of: "ingest_wall_s"` and `stage_order` describe disjoint
 submission-to-searchable elapsed stages in seconds. Setup time and cumulative or

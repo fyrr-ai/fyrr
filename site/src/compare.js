@@ -81,7 +81,9 @@
       var ratio = data.value === best ? 1 : divisor === 0 ? Infinity : (direction === 'higher_is_better' ? best : data.value) / divisor;
       var winner = ratio === 1 && complete;
       if (unit === 'fraction' && direction === 'higher_is_better') {
-        label.textContent = ratio === 1 ? (winner ? 'best' + (ties ? ' · tied' : '') : 'highest evaluated') : ((data.value - best) * 100).toFixed(1) + ' pp';
+        var gap = (data.value - best) * 100;
+        var gapLabel = gap !== 0 && Math.abs(gap) < .05 ? gap.toLocaleString('en', { maximumSignificantDigits: 2 }) : gap.toFixed(1);
+        label.textContent = ratio === 1 ? (winner ? 'best' + (ties ? ' · tied' : '') : 'highest evaluated') : gapLabel + ' pp';
       } else {
         label.textContent = '×' + (Number.isFinite(ratio) ? ratio.toFixed(2) : '∞') + (ratio === 1 ? (winner ? ' best' + (ties ? ' · tied' : '') : ' evaluated') : '');
       }
