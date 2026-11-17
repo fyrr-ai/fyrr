@@ -60,7 +60,7 @@ test('first-frame data contains only chart inputs and retains comparable sample 
   const initial = clientResults(data, true);
   const encoded = JSON.stringify(initial);
   assert(!encoded.includes('sample_ids'));
-  assert(!encoded.includes('footprint'));
+  assert(initial.systems.every(system => !('footprint' in system)), 'Heavy resource records are excluded; metric group names remain valid chart inputs');
   assert(!encoded.includes('binary_sha256'));
   assert(!('details' in initial) && !('protocol' in initial));
   assert(encoded.length < 32_000, 'Inline chart payload has a fixed size budget independent of question count');
@@ -582,6 +582,71 @@ test('a missing ingest clock cannot hide independent search evidence or verified
     run.ingest_completion.resume_evidence.native_inventory_verified = false as true;
     assert.throws(() => parseResults(data), /verified inventory and late probe/);
   }
+});
+test('partial input coverage retains measured search scores and discloses pending documents', () => {
+  const data = structuredClone(fixture);
+  const run = { ...structuredClone(data.systems.find(system => system.id === 'pipeshub')!), variant: 'parallel-partitions', headline_note: 'Non-default parallel scheduling; partial searchability disclosed.', notes: ['Same question set and gold; pending duplicate copies are not excluded from scoring.'] };
+  const pending = ['pending-duplicate-a', 'pending-duplicate-b'];
+  run.ingest_coverage = { submitted: 20000, accepted: 20000, rejected: 0, rejected_documents: [], searchable: 19998, pending: 2, pending_documents: pending };
+  run.ingest_completion = { status: 'verified_partial_coverage', verified_inventory: true, verified_searchable: false, all_accepted_searchable: false, canonical_timing_valid: false, searchable: 19998, pending: 2, artifact: 'runtime/test/ingest-resume.json', resume_evidence: { submitted: 20000, accepted: 20000, rejected: 0, documents: 19998, searchable: 19998, pending: 2, pending_documents: pending, native_inventory_verified: true, native_inventory_count: 19998, late_probe_verified: true, verified_coverage_monotonic: 1000 } };
+  for (const key of ['ingest_wall_s', 'ingest_docs_per_min']) Object.assign(run.metrics[key], { status: 'n/e', value: null, n: 0, expected: 1, attempted: 1, missing: 1 });
+  run.metrics.recall_at_10 = { status: 'measured', value: .9, unit: 'fraction', n: 1, expected: 1, attempted: 1, missing: 0, sample_ids: ['same-question'], ci95: [.8, 1] };
+  run.metrics.first_ask_c1_p50_ms = { status: 'measured', value: 100, unit: 'ms', n: 1, expected: 1, attempted: 1, missing: 0 };
+  for (const [key, value] of [['ingest_coverage_fraction', 1], ['searchable_coverage_fraction', .9999]] as const) {
+    data.website.metrics[key] = { key, label: key, unit: 'fraction', group: 'ingest', direction: 'higher_is_better', tier: 'primary', ci: null };
+    run.metrics[key] = { status: 'measured', value, unit: 'fraction', n: 1, expected: 1, attempted: 1, missing: 0 };
+  }
+  data.variants!['parallel-partitions'] = { label: 'PipesHub parallel scheduling', headline: true, systems: ['pipeshub'], reranker: null, description: run.headline_note, source_url: 'https://example.test/config' };
+  data.systems.push(run);
+  const parsed = parseResults(data);
+  const selected = headlineSystems(parsed).find(system => system.id === 'pipeshub')!;
+  assert.equal(selected.variant, 'parallel-partitions');
+  assert.equal(selected.metrics.recall_at_10.status, 'measured');
+  assert.deepEqual(selected.metrics.recall_at_10.sample_ids, ['same-question']);
+  assert.equal(selected.metrics.ingest_wall_s.value, null);
+  assert.equal(selected.metrics.ingest_coverage_fraction.value, 1);
+  assert.equal(selected.metrics.searchable_coverage_fraction.value, .9999);
+  for (const html of [renderScoreboard(parsed), renderMetric(parsed, 'recall_at_10'), renderMetric(parsed, 'first_ask_c1_p50_ms')]) {
+    assert(html.includes('Partial searchability'));
+    assert(html.includes('99.99% searchable versus 100.0% accepted'));
+    assert(html.includes('19,998 / 20,000 submitted; 2 pending'));
+  }
+  assert(comparisonScope(parsed).includes('19,998 / 20,000 searchable (2 pending)'));
+  assert(comparisonScope(parsed).includes('ingest time n/e'));
+  for (const mutate of [
+    (system: (typeof fixture.systems)[number]) => { system.ingest_coverage!.pending = 3; },
+    (system: (typeof fixture.systems)[number]) => { system.ingest_coverage!.pending_documents = []; },
+    (system: (typeof fixture.systems)[number]) => { system.ingest_completion!.resume_evidence.native_inventory_count = 20000; },
+    (system: (typeof fixture.systems)[number]) => { system.ingest_completion!.resume_evidence.documents = 20000; },
+    (system: (typeof fixture.systems)[number]) => { system.ingest_completion!.verified_searchable = true; },
+    (system: (typeof fixture.systems)[number]) => { system.ingest_completion!.resume_evidence.late_probe_verified = false as true; },
+    (system: (typeof fixture.systems)[number]) => { system.metrics.ingest_wall_s = { status: 'measured', value: 1, unit: 'seconds', n: 1, expected: 1, attempted: 1, missing: 0 }; },
+  ]) {
+    const bad = structuredClone(data);
+    mutate(bad.systems.find(system => system.variant === 'parallel-partitions')!);
+    assert.throws(() => parseResults(bad), /searchability|pending|searchable|late probe|canonical ingest timing/);
+  }
+});
+test('coverage fractions use independent counts while retrieval scores require paired sample identities', () => {
+  const data = structuredClone(fixture);
+  const key = 'searchable_coverage_fraction';
+  data.website.metrics[key] = { key, label: 'Searchable coverage', unit: 'fraction', group: 'ingest', direction: 'higher_is_better', ci: null };
+  const source = readFileSync('src/compare.js', 'utf8');
+  const start = source.indexOf('  function equalValue('), end = source.indexOf('  function update()', start);
+  const rank = new Function('results', source.slice(start, end) + '\nreturn ratios;')(data);
+  function cell(value: number) {
+    const classes = new Set();
+    const classList = { remove: (name: string) => classes.delete(name), add: (name: string) => classes.add(name), contains: (name: string) => classes.has(name), toggle: (name: string, on: boolean) => on ? classes.add(name) : classes.delete(name) };
+    const label = { textContent: '', classList };
+    return { dataset: { value: String(value), status: 'measured', n: '1', expected: '1', attempted: '1', missing: '0', samples: '' }, classList, querySelector: () => label, style: { removeProperty() {}, setProperty() {} }, label, classes };
+  }
+  const cells = [cell(1), cell(.9999)];
+  rank(cells, 'higher_is_better', true, 'fraction', key);
+  assert.equal(cells[0].label.textContent, 'best');
+  assert(cells[0].classes.has('is-best'));
+  data.website.metrics[key].group = 'retrieval';
+  rank(cells, 'higher_is_better', true, 'fraction', key);
+  assert.equal(cells[0].classes.has('is-best'), false, 'Unpaired retrieval observations must not establish a winner');
 });
 test('experimental Lambda measurements remain optional notebook variants', () => {
   const data = structuredClone(fixture);
