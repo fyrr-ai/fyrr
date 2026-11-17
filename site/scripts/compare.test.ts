@@ -91,8 +91,7 @@ test('cost-led narrative makes only supported claims and lets competitors win', 
     system.footprint.monthly_cost_estimate = { status: 'estimated', total_usd: cost, assumptions: { instance_name: 'Test instance', instance_ram_gib: 2, hours: 730, documents: 20000, searches_month: 100000, updated_documents_daily_fraction: .01 }, components: { compute_usd_month: cost, storage_usd_month: 0, embedding_usd_per_document: 0, llm_enrichment_usd_per_document: 0 }, missing: [], sources: [{ label: 'Test tariff, dated', url: 'https://example.test/pricing' }] };
   });
   const verdict = headlineVerdict(data);
-  assert(verdict.startsWith('Comparable observed search quality (1.0 pp behind Onyx)'));
-  assert(verdict.includes('Faster queries. Faster measured indexing. A fraction of the estimated running cost (20.0%'));
+  assert.equal(verdict, 'Similar search quality. A fraction of the estimated running cost. Faster queries and indexing.');
   const stories = renderStories(data);
   assert(stories.indexOf('id="story-footprint"') < stories.indexOf('id="story-speed"'));
   assert(stories.indexOf('id="story-speed"') < stories.indexOf('id="story-ingest"'));
@@ -100,6 +99,16 @@ test('cost-led narrative makes only supported claims and lets competitors win', 
   assert(stories.includes('Costs a fraction to run.'));
   assert(stories.includes('Finds the right documents (comparable).'));
   assert(stories.includes('LLM enrichment / accepted document'));
+  for (const weaken of [
+    (weaker: typeof data) => { weaker.systems[0].metrics.recall_at_10.value = .889; weaker.systems[0].metrics.recall_at_10.ci95 = [.888, .89]; },
+    (weaker: typeof data) => { weaker.systems[0].metrics.first_ask_c1_p50_ms.ci95 = [90, 220]; },
+    (weaker: typeof data) => { weaker.systems[0].metrics.ingest_wall_s.value = 300; },
+    (weaker: typeof data) => { weaker.systems[0].footprint.monthly_cost_estimate = { status: 'n/e' }; },
+  ]) {
+    const weaker = structuredClone(data);
+    weaken(weaker);
+    assert(!headlineVerdict(weaker).includes('Faster queries and indexing.'), 'Short marketing headline requires every guarded clause');
+  }
   const own = data.systems[0];
   own.metrics.recall_at_10.value = .5;
   own.metrics.recall_at_10.ci95 = [.49, .51];
@@ -112,7 +121,7 @@ test('cost-led narrative makes only supported claims and lets competitors win', 
   assert(revised.includes('Onyx has lower observed median query latency'));
   assert(revised.includes('Onyx has lower measured indexing time'));
   assert(revised.includes('Monthly operating cost is not yet estimated'));
-  assert(!revised.includes('Comparable'));
+  assert(!revised.includes('Similar'));
   assert(!renderStories(data).includes('Costs a fraction to run.'));
 });
 test('zero is a measured result, ratios handle zero baselines and axes stay round', () => {
