@@ -291,11 +291,13 @@ impl LocalStore {
         Ok(())
     }
 
-    /// Flushes every control directory of `namespace` and the directories
-    /// above it. Control objects are flushed before they get a name, so a
-    /// durable directory entry makes the whole object durable; that covers
-    /// every control object visible when this starts, whoever wrote it. The
-    /// dataset is Lance's and has [`Self::persist_native`].
+    /// Flushes `namespace`, each directory in it and the directories above
+    /// it. Control objects are flushed before they get a name, so a durable
+    /// directory entry makes the whole object durable; that covers every
+    /// control object visible when this starts, whoever wrote it. Control
+    /// objects live in the namespace directory or one directory below it,
+    /// so this reads only the namespace directory, however many objects the
+    /// others hold. The dataset is Lance's and has [`Self::persist_native`].
     pub(super) async fn persist_control(&self, namespace: Path) -> Result<()> {
         self.blocking(move |store| {
             let path = store.inner.path_to_filesystem(&namespace)?;
@@ -306,7 +308,7 @@ impl LocalStore {
                 Err(error) => return Err(failure(&path, error)),
             };
             let directory = chain.last().expect("the chain starts at the root");
-            sync_below(directory, Some(NamespaceLayout::DATASET_NAME))
+            sync_children(directory, NamespaceLayout::DATASET_NAME)
                 .map_err(|error| failure(&path, error))?;
             for directory in chain.iter().rev() {
                 directory.sync().map_err(|error| failure(&path, error))?;
@@ -335,7 +337,8 @@ impl LocalStore {
                 .root_directory()
                 .map_err(|error| failure(&store.root_path, error))?;
             store
-                .reap(&root)
+                .hand_over(&root)
+                .and_then(|()| store.reap(&root))
                 .map_err(|error| failure(&store.root_path, error))?;
             #[cfg(feature = "test-store")]
             super::test_store::sync::acknowledged("cleanup", &store.root_path)
@@ -1130,34 +1133,26 @@ impl LocalStore {
     }
 }
 
-/// Flushes every directory below `directory`, deepest first, except the
-/// entry `skip` of `directory` itself.
-fn sync_below(directory: &Directory, skip: Option<&str>) -> std::io::Result<()> {
+/// Flushes each directory that is an entry of `directory`, except `skip`.
+fn sync_children(directory: &Directory, skip: &str) -> std::io::Result<()> {
     for entry in rustix::fs::Dir::read_from(&directory.file)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if matches!(name.as_str(), "." | "..") || skip == Some(name.as_str()) {
+        if matches!(name.as_str(), "." | ".." | _ if name == skip) {
             continue;
         }
-        let file = match rustix::fs::openat(
+        match rustix::fs::openat(
             &directory.file,
             name.as_str(),
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         ) {
-            Ok(file) => File::from(file),
+            Ok(file) => sync_file(&File::from(file), &directory.path.join(&name))?,
             // Not a directory, a symlink, or removed since the read.
             Err(rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP | rustix::io::Errno::NOENT) => {
-                continue;
             }
             Err(error) => return Err(error.into()),
-        };
-        let below = Directory {
-            file,
-            path: directory.path.join(&name),
-        };
-        sync_below(&below, None)?;
-        below.sync()?;
+        }
     }
     Ok(())
 }
