@@ -98,7 +98,7 @@ test('cost-led narrative makes only supported claims and lets competitors win', 
   assert(stories.indexOf('id="story-ingest"') < stories.indexOf('id="story-quality"'));
   assert(stories.includes('Costs a fraction to run.'));
   assert(stories.includes('Finds the right documents (comparable).'));
-  assert(stories.includes('LLM enrichment / accepted document'));
+  assert(stories.includes('LLM enrichment estimate / document'));
   for (const weaken of [
     (weaker: typeof data) => { weaker.systems[0].metrics.recall_at_10.value = .889; weaker.systems[0].metrics.recall_at_10.ci95 = [.888, .89]; },
     (weaker: typeof data) => { weaker.systems[0].metrics.first_ask_c1_p50_ms.ci95 = [90, 220]; },

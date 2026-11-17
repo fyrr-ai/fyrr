@@ -475,7 +475,7 @@ export function renderStories(results: Results) {
 }
 function renderCostAssumptions(results: Results) {
   const fact = (value: unknown, unit: string) => finite(value) ? escape(format(value, unit)) + (unit === 'GiB' ? ' GiB' : '') : typeof value === 'string' ? escape(value) : 'n/e';
-  return `<aside class="cost-assumptions"><h3>What the estimate includes</h3><p class="note">Instance size must follow measured memory. Hosting, storage and API usage are separate inputs; unknown inputs stay n/e. Document enrichment is separate from embeddings and from one-time ingestion.</p><div class="cost-assumptions-grid">${results.systems.map(system => {
+  return `<aside class="cost-assumptions"><h3>What the estimate includes</h3><p class="note">Instance size must follow measured memory and CPU. Hosting, storage and API usage are separate inputs; unknown inputs stay n/e. Per-document API figures are model estimates, with their workload and usage caveats below. Product-billed spend is reported separately where available.</p><div class="cost-assumptions-grid">${results.systems.map(system => {
     const model = object(system.footprint.monthly_cost_estimate) ? system.footprint.monthly_cost_estimate : {};
     const assumptions = object(model.assumptions) ? model.assumptions : {};
     const components = object(model.components) ? model.components : {};
@@ -486,8 +486,8 @@ function renderCostAssumptions(results: Results) {
       ['Instance memory', fact(assumptions.instance_ram_gib ?? assumptions.ram_gib, 'GiB')],
       ['Compute / month', fact(components.compute_usd_month, 'USD')],
       ['Storage / month', fact(components.storage_usd_month, 'USD')],
-      ['Embedding / accepted document', fact(components.embedding_usd_per_document, 'USD')],
-      ['LLM enrichment / accepted document', fact(components.llm_enrichment_usd_per_document, 'USD')],
+      ['Embedding estimate / document', fact(components.embedding_usd_per_document, 'USD')],
+      ['LLM enrichment estimate / document', fact(components.llm_enrichment_usd_per_document, 'USD')],
     ];
     const sources = Array.isArray(model.sources) ? model.sources : [];
     return `<article class="cost-card" data-system="${escape(runKey(system))}"><h4>${escape(runLabel(results, system))}</h4><dl>${facts.map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join('')}</dl>${Array.isArray(model.missing) && model.missing.length ? `<p class="note">Missing: ${escape(model.missing.join('; '))}</p>` : ''}${Array.isArray(model.notes) && model.notes.length ? `<p class="note">${escape(model.notes.join(' '))}</p>` : ''}<p class="note">Scenario: ${fact(assumptions.hours, '')} h/month · ${fact(assumptions.documents, '')} documents · ${fact(assumptions.searches_month, '')} searches/month · ${fact(assumptions.updated_documents_daily_fraction, 'fraction')} documents updated daily.</p>${sources.map(source => object(source) && typeof source.url === 'string' ? `<p class="note"><a href="${link(source.url)}">${escape(source.label ?? 'Price source')} ↗</a>${typeof source.date === 'string' ? ` · ${escape(source.date)}` : ''}</p>` : '').join('')}<details><summary>Workload, prices &amp; full calculation</summary><pre>${escape(JSON.stringify(model, null, 2))}</pre></details></article>`;
