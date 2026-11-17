@@ -91,7 +91,7 @@ async fn local_storage_publishes_and_serves_with_permission_filtering() {
     let allowed = client.call("fetch", json!({"source_id": "allowed", "root_id": "0.txt"}));
     let documents = allowed["structuredContent"]["documents"]
         .as_array()
-        .unwrap();
+        .unwrap_or_else(|| panic!("fetch returned no documents: {allowed}"));
     assert_eq!(documents.len(), 1, "{allowed}");
     assert!(allowed.to_string().contains("fixture document 0"));
     let denied = client.call("fetch", json!({"source_id": "denied", "root_id": "0.txt"}));
