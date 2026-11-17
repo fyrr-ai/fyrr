@@ -366,7 +366,7 @@ function comparisonNarrative(results: Results) {
     const sameWorkload = ['hours', 'documents', 'searches_month', 'updated_documents_daily_fraction'].every(key => finite(assumptions[key]) && Number(assumptions[key]) >= 0 && assumptions[key] === common[key]);
     const ram = assumptions.instance_ram_gib ?? assumptions.ram_gib;
     const peak = system.metrics.load_rss_peak_bytes;
-    return sameWorkload && ['measured', 'estimated'].includes(String(model.status)) && model.total_usd === system.metrics.monthly_cost_usd.value && Array.isArray(model.missing) && model.missing.length === 0 && finite(ram) && peak?.status === 'measured' && peak.value != null && ram * 1024 ** 3 >= peak.value && ['compute_usd_month', 'storage_usd_month', 'embedding_usd_per_document', 'llm_enrichment_usd_per_document'].every(key => finite(components[key]) && Number(components[key]) >= 0) && Array.isArray(model.sources) && model.sources.length > 0 && model.sources.every(source => object(source) && typeof source.url === 'string' && /^https:\/\//.test(source.url));
+    return sameWorkload && ['measured', 'estimated', 'estimate'].includes(String(model.status)) && model.total_usd === system.metrics.monthly_cost_usd.value && Array.isArray(model.missing) && model.missing.length === 0 && finite(ram) && peak?.status === 'measured' && peak.value != null && ram * 1024 ** 3 >= peak.value && ['compute_usd_month', 'storage_usd_month', 'embedding_usd_per_document', 'llm_enrichment_usd_per_document'].every(key => finite(components[key]) && Number(components[key]) >= 0) && Array.isArray(model.sources) && model.sources.length > 0 && model.sources.every(source => object(source) && typeof source.url === 'string' && /^https:\/\//.test(source.url));
   })) {
     const cheapest = peers.reduce((best, peer) => peer.metrics.monthly_cost_usd.value! < best.metrics.monthly_cost_usd.value! ? peer : best);
     const value = own.metrics.monthly_cost_usd.value!, rival = cheapest.metrics.monthly_cost_usd.value!;
@@ -515,15 +515,29 @@ function renderSpeedStory(results: Results) {
   }).join('; ');
   return `<p class="latency-explainer">New question includes query embedding. Repeated question asks the same query again, preserving native cache behavior.<span class="cache-summary">${summaries}</span></p><div class="metric-set" data-metric-set><div class="metric-tabs" role="tablist" aria-label="Story search concurrency">${[1, 8].map((c, index) => `<button type="button" role="tab" id="story-speed-tab-c${c}" aria-controls="story-speed-c${c}" aria-selected="${index === 0}" tabindex="${index === 0 ? '0' : '-1'}">Concurrency ${c}</button>`).join('')}</div>${[1, 8].map((c, index) => `<div role="tabpanel" id="story-speed-c${c}" aria-labelledby="story-speed-tab-c${c}"${index ? ' hidden' : ''}><div class="latency-pair">${renderMetric(results, `first_ask_c${c}_p50_ms`, { tailKey: `first_ask_c${c}_p95_ms`, title: 'New question' })}${renderMetric(results, `warm_c${c}_p50_ms`, { tailKey: `warm_c${c}_p95_ms`, title: 'Repeated question' })}</div></div>`).join('')}</div>`;
 }
+function renderCapacity(sizing: Record<string, unknown>, concurrency: number) {
+  const rows = Array.isArray(sizing.capacity_tests) ? sizing.capacity_tests.filter(row => object(row) && row.concurrency === concurrency) : [];
+  if (!rows.length) return '<p class="note">Pinned CPU capacity tests: n/e.</p>';
+  return `<div class="capacity-evidence"><p class="note">Pinned whole-product capacity: zero errors and p95 ≤ 1.5× its unpinned baseline. Selected CPU count: ${finite(sizing.selected_cpus) ? sizing.selected_cpus : 'n/e'}.</p><table><thead><tr><th>vCPUs</th><th>p95 / limit</th><th>Result</th></tr></thead><tbody>${rows.map(row => {
+    const evaluated = typeof row.pass === 'boolean' && count(row.expected) && Number(row.expected) > 0 && count(row.valid) && count(row.errors) && finite(row.p95_ms) && finite(row.threshold_p95_ms);
+    const passed = evaluated && row.pass && row.errors === 0 && row.valid === row.expected && row.p95_ms <= row.threshold_p95_ms;
+    return `<tr><th>${finite(row.cpus) ? row.cpus : 'n/e'}</th><td>${finite(row.p95_ms) ? format(row.p95_ms, 'ms') : 'n/e'} / ${finite(row.threshold_p95_ms) ? format(row.threshold_p95_ms, 'ms') : 'n/e'} ms</td><td>${evaluated ? passed ? 'pass' : 'fail' : 'n/e'}<small>${count(row.valid) ? row.valid : 'n/e'} / ${count(row.expected) ? row.expected : 'n/e'} valid · ${count(row.errors) ? row.errors : 'n/e'} errors</small></td></tr>`;
+  }).join('')}</tbody></table></div>`;
+}
 function renderCostAssumptions(results: Results) {
   const fact = (value: unknown, unit: string) => finite(value) ? escape(format(value, unit)) + (unit === 'GiB' ? ' GiB' : '') : typeof value === 'string' ? escape(value) : 'n/e';
-  return `<aside class="cost-assumptions"><h3>What the estimate includes</h3><p class="note">Instance size must follow measured memory and CPU. Hosting, storage and API usage are separate inputs; unknown inputs stay n/e. Per-document API figures are model estimates, with their workload and usage caveats below. Product-billed spend is reported separately where available.</p><div class="cost-assumptions-grid">${results.systems.map(system => {
-    const model = object(system.footprint.monthly_cost_estimate) ? system.footprint.monthly_cost_estimate : {};
+  const scenarios = [{ id: 'light', label: 'Light use · concurrency 1', concurrency: 1 }, { id: 'team', label: 'Team use · concurrency 8', concurrency: 8 }];
+  return `<aside class="cost-assumptions"><h3>What the estimate includes</h3><p class="note">The overview and cost bars use light/C1. Team/C8 uses its separately measured configuration. Instance size follows pinned whole-product capacity tests and peak memory plus 25% headroom. Per-document API figures are model estimates; product-billed spend is reported separately where available.</p><div class="metric-tabs" role="tablist" aria-label="Cost reference scenario">${scenarios.map((scenario, index) => `<button type="button" role="tab" id="cost-tab-${scenario.id}" aria-controls="cost-${scenario.id}" aria-selected="${index === 0}" tabindex="${index === 0 ? '0' : '-1'}">${scenario.label}</button>`).join('')}</div>${scenarios.map((scenario, index) => `<div role="tabpanel" id="cost-${scenario.id}" aria-labelledby="cost-tab-${scenario.id}"${index ? ' hidden' : ''}><div class="cost-assumptions-grid">${results.systems.map(system => {
+    const parent: Record<string, unknown> = object(system.footprint.monthly_cost_estimate) ? system.footprint.monthly_cost_estimate : {};
+    const nested: Record<string, unknown> = object(parent.scenarios) ? parent.scenarios : {};
+    const candidate = nested[scenario.id];
+    const model: Record<string, unknown> = object(candidate) ? candidate : scenario.id === 'light' ? parent : {};
     const assumptions = object(model.assumptions) ? model.assumptions : {};
     const components = object(model.components) ? model.components : {};
-    const peak = system.metrics.load_rss_peak_bytes;
+    const sizing = object(model.sizing) ? model.sizing : {};
+    const peak = finite(sizing.measured_peak_rss_bytes) ? sizing.measured_peak_rss_bytes : scenario.id === 'light' ? system.metrics.load_rss_peak_bytes?.value : null;
     const facts = [
-      ['Measured peak memory', peak?.value != null ? escape(format(peak.value, peak.unit)) : 'n/e'],
+      ['Measured peak memory', peak != null ? escape(format(peak, 'bytes')) : 'n/e'],
       ['Instance', fact(assumptions.instance_name, '')],
       ['Instance memory', fact(assumptions.instance_ram_gib ?? assumptions.ram_gib, 'GiB')],
       ['Compute / month', fact(components.compute_usd_month, 'USD')],
@@ -532,9 +546,10 @@ function renderCostAssumptions(results: Results) {
       ['LLM enrichment estimate / document', fact(components.llm_enrichment_usd_per_document, 'USD')],
     ];
     const sources = Array.isArray(model.sources) ? model.sources : [];
-    return `<article class="cost-card" data-system="${escape(runKey(system))}"><h4>${escape(runLabel(results, system))}</h4><dl>${facts.map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join('')}</dl>${Array.isArray(model.missing) && model.missing.length ? `<p class="note">Missing: ${escape(model.missing.join('; '))}</p>` : ''}${Array.isArray(model.notes) && model.notes.length ? `<p class="note">${escape(model.notes.join(' '))}</p>` : ''}<p class="note">Scenario: ${fact(assumptions.hours, '')} h/month · ${fact(assumptions.documents, '')} documents · ${fact(assumptions.searches_month, '')} searches/month · ${fact(assumptions.updated_documents_daily_fraction, 'fraction')} documents updated daily.</p>${sources.map(source => object(source) && typeof source.url === 'string' ? `<p class="note"><a href="${link(source.url)}">${escape(source.label ?? 'Price source')} ↗</a>${typeof source.date === 'string' ? ` · ${escape(source.date)}` : ''}</p>` : '').join('')}<details><summary>Workload, prices &amp; full calculation</summary><pre>${escape(JSON.stringify(model, null, 2))}</pre></details></article>`;
-  }).join('')}</div></aside>`;
+    return `<article class="cost-card${system.id === 'fyrr' ? ' is-fyrr' : ''}" data-system="${escape(runKey(system))}"><h4>${escape(runLabel(results, system))}</h4><p class="cost-total">${fact(model.total_usd, 'USD')} / month${model.status === 'partial' ? ' *' : ''}</p><p class="note">${escape(scenario.label)}${typeof model.configuration_note === 'string' ? ` · ${escape(model.configuration_note)}` : ''}</p><dl>${facts.map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join('')}</dl>${renderCapacity(sizing, scenario.concurrency)}${Array.isArray(model.missing) && model.missing.length ? `<p class="note">Missing: ${escape(model.missing.join('; '))}</p>` : ''}${Array.isArray(model.notes) && model.notes.length ? `<p class="note">${escape(model.notes.join(' '))}</p>` : ''}<p class="note">Scenario: ${fact(assumptions.hours, '')} h/month · ${fact(assumptions.documents, '')} documents · ${fact(assumptions.searches_month, '')} searches/month · ${fact(assumptions.updated_documents_daily_fraction, 'fraction')} documents updated daily.</p>${sources.map(source => object(source) && typeof source.url === 'string' ? `<p class="note"><a href="${link(source.url)}">${escape(source.label ?? 'Price source')} ↗</a>${typeof source.date === 'string' ? ` · ${escape(source.date)}` : ''}</p>` : '').join('')}<details><summary>Workload, prices &amp; full calculation</summary><pre>${escape(JSON.stringify(model, null, 2))}</pre></details></article>`;
+  }).join('')}</div></div>`).join('')}</aside>`;
 }
+
 export function lambdaProjectionCost(projection: LambdaProjection, requests: number, coldFraction: number) {
   const seconds = requests * ((1 - coldFraction) * projection.warm_billed_ms + coldFraction * projection.cold_billed_allowance_ms) / 1000;
   const lambda = seconds * projection.memory_mib / 1024 * projection.prices.lambda_gb_second_usd + requests * projection.prices.lambda_request_usd;

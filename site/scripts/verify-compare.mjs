@@ -87,7 +87,10 @@ try {
     assert.equal(await page.locator('.score-row:visible .score-cell[data-score-metric="ingest_wall_s"] .score-rate').count(), headlineRuns.length, 'Every representative row exposes ingest throughput');
     assert.equal(await page.locator('#story-ingest .metric-panel').count(), 1, 'Ingest story has one wall-time chart');
     assert.equal(await page.locator('#story-ingest .ingest-cost').count(), headlineRuns.length, 'Embedding cost is a secondary line for each representative product');
-    assert.equal(await page.locator('#story-footprint .cost-card').count(), headlineRuns.length, 'Cost assumptions accompany every representative');
+    assert.equal(await page.locator('#cost-light .cost-card').count(), headlineRuns.length, 'Cost assumptions accompany every representative');
+    assert.equal(await page.locator('#cost-team .cost-card').count(), headlineRuns.length);
+    assert(await page.locator('#cost-light').isVisible());
+    assert.equal(await page.locator('#cost-team').isVisible(), false);
     assert.equal(await page.locator('.score-row:visible .score-repeat:visible').count(), headlineRuns.length, 'Repeated question is visible beneath each overview query speed');
     assert.equal(await page.locator('#story-speed-c1 .metric-panel:visible').count(), 2, 'New and repeated questions are paired in the first story state');
     assert.equal(await page.locator('#story-speed-c8').isVisible(), false, 'Concurrency 1 is the static first view');
@@ -150,6 +153,12 @@ try {
     await page.locator('#story-footprint').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await page.waitForTimeout(1500);
     await page.screenshot({ path: `${report}/footprint-${suffix}.png` });
+    const overviewBeforeTeam = await page.locator('.score-row').allTextContents();
+    await page.locator('#cost-tab-team').click();
+    assert(await page.locator('#cost-team').isVisible());
+    assert.equal(await page.locator('#cost-light').isVisible(), false);
+    assert.deepEqual(await page.locator('.score-row').allTextContents(), overviewBeforeTeam, 'Team cost view cannot replace headline values');
+    await page.locator('#cost-tab-light').click();
     if (results.website.lambda_projection) await page.locator('#lambda-projection').screenshot({ path: `${report}/lambda-${suffix}.png` });
     await page.locator('#products').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await page.screenshot({ path: `${report}/products-${suffix}.png` });
