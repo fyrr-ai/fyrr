@@ -110,10 +110,15 @@ function validateMetric(metric: unknown, key: string): asserts metric is Metric 
 export function parseResults(data: unknown): Results {
   requireField(object(data) && data.schema_version === '1.1', 'schema_version must be 1.1');
   requireField(typeof data.draft === 'boolean', 'explicit draft flag required');
-  requireField(!/\bjev(?:\b|[_-])|TypeSafe System One|c2a34a3/i.test(JSON.stringify(data)), 'private benchmark data cannot enter public results');
+  const serialized = JSON.stringify(data);
+  requireField(!/\bjev(?:\b|[_-])|TypeSafe System One|c2a34a3/i.test(serialized), 'private benchmark data cannot enter public results');
+  requireField(!/"(?:answer_(?:correctness|completeness)|native_answer[^"]*)"\s*:/i.test(serialized), 'private answer measurements cannot enter public results');
   requireField(object(data.benchmark) && typeof data.benchmark.id === 'string', 'benchmark');
   if (data.synthetic_design_preview) requireField(data.benchmark.publishable === false, 'synthetic preview must set benchmark.publishable to false');
   requireField(object(data.protocol), 'protocol');
+  requireField(!/(?:answers|native-answers)\.jsonl/i.test(serialized), 'private answer artifacts cannot enter public results');
+  const protocol = data.protocol;
+  requireField(!['answer', 'judge', 'prompts_sha256', 'codex_version', 'model_cache_sha256', 'secondary_execution', 'subscription'].some(key => key in protocol), 'private answer protocol cannot enter public results');
   requireField(Array.isArray(data.systems) && data.systems.length > 0, 'systems');
   const ids = new Set<string>();
   const runs = new Set<string>();
@@ -147,6 +152,7 @@ export function parseResults(data: unknown): Results {
   for (const group of w.groups) {
     requireField(object(group) && ['id', 'number', 'label', 'title', 'description'].every(key => typeof group[key] === 'string'), 'group');
     requireField(/^[a-z][a-z0-9_-]*$/.test(String(group.id)) && !groups.has(String(group.id)), 'unique group id');
+    requireField(group.id !== 'quality', 'private answer group cannot enter public results');
     groups.add(String(group.id));
   }
   for (const [key, meta] of Object.entries(w.metrics)) requireField(object(meta) && meta.key === key && typeof meta.label === 'string' && typeof meta.unit === 'string' && (groups.has(String(meta.group)) || meta.group === 'cost') && ['higher_is_better', 'lower_is_better'].includes(String(meta.direction)) && (meta.ci === null || object(meta.ci)) && (meta.scope === undefined || typeof meta.scope === 'string') && (meta.comparable === undefined || typeof meta.comparable === 'boolean') && (meta.description === undefined || typeof meta.description === 'string'), 'metric presentation metadata');
@@ -198,6 +204,7 @@ export function parseResults(data: unknown): Results {
     requireField(Array.isArray(results.details), 'details');
     for (const row of results.details) {
       requireField(object(row) && typeof row.id === 'string' && typeof row.label === 'string' && ['category', 'question'].includes(row.kind) && typeof row.metric === 'string' && object(row.results), 'detail row');
+      requireField(!/^(?:answer_|native_answer)/.test(row.metric), 'private answer details cannot enter public results');
       // Reuse the metric boundary for detailed cells, including counts and CIs.
       for (const [system, metric] of Object.entries(row.results)) {
         requireField(ids.has(system), 'detail result system');
@@ -498,7 +505,7 @@ export function renderSections(results: Results, prefix = '') {
       charts = ['first_ask', 'warm'].map(family => renderMetricSet(results, group.id, selected.filter(key => timing.test(key) && key.startsWith(family)), family === 'warm' ? 'repeat-' : '')).join('')
         + selected.filter(key => !timing.test(key)).map(key => renderMetric(results, key)).join('');
     } else charts = selected.map(key => renderMetric(results, key)).join('');
-    return `<section class="section" id="${escape(prefix + group.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">${escape(group.number)} / ${escape(group.label)}</p><h2>${escape(group.title)}</h2><p class="sub">${escape(group.description)}</p></div><div class="charts">${charts}</div>${group.id === 'footprint' ? renderFootprints(results) : ''}<p class="note">n/e = not evaluated. Invalid = unusable measurement. * = partial; see samples and uncertainty. ${group.id === 'quality' ? 'Shared answer track only. Native answer results, if available, are labelled separately.' : ''}</p></div></section>`;
+    return `<section class="section" id="${escape(prefix + group.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">${escape(group.number)} / ${escape(group.label)}</p><h2>${escape(group.title)}</h2><p class="sub">${escape(group.description)}</p></div><div class="charts">${charts}</div>${group.id === 'footprint' ? renderFootprints(results) : ''}<p class="note">n/e = not evaluated. Invalid = unusable measurement. * = partial; see samples and uncertainty.</p></div></section>`;
   }).join('');
 }
 
@@ -525,7 +532,7 @@ export function renderControls(results: Results) {
   return `<section class="comparison-controls" aria-label="Customize comparison"><div class="wrap">
     <div class="control-row"><fieldset><legend>Systems</legend><div class="selection-chips">${results.systems.map(system => `<label class="selection-chip"><input type="checkbox" data-select-system value="${escape(runKey(system))}"${representatives.has(runKey(system)) ? ' checked' : ''}>${escape(runLabel(results, system))}</label>`).join('')}</div></fieldset>
     <div class="permalink"><input aria-label="Current selection permalink" readonly value=""><button type="button" id="copy-permalink">Copy selection link ↗</button><span class="sr-only" id="copy-status" role="status"></span></div></div>
-    ${results.website.variant_note ? `<p class="note">${escape(results.website.variant_note)}</p>` : ''}<details class="metrics-select"><summary>Choose metrics</summary><fieldset><legend class="sr-only">Metrics</legend><div class="selection-chips">${metricKeys(results).map(key => `<label class="selection-chip"><input type="checkbox" data-select-metric value="${escape(key)}"${results.website.overview_metrics?.includes(key) || results.website.metrics[key]?.tier !== 'secondary' || ['answer_correctness', 'answer_completeness'].includes(key) ? ' checked' : ''}>${escape(results.website.metrics[key]?.label ?? name(key))}</label>`).join('')}</div></fieldset></details>
+    ${results.website.variant_note ? `<p class="note">${escape(results.website.variant_note)}</p>` : ''}<details class="metrics-select"><summary>Choose metrics</summary><fieldset><legend class="sr-only">Metrics</legend><div class="selection-chips">${metricKeys(results).map(key => `<label class="selection-chip"><input type="checkbox" data-select-metric value="${escape(key)}"${results.website.overview_metrics?.includes(key) || results.website.metrics[key]?.tier !== 'secondary' ? ' checked' : ''}>${escape(results.website.metrics[key]?.label ?? name(key))}</label>`).join('')}</div></fieldset></details>
     <p class="note">Bars show absolute values. Scores show the percentage-point gap to the best selected system; time, cost and footprint use ratios (×1.00 best). Partial and missing results are unranked. <span id="selection-status" role="status"></span></p>
   </div></section>`;
 }
@@ -545,8 +552,5 @@ export function renderDetailView(results: Results) {
 }
 export function renderMethodology(results: Results) {
   const { systems, website: _, ...provenance } = results;
-  const answer = object(results.protocol.answer) ? results.protocol.answer : {};
-  const judge = object(results.protocol.judge) ? results.protocol.judge : {};
-  const modelSummary = `Generator: ${answer.model ?? 'n/e'} (${answer.reasoning_effort ?? 'n/e'} reasoning). Judge: ${judge.model ?? 'n/e'} (${judge.reasoning_effort ?? 'n/e'} reasoning). Transport: ${answer.transport ?? answer.backend ?? 'n/e'}. Exact prompts and hashes are in provenance below.`;
-  return `<dl class="method-grid">${results.website.methodology.map(item => `<div class="method-item"><dt>${escape(item.label)}</dt><dd>${escape(item.text)}${item.url ? ` <a href="${link(item.url)}">Source ↗</a>` : ''}</dd></div>`).join('')}<div class="method-item"><dt>Answer &amp; judge protocol metadata</dt><dd>${escape(modelSummary)}</dd></div></dl><details class="run-config"><summary>Versions, dates, configurations &amp; provenance</summary><pre>${escape(JSON.stringify({ ...provenance, details: undefined, systems: systems.map(({ metrics: _metrics, footprint: _footprint, ...system }) => ({ ...system, variant: system.variant ?? 'default' })) }, null, 2))}</pre></details><div class="method-links"><a class="btn btn--primary" href="/compare/results.json">Download results JSON ↗</a><a class="btn" href="${link(String(results.benchmark.source_url))}">Upstream benchmark ↗</a></div><details class="run-config"><summary>Add your system / reproduce a run</summary><ol class="contribute-steps"><li>Use the frozen corpus and question selection; verify the manifest hashes.</li><li>Implement the benchmark adapter against the actual product API. Preserve native ranking and return product-selected evidence.</li><li>Run the shared protocol. Record every attempt, missing result, exact version, date, hardware and nonsecret configuration.</li><li>Export one schema 1.1 results JSON per run, including the metric catalogue, confidence intervals, artifacts and detailed rows.</li><li>Contribute the JSON and reproducibility artifacts to the open benchmark repository when its public URL is available. Until then, the downloadable JSON is the local review artifact.</li></ol></details><p class="note">Published by the fyrr team. Product descriptions link to their sources; measurements apply only to the exact configurations recorded above. Open comparison repository: ${results.benchmark.repository_url ? `<a href="${link(String(results.benchmark.repository_url))}">Reproduce &amp; add a system ↗</a>` : 'n/e · not published yet; no public artifact URL is claimed.'}</p>`;
+  return `<dl class="method-grid">${results.website.methodology.map(item => `<div class="method-item"><dt>${escape(item.label)}</dt><dd>${escape(item.text)}${item.url ? ` <a href="${link(item.url)}">Source ↗</a>` : ''}</dd></div>`).join('')}</dl><details class="run-config"><summary>Versions, dates, configurations &amp; provenance</summary><pre>${escape(JSON.stringify({ ...provenance, details: undefined, systems: systems.map(({ metrics: _metrics, footprint: _footprint, ...system }) => ({ ...system, variant: system.variant ?? 'default' })) }, null, 2))}</pre></details><div class="method-links"><a class="btn btn--primary" href="/compare/results.json">Download results JSON ↗</a><a class="btn" href="${link(String(results.benchmark.source_url))}">Upstream benchmark ↗</a></div><details class="run-config"><summary>Add your system / reproduce a run</summary><ol class="contribute-steps"><li>Use the frozen corpus and question selection; verify the manifest hashes.</li><li>Implement the benchmark adapter against the actual product API. Preserve native ranking and return product-selected evidence.</li><li>Run the shared protocol. Record every attempt, missing result, exact version, date, hardware and nonsecret configuration.</li><li>Export one schema 1.1 results JSON per run, including the metric catalogue, confidence intervals, artifacts and detailed rows.</li><li>Contribute the JSON and reproducibility artifacts to the open benchmark repository when its public URL is available. Until then, the downloadable JSON is the local review artifact.</li></ol></details><p class="note">Published by the fyrr team. Product descriptions link to their sources; measurements apply only to the exact configurations recorded above. Open comparison repository: ${results.benchmark.repository_url ? `<a href="${link(String(results.benchmark.repository_url))}">Reproduce &amp; add a system ↗</a>` : 'n/e · not published yet; no public artifact URL is claimed.'}</p>`;
 }
