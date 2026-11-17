@@ -50,6 +50,7 @@
   function ratios(cells, direction, heatmap, unit, metricKey) {
     var metadata = results.website.metrics[metricKey];
     var comparable = !metadata || metadata.comparable !== false && !(metadata.scope && metadata.scope.endsWith('-only'));
+    var paired = metadata ? metadata.group === 'retrieval' : unit === 'fraction';
     var entries = cells.map(function (cell) {
       var system = !heatmap && cell.dataset.overviewDeployment !== 'true' && metricKey && results.systems.find(function (item) { return (!item.variant || item.variant === 'default' ? item.id : item.id + '@' + item.variant) === cell.dataset.system; });
       var metric = system ? system.metrics[metricKey] : null;
@@ -70,7 +71,7 @@
     var ties = values.filter(function (value) { return equalValue(value, best); }).length > 1;
     var complete = measured.length > 1 && measured.every(function (entry) {
       var data = entry.data, first = measured[0].data;
-      return data.missing === 0 && data.n === data.attempted && data.n === data.expected && (unit !== 'fraction' || data.n === first.n && data.samples && data.samples === first.samples);
+      return data.missing === 0 && data.n === data.attempted && data.n === data.expected && (!paired || data.n === first.n && data.samples && data.samples === first.samples);
     });
     entries.forEach(function (entry) {
       var cell = entry.cell, data = entry.data, label = cell.querySelector('.relative');

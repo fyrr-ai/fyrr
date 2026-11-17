@@ -214,3 +214,12 @@ run is selected). Modern browsers fetch its gzip file and decompress it with
 `DecompressionStream`; older browsers use the ordinary JSON representation and
 HTTP compression. A failed load exposes a retry and never substitutes empty scores.
 The raw results and per-run JSON downloads retain the complete reviewed data.
+
+Resume evidence distinguishes fully searchable completion from
+`verified_partial_coverage`. Partial input coverage records accepted, searchable
+and pending documents separately, with both inventory and late-probe evidence.
+Searchable plus pending must equal accepted; pending IDs reconcile with the count.
+This does not change a valid retrieval or latency metric into an incomplete-sample
+metric, or exclude any question. Searchability is displayed alongside search and
+in the overview; canonical ingest time/rate stay n/e when their clock is invalid.
+Accepted and searchable fractions use submitted documents as their denominator.

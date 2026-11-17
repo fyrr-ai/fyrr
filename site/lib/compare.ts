@@ -15,6 +15,11 @@ export type Metric = {
   artifact?: string;
   notes?: string[];
 };
+type ResumeEvidence = Record<string, unknown> & { submitted: number; accepted: number; rejected: number; documents: number; native_inventory_verified: true; native_inventory_count: number; late_probe_verified: true };
+type IngestCompletion = { canonical_timing_valid: false; artifact: string } & (
+  { status: 'verified_complete_after_resume'; verified_searchable: true; verified_inventory?: true; all_accepted_searchable?: true; resume_evidence: ResumeEvidence }
+  | { status: 'verified_partial_coverage'; verified_inventory: true; verified_searchable: false; all_accepted_searchable: false; searchable: number; pending: number; resume_evidence: ResumeEvidence & { searchable: number; pending: number; pending_documents: unknown[] } }
+);
 type Group = { id: string; number: string; label: string; title: string; description: string };
 type Product = { type: string; pros: string[]; cons: string[]; sources: { label: string; url: string }[] };
 type Feature = { label: string; cells: Record<string, { text: string; sources: { label: string; url: string }[] }> };
@@ -45,8 +50,8 @@ export type Results = {
     headline_note?: string;
     default_ingest_baseline?: { docs_per_min?: number | null; interval_seconds?: number | null; newly_completed_documents?: number | null; projected_20000_seconds?: number | null; artifact?: string; notes?: string[] };
     ingest_diagnostics?: (Record<string, unknown> & { configuration_id: string; comparable: false; docs_per_min?: number | null; interval_seconds?: number | null; newly_completed_documents?: number | null; projected_20000_seconds?: number | null; notes?: string[] })[];
-    ingest_completion?: { status: 'verified_complete_after_resume'; verified_searchable: true; canonical_timing_valid: false; artifact: string; resume_evidence: Record<string, unknown> & { submitted: number; accepted: number; rejected: number; documents: number; native_inventory_verified: true; native_inventory_count: number; late_probe_verified: true } };
-    ingest_coverage?: { submitted: number | null; accepted: number | null; rejected: number | null; rejected_documents: unknown[] };
+    ingest_completion?: IngestCompletion;
+    ingest_coverage?: { submitted: number | null; accepted: number | null; rejected: number | null; rejected_documents: unknown[]; searchable?: number | null; pending?: number | null; pending_documents?: unknown[] };
   }[];
   website: {
     lambda_projection?: LambdaProjection;
@@ -74,23 +79,25 @@ function supportsMetric(results: Results, system: Results['systems'][number], ke
   const prefixes = results.variants?.[system.variant ?? 'default']?.metric_prefixes;
   return !prefixes || prefixes.some(prefix => key.startsWith(prefix));
 }
+function hasSearchEvidence(results: Results, system: Results['systems'][number]) {
+  return Object.entries(system.metrics).some(([key, metric]) => ['retrieval', 'speed'].includes(results.website.metrics[key]?.group) && canCompare(results.website.metrics[key]) && ['measured', 'partial'].includes(metric.status) && metric.value != null);
+}
 export function headlineSystems(results: Results) {
   const representatives = new Map<string, Results['systems'][number]>();
   for (const system of results.systems) {
     if (!system.variant || system.variant === 'default') representatives.set(system.id, system);
   }
-  const hasSearchEvidence = (system: Results['systems'][number]) => Object.entries(system.metrics).some(([key, metric]) => ['retrieval', 'speed'].includes(results.website.metrics[key]?.group) && canCompare(results.website.metrics[key]) && ['measured', 'partial'].includes(metric.status) && metric.value != null);
   for (const system of results.systems) {
     if (!system.variant || system.variant === 'default') continue;
     const variant = results.variants?.[system.variant];
     if (!variant?.headline || variant.systems && !variant.systems.includes(system.id)) continue;
     // Search evidence is independent of a valid ingest clock. An interrupted
     // observer must not hide valid retrieval, latency or verified coverage.
-    const observed = hasSearchEvidence(system);
+    const observed = hasSearchEvidence(results, system);
     const previous = representatives.get(system.id);
     if (!observed && previous) continue;
     requireField(Boolean((system.headline_note || variant.description)?.trim()) && Boolean(variant.source_url), 'non-default headline requires a visible configuration note and source');
-    requireField(!observed || !previous?.variant || previous.variant === 'default' || !hasSearchEvidence(previous), 'one authorized headline representative per product');
+    requireField(!observed || !previous?.variant || previous.variant === 'default' || !hasSearchEvidence(results, previous), 'one authorized headline representative per product');
     representatives.set(system.id, system);
   }
   return [...representatives.values()];
@@ -189,13 +196,24 @@ export function parseResults(data: unknown): Results {
       if (['submitted', 'accepted', 'rejected'].every(key => count(coverage[key]))) {
         requireField(Number(coverage.accepted) + Number(coverage.rejected) === coverage.submitted && coverage.rejected_documents.length === coverage.rejected, `${system.id} ingest coverage must reconcile`);
       }
+      if (coverage.searchable !== undefined || coverage.pending !== undefined || coverage.pending_documents !== undefined) {
+        requireField((coverage.searchable === null || count(coverage.searchable)) && (coverage.pending === null || count(coverage.pending)) && Array.isArray(coverage.pending_documents), `${system.id} searchability counts`);
+        if (count(coverage.searchable) && count(coverage.pending)) requireField(count(coverage.accepted) && Number(coverage.searchable) + Number(coverage.pending) === coverage.accepted && coverage.pending_documents.length === coverage.pending, `${system.id} searchable and pending counts must reconcile with accepted documents`);
+      }
     }
   }
   for (const system of data.systems) if (system.ingest_completion !== undefined) {
     const completion = system.ingest_completion;
-    requireField(object(completion) && completion.status === 'verified_complete_after_resume' && completion.verified_searchable === true && completion.canonical_timing_valid === false && typeof completion.artifact === 'string' && object(completion.resume_evidence), `${system.id} verified resume completion`);
+    requireField(object(completion) && ['verified_complete_after_resume', 'verified_partial_coverage'].includes(String(completion.status)) && completion.canonical_timing_valid === false && typeof completion.artifact === 'string' && object(completion.resume_evidence), `${system.id} verified resume completion`);
     const evidence = completion.resume_evidence;
-    requireField(evidence.native_inventory_verified === true && evidence.late_probe_verified === true && ['submitted', 'accepted', 'rejected', 'documents', 'native_inventory_count'].every(key => count(evidence[key])) && Number(evidence.accepted) + Number(evidence.rejected) === evidence.submitted && evidence.documents === evidence.accepted && evidence.native_inventory_count === evidence.accepted, `${system.id} resume completion needs verified inventory and late probe`);
+    requireField(evidence.native_inventory_verified === true && evidence.late_probe_verified === true && ['submitted', 'accepted', 'rejected', 'documents', 'native_inventory_count'].every(key => count(evidence[key])) && Number(evidence.accepted) + Number(evidence.rejected) === evidence.submitted, `${system.id} resume completion needs verified inventory and late probe`);
+    if (completion.status === 'verified_partial_coverage') {
+      requireField(completion.verified_inventory === true && completion.verified_searchable === false && completion.all_accepted_searchable === false && count(completion.searchable) && count(completion.pending) && Number(completion.pending) > 0 && Number(completion.searchable) + Number(completion.pending) === evidence.accepted, `${system.id} partial searchability state`);
+      requireField(evidence.documents === completion.searchable && evidence.native_inventory_count === completion.searchable && evidence.searchable === completion.searchable && evidence.pending === completion.pending && Array.isArray(evidence.pending_documents) && evidence.pending_documents.length === completion.pending, `${system.id} partial resume evidence must count searchable documents separately`);
+      requireField(object(system.ingest_coverage) && system.ingest_coverage.searchable === completion.searchable && system.ingest_coverage.pending === completion.pending, `${system.id} partial coverage must match verified searchability`);
+    } else {
+      requireField(completion.verified_searchable === true && (completion.verified_inventory === undefined || completion.verified_inventory === true) && (completion.all_accepted_searchable === undefined || completion.all_accepted_searchable === true) && evidence.documents === evidence.accepted && evidence.native_inventory_count === evidence.accepted, `${system.id} complete resume must verify all accepted documents searchable`);
+    }
     requireField(object(system.ingest_coverage) && ['submitted', 'accepted', 'rejected'].every(key => system.ingest_coverage[key] === evidence[key]), `${system.id} resume coverage must match verified partition`);
     requireField(['ingest_wall_s', 'ingest_docs_per_min'].every(key => object(system.metrics[key]) && system.metrics[key].value === null), `${system.id} resumed completion cannot invent canonical ingest timing`);
   }
@@ -324,10 +342,15 @@ function ingestRate(metric: Metric | undefined) {
   if (metric?.value == null) return metric?.status === 'invalid' ? 'invalid docs/min' : 'n/e docs/min';
   return `${format(metric.value, 'docs/min')} docs/min${metric.status === 'partial' ? ' *' : ''}`;
 }
+function searchabilityCounts(system: Results['systems'][number]) {
+  const coverage = system.ingest_coverage;
+  return coverage && count(coverage.submitted) && Number(coverage.submitted) > 0 && count(coverage.accepted) && count(coverage.searchable) && count(coverage.pending) ? { submitted: coverage.submitted!, accepted: coverage.accepted!, searchable: coverage.searchable!, pending: coverage.pending! } : null;
+}
 function ingestCoverage(system: Results['systems'][number]) {
   const coverage = system.ingest_coverage;
   if (!coverage || !count(coverage.submitted) || !count(coverage.accepted) || !count(coverage.rejected)) return 'Coverage n/e';
-  return `${format(coverage.accepted!, 'documents')} / ${format(coverage.submitted!, 'documents')} accepted · ${format(coverage.rejected!, 'documents')} rejected`;
+  const searchability = searchabilityCounts(system);
+  return `${format(coverage.accepted!, 'documents')} / ${format(coverage.submitted!, 'documents')} accepted · ${format(coverage.rejected!, 'documents')} rejected${searchability ? ` · ${format(searchability.searchable, 'documents')} / ${format(searchability.submitted, 'documents')} searchable · ${format(searchability.pending, 'documents')} pending` : ''}`;
 }
 function renderRunNotes(results: Results, system: Results['systems'][number], className = 'run-note', includeBaseline = false) {
   const variant = results.variants?.[system.variant ?? 'default'];
@@ -340,10 +363,12 @@ function renderRunNotes(results: Results, system: Results['systems'][number], cl
   const brief = note.length > 220 ? note.slice(0, 220).replace(/\s+\S*$/, '') + '…' : note;
   const marker = note ? `<small class="${className}">${escape(brief)}${variant?.source_url ? ` <a href="${link(variant.source_url)}">Configuration source ↗</a>` : ''}</small>` : '';
   const unavailable = missing ? `<small class="${className} unavailable-reason">${escape(missingMeasurements.join(' and '))}: n/e. See the run’s interruption and configuration notes.</small>` : '';
+  const searchability = searchabilityCounts(system);
+  const partial = searchability && searchability.pending > 0 ? `<small class="${className} partial-coverage">Partial searchability: ${format(searchability.searchable / searchability.submitted, 'fraction')} searchable versus ${format(searchability.accepted / searchability.submitted, 'fraction')} accepted (${format(searchability.searchable, 'documents')} / ${format(searchability.submitted, 'documents')} submitted; ${format(searchability.pending, 'documents')} pending).${hasSearchEvidence(results, system) ? ' Search measured at this coverage.' : ''}</small>` : '';
   const baseline = system.default_ingest_baseline;
   const expanded = includeBaseline && (note.length > 220 || missing || baseline?.notes?.length) ? `<details class="${className} run-notes-expanded"><summary>Full configuration &amp; interruption notes</summary>${note ? `<p>${escape(note)}</p>` : ''}${system.notes.map(note => `<p>${escape(note)}</p>`).join('')}${baseline?.notes?.map(note => `<p>${escape(note)}</p>`).join('') ?? ''}</details>` : '';
-  if (!baseline || !includeBaseline) return marker + unavailable + expanded;
-  return marker + unavailable + `<small class="${className} default-ingest-baseline">Default ingest sample (interrupted 1k): ${baseline.docs_per_min != null ? `${escape(format(baseline.docs_per_min, 'docs/min'))} docs/min observed${baseline.interval_seconds != null ? ` over ${escape(format(baseline.interval_seconds, 'seconds'))} s` : ''}` : 'steady rate n/e'}; 20k: ${baseline.projected_20000_seconds != null ? `PROJECTED ${(baseline.projected_20000_seconds / 3600).toFixed(2)} h` : 'projection n/e'}. Default 20k not completed. Sampling limitations are below.</small>` + expanded;
+  if (!baseline || !includeBaseline) return marker + unavailable + partial + expanded;
+  return marker + unavailable + partial + `<small class="${className} default-ingest-baseline">Default ingest sample (interrupted 1k): ${baseline.docs_per_min != null ? `${escape(format(baseline.docs_per_min, 'docs/min'))} docs/min observed${baseline.interval_seconds != null ? ` over ${escape(format(baseline.interval_seconds, 'seconds'))} s` : ''}` : 'steady rate n/e'}; 20k: ${baseline.projected_20000_seconds != null ? `PROJECTED ${(baseline.projected_20000_seconds / 3600).toFixed(2)} h` : 'projection n/e'}. Default 20k not completed. Sampling limitations are below.</small>` + expanded;
 }
 
 function renderIngestDiagnostics(results: Results) {
@@ -443,9 +468,11 @@ export function comparisonScope(results: Results) {
   const fields = [[results.website.headline_metric, 'retrieval'], ['first_ask_c1_p50_ms', 'new-question latency'], ['ingest_wall_s', 'ingest time'], ['monthly_cost_usd', 'total cost']];
   const notes = headlineSystems(results).flatMap(system => {
     const missing = fields.filter(([key]) => system.metrics[key]?.status !== 'measured' || system.metrics[key]?.value == null);
-    if (!missing.length) return [];
+    const coverage = searchabilityCounts(system);
+    const partial = coverage && coverage.pending > 0 ? `${format(coverage.searchable, 'documents')} / ${format(coverage.submitted, 'documents')} searchable (${coverage.pending} pending)` : '';
+    if (!missing.length && !partial) return [];
     if (missing.length === fields.length && system.ingest_coverage?.accepted == null) return [`${system.name}: 20k run not completed; see notes.`];
-    return [`${system.name}: ${missing.map(([key, label]) => `${label} ${system.metrics[key]?.status === 'partial' ? 'partial' : 'n/e'}`).join(', ')}; see notes.`];
+    return [`${system.name}: ${[missing.map(([key, label]) => `${label} ${system.metrics[key]?.status === 'partial' ? 'partial samples' : 'n/e'}`).join(', '), partial].filter(Boolean).join('; ')}; see notes.`];
   });
   return notes.length ? `Compared where measured. ${notes.join(' ')}` : 'Compared on complete measurements for each metric.';
 }
@@ -475,7 +502,7 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
   const axis = axisScale(rawMax || (available.length ? 1 : 0), unit);
   const max = axis.max;
   const pct = (value: number) => max ? `${value / max * 100}%` : '0%';
-  const caption = results.draft ? results.systems.some(system => Object.values(system.metrics).some(metric => metric.status === 'measured')) && !results.synthetic_design_preview ? 'Preliminary measured results · owner review pending. Whiskers show 95% confidence intervals. Partial results are unranked.' : 'Preliminary / placeholder data. No published scores or rankings.' : 'Whiskers show 95% confidence intervals where available. Partial results cannot establish a product win.';
+  const caption = results.draft ? results.systems.some(system => Object.values(system.metrics).some(metric => metric.status === 'measured')) && !results.synthetic_design_preview ? 'Preliminary measured results · owner review pending. Whiskers show 95% confidence intervals. * = incomplete measurement samples; unranked.' : 'Preliminary / placeholder data. No published scores or rankings.' : 'Whiskers show 95% confidence intervals where available. Incomplete measurement samples cannot establish a product win.';
   const title = options.title ?? (options.tailKey ? key.startsWith('first_ask_') ? 'First-ask search latency' : 'Repeated-query search latency' : meta?.label ?? name(key));
   // stage_of denotes disjoint submission-to-searchable elapsed segments, excluding setup and parallel work.
   const stages = options.ingest ? Object.values(results.website.metrics).filter(stage => stage.stage_of === key).sort((a, b) => (a.stage_order ?? 0) - (b.stage_order ?? 0)) : [];
@@ -696,7 +723,7 @@ export function renderSections(results: Results, prefix = '') {
       charts = ['first_ask', 'warm'].map(family => renderMetricSet(results, group.id, selected.filter(key => timing.test(key) && key.startsWith(family)), family === 'warm' ? 'repeat-' : '')).join('')
         + selected.filter(key => !timing.test(key)).map(key => renderMetric(results, key)).join('');
     } else charts = selected.map(key => renderMetric(results, key)).join('');
-    return `<section class="section" id="${escape(prefix + group.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">${escape(group.number)} / ${escape(group.label)}</p><h2>${escape(group.title)}</h2><p class="sub">${escape(group.description)}</p></div><div class="charts">${charts}</div>${group.id === 'footprint' ? renderFootprints(results) : ''}<p class="note">n/e = not evaluated. Invalid = unusable measurement. * = partial; see samples and uncertainty.</p></div></section>`;
+    return `<section class="section" id="${escape(prefix + group.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">${escape(group.number)} / ${escape(group.label)}</p><h2>${escape(group.title)}</h2><p class="sub">${escape(group.description)}</p></div><div class="charts">${charts}</div>${group.id === 'footprint' ? renderFootprints(results) : ''}<p class="note">n/e = not evaluated. Invalid = unusable measurement. * = incomplete measurement samples; see uncertainty. Input coverage is disclosed separately.</p></div></section>`;
   }).join('');
 }
 
@@ -725,7 +752,7 @@ export function renderControls(results: Results) {
     <div class="control-row"><fieldset><legend>Systems</legend><div class="selection-chips">${results.systems.map(system => `<label class="selection-chip"><input type="checkbox" data-select-system value="${escape(runKey(system))}"${representatives.has(runKey(system)) ? ' checked' : ''}>${escape(runLabel(results, system))}</label>`).join('')}</div></fieldset>
     <div class="permalink"><input aria-label="Current selection permalink" readonly value=""><button type="button" id="copy-permalink">Copy selection link ↗</button><span class="sr-only" id="copy-status" role="status"></span></div></div>
     ${results.website.variant_note ? `<p class="note">${escape(results.website.variant_note)}</p>` : ''}<details class="metrics-select"><summary>Choose metrics</summary><fieldset><legend class="sr-only">Metrics</legend><div class="selection-chips">${metricKeys(results).map(key => `<label class="selection-chip"><input type="checkbox" data-select-metric value="${escape(key)}"${results.website.overview_metrics?.includes(key) || storyMetrics.has(key) || results.website.metrics[key]?.tier !== 'secondary' ? ' checked' : ''}>${escape(results.website.metrics[key]?.label ?? name(key))}</label>`).join('')}</div></fieldset></details>
-    <p class="note">Bars show absolute values. Scores show the percentage-point gap to the best selected system; time, cost and footprint use ratios (×1.00 best). Partial and missing results are unranked. <span id="selection-status" role="status"></span></p>
+    <p class="note">Bars show absolute values. Scores show the percentage-point gap to the best selected system; time, cost and footprint use ratios (×1.00 best). Incomplete or missing measurement samples are unranked; input coverage is disclosed separately. <span id="selection-status" role="status"></span></p>
   </div></section>`;
 }
 export function renderDetailView(results: Results) {
@@ -760,7 +787,7 @@ export function clientResults(results: Results, criticalOnly = false) {
       metrics: Object.fromEntries(Object.entries(system.metrics).filter(([key]) => !criticalOnly || representatives.has(runKey(system)) && critical.has(key)).map(([key, metric]) => [key, { status: metric.status, value: metric.value, n: metric.n, expected: metric.expected, attempted: metric.attempted, missing: metric.missing, sample_set: sampleSet(metric) }])) })),
     variants: Object.fromEntries(Object.entries(results.variants ?? {}).map(([key, variant]) => [key, { metric_prefixes: variant.metric_prefixes }])),
     website: { headline_metric: results.website.headline_metric, overview_metrics: results.website.overview_metrics,
-      metrics: Object.fromEntries(Object.entries(results.website.metrics).map(([key, metric]) => [key, { unit: metric.unit, direction: metric.direction, comparable: metric.comparable, scope: metric.scope }])) },
+      metrics: Object.fromEntries(Object.entries(results.website.metrics).map(([key, metric]) => [key, { unit: metric.unit, group: metric.group, direction: metric.direction, comparable: metric.comparable, scope: metric.scope }])) },
   };
 }
 export function renderProvenance(results: Results) {
