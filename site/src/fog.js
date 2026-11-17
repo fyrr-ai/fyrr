@@ -1,4 +1,5 @@
-/* fog.js — slow, grey, dithered fog. watchFog(canvases) draws each canvas and animates it while on screen. */
+/* fog.js — slow, grey, dithered fog. watchFog(canvases) draws each canvas and animates it while on screen;
+   a canvas's data-pace speeds its fog up (default 1). */
 (function (global) {
   'use strict';
   var BAYER = [0,32,8,40,2,34,10,42,48,16,56,24,50,18,58,26,12,44,4,36,14,46,6,38,60,28,52,20,62,30,54,22,3,35,11,43,1,33,9,41,51,19,59,27,49,17,57,25,15,47,7,39,13,45,5,37,63,31,55,23,61,29,53,21];
@@ -48,6 +49,7 @@
       }
       bitmap.close();
     };
+    function clock(c, now) { return now / 1000 * (Number(c.dataset.pace) || 1) + (Number(c.dataset.seed) || 0); }
     function paint(c, time) {
       if (!worker) { drawFog(c, time); return; }
       if (pending.has(c)) return;
@@ -58,7 +60,7 @@
       es.forEach(function (e) {
         if (!e.isIntersecting) { visible.delete(e.target); return; }
         visible.add(e.target);
-        paint(e.target, performance.now() / 1000 + (Number(e.target.dataset.seed) || 0));
+        paint(e.target, clock(e.target, performance.now()));
       });
     }, { rootMargin: '100px 0px' });
     fogs.forEach(function (c) { io.observe(c); });
@@ -67,7 +69,7 @@
       frame = requestAnimationFrame(loop);
       if (document.hidden || now - last < 100) return;
       last = now;
-      visible.forEach(function (c) { paint(c, now / 1000 + (Number(c.dataset.seed) || 0)); });
+      visible.forEach(function (c) { paint(c, clock(c, now)); });
     })(0);
     return function () { stopped = true; cancelAnimationFrame(frame); io.disconnect(); visible.clear(); if (worker) worker.terminate(); };
   };

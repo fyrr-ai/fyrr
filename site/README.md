@@ -20,7 +20,8 @@ The deployable directory is `site/dist`. Preview uses the actual Cloudflare
 Workers Static Assets runtime at `http://localhost:8486`, including its HTML
 routing, compression, headers, redirects and 404 handling.
 
-The build copies `../docs/`, exports Fumadocs and search, and checks links,
+The build copies `../docs/`, exports Fumadocs and search, adds the homepage,
+the use-cases page and the 404 page, and checks links,
 anchors, assets and navigation coverage. Links outside `docs/` point to GitHub.
 
 ## Cloudflare Workers deployment
@@ -61,6 +62,7 @@ copying. Install Chromium once with
 | Path | Content |
 | --- | --- |
 | `src/page.html`, `src/base.css`, `src/header.html` | Homepage, shared style and header |
+| `src/use-cases.html`, `src/sections.css` | Use-cases page; section and panel styles it shares with the homepage |
 | `src/*.js` | Procedural map, fog, ships and homepage interactions |
 | `src/404.html` | Custom 404 page |
 | `app/docs/`, `components/mdx.tsx` | Fumadocs navigation and page components |
