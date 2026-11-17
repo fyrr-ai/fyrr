@@ -46,7 +46,7 @@
   });
   function ratios(cells, direction, heatmap, unit, metricKey) {
     var metadata = results.website.metrics[metricKey];
-    var comparable = !metadata || metadata.comparable !== false && metadata.scope !== 'fyrr-only';
+    var comparable = !metadata || metadata.comparable !== false && !(metadata.scope && metadata.scope.endsWith('-only'));
     var entries = cells.map(function (cell) {
       var system = !heatmap && metricKey && results.systems.find(function (item) { return (!item.variant || item.variant === 'default' ? item.id : item.id + '@' + item.variant) === cell.dataset.system; });
       var metric = system ? system.metrics[metricKey] : null;

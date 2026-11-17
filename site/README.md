@@ -88,7 +88,7 @@ time is labelled “Other / unreported”. Per-stage measurements stay in detail
 Metrics marked `comparable: false` show diagnostic values without ratios or win
 labels. This also applies to scoped engine diagnostics and filtered selections.
 
-The comparison opens with a default-system scoreboard, followed by four
+The comparison opens with a one-row-per-product scoreboard, followed by four
 short chart sections and the product trade-offs. Primary speed is first-ask
 latency with fresh query caches; repeated-query timings are secondary. The
 detailed notebook is collapsed initially; its links open the relevant section. System and
@@ -105,7 +105,11 @@ It extends the benchmark's schema 1.1 envelope: `benchmark`, `protocol`,
 `unit`, `n`, `expected`, `attempted`, `missing`, `sample_ids`, `ci95`,
 `method`, `artifact`, and notes. Run identity is `(id, variant)`; a missing
 variant means `default`. Optional extra variants have their own checkbox
-and rows in the notebook, while the headline and overview use defaults.
+and rows in the notebook. The headline and overview use defaults unless a
+completed alternative is explicitly authorized by variant `headline: true` and
+`systems`. That representative replaces its default once ingest is measured and a
+retrieval result exists. Its non-default marker, source, and any observed default
+ingest baseline/projection stay visible. Projections never enter measured bars.
 A variant catalogue may include `description` and `metric_prefixes` to scope
 notebook rows. The sized C8 variant changes only `reader.concurrency=8`, reuses
 the default index and is excluded from C1, ingestion and answer metrics.

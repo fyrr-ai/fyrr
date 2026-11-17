@@ -702,7 +702,7 @@
         }
       }
     ],
-    "variant_note": "Optional notebook rows are excluded from the headline, overview and main story comparisons. fyrr + Jev reranker uses jev-1.14.0 through a benchmark adapter, adding reranking latency and per-query provider cost. fyrr sized for C8 uses reader.concurrency=8 on the same index, with no re-ingest; only C8 is measured and no answer batch is run. Both remain n/e until measured. Public artifact links are not published yet.",
+    "variant_note": "Headline rows use product defaults unless an authorized, source-documented alternative is explicitly marked. Extra fyrr notebook rows remain outside the headline: Jev reranker adds provider latency and per-query cost; sized C8 changes reader.concurrency=8 on the same index, without re-ingest or an answer batch. Default partial baselines remain available in the notebook. Public artifact links are not published yet.",
     "overview_metrics": [
       "recall_at_10",
       "first_ask_c1_p50_ms",
