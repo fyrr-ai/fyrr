@@ -1268,9 +1268,9 @@ fn local_store_frozen_holder_bounds_lock_acquisition() {
     );
     reached(&marker, &mut holder);
 
-    // Other objects: create, replace, compare-and-swap and remove, each well
-    // inside the bound a waiter on the held object would need.
-    let started = std::time::Instant::now();
+    // Other objects: create, replace, compare-and-swap and remove. One that
+    // waited for the held object's lock would fail at the deadline, so their
+    // success shows that none did, however slow the disk is.
     let unrelated = || -> Result<()> {
         let fresh = LocalStore::open(&root).unwrap();
         put_at(&fresh, "namespaces/ns/created", b"created", PutMode::Create)?;
@@ -1286,7 +1286,6 @@ fn local_store_frozen_holder_bounds_lock_acquisition() {
         fresh.delete_blocking(&at(&fresh, "namespaces/ns/retired"))
     };
     let others = unrelated();
-    let elapsed = started.elapsed();
 
     // The held object: a replacement and a removal each give up in time.
     let contender = store.clone();
@@ -1296,7 +1295,9 @@ fn local_store_frozen_holder_bounds_lock_acquisition() {
         let removed = contender.delete_blocking(&object(&contender));
         send.send((replaced, removed)).unwrap();
     });
-    let bounded = receive.recv_timeout(Duration::from_secs(30));
+    // The bound applies to the lock; staging the replacement first flushes,
+    // which a busy disk can stretch. This guard is against waiting forever.
+    let bounded = receive.recv_timeout(Duration::from_secs(120));
     // A stopped writer's staging file is not abandoned: its lock is held.
     let kept = staged(&root).len();
     // Release the holder even when a regression blocks someone forever.
@@ -1304,10 +1305,6 @@ fn local_store_frozen_holder_bounds_lock_acquisition() {
     holder.wait().unwrap();
     thread.join().unwrap();
     others.expect("a held object does not block other objects");
-    assert!(
-        elapsed < LOCK_WAIT / 2,
-        "other objects waited {elapsed:?} behind a held one"
-    );
     assert_eq!(read_at(&store, "namespaces/ns/other").0, b"swapped");
     assert_eq!(read_at(&store, "namespaces/ns/created").0, b"created");
     assert!(!root.join("namespaces/ns/retired").exists());
@@ -1351,13 +1348,10 @@ fn local_store_frozen_holder_bounds_lock_acquisition() {
         ],
     );
     reached(&marker, &mut holder);
-    let started = std::time::Instant::now();
     let replaced = put(&store, b"unblocked", PutMode::Overwrite);
-    let elapsed = started.elapsed();
     holder.kill().unwrap();
     holder.wait().unwrap();
     replaced.expect("a writer that holds no lock blocks nobody");
-    assert!(elapsed < LOCK_WAIT / 2, "waited {elapsed:?}");
     assert_eq!(read(&store, &root), b"unblocked");
     std::fs::remove_dir_all(root).unwrap();
 }
