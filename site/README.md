@@ -126,6 +126,9 @@ completed alternative is explicitly authorized by variant `headline: true` and
 `systems`. That representative replaces its default once ingest is measured and a
 retrieval result exists. Its non-default marker, source, and any observed default
 ingest baseline/projection stay visible. Projections never enter measured bars.
+If a product has only an incomplete authorized attempt, that actual attempt stays
+visible as unavailable with its reason. Import drops empty site placeholders for
+that product while retaining real measured or interrupted run history.
 A variant catalogue may include `description` and `metric_prefixes` to scope
 notebook rows. The sized C8 variant changes only `reader.concurrency=8`, reuses
 the default index and is excluded from C1, ingestion and retrieval metrics.

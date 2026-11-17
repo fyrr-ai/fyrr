@@ -514,3 +514,38 @@ test('import retains partial C8 measurements and refusals despite conservative r
     assert(renderMetric(parseResults(imported), 'first_ask_c8_p50_ms').includes('partial · unranked'));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+test('a sole incomplete product attempt stays visible without a fictional default run', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fyrr-site-unavailable-'));
+  try {
+    mkdirSync(join(dir, 'data'));
+    const canonical = join(dir, 'data/compare-results.json');
+    const original = structuredClone(fixture.systems.find(system => system.id === 'pipeshub')!);
+    const run = { ...structuredClone(original), variant: 'parallel-partitions', date: '2026-11-17T12:00:00Z', version: { version: 'test-version' }, config: { FAIR_SCHEDULING_PARALLEL_PARTITIONS: true }, status: 'partial', headline_note: 'Non-default, source-documented; full 20k interrupted', notes: ['No accepted inventory or shared probe; retrieval and latency are n/e.'] };
+    const incoming = structuredClone(fixture);
+    incoming.systems = [run];
+    incoming.variants!['parallel-partitions'] = { label: 'PipesHub parallel partitions', headline: true, systems: ['pipeshub'], reranker: null, description: run.headline_note, source_url: 'https://example.test/config' };
+    const file = join(dir, 'attempt.json');
+    writeFileSync(file, JSON.stringify(incoming));
+    for (const realDefault of [false, true]) {
+      const current = structuredClone(fixture);
+      if (realDefault) {
+        const actual = current.systems.find(system => system.id === 'pipeshub')!;
+        actual.date = '2026-11-17T10:00:00Z'; actual.version = { version: 'actual-prior-run' }; actual.notes = ['Actual prior full-run attempt, interrupted.'];
+      }
+      current.details = [{ id: 'placeholder', kind: 'category', label: 'placeholder', metric: 'recall_at_10', results: { pipeshub: structuredClone(original.metrics.recall_at_10) } }];
+      writeFileSync(canonical, JSON.stringify(current));
+      const child = spawnSync(process.execPath, [join(process.cwd(), 'scripts/import-compare.ts'), file], { cwd: dir, encoding: 'utf8' });
+      assert.equal(child.status, 0, child.stderr);
+      const imported = parseResults(JSON.parse(readFileSync(canonical, 'utf8')));
+      const defaults = imported.systems.filter(system => system.id === 'pipeshub' && (!system.variant || system.variant === 'default'));
+      assert.equal(defaults.length, realDefault ? 1 : 0);
+      assert.equal(headlineSystems(imported).filter(system => system.id === 'pipeshub').length, 1);
+      if (!realDefault) {
+        const board = renderScoreboard(imported);
+        assert(board.includes('data-system="pipeshub@parallel-partitions"'));
+        assert(board.includes('No accepted inventory or shared probe'));
+        assert.equal(imported.details?.some(row => (!row.variant || row.variant === 'default') && row.results.pipeshub), false);
+      }
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

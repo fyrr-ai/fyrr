@@ -81,10 +81,11 @@ export function headlineSystems(results: Results) {
     if (!variant?.headline || variant.systems && !variant.systems.includes(system.id)) continue;
     // An authorized alternative replaces its default only after the full ingest
     // and a retrieval result exist, including honest partial retrieval evidence.
-    if (system.metrics.ingest_wall_s?.status !== 'measured' || system.metrics[results.website.headline_metric]?.value == null) continue;
-    requireField(Boolean((system.headline_note || variant.description)?.trim()) && Boolean(variant.source_url), 'non-default headline requires a visible configuration note and source');
+    const complete = system.metrics.ingest_wall_s?.status === 'measured' && system.metrics[results.website.headline_metric]?.value != null;
     const previous = representatives.get(system.id);
-    requireField(!previous?.variant || previous.variant === 'default', 'one authorized headline representative per product');
+    if (!complete && previous) continue;
+    requireField(Boolean((system.headline_note || variant.description)?.trim()) && Boolean(variant.source_url), 'non-default headline requires a visible configuration note and source');
+    requireField(!complete || !previous?.variant || previous.variant === 'default' || previous.metrics.ingest_wall_s?.status !== 'measured' || previous.metrics[results.website.headline_metric]?.value == null, 'one authorized headline representative per product');
     representatives.set(system.id, system);
   }
   return [...representatives.values()];
@@ -120,9 +121,8 @@ function validateMetric(metric: unknown, key: string): asserts metric is Metric 
   if (metric.sample_ids !== undefined) requireField(strings(metric.sample_ids) && new Set(metric.sample_ids).size === metric.sample_ids.length && metric.sample_ids.length === metric.n, `${key} sample IDs`);
 }
 
-export function parseResults(data: unknown): Results {
-  requireField(object(data) && data.schema_version === '1.1', 'schema_version must be 1.1');
-  requireField(typeof data.draft === 'boolean', 'explicit draft flag required');
+export function validatePublicScope(data: unknown) {
+  requireField(object(data), 'results object');
   const serialized = JSON.stringify(data);
   requireField(!/\bjev(?:\b|[_-])|TypeSafe System One/i.test(serialized), 'private benchmark data cannot enter public results');
   const publicWebsite = object(data.website) ? data.website : {};
@@ -133,12 +133,19 @@ export function parseResults(data: unknown): Results {
   const comparison = approvedTrial ? JSON.stringify({ ...data, website: { ...publicWebsite, lambda_projection: { ...trial, reader_commit: undefined } } }) : serialized;
   requireField(!/c2a34a3/i.test(comparison), 'private benchmark data cannot enter public results');
   requireField(!/"(?:answer_(?:correctness|completeness)|native_answer[^"]*)"\s*:/i.test(serialized), 'private answer measurements cannot enter public results');
+  requireField(!/(?:answers|native-answers)\.jsonl/i.test(serialized), 'private answer artifacts cannot enter public results');
+  const protocol = object(data.protocol) ? data.protocol : {};
+  requireField(!['answer', 'judge', 'prompts_sha256', 'codex_version', 'model_cache_sha256', 'secondary_execution', 'subscription'].some(key => key in protocol), 'private answer protocol cannot enter public results');
+  return approvedTrial;
+}
+
+export function parseResults(data: unknown): Results {
+  requireField(object(data) && data.schema_version === '1.1', 'schema_version must be 1.1');
+  requireField(typeof data.draft === 'boolean', 'explicit draft flag required');
+  const approvedTrial = validatePublicScope(data);
   requireField(object(data.benchmark) && typeof data.benchmark.id === 'string', 'benchmark');
   if (data.synthetic_design_preview) requireField(data.benchmark.publishable === false, 'synthetic preview must set benchmark.publishable to false');
   requireField(object(data.protocol), 'protocol');
-  requireField(!/(?:answers|native-answers)\.jsonl/i.test(serialized), 'private answer artifacts cannot enter public results');
-  const protocol = data.protocol;
-  requireField(!['answer', 'judge', 'prompts_sha256', 'codex_version', 'model_cache_sha256', 'secondary_execution', 'subscription'].some(key => key in protocol), 'private answer protocol cannot enter public results');
   requireField(Array.isArray(data.systems) && data.systems.length > 0, 'systems');
   const ids = new Set<string>();
   const runs = new Set<string>();
@@ -300,10 +307,11 @@ function renderRunNotes(results: Results, system: Results['systems'][number], cl
   const variant = results.variants?.[system.variant ?? 'default'];
   const alternative = system.variant && system.variant !== 'default';
   const note = system.headline_note?.trim() || (alternative ? variant?.description?.trim() || `Non-default configuration: ${name(system.variant!)}` : '');
+  const unavailable = alternative && variant?.headline && system.metrics[results.website.headline_metric]?.value == null ? `<small class="${className} unavailable-reason">${escape(system.notes.length ? system.notes.join(' ') : 'Full-run measurements: n/e.')}</small>` : '';
   const marker = note ? `<small class="${className}">${escape(note)}${variant?.source_url ? ` <a href="${link(variant.source_url)}">Configuration source ↗</a>` : ''}</small>` : '';
   const baseline = system.default_ingest_baseline;
-  if (!baseline || !includeBaseline) return marker;
-  return marker + `<small class="${className} default-ingest-baseline">Default ingest: ${baseline.docs_per_min != null ? `${escape(format(baseline.docs_per_min, 'docs/min'))} docs/min observed${baseline.interval_seconds != null ? ` over ${escape(format(baseline.interval_seconds, 'seconds'))} s` : ''}` : 'steady rate n/e'}; 20,000 documents: ${baseline.projected_20000_seconds != null ? `PROJECTED ${escape(format(baseline.projected_20000_seconds, 'seconds'))} s` : 'projection n/e'}. Default 20k ingest not completed. Projection is excluded from measured ingest bars.${baseline.notes?.length ? ` ${escape(baseline.notes.join(' '))}` : ''}</small>`;
+  if (!baseline || !includeBaseline) return marker + unavailable;
+  return marker + unavailable + `<small class="${className} default-ingest-baseline">Default ingest: ${baseline.docs_per_min != null ? `${escape(format(baseline.docs_per_min, 'docs/min'))} docs/min observed${baseline.interval_seconds != null ? ` over ${escape(format(baseline.interval_seconds, 'seconds'))} s` : ''}` : 'steady rate n/e'}; 20,000 documents: ${baseline.projected_20000_seconds != null ? `PROJECTED ${escape(format(baseline.projected_20000_seconds, 'seconds'))} s` : 'projection n/e'}. Default 20k ingest not completed. Projection is excluded from measured ingest bars.${baseline.notes?.length ? ` ${escape(baseline.notes.join(' '))}` : ''}</small>`;
 }
 
 function axisScale(value: number, unit: string) {
