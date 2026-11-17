@@ -21,8 +21,8 @@
     "geist": "^1.9.2",
     "mdast-util-to-string": "^4.0.0",
     "next": "16.4.6",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "remark-gfm": "^4.0.0",
     "remark-parse": "^11.0.0",
     "remark-stringify": "^11.0.0",
@@ -32,13 +32,13 @@
   },
   "devDependencies": {
     "@types/mdx": "^2.0.13",
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@types/subset-font": "2.3.0",
     "playwright": "^1.65.1",
     "subset-font": "2.9.0",
-    "typescript": "^5.9.0",
+    "typescript": "^7.0.2",
     "wrangler": "4.162.0"
   },
   "packageManager": "bun@1.4.4"
