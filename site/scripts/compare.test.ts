@@ -88,7 +88,7 @@ test('cost-led narrative makes only supported claims and lets competitors win', 
     const cost = index === 0 ? 10 : index * 50;
     system.metrics.monthly_cost_usd = { status: 'measured', value: cost, unit: 'USD/month', n: 1, expected: 1, attempted: 1, missing: 0 };
     system.metrics.load_rss_peak_bytes = { status: 'measured', value: 1024 ** 3, unit: 'bytes', n: 1 };
-    system.footprint.monthly_cost_estimate = { status: 'estimate', total_usd: cost, assumptions: { instance_name: 'Test instance', instance_ram_gib: 2, hours: 730, documents: 20000, searches_month: 100000, updated_documents_daily_fraction: .01 }, components: { compute_usd_month: cost, storage_usd_month: 0, embedding_usd_per_document: 0, llm_enrichment_usd_per_document: 0 }, missing: [], sources: [{ label: 'Test tariff, dated', url: 'https://example.test/pricing' }] };
+    system.footprint.monthly_cost_estimate = { basis: 'documented-production', model_version: 2, status: 'estimate', total_usd: cost, assumptions: { hours_per_month: 730, documents: 20000, queries_per_month: 100000, daily_changed_fraction: .01 }, components: { compute_usd_month: cost, storage_usd_month: 0, network_usd_month: 0, control_plane_usd_month: 0, security_usd_month: 0, observability_usd_month: 0, api_usd_month: 0, embedding_usd_per_document: 0, llm_enrichment_usd_per_document: 0 }, line_items: [{ key: 'compute', label: 'Compute', required: true, usd_month: cost, deployment_source: 'https://example.test/deployment', price_source: { url: 'https://example.test/pricing' } }], missing: [], sources: [{ label: 'Test tariff, dated', url: 'https://example.test/pricing' }] };
   });
   const verdict = headlineVerdict(data);
   assert.equal(verdict, 'Similar search quality. A fraction of the estimated running cost. Faster queries and indexing.');
@@ -126,8 +126,7 @@ test('cost-led narrative makes only supported claims and lets competitors win', 
 });
 test('light and team cost assumptions stay separate and expose capacity pass criteria', () => {
   const data = structuredClone(fixture);
-  const before = renderScoreboard(data);
-  data.systems[0].footprint.monthly_cost_estimate = {
+  data.systems[0].footprint.minimum_deployment_cost_estimate = {
     status: 'estimate', total_usd: 10, assumptions: {}, components: {}, scenarios: {
       light: { status: 'estimate', total_usd: 10, assumptions: { load_concurrency: 1 }, components: {}, sizing: {} },
       team: { status: 'estimate', total_usd: 20, configuration_note: 'reader.concurrency=8; measured sized reader', assumptions: { load_concurrency: 8 }, components: {}, sizing: { selected_cpus: 2, measured_peak_rss_bytes: 1024 ** 3, ram_headroom_fraction: .25, capacity_tests: [
@@ -136,6 +135,7 @@ test('light and team cost assumptions stay separate and expose capacity pass cri
       ] } },
     },
   };
+  const before = renderScoreboard(data);
   const html = renderStories(data);
   assert(html.includes('id="cost-light"'));
   assert(html.includes('id="cost-team"'));
@@ -144,7 +144,33 @@ test('light and team cost assumptions stay separate and expose capacity pass cri
   assert(html.includes('pass<small>250 / 250 valid · 0 errors'));
   assert(html.includes('fail<small>249 / 250 valid · 1 errors'));
   assert(html.includes('peak memory plus 25% headroom'));
+  (data.systems[0].footprint.minimum_deployment_cost_estimate as any).scenarios.team.total_usd = 999;
   assert.equal(renderScoreboard(data), before, 'Team estimates cannot replace headline cost');
+});
+test('documented production costs retain unknown required items and keep the minimum separate', () => {
+  const data = structuredClone(fixture);
+  data.systems[0].footprint.monthly_cost_estimate = {
+    basis: 'documented-production', model_version: 2, status: 'partial', total_usd: null, known_subtotal_usd: 42,
+    profile: 'Documented production test', assumptions: { hours_per_month: 730, documents: 20000, queries_per_month: 100000, daily_changed_fraction: .01 },
+    components: { compute_usd_month: 42, storage_usd_month: null },
+    line_items: [{ label: 'Snapshot storage', count: 1, quantity: null, unit: 'GB-month', unit_price_usd: .05, usd_month: null, required: true, quantity_basis: 'Used blocks unknown', deployment_source: 'https://example.test/deployment', price_source: { url: 'https://example.test/pricing' } }],
+    missing: ['Snapshot used blocks'], notes: ['Availability and topology differ.'],
+  };
+  data.systems[0].footprint.minimum_deployment_cost_estimate = { status: 'estimate', total_usd: 10 };
+  const html = renderStories(data);
+  assert(html.includes('Known subtotal: $42 / month · incomplete'));
+  assert(html.includes('Snapshot used blocks'));
+  assert(html.includes('Used blocks unknown'));
+  assert(html.includes('Snapshot storage'));
+  assert(html.includes('href="https://example.test/deployment"'));
+  assert(html.includes('href="https://example.test/pricing"'));
+  assert(html.includes('not a cloud capacity or availability guarantee'));
+  assert(html.includes('id="minimum-cost-details"><summary>'));
+  const firstCard = html.slice(html.indexOf('id="cost-production"'), html.indexOf('id="minimum-cost-details"'));
+  assert(firstCard.includes('class="cost-total">n/e / month'));
+  assert(!firstCard.includes('class="cost-total">$42'));
+  assert(renderScoreboard(data).includes('Minimum to run: $10'));
+  assert.equal(data.systems[0].metrics.monthly_cost_usd.value, null, 'The minimum never fills the main cost metric');
 });
 test('zero is a measured result, ratios handle zero baselines and axes stay round', () => {
   const data = structuredClone(fixture);

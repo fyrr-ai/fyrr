@@ -101,10 +101,12 @@ question search and the notebook's open state. Higher-is-better scores
 show percentage-point gaps; time, cost and footprint show ratios to the
 best selected complete result.
 
-Cost assumptions have light/C1 and team/C8 controls. Top-level estimates and
-headline cost stay light/C1. Team figures retain their measured configuration;
-missing C8 evidence remains n/e. Capacity rows show pinned CPU count, p95 versus
-its limit, valid attempts/errors and pass/fail, with measured RAM plus 25% headroom.
+Main monthly cost uses documented production deployments and itemized regional
+prices. A missing required line leaves the total n/e; known subtotals are labelled
+incomplete. `footprint.minimum_deployment_cost_estimate` is separate, with light/C1
+and team/C8 controls, measured configurations and pinned-capacity evidence. The
+overview labels that reference “Minimum to run”; it never replaces production
+cost. Capacity rows retain failed tests and measured RAM plus 25% headroom.
 
 The cost story also contains a separately labelled experimental Lambda projection
 from a 300-document synthetic trial. It never supplies benchmark scores, the
@@ -141,8 +143,8 @@ an asterisk and cannot establish a product win. Fraction axes cover
 0–100%; other axes start at zero and include the full confidence interval.
 No metric is sorted to favor a product. Hero clauses and story titles are derived
 from complete comparable evidence: observed quality gaps/intervals, C1 latency,
-ingest wall time and a complete monthly cost model. Cost claims require explicit
-assumptions, components and no missing inputs; the visible cost cards show measured
+ingest wall time and a complete monthly cost model. Cost claims require a complete documented-production model, matched workload,
+priced required line items and no missing inputs; the visible cost cards show measured
 peak memory, selected instance, storage, embedding and LLM enrichment inputs. Public results cover retrieval, latency, ingest, footprint and cost. Shared answer scoring and its model/protocol artifacts remain private.
 
 Import a new benchmark envelope with:
