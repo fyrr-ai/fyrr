@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readResults, parseResults, assertPublishable, headlineVerdict, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderDetailView, relativeValue } from '../lib/compare';
+import { readResults, parseResults, assertPublishable, headlineVerdict, headlineSystems, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderDetailView, renderControls, relativeValue } from '../lib/compare';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -258,6 +258,40 @@ test('sized C8 variant stays separate from default wins and out of unmeasured tr
   assert(headlineVerdict(data).startsWith(data.systems[1].name));
   // Rendering never mutates the default run's original C8 refusal evidence.
   assert.deepEqual(data.systems[0].metrics.first_ask_c8_p50_ms, before.metrics.first_ask_c8_p50_ms);
+});
+test('an authorized completed alternative represents its product once with visible baseline caveats', () => {
+  const data = structuredClone(fixture);
+  const original = data.systems.find(system => system.id === 'pipeshub')!;
+  const parallel = { ...structuredClone(original), variant: 'parallel-partitions', headline_note: 'FAIR_SCHEDULING_PARALLEL_PARTITIONS=true, non-default, source-documented; default 20k ingest not completed', default_ingest_baseline: { docs_per_min: 10, interval_seconds: 60, newly_completed_documents: 10, projected_20000_seconds: 120000 } };
+  data.variants!['parallel-partitions'] = { label: 'PipesHub parallel partitions', headline: true, systems: ['pipeshub'], replaces_headline_variant: 'default', reranker: null, description: parallel.headline_note, source_url: 'https://github.com/pipeshub-ai/pipeshub-ai/blob/v1.0.0/backend/python/app/services/messaging/config.py#L533' };
+  data.systems.push(parallel);
+  assert.equal(headlineSystems(parseResults(data)).find(system => system.id === 'pipeshub')?.variant, 'default', 'A planned or incomplete alternative cannot replace the baseline');
+  data.systems.forEach(system => { system.metrics.recall_at_10 = { status: 'measured', value: system === parallel ? .95 : .8, unit: 'fraction', n: 1, expected: 1, attempted: 1, missing: 0, sample_ids: ['a'], ci95: [0, 1] }; });
+  parallel.metrics.ingest_wall_s = { status: 'measured', value: 1000, unit: 'seconds', n: 1 };
+  const parsed = parseResults(data);
+  const selected = headlineSystems(parsed);
+  assert.equal(selected.length, 3);
+  assert.equal(selected.find(system => system.id === 'pipeshub')?.variant, 'parallel-partitions');
+  const board = renderScoreboard(parsed);
+  assert.equal((board.match(/class="score-row/g) ?? []).length, 3);
+  assert(board.includes('/compare/runs/pipeshub--parallel-partitions.json'));
+  assert(board.includes('FAIR_SCHEDULING_PARALLEL_PARTITIONS=true, non-default'));
+  assert(board.includes('10 docs/min observed over 60 s'));
+  assert(board.includes('PROJECTED 120,000 s'));
+  assert(!board.includes('data-value="120000"'));
+  assert(!renderStories(parsed).includes('data-system="pipeshub"'));
+  const controls = renderControls(parsed);
+  assert(controls.includes('value="pipeshub@parallel-partitions" checked'));
+  assert(!controls.includes('value="pipeshub" checked'));
+  parsed.draft = false;
+  assert(headlineVerdict(parsed).startsWith('PipesHub (non-default configuration) has the highest'));
+  data.variants!['parallel-partitions'].systems = ['onyx'];
+  assert.equal(headlineSystems(data).find(system => system.id === 'pipeshub')?.variant, 'default', 'Representative authorization is product scoped');
+  data.variants!['parallel-partitions'].systems = ['pipeshub'];
+  data.systems.push({ ...structuredClone(parallel), variant: 'another-alternative' });
+  data.variants!['another-alternative'] = { ...data.variants!['parallel-partitions'] };
+  data.draft = true;
+  assert.throws(() => parseResults(data), /one authorized headline representative per product/);
 });
 test('synthetic or smoke fixtures cannot overwrite the committed results', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fyrr-site-import-'));

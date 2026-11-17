@@ -33,7 +33,7 @@ async function assertDiagnosticsUnranked(page) {
     const parent = label.closest('[data-metric], [data-score-metric], [data-detail-metric]');
     const key = parent?.dataset.metric ?? parent?.dataset.scoreMetric ?? parent?.dataset.detailMetric;
     const meta = metrics[key];
-    return meta && (meta.comparable === false || meta.scope === 'fyrr-only') && (label.textContent !== 'diagnostic · unranked' || label.classList.contains('is-best') || label.closest('.is-winner'));
+    return meta && (meta.comparable === false || meta.scope?.endsWith('-only')) && (label.textContent !== 'diagnostic · unranked' || label.classList.contains('is-best') || label.closest('.is-winner'));
   }).map(label => label.textContent), results.website.metrics);
   assert.deepEqual(errors, [], 'Diagnostics must never gain a ratio or winner label, including after filtering');
 }
@@ -67,18 +67,29 @@ try {
     if (results.draft && !results.synthetic_design_preview) assert.equal(await page.locator('.bar i, .whisker').count(), 0, 'Placeholder must never draw fabricated bars');
     assert.equal(await page.locator('.synthetic-watermark').count(), results.synthetic_design_preview ? 1 : 0);
     assert.equal(await page.locator('.score-row:visible').first().locator('.score-cell:visible').count(), results.website.overview_metrics.length, 'Every overview column is selected initially');
-    assert.equal(await page.locator('.score-row:visible .score-cell[data-score-metric="ingest_wall_s"] .score-rate').count(), results.systems.filter(system => !system.variant || system.variant === 'default').length, 'Every default row exposes ingest throughput');
+    const headlineKeys = await page.locator('.score-row').evaluateAll(rows => rows.map(row => row.dataset.system));
+    const headlineRuns = headlineKeys.map(key => results.systems.find(system => (!system.variant || system.variant === 'default' ? system.id : system.id + '@' + system.variant) === key));
+    assert(headlineRuns.every(Boolean));
+    assert.equal(new Set(headlineRuns.map(system => system.id)).size, headlineRuns.length, 'Exactly one headline representative per product');
+    assert.equal(headlineRuns.length, new Set(results.systems.map(system => system.id)).size);
+    assert.equal(await page.locator('.score-row:visible .score-cell[data-score-metric="ingest_wall_s"] .score-rate').count(), headlineRuns.length, 'Every representative row exposes ingest throughput');
     assert.equal(await page.locator('#story-ingest .metric-panel').count(), 1, 'Ingest story has one wall-time chart');
-    assert.equal(await page.locator('#story-ingest .ingest-cost').count(), results.systems.filter(system => !system.variant || system.variant === 'default').length, 'Embedding cost is a secondary line for each default product');
-    for (const system of results.systems.filter(system => !system.variant || system.variant === 'default')) {
+    assert.equal(await page.locator('#story-ingest .ingest-cost').count(), headlineRuns.length, 'Embedding cost is a secondary line for each representative product');
+    for (const system of headlineRuns) {
+      const key = !system.variant || system.variant === 'default' ? system.id : system.id + '@' + system.variant;
+      if (system.variant && system.variant !== 'default') {
+        assert(await page.locator(`.score-row[data-system="${key}"] .score-run-note`).count() > 0, 'Non-default headline configuration must have a visible marker');
+        assert.equal(await page.locator(`[data-select-system][value="${key}"]`).isChecked(), true);
+        if (system.default_ingest_baseline?.projected_20000_seconds != null) assert.match(await page.locator(`.score-row[data-system="${key}"] .default-ingest-baseline`).textContent(), /PROJECTED.*not completed/);
+      }
       const coverage = system.ingest_coverage;
       if (!coverage || !['submitted', 'accepted', 'rejected'].every(key => Number.isInteger(coverage[key]))) continue;
       const label = `${coverage.accepted.toLocaleString('en')} / ${coverage.submitted.toLocaleString('en')} accepted · ${coverage.rejected.toLocaleString('en')} rejected`;
-      assert.equal(await page.locator(`.score-row[data-system="${system.id}"] .score-coverage`).textContent(), label);
-      assert.equal(await page.locator(`#story-ingest .chart-row[data-system="${system.id}"] .ingest-coverage`).textContent(), label, 'Accepted coverage must remain prominent next to ingest time');
+      assert.equal(await page.locator(`.score-row[data-system="${key}"] .score-coverage`).textContent(), label);
+      assert.equal(await page.locator(`#story-ingest .chart-row[data-system="${key}"] .ingest-coverage`).textContent(), label, 'Accepted coverage must remain prominent next to ingest time');
     }
     const suffix = `${width}${motion === 'reduce' ? '-reduced' : ''}`;
-    if (width === 390) {
+    if (width === 390 && headlineRuns.every(system => !system.variant || system.variant === 'default')) {
       const last = await page.locator('.score-row:visible').last().boundingBox();
       assert(last.y + last.height <= 960, 'All three headline rows fit in the first phone screen');
     }
@@ -150,7 +161,7 @@ try {
       assert.equal(await variant.isChecked(), false);
       await variant.check();
       assert(await page.locator('#detail-speed .chart-row[data-system="fyrr@jev-rerank"]:visible').count() > 0, 'Optional variant has a separate latency row');
-      assert.equal(await page.locator('.hero-evidence [data-system="fyrr@jev-rerank"]').count(), 0, 'Headline only compares defaults');
+      assert.equal(await page.locator('.hero-evidence [data-system="fyrr@jev-rerank"]').count(), 0, 'Optional fyrr variants stay out of the headline');
       await variant.uncheck();
     }
     if (results.systems.some(system => system.variant === 'concurrency-8')) {

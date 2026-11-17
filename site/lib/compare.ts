@@ -22,7 +22,7 @@ export type Results = {
   schema_version: '1.1';
   draft: boolean;
   synthetic_design_preview?: boolean;
-  variants?: Record<string, { label: string; headline: boolean; reranker: Record<string, unknown> | null; description?: string; metric_prefixes?: string[] }>;
+  variants?: Record<string, { label: string; headline: boolean; reranker: Record<string, unknown> | null; description?: string; metric_prefixes?: string[]; systems?: string[]; source_url?: string; replaces_headline_variant?: string }>;
   details?: { id: string; label: string; kind: 'category' | 'question'; metric: string; variant?: string; results: Record<string, Metric> }[];
   benchmark: Record<string, unknown>;
   protocol: Record<string, unknown>;
@@ -30,6 +30,8 @@ export type Results = {
     id: string; name: string; variant?: string; version: Record<string, unknown>; config: Record<string, unknown>;
     date: string; status?: string; metrics: Record<string, Metric>; footprint: Record<string, unknown>;
     notes: string[]; artifacts?: Record<string, unknown>;
+    headline_note?: string;
+    default_ingest_baseline?: { docs_per_min?: number | null; interval_seconds?: number | null; newly_completed_documents?: number | null; projected_20000_seconds?: number | null; artifact?: string; notes?: string[] };
     ingest_coverage?: { submitted: number | null; accepted: number | null; rejected: number | null; rejected_documents: unknown[] };
   }[];
   website: {
@@ -55,9 +57,29 @@ function supportsMetric(results: Results, system: Results['systems'][number], ke
   const prefixes = results.variants?.[system.variant ?? 'default']?.metric_prefixes;
   return !prefixes || prefixes.some(prefix => key.startsWith(prefix));
 }
+export function headlineSystems(results: Results) {
+  const representatives = new Map<string, Results['systems'][number]>();
+  for (const system of results.systems) {
+    if (!system.variant || system.variant === 'default') representatives.set(system.id, system);
+  }
+  for (const system of results.systems) {
+    if (!system.variant || system.variant === 'default') continue;
+    const variant = results.variants?.[system.variant];
+    if (!variant?.headline || variant.systems && !variant.systems.includes(system.id)) continue;
+    // An authorized alternative replaces its default only after the full ingest
+    // and a retrieval result exist, including honest partial retrieval evidence.
+    if (system.metrics.ingest_wall_s?.status !== 'measured' || system.metrics[results.website.headline_metric]?.value == null) continue;
+    requireField(Boolean((system.headline_note || variant.description)?.trim()) && Boolean(variant.source_url), 'non-default headline requires a visible configuration note and source');
+    const previous = representatives.get(system.id);
+    requireField(!previous?.variant || previous.variant === 'default', 'one authorized headline representative per product');
+    representatives.set(system.id, system);
+  }
+  return [...representatives.values()];
+}
 function productSystems(results: Results) {
   const products = new Map<string, Results['systems'][number]>();
   for (const system of results.systems) if (!products.has(system.id) || !system.variant || system.variant === 'default') products.set(system.id, system);
+  for (const system of headlineSystems(results)) products.set(system.id, system);
   return [...products.values()];
 }
 function requireField(condition: unknown, name: string): asserts condition {
@@ -105,6 +127,11 @@ export function parseResults(data: unknown): Results {
     for (const [key, metric] of Object.entries(system.metrics)) {
       validateMetric(metric, key);
     }
+    requireField(system.headline_note === undefined || typeof system.headline_note === 'string', `${system.id} headline note`);
+    if (system.default_ingest_baseline !== undefined) {
+      const baseline = system.default_ingest_baseline;
+      requireField(object(baseline) && ['docs_per_min', 'interval_seconds', 'projected_20000_seconds'].every(key => baseline[key] === undefined || baseline[key] === null || finite(baseline[key]) && Number(baseline[key]) >= 0) && (baseline.newly_completed_documents == null || count(baseline.newly_completed_documents)) && (baseline.notes === undefined || strings(baseline.notes)) && (baseline.artifact === undefined || typeof baseline.artifact === 'string'), `${system.id} default ingest baseline`);
+    }
     if (system.ingest_coverage !== undefined) {
       const coverage = system.ingest_coverage;
       requireField(object(coverage) && ['submitted', 'accepted', 'rejected'].every(key => coverage[key] === null || count(coverage[key])) && Array.isArray(coverage.rejected_documents), `${system.id} ingest coverage counts`);
@@ -147,6 +174,9 @@ export function parseResults(data: unknown): Results {
   if (data.variants !== undefined) {
     requireField(object(data.variants), 'variants catalogue');
     for (const [key, variant] of Object.entries(data.variants)) requireField(/^[a-z][a-z0-9_-]*$/.test(key) && object(variant) && typeof variant.label === 'string' && typeof variant.headline === 'boolean' && (variant.reranker === null || object(variant.reranker)) && (variant.description === undefined || typeof variant.description === 'string') && (variant.metric_prefixes === undefined || strings(variant.metric_prefixes) && variant.metric_prefixes.length > 0 && variant.metric_prefixes.every(prefix => /^[a-z][a-z0-9_]*$/.test(prefix))), 'variant metadata');
+    for (const variant of Object.values(data.variants)) {
+      requireField(object(variant) && (variant.systems === undefined || strings(variant.systems)) && (variant.source_url === undefined || typeof variant.source_url === 'string' && /^https:\/\//.test(variant.source_url)) && (variant.replaces_headline_variant === undefined || typeof variant.replaces_headline_variant === 'string'), 'headline variant metadata');
+    }
   }
   const keys = new Set(data.systems.flatMap(system => Object.keys(system.metrics)));
   requireField(keys.has(w.headline_metric), 'headline metric must exist');
@@ -175,6 +205,7 @@ export function parseResults(data: unknown): Results {
       }
     }
   }
+  headlineSystems(results);
   return results;
 }
 
@@ -227,6 +258,15 @@ function ingestCoverage(system: Results['systems'][number]) {
   if (!coverage || !count(coverage.submitted) || !count(coverage.accepted) || !count(coverage.rejected)) return 'Coverage n/e';
   return `${format(coverage.accepted!, 'documents')} / ${format(coverage.submitted!, 'documents')} accepted · ${format(coverage.rejected!, 'documents')} rejected`;
 }
+function renderRunNotes(results: Results, system: Results['systems'][number], className = 'run-note', includeBaseline = false) {
+  const variant = results.variants?.[system.variant ?? 'default'];
+  const alternative = system.variant && system.variant !== 'default';
+  const note = system.headline_note?.trim() || (alternative ? variant?.description?.trim() || `Non-default configuration: ${name(system.variant!)}` : '');
+  const marker = note ? `<small class="${className}">${escape(note)}${variant?.source_url ? ` <a href="${link(variant.source_url)}">Configuration source ↗</a>` : ''}</small>` : '';
+  const baseline = system.default_ingest_baseline;
+  if (!baseline || !includeBaseline) return marker;
+  return marker + `<small class="${className} default-ingest-baseline">Default ingest: ${baseline.docs_per_min != null ? `${escape(format(baseline.docs_per_min, 'docs/min'))} docs/min observed${baseline.interval_seconds != null ? ` over ${escape(format(baseline.interval_seconds, 'seconds'))} s` : ''}` : 'steady rate n/e'}; 20,000 documents: ${baseline.projected_20000_seconds != null ? `PROJECTED ${escape(format(baseline.projected_20000_seconds, 'seconds'))} s` : 'projection n/e'}. Default 20k ingest not completed. Projection is excluded from measured ingest bars.</small>`;
+}
 
 function axisScale(value: number, unit: string) {
   if (unit === 'fraction') return { max: 1, step: .25 };
@@ -238,10 +278,11 @@ function axisScale(value: number, unit: string) {
   return { max: Math.ceil(value / step) * step, step };
 }
 
-const canCompare = (meta: Results['website']['metrics'][string] | undefined) => meta?.comparable !== false && meta?.scope !== 'fyrr-only';
+const scopeProduct = (meta: Results['website']['metrics'][string] | undefined) => meta?.scope?.endsWith('-only') ? meta.scope.slice(0, -5) : null;
+const canCompare = (meta: Results['website']['metrics'][string] | undefined) => meta?.comparable !== false && !scopeProduct(meta);
 
 export function headlineVerdict(results: Results) {
-  results = { ...results, systems: results.systems.filter(system => !system.variant || system.variant === 'default') };
+  results = { ...results, systems: headlineSystems(results) };
   const key = results.website.headline_metric;
   const meta = results.website.metrics[key];
   if (!canCompare(meta)) return `${meta?.label ?? 'This metric'} is a diagnostic; it does not establish a product ranking.`;
@@ -253,14 +294,14 @@ export function headlineVerdict(results: Results) {
   }
   const values = cells.map(metric => metric.value!);
   const best = meta.direction === 'higher_is_better' ? Math.max(...values) : Math.min(...values);
-  const winners = values.flatMap((value, index) => value === best ? [results.systems[index].name] : []);
+  const winners = values.flatMap((value, index) => value === best ? [results.systems[index].name + (results.systems[index].variant && results.systems[index].variant !== 'default' ? ' (non-default configuration)' : '')] : []);
   if (winners.length > 1) return `${winners.join(' and ')} tie on observed ${meta.label.toLowerCase()} at ${format(best, cells[0].unit)}; uncertainty and trade-offs are shown below.`;
   return `${winners[0]} has the ${meta.direction === 'higher_is_better' ? 'highest' : 'lowest'} observed ${meta.label.toLowerCase()} at ${format(best, cells[0].unit)}; uncertainty and trade-offs are shown below.`;
 }
 
 export function renderMetric(results: Results, key: string, options: { tailKey?: string; axisMax?: number; ingest?: boolean } = {}) {
   const meta = results.website.metrics[key];
-  results = { ...results, systems: results.systems.filter(system => supportsMetric(results, system, key) && (meta?.scope !== 'fyrr-only' || system.id === 'fyrr')) };
+  results = { ...results, systems: results.systems.filter(system => supportsMetric(results, system, key) && (!scopeProduct(meta) || system.id === scopeProduct(meta))) };
   const cells = results.systems.map(system => system.metrics[key]);
   const unit = cells.find(Boolean)?.unit ?? meta?.unit ?? '';
   const tails = options.tailKey ? results.systems.map(system => system.metrics[options.tailKey!]) : [];
@@ -304,18 +345,19 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
     const breakdown = stageBreakdown(system);
     const cost = system.metrics.embedding_cost_usd;
     return `<div class="chart-row${system.id === 'fyrr' ? ' is-fyrr' : ''}" data-system="${escape(runKey(system))}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-missing="${metric?.missing ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-expected="${metric?.expected ?? ''}" data-samples="${sampleSet(metric)}" role="listitem">
-      <span class="product-name"><a href="/compare/runs/${escape(system.id)}--${escape(system.variant ?? 'default')}.json" title="Download this run JSON">${escape(runLabel(results, system))}</a>${results.variants?.[system.variant ?? 'default']?.description ? `<small class="run-note">${escape(results.variants[system.variant ?? 'default'].description)}</small>` : ''}</span>
+      <span class="product-name"><a href="/compare/runs/${escape(system.id)}--${escape(system.variant ?? 'default')}.json" title="Download this run JSON">${escape(runLabel(results, system))}</a></span>
       <div class="bar${system.id === 'fyrr' ? ' bar--fyrr' : ''}${hasValue ? '' : ' is-empty'}" aria-hidden="true">
         ${hasValue ? `<i style="--w:${pct(metric.value!)}">${breakdown.segments.map((stage, i) => `<span class="ingest-segment" style="width:${metric.value ? stage.value / metric.value * 100 : 0}%;--stage-shade:${Math.min(i * .18, .72)}" title="${escape(stage.label)}: ${escape(format(stage.value, 'seconds'))} s"></span>`).join('')}</i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}
         ${tail?.value != null ? `<b class="tail-tick" style="left:${pct(tail.value)}"></b>${tail.ci95 ? `<b class="whisker whisker--tail" style="--low:${pct(tail.ci95[0])};--high:${pct(tail.ci95[1])}"></b>` : ''}` : ''}
       </div>
       <span class="chart-value"><span class="primary-value">${options.tailKey ? `<span class="sr-only">p50 </span>` : ''}${value}${key === 'ingest_wall_s' && hasValue ? ' s' : ''}</span>${options.tailKey ? `<small class="tail-value">p95 ${tailValue}</small>` : ''}${key === 'ingest_wall_s' ? `<small class="ingest-rate">${escape(ingestRate(system.metrics.ingest_docs_per_min))}</small>` : ''}<small class="relative">${relative}</small></span>
+      ${renderRunNotes(results, system, 'run-note', key === 'ingest_wall_s')}
       ${key === 'ingest_wall_s' ? `<small class="ingest-coverage">${escape(ingestCoverage(system))}</small>` : ''}
       ${options.ingest ? `<small class="ingest-cost" data-secondary-metric="embedding_cost_usd">Embedding cost: ${cost?.value != null ? `${escape(format(cost.value, cost.unit))}${cost.status === 'partial' ? ' *' : ''}` : cost?.status === 'invalid' ? 'invalid' : 'n/e'}</small>` : ''}
     </div>`;
   }).join('');
   return `<figure class="panel metric-panel rv" data-metric="${escape(key)}" data-direction="${escape(meta?.direction ?? '')}"${options.tailKey ? ` data-companion="${escape(options.tailKey)}"` : ''}>
-    <figcaption class="panel__bar"><span>${meta?.scope === 'fyrr-only' ? 'FYRR-only diagnostic' : escape(meta ? results.website.groups.find(group => group.id === (meta.group === 'cost' ? 'footprint' : meta.group))?.label ?? 'Additional metric' : 'Additional metric')}${meta?.tier === 'secondary' ? ' / secondary' : ''}</span><span>${meta?.scope === 'fyrr-only' ? 'No cross-product comparison' : !canCompare(meta) ? 'Diagnostic only · no product ranking' : meta?.direction ? `${meta.direction === 'higher_is_better' ? 'higher' : 'lower'} is better` : 'Reported value'}</span></figcaption>
+    <figcaption class="panel__bar"><span>${scopeProduct(meta) ? `${escape(scopeProduct(meta))} / diagnostic` : escape(meta ? results.website.groups.find(group => group.id === (meta.group === 'cost' ? 'footprint' : meta.group))?.label ?? 'Additional metric' : 'Additional metric')}${meta?.tier === 'secondary' ? ' / secondary' : ''}</span><span>${scopeProduct(meta) ? 'No cross-product comparison' : !canCompare(meta) ? 'Diagnostic only · no product ranking' : meta?.direction ? `${meta.direction === 'higher_is_better' ? 'higher' : 'lower'} is better` : 'Reported value'}</span></figcaption>
     <div class="panel__body"><h3 class="metric-title">${escape(title)}</h3>
       <p class="metric-sub">${escape(unit === 'fraction' ? 'Score · full scale 0–100%' : unit === 'bytes' ? 'Memory / storage · scaled to MiB or GiB' : unit)}${available.length ? '' : ' · awaiting measurements'}</p>
       ${meta?.description ? `<p class="metric-sub">${escape(meta.description)}</p>` : ''}
@@ -347,7 +389,7 @@ function renderMetricSet(results: Results, group: string, keys: string[], prefix
 const architecture = `<aside class="architecture"><div><p class="eyebrow">fyrr / serverless index</p><h3>No database. No cluster.<br>The index lives on S3.</h3><p>Writers publish files. Readers search them. You still run the writer and reader processes, pay for storage and embeddings, and size a private reader mirror. Serverless describes the index, not zero compute or zero cost. <a href="/docs/deployment">Deployment details ↗</a></p></div><div class="topology" aria-label="Writer publishes to S3 index; reader reads from S3"><div class="topology-box"><strong>Writer</strong><small>sync &amp; publish</small></div><span aria-hidden="true">→</span><div class="topology-box bucket"><strong>S3</strong><small>index files</small></div><span aria-hidden="true">→</span><div class="topology-box"><strong>Reader</strong><small>search via MCP</small></div></div></aside>`;
 
 export function renderScoreboard(results: Results) {
-  const systems = results.systems.filter(system => !system.variant || system.variant === 'default');
+  const systems = headlineSystems(results);
   const keys = results.website.overview_metrics ?? [results.website.headline_metric];
   const scales = new Map<string, number>(keys.map(key => {
     const values = systems.flatMap(system => {
@@ -356,19 +398,19 @@ export function renderScoreboard(results: Results) {
     });
     return [key, axisScale(Math.max(0, ...values) * 1.1 || (values.length ? 1 : 0), results.website.metrics[key]?.unit ?? '').max];
   }));
-  return `<div class="scoreboard rv" style="--score-cols:${keys.length}"><p class="score-intro">Quality means the right documents in the top 10. Default variants only.</p>
+  return `<div class="scoreboard rv" style="--score-cols:${keys.length}"><p class="score-intro">Quality means the right documents in the top 10. One representative per product; non-default configurations are marked.</p>
     <div class="score-head"><span>System</span>${keys.map(key => `<span data-score-metric="${escape(key)}">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span>`).join('')}</div>
-    ${systems.map(system => `<div class="score-row${system.id === 'fyrr' ? ' is-fyrr' : ''}" data-system="${escape(runKey(system))}"><a class="score-product" href="/compare/runs/${escape(system.id)}--default.json">${escape(system.name)} ↗</a>${keys.map(key => {
+    ${systems.map(system => `<div class="score-row${system.id === 'fyrr' ? ' is-fyrr' : ''}" data-system="${escape(runKey(system))}"><a class="score-product" href="/compare/runs/${escape(system.id)}--${escape(system.variant ?? 'default')}.json">${escape(system.name)} ↗</a>${keys.map(key => {
       const metric = system.metrics[key], max = scales.get(key) ?? 0;
       const unit = metric?.unit ?? results.website.metrics[key]?.unit ?? '';
       const pct = (value: number) => `${max ? value / max * 100 : 0}%`;
       return `<div class="score-cell" data-score-metric="${escape(key)}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-expected="${metric?.expected ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-missing="${metric?.missing ?? ''}" data-samples="${sampleSet(metric)}"><span class="score-label">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span><span class="score-value">${metric?.value != null ? format(metric.value, unit) + (unit === 'ms' ? ' ms' : unit === 'seconds' ? ' s' : '') + (metric.status === 'partial' ? ' *' : '') : metric?.status === 'invalid' ? 'invalid' : 'n/e'}</span>${key === 'ingest_wall_s' ? `<small class="score-rate">${escape(ingestRate(system.metrics.ingest_docs_per_min))}</small>${metric?.value != null || system.ingest_coverage?.submitted != null ? `<small class="score-coverage">${escape(ingestCoverage(system))}</small>` : ''}` : ''}<div class="bar${system.id === 'fyrr' ? ' bar--fyrr' : ''}${metric?.value != null ? '' : ' is-empty'}" aria-hidden="true">${metric?.value != null ? `<i style="--w:${pct(metric.value)}"></i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}</div><small class="relative">${canCompare(results.website.metrics[key]) ? '' : 'diagnostic · unranked'}</small></div>`;
-    }).join('')}</div>`).join('')}
-    <p class="score-note">n/e = not evaluated. Each column shares a zero-based scale; quality spans 0–100%. <a href="#details">Intervals, samples &amp; assumptions ↘</a></p></div><p class="overview-empty note" hidden>The overview compares default variants. Select a default system to see it.</p>`;
+    }).join('')}${renderRunNotes(results, system, 'score-run-note', true)}</div>`).join('')}
+    <p class="score-note">n/e = not evaluated. Each column shares a zero-based scale; quality spans 0–100%. <a href="#details">Intervals, samples &amp; assumptions ↘</a></p></div><p class="overview-empty note" hidden>Select a headline representative to see the overview.</p>`;
 }
 
 export function renderStories(results: Results) {
-  const baseline = { ...results, systems: results.systems.filter(system => !system.variant || system.variant === 'default') };
+  const baseline = { ...results, systems: headlineSystems(results) };
   return (results.website.stories ?? []).map((story, index) => {
     const chart = story.group === 'ingest' ? renderMetric(baseline, story.metrics[0], { ingest: true }) : story.group === 'speed' ? renderMetric(baseline, story.metrics[0], { tailKey: story.metrics[1] }) : story.metrics.length === 1 ? renderMetric(baseline, story.metrics[0]) : renderMetricSet(baseline, story.group, story.metrics, `${story.id}-`);
     return `<section class="section story-section" id="${escape(story.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">0${index + 1} / ${escape(results.website.groups.find(group => group.id === story.group)?.label ?? story.group)}</p><h2>${escape(story.title)}</h2><p class="sub">${escape(story.description)}</p></div>${story.group === 'footprint' ? architecture : ''}${chart}<a class="text-link" href="#detail-${escape(story.group)}">${escape(results.website.groups.find(group => group.id === story.group)?.label ?? 'Full')} details <span aria-hidden="true">↘</span></a></div></section>`;
@@ -410,8 +452,9 @@ export function renderProducts(results: Results) {
   }).join('');
 }
 export function renderControls(results: Results) {
+  const representatives = new Set(headlineSystems(results).map(runKey));
   return `<section class="comparison-controls" aria-label="Customize comparison"><div class="wrap">
-    <div class="control-row"><fieldset><legend>Systems</legend><div class="selection-chips">${results.systems.map(system => `<label class="selection-chip"><input type="checkbox" data-select-system value="${escape(runKey(system))}"${!system.variant || system.variant === 'default' ? ' checked' : ''}>${escape(runLabel(results, system))}</label>`).join('')}</div></fieldset>
+    <div class="control-row"><fieldset><legend>Systems</legend><div class="selection-chips">${results.systems.map(system => `<label class="selection-chip"><input type="checkbox" data-select-system value="${escape(runKey(system))}"${representatives.has(runKey(system)) ? ' checked' : ''}>${escape(runLabel(results, system))}</label>`).join('')}</div></fieldset>
     <div class="permalink"><input aria-label="Current selection permalink" readonly value=""><button type="button" id="copy-permalink">Copy selection link ↗</button><span class="sr-only" id="copy-status" role="status"></span></div></div>
     ${results.website.variant_note ? `<p class="note">${escape(results.website.variant_note)}</p>` : ''}<details class="metrics-select"><summary>Choose metrics</summary><fieldset><legend class="sr-only">Metrics</legend><div class="selection-chips">${metricKeys(results).map(key => `<label class="selection-chip"><input type="checkbox" data-select-metric value="${escape(key)}"${results.website.overview_metrics?.includes(key) || results.website.metrics[key]?.tier !== 'secondary' || ['answer_correctness', 'answer_completeness'].includes(key) ? ' checked' : ''}>${escape(results.website.metrics[key]?.label ?? name(key))}</label>`).join('')}</div></fieldset></details>
     <p class="note">Bars show absolute values. Scores show the percentage-point gap to the best selected system; time, cost and footprint use ratios (×1.00 best). Partial and missing results are unranked. <span id="selection-status" role="status"></span></p>
