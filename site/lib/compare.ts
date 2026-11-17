@@ -391,8 +391,7 @@ function comparisonNarrative(results: Results) {
     const best = peers.reduce((best, peer) => peer.metrics[qualityKey].value! > best.metrics[qualityKey].value! ? peer : best);
     const ownMetric = own.metrics[qualityKey], peerMetric = best.metrics[qualityKey];
     const gap = (ownMetric.value! - peerMetric.value!) * 100;
-    const overlap = ownMetric.ci95![1] > peerMetric.ci95![0] && peerMetric.ci95![1] > ownMetric.ci95![0];
-    result.comparable = Math.abs(gap) <= 2 + 1e-10 || overlap;
+    result.comparable = peers.every(peer => Math.abs(ownMetric.value! - peer.metrics[qualityKey].value!) <= .02 + 1e-12 || ownMetric.ci95![1] > peer.metrics[qualityKey].ci95![0] && peer.metrics[qualityKey].ci95![1] > ownMetric.ci95![0]);
     const ndcgPeers = measuredPeers('ndcg_at_10', true, true);
     if (ndcgPeers.length) result.comparable &&= ndcgPeers.every(peer => Math.abs(own.metrics.ndcg_at_10.value! - peer.metrics.ndcg_at_10.value!) <= .02 || own.metrics.ndcg_at_10.ci95![1] > peer.metrics.ndcg_at_10.ci95![0] && peer.metrics.ndcg_at_10.ci95![1] > own.metrics.ndcg_at_10.ci95![0]);
     const gapLabel = gap !== 0 && Math.abs(gap) < .05 ? Math.abs(gap).toLocaleString('en', { maximumSignificantDigits: 2 }) : Math.abs(gap).toFixed(1);

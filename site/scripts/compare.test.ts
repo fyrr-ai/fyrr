@@ -182,6 +182,7 @@ test('cost-led narrative makes only supported claims and lets competitors win', 
   assert(stories.includes('LLM enrichment estimate / document'));
   for (const weaken of [
     (weaker: typeof data) => { weaker.systems[0].metrics.recall_at_10.value = .889; weaker.systems[0].metrics.recall_at_10.ci95 = [.888, .89]; },
+    (weaker: typeof data) => { const peer = weaker.systems.find(system => system.id === 'pipeshub')!; peer.metrics.recall_at_10.value = .5; peer.metrics.recall_at_10.ci95 = [.49, .51]; },
     (weaker: typeof data) => { weaker.systems[0].metrics.first_ask_c1_p50_ms.ci95 = [90, 220]; },
     (weaker: typeof data) => { weaker.systems[0].metrics.ingest_wall_s.value = 300; },
     (weaker: typeof data) => { weaker.systems[0].footprint.monthly_cost_estimate = { status: 'n/e' }; },
