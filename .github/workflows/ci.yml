@@ -8,8 +8,6 @@ on:
     paths-ignore: ["docs/**", "site/**", "**/*.md", ".github/ISSUE_TEMPLATE/**"]
   pull_request:
     paths-ignore: ["docs/**", "site/**", "**/*.md", ".github/ISSUE_TEMPLATE/**"]
-  schedule:
-    - cron: "17 2 * * *"
   workflow_dispatch:
   workflow_call:
 
@@ -80,10 +78,10 @@ jobs:
           CI_PRIVATE: ${{ github.event.repository.private }}
         run: |
           args=()
-          if [[ "$CI_EVENT" == pull_request ]]; then
-            args+=(--quick)
-          elif [[ "$CI_REF" == refs/tags/v* ]]; then
+          if [[ "$CI_REF" == refs/tags/v* ]]; then
             args+=(--images)
+          else
+            args+=(--quick)
           fi
           if [[ "$CI_PRIVATE" == true ]]; then args+=(--debug-only); fi
           mkdir -p target/ci-measurements

@@ -103,7 +103,8 @@ Keycloak and long maintenance/history campaigns. Cases excluded by the tier
 are `n/e` in `case-plan.json` and row results; wholly excluded rows are `n/e`
 in `summary.txt`. A mixed row counts only its selected cases as passed.
 
-PRs run `--quick`; main and nightly run full CI; `v*` tags run `--images`.
+PRs and pushes to main run `--quick`; `v*` tags run `--images`, which
+includes the full tier.
 Private repositories use `--debug-only` and skip release artifacts.
 
 This checkout owns its `target/`. Fat-LTO and image checks run only in the
