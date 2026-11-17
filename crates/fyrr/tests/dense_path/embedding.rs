@@ -482,3 +482,11 @@ fn tools_empty_selection_hides_query_cache_on_storage() {
         "serve::tests::embedding::empty_selection_metadata_does_not_reveal_query_cache_on_storage",
     );
 }
+
+#[test]
+#[ignore = "real publication and eight simultaneous MCP clients"]
+fn tools_default_concurrency_serves_eight_clients_on_storage() {
+    parked_reader_test(
+        "serve::tests::embedding::default_concurrency_serves_eight_simultaneous_clients_on_storage",
+    );
+}

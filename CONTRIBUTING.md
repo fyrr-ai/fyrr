@@ -160,7 +160,7 @@ not create.
   minor version; anything else bumps the major, and published data is then
   republished, not migrated. The SDK's `versions.py` must match the
   contracts it ships. The configuration schema has its own
-  `x-fyrr-schema-version`, currently `4.0` (S3 and local storage).
+  `x-fyrr-schema-version`, currently `5.0` (S3 and local storage).
 - **Dependencies.** A new dependency needs a license and advisory verdict in
   `deny.toml`.
 - **Secrets and privacy.** Secrets never enter the repository, configuration

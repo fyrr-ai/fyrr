@@ -163,3 +163,24 @@ fn reservation_falls_back_and_stays_owned_until_last_reference() {
     drop(warmed);
     assert_eq!(pool.available_permits(), cold + additional);
 }
+
+#[test]
+fn default_workers_reserve_private_row_state_and_share_native_capacity() {
+    let mut config = fyrr_core::config::parse(
+        "[namespace]\nname='sizing'\n[storage]\nuri='s3://sizing'\n[embedding]\nendpoint='https://cache.invalid'\n",
+    ).unwrap().config;
+    assert_eq!(config.reader.concurrency, 8);
+    let rows = 20_000;
+    let base = 32 * 1024 * 1024;
+    assert_eq!(PreparationReservation::worker_count(&config), 8);
+    assert_eq!(
+        PreparationReservation::cold_bytes(&config, rows),
+        base + 9 * rows * 64
+    );
+    config.embedding.reader_live = true;
+    assert_eq!(PreparationReservation::worker_count(&config), 16);
+    assert_eq!(
+        PreparationReservation::cold_bytes(&config, rows),
+        base + 17 * rows * 64
+    );
+}

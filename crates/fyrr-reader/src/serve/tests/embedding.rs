@@ -831,3 +831,48 @@ async fn empty_selection_metadata_does_not_reveal_query_cache_on_storage() {
     }
     fixture.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real publication, MCP transport and eight independent native requests"]
+async fn default_concurrency_serves_eight_simultaneous_clients_on_storage() {
+    let path = std::env::var_os("FYRR_TEST_EMBED_CONFIG").expect("publication fixture config");
+    let mut config = fyrr_core::config::load(std::path::Path::new(&path))
+        .unwrap()
+        .config;
+    config.reader.concurrency = fyrr_core::config::ReaderConfig::default().concurrency;
+    config.reader.version_check = fyrr_core::config::VersionCheck::Off;
+    config.embedding.reader_live = false;
+    let mut reader = PreparedReader::open(&config).await.unwrap();
+    reader.prewarm().await.unwrap();
+    let hooks = reader.test_hooks.clone();
+    hooks.native_work.enabled.store(true, Ordering::SeqCst);
+    let service = start(reader).await.unwrap();
+    let mut clients = Vec::new();
+    for id in 1..=8 {
+        let mut wire = EmbeddingWire::open(service.clone()).await;
+        hooks.native_work.enabled.store(true, Ordering::SeqCst);
+        wire.call(
+            id,
+            "search",
+            json!({"query":"exactneedle","limit":4,"output":"metadata"}),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(5), hooks.native_work.entered.notified())
+            .await
+            .expect("each client gets an independent prepared native reader");
+        clients.push(wire);
+    }
+    hooks.native_work.enabled.store(false, Ordering::SeqCst);
+    hooks.native_work.release.add_permits(8);
+    for mut wire in clients {
+        let reply = wire.reply().await;
+        assert_ne!(reply["result"]["isError"], true, "{reply}");
+        assert!(
+            !reply["result"]["structuredContent"]["hits"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        wire.close().await;
+    }
+}

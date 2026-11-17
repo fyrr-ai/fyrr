@@ -31,7 +31,7 @@ use crate::units::{ByteSize, ConfigDuration};
 
 /// Configuration schema revision: adding a storage backend changes the URI
 /// contract beyond an optional field, so it starts a new major revision.
-pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(4, 0);
+pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(5, 0);
 
 /// Namespace IDs: lowercase letters, digits and `-`, at most 63 bytes.
 pub const NAMESPACE_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
@@ -584,7 +584,7 @@ pub struct ReaderConfig {
     pub sparse_read: SparseRead,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http: Option<HttpConfig>,
-    /// Independent stdio requests executing at once; the waiting queue has the same bound.
+    /// Independent requests executing at once; the waiting queue has the same bound.
     #[serde(default = "default_concurrency")]
     #[schemars(range(min = 1, max = CONCURRENCY_MAX))]
     pub concurrency: usize,
@@ -1503,7 +1503,7 @@ fn default_dimensions() -> u32 {
     1024
 }
 fn default_concurrency() -> usize {
-    2
+    8
 }
 fn default_filter_rows() -> usize {
     1_000_000

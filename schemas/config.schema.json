@@ -28,7 +28,7 @@
       "$ref": "#/$defs/ReaderConfig",
       "default": {
         "sparse_read": "masked_scan",
-        "concurrency": 2,
+        "concurrency": 8,
         "filter_count_max_rows": 1000000,
         "nprobes": 256,
         "routing": "exact",
@@ -844,9 +844,9 @@
           "type": "integer",
           "format": "uint",
           "minimum": 1,
-          "description": "Independent stdio requests executing at once; the waiting queue has the same bound.",
+          "description": "Independent requests executing at once; the waiting queue has the same bound.",
           "maximum": 16,
-          "default": 2
+          "default": 8
         },
         "filter_count_max_rows": {
           "type": "integer",
@@ -1321,5 +1321,5 @@
       "description": "When each of a source's syncs is due."
     }
   },
-  "x-fyrr-schema-version": "4.0"
+  "x-fyrr-schema-version": "5.0"
 }
