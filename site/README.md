@@ -91,7 +91,10 @@ labels. This also applies to scoped engine diagnostics and filtered selections.
 The comparison opens with a one-row-per-product scoreboard ordered by monthly
 cost, services, memory, query speed, ingest and quality, followed by four
 short chart sections: cost, query speed, ingest and quality. Product trade-offs follow. Primary speed is first-ask
-latency with fresh query caches; repeated-query timings are secondary. The
+latency with fresh query caches. The main speed story pairs new-question and
+repeated-question p50/p95 charts under one C1/C8 toggle. The overview shows
+repeated timing beneath first-ask speed; it remains a secondary measure and never
+replaces the headline. Cache descriptions come from protocol metadata. The
 detailed notebook is collapsed initially; its links open the relevant section. System and
 metric chips recompute the view. Selection links preserve filters, tabs,
 question search and the notebook's open state. Higher-is-better scores

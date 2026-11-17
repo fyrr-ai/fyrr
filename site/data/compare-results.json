@@ -647,11 +647,17 @@
       {
         "id": "story-speed",
         "title": "Answers fast.",
-        "description": "First-ask search at concurrency 1: median and tail time to evidence with fresh query caches. Each question is asked once after an unrelated index warm-up; embedding-provider time is included, answer generation is excluded.",
+        "description": "Median (p50) bars and p95 ticks for new and repeated questions. Lower is better. Switch between one and eight simultaneous requests.",
         "group": "speed",
         "metrics": [
           "first_ask_c1_p50_ms",
-          "first_ask_c1_p95_ms"
+          "first_ask_c1_p95_ms",
+          "warm_c1_p50_ms",
+          "warm_c1_p95_ms",
+          "first_ask_c8_p50_ms",
+          "first_ask_c8_p95_ms",
+          "warm_c8_p50_ms",
+          "warm_c8_p95_ms"
         ]
       },
       {

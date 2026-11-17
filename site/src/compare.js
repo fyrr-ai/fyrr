@@ -131,8 +131,8 @@
     document.querySelectorAll('[data-metric-set]').forEach(function (set) {
       var tabs = Array.from(set.querySelectorAll('[role="tab"]'));
       tabs.forEach(function (tab) {
-        var panel = document.getElementById(tab.getAttribute('aria-controls')).querySelector('.metric-panel');
-        tab.hidden = panel.hidden;
+        var panels = Array.from(document.getElementById(tab.getAttribute('aria-controls')).querySelectorAll('.metric-panel'));
+        tab.hidden = panels.every(function (panel) { return panel.hidden; });
       });
       var current = tabs.find(function (tab) { return tab.getAttribute('aria-selected') === 'true' && !tab.hidden; });
       if (!current) { current = tabs.find(function (tab) { return !tab.hidden; }); if (current) activate(current); }

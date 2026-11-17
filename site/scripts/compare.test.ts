@@ -150,6 +150,38 @@ test('first-ask and repeated-query latency have independent controls and diagnos
   assert(!diagnostic.includes('data-system="onyx"'));
   assert(!diagnostic.includes('data-system="pipeshub"'));
 });
+test('new and repeated questions stay visible together without changing headline speed', () => {
+  const data = structuredClone(fixture);
+  data.draft = false;
+  data.protocol.latency = { query_embedding_cache: { fyrr: 'Reuses in-process embeddings', onyx: 'Reuses cached embeddings for 15 minutes', pipeshub: false } };
+  data.systems.filter(system => !system.variant || system.variant === 'default').forEach((system, index) => {
+    const first = index === 1 ? 100 : index === 0 ? 200 : 300;
+    const repeat = index === 0 ? 1 : 50;
+    for (const p of [50, 95]) {
+      const multiplier = p === 50 ? 1 : 2;
+      system.metrics[`first_ask_c1_p${p}_ms`] = { status: 'measured', value: first * multiplier, unit: 'ms', n: 2, expected: 2, attempted: 2, missing: 0, ci95: [first * multiplier, first * multiplier] };
+      system.metrics[`warm_c1_p${p}_ms`] = { status: 'measured', value: repeat * multiplier, unit: 'ms', n: 6, expected: 6, attempted: 6, missing: 0, ci95: [repeat * multiplier, repeat * multiplier] };
+    }
+  });
+  const html = renderStories(data);
+  const c1 = html.slice(html.indexOf('id="story-speed-c1"'), html.indexOf('id="story-speed-c8"'));
+  const c8 = html.slice(html.indexOf('id="story-speed-c8"'));
+  for (const [block, c] of [[c1, 1], [c8, 8]] as const) {
+    assert(block.includes(`data-metric="first_ask_c${c}_p50_ms"`));
+    assert(block.includes(`data-metric="warm_c${c}_p50_ms"`));
+    assert(block.includes('New question</h3>'));
+    assert(block.includes('Repeated question</h3>'));
+  }
+  assert(html.includes('Reuses in-process embeddings'));
+  assert(html.includes('Reuses cached embeddings for 15 minutes'));
+  assert(html.includes('does not reuse cached query embeddings'));
+  const ids = [...(html + renderSections(data)).matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
+  assert.equal(new Set(ids).size, ids.length);
+  assert(renderScoreboard(data).includes('Repeated question<br>p50 1 ms · p95 2 ms'));
+  assert(renderControls(data).includes('value="warm_c1_p50_ms" checked'));
+  assert(headlineVerdict(data).includes('Onyx has lower observed median query latency'));
+  assert(!headlineVerdict(data).includes('Faster queries'));
+});
 test('noncomparable diagnostics cannot produce ratios, heatmap winners or a headline win', () => {
   const data = structuredClone(fixture);
   const key = 'voyage_probe_c1_p50_ms';
