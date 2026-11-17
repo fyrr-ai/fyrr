@@ -312,6 +312,27 @@ test('ingest story stacks only exposed elapsed stages within total wall time', (
   data.website.metrics.ingest_preprocessing_seconds.unit = 'ms';
   assert.throws(() => parseResults(data), /ingest stages must be elapsed seconds/);
 });
+test('ingest diagnostics retain their distinct scopes without filling canonical bars', () => {
+  const data = structuredClone(fixture);
+  const product = data.systems.find(system => system.id === 'pipeshub')!;
+  product.ingest_diagnostics = ['default', 'parallel-partitions', 'scaled-indexing'].map((configuration_id, index) => ({ configuration_id, comparable: false, docs_per_min: 5 + index, interval_seconds: 120, newly_completed_documents: 10 + index, projected_20000_seconds: 20000, smoke_corpus_documents: index === 1 ? undefined : 1000, submitted_documents: index === 1 ? 20000 : undefined, completed_1000_ingest: index === 2, notes: [`Limit for ${configuration_id}`] }));
+  const parsed = parseResults(data);
+  const stories = renderStories(parsed);
+  assert(stories.includes('separate ingest observations'));
+  assert(stories.includes('Scaled indexing'));
+  assert(stories.includes('1,000-document ingest completed'));
+  assert(stories.includes('20,000 documents · interrupted / partial window'));
+  assert.equal((stories.match(/PROJECTED 5.56 h/g) ?? []).length, 3);
+  assert(stories.includes('Limit for parallel-partitions'));
+  assert(!renderMetric(parsed, 'ingest_wall_s', { ingest: true }).includes('<i style='));
+  assert.equal(product.metrics.ingest_docs_per_min.value, null);
+  assert(!renderScoreboard(parsed).includes('5.56'));
+  product.ingest_diagnostics[0].comparable = true as false;
+  assert.throws(() => parseResults(data), /noncomparable ingest diagnostics/);
+  product.ingest_diagnostics[0].comparable = false;
+  product.ingest_diagnostics[1].configuration_id = 'default';
+  assert.throws(() => parseResults(data), /distinct noncomparable/);
+});
 test('ingest discloses accepted coverage and rejects inconsistent rejection counts', () => {
   const data = structuredClone(fixture);
   const system = data.systems[0];
