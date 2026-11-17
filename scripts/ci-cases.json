@@ -3957,6 +3957,10 @@
       "python:connectors/tests/notion/test_notion_client.py::test_retry_after_does_not_shorten_backoff[Wed, 21 Oct 2015 07:28:00 GMT]": {
         "tier": "quick",
         "seconds": null
+      },
+      "python:connectors/tests/test_provider_runtime.py::test_local_files_normalizes_controls_without_changing_raw_revision_identity": {
+        "tier": "quick",
+        "seconds": 0.0
       }
     }
   },

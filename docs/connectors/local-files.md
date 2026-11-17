@@ -31,6 +31,10 @@ prefix. Do not assume arbitrary recursive `**` glob semantics.
   directories are walked without following links.
 - A file that is not valid UTF-8 or exceeds `document_max_bytes` is
   quarantined; the last good revision stays visible.
+- Extraction replaces NUL and other C0 controls with spaces, preserving tabs,
+  LF and CR. This keeps surrounding words separate. Invalid UTF-8 and oversized
+  files still follow the quarantine path. Content digests and embedding inputs
+  use the extracted text; source revisions continue to use the original bytes.
 - Revisions hash the file bytes and the configured readers; an unchanged
   file is not republished. A content sync deletes previously indexed files
   that no longer exist, and the complete listing at `intervals.reconcile`
