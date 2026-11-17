@@ -95,7 +95,12 @@ const STAGES: &str = ".fyrr-storage.stage.d";
 const LEGACY_STAGE: &str = ".fyrr-storage.stage";
 /// How long a mutation polls for a `flock` before it fails without writing.
 /// Nothing is flushed under a lock, so a live holder is done in far less.
+/// Only time spent waiting for a lock counts; a slow system call does not.
 const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How often a mutation starts over because the object changed under it.
+/// Each new start means another writer got through, so this only ends a
+/// writer that could otherwise lose to others indefinitely.
+const ATTEMPTS: usize = 64;
 /// `statfs` types of network and remote file systems, whose `flock`, rename
 /// and timestamps do not give single-host guarantees: NFS, SMB, CIFS, SMB2,
 /// AFS, Ceph and 9p.
@@ -604,7 +609,6 @@ impl LocalStore {
         tests::pause("versioned");
         #[cfg(feature = "test-store")]
         super::test_store::sync::publishing(&place.path, &stage.path, payload).map_err(io)?;
-        let deadline = std::time::Instant::now() + LOCK_WAIT;
         let replace = |key: Key| -> Result<()> {
             #[cfg(test)]
             tests::pause("locked");
@@ -618,7 +622,11 @@ impl LocalStore {
             drop(key);
             Ok(())
         };
+        let mut attempts = 0..ATTEMPTS;
         let created = loop {
+            if attempts.next().is_none() {
+                return Err(io(contended()));
+            }
             match mode {
                 PutMode::Create => {
                     if self.create(place, stage).map_err(io)? {
@@ -628,7 +636,7 @@ impl LocalStore {
                     self.admit(place, mode, None)?;
                 }
                 PutMode::Update(_) => {
-                    let Some(key) = self.key(place, deadline).map_err(io)? else {
+                    let Some(key) = self.key(place).map_err(io)? else {
                         return Err(Error::Precondition {
                             path: place.path.display().to_string(),
                             source: "object does not exist".into(),
@@ -642,15 +650,12 @@ impl LocalStore {
                     if self.create(place, stage).map_err(io)? {
                         break true;
                     }
-                    if let Some(key) = self.key(place, deadline).map_err(io)? {
+                    if let Some(key) = self.key(place).map_err(io)? {
                         replace(key)?;
                         break false;
                     }
                     // Removed since the create found it; create again.
                 }
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err(io(lock_deadline()));
             }
         };
         // The published inode still carries this writer's staging lock, which
@@ -713,9 +718,9 @@ impl LocalStore {
     /// writer waited; then the new inode is locked instead. The descriptor
     /// held while waiting keeps the old inode number from being reused, so
     /// the comparison cannot be fooled.
-    fn key(&self, place: &Place, deadline: std::time::Instant) -> std::io::Result<Option<Key>> {
+    fn key(&self, place: &Place) -> std::io::Result<Option<Key>> {
         let (parent, name) = (place.parent(), place.name.as_str());
-        loop {
+        for _ in 0..ATTEMPTS {
             let file = match rustix::fs::openat(
                 &parent.file,
                 name,
@@ -735,7 +740,7 @@ impl LocalStore {
             }
             #[cfg(test)]
             tests::hold("opened");
-            lock_until(&file, deadline)?;
+            lock_exclusive(&file)?;
             match parent.entry(name)? {
                 Some(named) if (named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino) => {
                     #[cfg(feature = "test-store")]
@@ -745,11 +750,11 @@ impl LocalStore {
                         path: place.path.clone(),
                     }));
                 }
-                Some(_) if std::time::Instant::now() >= deadline => return Err(lock_deadline()),
                 Some(_) => {}
                 None => return Ok(None),
             }
         }
+        Err(contended())
     }
 
     /// Before a create reports that its object exists: callers treat that
@@ -1032,8 +1037,7 @@ impl LocalStore {
             let (root, parent) = (&place.chain[0], place.parent());
             store.hand_over(root).map_err(io)?;
             store.reap(root).map_err(io)?;
-            let deadline = std::time::Instant::now() + LOCK_WAIT;
-            let Some(key) = store.key(&place, deadline).map_err(io)? else {
+            let Some(key) = store.key(&place).map_err(io)? else {
                 return Err(io(ErrorKind::NotFound.into()));
             };
             if version_tag(read_version(&key.file).map_err(io)?) != expected {
@@ -1085,8 +1089,7 @@ impl LocalStore {
                 None => false,
             }
         } else {
-            let deadline = std::time::Instant::now() + LOCK_WAIT;
-            match self.key(&place, deadline).map_err(io)? {
+            match self.key(&place).map_err(io)? {
                 Some(key) => {
                     let removed = gone(parent.unlink(&place.name)).map_err(io)?;
                     drop(key);
@@ -1157,34 +1160,34 @@ fn sync_children(directory: &Directory, skip: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-fn lock_deadline() -> std::io::Error {
+fn contended() -> std::io::Error {
     std::io::Error::new(
         ErrorKind::WouldBlock,
-        "storage lock acquisition deadline exceeded",
+        "storage object kept changing under this write",
     )
 }
 
-/// Polls for an exclusive `flock` on `file` until `deadline`.
+/// Polls for an exclusive `flock` on `file` for at most [`LOCK_WAIT`].
 /// `flock` cannot be revoked and a waiter cannot tell a stopped holder from
 /// a slow one, so the caller fails closed instead of waiting forever.
-fn lock_until(file: &File, deadline: std::time::Instant) -> std::io::Result<()> {
+fn lock_exclusive(file: &File) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(()),
             Err(std::fs::TryLockError::WouldBlock) => {
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                 if remaining.is_zero() {
-                    return Err(lock_deadline());
+                    return Err(std::io::Error::new(
+                        ErrorKind::WouldBlock,
+                        "storage lock acquisition deadline exceeded",
+                    ));
                 }
                 std::thread::sleep(remaining.min(std::time::Duration::from_millis(5)));
             }
             Err(std::fs::TryLockError::Error(error)) => return Err(error),
         }
     }
-}
-
-fn lock_exclusive(file: &File) -> std::io::Result<()> {
-    lock_until(file, std::time::Instant::now() + LOCK_WAIT)
 }
 
 /// A tag no other write has: 128 bits from the operating system's generator.
