@@ -168,6 +168,9 @@ impl LocalStore {
                     .map_err(|error| failure(directory, error))?;
             }
             directories.clear();
+            #[cfg(feature = "test-store")]
+            super::test_store::sync::acknowledged("cleanup", &store.lock)
+                .map_err(|error| failure(&store.lock, error))?;
             Ok(())
         })
         .await
@@ -289,6 +292,10 @@ impl LocalStore {
         let result = self.publish(&target, &mut file, &staged, &payload, mode, &lock);
         if result.is_err() {
             let _ = std::fs::remove_file(&staged);
+        }
+        #[cfg(feature = "test-store")]
+        if result.is_ok() {
+            super::test_store::sync::acknowledged("put", &target).map_err(io)?;
         }
         result
     }
@@ -586,7 +593,12 @@ impl LocalStore {
                 });
             }
             std::fs::remove_file(&target).map_err(io)?;
-            sync_parent(&target).map_err(io)
+            #[cfg(feature = "test-store")]
+            super::test_store::sync::unlinked(&target).map_err(io)?;
+            sync_parent(&target).map_err(io)?;
+            #[cfg(feature = "test-store")]
+            super::test_store::sync::acknowledged("delete", &target).map_err(io)?;
+            Ok(())
         })
         .await
     }
@@ -608,9 +620,14 @@ impl LocalStore {
                         .insert(target.parent().expect("object directory").to_path_buf());
                     #[cfg(test)]
                     tests::pause("unlinked");
+                    #[cfg(feature = "test-store")]
+                    super::test_store::sync::acknowledged("deferred", &target).map_err(io)?;
                     Ok(())
                 } else {
-                    sync_parent(&target).map_err(io)
+                    sync_parent(&target).map_err(io)?;
+                    #[cfg(feature = "test-store")]
+                    super::test_store::sync::acknowledged("delete", &target).map_err(io)?;
+                    Ok(())
                 }
             }
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),

@@ -1,4 +1,5 @@
-//! Records successful fsyncs and publication boundaries, never object contents.
+//! Records successful fsyncs, publication boundaries and acknowledgements,
+//! never object contents.
 use std::io::Write;
 use std::path::Path;
 
@@ -18,6 +19,11 @@ pub(crate) fn synced(path: &Path, directory: bool) -> std::io::Result<()> {
 }
 pub(crate) fn unlinked(path: &Path) -> std::io::Result<()> {
     record(serde_json::json!({"event":"unlink","path":path}))
+}
+/// A mutation is about to report success: `put`, `delete`, a `deferred`
+/// delete of a cleanup batch, or the `cleanup` batch itself.
+pub(crate) fn acknowledged(operation: &str, path: &Path) -> std::io::Result<()> {
+    record(serde_json::json!({"event":"ack","operation":operation,"path":path}))
 }
 pub(crate) fn publishing(
     target: &Path,
