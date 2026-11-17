@@ -17,6 +17,8 @@ use std::sync::Arc;
 pub use lance::Dataset;
 #[path = "storage/conditional.rs"]
 mod conditional;
+#[path = "storage/diagnostics.rs"]
+mod diagnostics;
 
 /// One digest-verified immutable artifact shared by a serving generation.
 pub(crate) type ArtifactCache<T> = Arc<tokio::sync::Mutex<Option<(GenerationPointer, Arc<T>)>>>;
@@ -30,6 +32,7 @@ pub mod test_store;
 pub fn native_store_params(
     mirror: Option<Arc<dyn lance_io::object_store::WrappingObjectStore>>,
 ) -> lance_io::object_store::ObjectStoreParams {
+    let mirror = diagnostics::native_wrapper(mirror);
     #[cfg(feature = "test-store")]
     let mirror = test_store::native_wrapper(mirror);
     lance_io::object_store::ObjectStoreParams {
@@ -178,7 +181,11 @@ pub fn cleanup_namespace_store(
         let store: Arc<dyn ObjectStore> = Arc::new(local.clone());
         #[cfg(feature = "test-store")]
         let store = test_store::boundary::wrap(store);
-        return Ok((store, root, CleanupDurability(Some(local))));
+        return Ok((
+            diagnostics::wrap(store, true, &root),
+            root,
+            CleanupDurability(Some(local)),
+        ));
     }
     let (store, root) = namespace_store(config)?;
     Ok((store, root, CleanupDurability(None)))
@@ -198,11 +205,11 @@ pub fn namespace_store(config: &Config) -> Result<(Arc<dyn ObjectStore>, Path), 
             let store: Arc<dyn ObjectStore> = Arc::new(store);
             #[cfg(feature = "test-store")]
             let store = test_store::boundary::wrap(store);
-            Ok((store, root))
+            Ok((diagnostics::wrap(store, true, &root), root))
         }
         Some(StorageBackend::S3 { .. }) => {
             let (store, root, _) = s3_namespace_store(config)?;
-            Ok((Arc::new(store), root))
+            Ok((diagnostics::wrap(Arc::new(store), false, &root), root))
         }
         None => Err(StorageError::StorageConfigurationInvalid),
     }
@@ -273,7 +280,12 @@ pub async fn delete_head_if_match(
                 .join("namespaces")
                 .join(config.namespace.name.as_str())
                 .join("head.json");
-            let deletion = store.delete_if_match(path.clone(), tag.to_owned());
+            let deletion = diagnostics::observe(
+                "DELETE_CONDITIONAL",
+                &path,
+                true,
+                store.delete_if_match(path.clone(), tag.to_owned()),
+            );
             #[cfg(feature = "test-store")]
             {
                 test_store::boundary::conditional_delete(&path, tag, deletion).await

@@ -144,3 +144,10 @@ for access-token validation.
 A caller can still infer shared query-embedding cache membership by choosing
 a `deadline_ms` shorter than provider latency and observing whether dense
 retrieval degrades.
+
+
+Opt-in [object-store diagnostics](operations.md#object-store-diagnostics) write
+only method names, hashed keys, numeric transport facts and fixed error codes to
+an operator-owned private file. They never format backend errors or record bodies,
+headers or credentials. Treat key hashes and operational timing as restricted
+operator metadata and configure log retention accordingly.

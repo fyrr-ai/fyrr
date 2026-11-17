@@ -574,6 +574,18 @@
       "full:fyrr-reader:lib:fyrr_reader/generation::tests::default_workers_reserve_private_row_state_and_share_native_capacity": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::diagnostics::tests::boundary_records_operations_without_keys_payloads_or_backend_errors": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::diagnostics::tests::boundary_counts_real_http_retries_and_never_formats_remote_errors": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::diagnostics::tests::diagnostic_sink_refuses_symlinks_and_public_files": {
+        "tier": "quick",
+        "seconds": 1.0
       }
     },
     "children": {
@@ -1664,6 +1676,10 @@
       "full:fyrr:test:privacy/values_in_the_config_file_never_leave_through_errors": {
         "tier": "quick",
         "seconds": 15.467
+      },
+      "full:fyrr:test:privacy/object_store_diagnostics_hash_keys_and_keep_cli_inputs_private": {
+        "tier": "quick",
+        "seconds": 1.0
       }
     }
   },
@@ -4083,6 +4099,10 @@
       "reader:fyrr:test:privacy/values_in_the_config_file_never_leave_through_errors": {
         "tier": "quick",
         "seconds": 0.118
+      },
+      "reader:fyrr:test:privacy/object_store_diagnostics_hash_keys_and_keep_cli_inputs_private": {
+        "tier": "quick",
+        "seconds": 1.0
       }
     }
   },
