@@ -34,5 +34,9 @@ ol, ul { list-style: none; }
 @media (max-width: 991px) {
   .nav > :not(.nav__item--keep):not(.nav__gh) { display: none; }
 }
+@media (max-width: 640px) {
+  .nav__item { padding-inline: 8px; font-size: 13px; white-space: nowrap; }
+  .nav__gh { margin-left: 6px; padding-inline: 10px; font-size: 13px; }
+}
 @keyframes drop { from { opacity: 0; transform: translateY(-100%); } }
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
