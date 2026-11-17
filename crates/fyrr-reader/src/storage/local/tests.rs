@@ -2,7 +2,8 @@
 use super::*;
 use object_store::{ObjectStoreExt, UpdateVersion};
 use std::collections::BTreeSet;
-use std::os::unix::fs::PermissionsExt;
+use std::fs::OpenOptions;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::process::{Child, Command};
 use std::time::Duration;
 
@@ -58,7 +59,7 @@ fn read(store: &LocalStore, root: &std::path::Path) -> Vec<u8> {
 
 fn current(store: &LocalStore) -> String {
     let path = store.inner.path_to_filesystem(&object(store)).unwrap();
-    version_tag(read_version(&open_object(&path).unwrap().0).unwrap())
+    version_tag(read_version(&File::open(path).unwrap()).unwrap())
 }
 
 /// Same-size payloads exercise versions independently of file size.

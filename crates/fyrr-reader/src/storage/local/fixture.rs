@@ -1,7 +1,7 @@
 //! Batch setup for inert local fixtures, before any CLI or reader starts.
 //! Normal store mutations retain their individual publication/durability path.
 use super::*;
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 pub(in crate::storage) fn seed(
     root: &std::path::Path,
@@ -13,29 +13,23 @@ pub(in crate::storage) fn seed(
     }
     let store = LocalStore::open(root)?;
     let lock = store.lock()?;
-    store.reap_stage()?;
+    store.reap_stage(&store.root_directory()?)?;
     let prefix = store.root.clone().join("namespaces").join(namespace);
+    // One descriptor chain per directory, however many objects it receives.
+    let mut directories = BTreeMap::<Vec<String>, Vec<Directory>>::new();
     let mut targets = Vec::with_capacity(entries.len());
-    let mut parents = BTreeSet::new();
     for (location, _) in &entries {
         if location.prefix_match(&prefix).is_none() || store.is_native_file(location) {
             return Err(std::io::Error::other(
                 "fixture object is outside its control namespace",
             ));
         }
-        let target = store.target(location).map_err(std::io::Error::other)?;
-        let mut parent = target.parent();
-        while let Some(path) = parent.filter(|path| path.starts_with(root)) {
-            parents.insert(path.to_path_buf());
-            parent = path.parent();
+        let mut names = store.names(location).map_err(std::io::Error::other)?;
+        let name = names.pop().expect("an object has a name");
+        if !directories.contains_key(&names) {
+            directories.insert(names.clone(), store.chain(&names, true)?);
         }
-        targets.push(target);
-    }
-    for directory in &parents {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(directory)?;
+        targets.push((names, name));
     }
     // Reserve every version durably before exposing any fixture object. Future
     // real puts continue beyond the reservation, including after a setup error.
@@ -45,13 +39,18 @@ pub(in crate::storage) fn seed(
         .ok_or_else(|| std::io::Error::other("fixture version counter exhausted"))?;
     set_version(&lock, last)?;
     lock.sync_all()?;
-    for (index, (target, (_, bytes))) in targets.iter().zip(entries).enumerate() {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(target)?;
+    let parent = |names: &Vec<String>| {
+        directories[names]
+            .last()
+            .expect("the chain starts at the root")
+    };
+    for (index, ((names, name), (_, bytes))) in targets.iter().zip(entries).enumerate() {
+        let mut file = File::from(rustix::fs::openat(
+            &parent(names).file,
+            name.as_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )?);
         file.write_all(&bytes)?;
         set_version(&file, first + index as u128 + 1)?;
     }
@@ -65,9 +64,10 @@ pub(in crate::storage) fn seed(
         let handles: Vec<_> = targets
             .chunks(targets.len().div_ceil(workers))
             .map(|chunk| {
+                let parent = &parent;
                 scope.spawn(move || -> std::io::Result<()> {
-                    for target in chunk {
-                        open_object(target)?.0.sync_all()?;
+                    for (names, name) in chunk {
+                        parent(names).object(name)?.0.sync_all()?;
                     }
                     Ok(())
                 })
@@ -81,8 +81,12 @@ pub(in crate::storage) fn seed(
         Ok(())
     })?;
     // Descendants precede their parents in reverse path order.
-    for directory in parents.into_iter().rev() {
-        File::open(directory)?.sync_all()?;
+    let mut flushed = BTreeMap::new();
+    for directory in directories.values().flatten() {
+        flushed.entry(&directory.path).or_insert(&directory.file);
+    }
+    for directory in flushed.values().rev() {
+        directory.sync_all()?;
     }
     Ok(())
 }
