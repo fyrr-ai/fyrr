@@ -81,6 +81,10 @@ try {
     assert.equal(await page.locator('#story-ingest .metric-panel').count(), 1, 'Ingest story has one wall-time chart');
     assert.equal(await page.locator('#story-ingest .ingest-cost').count(), headlineRuns.length, 'Embedding cost is a secondary line for each representative product');
     assert.equal(await page.locator('#story-footprint .cost-card').count(), headlineRuns.length, 'Cost assumptions accompany every representative');
+    assert.equal(await page.locator('.score-row:visible .score-repeat:visible').count(), headlineRuns.length, 'Repeated question is visible beneath each overview query speed');
+    assert.equal(await page.locator('#story-speed-c1 .metric-panel:visible').count(), 2, 'New and repeated questions are paired in the first story state');
+    assert.equal(await page.locator('#story-speed-c8').isVisible(), false, 'Concurrency 1 is the static first view');
+    assert.equal(await page.locator('#story-speed .cache-summary [data-system]').count(), headlineRuns.length, 'Cache provenance accompanies every representative');
     for (const system of headlineRuns) {
       const key = !system.variant || system.variant === 'default' ? system.id : system.id + '@' + system.variant;
       if (system.variant && system.variant !== 'default') {
@@ -121,6 +125,18 @@ try {
     await page.waitForTimeout(1500);
     await assertBarWidths(page);
     await page.screenshot({ path: `${report}/speed-${suffix}.png` });
+    for (const panel of await page.locator('#story-speed-c1 .metric-panel').all()) {
+      await panel.scrollIntoViewIfNeeded();
+      await assertBarWidths(page);
+    }
+    await page.locator('#story-speed-c1').screenshot({ path: `${report}/speed-pair-${suffix}.png` });
+    const queryBefore = await page.locator('.score-row .score-cell[data-score-metric="first_ask_c1_p50_ms"] .score-value').allTextContents();
+    await page.locator('#story-speed-tab-c8').click();
+    assert.equal(await page.locator('#story-speed-c8 .metric-panel:visible').count(), 2, 'One concurrency toggle switches both timing measures');
+    assert(await page.locator('#story-speed-c8 [data-metric="first_ask_c8_p50_ms"]').isVisible());
+    assert(await page.locator('#story-speed-c8 [data-metric="warm_c8_p50_ms"]').isVisible());
+    assert.deepEqual(await page.locator('.score-row .score-cell[data-score-metric="first_ask_c1_p50_ms"] .score-value').allTextContents(), queryBefore, 'Story repeat/C8 selection cannot replace headline first-ask speed');
+    await page.locator('#story-speed-tab-c1').click();
     await page.locator('#story-ingest').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await assertBarWidths(page);
     await page.screenshot({ path: `${report}/ingest-${suffix}.png` });
@@ -156,11 +172,13 @@ try {
     await assertDiagnosticsUnranked(page);
     assert.equal(await page.locator('.chart-row[data-system="fyrr"]:visible').count(), 0);
     assert(new URL(page.url()).searchParams.get('systems').includes('onyx'));
+    await page.locator('#story-speed-tab-c8').click();
     await page.getByRole('button', { name: 'Copy selection link' }).click();
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), await page.locator('.permalink input').inputValue());
     await page.reload();
     assert.equal(await page.locator('[data-select-system][value="fyrr"]').isChecked(), false, 'Permalink restores systems');
     assert.equal(await page.locator('#tab-first_ask_c8_p50_ms').getAttribute('aria-selected'), 'true', 'Permalink restores concurrency');
+    assert.equal(await page.locator('#story-speed-tab-c8').getAttribute('aria-selected'), 'true', 'Permalink restores paired story concurrency');
     await page.locator('[data-select-system][value="fyrr"]').check();
     assert.equal(await page.locator('[data-select-system][value="fyrr@jev-rerank"]').count(), 0, 'Private reranker never enters public filters');
     if (results.systems.some(system => system.variant === 'concurrency-8')) {
@@ -174,6 +192,10 @@ try {
       await sized.uncheck();
     }
     await page.locator('.metrics-select summary').click();
+    for (const p of [50, 95]) await page.locator(`[data-select-metric][value="first_ask_c8_p${p}_ms"]`).uncheck();
+    assert(await page.locator('#story-speed-tab-c8').isVisible(), 'Repeated measure keeps the paired concurrency view available');
+    assert(await page.locator('#story-speed-c8 [data-metric="warm_c8_p50_ms"]').isVisible());
+    for (const p of [50, 95]) await page.locator(`[data-select-metric][value="first_ask_c8_p${p}_ms"]`).check();
     await page.locator('[data-select-metric][value="ingest_docs_per_min"]').uncheck();
     assert.equal(await page.locator('#detail-ingest [data-metric="ingest_docs_per_min"]').isVisible(), false);
     const details = page.locator('#detail-ingest .metric-panel:not([hidden]) details').first();

@@ -354,7 +354,7 @@ export function headlineVerdict(results: Results) {
   return [narrative.quality, narrative.query, narrative.ingest, narrative.cost].join('. ') + '.';
 }
 
-export function renderMetric(results: Results, key: string, options: { tailKey?: string; axisMax?: number; ingest?: boolean } = {}) {
+export function renderMetric(results: Results, key: string, options: { tailKey?: string; axisMax?: number; ingest?: boolean; title?: string } = {}) {
   const meta = results.website.metrics[key];
   results = { ...results, systems: results.systems.filter(system => supportsMetric(results, system, key) && (!scopeProduct(meta) || system.id === scopeProduct(meta))) };
   const cells = results.systems.map(system => system.metrics[key]);
@@ -366,7 +366,7 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
   const max = axis.max;
   const pct = (value: number) => max ? `${value / max * 100}%` : '0%';
   const caption = results.draft ? 'Preliminary / placeholder data. No published scores or rankings.' : 'Whiskers show 95% confidence intervals where available. Partial results cannot establish a product win.';
-  const title = options.tailKey ? key.startsWith('first_ask_') ? 'First-ask search latency' : 'Repeated-query search latency' : meta?.label ?? name(key);
+  const title = options.title ?? (options.tailKey ? key.startsWith('first_ask_') ? 'First-ask search latency' : 'Repeated-query search latency' : meta?.label ?? name(key));
   // stage_of denotes disjoint submission-to-searchable elapsed segments, excluding setup and parallel work.
   const stages = options.ingest ? Object.values(results.website.metrics).filter(stage => stage.stage_of === key).sort((a, b) => (a.stage_order ?? 0) - (b.stage_order ?? 0)) : [];
   function stageBreakdown(system: Results['systems'][number]) {
@@ -459,19 +459,31 @@ export function renderScoreboard(results: Results) {
       const metric = system.metrics[key], max = scales.get(key) ?? 0;
       const unit = metric?.unit ?? results.website.metrics[key]?.unit ?? '';
       const pct = (value: number) => `${max ? value / max * 100 : 0}%`;
-      return `<div class="score-cell" data-score-metric="${escape(key)}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-expected="${metric?.expected ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-missing="${metric?.missing ?? ''}" data-samples="${sampleSet(metric)}"><span class="score-label">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span><span class="score-value">${metric?.value != null ? format(metric.value, unit) + (unit === 'ms' ? ' ms' : unit === 'seconds' ? ' s' : '') + (metric.status === 'partial' ? ' *' : '') : metric?.status === 'invalid' ? 'invalid' : 'n/e'}</span>${key === 'ingest_wall_s' ? `<small class="score-rate">${escape(ingestRate(system.metrics.ingest_docs_per_min))}</small>${metric?.value != null || system.ingest_coverage?.submitted != null ? `<small class="score-coverage">${escape(ingestCoverage(system))}</small>` : ''}` : ''}<div class="bar${system.id === 'fyrr' ? ' bar--fyrr' : ''}${metric?.value != null ? '' : ' is-empty'}" aria-hidden="true">${metric?.value != null ? `<i style="--w:${pct(metric.value)}"></i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}</div><small class="relative">${canCompare(results.website.metrics[key]) ? '' : 'diagnostic · unranked'}</small></div>`;
+      const repeat = system.metrics.warm_c1_p50_ms, tail = system.metrics.warm_c1_p95_ms;
+      const timing = (metric: Metric | undefined) => metric?.value != null ? `${format(metric.value, 'ms')} ms${metric.status === 'partial' ? ' *' : ''}` : metric?.status === 'invalid' ? 'invalid' : 'n/e';
+      return `<div class="score-cell" data-score-metric="${escape(key)}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-expected="${metric?.expected ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-missing="${metric?.missing ?? ''}" data-samples="${sampleSet(metric)}"><span class="score-label">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span><span class="score-value">${metric?.value != null ? format(metric.value, unit) + (unit === 'ms' ? ' ms' : unit === 'seconds' ? ' s' : '') + (metric.status === 'partial' ? ' *' : '') : metric?.status === 'invalid' ? 'invalid' : 'n/e'}</span>${key === 'first_ask_c1_p50_ms' ? `<small class="score-repeat" data-secondary-metric="warm_c1_p50_ms">Repeated question<br>p50 ${escape(timing(repeat))} · p95 ${escape(timing(tail))}</small>` : ''}${key === 'ingest_wall_s' ? `<small class="score-rate">${escape(ingestRate(system.metrics.ingest_docs_per_min))}</small>${metric?.value != null || system.ingest_coverage?.submitted != null ? `<small class="score-coverage">${escape(ingestCoverage(system))}</small>` : ''}` : ''}<div class="bar${system.id === 'fyrr' ? ' bar--fyrr' : ''}${metric?.value != null ? '' : ' is-empty'}" aria-hidden="true">${metric?.value != null ? `<i style="--w:${pct(metric.value)}"></i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}</div><small class="relative">${canCompare(results.website.metrics[key]) ? '' : 'diagnostic · unranked'}</small></div>`;
     }).join('')}${renderRunNotes(results, system, 'score-run-note', true)}</div>`).join('')}
-    <p class="score-note">n/e = not evaluated. Each column shares a zero-based scale; quality spans 0–100%. <a href="#details">Intervals, samples &amp; assumptions ↘</a></p></div><p class="overview-empty note" hidden>Select a headline representative to see the overview.</p>`;
+    <p class="score-note">n/e = not evaluated. Each column shares a zero-based scale; quality spans 0–100%. Query speed is new-question p50; repeated timing is shown separately. <a href="#details">Intervals, samples &amp; assumptions ↘</a></p></div><p class="overview-empty note" hidden>Select a headline representative to see the overview.</p>`;
 }
 
 export function renderStories(results: Results) {
   const baseline = { ...results, systems: headlineSystems(results) };
   const narrative = comparisonNarrative(results);
   return (results.website.stories ?? []).map((story, index) => {
-    const chart = story.group === 'ingest' ? renderMetric(baseline, story.metrics[0], { ingest: true }) : story.group === 'speed' ? renderMetric(baseline, story.metrics[0], { tailKey: story.metrics[1] }) : story.metrics.length === 1 ? renderMetric(baseline, story.metrics[0]) : renderMetricSet(baseline, story.group, story.metrics, `${story.id}-`);
+    const chart = story.group === 'ingest' ? renderMetric(baseline, story.metrics[0], { ingest: true }) : story.group === 'speed' ? renderSpeedStory(baseline) : story.metrics.length === 1 ? renderMetric(baseline, story.metrics[0]) : renderMetricSet(baseline, story.group, story.metrics, `${story.id}-`);
     const title = story.group === 'footprint' ? narrative.fractionOfCost ? 'Costs a fraction to run.' : narrative.cheaper ? 'Lower estimated running cost.' : 'What it costs to run.' : story.group === 'speed' ? narrative.fasterQueries ? 'Answers fast.' : 'Time to the evidence.' : story.group === 'ingest' ? narrative.fasterIngest ? 'Indexes fast.' : 'Indexing time.' : story.group === 'retrieval' ? `Finds the right documents${narrative.comparable ? ' (comparable)' : ''}.` : story.title;
     return `<section class="section story-section${index === 0 && story.group === 'footprint' ? ' story-section--lead' : ''}" id="${escape(story.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">0${index + 1} / ${escape(results.website.groups.find(group => group.id === story.group)?.label ?? story.group)}</p><h2>${escape(title)}</h2><p class="sub">${escape(story.description)}</p></div>${story.group === 'footprint' ? architecture : ''}${chart}${story.group === 'footprint' ? renderCostAssumptions(baseline) : ''}<a class="text-link" href="#detail-${escape(story.group)}">${escape(results.website.groups.find(group => group.id === story.group)?.label ?? 'Full')} details <span aria-hidden="true">↘</span></a></div></section>`;
   }).join('');
+}
+function renderSpeedStory(results: Results) {
+  const latency: Record<string, unknown> = object(results.protocol.latency) ? results.protocol.latency : {};
+  const caches: Record<string, unknown> = object(latency.query_embedding_cache_summary) ? latency.query_embedding_cache_summary : object(latency.query_embedding_cache) ? latency.query_embedding_cache : {};
+  const summaries = results.systems.map(system => {
+    const cache = caches[system.id];
+    const summary = typeof cache === 'string' ? cache : object(cache) && typeof cache.description === 'string' ? cache.description : typeof cache === 'boolean' ? cache ? 'reuses cached query embeddings' : 'does not reuse cached query embeddings' : 'query-embedding cache reuse n/e';
+    return `<span data-system="${escape(runKey(system))}">${escape(system.name)}: ${escape(summary)}</span>`;
+  }).join('; ');
+  return `<p class="latency-explainer">New question includes query embedding. Repeated question asks the same query again, preserving native cache behavior.<span class="cache-summary">${summaries}</span></p><div class="metric-set" data-metric-set><div class="metric-tabs" role="tablist" aria-label="Story search concurrency">${[1, 8].map((c, index) => `<button type="button" role="tab" id="story-speed-tab-c${c}" aria-controls="story-speed-c${c}" aria-selected="${index === 0}" tabindex="${index === 0 ? '0' : '-1'}">Concurrency ${c}</button>`).join('')}</div>${[1, 8].map((c, index) => `<div role="tabpanel" id="story-speed-c${c}" aria-labelledby="story-speed-tab-c${c}"${index ? ' hidden' : ''}><div class="latency-pair">${renderMetric(results, `first_ask_c${c}_p50_ms`, { tailKey: `first_ask_c${c}_p95_ms`, title: 'New question' })}${renderMetric(results, `warm_c${c}_p50_ms`, { tailKey: `warm_c${c}_p95_ms`, title: 'Repeated question' })}</div></div>`).join('')}</div>`;
 }
 function renderCostAssumptions(results: Results) {
   const fact = (value: unknown, unit: string) => finite(value) ? escape(format(value, unit)) + (unit === 'GiB' ? ' GiB' : '') : typeof value === 'string' ? escape(value) : 'n/e';
@@ -530,10 +542,11 @@ export function renderProducts(results: Results) {
 }
 export function renderControls(results: Results) {
   const representatives = new Set(headlineSystems(results).map(runKey));
+  const storyMetrics = new Set(results.website.stories?.flatMap(story => story.metrics));
   return `<section class="comparison-controls" aria-label="Customize comparison"><div class="wrap">
     <div class="control-row"><fieldset><legend>Systems</legend><div class="selection-chips">${results.systems.map(system => `<label class="selection-chip"><input type="checkbox" data-select-system value="${escape(runKey(system))}"${representatives.has(runKey(system)) ? ' checked' : ''}>${escape(runLabel(results, system))}</label>`).join('')}</div></fieldset>
     <div class="permalink"><input aria-label="Current selection permalink" readonly value=""><button type="button" id="copy-permalink">Copy selection link ↗</button><span class="sr-only" id="copy-status" role="status"></span></div></div>
-    ${results.website.variant_note ? `<p class="note">${escape(results.website.variant_note)}</p>` : ''}<details class="metrics-select"><summary>Choose metrics</summary><fieldset><legend class="sr-only">Metrics</legend><div class="selection-chips">${metricKeys(results).map(key => `<label class="selection-chip"><input type="checkbox" data-select-metric value="${escape(key)}"${results.website.overview_metrics?.includes(key) || results.website.metrics[key]?.tier !== 'secondary' ? ' checked' : ''}>${escape(results.website.metrics[key]?.label ?? name(key))}</label>`).join('')}</div></fieldset></details>
+    ${results.website.variant_note ? `<p class="note">${escape(results.website.variant_note)}</p>` : ''}<details class="metrics-select"><summary>Choose metrics</summary><fieldset><legend class="sr-only">Metrics</legend><div class="selection-chips">${metricKeys(results).map(key => `<label class="selection-chip"><input type="checkbox" data-select-metric value="${escape(key)}"${results.website.overview_metrics?.includes(key) || storyMetrics.has(key) || results.website.metrics[key]?.tier !== 'secondary' ? ' checked' : ''}>${escape(results.website.metrics[key]?.label ?? name(key))}</label>`).join('')}</div></fieldset></details>
     <p class="note">Bars show absolute values. Scores show the percentage-point gap to the best selected system; time, cost and footprint use ratios (×1.00 best). Partial and missing results are unranked. <span id="selection-status" role="status"></span></p>
   </div></section>`;
 }
