@@ -174,17 +174,9 @@
     if (provenance.open) document.getElementById('provenance-body').textContent = 'Loading full provenance…';
     deepDetails.dataset.loadState = 'loading';
     notebookRequest = (async function () {
-      var compressed = typeof DecompressionStream !== 'undefined';
-      var response = await fetch(compressed ? results.notebook.url : results.notebook.fallback);
+      var response = await fetch(results.notebook.url);
       if (!response.ok) throw new Error('Notebook request failed');
-      var payload;
-      if (compressed) {
-        var bytes = new Uint8Array(await response.arrayBuffer());
-        var body = new Response(bytes);
-        // Fetch may already have decoded a server's Content-Encoding header.
-        if (bytes[0] === 31 && bytes[1] === 139) body = new Response(body.body.pipeThrough(new DecompressionStream('gzip')));
-        payload = await body.json();
-      } else payload = await response.json();
+      var payload = await response.json();
       if (payload.version !== 1 || typeof payload.html !== 'string' || typeof payload.provenance !== 'string' || !Array.isArray(payload.systems)) throw new Error('Invalid notebook');
       if (payload.systems.length !== results.systems.length || payload.systems.some(function (run) { return !run.metrics || !results.systems.some(function (system) { return system.id === run.id && (system.variant || 'default') === (run.variant || 'default'); }); })) throw new Error('Mismatched notebook');
       document.getElementById('notebook-body').innerHTML = payload.html;
