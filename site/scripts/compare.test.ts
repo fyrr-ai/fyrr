@@ -272,14 +272,18 @@ test('overview separates documented deployment counts, cost bounds and diagnosti
   const pipes = data.systems.find(system => system.id === 'pipeshub')!;
   pipes.footprint.monthly_cost_estimate = { status: 'partial', total_usd: null, known_subtotal_usd: 2551.517, component_counts: { app_pods_min: 2, dind_sidecars: 2, proxy_sidecars: 2, mongodb_members: 3, redis_members: 2, qdrant_nodes: 3, neo4j_community_nodes: 1 } };
   pipes.default_ingest_baseline = { docs_per_min: 7.8042, projected_20000_seconds: 153763, notes: ['Interrupted 1k diagnostic'] };
+  pipes.ingest_diagnostics = [{ configuration_id: 'full-final-segment1', comparable: false, docs_per_min: 70.5662 }, { configuration_id: 'full-final-segment2', comparable: false, docs_per_min: 87.3404 }, { configuration_id: 'default', comparable: false, ...pipes.default_ingest_baseline }];
   const html = renderScoreboard(data);
   assert(html.includes('data-overview-deployment="true" data-status="measured" data-value="3"'));
   assert(html.includes('data-overview-deployment="true" data-status="measured" data-value="15"'));
   assert(html.includes('reader + writer job + TLS proxy; plus S3'));
   assert(html.includes('≥ $2,552/month'));
   assert(html.includes('Known subtotal; enrichment n/e'));
-  assert(html.includes('7.8 docs/min'));
-  assert(html.includes('Diagnostic · projected ~43 h for 20k'));
+  assert(html.includes('about 71–87 docs/min'));
+  assert(html.includes('Measured segments; full 20k time n/e (harness interruption)'));
+  assert(!html.includes('7.8 docs/min'));
+  assert(!html.includes('projected ~43 h'));
+  assert(renderStories(data).includes('7.8 docs/min'));
   for (const key of ['service_count', 'monthly_cost_usd', 'ingest_wall_s']) assert.equal(pipes.metrics[key].value, null, 'Raw measurements are never overwritten by deployment or diagnostic display values');
 });
 test('zero is a measured result, ratios handle zero baselines and axes stay round', () => {
@@ -534,9 +538,9 @@ test('an authorized completed alternative represents its product once with visib
   assert.equal((board.match(/class="score-row/g) ?? []).length, 3);
   assert(board.includes('/compare/runs/pipeshub--parallel-partitions.json'));
   assert(board.includes('FAIR_SCHEDULING_PARALLEL_PARTITIONS=true, non-default'));
-  assert(board.includes('10 docs/min observed over 60 s'));
-  assert(board.includes('PROJECTED 33.33 h'));
-  assert(board.includes('intentionally interrupted 1k smoke index; rate sample only'));
+  assert(!board.includes('10 docs/min observed'));
+  assert(!board.includes('PROJECTED 33.33 h'));
+  assert(!board.includes('default-ingest-baseline'));
   assert.equal(original.metrics.ingest_wall_s.status, 'n/e');
   assert(!board.includes('data-value="120000"'));
   assert(!renderStories(parsed).includes('data-system="pipeshub"'));

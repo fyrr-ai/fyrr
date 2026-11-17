@@ -7,7 +7,7 @@ const report = process.env.REPORT_DIR ?? 'shots/compare';
 const elementShotStyle = '.header,.skip{visibility:hidden!important}';
 const results = JSON.parse(await readFile(process.env.COMPARE_PREVIEW_RESULTS ?? 'data/compare-results.json', 'utf8'));
 await mkdir(report, { recursive: true });
-const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH, args: ['--no-sandbox'] });
+let browser = await chromium.launch({ executablePath: process.env.CHROME_PATH, args: ['--no-sandbox'] });
 async function assertBarWidths(page) {
   await page.waitForFunction(() => Array.from(document.querySelectorAll('.rv .bar > i')).filter(bar => bar.getClientRects().length && bar.closest('.rv').getBoundingClientRect().top < innerHeight && bar.closest('.rv').getBoundingClientRect().bottom > 0).every(bar => {
     const expected = parseFloat(bar.style.getPropertyValue('--w')) / 100;
@@ -53,6 +53,9 @@ try {
   cases++;
   console.log('PASS static 390px: overview and story charts complete without JavaScript; no notebook transfer');
   for (const [width, motion] of [[1440, 'no-preference'], [390, 'no-preference'], [390, 'reduce']]) {
+    // Release native renderer and screenshot resources between independent cases.
+    await browser.close();
+    browser = await chromium.launch({ executablePath: process.env.CHROME_PATH, args: ['--no-sandbox'] });
     const context = await browser.newContext({ viewport: { width, height: 960 }, reducedMotion: motion, permissions: ['clipboard-read', 'clipboard-write'] });
     const page = await context.newPage();
     page.setDefaultNavigationTimeout(Number(process.env.SITE_BROWSER_TIMEOUT_MS ?? 30_000));
@@ -124,7 +127,15 @@ try {
       if (system.variant && system.variant !== 'default') {
         assert(await page.locator(`.score-row[data-system="${key}"] .score-run-note`).count() > 0, 'Non-default headline configuration must have a visible marker');
         assert.equal(await page.locator(`[data-select-system][value="${key}"]`).isChecked(), true);
-        if (system.default_ingest_baseline?.projected_20000_seconds != null) assert.match(await page.locator(`.score-row[data-system="${key}"] .default-ingest-baseline`).textContent(), /PROJECTED.*not completed/);
+        assert.equal(await page.locator(`.score-row[data-system="${key}"] .default-ingest-baseline`).count(), 0, 'Other configuration baselines belong in the diagnostic table');
+        const segments = (system.ingest_diagnostics ?? []).filter(row => row.configuration_id.startsWith('full-final-segment') && Number.isFinite(row.docs_per_min));
+        if (system.metrics.ingest_wall_s?.value == null && segments.length) {
+          const cell = page.locator(`.score-row[data-system="${key}"] [data-score-metric="ingest_wall_s"]`);
+          const range = [...new Set([Math.round(Math.min(...segments.map(row => row.docs_per_min))), Math.round(Math.max(...segments.map(row => row.docs_per_min)))])].map(value => value.toLocaleString('en')).join('–');
+          assert.equal(await cell.locator('.score-value').innerText(), `about ${range} docs/min`);
+          assert.match(await cell.locator('.score-rate').innerText(), /Measured segments; full 20k time n\/e \(harness interruption\)/);
+          assert.equal(await cell.locator('.bar i').count(), 0, 'Interrupted observation rates cannot become completed-ingest bars');
+        }
       }
       if (system.background_activity?.enrichment_active) {
         assert.match(await page.locator(`.score-row[data-system="${key}"] .background-activity`).innerText(), /Background document enrichment active.*Enrichment completed:/);
@@ -305,11 +316,12 @@ try {
     assert(await details.getAttribute('open') !== null);
     await page.screenshot({ path: `${report}/uncertainty-${suffix}.png` });
     const [download] = await Promise.all([
-      page.waitForResponse(response => new URL(response.url()).pathname === '/compare/results.json'),
+      page.waitForEvent('download'),
       page.getByRole('link', { name: 'Download results JSON' }).click(),
     ]);
-    assert.equal(download.status(), 200);
-    assert.deepEqual(await download.json(), results, 'The complete download preserves every reviewed result');
+    assert.equal(download.suggestedFilename(), 'fyrr-comparison-results.json');
+    assert.equal(await download.failure(), null);
+    assert.deepEqual(JSON.parse(await readFile(await download.path(), 'utf8')), results, 'The complete downloaded file preserves every reviewed result');
     if (motion === 'reduce') {
       await page.goto(`${base}/compare`);
       await page.evaluate(() => document.fonts.ready);
