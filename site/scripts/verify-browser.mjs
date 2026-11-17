@@ -68,6 +68,6 @@ try {
     await page.screenshot({ path: `${process.env.REPORT_DIR ?? '../target'}/fumadocs-${width}.png` });
     assert.deepEqual(errors, [], `Browser errors at ${width}`);
     await context.close();
-    console.log(`${width}px: 20 docs pages, legacy URL, Unicode font loading, search, result navigation, ${width >= 992 ? 'desktop table of contents, ' : ''}exact code copying passed`);
+    console.log(`${width}px: ${navigation.reduce((count, [, entries]) => count + entries.length, 0)} docs pages, legacy URL, Unicode font loading, search, result navigation, ${width >= 992 ? 'desktop table of contents, ' : ''}exact code copying passed`);
   }
 } finally { await browser.close(); }

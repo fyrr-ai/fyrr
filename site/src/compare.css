@@ -289,3 +289,7 @@ summary { cursor: pointer; padding-block: 6px; }
 .ingest-diagnostics{margin-top:28px;border-top:1px solid var(--line);padding-top:24px}.ingest-diagnostics h3{font-size:20px;margin:0 0 12px}.ingest-diagnostics .detail-scroll{margin:18px 0}.ingest-diagnostics pre{overflow:auto;max-height:28rem}
 
 .evidence-digest{overflow-wrap:anywhere}.evidence-digest code{font-size:10px}
+
+.run-notes-expanded p{margin-top:8px}.run-notes-expanded{font-size:10px;line-height:16px}
+
+.hero-scope{margin-top:12px;font-size:12px;line-height:18px;color:var(--fg-dim)}.score-services{display:block;margin-top:4px;font-size:9px;line-height:13px;color:var(--fg-muted)}

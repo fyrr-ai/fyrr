@@ -16,10 +16,11 @@ bun run typecheck
 bun run preview
 ```
 
-The comparison currently contains an explicit draft fixture. `bun run build`
+The comparison currently contains measured results pending owner review. `bun run build`
 rejects it before exporting the site. For local design review, run
 `bun run build:preview`, then `bun run preview`. The page shows a prominent
-placeholder notice, is marked `noindex`, and draws no invented result bars.
+review notice and is marked `noindex`. Measured values are shown; unavailable
+results remain n/e.
 Both deployment commands reject drafts, including an old draft export left
 in `dist/`; the local preview opt-in cannot bypass the deployment guard.
 
@@ -142,7 +143,8 @@ Unavailable/invalid measurements have null values. Partial values carry
 an asterisk and cannot establish a product win. Fraction axes cover
 0–100%; other axes start at zero and include the full confidence interval.
 No metric is sorted to favor a product. Hero clauses and story titles are derived
-from complete comparable evidence: observed quality gaps/intervals, C1 latency,
+from products with complete measured values for each metric (n/e products are
+disclosed separately): observed quality gaps/intervals, C1 latency,
 ingest wall time and a complete monthly cost model. Cost claims require a complete documented-production model, matched workload,
 priced required line items and no missing inputs. The production cards show documented
 resources and managed services; the separate minimum shows measured capacity and
@@ -198,3 +200,8 @@ A reviewed evidence bundle under 20 MB belongs in `data/evidence/`, with
 SHA256 and byte length. Build and deploy verification compare the actual bytes
 to that digest. Larger bundles stay outside the site until hosting is decided.
 Do not place evidence in generated `public/`; content preparation replaces it.
+
+The overview rounds numbers for reading. It derives deployment-component counts
+from the production model (including the scheduled writer and TLS proxy), keeping
+measured resident-process counts in the notebook. Known cost subtotals and
+interrupted-ingest diagnostic rates are labelled and never receive metric bars.

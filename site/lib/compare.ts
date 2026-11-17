@@ -49,6 +49,8 @@ export type Results = {
   }[];
   website: {
     lambda_projection?: LambdaProjection;
+    hardware?: Record<string, unknown>;
+    dataset_license?: { label: string; notice: string; source_url: string };
     headline_metric: string; groups: Group[];
     metrics: Record<string, { key: string; label: string; unit: string; group: string; direction: 'higher_is_better' | 'lower_is_better'; ci: Record<string, unknown> | null; tier?: 'primary' | 'secondary'; scope?: string; description?: string; comparable?: boolean; stage_of?: string; stage_order?: number }>;
     products: Record<string, Product>;
@@ -66,7 +68,7 @@ const strings = (value: unknown): value is string[] => Array.isArray(value) && v
 const count = (value: unknown) => Number.isInteger(value) && Number(value) >= 0;
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 export const runKey = (system: { id: string; variant?: string }) => !system.variant || system.variant === 'default' ? system.id : `${system.id}@${system.variant}`;
-const runLabel = (results: Results, system: Results['systems'][number]) => !system.variant || system.variant === 'default' ? system.name : `${results.variants?.[system.variant]?.label ?? `${system.name} (${name(system.variant)})`}${results.variants?.[system.variant]?.experimental ? ' · experimental' : ''}`;
+const runLabel = (results: Results, system: Results['systems'][number]) => !system.variant || system.variant === 'default' ? system.name : `${results.variants?.[system.variant]?.headline ? `${system.name} · non-default` : results.variants?.[system.variant]?.label ?? `${system.name} (${name(system.variant)})`}${results.variants?.[system.variant]?.experimental ? ' · experimental' : ''}`;
 function supportsMetric(results: Results, system: Results['systems'][number], key: string) {
   const prefixes = results.variants?.[system.variant ?? 'default']?.metric_prefixes;
   return !prefixes || prefixes.some(prefix => key.startsWith(prefix));
@@ -105,7 +107,7 @@ function validateMetric(metric: unknown, key: string): asserts metric is Metric 
   requireField(typeof metric.unit === 'string' && count(metric.n), `${key} unit/count`);
   const available = metric.status === 'measured' || metric.status === 'partial';
   requireField(available ? finite(metric.value) && metric.value >= 0 && Number(metric.n) > 0 : metric.value === null, `${key} value must match status`);
-  requireField(metric.unit !== 'fraction' || metric.value === null || Number(metric.value) <= 1, `${key} fraction range`);
+  requireField(metric.unit !== 'fraction' || metric.value === null || Number(metric.value) <= 1 + 8 * Number.EPSILON, `${key} fraction range`);
   if (metric.attempted !== undefined) requireField(count(metric.attempted) && Number(metric.attempted) >= Number(metric.n), `${key} attempted count`);
   if (metric.expected !== undefined) requireField(count(metric.expected) && Number(metric.expected) >= Number(metric.n), `${key} expected count`);
   if (metric.missing !== undefined) {
@@ -116,7 +118,7 @@ function validateMetric(metric: unknown, key: string): asserts metric is Metric 
   if (metric.ci95 != null) {
     const ci = metric.ci95;
     requireField(available && Array.isArray(ci) && ci.length === 2 && ci.every(finite) && ci[0] >= 0 && ci[0] <= Number(metric.value) && ci[1] >= Number(metric.value), `${key} confidence interval`);
-    requireField(metric.unit !== 'fraction' || ci[1] <= 1, `${key} confidence interval range`);
+    requireField(metric.unit !== 'fraction' || ci[1] <= 1 + 8 * Number.EPSILON, `${key} confidence interval range`);
   }
   if (metric.notes !== undefined) requireField(strings(metric.notes), `${key} notes`);
   if (metric.sample_ids !== undefined) requireField(strings(metric.sample_ids) && new Set(metric.sample_ids).size === metric.sample_ids.length && metric.sample_ids.length === metric.n, `${key} sample IDs`);
@@ -301,7 +303,7 @@ export function format(value: number, unit: string) {
 }
 
 export function relativeValue(value: number, best: number, direction: string) {
-  if (value === best) return 1;
+  if (Math.abs(value - best) <= 8 * Number.EPSILON * Math.max(1, Math.abs(value), Math.abs(best))) return 1;
   const denominator = direction === 'higher_is_better' ? value : best;
   return denominator === 0 ? Infinity : (direction === 'higher_is_better' ? best : value) / denominator;
 }
@@ -321,11 +323,14 @@ function renderRunNotes(results: Results, system: Results['systems'][number], cl
   const variant = results.variants?.[system.variant ?? 'default'];
   const alternative = system.variant && system.variant !== 'default';
   const note = system.headline_note?.trim() || (alternative ? variant?.description?.trim() || `Non-default configuration: ${name(system.variant!)}` : '');
-  const unavailable = alternative && variant?.headline && system.metrics[results.website.headline_metric]?.value == null ? `<small class="${className} unavailable-reason">${escape(system.notes.length ? system.notes.join(' ') : 'Full-run measurements: n/e.')}</small>` : '';
-  const marker = note ? `<small class="${className}">${escape(note)}${variant?.source_url ? ` <a href="${link(variant.source_url)}">Configuration source ↗</a>` : ''}</small>` : '';
+  const missing = alternative && variant?.headline && system.metrics[results.website.headline_metric]?.value == null;
+  const brief = note.length > 220 ? note.slice(0, 220).replace(/\s+\S*$/, '') + '…' : note;
+  const marker = note ? `<small class="${className}">${escape(brief)}${variant?.source_url ? ` <a href="${link(variant.source_url)}">Configuration source ↗</a>` : ''}</small>` : '';
+  const unavailable = missing ? `<small class="${className} unavailable-reason">Full 20k retrieval and query latency: n/e. See the run’s interruption and configuration notes.</small>` : '';
   const baseline = system.default_ingest_baseline;
-  if (!baseline || !includeBaseline) return marker + unavailable;
-  return marker + unavailable + `<small class="${className} default-ingest-baseline">Default ingest: ${baseline.docs_per_min != null ? `${escape(format(baseline.docs_per_min, 'docs/min'))} docs/min observed${baseline.interval_seconds != null ? ` over ${escape(format(baseline.interval_seconds, 'seconds'))} s` : ''}` : 'steady rate n/e'}; 20,000 documents: ${baseline.projected_20000_seconds != null ? `PROJECTED ${escape(format(baseline.projected_20000_seconds, 'seconds'))} s` : 'projection n/e'}. Default 20k ingest not completed. Projection is excluded from measured ingest bars.${baseline.notes?.length ? ` ${escape(baseline.notes.join(' '))}` : ''}</small>`;
+  const expanded = includeBaseline && (note.length > 220 || missing || baseline?.notes?.length) ? `<details class="${className} run-notes-expanded"><summary>Full configuration &amp; interruption notes</summary>${note ? `<p>${escape(note)}</p>` : ''}${system.notes.map(note => `<p>${escape(note)}</p>`).join('')}${baseline?.notes?.map(note => `<p>${escape(note)}</p>`).join('') ?? ''}</details>` : '';
+  if (!baseline || !includeBaseline) return marker + unavailable + expanded;
+  return marker + unavailable + `<small class="${className} default-ingest-baseline">Default ingest sample (interrupted 1k): ${baseline.docs_per_min != null ? `${escape(format(baseline.docs_per_min, 'docs/min'))} docs/min observed${baseline.interval_seconds != null ? ` over ${escape(format(baseline.interval_seconds, 'seconds'))} s` : ''}` : 'steady rate n/e'}; 20k: ${baseline.projected_20000_seconds != null ? `PROJECTED ${(baseline.projected_20000_seconds / 3600).toFixed(2)} h` : 'projection n/e'}. Default 20k not completed. Sampling limitations are below.</small>` + expanded;
 }
 
 function renderIngestDiagnostics(results: Results) {
@@ -357,43 +362,55 @@ function comparisonNarrative(results: Results) {
   const own = systems.find(system => system.id === 'fyrr');
   const peers = systems.filter(system => system.id !== 'fyrr');
   const pending = { quality: 'Search quality is still being measured', query: 'Query speed is still being measured', ingest: 'Indexing time is still being measured', cost: 'Monthly operating cost is not yet estimated', comparable: false, fasterQueries: false, fasterIngest: false, cheaper: false, fractionOfCost: false };
-  if (results.draft || !own || !peers.length) return pending;
+  if (results.synthetic_design_preview || !own || !peers.length || results.draft && (!Object.keys(own.version).length || Number.isNaN(Date.parse(own.date)))) return pending;
   const result = { ...pending };
   const label = (system: Results['systems'][number]) => system.name + (system.variant && system.variant !== 'default' ? ' (non-default configuration)' : '');
-  function complete(key: string, paired = false, ci = false) {
-    const cells = systems.map(system => system.metrics[key]);
-    return canCompare(results.website.metrics[key]) && cells.every(metric => metric?.status === 'measured' && metric.value != null && metric.n > 0 && metric.n === metric.expected && metric.n === metric.attempted && metric.missing === 0 && (!ci || metric.ci95)) && new Set(cells.map(metric => metric.n)).size === 1 && (!paired || cells.every(metric => metric.sample_ids?.length) && new Set(cells.map(metric => [...metric.sample_ids!].sort().join('\n'))).size === 1);
+  function measuredPeers(key: string, paired = false, ci = false) {
+    const selected = systems.filter(system => system.metrics[key]?.status === 'measured' && system.metrics[key].value != null);
+    const cells = selected.map(system => system.metrics[key]);
+    const complete = selected.some(system => system === own) && selected.length > 1 && canCompare(results.website.metrics[key]) && cells.every(metric => metric.n > 0 && metric.n === metric.expected && metric.n === metric.attempted && metric.missing === 0 && (!ci || metric.ci95)) && new Set(cells.map(metric => metric.n)).size === 1 && (!paired || cells.every(metric => metric.sample_ids?.length) && new Set(cells.map(metric => [...metric.sample_ids!].sort().join('\n'))).size === 1);
+    return complete ? selected.filter(system => system !== own) : [];
   }
   const qualityKey = results.website.headline_metric;
-  if (complete(qualityKey, true, true)) {
+  const qualityPeers = measuredPeers(qualityKey, true, true);
+  if (qualityPeers.length) {
+    const peers = qualityPeers;
     const best = peers.reduce((best, peer) => peer.metrics[qualityKey].value! > best.metrics[qualityKey].value! ? peer : best);
     const ownMetric = own.metrics[qualityKey], peerMetric = best.metrics[qualityKey];
     const gap = (ownMetric.value! - peerMetric.value!) * 100;
     const overlap = ownMetric.ci95![1] > peerMetric.ci95![0] && peerMetric.ci95![1] > ownMetric.ci95![0];
     result.comparable = Math.abs(gap) <= 2 + 1e-10 || overlap;
+    const ndcgPeers = measuredPeers('ndcg_at_10', true, true);
+    if (ndcgPeers.length) result.comparable &&= ndcgPeers.every(peer => Math.abs(own.metrics.ndcg_at_10.value! - peer.metrics.ndcg_at_10.value!) <= .02 || own.metrics.ndcg_at_10.ci95![1] > peer.metrics.ndcg_at_10.ci95![0] && peer.metrics.ndcg_at_10.ci95![1] > own.metrics.ndcg_at_10.ci95![0]);
     const gapLabel = gap !== 0 && Math.abs(gap) < .05 ? Math.abs(gap).toLocaleString('en', { maximumSignificantDigits: 2 }) : Math.abs(gap).toFixed(1);
     const comparison = gap === 0 ? `tied with ${label(best)}` : `${gapLabel} pp ${gap > 0 ? 'ahead of' : 'behind'} ${label(best)}`;
     result.quality = result.comparable ? `Similar observed search quality (${comparison}${Math.abs(gap) > 2 ? '; 95% intervals overlap' : ''})` : `${results.website.metrics[qualityKey].label} is ${comparison}`;
   }
   const queryKey = 'first_ask_c1_p50_ms';
-  if (complete(queryKey, false, true)) {
+  const queryPeers = measuredPeers(queryKey, false, true);
+  if (queryPeers.length) {
+    const peers = queryPeers;
     const fastest = peers.reduce((best, peer) => peer.metrics[queryKey].value! < best.metrics[queryKey].value! ? peer : best);
     const value = own.metrics[queryKey].value!, rival = fastest.metrics[queryKey].value!;
     result.fasterQueries = value < rival;
     const separated = result.fasterQueries && peers.every(peer => own.metrics[queryKey].ci95![1] < peer.metrics[queryKey].ci95![0]);
     result.query = separated ? 'Faster queries' : result.fasterQueries ? 'Lower observed median query latency' : value === rival ? `Median query latency ties ${label(fastest)}` : `${label(fastest)} has lower observed median query latency`;
   }
-  if (complete('ingest_wall_s')) {
+  const ingestPeers = measuredPeers('ingest_wall_s');
+  if (ingestPeers.length) {
+    const peers = ingestPeers;
     const fastest = peers.reduce((best, peer) => peer.metrics.ingest_wall_s.value! < best.metrics.ingest_wall_s.value! ? peer : best);
     const value = own.metrics.ingest_wall_s.value!, rival = fastest.metrics.ingest_wall_s.value!;
     result.fasterIngest = value < rival;
     result.ingest = result.fasterIngest ? 'Faster measured indexing' : value === rival ? `Indexing time ties ${label(fastest)}` : `${label(fastest)} has lower measured indexing time`;
   }
-  if (complete('monthly_cost_usd') && systems.every(system => {
+  const costPeers = measuredPeers('monthly_cost_usd');
+  const costSystems = [own, ...costPeers];
+  if (costPeers.length && costSystems.every(system => {
     const model = system.footprint.monthly_cost_estimate;
     if (!object(model) || !object(model.assumptions) || !object(model.components)) return false;
     const assumptions = model.assumptions, components = model.components;
-    const reference = systems[0].footprint.monthly_cost_estimate;
+    const reference = costSystems[0].footprint.monthly_cost_estimate;
     if (!object(reference) || !object(reference.assumptions)) return false;
     const common = reference.assumptions;
     const sameWorkload = ['hours_per_month', 'documents', 'queries_per_month', 'daily_changed_fraction'].every(key => finite(assumptions[key]) && Number(assumptions[key]) >= 0 && assumptions[key] === common[key]);
@@ -401,6 +418,7 @@ function comparisonNarrative(results: Results) {
     const priced = items.length > 0 && items.every(item => object(item) && (!item.required || finite(item.usd_month) && item.usd_month >= 0 && (item.kind === 'api' || typeof item.deployment_source === 'string' && /^https:\/\//.test(item.deployment_source)) && object(item.price_source) && typeof item.price_source.url === 'string' && /^https:\/\//.test(item.price_source.url)));
     return model.basis === 'documented-production' && model.model_version === 2 && sameWorkload && ['estimated', 'estimate'].includes(String(model.status)) && model.total_usd === system.metrics.monthly_cost_usd.value && Array.isArray(model.missing) && model.missing.length === 0 && priced && ['compute_usd_month', 'storage_usd_month', 'network_usd_month', 'control_plane_usd_month', 'security_usd_month', 'observability_usd_month', 'api_usd_month', 'embedding_usd_per_document', 'llm_enrichment_usd_per_document'].every(key => finite(components[key]) && Number(components[key]) >= 0) && Array.isArray(model.sources) && model.sources.length > 0 && model.sources.every(source => object(source) && typeof source.url === 'string' && /^https:\/\//.test(source.url));
   })) {
+    const peers = costPeers;
     const cheapest = peers.reduce((best, peer) => peer.metrics.monthly_cost_usd.value! < best.metrics.monthly_cost_usd.value! ? peer : best);
     const value = own.metrics.monthly_cost_usd.value!, rival = cheapest.metrics.monthly_cost_usd.value!;
     result.cheaper = value < rival;
@@ -413,6 +431,13 @@ export function headlineVerdict(results: Results) {
   const meta = results.website.metrics[results.website.headline_metric];
   if (!canCompare(meta)) return `${meta?.label ?? 'This metric'} is a diagnostic; it does not establish a product ranking.`;
   const narrative = comparisonNarrative(results);
+  if (narrative.comparable && narrative.fractionOfCost && narrative.query === 'Faster queries' && narrative.fasterIngest) return 'Similar search quality. A fraction of the estimated running cost. Faster queries and indexing.';
+  const own = headlineSystems(results).find(system => system.id === 'fyrr');
+  const factual = !results.synthetic_design_preview && own && Object.keys(own.version).length > 0 && !Number.isNaN(Date.parse(own.date)) && ['recall_at_10', 'first_ask_c1_p50_ms', 'ingest_wall_s', 'monthly_cost_usd'].every(key => own.metrics[key]?.status === 'measured' && own.metrics[key].value != null);
+  if (factual && (results.draft || headlineSystems(results).some(system => system.metrics.recall_at_10?.value == null))) {
+    const unavailable = headlineSystems(results).filter(system => system.metrics.recall_at_10?.value == null && system.metrics.ingest_wall_s?.value == null);
+    return `fyrr: ${format(own.metrics.recall_at_10.value!, 'fraction')} recall@10. ${format(own.metrics.first_ask_c1_p50_ms.value!, 'ms')} ms new-question p50. ${format(own.metrics.ingest_wall_s.value! / 60, 'minutes')} min to index. ${format(own.metrics.monthly_cost_usd.value!, 'USD')}/month estimated production cost.${unavailable.length ? ` ${unavailable.map(system => system.name).join(', ')}: 20k run incomplete; full results n/e.` : ''}`;
+  }
   if (narrative.comparable && narrative.fractionOfCost && narrative.query === 'Faster queries' && narrative.fasterIngest) return 'Similar search quality. A fraction of the estimated running cost. Faster queries and indexing.';
   return [narrative.quality, narrative.query, narrative.ingest, narrative.cost].join('. ') + '.';
 }
@@ -428,7 +453,7 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
   const axis = axisScale(rawMax || (available.length ? 1 : 0), unit);
   const max = axis.max;
   const pct = (value: number) => max ? `${value / max * 100}%` : '0%';
-  const caption = results.draft ? 'Preliminary / placeholder data. No published scores or rankings.' : 'Whiskers show 95% confidence intervals where available. Partial results cannot establish a product win.';
+  const caption = results.draft ? results.systems.some(system => Object.values(system.metrics).some(metric => metric.status === 'measured')) && !results.synthetic_design_preview ? 'Preliminary measured results · owner review pending. Whiskers show 95% confidence intervals. Partial results are unranked.' : 'Preliminary / placeholder data. No published scores or rankings.' : 'Whiskers show 95% confidence intervals where available. Partial results cannot establish a product win.';
   const title = options.title ?? (options.tailKey ? key.startsWith('first_ask_') ? 'First-ask search latency' : 'Repeated-query search latency' : meta?.label ?? name(key));
   // stage_of denotes disjoint submission-to-searchable elapsed segments, excluding setup and parallel work.
   const stages = options.ingest ? Object.values(results.website.metrics).filter(stage => stage.stage_of === key).sort((a, b) => (a.stage_order ?? 0) - (b.stage_order ?? 0)) : [];
@@ -459,7 +484,7 @@ export function renderMetric(results: Results, key: string, options: { tailKey?:
     const ratio = metric?.status === 'measured' && metric.value !== null && meta && canCompare(meta) ? relativeValue(metric.value, best, meta.direction) : null;
     const gap = ((metric?.value ?? 0) - best) * 100;
     const gapLabel = gap !== 0 && Math.abs(gap) < .05 ? gap.toLocaleString('en', { maximumSignificantDigits: 2 }) : gap.toFixed(1);
-    const relative = !canCompare(meta) ? 'diagnostic · unranked' : ratio === null ? metric?.status === 'partial' ? 'partial · unranked' : 'n/e comparison' : unit === 'fraction' && meta?.direction === 'higher_is_better' ? metric!.value === best ? 'highest evaluated' : `${gapLabel} pp` : `×${Number.isFinite(ratio) ? ratio.toFixed(2) : '∞'}${ratio === 1 ? ' evaluated' : ''}`;
+    const relative = !canCompare(meta) ? 'diagnostic · unranked' : ratio === null ? metric?.status === 'partial' ? 'partial · unranked' : 'n/e comparison' : unit === 'fraction' && meta?.direction === 'higher_is_better' ? ratio === 1 ? 'best' : `${gapLabel} pp` : `×${Number.isFinite(ratio) ? ratio.toFixed(2) : '∞'}${ratio === 1 ? ' best' : ''}`;
     const breakdown = stageBreakdown(system);
     const cost = system.metrics.embedding_cost_usd;
     return `<div class="chart-row${system.id === 'fyrr' ? ' is-fyrr' : ''}" data-system="${escape(runKey(system))}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-missing="${metric?.missing ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-expected="${metric?.expected ?? ''}" data-samples="${sampleSet(metric)}" role="listitem">
@@ -506,12 +531,28 @@ function renderMetricSet(results: Results, group: string, keys: string[], prefix
 
 const architecture = `<aside class="architecture"><div><p class="eyebrow">fyrr / serverless index</p><h3>No database. No cluster.<br>The index lives on S3.</h3><p>Writers publish files. Readers search them. You still run the writer and reader processes, pay for storage and embeddings, and size a private reader mirror. Serverless describes the index, not zero compute or zero cost. <a href="/docs/deployment">Deployment details ↗</a></p></div><div class="topology" aria-label="Writer publishes to S3 index; reader reads from S3"><div class="topology-box"><strong>Writer</strong><small>sync &amp; publish</small></div><span aria-hidden="true">→</span><div class="topology-box bucket"><strong>S3</strong><small>index files</small></div><span aria-hidden="true">→</span><div class="topology-box"><strong>Reader</strong><small>search via MCP</small></div></div></aside>`;
 
+function overviewMetric(system: Results['systems'][number], key: string): Metric | undefined {
+  if (key !== 'service_count') return system.metrics[key];
+  const model = system.footprint.monthly_cost_estimate;
+  const counts = object(model) && object(model.component_counts) ? model.component_counts : {};
+  const keys = system.id === 'fyrr' ? ['always_on_reader_instances', 'scheduled_writer_role', 'tls_proxy_processes'] : system.id === 'pipeshub' ? ['app_pods_min', 'dind_sidecars', 'proxy_sidecars', 'mongodb_members', 'redis_members', 'qdrant_nodes', 'neo4j_community_nodes'] : [];
+  if (!keys.length || !keys.every(key => count(counts[key]))) return system.metrics[key];
+  return { status: 'measured', value: keys.reduce((sum, key) => sum + Number(counts[key]), 0), unit: 'services', n: 1, attempted: 1, expected: 1, missing: 0 };
+}
+function overviewFormat(value: number, unit: string) {
+  if (unit === 'ms') return `${Math.round(value).toLocaleString('en')} ms`;
+  if (unit === 'seconds') return `${(value / 60).toLocaleString('en', { maximumFractionDigits: 1, minimumFractionDigits: 1 })} min`;
+  if (unit.startsWith('USD')) return `$${Math.round(value).toLocaleString('en')}`;
+  if (unit === 'docs/min') return Math.round(value).toLocaleString('en');
+  if (unit === 'fraction') return `${(value * 100).toFixed(1)} %`;
+  return format(value, unit);
+}
 export function renderScoreboard(results: Results) {
   const systems = headlineSystems(results);
   const keys = results.website.overview_metrics ?? [results.website.headline_metric];
   const scales = new Map<string, number>(keys.map(key => {
     const values = systems.flatMap(system => {
-      const metric = system.metrics[key];
+      const metric = overviewMetric(system, key);
       return metric?.value != null ? [metric.value, metric.ci95?.[1] ?? 0] : [];
     });
     return [key, axisScale(Math.max(0, ...values) * 1.1 || (values.length ? 1 : 0), results.website.metrics[key]?.unit ?? '').max];
@@ -519,14 +560,14 @@ export function renderScoreboard(results: Results) {
   return `<div class="scoreboard rv" style="--score-cols:${keys.length}"><p class="score-intro">Quality means the right documents in the top 10. One representative per product; non-default configurations are marked.</p>
     <div class="score-head"><span>System</span>${keys.map(key => `<span data-score-metric="${escape(key)}">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span>`).join('')}</div>
     ${systems.map(system => `<div class="score-row${system.id === 'fyrr' ? ' is-fyrr' : ''}" data-system="${escape(runKey(system))}"><a class="score-product" href="/compare/runs/${escape(system.id)}--${escape(system.variant ?? 'default')}.json">${escape(system.name)} ↗</a>${keys.map(key => {
-      const metric = system.metrics[key], max = scales.get(key) ?? 0;
+      const metric = overviewMetric(system, key), max = scales.get(key) ?? 0;
       const unit = metric?.unit ?? results.website.metrics[key]?.unit ?? '';
       const pct = (value: number) => `${max ? value / max * 100 : 0}%`;
       const repeat = system.metrics.warm_c1_p50_ms, tail = system.metrics.warm_c1_p95_ms;
-      const timing = (metric: Metric | undefined) => metric?.value != null ? `${format(metric.value, 'ms')} ms${metric.status === 'partial' ? ' *' : ''}` : metric?.status === 'invalid' ? 'invalid' : 'n/e';
-      return `<div class="score-cell" data-score-metric="${escape(key)}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-expected="${metric?.expected ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-missing="${metric?.missing ?? ''}" data-samples="${sampleSet(metric)}"><span class="score-label">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span><span class="score-value">${metric?.value != null ? format(metric.value, unit) + (unit === 'ms' ? ' ms' : unit === 'seconds' ? ' s' : '') + (metric.status === 'partial' ? ' *' : '') : metric?.status === 'invalid' ? 'invalid' : 'n/e'}</span>${key === 'monthly_cost_usd' ? `<small class="score-minimum">Documented production<br>Minimum to run: ${object(system.footprint.minimum_deployment_cost_estimate) && finite(system.footprint.minimum_deployment_cost_estimate.total_usd) ? format(system.footprint.minimum_deployment_cost_estimate.total_usd, 'USD') : 'n/e'}</small>` : ''}${key === 'first_ask_c1_p50_ms' ? `<small class="score-repeat" data-secondary-metric="warm_c1_p50_ms">Repeated question<br>p50 ${escape(timing(repeat))} · p95 ${escape(timing(tail))}</small>` : ''}${key === 'ingest_wall_s' ? `<small class="score-rate">${escape(ingestRate(system.metrics.ingest_docs_per_min))}</small>${metric?.value != null || system.ingest_coverage?.submitted != null ? `<small class="score-coverage">${escape(ingestCoverage(system))}</small>` : ''}` : ''}<div class="bar${system.id === 'fyrr' ? ' bar--fyrr' : ''}${metric?.value != null ? '' : ' is-empty'}" aria-hidden="true">${metric?.value != null ? `<i style="--w:${pct(metric.value)}"></i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}</div><small class="relative">${canCompare(results.website.metrics[key]) ? '' : 'diagnostic · unranked'}</small></div>`;
+      const timing = (metric: Metric | undefined) => metric?.value != null ? `${Math.round(metric.value).toLocaleString('en')} ms${metric.status === 'partial' ? ' *' : ''}` : metric?.status === 'invalid' ? 'invalid' : 'n/e';
+      return `<div class="score-cell" data-score-metric="${escape(key)}" data-overview-deployment="${key === 'service_count'}" data-status="${metric?.status ?? 'n/e'}" data-value="${metric?.value ?? ''}" data-n="${metric?.n ?? 0}" data-expected="${metric?.expected ?? ''}" data-attempted="${metric?.attempted ?? ''}" data-missing="${metric?.missing ?? ''}" data-samples="${sampleSet(metric)}"><span class="score-label">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span><span class="score-value">${metric?.value != null ? overviewFormat(metric.value, unit) + (metric.status === 'partial' ? ' *' : '') : metric?.status === 'invalid' ? 'invalid' : key === 'monthly_cost_usd' && object(system.footprint.monthly_cost_estimate) && finite(system.footprint.monthly_cost_estimate.known_subtotal_usd) ? `≥ $${Math.ceil(system.footprint.monthly_cost_estimate.known_subtotal_usd).toLocaleString('en')}/month` : key === 'ingest_wall_s' && system.default_ingest_baseline?.docs_per_min != null ? `${system.default_ingest_baseline.docs_per_min.toFixed(1)} docs/min` : 'n/e'}</span>${key === 'monthly_cost_usd' ? `<small class="score-minimum">${metric?.value == null && object(system.footprint.monthly_cost_estimate) && finite(system.footprint.monthly_cost_estimate.known_subtotal_usd) ? 'Known subtotal; enrichment n/e' : 'Documented production'}<br>Minimum to run: ${object(system.footprint.minimum_deployment_cost_estimate) && finite(system.footprint.minimum_deployment_cost_estimate.total_usd) ? overviewFormat(system.footprint.minimum_deployment_cost_estimate.total_usd, 'USD') : 'n/e'}</small>` : ''}${key === 'service_count' ? `<small class="score-services">${system.id === 'fyrr' ? 'reader + writer job + TLS proxy; plus S3' : system.id === 'pipeshub' ? '11 workloads + 4 sidecars; managed EKS/S3 separate' : 'resident containers; managed services separate'}</small>` : ''}${key === 'first_ask_c1_p50_ms' ? `<small class="score-repeat" data-secondary-metric="warm_c1_p50_ms">Repeated question<br>p50 ${escape(timing(repeat))} · p95 ${escape(timing(tail))}</small>` : ''}${key === 'ingest_wall_s' ? `<small class="score-rate">${metric?.value == null && system.default_ingest_baseline?.projected_20000_seconds != null ? `Diagnostic · projected ~${Math.round(system.default_ingest_baseline.projected_20000_seconds / 3600)} h for 20k` : system.metrics.ingest_docs_per_min?.value != null ? `${overviewFormat(system.metrics.ingest_docs_per_min.value, 'docs/min')} docs/min${system.metrics.ingest_docs_per_min.status === 'partial' ? ' *' : ''}` : 'n/e docs/min'}</small>${metric?.value != null || system.ingest_coverage?.submitted != null ? `<small class="score-coverage">${escape(ingestCoverage(system))}</small>` : ''}` : ''}<div class="bar${system.id === 'fyrr' ? ' bar--fyrr' : ''}${metric?.value != null ? '' : ' is-empty'}" aria-hidden="true">${metric?.value != null ? `<i style="--w:${pct(metric.value)}"></i>${metric.ci95 ? `<b class="whisker" style="--low:${pct(metric.ci95[0])};--high:${pct(metric.ci95[1])}"></b>` : ''}` : ''}</div><small class="relative">${canCompare(results.website.metrics[key]) ? '' : 'diagnostic · unranked'}</small></div>`;
     }).join('')}${renderRunNotes(results, system, 'score-run-note', true)}</div>`).join('')}
-    <p class="score-note">n/e = not evaluated. Each column shares a zero-based scale; quality spans 0–100%. Query speed is new-question p50; repeated timing is shown separately. <a href="#details">Intervals, samples &amp; assumptions ↘</a></p></div><p class="overview-empty note" hidden>Select a headline representative to see the overview.</p>`;
+    <p class="score-note">n/e = not evaluated. Service counts show deployment components (scheduled jobs included); the notebook retains measured idle resident counts. Diagnostic rates and incomplete cost subtotals have no bar. Each column shares a zero-based scale; quality spans 0–100%. Query speed is new-question p50; repeated timing is shown separately. <a href="#details">Intervals, samples &amp; assumptions ↘</a></p></div><p class="overview-empty note" hidden>Select a headline representative to see the overview.</p>`;
 }
 
 export function renderStories(results: Results) {
@@ -560,14 +601,14 @@ function renderCapacity(sizing: Record<string, unknown>, concurrency: number) {
 function renderCostAssumptions(results: Results) {
   const money = (value: unknown) => finite(value) ? escape(format(value, 'USD')) : 'n/e';
   const categories = ['compute', 'storage', 'network', 'control_plane', 'security', 'observability', 'api'];
-  return `<aside class="cost-assumptions" id="cost-production"><h3>Documented production deployment</h3><p class="note">Main monthly cost prices each product’s documented production deployment on AWS Frankfurt, including its prescribed resources, replicas and managed services. Local benchmark performance and footprint are recorded separately from documented cloud deployment quantities. This is a pricing model, not a cloud capacity or availability guarantee. The measured single-host minimum is separate below.</p><div class="cost-assumptions-grid">${results.systems.map(system => {
+  return `<aside class="cost-assumptions" id="cost-production"><h3>Documented production deployment</h3><p class="note">Main monthly cost prices each product’s documented production deployment on AWS Frankfurt, including its prescribed resources, replicas and managed services. Local benchmark performance and footprint are recorded separately from documented cloud deployment quantities. Deployments differ in availability and service scope. This is a pricing model, not a cloud capacity or availability guarantee. The measured single-host minimum is separate below.</p><div class="cost-assumptions-grid">${results.systems.map(system => {
     const model: Record<string, unknown> = object(system.footprint.monthly_cost_estimate) ? system.footprint.monthly_cost_estimate : {};
     const assumptions = object(model.assumptions) ? model.assumptions : {};
     const components: Record<string, unknown> = object(model.components) ? model.components : {};
     const complete = model.basis === 'documented-production' && ['estimate', 'estimated'].includes(String(model.status)) && Array.isArray(model.missing) && !model.missing.length && finite(model.total_usd);
     const items = Array.isArray(model.line_items) ? model.line_items : [];
     const sources = Array.isArray(model.sources) ? model.sources : [];
-    return `<article class="cost-card${system.id === 'fyrr' ? ' is-fyrr' : ''}" data-system="${escape(runKey(system))}"><h4>${escape(runLabel(results, system))}</h4><p class="cost-total">${complete ? money(model.total_usd) : 'n/e'} / month</p>${!complete && finite(model.known_subtotal_usd) ? `<p class="note">Known subtotal: ${money(model.known_subtotal_usd)} / month · incomplete</p>` : ''}<p class="note">${escape(typeof model.profile === 'string' ? model.profile : 'Production deployment assumptions: n/e.')}</p>${typeof assumptions.configuration_note === 'string' ? `<p class="note">${escape(assumptions.configuration_note)}</p>` : ''}<dl>${categories.map(category => `<div><dt>${escape(name(category))} / month</dt><dd>${money(components[`${category}_usd_month`])}</dd></div>`).join('')}<div><dt>Embedding estimate / document</dt><dd>${money(components.embedding_usd_per_document)}</dd></div><div><dt>LLM enrichment estimate / document</dt><dd>${money(components.llm_enrichment_usd_per_document)}</dd></div></dl><p class="note">${finite(assumptions.hours_per_month) ? assumptions.hours_per_month : 'n/e'} h/month · ${finite(assumptions.documents) ? format(assumptions.documents, 'documents') : 'n/e'} documents · ${finite(assumptions.queries_per_month) ? format(assumptions.queries_per_month, 'queries') : 'n/e'} searches/month · ${finite(assumptions.daily_changed_fraction) ? format(assumptions.daily_changed_fraction, 'fraction') : 'n/e'} changed daily.</p>${Array.isArray(model.missing) && model.missing.length ? `<p class="note">Missing: ${escape(model.missing.join('; '))}</p>` : ''}${Array.isArray(model.notes) ? model.notes.map(note => `<p class="note">${escape(note)}</p>`).join('') : ''}${sources.map(source => object(source) && typeof source.url === 'string' ? `<p class="note"><a href="${link(source.url)}">${escape(source.label ?? 'Deployment source')} ↗</a></p>` : '').join('')}<details><summary>Itemized deployment, quantities &amp; prices</summary><div class="detail-scroll"><table class="detail-table cost-line-items"><thead><tr><th>Item</th><th>Count / replicas</th><th>Quantity</th><th>Unit price</th><th>Monthly</th></tr></thead><tbody>${items.map(item => {
+    return `<article class="cost-card${system.id === 'fyrr' ? ' is-fyrr' : ''}" data-system="${escape(runKey(system))}"><h4>${escape(runLabel(results, system))}</h4><p class="cost-total">${complete ? money(model.total_usd) : 'n/e'} / month</p>${!complete && finite(model.known_subtotal_usd) ? `<p class="note">Known subtotal: ${money(model.known_subtotal_usd)} / month · incomplete</p>` : ''}<p class="note">${escape(typeof model.profile === 'string' ? model.profile : 'Production deployment assumptions: n/e.')}</p>${typeof assumptions.configuration_note === 'string' ? `<p class="note">${escape(assumptions.configuration_note)}</p>` : ''}<dl>${categories.map(category => `<div><dt>${escape(name(category))} / month</dt><dd>${money(components[`${category}_usd_month`])}</dd></div>`).join('')}<div><dt>Embedding estimate / document</dt><dd>${money(components.embedding_usd_per_document)}</dd></div><div><dt>LLM enrichment estimate / document</dt><dd>${money(components.llm_enrichment_usd_per_document)}</dd></div></dl><p class="note">${finite(assumptions.hours_per_month) ? assumptions.hours_per_month : 'n/e'} h/month · ${finite(assumptions.documents) ? format(assumptions.documents, 'documents') : 'n/e'} documents · ${finite(assumptions.queries_per_month) ? format(assumptions.queries_per_month, 'queries') : 'n/e'} searches/month · ${finite(assumptions.daily_changed_fraction) ? format(assumptions.daily_changed_fraction, 'fraction') : 'n/e'} changed daily.</p>${Array.isArray(model.missing) && model.missing.length ? `<p class="note">Missing: ${escape(model.missing.join('; '))}</p>` : ''}${Array.isArray(model.notes) && model.notes.length ? `<details><summary>Assumptions &amp; limits</summary>${model.notes.map(note => `<p class="note">${escape(note)}</p>`).join('')}</details>` : ''}${sources.map(source => object(source) && typeof source.url === 'string' ? `<p class="note"><a href="${link(source.url)}">${escape(source.label ?? 'Deployment source')} ↗</a></p>` : '').join('')}<details><summary>Itemized deployment, quantities &amp; prices</summary><div class="detail-scroll"><table class="detail-table cost-line-items"><thead><tr><th>Item</th><th>Count / replicas</th><th>Quantity</th><th>Unit price</th><th>Monthly</th></tr></thead><tbody>${items.map(item => {
       if (!object(item)) return '';
       const price = object(item.price_source) ? item.price_source : {};
       return `<tr><th>${escape(item.label ?? item.key ?? 'Item')}<small>${escape(item.quantity_basis ?? 'Quantity basis: n/e')}</small>${typeof item.deployment_source === 'string' ? `<small><a href="${link(item.deployment_source)}">Deployment source ↗</a></small>` : ''}${typeof price.url === 'string' ? `<small><a href="${link(price.url)}">Price source ↗</a></small>` : ''}</th><td>${finite(item.count) ? format(item.count, '') : 'n/e'}</td><td>${finite(item.quantity) ? format(item.quantity, '') : 'n/e'} ${escape(item.unit ?? '')}</td><td>${money(item.unit_price_usd)}</td><td>${money(item.usd_month)}</td></tr>`;
@@ -690,5 +731,5 @@ export async function verifyEvidenceArchive(results: Results, directory = 'data/
 export function renderMethodology(results: Results) {
   const { systems, website: _, ...provenance } = results;
   const archive = object(results.benchmark.evidence_archive) ? results.benchmark.evidence_archive : null;
-  return `<dl class="method-grid">${results.website.methodology.map(item => `<div class="method-item"><dt>${escape(item.label)}</dt><dd>${escape(item.text)}${item.url ? ` <a href="${link(item.url)}">Source ↗</a>` : ''}</dd></div>`).join('')}</dl><details class="run-config"><summary>Versions, dates, configurations &amp; provenance</summary><pre>${escape(JSON.stringify({ ...provenance, details: undefined, systems: systems.map(({ metrics: _metrics, footprint: _footprint, ...system }) => ({ ...system, variant: system.variant ?? 'default' })) }, null, 2))}</pre></details><div class="method-links"><a class="btn btn--primary" href="/compare/results.json">Download results JSON ↗</a><a class="btn" href="${link(String(results.benchmark.source_url))}">Upstream benchmark ↗</a>${archive ? `<a class="btn" href="${link(String(archive.url))}" download>${escape(archive.label)} · ${(Number(archive.bytes) / 1_000_000).toFixed(1)} MB ↧</a>` : ''}</div>${archive ? `<p class="note evidence-digest">Evidence archive SHA256: <code>${escape(archive.sha256)}</code></p>` : ''}<details class="run-config"><summary>Add your system / reproduce a run</summary><ol class="contribute-steps"><li>Use the frozen corpus and question selection; verify the manifest hashes.</li><li>Implement the benchmark adapter against the actual product API. Preserve native ranking and return product-selected evidence.</li><li>Run the shared protocol. Record every attempt, missing result, exact version, date, hardware and nonsecret configuration.</li><li>Export one schema 1.1 results JSON per run, including the metric catalogue, confidence intervals, artifacts and detailed rows.</li><li>Contribute the JSON and reproducibility artifacts to the open benchmark repository when its public URL is available. Until then, the downloadable JSON is the local review artifact.</li></ol></details><p class="note">Published by the fyrr team. Product descriptions link to their sources; measurements apply only to the exact configurations recorded above. Open comparison repository: ${results.benchmark.repository_url ? `<a href="${link(String(results.benchmark.repository_url))}">Reproduce &amp; add a system ↗</a>` : 'n/e · not published yet; no public artifact URL is claimed.'}</p>`;
+  return `<dl class="method-grid">${results.website.methodology.map(item => `<div class="method-item"><dt>${escape(item.label)}</dt><dd>${escape(item.text)}${item.url ? ` <a href="${link(item.url)}">Source ↗</a>` : ''}</dd></div>`).join('')}</dl><details class="run-config"><summary>Versions, dates, configurations &amp; provenance</summary><pre>${escape(JSON.stringify({ ...provenance, details: undefined, hardware: results.website.hardware, dataset_license: results.website.dataset_license, systems: systems.map(({ metrics: _metrics, footprint: _footprint, ...system }) => ({ ...system, variant: system.variant ?? 'default' })) }, null, 2))}</pre></details>${results.website.dataset_license ? `<details class="run-config"><summary>${escape(results.website.dataset_license.label)}</summary><pre>${escape(results.website.dataset_license.notice)}</pre><a href="${link(results.website.dataset_license.source_url)}">Dataset source ↗</a></details>` : ''}<div class="method-links"><a class="btn btn--primary" href="/compare/results.json">Download results JSON ↗</a><a class="btn" href="${link(String(results.benchmark.source_url))}">Upstream benchmark ↗</a>${archive ? `<a class="btn" href="${link(String(archive.url))}" download>${escape(archive.label)} · ${(Number(archive.bytes) / 1_000_000).toFixed(1)} MB ↧</a>` : ''}</div>${archive ? `<p class="note evidence-digest">Evidence archive SHA256: <code>${escape(archive.sha256)}</code></p>` : ''}<details class="run-config"><summary>Add your system / reproduce a run</summary><ol class="contribute-steps"><li>Use the frozen corpus and question selection; verify the manifest hashes.</li><li>Implement the benchmark adapter against the actual product API. Preserve native ranking and return product-selected evidence.</li><li>Run the shared protocol. Record every attempt, missing result, exact version, date, hardware and nonsecret configuration.</li><li>Export one schema 1.1 results JSON per run, including the metric catalogue, confidence intervals, artifacts and detailed rows.</li><li>Contribute the JSON and reproducibility artifacts to the open benchmark repository when its public URL is available. Until then, the downloadable JSON is the local review artifact.</li></ol></details><p class="note">Published by the fyrr team. Product descriptions link to their sources; measurements apply only to the exact configurations recorded above. Open comparison repository: ${results.benchmark.repository_url ? `<a href="${link(String(results.benchmark.repository_url))}">Reproduce &amp; add a system ↗</a>` : 'n/e · not published yet; no public artifact URL is claimed.'}</p>`;
 }
