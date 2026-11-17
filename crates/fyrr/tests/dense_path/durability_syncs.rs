@@ -31,6 +31,8 @@ fn command(config: &Path, args: &[&str], log: &Path, worker: bool) {
 /// - A delete is acknowledged only after its directory was synced after the
 ///   unlink. A cleanup batch owes that sync when the batch is acknowledged.
 /// - Nothing is synced while an object's lock is held.
+/// - A control object lives in its namespace directory or one directory
+///   below it, which is as far as the flush of observed objects reaches.
 fn acknowledged_puts(log: &Path, storage: &Path) -> BTreeMap<String, usize> {
     let mut synced_files = BTreeMap::<PathBuf, usize>::new();
     let mut synced_directories = BTreeMap::<PathBuf, usize>::new();
@@ -80,6 +82,9 @@ fn acknowledged_puts(log: &Path, storage: &Path) -> BTreeMap<String, usize> {
                 unlinked.insert(path, index);
             }
             ("ack", Some("put")) => {
+                let namespace = storage.join("namespaces/dense-fixture");
+                let below = path.strip_prefix(&namespace).unwrap().components().count();
+                assert!(below <= 2, "control object too deep: {}", path.display());
                 let publish = *published
                     .get(&path)
                     .unwrap_or_else(|| panic!("acknowledged unpublished {}", path.display()));
