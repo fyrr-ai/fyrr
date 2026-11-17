@@ -23,6 +23,51 @@ pub(super) fn pause(stage: &str) {
     }
 }
 
+/// Test-only gate: with `FYRR_TEST_LOCAL_HOLD_<STAGE>` set, a write announces
+/// the stage once by creating the named file and continues when the file
+/// with the added extension `go` appears.
+pub(super) fn hold(stage: &str) {
+    let variable = format!("FYRR_TEST_LOCAL_HOLD_{}", stage.to_uppercase());
+    let Some(marker) = std::env::var_os(variable).map(PathBuf::from) else {
+        return;
+    };
+    if marker.exists() {
+        return;
+    }
+    std::fs::write(&marker, b"").expect("announce the held stage");
+    while !marker.with_extension("go").exists() {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn reached(marker: &std::path::Path, process: &mut Child) {
+    let started = std::time::Instant::now();
+    while !marker.exists() {
+        if started.elapsed() >= Duration::from_secs(30) {
+            process.kill().unwrap();
+            process.wait().unwrap();
+            panic!("{} was not reached", marker.display());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn put_at(store: &LocalStore, relative: &str, bytes: &[u8], mode: PutMode) -> Result<PutResult> {
+    store.put_blocking(&at(store, relative), bytes.to_vec().into(), mode)
+}
+
+/// The bytes and tag of one object, read from one descriptor.
+fn read_at(store: &LocalStore, relative: &str) -> (Vec<u8>, String) {
+    let read = store
+        .get_blocking(at(store, relative), GetOptions::default())
+        .unwrap();
+    let tag = read.meta.e_tag.clone().unwrap();
+    (
+        futures::executor::block_on(read.bytes()).unwrap().to_vec(),
+        tag,
+    )
+}
+
 /// The staging files currently present in `root`.
 fn staged(root: &std::path::Path) -> Vec<PathBuf> {
     match std::fs::read_dir(root.join(STAGES)) {
@@ -152,6 +197,7 @@ fn local_store_child_process() {
         .into_bytes();
     let mode = match std::env::var("FYRR_TEST_LOCAL_ACTION").unwrap().as_str() {
         "create" => PutMode::Create,
+        "overwrite" => PutMode::Overwrite,
         "update" => PutMode::Update(version(std::env::var("FYRR_TEST_LOCAL_EXPECTED").ok())),
         other => panic!("unknown action {other}"),
     };
@@ -1151,11 +1197,16 @@ fn local_native_process_restart_preserves_unpublished_reference() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A writer stopped while it holds an object's lock blocks replacements and
+/// removals of that object only, and those fail within a bound without
+/// writing. Every other object and every create proceeds at once.
 #[test]
 fn local_store_frozen_holder_bounds_lock_acquisition() {
     let root = scratch("frozen-holder");
     let store = LocalStore::open(&root).unwrap();
     put(&store, b"original", PutMode::Create).unwrap();
+    put_at(&store, "namespaces/ns/other", b"other", PutMode::Create).unwrap();
+    put_at(&store, "namespaces/ns/retired", b"retired", PutMode::Create).unwrap();
     let marker = root.join("locked");
     let expected = current(&store);
     let result = root.join("holder-result");
@@ -1169,38 +1220,98 @@ fn local_store_frozen_holder_bounds_lock_acquisition() {
             ("FYRR_TEST_LOCAL_RESULT", result.as_os_str()),
         ],
     );
+    reached(&marker, &mut holder);
+
+    // Other objects: create, replace, compare-and-swap and remove, each well
+    // inside the bound a waiter on the held object would need.
     let started = std::time::Instant::now();
-    while !marker.exists() {
-        if started.elapsed() >= Duration::from_secs(30) {
-            holder.kill().unwrap();
-            holder.wait().unwrap();
-            panic!("holder did not reach the locked mutation");
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    let unrelated = || -> Result<()> {
+        let fresh = LocalStore::open(&root).unwrap();
+        put_at(&fresh, "namespaces/ns/created", b"created", PutMode::Create)?;
+        put_at(
+            &fresh,
+            "namespaces/ns/other",
+            b"replaced",
+            PutMode::Overwrite,
+        )?;
+        let (_, tag) = read_at(&fresh, "namespaces/ns/other");
+        let swap = PutMode::Update(version(Some(tag)));
+        put_at(&fresh, "namespaces/ns/other", b"swapped", swap)?;
+        fresh.delete_blocking(&at(&fresh, "namespaces/ns/retired"))
+    };
+    let others = unrelated();
+    let elapsed = started.elapsed();
+
+    // The held object: a replacement and a removal each give up in time.
     let contender = store.clone();
     let (send, receive) = std::sync::mpsc::channel();
     let thread = std::thread::spawn(move || {
-        send.send(put(&contender, b"contender", PutMode::Overwrite))
-            .unwrap();
+        let replaced = put(&contender, b"contender", PutMode::Overwrite);
+        let removed = contender.delete_blocking(&object(&contender));
+        send.send((replaced, removed)).unwrap();
     });
-    let bounded = receive.recv_timeout(Duration::from_secs(15));
-    // Release the holder even when the regression blocks the contender forever.
+    let bounded = receive.recv_timeout(Duration::from_secs(30));
+    // A stopped writer's staging file is not abandoned: its lock is held.
+    let kept = staged(&root).len();
+    // Release the holder even when a regression blocks someone forever.
     holder.kill().unwrap();
     holder.wait().unwrap();
     thread.join().unwrap();
-    assert!(bounded.is_ok(), "lock acquisition exceeded its bound");
-    let error = bounded
-        .unwrap()
-        .expect_err("a frozen holder retains exclusion");
+    others.expect("a held object does not block other objects");
     assert!(
-        error
-            .to_string()
-            .contains("storage lock acquisition deadline exceeded"),
-        "unexpected storage failure: {error}"
+        elapsed < LOCK_WAIT / 2,
+        "other objects waited {elapsed:?} behind a held one"
     );
+    assert_eq!(read_at(&store, "namespaces/ns/other").0, b"swapped");
+    assert_eq!(read_at(&store, "namespaces/ns/created").0, b"created");
+    assert!(!root.join("namespaces/ns/retired").exists());
+    assert_eq!(kept, 1, "the reaper left the stopped writer's staging file");
+    let (replaced, removed) = bounded.expect("lock acquisition exceeded its bound");
+    for error in [
+        replaced
+            .expect_err("a frozen holder retains exclusion")
+            .to_string(),
+        removed
+            .expect_err("a frozen holder retains exclusion")
+            .to_string(),
+    ] {
+        assert!(
+            error.contains("storage lock acquisition deadline exceeded"),
+            "unexpected storage failure: {error}"
+        );
+    }
     assert_eq!(read(&store, &root), b"original");
-    put(&store, b"recovered", PutMode::Overwrite).unwrap();
+    assert_eq!(current(&store), expected);
+    put(
+        &LocalStore::open(&root).unwrap(),
+        b"recovered",
+        PutMode::Overwrite,
+    )
+    .unwrap();
     assert_eq!(read(&store, &root), b"recovered");
+    assert!(staged(&root).is_empty(), "the dead writer's file is reaped");
+
+    // Stopped before it took the lock, a writer blocks nobody at all.
+    let marker = root.join("staged");
+    let expected = current(&store);
+    let mut holder = child(
+        &root,
+        "update",
+        &[
+            ("FYRR_TEST_LOCAL_PAUSE_STAGED", marker.as_os_str()),
+            ("FYRR_TEST_LOCAL_PAYLOAD", "holder".as_ref()),
+            ("FYRR_TEST_LOCAL_EXPECTED", expected.as_ref()),
+            ("FYRR_TEST_LOCAL_RESULT", result.as_os_str()),
+        ],
+    );
+    reached(&marker, &mut holder);
+    let started = std::time::Instant::now();
+    let replaced = put(&store, b"unblocked", PutMode::Overwrite);
+    let elapsed = started.elapsed();
+    holder.kill().unwrap();
+    holder.wait().unwrap();
+    replaced.expect("a writer that holds no lock blocks nobody");
+    assert!(elapsed < LOCK_WAIT / 2, "waited {elapsed:?}");
+    assert_eq!(read(&store, &root), b"unblocked");
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -12,8 +12,9 @@ pub(in crate::storage) fn seed(
         return Ok(());
     }
     let store = LocalStore::open(root)?;
-    let _lock = store.lock()?;
-    store.reap(&store.root_directory()?)?;
+    let root = store.root_directory()?;
+    store.hand_over(&root)?;
+    store.reap(&root)?;
     let prefix = store.root.clone().join("namespaces").join(namespace);
     // One descriptor chain per directory, however many objects it receives.
     let mut directories = BTreeMap::<Vec<String>, Vec<Directory>>::new();
@@ -46,8 +47,7 @@ pub(in crate::storage) fn seed(
         file.write_all(&bytes)?;
         set_version(&file, new_tag()?)?;
     }
-    // Bound open files and flush concurrency. Keep the real root lock until
-    // every file and its directory entries are durable.
+    // Bound open files and flush concurrency.
     let workers = std::thread::available_parallelism()
         .map_or(1, usize::from)
         .min(8)

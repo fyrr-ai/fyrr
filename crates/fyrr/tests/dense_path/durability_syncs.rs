@@ -30,6 +30,7 @@ fn command(config: &Path, args: &[&str], log: &Path, worker: bool) {
 ///   up to the storage root at some earlier point.
 /// - A delete is acknowledged only after its directory was synced after the
 ///   unlink. A cleanup batch owes that sync when the batch is acknowledged.
+/// - Nothing is synced while an object's lock is held.
 fn acknowledged_puts(log: &Path, storage: &Path) -> BTreeMap<String, usize> {
     let mut synced_files = BTreeMap::<PathBuf, usize>::new();
     let mut synced_directories = BTreeMap::<PathBuf, usize>::new();
@@ -37,6 +38,8 @@ fn acknowledged_puts(log: &Path, storage: &Path) -> BTreeMap<String, usize> {
     let mut unlinked = BTreeMap::<PathBuf, usize>::new();
     let mut deferred = Vec::<PathBuf>::new();
     let mut puts = BTreeMap::<String, usize>::new();
+    // One blocking mutation runs on one thread of one process.
+    let mut held = std::collections::BTreeSet::<(u64, String)>::new();
     let after = |directories: &BTreeMap<PathBuf, usize>, path: &Path, event: usize| {
         directories
             .get(path.parent().unwrap())
@@ -45,10 +48,19 @@ fn acknowledged_puts(log: &Path, storage: &Path) -> BTreeMap<String, usize> {
     for (index, line) in std::fs::read_to_string(log).unwrap().lines().enumerate() {
         let event: Value = serde_json::from_str(line).unwrap();
         let path = PathBuf::from(event["path"].as_str().unwrap());
+        let thread = (
+            event["pid"].as_u64().unwrap(),
+            event["thread"].as_str().unwrap().to_owned(),
+        );
         match (
             event["event"].as_str().unwrap(),
             event["operation"].as_str(),
         ) {
+            ("lock", _) => assert!(held.insert(thread), "one lock per mutation"),
+            ("unlock", _) => assert!(held.remove(&thread), "unlock without lock"),
+            ("sync", _) if held.contains(&thread) => {
+                panic!("synced under an object's lock: {}", path.display())
+            }
             ("sync", _) if event["directory"] == true => {
                 synced_directories.insert(path, index);
             }
