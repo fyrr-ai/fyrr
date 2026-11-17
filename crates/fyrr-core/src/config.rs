@@ -31,7 +31,7 @@ use crate::units::{ByteSize, ConfigDuration};
 
 /// Configuration schema revision: adding a storage backend changes the URI
 /// contract beyond an optional field, so it starts a new major revision.
-pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(3, 0);
+pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(4, 0);
 
 /// Namespace IDs: lowercase letters, digits and `-`, at most 63 bytes.
 pub const NAMESPACE_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
@@ -179,7 +179,7 @@ pub struct RerankConfig {
     pub text_chars: Option<usize>,
 }
 
-/// Retrieval policy; explicit defaults retain the legacy policy digest.
+/// Retrieval policy bound into each publication's ranking identity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct RetrievalConfig {
@@ -203,9 +203,9 @@ impl Default for RetrievalConfig {
     fn default() -> Self {
         Self {
             rescore_depth: RescoreDepth::Legacy,
-            dense_weight: 0.25,
+            dense_weight: 0.5,
             dense_candidates: 75,
-            lexical_candidates: 50,
+            lexical_candidates: 200,
             source_cap: 2,
             max_documents: 75,
         }
@@ -302,7 +302,17 @@ impl NamespaceConfig {
             serde_json::json!(self.fts_settings()),
             serde_json::json!(self.composition),
         ];
-        if self.retrieval != RetrievalConfig::default() {
+        // The historical policy omitted these fields. Keep its identity tied
+        // to the original values rather than to defaults that can change.
+        let legacy = RetrievalConfig {
+            rescore_depth: RescoreDepth::Legacy,
+            dense_weight: 0.25,
+            dense_candidates: 75,
+            lexical_candidates: 50,
+            source_cap: 2,
+            max_documents: 75,
+        };
+        if self.retrieval != legacy {
             policy.push(serde_json::json!({"retrieval_v1": self.retrieval}));
         }
         if let Some(rerank) = &self.rerank {

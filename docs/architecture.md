@@ -136,7 +136,7 @@ A `search` runs two candidate lanes over the permission-filtered rows:
   otherwise, or when the embedding call fails, the lexical lane answers
   alone and the response reports `degraded: ["dense"]`.
 
-The two score lists are normalized, fused (weight 0.75 lexical, 0.25 dense
+The two score lists are normalized, fused (weight 0.5 lexical, 0.5 dense
 by default) and grouped to one hit per document. A soft per-source cap
 spreads the top of the list across sources; remaining slots may still come
 from the same source. An optional reranker (`[namespace.rerank]`) reorders

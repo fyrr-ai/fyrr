@@ -43,9 +43,9 @@ slots total at most 75.
 
 | Key | Default | Range | Meaning |
 | --- | --- | --- | --- |
-| `dense_weight` | `0.25` | 0–1 | Weight of the dense lane in fusion; lexical gets the rest. |
+| `dense_weight` | `0.5` | 0–1 | Weight of the dense lane in fusion; lexical gets the rest. |
 | `dense_candidates` | `75` | 1–75 | Dense candidates per query. |
-| `lexical_candidates` | `50` | 1–200 | Lexical candidates per query. |
+| `lexical_candidates` | `200` | 1–200 | Lexical candidates per query. |
 | `source_cap` | `2` | 0–75 | Soft cap of documents per source in each composition bucket; `0` disables it. |
 | `max_documents` | `75` | 1–320 | Unique documents in a multi-query response. |
 

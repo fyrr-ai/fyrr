@@ -38,5 +38,55 @@ async fn writer_verify_preserves_incompatible_index_on_storage() {
         before,
         "verification must not change the serving head"
     );
+
+    // Explicit historical settings keep their published identity. A reader
+    // using the new defaults must refuse it until the writer republishes.
+    let historical = root.join("historical-retrieval.toml");
+    std::fs::write(
+        &historical,
+        text.replacen(
+            "[namespace]",
+            "[namespace]\nretrieval = { dense_weight = 0.25, lexical_candidates = 50 }",
+            1,
+        ),
+    )
+    .unwrap();
+    let old = fyrr_core::config::load(&historical).unwrap().config;
+    super::coordination::command(&historical, &["writer", "commit"]);
+    let (_, prior) = super::coordination::publication(&historical).await;
+    assert_eq!(
+        prior.retrieval_policy_digest,
+        old.namespace.retrieval_digest()
+    );
+    assert!(
+        fyrr_reader::search::PreparedReader::open(&old)
+            .await
+            .is_ok()
+    );
+    assert!(matches!(
+        fyrr_reader::search::PreparedReader::open(&original).await,
+        Err(fyrr_reader::ReaderError::IncompatibleIndex)
+    ));
+    super::coordination::command(&config, &["writer", "commit"]);
+    let (_, updated) = super::coordination::publication(&config).await;
+    assert_eq!(
+        updated.retrieval_policy_digest,
+        original.namespace.retrieval_digest()
+    );
+    assert_ne!(
+        updated.retrieval_policy_digest,
+        prior.retrieval_policy_digest
+    );
+    assert_eq!(updated.embedding, prior.embedding);
+    assert!(updated.envelope_ids.is_empty());
+    assert!(
+        fyrr_reader::search::PreparedReader::open(&original)
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        super::coordination::command(&config, &["writer", "verify"])["verified"],
+        true
+    );
     std::fs::remove_dir_all(root).unwrap();
 }

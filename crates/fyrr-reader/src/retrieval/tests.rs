@@ -22,8 +22,8 @@ fn composition_cases() {
             vec![row("a", "x", "1", 4.0), row("b", "y", "1", 4.0)],
             vec![row("a", "x", "2", 9.0)],
             Composition::default(),
-            Ok(vec![("a", "x", "2"), ("b", "y", "1")]),
-            vec![0.375, 0.125],
+            Ok(vec![("a", "x", "1"), ("b", "y", "1")]),
+            vec![0.25, 0.25],
         ),
         (
             "source cap and unique document slots",
@@ -125,7 +125,12 @@ fn composition_cases() {
             );
         }
     }
-    for (weight, first) in [(1.0, "dense"), (0.0, "lexical"), (0.5, "dense")] {
+    for (weight, first) in [
+        (1.0, "dense"),
+        (0.0, "lexical"),
+        (0.25, "lexical"),
+        (0.5, "dense"),
+    ] {
         let dense = vec![row("a", "dense", "0", 2.0), row("a", "shared", "0", 1.0)];
         let lexical = vec![row("b", "lexical", "0", 2.0), row("a", "shared", "0", 1.0)];
         let config = Composition {

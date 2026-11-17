@@ -763,7 +763,7 @@ async fn tools_agent_multiquery_text_and_fetch_list_on_storage() {
         &stale,
         text.replace(
             "name = \"dense-fixture\"",
-            "name = \"dense-fixture\"\nretrieval = { dense_weight = 0.5 }",
+            "name = \"dense-fixture\"\nretrieval = { dense_weight = 0.25, lexical_candidates = 50 }",
         ),
     )
     .unwrap();

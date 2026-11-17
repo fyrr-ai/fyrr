@@ -9,6 +9,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- Default fusion weights favour the dense lane more (dense_weight 0.5,
+  lexical_candidates 200). Configuration schema 4.0 records the new defaults;
+  dense candidates and rescoring are unchanged. Existing publications retain
+  their policy digest: pin `dense_weight = 0.25` and `lexical_candidates = 50`
+  to keep it, or run `fyrr writer commit` with the new settings before starting
+  readers that use them. A policy mismatch is refused with `incompatible_index`.
 - MCP contract 3.0 removes query embedding cache-hit and provider-call
   counters and provider-stage timing from responses to prevent disclosure of
   shared cache activity; search responses also suppress explicit durations.

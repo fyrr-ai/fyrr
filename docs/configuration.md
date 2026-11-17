@@ -18,6 +18,12 @@ rejected, and error messages name the key path without quoting a value.
 `[embedding]`, `[identity]` and `[[sources]]`; the keys under
 [Advanced tuning](tuning.md#advanced-tuning) are best left at their defaults.
 
+The default `[namespace.retrieval]` policy gives the dense lane weight `0.5`
+and retains `200` lexical candidates and `75` dense candidates per query.
+Dense rescoring stays in `legacy` mode. These settings enter the published
+retrieval-policy digest; see [upgrades](operations.md#upgrades) when changing
+an existing deployment from the previous defaults.
+
 ## Secrets
 
 A secret is always a reference to an environment variable:
@@ -84,7 +90,7 @@ Use local storage for one host and user:
   fresh namespace on the other storage.
 
 See [local storage mechanics](architecture.md#local-storage) for coordination,
-cleanup and mirror behavior. The configuration schema is revision `3.0`.
+cleanup and mirror behavior. The configuration schema is revision `4.0`.
 
 ## `[embedding]`
 

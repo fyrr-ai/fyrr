@@ -98,10 +98,19 @@ and cursors; each step is idempotent, so an interrupted purge is run again.
 
 ## Upgrades
 
-The current configuration schema is `3.0`, the prepared-envelope and
+The current configuration schema is `4.0`, the prepared-envelope and
 rejection contracts are `4.0`, and content manifests and serving heads are
 `3.0`. Embedding settings are required even for the default BGE-M3 model.
 Republish older namespaces before using this build.
+
+Configuration schema `4.0` changes the default retrieval policy to
+`dense_weight = 0.5` and `lexical_candidates = 200`. An omitted setting now
+uses that value, so the effective policy digest changes. A reader using the
+new defaults refuses a publication using the previous defaults with
+`incompatible_index`. Run `fyrr writer commit` with the updated configuration
+to publish the new policy, then use the same settings in readers and writers.
+To retain the previous policy and its digest, explicitly set both
+`dense_weight = 0.25` and `lexical_candidates = 50` under `[namespace.retrieval]`.
 
 Contracts carry `major.minor` versions; a new minor reads older data. These
 changes need a fresh namespace instead: a new contract major, and any change

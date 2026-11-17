@@ -108,9 +108,9 @@
           "$ref": "#/$defs/RetrievalConfig",
           "description": "Candidate depths, fusion weight and batched output bounds.",
           "default": {
-            "dense_weight": 0.25,
+            "dense_weight": 0.5,
             "dense_candidates": 75,
-            "lexical_candidates": 50,
+            "lexical_candidates": 200,
             "source_cap": 2,
             "max_documents": 75
           }
@@ -263,7 +263,7 @@
           "format": "double",
           "minimum": 0,
           "maximum": 1,
-          "default": 0.25
+          "default": 0.5
         },
         "dense_candidates": {
           "type": "integer",
@@ -277,7 +277,7 @@
           "format": "uint",
           "minimum": 1,
           "maximum": 200,
-          "default": 50
+          "default": 200
         },
         "source_cap": {
           "type": "integer",
@@ -296,7 +296,7 @@
           "default": 75
         }
       },
-      "description": "Retrieval policy; explicit defaults retain the legacy policy digest."
+      "description": "Retrieval policy bound into each publication's ranking identity."
     },
     "RescoreDepth": {
       "oneOf": [
@@ -1321,5 +1321,5 @@
       "description": "When each of a source's syncs is due."
     }
   },
-  "x-fyrr-schema-version": "3.0"
+  "x-fyrr-schema-version": "4.0"
 }

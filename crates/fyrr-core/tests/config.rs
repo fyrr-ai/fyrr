@@ -926,25 +926,53 @@ fn composition_is_bounded_defaulted_and_bound_into_policy_identity() {
 #[test]
 fn retrieval_config_bounds_and_legacy_digest() {
     let base = parse(MINIMAL).unwrap();
+    assert!(errors(&base).is_empty());
+    let retrieval = &base.config.namespace.retrieval;
+    assert_eq!(retrieval.dense_weight, 0.5);
+    assert_eq!(retrieval.lexical_candidates, 200);
+    assert_eq!(retrieval.dense_candidates, 75);
+    assert_eq!(
+        retrieval.rescore_depth,
+        fyrr_core::config::RescoreDepth::Legacy
+    );
+    assert_eq!(
+        retrieval.rescore_depth.initial(retrieval.dense_candidates),
+        300
+    );
+    assert_eq!(
+        retrieval.rescore_depth.maximum(retrieval.dense_candidates),
+        1200
+    );
     let legacy = serde_json::json!([
         "slice2:cosine:ivf-rq1:f16:550:training256:logistic-z:population:lex.75:dense.25:source2-soft-per-bucket:lex50:dense75:p1:1200:phrase0",
         base.config.namespace.fts_settings(),
         base.config.namespace.composition
     ]);
+    let legacy_digest = fyrr_core::limits::digest(legacy.to_string().as_bytes());
+    let historical = parse(&format!(
+        "{MINIMAL}\n[namespace.retrieval]\ndense_weight=0.25\nlexical_candidates=50\n"
+    ))
+    .unwrap();
+    assert!(errors(&historical).is_empty());
     assert_eq!(
-        base.config.namespace.retrieval_digest(),
-        fyrr_core::limits::digest(legacy.to_string().as_bytes())
+        historical.config.namespace.retrieval_digest(),
+        legacy_digest
     );
-    let explicit = parse(&format!("{MINIMAL}\n[namespace.retrieval]\ndense_weight=0.25\ndense_candidates=75\nlexical_candidates=50\nsource_cap=2\nmax_documents=75\n")).unwrap();
+    assert_ne!(base.config.namespace.retrieval_digest(), legacy_digest);
+    let explicit = parse(&format!("{MINIMAL}\n[namespace.retrieval]\ndense_weight=0.5\ndense_candidates=75\nlexical_candidates=200\nsource_cap=2\nmax_documents=75\n")).unwrap();
     assert!(errors(&explicit).is_empty());
+    assert_eq!(
+        base.config.namespace.retrieval,
+        explicit.config.namespace.retrieval
+    );
     assert_eq!(
         base.config.namespace.retrieval_digest(),
         explicit.config.namespace.retrieval_digest()
     );
     for (field, good) in [
-        ("dense_weight", "0.5"),
+        ("dense_weight", "0.25"),
         ("dense_candidates", "1"),
-        ("lexical_candidates", "200"),
+        ("lexical_candidates", "50"),
         ("source_cap", "0"),
         ("max_documents", "320"),
     ] {
@@ -960,6 +988,17 @@ fn retrieval_config_bounds_and_legacy_digest() {
         assert_error(
             &format!("[namespace.retrieval]\ndense_weight={bad}"),
             "namespace.retrieval.dense_weight",
+        );
+    }
+    for (field, bad) in [
+        ("lexical_candidates", "0"),
+        ("lexical_candidates", "201"),
+        ("dense_candidates", "0"),
+        ("dense_candidates", "76"),
+    ] {
+        assert_error(
+            &format!("[namespace.retrieval]\n{field}={bad}"),
+            &format!("namespace.retrieval.{field}"),
         );
     }
 }
