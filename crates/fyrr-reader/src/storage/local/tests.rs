@@ -1394,6 +1394,9 @@ fn local_store_waiter_across_delete_and_recreate_acts_on_the_new_object() {
         );
         // The waiter has the first inode open and has not locked it yet.
         reached(&marker, &mut waiter);
+        // However long the writes below take, the waiter spends none of that
+        // time waiting for a lock, so its lock wait does not run out.
+        std::thread::sleep(LOCK_WAIT + Duration::from_secs(1));
         store.delete_blocking(&object(&store)).unwrap();
         let second = recreate.then(|| {
             put(&store, b"second", PutMode::Create).unwrap();
