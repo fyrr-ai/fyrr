@@ -92,7 +92,7 @@
         "number": "04",
         "label": "Ingest & embeddings",
         "title": "Before the first question.",
-        "description": "Fresh index and vector cache. Timing includes preprocessing, embeddings, publication and search readiness; installation is excluded."
+        "description": "Fresh index and vector cache. Submission-to-searchable wall time ends when every accepted document is searchable. Coverage and native rejections are disclosed; throughput uses accepted documents. Setup and installation are excluded."
       },
       {
         "id": "quality",
@@ -742,7 +742,7 @@
       {
         "id": "story-ingest",
         "title": "Indexes fast.",
-        "description": "Time to index the 20,000 documents, from a fresh index and vector cache until searchable. Lower wall time is better; installation is excluded. Embedding cost is reported separately.",
+        "description": "Submit the same 20,000 documents to each product; time until every accepted document is searchable. Accepted and rejected counts stay visible. Lower wall time is better; setup and installation are excluded. Embedding cost is reported separately.",
         "group": "ingest",
         "metrics": [
           "ingest_wall_s"

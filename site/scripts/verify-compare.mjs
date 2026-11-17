@@ -70,6 +70,13 @@ try {
     assert.equal(await page.locator('.score-row:visible .score-cell[data-score-metric="ingest_wall_s"] .score-rate').count(), results.systems.filter(system => !system.variant || system.variant === 'default').length, 'Every default row exposes ingest throughput');
     assert.equal(await page.locator('#story-ingest .metric-panel').count(), 1, 'Ingest story has one wall-time chart');
     assert.equal(await page.locator('#story-ingest .ingest-cost').count(), results.systems.filter(system => !system.variant || system.variant === 'default').length, 'Embedding cost is a secondary line for each default product');
+    for (const system of results.systems.filter(system => !system.variant || system.variant === 'default')) {
+      const coverage = system.ingest_coverage;
+      if (!coverage || !['submitted', 'accepted', 'rejected'].every(key => Number.isInteger(coverage[key]))) continue;
+      const label = `${coverage.accepted.toLocaleString('en')} / ${coverage.submitted.toLocaleString('en')} accepted · ${coverage.rejected.toLocaleString('en')} rejected`;
+      assert.equal(await page.locator(`.score-row[data-system="${system.id}"] .score-coverage`).textContent(), label);
+      assert.equal(await page.locator(`#story-ingest .chart-row[data-system="${system.id}"] .ingest-coverage`).textContent(), label, 'Accepted coverage must remain prominent next to ingest time');
+    }
     const suffix = `${width}${motion === 'reduce' ? '-reduced' : ''}`;
     if (width === 390) {
       const last = await page.locator('.score-row:visible').last().boundingBox();

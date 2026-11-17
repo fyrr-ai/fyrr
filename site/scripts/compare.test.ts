@@ -185,6 +185,34 @@ test('ingest story stacks only exposed elapsed stages within total wall time', (
   data.website.metrics.ingest_preprocessing_seconds.unit = 'ms';
   assert.throws(() => parseResults(data), /ingest stages must be elapsed seconds/);
 });
+test('ingest discloses accepted coverage and rejects inconsistent rejection counts', () => {
+  const data = structuredClone(fixture);
+  const system = data.systems[0];
+  system.ingest_coverage = { submitted: 20_000, accepted: 19_999, rejected: 1, rejected_documents: [{ id: 'rejected-test-document', reason: 'unsupported input' }] };
+  system.metrics.ingest_wall_s = { status: 'measured', value: 1200, unit: 'seconds', n: 1 };
+  system.metrics.ingest_docs_per_min = { status: 'measured', value: 999.95, unit: 'docs/min', n: 1 };
+  data.website.metrics.ingest_coverage_fraction = { key: 'ingest_coverage_fraction', label: 'Accepted ingest coverage', unit: 'fraction', group: 'ingest', direction: 'higher_is_better', tier: 'primary', ci: null };
+  system.metrics.ingest_coverage_fraction = { status: 'measured', value: .99995, unit: 'fraction', n: 1 };
+  data.systems[1].metrics.ingest_coverage_fraction = { status: 'measured', value: 1, unit: 'fraction', n: 1 };
+  const parsed = parseResults(data);
+  const expected = '19,999 / 20,000 accepted · 1 rejected';
+  assert(renderScoreboard(parsed).includes(expected));
+  assert(renderScoreboard(parsed).includes('999.95 docs/min'));
+  const story = renderStories(parsed);
+  assert(story.includes(expected));
+  assert(story.includes('until every accepted document is searchable'));
+  assert(story.includes('Coverage n/e'));
+  const coverage = renderMetric(parsed, 'ingest_coverage_fraction');
+  assert(coverage.includes('99.995%'));
+  assert(coverage.includes('-0.005 pp'));
+  system.ingest_coverage.accepted = 20_000;
+  assert.throws(() => parseResults(data), /ingest coverage must reconcile/);
+  system.ingest_coverage.accepted = 19_999;
+  system.ingest_coverage.rejected_documents = [];
+  assert.throws(() => parseResults(data), /ingest coverage must reconcile/);
+  system.ingest_coverage = { submitted: null, accepted: null, rejected: null, rejected_documents: [] };
+  assert(renderStories(parseResults(data)).includes('Coverage n/e'));
+});
 test('deploy guard rejects draft even when the local preview opt-in is set', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fyrr-site-draft-'));
   try {
