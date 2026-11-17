@@ -126,9 +126,19 @@ try {
         assert.equal(await page.locator(`[data-select-system][value="${key}"]`).isChecked(), true);
         if (system.default_ingest_baseline?.projected_20000_seconds != null) assert.match(await page.locator(`.score-row[data-system="${key}"] .default-ingest-baseline`).textContent(), /PROJECTED.*not completed/);
       }
+      if (system.background_activity?.enrichment_active) {
+        assert.match(await page.locator(`.score-row[data-system="${key}"] .background-activity`).innerText(), /Background document enrichment active.*Enrichment completed:/);
+      }
       const coverage = system.ingest_coverage;
       if (!coverage || !['submitted', 'accepted', 'rejected'].every(key => Number.isInteger(coverage[key]))) continue;
-      const label = `${coverage.accepted.toLocaleString('en')} / ${coverage.submitted.toLocaleString('en')} accepted · ${coverage.rejected.toLocaleString('en')} rejected`;
+      const partial = Number.isInteger(coverage.searchable) && Number.isInteger(coverage.pending);
+      const label = `${coverage.accepted.toLocaleString('en')} / ${coverage.submitted.toLocaleString('en')} accepted · ${coverage.rejected.toLocaleString('en')} rejected${partial ? ` · ${coverage.searchable.toLocaleString('en')} / ${coverage.submitted.toLocaleString('en')} searchable · ${coverage.pending.toLocaleString('en')} pending` : ''}`;
+      if (partial && coverage.pending > 0) {
+        assert.match(await page.locator(`.score-row[data-system="${key}"] .partial-coverage`).innerText(), /Partial searchability/);
+        for (const metric of ['recall_at_10', 'first_ask_c1_p50_ms']) {
+          if (system.metrics[metric]?.status === 'measured') assert.notEqual(await page.locator(`.score-row[data-system="${key}"] [data-score-metric="${metric}"] .score-value`).innerText(), 'n/e', 'Partial input coverage must not hide complete measured scores');
+        }
+      }
       assert.equal(await page.locator(`.score-row[data-system="${key}"] .score-coverage`).textContent(), label);
       assert.equal(await page.locator(`#story-ingest .chart-row[data-system="${key}"] .ingest-coverage`).textContent(), label, 'Accepted coverage must remain prominent next to ingest time');
     }
