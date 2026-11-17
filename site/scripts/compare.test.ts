@@ -262,7 +262,7 @@ test('sized C8 variant stays separate from default wins and out of unmeasured tr
 test('an authorized completed alternative represents its product once with visible baseline caveats', () => {
   const data = structuredClone(fixture);
   const original = data.systems.find(system => system.id === 'pipeshub')!;
-  const parallel = { ...structuredClone(original), variant: 'parallel-partitions', headline_note: 'FAIR_SCHEDULING_PARALLEL_PARTITIONS=true, non-default, source-documented; default 20k ingest not completed', default_ingest_baseline: { docs_per_min: 10, interval_seconds: 60, newly_completed_documents: 10, projected_20000_seconds: 120000 } };
+  const parallel = { ...structuredClone(original), variant: 'parallel-partitions', headline_note: 'FAIR_SCHEDULING_PARALLEL_PARTITIONS=true, non-default, source-documented; default 20k ingest not completed', default_ingest_baseline: { docs_per_min: 10, interval_seconds: 60, newly_completed_documents: 10, projected_20000_seconds: 120000, notes: ['Observed from an intentionally interrupted 1k smoke index; rate sample only.'] } };
   data.variants!['parallel-partitions'] = { label: 'PipesHub parallel partitions', headline: true, systems: ['pipeshub'], replaces_headline_variant: 'default', reranker: null, description: parallel.headline_note, source_url: 'https://github.com/pipeshub-ai/pipeshub-ai/blob/v1.0.0/backend/python/app/services/messaging/config.py#L533' };
   data.systems.push(parallel);
   assert.equal(headlineSystems(parseResults(data)).find(system => system.id === 'pipeshub')?.variant, 'default', 'A planned or incomplete alternative cannot replace the baseline');
@@ -278,6 +278,8 @@ test('an authorized completed alternative represents its product once with visib
   assert(board.includes('FAIR_SCHEDULING_PARALLEL_PARTITIONS=true, non-default'));
   assert(board.includes('10 docs/min observed over 60 s'));
   assert(board.includes('PROJECTED 120,000 s'));
+  assert(board.includes('intentionally interrupted 1k smoke index; rate sample only'));
+  assert.equal(original.metrics.ingest_wall_s.status, 'n/e');
   assert(!board.includes('data-value="120000"'));
   assert(!renderStories(parsed).includes('data-system="pipeshub"'));
   const controls = renderControls(parsed);
