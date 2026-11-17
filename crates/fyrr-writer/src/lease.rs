@@ -116,6 +116,7 @@ pub struct LeaseGuard {
     lease: Lease,
     ttl: Duration,
     state: Mutex<HeldHead>,
+    observed: fyrr_reader::storage::ObservedDurability,
 }
 
 impl LeaseGuard {
@@ -182,6 +183,7 @@ impl LeaseGuard {
                 _ => WriterError::StorageUnavailable,
             })?;
         Ok(Arc::new(Self {
+            observed: fyrr_reader::storage::observed_durability(config)?,
             store,
             path,
             lease,
@@ -225,6 +227,10 @@ impl LeaseGuard {
         self.live(&state)?;
         head.lease = state.head.lease.clone();
         head.schema_version = fyrr_core::publication::PUBLICATION_CONTRACT_VERSION;
+        // The head makes its manifest, policy and identity objects, the
+        // envelopes and rejections they record, and everything those were
+        // derived from reachable. Other processes wrote some of them.
+        self.observed.persist().await?;
         self.write(&mut state, head, HeadWriteStage::Publish).await
     }
 

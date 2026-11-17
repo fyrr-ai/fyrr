@@ -3,10 +3,13 @@
 use std::io::Write;
 use std::path::Path;
 
-fn record(value: serde_json::Value) -> std::io::Result<()> {
+fn record(mut value: serde_json::Value) -> std::io::Result<()> {
     let Some(log) = std::env::var_os("FYRR_TEST_SYNC_LOG") else {
         return Ok(());
     };
+    // Which process flushed matters: a publisher must persist what it
+    // observed itself, not rely on the writer having got there first.
+    value["pid"] = std::process::id().into();
     let mut line = serde_json::to_vec(&value).map_err(std::io::Error::other)?;
     line.push(b'\n');
     std::fs::OpenOptions::new()
@@ -19,6 +22,10 @@ pub(crate) fn synced(path: &Path, directory: bool) -> std::io::Result<()> {
 }
 pub(crate) fn unlinked(path: &Path) -> std::io::Result<()> {
     record(serde_json::json!({"event":"unlink","path":path}))
+}
+/// A create is about to report that its object already exists.
+pub(crate) fn existing(path: &Path) -> std::io::Result<()> {
+    record(serde_json::json!({"event":"exists","path":path}))
 }
 /// A mutation is about to report success: `put`, `delete`, a `deferred`
 /// delete of a cleanup batch, or the `cleanup` batch itself.
@@ -68,6 +75,14 @@ pub(crate) fn publishing(
             }
         }
     }
+    // The envelopes a manifest records as applied were written by workers.
+    // They are owed when the head makes the manifest reachable.
+    let mut envelopes = Vec::new();
+    if let Some(ids) = value["envelope_ids"].as_array() {
+        for id in ids.iter().filter_map(serde_json::Value::as_str) {
+            envelopes.push(namespace.join("envelopes").join(format!("{id}.json")));
+        }
+    }
     if target.file_name().is_some_and(|name| name == "head.json") {
         for pointer in ["content", "policy", "identity"] {
             for field in ["manifest", "object"] {
@@ -78,6 +93,6 @@ pub(crate) fn publishing(
         }
     }
     record(
-        serde_json::json!({"event":"publish","path":target,"staged":staged,"references":references}),
+        serde_json::json!({"event":"publish","path":target,"staged":staged,"references":references,"envelopes":envelopes}),
     )
 }

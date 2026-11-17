@@ -254,6 +254,31 @@ impl LocalStore {
         Ok(())
     }
 
+    /// Flushes every control directory of `namespace` and the directories
+    /// above it. Control objects are flushed before they get a name, so a
+    /// durable directory entry makes the whole object durable; that covers
+    /// every control object visible when this starts, whoever wrote it. The
+    /// dataset is Lance's and has [`Self::persist_native`].
+    pub(super) async fn persist_control(&self, namespace: Path) -> Result<()> {
+        self.blocking(move |store| {
+            let path = store.inner.path_to_filesystem(&namespace)?;
+            let names = store.names(&namespace)?;
+            let chain = match store.chain(&names, false) {
+                Ok(chain) => chain,
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(failure(&path, error)),
+            };
+            let directory = chain.last().expect("the chain starts at the root");
+            sync_below(directory, Some(NamespaceLayout::DATASET_NAME))
+                .map_err(|error| failure(&path, error))?;
+            for directory in chain.iter().rev() {
+                directory.sync().map_err(|error| failure(&path, error))?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
     /// Only maintenance and purge opt into deferred directory durability.
     pub(super) fn cleanup_batch(mut self) -> Self {
         self.cleanup_directories = Some(Arc::new(std::sync::Mutex::new(Default::default())));
@@ -485,6 +510,7 @@ impl LocalStore {
         }
         match (&mode, &current) {
             (PutMode::Create, Some(_)) => {
+                self.settle_existing(place).map_err(io)?;
                 return Err(Error::AlreadyExists {
                     path,
                     source: "object exists".into(),
@@ -532,14 +558,23 @@ impl LocalStore {
         super::test_store::sync::publishing(&place.path, &stage.path, payload).map_err(io)?;
         let (stages, staged, name) = (&stage.directory, stage.name.as_str(), place.name.as_str());
         if matches!(mode, PutMode::Create) {
-            rustix::fs::linkat(
+            match rustix::fs::linkat(
                 &stages.file,
                 staged,
                 &parent.file,
                 name,
                 rustix::fs::AtFlags::empty(),
-            )
-            .map_err(|error| io(error.into()))?;
+            ) {
+                Ok(()) => {}
+                Err(rustix::io::Errno::EXIST) => {
+                    self.settle_existing(place).map_err(io)?;
+                    return Err(Error::AlreadyExists {
+                        path,
+                        source: "object exists".into(),
+                    });
+                }
+                Err(error) => return Err(io(error.into())),
+            }
             // Publication succeeded, but a cleanup error still fails the call.
             stages.unlink(staged).map_err(io)?;
         } else {
@@ -554,6 +589,25 @@ impl LocalStore {
             version: None,
             extensions: Default::default(),
         })
+    }
+
+    /// Before a create reports that its object exists: callers treat that
+    /// answer as "stored", but the writer that won may not have flushed the
+    /// name yet. Flush the object and every directory down to it, so the
+    /// answer holds after a power loss as well.
+    fn settle_existing(&self, place: &Place) -> std::io::Result<()> {
+        match place.parent().object(&place.name) {
+            Ok((file, _)) => sync_file(&file, &place.path)?,
+            // Deleted since; it did exist when this create looked.
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        for directory in place.chain.iter().rev() {
+            directory.sync()?;
+        }
+        #[cfg(feature = "test-store")]
+        super::test_store::sync::existing(&place.path)?;
+        Ok(())
     }
 
     /// The private staging directory of the root; `create` makes it.
@@ -897,6 +951,38 @@ impl LocalStore {
                 source: Box::new(error),
             })?
     }
+}
+
+/// Flushes every directory below `directory`, deepest first, except the
+/// entry `skip` of `directory` itself.
+fn sync_below(directory: &Directory, skip: Option<&str>) -> std::io::Result<()> {
+    for entry in rustix::fs::Dir::read_from(&directory.file)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if matches!(name.as_str(), "." | "..") || skip == Some(name.as_str()) {
+            continue;
+        }
+        let file = match rustix::fs::openat(
+            &directory.file,
+            name.as_str(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(file) => File::from(file),
+            // Not a directory, a symlink, or removed since the read.
+            Err(rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP | rustix::io::Errno::NOENT) => {
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let below = Directory {
+            file,
+            path: directory.path.join(&name),
+        };
+        sync_below(&below, None)?;
+        below.sync()?;
+    }
+    Ok(())
 }
 
 /// Polls for an exclusive `flock` on `file` for at most [`LOCK_WAIT`].

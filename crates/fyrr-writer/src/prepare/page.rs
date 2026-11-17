@@ -144,6 +144,7 @@ pub(super) async fn content_page(
         .await?;
     }
     lease.state().await?;
+    lease.persist_observed().await?;
     put_immutable(store.as_ref(), &envelope_path, &envelope).await?;
     if advances_cursor {
         state.cursor = Some(batch.cursor.end.clone());
