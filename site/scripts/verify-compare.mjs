@@ -1,5 +1,6 @@
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
+import { gzipSync } from 'node:zlib';
 import { mkdir, readFile } from 'node:fs/promises';
 
 const base = process.env.SITE_URL ?? 'http://127.0.0.1:8486';
@@ -39,11 +40,27 @@ async function assertDiagnosticsUnranked(page) {
   assert.deepEqual(errors, [], 'Diagnostics must never gain a ratio or winner label, including after filtering');
 }
 try {
+  const staticContext = await browser.newContext({ viewport: { width: 390, height: 960 }, javaScriptEnabled: false });
+  const staticPage = await staticContext.newPage();
+  const staticRequests = [];
+  staticPage.on('request', request => { if (/notebook-/.test(request.url())) staticRequests.push(request.url()); });
+  await staticPage.goto(`${base}/compare`);
+  assert.equal(await staticPage.locator('.score-row').count(), new Set(results.systems.map(system => system.id)).size);
+  assert(await staticPage.locator('#story-speed-c1 .primary-value').first().isVisible());
+  assert.equal(await staticPage.locator('[data-detail-metric]').count(), 0);
+  assert.equal(staticRequests.length, 0);
+  await staticPage.screenshot({ path: `${report}/static-390.png` });
+  await staticContext.close();
+  cases++;
+  console.log('PASS static 390px: overview and story charts complete without JavaScript; no notebook transfer');
   for (const [width, motion] of [[1440, 'no-preference'], [390, 'no-preference'], [390, 'reduce']]) {
     const context = await browser.newContext({ viewport: { width, height: 960 }, reducedMotion: motion, permissions: ['clipboard-read', 'clipboard-write'] });
     const page = await context.newPage();
+    if (motion === 'reduce') await page.addInitScript(() => { window.DecompressionStream = undefined; });
     page.setDefaultNavigationTimeout(Number(process.env.SITE_BROWSER_TIMEOUT_MS ?? 30_000));
     const errors = [];
+    const notebookRequests = [];
+    page.on('request', request => { if (/notebook-.*\.json(?:\.gz)?$/.test(new URL(request.url()).pathname)) notebookRequests.push(request.url()); });
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
     const response = await page.goto(`${base}/compare`);
@@ -70,8 +87,10 @@ try {
       assert.equal(await page.locator('#lambda-projection a[href="/docs/lambda"]').count(), 1);
     }
     const keys = new Set(results.systems.flatMap(system => Object.keys(system.metrics)));
-    const covered = await page.locator('#results .metric-panel').evaluateAll(panels => [...new Set(panels.flatMap(panel => [panel.dataset.metric, panel.dataset.companion].filter(Boolean)))]);
-    assert.deepEqual(covered.sort(), [...keys].sort());
+    assert.equal(await page.locator('#results').count(), 0, 'Notebook charts are absent from the initial HTML');
+    assert.equal(await page.locator('[data-detail-metric]').count(), 0, 'No per-question rows in the first response');
+    assert.equal(notebookRequests.length, 0, 'Opening the page and story views must not fetch the notebook');
+    assert(await page.locator('#story-speed-c1 .metric-panel').first().isVisible(), 'Static story charts remain complete');
     assert.equal(await page.locator('a[aria-current="page"]').textContent(), 'Compare');
     assert(await page.locator('nav[aria-label="Main"] a[href="/compare"]').isVisible());
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Page overflow at ${width}`);
@@ -173,7 +192,20 @@ try {
     if (results.website.lambda_projection) await page.locator('#lambda-projection').screenshot({ path: `${report}/lambda-${suffix}.png`, style: elementShotStyle });
     await page.locator('#products').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await page.screenshot({ path: `${report}/products-${suffix}.png` });
+    assert.equal(notebookRequests.length, 0, 'Story interactions do not load per-question data');
+    if (width === 1440) await page.route('**/notebook-*.json.gz', route => route.fulfill({ status: 200, contentType: 'application/gzip', body: gzipSync('{"version":0}') }));
     await page.locator('#details > summary').click();
+    if (width === 1440) {
+      await page.locator('#details[data-load-state="failed"]').waitFor();
+      assert(await page.locator('#notebook-retry').isVisible());
+      assert.equal(await page.locator('#results').count(), 0, 'An invalid payload must not masquerade as missing scores');
+      await page.unroute('**/notebook-*.json.gz');
+      await page.locator('#notebook-retry').click();
+    }
+    await page.locator('#details[data-load-state="ready"]').waitFor();
+    assert.equal(notebookRequests.length, width === 1440 ? 2 : 1, 'One successful notebook request, with explicit retry after failure');
+    const covered = await page.locator('#results .metric-panel').evaluateAll(panels => [...new Set(panels.flatMap(panel => [panel.dataset.metric, panel.dataset.companion].filter(Boolean)))]);
+    assert.deepEqual(covered.sort(), [...keys].sort());
     await page.locator('#detail').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await page.screenshot({ path: `${report}/details-${suffix}.png` });
     if (results.synthetic_design_preview) {
@@ -184,6 +216,10 @@ try {
       await panel.scrollIntoViewIfNeeded();
       await assertBarWidths(page);
     }
+    const loadedCount = notebookRequests.length;
+    await page.locator('#details > summary').click();
+    await page.locator('#details > summary').click();
+    assert.equal(notebookRequests.length, loadedCount, 'Reopening the notebook reuses the loaded data');
     const c8 = page.locator('#tab-first_ask_c8_p50_ms');
     await c8.click();
     assert.equal(await c8.getAttribute('aria-selected'), 'true');
@@ -204,6 +240,7 @@ try {
     await page.getByRole('button', { name: 'Copy selection link' }).click();
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), await page.locator('.permalink input').inputValue());
     await page.reload();
+    await page.locator('#details[data-load-state="ready"]').waitFor();
     assert.equal(await page.locator('[data-select-system][value="fyrr"]').isChecked(), false, 'Permalink restores systems');
     assert.equal(await page.locator('#tab-first_ask_c8_p50_ms').getAttribute('aria-selected'), 'true', 'Permalink restores concurrency');
     assert.equal(await page.locator('#story-speed-tab-c8').getAttribute('aria-selected'), 'true', 'Permalink restores paired story concurrency');

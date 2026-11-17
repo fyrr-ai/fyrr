@@ -13,11 +13,10 @@
   }
   restore(systemInputs, 'systems');
   restore(metricInputs, 'metrics');
-  var detailMetric = document.getElementById('detail-metric');
-  var detailSearch = document.getElementById('detail-search');
-  if (initial.searchParams.has('detail_metric') && Array.from(detailMetric.options).some(function (option) { return option.value === initial.searchParams.get('detail_metric'); })) detailMetric.value = initial.searchParams.get('detail_metric');
-  detailSearch.value = initial.searchParams.get('find') || '';
+  var detailMetric = null, detailSearch = null;
   var deepDetails = document.getElementById('details');
+  var provenance = document.getElementById('provenance');
+  var notebookRequest = null, notebookReady = false;
   deepDetails.open = initial.searchParams.get('details') === 'open' || initial.hash.startsWith('#detail');
   function selected(inputs) { return inputs.filter(function (input) { return input.checked; }).map(function (input) { return input.value; }); }
   function activate(tab) {
@@ -29,21 +28,24 @@
       document.getElementById(item.getAttribute('aria-controls')).hidden = !active;
     });
   }
-  document.querySelectorAll('[role="tablist"]').forEach(function (list) {
-    var tabs = Array.from(list.querySelectorAll('[role="tab"]'));
-    tabs.forEach(function (tab) {
-      if (initial.searchParams.get(list.getAttribute('aria-label')) === tab.id) activate(tab);
-      tab.addEventListener('click', function () { activate(tab); update(); });
-      tab.addEventListener('keydown', function (event) {
-        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-        event.preventDefault();
-        var visible = tabs.filter(function (item) { return !item.hidden; });
-        var index = visible.indexOf(tab);
-        var next = event.key === 'Home' ? visible[0] : event.key === 'End' ? visible[visible.length - 1] : visible[(index + (event.key === 'ArrowRight' ? 1 : -1) + visible.length) % visible.length];
-        if (next) { activate(next); next.focus(); update(); }
+  function bindTabs(root) {
+    root.querySelectorAll('[role="tablist"]').forEach(function (list) {
+      var tabs = Array.from(list.querySelectorAll('[role="tab"]'));
+      tabs.forEach(function (tab) {
+        if (new URL(location.href).searchParams.get(list.getAttribute('aria-label')) === tab.id) activate(tab);
+        tab.addEventListener('click', function () { activate(tab); update(); });
+        tab.addEventListener('keydown', function (event) {
+          if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+          event.preventDefault();
+          var visible = tabs.filter(function (item) { return !item.hidden; });
+          var index = visible.indexOf(tab);
+          var next = event.key === 'Home' ? visible[0] : event.key === 'End' ? visible[visible.length - 1] : visible[(index + (event.key === 'ArrowRight' ? 1 : -1) + visible.length) % visible.length];
+          if (next) { activate(next); next.focus(); update(); }
+        });
       });
     });
-  });
+  }
+  bindTabs(document);
   function equalValue(value, other) { return Math.abs(value - other) <= 8 * Number.EPSILON * Math.max(1, Math.abs(value), Math.abs(other)); }
   function ratios(cells, direction, heatmap, unit, metricKey) {
     var metadata = results.website.metrics[metricKey];
@@ -54,7 +56,7 @@
       return { cell: cell, data: metric ? {
         status: metric.status, value: metric.value, n: metric.n, expected: metric.expected,
         missing: metric.missing, attempted: metric.attempted,
-        samples: metric.sample_ids && metric.sample_ids.length ? metric.sample_ids.slice().sort().join('\n') : ''
+        samples: metric.sample_set || (metric.sample_ids && metric.sample_ids.length ? metric.sample_ids.slice().sort().join('\n') : '')
       } : {
         status: cell.dataset.status, value: cell.dataset.value === '' ? null : Number(cell.dataset.value),
         n: Number(cell.dataset.n), expected: cell.dataset.expected === '' ? null : Number(cell.dataset.expected),
@@ -100,7 +102,7 @@
       var system = results.systems.find(function (item) { return (!item.variant || item.variant === 'default' ? item.id : item.id + '@' + item.variant) === cell.dataset.system; });
       var prefixes = system && results.variants && results.variants[system.variant || 'default'] && results.variants[system.variant || 'default'].metric_prefixes;
       var panel = cell.closest('[data-metric]');
-      var key = panel ? panel.dataset.metric : cell.closest('.detail-table') ? detailMetric.value : null;
+      var key = panel ? panel.dataset.metric : cell.closest('.detail-table') && detailMetric ? detailMetric.value : null;
       cell.hidden = !systems.includes(cell.dataset.system) || Boolean(prefixes && key && !prefixes.some(function (prefix) { return key.startsWith(prefix); }));
     });
     document.querySelectorAll('[data-product]').forEach(function (cell) { cell.hidden = !systems.some(function (id) { return id.split('@')[0] === cell.dataset.product; }); });
@@ -149,8 +151,8 @@
     if (systems.join(',') === systemDefaults.join(',')) url.searchParams.delete('systems'); else url.searchParams.set('systems', systems.join(','));
     var defaults = metricInputs.filter(function (input) { return input.defaultChecked; }).map(function (input) { return input.value; });
     if (metrics.join(',') === defaults.join(',')) url.searchParams.delete('metrics'); else url.searchParams.set('metrics', metrics.join(','));
-    if (detailMetric.value !== detailMetric.options[0].value) url.searchParams.set('detail_metric', detailMetric.value); else url.searchParams.delete('detail_metric');
-    if (detailSearch.value) url.searchParams.set('find', detailSearch.value); else url.searchParams.delete('find');
+    if (detailMetric && detailMetric.value !== detailMetric.options[0].value) url.searchParams.set('detail_metric', detailMetric.value); else if (detailMetric) url.searchParams.delete('detail_metric');
+    if (detailSearch && detailSearch.value) url.searchParams.set('find', detailSearch.value); else if (detailSearch) url.searchParams.delete('find');
     if (deepDetails.open) url.searchParams.set('details', 'open'); else url.searchParams.delete('details');
     document.querySelectorAll('[role="tablist"]').forEach(function (list) {
       var tabs = Array.from(list.querySelectorAll('[role="tab"]'));
@@ -160,11 +162,77 @@
     history.replaceState(null, '', url);
     document.querySelector('.permalink input').value = url.href;
   }
-  systemInputs.concat(metricInputs).forEach(function (input) { input.addEventListener('change', update); });
-  detailMetric.addEventListener('change', update);
-  detailSearch.addEventListener('input', update);
-  deepDetails.addEventListener('toggle', update);
-  document.querySelectorAll('a[href^="#detail"]').forEach(function (link) { link.addEventListener('click', function () { document.getElementById('details').open = true; }); });
+  async function loadNotebook() {
+    if (notebookReady) return;
+    if (notebookRequest) return notebookRequest;
+    var status = document.getElementById('notebook-status');
+    var message = document.getElementById('notebook-message');
+    var retry = document.getElementById('notebook-retry');
+    status.hidden = false; retry.hidden = true;
+    message.textContent = 'Loading detailed results…';
+    if (provenance.open) document.getElementById('provenance-body').textContent = 'Loading full provenance…';
+    deepDetails.dataset.loadState = 'loading';
+    notebookRequest = (async function () {
+      var compressed = typeof DecompressionStream !== 'undefined';
+      var response = await fetch(compressed ? results.notebook.url : results.notebook.fallback);
+      if (!response.ok) throw new Error('Notebook request failed');
+      var payload;
+      if (compressed) {
+        var bytes = new Uint8Array(await response.arrayBuffer());
+        var body = new Response(bytes);
+        // Fetch may already have decoded a server's Content-Encoding header.
+        if (bytes[0] === 31 && bytes[1] === 139) body = new Response(body.body.pipeThrough(new DecompressionStream('gzip')));
+        payload = await body.json();
+      } else payload = await response.json();
+      if (payload.version !== 1 || typeof payload.html !== 'string' || typeof payload.provenance !== 'string' || !Array.isArray(payload.systems)) throw new Error('Invalid notebook');
+      if (payload.systems.length !== results.systems.length || payload.systems.some(function (run) { return !run.metrics || !results.systems.some(function (system) { return system.id === run.id && (system.variant || 'default') === (run.variant || 'default'); }); })) throw new Error('Mismatched notebook');
+      document.getElementById('notebook-body').innerHTML = payload.html;
+      document.getElementById('provenance-body').innerHTML = payload.provenance;
+      payload.systems.forEach(function (run) {
+        var system = results.systems.find(function (system) { return system.id === run.id && (system.variant || 'default') === (run.variant || 'default'); });
+        system.metrics = run.metrics; system.deferred = false;
+      });
+      detailMetric = document.getElementById('detail-metric');
+      detailSearch = document.getElementById('detail-search');
+      var current = new URL(location.href);
+      if (current.searchParams.has('detail_metric') && Array.from(detailMetric.options).some(function (option) { return option.value === current.searchParams.get('detail_metric'); })) detailMetric.value = current.searchParams.get('detail_metric');
+      detailSearch.value = current.searchParams.get('find') || '';
+      detailMetric.addEventListener('change', update); detailSearch.addEventListener('input', update);
+      bindTabs(document.getElementById('notebook-body'));
+      document.querySelectorAll('#notebook-body .rv').forEach(function (panel) { if (motion.matches) panel.classList.add('is-in'); else reveal.observe(panel); });
+      update();
+      notebookReady = true; status.hidden = true; deepDetails.dataset.loadState = 'ready';
+      if (current.hash.startsWith('#detail')) {
+        var target = document.getElementById(current.hash.slice(1)); if (target) target.scrollIntoView();
+      }
+    })().catch(function () {
+      message.textContent = 'Could not load the detailed results. Retry, refresh this page, or download the results JSON below.';
+      if (provenance.open) {
+        var body = document.getElementById('provenance-body');
+        body.textContent = message.textContent;
+        var button = document.createElement('button'); button.type = 'button'; button.className = 'btn'; button.textContent = 'Retry loading';
+        button.addEventListener('click', loadNotebook); body.appendChild(button);
+      }
+      retry.hidden = false; deepDetails.dataset.loadState = 'failed'; notebookRequest = null; notebookReady = false;
+    });
+    return notebookRequest;
+  }
+  systemInputs.concat(metricInputs).forEach(function (input) { input.addEventListener('change', function () {
+    var system = results.systems.find(function (system) { return (system.variant && system.variant !== 'default' ? system.id + '@' + system.variant : system.id) === input.value; });
+    if (input.checked && system && system.deferred) { deepDetails.open = true; loadNotebook(); }
+    update();
+  }); });
+  deepDetails.addEventListener('toggle', function () { update(); if (deepDetails.open) loadNotebook(); });
+  provenance.addEventListener('toggle', function () { if (provenance.open) loadNotebook(); });
+  document.getElementById('notebook-retry').addEventListener('click', loadNotebook);
+  document.querySelectorAll('a[href^="#detail"]').forEach(function (link) { link.addEventListener('click', function (event) {
+    event.preventDefault(); deepDetails.open = true;
+    loadNotebook().then(function () {
+      var hash = link.dataset.detailTarget || link.getAttribute('href');
+      var target = document.getElementById(hash.slice(1));
+      if (target) { target.scrollIntoView(); history.replaceState(null, '', hash); document.querySelector('.permalink input').value = location.href; }
+    });
+  }); });
   document.getElementById('copy-permalink').addEventListener('click', async function () {
     var input = document.querySelector('.permalink input');
     try { await navigator.clipboard.writeText(input.value); document.getElementById('copy-status').textContent = 'Selection link copied.'; }
@@ -224,4 +292,5 @@
   new ResizeObserver(function () { clearTimeout(timer); timer = setTimeout(draw, 150); }).observe(canvas);
   motion.addEventListener('change', function () { animate(); light(); sea(); });
   document.addEventListener('visibilitychange', function () { animate(); light(); sea(); });
+  if (deepDetails.open || provenance.open) loadNotebook();
 })();

@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readResults, parseResults, assertPublishable, headlineVerdict, headlineSystems, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderDetailView, renderControls, renderLambdaProjection, lambdaProjectionCost, renderMethodology, verifyEvidenceArchive, relativeValue } from '../lib/compare';
+import { readResults, parseResults, assertPublishable, headlineVerdict, headlineSystems, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderDetailView, renderControls, renderLambdaProjection, lambdaProjectionCost, renderMethodology, renderProvenance, clientResults, verifyEvidenceArchive, relativeValue } from '../lib/compare';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -52,6 +53,39 @@ test('evidence downloads require the reviewed local filename, size and digest', 
     (data.benchmark.evidence_archive as any).bytes = 20_000_001;
     assert.throws(() => parseResults(data), /at most 20 MB/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+test('first-frame data contains only chart inputs and retains comparable sample identities', async () => {
+  const data = await readResults();
+  const before = JSON.stringify(data);
+  const initial = clientResults(data, true);
+  const encoded = JSON.stringify(initial);
+  assert(!encoded.includes('sample_ids'));
+  assert(!encoded.includes('footprint'));
+  assert(!encoded.includes('binary_sha256'));
+  assert(!('details' in initial) && !('protocol' in initial));
+  assert(encoded.length < 32_000, 'Inline chart payload has a fixed size budget independent of question count');
+  assert(gzipSync(encoded).length < 5_000);
+  const deferred = initial.systems.filter(system => system.deferred);
+  assert(deferred.length > 0);
+  assert(deferred.every(system => Object.keys(system.metrics).length === 0));
+  const full = clientResults(data);
+  for (const system of full.systems) {
+    const raw = data.systems.find(run => run.id === system.id && run.variant === system.variant)!;
+    for (const [key, metric] of Object.entries(system.metrics)) {
+      assert.equal(metric.value, raw.metrics[key].value);
+      assert.equal(metric.n, raw.metrics[key].n);
+    }
+  }
+  assert.equal(JSON.stringify(data), before, 'Projection never alters canonical results');
+});
+test('large provenance is deferred without losing its explicit download or license notice', () => {
+  const data = structuredClone(fixture);
+  data.systems[0].version = { binary_sha256: 'unique-provenance-test-value' };
+  const initial = renderMethodology(data, true);
+  assert(!initial.includes('unique-provenance-test-value'));
+  assert(initial.includes('id="provenance-body"'));
+  assert(initial.includes('/compare/results.json'));
+  assert(renderProvenance(data).includes('unique-provenance-test-value'));
 });
 test('unavailable metrics have no bars and are never encoded as zero', () => {
   const html = renderMetric(fixture, 'recall_at_10');
