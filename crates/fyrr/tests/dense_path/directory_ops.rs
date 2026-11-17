@@ -635,11 +635,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
         .unwrap();
     }
     let output = directory_command(&commit, Some(&fresh_token().await));
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", report(&output));
     let a = super::identity::artifact(&commit).await.1;
     assert_eq!(a.principals.len(), 1);
     assert_eq!(a.subjects.len(), 1);
@@ -652,7 +648,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
     for _ in 0..4 {
         let before = state(&commit).await;
         let result = directory_command(&commit, Some(&fresh_token().await));
-        assert!(result.status.success());
+        assert!(result.status.success(), "{}", report(&result));
         let next = state(&commit).await;
         assert!(next.freshness.directory > before.freshness.directory);
         assert_eq!(next.identity, before.identity);
@@ -783,11 +779,7 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
     );
     let before = state(&commit).await.freshness.directory;
     let output = directory_command(&commit, Some(&fresh_token().await));
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", report(&output));
     assert_eq!(
         super::identity::artifact(&commit).await.1.principals.len(),
         3400

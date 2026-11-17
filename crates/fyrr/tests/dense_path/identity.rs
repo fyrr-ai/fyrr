@@ -62,11 +62,7 @@ fn import(config: &Path, root: &Path, snapshot: &DirectorySnapshot) -> std::proc
 }
 fn applied(config: &Path, root: &Path, snapshot: &DirectorySnapshot) -> Value {
     let result = import(config, root, snapshot);
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    assert!(result.status.success(), "{}", report(&result));
     serde_json::from_slice(&result.stdout).unwrap()
 }
 
@@ -94,11 +90,7 @@ fn measured_publication(config: &Path, root: &Path, snapshot: &DirectorySnapshot
     let output = import(&proxied, root, snapshot);
     stop.store(true, Ordering::Relaxed);
     drop(thread);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", report(&output));
     let mut receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
     receipt["s3_requests"] = json!(requests.load(Ordering::Relaxed));
     receipt
@@ -602,11 +594,7 @@ async fn identity_directory_keeps_lease_alive_during_slow_storage_on_storage() {
         delayed.load(Ordering::Relaxed),
         "slow storage boundary exercised"
     );
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    assert!(result.status.success(), "{}", report(&result));
     assert!(
         renewals.load(Ordering::Relaxed) >= 5,
         "acquire, renewal, publish and release writes"

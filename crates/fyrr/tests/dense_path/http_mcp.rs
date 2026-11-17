@@ -118,7 +118,7 @@ impl Issuer {
             .write_all(payload.as_bytes())
             .unwrap();
         let signed = signer.wait_with_output().unwrap();
-        assert!(signed.status.success());
+        assert!(signed.status.success(), "{}", report(&signed));
         format!("{payload}.{}", URL_SAFE_NO_PAD.encode(signed.stdout))
     }
 }
@@ -1072,11 +1072,7 @@ pub(super) async fn fixture_for_issuer(
         .args(["writer", "sync", "--directory"])
         .output()
         .unwrap();
-    assert!(
-        pull.status.success(),
-        "{}",
-        String::from_utf8_lossy(&pull.stderr)
-    );
+    assert!(pull.status.success(), "{}", report(&pull));
     (worker, commit, root, snapshot)
 }
 #[tokio::test]

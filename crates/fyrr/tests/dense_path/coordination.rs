@@ -359,7 +359,7 @@ async fn coordination_crash_boundaries_on_storage() {
             );
         }
         let repeated = host_commit(&committer);
-        assert!(repeated.status.success());
+        assert!(repeated.status.success(), "{}", report(&repeated));
         assert_eq!(
             serde_json::from_slice::<Value>(&repeated.stdout).unwrap(),
             receipt
@@ -437,11 +437,7 @@ async fn coordination_busy_and_expired_holder_on_storage() {
         // The stopped holder cannot renew; advance its persisted lease deadline.
         fyrr_core::clock::advance(remaining + Duration::from_millis(50)).unwrap();
         let takeover = host_commit(&committer);
-        assert!(
-            takeover.status.success(),
-            "{}",
-            String::from_utf8_lossy(&takeover.stderr)
-        );
+        assert!(takeover.status.success(), "{}", report(&takeover));
         let (new_head, manifest) = publication(&committer).await;
         assert_eq!(manifest.lineage.recovery_version.is_some(), pause_after);
         gate.release();
@@ -466,11 +462,7 @@ async fn coordination_busy_and_expired_holder_on_storage() {
         // A native commit that finishes after takeover may leave another orphan,
         // but never changes the head. The next holder must recover rather than block.
         let retry = host_commit(&committer);
-        assert!(
-            retry.status.success(),
-            "{}",
-            String::from_utf8_lossy(&retry.stderr)
-        );
+        assert!(retry.status.success(), "{}", report(&retry));
         let (recovered_head, recovered_manifest) = publication(&committer).await;
         assert_eq!(pinned_count(&committer).await, 1535);
         if recovered_head.content != new_head.content {
@@ -634,11 +626,7 @@ async fn coordination_live_holder_is_busy_then_fenced_after_expiry(backend: Back
     // This holder has no keepalive; advance its persisted lease deadline.
     fyrr_core::clock::advance(remaining + Duration::from_millis(50)).unwrap();
     let takeover = host_commit(&config);
-    assert!(
-        takeover.status.success(),
-        "{}",
-        String::from_utf8_lossy(&takeover.stderr)
-    );
+    assert!(takeover.status.success(), "{}", report(&takeover));
     let published = store.get(&path).await.unwrap();
     let (tag, bytes) = (
         published.meta.e_tag.clone(),

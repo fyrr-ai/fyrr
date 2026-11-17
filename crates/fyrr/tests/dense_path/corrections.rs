@@ -470,13 +470,19 @@ async fn correction_durability_acl_and_private_mirror_on_storage() {
     assert_eq!(cursor.cursor, None);
     reject.store(false, Ordering::Relaxed);
     let resumed = run(&config, &["writer", "sync"]);
-    assert!(resumed.status.success());
+    assert!(resumed.status.success(), "{}", report(&resumed));
     assert!(String::from_utf8_lossy(&resumed.stdout).contains("\"upserts\":0"));
     // A -> B -> A before one publication must contain only the final A.
     std::fs::write(&file, "fixture document 1").unwrap();
-    assert!(run(&config, &["writer", "sync"]).status.success());
+    {
+        let output = run(&config, &["writer", "sync"]);
+        assert!(output.status.success(), "{}", report(&output));
+    }
     std::fs::write(&file, "fixture document 0").unwrap();
-    assert!(run(&config, &["writer", "sync"]).status.success());
+    {
+        let output = run(&config, &["writer", "sync"]);
+        assert!(output.status.success(), "{}", report(&output));
+    }
     success(&config, &["writer", "commit"]);
     assert_eq!(
         success(
@@ -516,7 +522,7 @@ async fn correction_durability_acl_and_private_mirror_on_storage() {
     assert!(retained.lease.as_ref().unwrap().epoch > before_reset.lease.as_ref().unwrap().epoch);
     reject.store(false, Ordering::Relaxed);
     let restarted = run(&config, &["writer", "sync"]);
-    assert!(restarted.status.success());
+    assert!(restarted.status.success(), "{}", report(&restarted));
     assert!(String::from_utf8_lossy(&restarted.stdout).contains("\"upserts\":0"));
     let recovered: fyrr_core::connector::CursorState =
         fyrr_reader::storage::read_contract(store.as_ref(), &cursor_path)
@@ -524,7 +530,10 @@ async fn correction_durability_acl_and_private_mirror_on_storage() {
             .unwrap();
     assert_eq!(recovered.sequence, before_reset.sequence + 1);
     std::fs::write(&file, "fixture document 0").unwrap();
-    assert!(run(&config, &["writer", "sync"]).status.success());
+    {
+        let output = run(&config, &["writer", "sync"]);
+        assert!(output.status.success(), "{}", report(&output));
+    }
     let pending = fyrr_writer::commit::pending(
         &loaded.config,
         &fyrr_reader::storage::optional_head(&loaded.config)
@@ -586,7 +595,7 @@ async fn correction_durability_acl_and_private_mirror_on_storage() {
     );
     reject.store(false, Ordering::Relaxed);
     let restarted = run(&config, &["writer", "sync"]);
-    assert!(restarted.status.success());
+    assert!(restarted.status.success(), "{}", report(&restarted));
     assert!(String::from_utf8_lossy(&restarted.stdout).contains("\"upserts\":0"));
     let recovered: fyrr_core::connector::CursorState =
         fyrr_reader::storage::read_contract(store.as_ref(), &cursor_path)
@@ -616,14 +625,26 @@ async fn correction_durability_acl_and_private_mirror_on_storage() {
     assert_eq!(latest["hits"][0]["content"], "fixture document 0");
     // Establish B, then A -> delete -> A before the next single commit.
     std::fs::write(&file, "fixture document 1").unwrap();
-    assert!(run(&config, &["writer", "sync"]).status.success());
+    {
+        let output = run(&config, &["writer", "sync"]);
+        assert!(output.status.success(), "{}", report(&output));
+    }
     success(&config, &["writer", "commit"]);
     std::fs::write(&file, "fixture document 0").unwrap();
-    assert!(run(&config, &["writer", "sync"]).status.success());
+    {
+        let output = run(&config, &["writer", "sync"]);
+        assert!(output.status.success(), "{}", report(&output));
+    }
     std::fs::remove_file(&file).unwrap();
-    assert!(run(&config, &["writer", "sync"]).status.success());
+    {
+        let output = run(&config, &["writer", "sync"]);
+        assert!(output.status.success(), "{}", report(&output));
+    }
     std::fs::write(&file, "fixture document 0").unwrap();
-    assert!(run(&config, &["writer", "sync"]).status.success());
+    {
+        let output = run(&config, &["writer", "sync"]);
+        assert!(output.status.success(), "{}", report(&output));
+    }
     success(&config, &["writer", "commit"]);
     assert_eq!(
         success(
@@ -682,7 +703,7 @@ async fn correction_durability_acl_and_private_mirror_on_storage() {
         .replace("grp:allow", "grp:new");
     std::fs::write(&changed, &changed_text).unwrap();
     let update = run(&changed, &["writer", "sync", "--full"]);
-    assert!(update.status.success());
+    assert!(update.status.success(), "{}", report(&update));
     assert!(String::from_utf8_lossy(&update.stdout).contains("\"upserts\":1"));
     assert!(
         String::from_utf8_lossy(&update.stdout).contains("\"cache_misses\":0,\"paid_calls\":0")
@@ -824,7 +845,7 @@ async fn correction_durability_acl_and_private_mirror_on_storage() {
         .await
         .unwrap();
     let resumed = run(&changed, &["writer", "sync"]);
-    assert!(resumed.status.success());
+    assert!(resumed.status.success(), "{}", report(&resumed));
     assert!(String::from_utf8_lossy(&resumed.stdout).contains("\"upserts\":0"));
     let repaired: fyrr_core::connector::CursorState =
         fyrr_reader::storage::read_contract(store.as_ref(), &cursor_path)
@@ -884,7 +905,10 @@ fn correction_inflight_identity_change_on_storage() {
     std::fs::create_dir(&sources).unwrap();
     std::fs::write(sources.join("0.txt"), "fixture document 0").unwrap();
     success(&config, &["writer", "namespace", "create"]);
-    assert!(run(&config, &["writer", "sync"]).status.success());
+    {
+        let output = run(&config, &["writer", "sync"]);
+        assert!(output.status.success(), "{}", report(&output));
+    }
     success(&config, &["writer", "commit"]);
     let revoked = root.join("partial-revoke.toml");
     std::fs::write(
@@ -1104,7 +1128,10 @@ fn retrieval_error_during_identity_change(query: Option<&str>) {
     std::fs::create_dir(&sources).unwrap();
     std::fs::write(sources.join("0.txt"), "fixture document 0").unwrap();
     success(&config, &["writer", "namespace", "create"]);
-    assert!(run(&config, &["writer", "sync"]).status.success());
+    {
+        let output = run(&config, &["writer", "sync"]);
+        assert!(output.status.success(), "{}", report(&output));
+    }
     success(&config, &["writer", "commit"]);
     let revoked = root.join("revoked.toml");
     std::fs::write(
@@ -1264,7 +1291,10 @@ fn mirror_endpoint_isolation_on_real_s3() {
     std::fs::create_dir(&sources).unwrap();
     std::fs::write(sources.join("0.txt"), "fixture document 0").unwrap();
     success(&config, &["writer", "namespace", "create"]);
-    assert!(run(&config, &["writer", "sync", "--full"]).status.success());
+    {
+        let output = run(&config, &["writer", "sync", "--full"]);
+        assert!(output.status.success(), "{}", report(&output));
+    }
     success(&config, &["writer", "commit"]);
     success(
         &config,
