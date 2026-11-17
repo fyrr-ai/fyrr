@@ -229,3 +229,28 @@ test('synthetic or smoke fixtures cannot overwrite the committed results', () =>
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+test('import retains partial C8 measurements and refusals despite conservative readiness flags', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fyrr-site-partial-'));
+  try {
+    mkdirSync(join(dir, 'data'));
+    const canonical = join(dir, 'data/compare-results.json');
+    writeFileSync(canonical, JSON.stringify(fixture));
+    const incoming = { ...structuredClone(fixture), publication_ready_primary: false };
+    const run = { ...incoming.systems[0], publication_ready_primary: false, status: 'partial', errors: [{ code: 'busy', count: 50 }], notes: ['C8: 200 valid responses; 50 explicit busy refusals.'] };
+    run.metrics.first_ask_c8_p50_ms = { status: 'partial', value: 100, unit: 'ms', n: 200, attempted: 250, expected: 250, missing: 50, ci95: [90, 110] };
+    run.metrics.first_ask_c8_failure_rate = { status: 'measured', value: .2, unit: 'fraction', n: 250, attempted: 250, expected: 250, missing: 0, ci95: [.15, .25] };
+    incoming.website.metrics.first_ask_c8_failure_rate = { key: 'first_ask_c8_failure_rate', label: 'First-ask failures at concurrency 8', unit: 'fraction', group: 'speed', direction: 'lower_is_better', ci: null, tier: 'primary' };
+    incoming.systems = [run];
+    const file = join(dir, 'partial.json');
+    writeFileSync(file, JSON.stringify(incoming));
+    const child = spawnSync(process.execPath, [join(process.cwd(), 'scripts/import-compare.ts'), file], { cwd: dir, encoding: 'utf8' });
+    assert.equal(child.status, 0, child.stderr);
+    const imported = JSON.parse(readFileSync(canonical, 'utf8'));
+    assert.equal(imported.draft, true);
+    assert.equal(imported.publication_ready_primary, false);
+    assert.equal(imported.systems.length, fixture.systems.length);
+    const actual = imported.systems.find((system: { id: string; variant?: string }) => system.id === run.id && (system.variant ?? 'default') === (run.variant ?? 'default'));
+    assert.deepEqual(actual, run);
+    assert(renderMetric(parseResults(imported), 'first_ask_c8_p50_ms').includes('partial · unranked'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
