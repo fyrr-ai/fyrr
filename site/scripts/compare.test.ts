@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readResults, parseResults, assertPublishable, headlineVerdict, headlineSystems, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderDetailView, renderControls, renderLambdaProjection, lambdaProjectionCost, renderMethodology, renderProvenance, clientResults, verifyEvidenceArchive, relativeValue } from '../lib/compare';
+import { readResults, parseResults, assertPublishable, headlineVerdict, comparisonScope, headlineSystems, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderDetailView, renderControls, renderLambdaProjection, lambdaProjectionCost, renderMethodology, renderProvenance, clientResults, verifyEvidenceArchive, relativeValue } from '../lib/compare';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -551,6 +551,36 @@ test('an authorized completed alternative represents its product once with visib
   data.variants!['another-alternative'] = { ...data.variants!['parallel-partitions'] };
   data.draft = true;
   assert.throws(() => parseResults(data), /one authorized headline representative per product/);
+});
+test('a missing ingest clock cannot hide independent search evidence or verified coverage', () => {
+  for (const key of ['recall_at_10', 'first_ask_c1_p50_ms']) {
+    const data = structuredClone(fixture);
+    const source = data.systems.find(system => system.id === 'pipeshub')!;
+    const run = { ...structuredClone(source), variant: 'parallel-partitions', headline_note: 'Non-default parallel scheduling; ingest observer interrupted, search measured independently.', notes: ['Ingest clock invalid; verified inventory and shared probe completed.'] };
+    Object.assign(run.metrics[key], { status: 'measured', value: key === 'recall_at_10' ? .9 : 100, n: 1, expected: 1, attempted: 1, missing: 0, sample_ids: ['test-question'] });
+    for (const metric of ['ingest_wall_s', 'ingest_docs_per_min']) Object.assign(run.metrics[metric], { status: 'n/e', value: null, n: 0, expected: 1, attempted: 1, missing: 1, notes: ['Observer interruption invalidated wall clock.'] });
+    run.ingest_coverage = { submitted: 20000, accepted: 20000, rejected: 0, rejected_documents: [] };
+    run.ingest_completion = { status: 'verified_complete_after_resume', verified_searchable: true, canonical_timing_valid: false, artifact: 'runtime/test/ingest-resume.json', resume_evidence: { submitted: 20000, accepted: 20000, rejected: 0, documents: 20000, native_inventory_verified: true, native_inventory_count: 20000, late_probe_verified: true } };
+
+    data.variants!['parallel-partitions'] = { label: 'PipesHub parallel scheduling', headline: true, systems: ['pipeshub'], reranker: null, description: run.headline_note, source_url: 'https://example.test/config' };
+    data.systems.push(run);
+    const parsed = parseResults(data);
+    const representative = headlineSystems(parsed).find(system => system.id === 'pipeshub')!;
+    assert.equal(representative.variant, 'parallel-partitions');
+    assert.equal(representative.metrics.ingest_wall_s.value, null);
+    assert(renderMetric(parsed, key).includes('data-system="pipeshub@parallel-partitions"'));
+    assert(renderScoreboard(parsed).includes('20,000 / 20,000 accepted'));
+    assert(comparisonScope(parsed).includes('ingest time n/e'));
+    assert(!comparisonScope(parsed).includes('PipesHub: 20k run not completed'));
+    const story = renderStories(parsed);
+    if (key === 'first_ask_c1_p50_ms') { assert(story.includes('retrieval: n/e')); assert(!story.includes('retrieval and new-question C1 latency: n/e')); }
+    assert.equal(headlineSystems(parsed).filter(system => system.id === 'pipeshub').length, 1);
+    run.ingest_completion.resume_evidence.late_probe_verified = false as true;
+    assert.throws(() => parseResults(data), /verified inventory and late probe/);
+    run.ingest_completion.resume_evidence.late_probe_verified = true;
+    run.ingest_completion.resume_evidence.native_inventory_verified = false as true;
+    assert.throws(() => parseResults(data), /verified inventory and late probe/);
+  }
 });
 test('experimental Lambda measurements remain optional notebook variants', () => {
   const data = structuredClone(fixture);
