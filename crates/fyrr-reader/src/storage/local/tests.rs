@@ -68,6 +68,49 @@ fn read_at(store: &LocalStore, relative: &str) -> (Vec<u8>, String) {
     )
 }
 
+const STRESS_ROUNDS: usize = 20;
+
+/// One contender of the stress test: per round a key of its own, a key every
+/// contender creates, and one compare-and-swap increment of a shared counter.
+fn stress(store: &LocalStore) {
+    let id: usize = std::env::var("FYRR_TEST_LOCAL_ID")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut log = Vec::new();
+    for round in 0..STRESS_ROUNDS {
+        let own = format!("namespaces/ns/own/{id}-{round}");
+        put_at(store, &own, &payload(round, id), PutMode::Create).unwrap();
+        let raced = format!("namespaces/ns/raced/{round}");
+        if outcome(put_at(store, &raced, &payload(round, id), PutMode::Create)) == Outcome::Won {
+            log.push(format!("raced {round}"));
+        }
+        loop {
+            let (bytes, tag) = read_at(store, "namespaces/ns/counter");
+            let next = String::from_utf8(bytes).unwrap().parse::<u64>().unwrap() + 1;
+            let mode = PutMode::Update(version(Some(tag.clone())));
+            match outcome(put_at(
+                store,
+                "namespaces/ns/counter",
+                next.to_string().as_bytes(),
+                mode,
+            )) {
+                Outcome::Won => {
+                    log.push(format!("swapped {tag}"));
+                    break;
+                }
+                Outcome::Precondition => {}
+                Outcome::Exists => panic!("an update cannot report an existing object"),
+            }
+        }
+    }
+    std::fs::write(
+        std::env::var_os("FYRR_TEST_LOCAL_RESULT").unwrap(),
+        log.join("\n"),
+    )
+    .unwrap();
+}
+
 /// The staging files currently present in `root`.
 fn staged(root: &std::path::Path) -> Vec<PathBuf> {
     match std::fs::read_dir(root.join(STAGES)) {
@@ -191,6 +234,9 @@ fn local_store_child_process() {
         while !std::path::Path::new(&go).exists() {
             std::thread::sleep(Duration::from_micros(200));
         }
+    }
+    if std::env::var("FYRR_TEST_LOCAL_ACTION").as_deref() == Ok("stress") {
+        return stress(&store);
     }
     let bytes = std::env::var("FYRR_TEST_LOCAL_PAYLOAD")
         .unwrap()
@@ -1313,5 +1359,149 @@ fn local_store_frozen_holder_bounds_lock_acquisition() {
     replaced.expect("a writer that holds no lock blocks nobody");
     assert!(elapsed < LOCK_WAIT / 2, "waited {elapsed:?}");
     assert_eq!(read(&store, &root), b"unblocked");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A writer that waits for an object's lock holds the inode the name meant
+/// when it arrived. If the object is removed and created again meanwhile,
+/// the lock it finally gets is on an inode the name no longer means. It must
+/// notice and act on the new object, never on the strength of the old lock.
+#[test]
+fn local_store_waiter_across_delete_and_recreate_acts_on_the_new_object() {
+    let root = scratch("waiter");
+    let store = LocalStore::open(&root).unwrap();
+    for (round, (action, recreate, outcome, bytes)) in [
+        // A stale tag is refused against the new object, which is untouched.
+        ("update", true, "precondition", b"second".as_slice()),
+        // An unconditional write replaces the new object, not the old inode.
+        ("overwrite", true, "won", b"waiter".as_slice()),
+        // With no new object, the update finds nothing and the overwrite
+        // creates one.
+        ("update", false, "precondition", b"".as_slice()),
+        ("overwrite", false, "won", b"waiter".as_slice()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let _ = store.delete_blocking(&object(&store));
+        put(&store, b"first", PutMode::Create).unwrap();
+        let first = current(&store);
+        let marker = root.join(format!("opened-{round}"));
+        let result = root.join(format!("waiter-{round}"));
+        let mut waiter = child(
+            &root,
+            action,
+            &[
+                ("FYRR_TEST_LOCAL_HOLD_OPENED", marker.as_os_str()),
+                ("FYRR_TEST_LOCAL_PAYLOAD", "waiter".as_ref()),
+                ("FYRR_TEST_LOCAL_EXPECTED", first.as_ref()),
+                ("FYRR_TEST_LOCAL_RESULT", result.as_os_str()),
+            ],
+        );
+        // The waiter has the first inode open and has not locked it yet.
+        reached(&marker, &mut waiter);
+        store.delete_blocking(&object(&store)).unwrap();
+        let second = recreate.then(|| {
+            put(&store, b"second", PutMode::Create).unwrap();
+            current(&store)
+        });
+        std::fs::write(marker.with_extension("go"), b"").unwrap();
+        assert!(waiter.wait().unwrap().success(), "round {round}");
+        assert_eq!(
+            std::fs::read_to_string(&result).unwrap(),
+            outcome,
+            "round {round}"
+        );
+        if bytes.is_empty() {
+            assert!(!root.join("namespaces/ns/head.json").exists());
+            continue;
+        }
+        assert_eq!(read(&store, &root), bytes, "round {round}");
+        let now = current(&store);
+        assert_ne!(now, first, "round {round}");
+        assert_eq!(second.is_some_and(|second| second == now), outcome != "won");
+    }
+    assert!(staged(&root).is_empty());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Several processes write the same and different objects at once. No
+/// compare-and-swap is lost or applied twice, each contested create has one
+/// winner, every acknowledged object keeps its bytes, and nothing is left
+/// in the staging directory.
+#[test]
+fn local_store_processes_stress_the_same_and_different_objects() {
+    const PROCESSES: usize = 6;
+    let root = scratch("stress");
+    let store = LocalStore::open(&root).unwrap();
+    put_at(&store, "namespaces/ns/counter", b"0", PutMode::Create).unwrap();
+    let initial = read_at(&store, "namespaces/ns/counter").1;
+    let go = root.join("go");
+    let mut children: Vec<_> = (0..PROCESSES)
+        .map(|id| {
+            let result = root.join(format!("stress-{id}"));
+            let name = id.to_string();
+            let process = child(
+                &root,
+                "stress",
+                &[
+                    ("FYRR_TEST_LOCAL_GO", go.as_os_str()),
+                    ("FYRR_TEST_LOCAL_ID", name.as_ref()),
+                    ("FYRR_TEST_LOCAL_RESULT", result.as_os_str()),
+                ],
+            );
+            (process, result)
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(500));
+    std::fs::write(&go, b"").unwrap();
+    let mut swapped = BTreeSet::new();
+    let mut winners = std::collections::BTreeMap::new();
+    for (id, (process, result)) in children.iter_mut().enumerate() {
+        assert!(process.wait().unwrap().success(), "contender {id}");
+        for line in std::fs::read_to_string(result).unwrap().lines() {
+            let (event, value) = line.split_once(' ').unwrap();
+            match event {
+                "swapped" => assert!(
+                    swapped.insert(value.to_owned()),
+                    "two updates succeeded against the tag {value}"
+                ),
+                "raced" => assert!(
+                    winners
+                        .insert(value.parse::<usize>().unwrap(), id)
+                        .is_none(),
+                    "round {value} has two winners"
+                ),
+                other => panic!("{other}"),
+            }
+        }
+    }
+    let total = PROCESSES * STRESS_ROUNDS;
+    let (bytes, last) = read_at(&store, "namespaces/ns/counter");
+    assert_eq!(
+        String::from_utf8(bytes).unwrap(),
+        total.to_string(),
+        "an increment was lost or applied twice"
+    );
+    assert_eq!(swapped.len(), total);
+    assert!(swapped.contains(&initial) && !swapped.contains(&last));
+    assert_eq!(
+        winners.len(),
+        STRESS_ROUNDS,
+        "every contested create has a winner"
+    );
+    for round in 0..STRESS_ROUNDS {
+        let raced = read_at(&store, &format!("namespaces/ns/raced/{round}")).0;
+        assert_eq!(raced, payload(round, winners[&round]), "round {round}");
+        for id in 0..PROCESSES {
+            let own = read_at(&store, &format!("namespaces/ns/own/{id}-{round}")).0;
+            assert_eq!(own, payload(round, id));
+        }
+    }
+    LocalStore::open(&root)
+        .unwrap()
+        .delete_blocking(&at(&store, "namespaces/ns/missing"))
+        .unwrap();
+    assert!(staged(&root).is_empty());
     std::fs::remove_dir_all(root).unwrap();
 }

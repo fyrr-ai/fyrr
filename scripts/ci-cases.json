@@ -554,6 +554,14 @@
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_reaps_only_unlocked_staging_files": {
         "tier": "quick",
         "seconds": 0.02
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_waiter_across_delete_and_recreate_acts_on_the_new_object": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_processes_stress_the_same_and_different_objects": {
+        "tier": "quick",
+        "seconds": 5.0
       }
     },
     "children": {
