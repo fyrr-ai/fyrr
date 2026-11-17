@@ -45,7 +45,25 @@
       });
     });
   }
+  function openAncestors(target) {
+    for (var element = target; element; element = element.parentElement) if (element.tagName === 'DETAILS') element.open = true;
+  }
+  function bindFolds(root, scope) {
+    root.querySelectorAll('details').forEach(function (fold, index) {
+      if (!fold.id) fold.id = 'fold-' + scope + '-' + index;
+      if ((initial.searchParams.get('open') || '').split(',').includes(fold.id)) openAncestors(fold);
+      fold.addEventListener('toggle', function () {
+        if (!fold.open) {
+          fold.querySelectorAll('details[open]').forEach(function (child) { child.open = false; });
+          var hashTarget = document.getElementById(location.hash.slice(1));
+          if (hashTarget && fold.contains(hashTarget)) { var url = new URL(location.href); url.hash = ''; history.replaceState(null, '', url); }
+        }
+        update();
+      });
+    });
+  }
   bindTabs(document);
+  bindFolds(document, 'static');
   function equalValue(value, other) { return Math.abs(value - other) <= 8 * Number.EPSILON * Math.max(1, Math.abs(value), Math.abs(other)); }
   function ratios(cells, direction, heatmap, unit, metricKey) {
     var metadata = results.website.metrics[metricKey];
@@ -89,7 +107,7 @@
         var gapLabel = gap !== 0 && Math.abs(gap) < .05 ? gap.toLocaleString('en', { maximumSignificantDigits: 2 }) : gap.toFixed(1);
         label.textContent = ratio === 1 ? (winner ? 'best' + (ties ? ' · tied' : '') : 'incomplete · unranked') : gapLabel + ' pp';
       } else {
-        label.textContent = '×' + (Number.isFinite(ratio) ? ratio.toFixed(2) : '∞') + (ratio === 1 ? (winner ? ' best' + (ties ? ' · tied' : '') : ' · incomplete') : '');
+        label.textContent = ratio === 1 && winner ? 'best' + (ties ? ' · tied' : '') : '×' + (Number.isFinite(ratio) ? ratio.toFixed(2) : '∞') + (ratio === 1 ? ' · incomplete' : '');
       }
       label.classList.toggle('is-best', winner);
       if (heatmap && winner) cell.classList.add('is-winner');
@@ -155,6 +173,12 @@
     if (detailMetric && detailMetric.value !== detailMetric.options[0].value) url.searchParams.set('detail_metric', detailMetric.value); else if (detailMetric) url.searchParams.delete('detail_metric');
     if (detailSearch && detailSearch.value) url.searchParams.set('find', detailSearch.value); else if (detailSearch) url.searchParams.delete('find');
     if (deepDetails.open) url.searchParams.set('details', 'open'); else url.searchParams.delete('details');
+    var expanded = Array.from(document.querySelectorAll('details[open]')).filter(function (fold) {
+      if (fold === deepDetails) return false;
+      for (var parent = fold.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS' && !parent.open) return false;
+      return true;
+    }).map(function (fold) { return fold.id; });
+    if (expanded.length) url.searchParams.set('open', expanded.join(',')); else url.searchParams.delete('open');
     document.querySelectorAll('[role="tablist"]').forEach(function (list) {
       var tabs = Array.from(list.querySelectorAll('[role="tab"]'));
       var active = tabs.find(function (tab) { return tab.getAttribute('aria-selected') === 'true'; });
@@ -192,6 +216,7 @@
       detailSearch.value = current.searchParams.get('find') || '';
       detailMetric.addEventListener('change', update); detailSearch.addEventListener('input', update);
       bindTabs(document.getElementById('notebook-body'));
+      bindFolds(document.getElementById('notebook-body'), 'notebook');
       document.querySelectorAll('#notebook-body .rv').forEach(function (panel) { if (motion.matches) panel.classList.add('is-in'); else reveal.observe(panel); });
       update();
       notebookReady = true; status.hidden = true; deepDetails.dataset.loadState = 'ready';
@@ -218,14 +243,23 @@
   deepDetails.addEventListener('toggle', function () { update(); if (deepDetails.open) loadNotebook(); });
   provenance.addEventListener('toggle', function () { if (provenance.open) loadNotebook(); });
   document.getElementById('notebook-retry').addEventListener('click', loadNotebook);
-  document.querySelectorAll('a[href^="#detail"]').forEach(function (link) { link.addEventListener('click', function (event) {
-    event.preventDefault(); deepDetails.open = true;
-    loadNotebook().then(function () {
-      var hash = link.dataset.detailTarget || link.getAttribute('href');
-      var target = document.getElementById(hash.slice(1));
-      if (target) { target.scrollIntoView(); history.replaceState(null, '', hash); document.querySelector('.permalink input').value = location.href; }
-    });
-  }); });
+  async function openTarget(hash) {
+    var target = document.getElementById(hash.slice(1));
+    if (hash.startsWith('#detail')) { deepDetails.open = true; await loadNotebook(); target = document.getElementById(hash.slice(1)); }
+    if (!target) return;
+    openAncestors(target);
+    if (target === provenance) await loadNotebook();
+    var url = new URL(location.href); url.hash = hash; history.replaceState(null, '', url);
+    update(); target.scrollIntoView();
+  }
+  document.addEventListener('click', function (event) {
+    var link = event.target.closest('a[href^="#"]');
+    if (!link) return;
+    var hash = link.dataset.detailTarget || link.getAttribute('href');
+    var target = document.getElementById(hash.slice(1));
+    if (!hash.startsWith('#detail') && (!target || !target.closest('details'))) return;
+    event.preventDefault(); openTarget(hash);
+  });
   document.getElementById('copy-permalink').addEventListener('click', async function () {
     var input = document.querySelector('.permalink input');
     try { await navigator.clipboard.writeText(input.value); document.getElementById('copy-status').textContent = 'Selection link copied.'; }
@@ -285,5 +319,7 @@
   new ResizeObserver(function () { clearTimeout(timer); timer = setTimeout(draw, 150); }).observe(canvas);
   motion.addEventListener('change', function () { animate(); light(); sea(); });
   document.addEventListener('visibilitychange', function () { animate(); light(); sea(); });
+  window.addEventListener('hashchange', function () { if (location.hash) openTarget(location.hash); });
+  if (initial.hash) openTarget(initial.hash);
   if (deepDetails.open || provenance.open) loadNotebook();
 })();

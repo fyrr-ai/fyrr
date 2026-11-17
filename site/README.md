@@ -226,3 +226,12 @@ Accepted and searchable fractions use submitted documents as their denominator.
 The build rejects comparison HTML above 500 KB or 96 KB gzip. The unit budget
 also limits inline chart inputs; browser verification proves that initial and
 static story views fetch no notebook data, and covers lazy loading and retry.
+
+The comparison’s default view is the overview, four short stories and compact
+product cards. Native `details` disclosures hold assumptions, configuration and
+coverage notes, diagnostics, model facts, methodology and the notebook. Footnotes
+open the matching disclosure in one click. The `open` permalink parameter stores
+expanded disclosure IDs; hash links open their ancestors. Closing a disclosure
+also closes its children and clears a hash that would otherwise reopen it. The
+existing `details=open` notebook links remain supported. Detailed question data
+still loads only on demand; every JSON result and publication guard is unchanged.
