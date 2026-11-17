@@ -263,32 +263,41 @@ async fn tools_rerank_revoke_before_body_emission_sends_no_text_on_storage() {
     let (config, root, _) = tools::fixture();
     let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     provider.endpoint = format!("http://{}/rerank", socket.local_addr().unwrap());
-    let connected = Arc::new(AtomicBool::new(false));
     let accepted = Arc::new(tokio::sync::Notify::new());
     let read_body = Arc::new(tokio::sync::Semaphore::new(0));
     let receive = tokio::spawn({
-        let connected = connected.clone();
         let accepted = accepted.clone();
         let read_body = read_body.clone();
         async move {
             let (mut socket, _) = socket.accept().await.unwrap();
-            connected.store(true, Ordering::SeqCst);
             accepted.notify_one();
             // The connection is established, but the provider does not read yet.
             read_body.acquire().await.unwrap().forget();
+            let mut received = Vec::new();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let mut chunk = [0; 4096];
+                    let count = socket.read(&mut chunk).await?;
+                    if count == 0 {
+                        break;
+                    }
+                    received.extend_from_slice(&chunk[..count]);
+                    // The streaming body uses chunked HTTP/1. Read the complete
+                    // request before responding, so a 502 cannot suppress bytes.
+                    if received.ends_with(b"\r\n0\r\n\r\n") {
+                        break;
+                    }
+                }
+                Ok::<_, std::io::Error>(())
+            })
+            .await
+            .unwrap()
+            .unwrap();
             let _ = socket
                 .write_all(
                     b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                 )
                 .await;
-            let mut received = Vec::new();
-            tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                socket.read_to_end(&mut received),
-            )
-            .await
-            .unwrap()
-            .unwrap();
             received
         }
     });
@@ -297,17 +306,9 @@ async fn tools_rerank_revoke_before_body_emission_sends_no_text_on_storage() {
     let resume = Arc::new(AtomicBool::new(false));
     let held = Arc::new(tokio::sync::Notify::new());
     let hook: corrections::BoundaryHook = Arc::new({
-        let (connected, stop, resume, held) = (
-            connected.clone(),
-            stop.clone(),
-            resume.clone(),
-            held.clone(),
-        );
+        let (stop, resume, held) = (stop.clone(), resume.clone(), held.clone());
         move |request, _, after| {
-            if !after
-                && request.starts_with("GET ")
-                && request.contains("/head.json ")
-                && connected.load(Ordering::SeqCst)
+            if !after && request.starts_with("RERANK ") && request.contains("/body-authorization ")
             {
                 held.notify_one();
                 while !resume.load(Ordering::SeqCst) && !stop.load(Ordering::SeqCst) {
@@ -318,6 +319,7 @@ async fn tools_rerank_revoke_before_body_emission_sends_no_text_on_storage() {
         }
     });
     let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    assert_eq!(endpoint, "local-storage", "owned by the local CI row");
     let (proxy, mut guard) = corrections::proxy_at_boundary(endpoint.clone(), stop, hook);
     guard.resume = resume.clone(); // Also release held reads on assertion unwind.
     let proxied = root.join("body-disclosure.toml");
@@ -328,15 +330,18 @@ async fn tools_rerank_revoke_before_body_emission_sends_no_text_on_storage() {
             .replace(&endpoint, &proxy),
     )
     .unwrap();
+    let admitted = coordination::publication(&enabled).await.0;
     let mut client = Mcp::open(&proxied);
     let task = tokio::task::spawn_blocking(move || {
         let result = client.call("search", query());
         (client, result)
     });
-    tokio::time::timeout(std::time::Duration::from_secs(10), accepted.notified())
+    // The request is parked at its own body-authorization boundary. Provider
+    // acceptance and other head reads are unordered with it and gate nothing.
+    tokio::time::timeout(std::time::Duration::from_secs(10), held.notified())
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(10), held.notified())
+    tokio::time::timeout(std::time::Duration::from_secs(10), accepted.notified())
         .await
         .unwrap();
     let path = root.join("documents.json");
@@ -348,6 +353,11 @@ async fn tools_rerank_revoke_before_body_emission_sends_no_text_on_storage() {
     std::fs::write(path, serde_json::to_vec(&input).unwrap()).unwrap();
     coordination::worker_sync(&enabled, &["--full"]);
     success(&enabled, &["writer", "commit"]);
+    let revoked = coordination::publication(&enabled).await.0;
+    assert_ne!(
+        revoked.policy, admitted.policy,
+        "revocation is published before release"
+    );
     resume.store(true, Ordering::SeqCst);
     read_body.add_permits(1);
     let received = receive.await.unwrap();
@@ -364,6 +374,8 @@ async fn tools_rerank_revoke_before_body_emission_sends_no_text_on_storage() {
         result["structuredContent"]["code"],
         "authorization_unavailable"
     );
+    assert!(!result.to_string().contains("fixture document"));
+    assert!(!result.to_string().contains("exactneedle"));
     drop(client);
     drop(guard);
     std::fs::remove_dir_all(root).unwrap();

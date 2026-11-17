@@ -76,7 +76,7 @@ impl PreparedReader {
             self.test_hooks.authorization_output.wait_once().await;
         }
         #[cfg(feature = "test-store")]
-        crate::storage::test_store::boundary::authorization_output()
+        crate::storage::test_store::boundary::request_boundary("AUTHORIZE", "authorization-output")
             .await
             .map_err(|_| StorageUnavailable)?;
         if self.interrupted().await? {

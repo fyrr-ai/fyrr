@@ -142,19 +142,18 @@ impl Operation {
     }
 }
 
-/// A named request boundary after retrieval and before the live authorization read.
-/// Background preparation never emits this event.
-pub(crate) async fn authorization_output() -> Result<()> {
+/// Named request boundaries that background preparation never emits.
+pub(crate) async fn request_boundary(method: &str, name: &str) -> Result<()> {
     let Some(client) = Client::current() else {
         return Ok(());
     };
     let mut operation = client.operation().await?;
-    let path = Path::from("authorization-output");
+    let path = Path::from(name);
     operation
-        .observe("AUTHORIZE", &path, false, 0, &[], None)
+        .observe(method, &path, false, 0, &[], None)
         .await?;
     operation
-        .observe("AUTHORIZE", &path, true, 200, &[], None)
+        .observe(method, &path, true, 200, &[], None)
         .await?;
     Ok(())
 }

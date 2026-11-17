@@ -342,6 +342,13 @@ async fn rerank_inner(
             let refused = refused_admission.clone();
             let refused_guard = refused.clone();
             let authorization = async move {
+                #[cfg(feature = "test-store")]
+                crate::storage::test_store::boundary::request_boundary(
+                    "RERANK",
+                    "body-authorization",
+                )
+                .await
+                .map_err(|_| StorageUnavailable)?;
                 let current: fyrr_core::publication::ServingHead =
                     crate::storage::read_contract(store.as_ref(), &root.join("head.json")).await?;
                 // A changed grant snapshot drops the entire candidate payload:
