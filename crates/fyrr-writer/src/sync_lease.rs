@@ -23,6 +23,7 @@ pub struct CursorLease {
     path: Path,
     held: Mutex<(CursorState, UpdateVersion, Instant)>,
     ttl: Duration,
+    observed: fyrr_reader::storage::ObservedDurability,
 }
 impl CursorLease {
     pub(crate) fn with<T, E>(
@@ -105,6 +106,7 @@ impl CursorLease {
                 _ => WriterError::StorageUnavailable,
             })?;
         let lease = Arc::new(Self {
+            observed: fyrr_reader::storage::observed_durability(config)?,
             store: store.clone(),
             path,
             held: Mutex::new((state, result, Instant::now())),
@@ -123,7 +125,16 @@ impl CursorLease {
         }
         Ok(held.0.clone())
     }
+    /// Before this worker publishes an envelope: the envelope records the
+    /// head it was based on and builds on pending envelopes and shared
+    /// objects that other processes wrote.
+    pub(crate) async fn persist_observed(&self) -> Result<()> {
+        Ok(self.observed.persist().await?)
+    }
     pub async fn write(&self, mut state: CursorState) -> Result<()> {
+        // A cursor advances because an envelope exists, possibly one that an
+        // earlier worker published without living to flush its name.
+        self.persist_observed().await?;
         let mut held = self.held.lock().await;
         if !self.live(&held) {
             return Err(WriterError::SyncLeaseLost);

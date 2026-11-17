@@ -104,6 +104,7 @@ fn acknowledged_puts(log: &Path, storage: &Path) -> BTreeMap<String, usize> {
                     path.display()
                 );
             }
+            ("exists", _) => {}
             ("ack", Some("deferred")) => deferred.push(path),
             ("ack", Some("cleanup")) => {
                 for path in deferred.drain(..) {
@@ -128,18 +129,21 @@ async fn references_are_synced_before_real_prepare_and_publication() {
         std::fs::remove_file(root.join("sources").join(format!("{n}.txt"))).unwrap();
     }
     // A source with connector maps, so the page path writes document metadata.
-    let documents: Vec<_> = (0..8)
-        .map(|n| {
-            json!({"id":format!("doc-{n}"),"title":"document","author":"Ada",
-                "readers":["grp:allow"],"note":format!("note-{n}"),
-                "text":format!("fixture document {n}")})
-        })
-        .collect();
-    std::fs::write(
-        root.join("documents.json"),
-        serde_json::to_vec(&json!({"documents":documents,"cursor":"one"})).unwrap(),
-    )
-    .unwrap();
+    let documents = |revision: &str| {
+        let documents: Vec<_> = (0..8)
+            .map(|n| {
+                json!({"id":format!("doc-{n}"),"title":"document","author":"Ada",
+                    "readers":["grp:allow"],"note":format!("note-{n}"),
+                    "revision":revision,"text":format!("fixture document {n}")})
+            })
+            .collect();
+        std::fs::write(
+            root.join("documents.json"),
+            serde_json::to_vec(&json!({"documents":documents,"cursor":revision})).unwrap(),
+        )
+        .unwrap();
+    };
+    documents("r1");
     let text = std::fs::read_to_string(&config).unwrap();
     std::fs::write(
         &config,
@@ -187,9 +191,13 @@ async fn references_are_synced_before_real_prepare_and_publication() {
     );
     command(&config, &["writer", "commit"], &log, false);
     std::fs::write(root.join("sources/0.txt"), "fixture document 1").unwrap();
+    // New revisions with the same connector maps: their metadata objects exist.
+    documents("r2");
     command(
         &config,
-        &["writer", "sync", "allowed", "--kind", "content", "--full"],
+        &[
+            "writer", "sync", "allowed", "metadata", "--kind", "content", "--full",
+        ],
         &log,
         true,
     );
@@ -199,12 +207,33 @@ async fn references_are_synced_before_real_prepare_and_publication() {
     let mut prepares = 0;
     let mut publications = 0;
     let mut heads = 0;
+    // The latest directory sync per process, and what each manifest owes.
+    let mut own_syncs = BTreeMap::<(u64, PathBuf), usize>::new();
+    let mut manifest_envelopes = BTreeMap::<PathBuf, Vec<PathBuf>>::new();
+    let mut reachable = std::collections::BTreeSet::<PathBuf>::new();
+    let mut observed_envelopes = 0;
+    let mut existing = 0;
     for (index, line) in std::fs::read_to_string(&log).unwrap().lines().enumerate() {
         let event: Value = serde_json::from_str(line).unwrap();
         let path = PathBuf::from(event["path"].as_str().unwrap());
+        let pid = event["pid"].as_u64().unwrap();
         match event["event"].as_str().unwrap() {
+            "exists" => {
+                // "It exists" is an acknowledgement: the process that says so
+                // flushed the name itself, after the winner published it.
+                let published = files.get(&path).map_or(0, |(publish, _)| *publish);
+                assert!(
+                    own_syncs
+                        .get(&(pid, path.parent().unwrap().to_path_buf()))
+                        .is_some_and(|sync| *sync > published),
+                    "existing object reported before its directory was synced: {}",
+                    path.display()
+                );
+                existing += 1;
+            }
             "sync" => {
                 if event["directory"] == true {
+                    own_syncs.insert((pid, path.clone()), index);
                     directories.insert(path, index);
                 } else {
                     files.insert(path, (index, true));
@@ -249,9 +278,39 @@ async fn references_are_synced_before_real_prepare_and_publication() {
                 }
                 if path.parent().unwrap().ends_with("publications") {
                     publications += 1;
+                    let envelopes = event["envelopes"].as_array().unwrap();
+                    manifest_envelopes.insert(
+                        path.clone(),
+                        envelopes
+                            .iter()
+                            .map(|envelope| PathBuf::from(envelope.as_str().unwrap()))
+                            .collect(),
+                    );
                 }
                 if path.file_name().unwrap() == "head.json" {
                     heads += 1;
+                    // Workers wrote the envelopes its manifest records. The
+                    // publisher flushes their names itself before a head
+                    // first makes them reachable; lease renewals repeat it.
+                    for reference in event["references"].as_array().unwrap() {
+                        let reference = PathBuf::from(reference.as_str().unwrap());
+                        if !reachable.insert(reference.clone()) {
+                            continue;
+                        }
+                        for envelope in manifest_envelopes.get(&reference).into_iter().flatten() {
+                            let (written, _) = files.get(envelope).unwrap_or_else(|| {
+                                panic!("unpublished envelope {}", envelope.display())
+                            });
+                            assert!(
+                                own_syncs
+                                    .get(&(pid, envelope.parent().unwrap().to_path_buf()))
+                                    .is_some_and(|sync| sync > written),
+                                "head published before its process synced {}",
+                                envelope.display()
+                            );
+                            observed_envelopes += 1;
+                        }
+                    }
                 }
                 files.insert(path, (index, false));
             }
@@ -261,6 +320,10 @@ async fn references_are_synced_before_real_prepare_and_publication() {
     assert!(
         prepares >= 2 && publications >= 2 && heads >= 2,
         "real prepare and publication paths were not exercised"
+    );
+    assert!(
+        observed_envelopes >= 2 && existing >= 8,
+        "observed envelopes {observed_envelopes}, existing objects {existing}"
     );
     // The page path (document metadata, envelopes) and the publication path
     // (manifests, the head) each acknowledged durable puts.

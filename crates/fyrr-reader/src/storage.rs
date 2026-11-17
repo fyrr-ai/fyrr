@@ -109,6 +109,42 @@ pub async fn persist_native_files(
     .map_err(|_| StorageError::StorageUnavailable)
 }
 
+/// Makes durable what a writer observed before it publishes a reference to
+/// it. Call `persist` after the observation and before the dependent write:
+/// a head naming a manifest whose envelopes a worker wrote, a cursor advanced
+/// because an envelope exists, an envelope recording the head it was based on.
+///
+/// A local writer acknowledges an object after flushing its directory, but
+/// the name is visible earlier, so a reader can observe an object that a
+/// power loss would still remove. S3 shows only durable objects.
+#[derive(Debug, Clone)]
+pub struct ObservedDurability(Option<(local::LocalStore, Path)>);
+
+impl ObservedDurability {
+    pub async fn persist(&self) -> Result<(), StorageError> {
+        if let Some((store, namespace)) = &self.0 {
+            store
+                .persist_control(namespace.clone())
+                .await
+                .map_err(|_| StorageError::StorageUnavailable)?;
+        }
+        Ok(())
+    }
+}
+
+pub fn observed_durability(config: &Config) -> Result<ObservedDurability, StorageError> {
+    let Some(StorageBackend::Local { root }) = config.storage.backend() else {
+        return Ok(ObservedDurability(None));
+    };
+    let store = local::LocalStore::open(&root).map_err(|_| StorageError::StorageUnavailable)?;
+    let namespace = store
+        .root()
+        .clone()
+        .join("namespaces")
+        .join(config.namespace.name.as_str());
+    Ok(ObservedDurability(Some((store, namespace))))
+}
+
 /// Explicit durability scope for maintenance and purge deletions.
 /// Call `finish` before reporting cleanup success. Dropping an unfinished scope
 /// may leave retired files after a crash; subsequent cleanup can remove them.

@@ -480,6 +480,7 @@ async fn non_content_page(
         payload,
     };
     lease.state().await?;
+    lease.persist_observed().await?;
     put_immutable(
         store.as_ref(),
         &root.join("envelopes").join(format!("{id}.json")),
