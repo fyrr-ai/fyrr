@@ -156,14 +156,7 @@ try {
     assert.equal(await page.locator('[data-select-system][value="fyrr"]').isChecked(), false, 'Permalink restores systems');
     assert.equal(await page.locator('#tab-first_ask_c8_p50_ms').getAttribute('aria-selected'), 'true', 'Permalink restores concurrency');
     await page.locator('[data-select-system][value="fyrr"]').check();
-    if (results.systems.some(system => system.variant === 'jev-rerank')) {
-      const variant = page.locator('[data-select-system][value="fyrr@jev-rerank"]');
-      assert.equal(await variant.isChecked(), false);
-      await variant.check();
-      assert(await page.locator('#detail-speed .chart-row[data-system="fyrr@jev-rerank"]:visible').count() > 0, 'Optional variant has a separate latency row');
-      assert.equal(await page.locator('.hero-evidence [data-system="fyrr@jev-rerank"]').count(), 0, 'Optional fyrr variants stay out of the headline');
-      await variant.uncheck();
-    }
+    assert.equal(await page.locator('[data-select-system][value="fyrr@jev-rerank"]').count(), 0, 'Private reranker never enters public filters');
     if (results.systems.some(system => system.variant === 'concurrency-8')) {
       const sized = page.locator('[data-select-system][value="fyrr@concurrency-8"]');
       assert.equal(await sized.isChecked(), false);

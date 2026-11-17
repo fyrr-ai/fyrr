@@ -158,7 +158,7 @@ test('ingest overview uses the reported throughput and never infers a missing ra
   assert(!html.includes('2,000 docs/min'));
   assert(!html.includes('Infinity'));
   assert.equal((html.match(/n\/e docs\/min/g) ?? []).length, 2);
-  assert(!html.includes('fyrr@jev-rerank'));
+  assert(!html.includes('fyrr@concurrency-8'));
   data.systems[0].metrics.ingest_docs_per_min.value = 0;
   assert(renderScoreboard(data).includes('0 docs/min'));
   data.systems[0].metrics.ingest_docs_per_min.status = 'partial';
@@ -229,11 +229,11 @@ test('an optional variant has its own row and cannot win the default headline', 
   const data = structuredClone(fixture);
   data.draft = false;
   data.systems.forEach((system, index) => {
-    const value = system.variant === 'jev-rerank' ? 1 : index === 1 ? .9 : .8;
+    const value = system.variant && system.variant !== 'default' ? 1 : index === 1 ? .9 : .8;
     system.metrics.recall_at_10 = { status: 'measured', value, unit: 'fraction', n: 2, expected: 2, attempted: 2, missing: 0, ci95: [value - .05, Math.min(1, value + .05)], sample_ids: ['a', 'b'] };
   });
   assert(headlineVerdict(data).startsWith(data.systems[1].name));
-  assert(renderMetric(data, 'recall_at_10').includes('data-system="fyrr@jev-rerank"'));
+  assert(renderMetric(data, 'first_ask_c8_p50_ms').includes('data-system="fyrr@concurrency-8"'));
   assert.equal((renderProducts(data).match(/class="product-card/g) ?? []).length, new Set(data.systems.map(system => system.id)).size);
   data.systems.push(structuredClone(data.systems[0]));
   assert.throws(() => parseResults({ ...data, draft: true }), /unique product\/variant/);
@@ -312,6 +312,35 @@ test('synthetic or smoke fixtures cannot overwrite the committed results', () =>
       assert.equal(readFileSync('data/compare-results.json', 'utf8'), before);
       assert.equal(readFileSync(canonical, 'utf8'), before);
     }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+test('private rows and provenance cannot enter public views or imported JSON', () => {
+  for (const mutate of [
+    (data: typeof fixture) => { data.systems.push({ ...structuredClone(data.systems[0]), variant: 'jev-rerank' }); },
+    (data: typeof fixture) => { data.variants!['jev-rerank'] = { label: 'Private reranker', headline: false, reranker: null }; },
+    (data: typeof fixture) => { data.protocol.provider_pricing = { jev: { model: 'jev-1.14.0' } }; },
+    (data: typeof fixture) => { data.protocol.prompt_hashes = { jev_proxy: 'private-test-hash' }; },
+    (data: typeof fixture) => { data.systems[0].version.commit = 'c2a34a3'; },
+  ]) {
+    const data = structuredClone(fixture);
+    mutate(data);
+    assert.throws(() => parseResults(data), /private benchmark data/);
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'fyrr-site-private-'));
+  try {
+    mkdirSync(join(dir, 'data'));
+    const canonical = join(dir, 'data/compare-results.json');
+    const before = JSON.stringify(fixture);
+    writeFileSync(canonical, before);
+    const incoming = structuredClone(fixture);
+    incoming.protocol.proxy_metadata = { variant: 'jev-rerank' };
+    const file = join(dir, 'private.json');
+    writeFileSync(file, JSON.stringify(incoming));
+    const child = spawnSync(process.execPath, [join(process.cwd(), 'scripts/import-compare.ts'), file], { cwd: dir, encoding: 'utf8' });
+    assert.notEqual(child.status, 0);
+    assert.match(child.stderr, /private benchmark data/);
+    assert.equal(readFileSync(canonical, 'utf8'), before);
+    assert(!/\bjev\b|c2a34a3/i.test(JSON.stringify(fixture)));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 test('import retains partial C8 measurements and refusals despite conservative readiness flags', () => {

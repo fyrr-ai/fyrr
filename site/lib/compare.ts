@@ -110,6 +110,7 @@ function validateMetric(metric: unknown, key: string): asserts metric is Metric 
 export function parseResults(data: unknown): Results {
   requireField(object(data) && data.schema_version === '1.1', 'schema_version must be 1.1');
   requireField(typeof data.draft === 'boolean', 'explicit draft flag required');
+  requireField(!/\bjev(?:\b|[_-])|TypeSafe System One|c2a34a3/i.test(JSON.stringify(data)), 'private benchmark data cannot enter public results');
   requireField(object(data.benchmark) && typeof data.benchmark.id === 'string', 'benchmark');
   if (data.synthetic_design_preview) requireField(data.benchmark.publishable === false, 'synthetic preview must set benchmark.publishable to false');
   requireField(object(data.protocol), 'protocol');

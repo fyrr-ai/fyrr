@@ -114,6 +114,9 @@ A variant catalogue may include `description` and `metric_prefixes` to scope
 notebook rows. The sized C8 variant changes only `reader.concurrency=8`, reuses
 the default index and is excluded from C1, ingestion and answer metrics.
 Each run also exports its own JSON under `/compare/runs/`.
+The public boundary rejects private reranker and superseded pre-release evidence,
+including variant, protocol and pricing metadata. Only the final measured release
+version/commit and configuration belong in public results.
 Unavailable/invalid measurements have null values. Partial values carry
 an asterisk and cannot establish a product win. Fraction axes cover
 0–100%; other axes start at zero and include the full confidence interval.
