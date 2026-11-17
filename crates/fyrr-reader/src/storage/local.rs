@@ -9,9 +9,10 @@
 //! - every mutation holds one exclusive `flock` on the root's lock file, so a
 //!   conditional write compares the current e-tag and publishes its object
 //!   with no other fyrr process changing the object in between;
-//! - a durable, monotonically increasing counter on the lock inode assigns
-//!   each write a version, stored as an xattr on its staging inode before
-//!   publication. Versions survive crashes and never depend on timestamps;
+//! - each write gets a tag of 128 random bits from the operating system,
+//!   stored as an xattr on its staging inode before publication. A tag never
+//!   depends on timestamps, inode numbers or content, so a rewrite of the
+//!   same bytes and an object created again after a delete get new ones;
 //! - an object and its version xattr are flushed on a staging inode, then
 //!   published by `rename` (replace) or `link` (create only). Native files are
 //!   persisted explicitly before the contracts that reference them. Finally,
@@ -57,6 +58,10 @@ const VERSION: &str = "user.fyrr.version";
 const STORE: &str = "fyrr local storage";
 /// In the root, outside `namespaces/`, so no namespace listing returns it.
 const LOCK: &str = ".fyrr-storage.lock";
+/// The content of a lock file that carries no version counter. Releases
+/// that numbered versions from a counter on this file refuse a non-empty
+/// lock file without one, so they cannot write beside this release.
+const NO_COUNTER: &[u8] = b"fyrr local storage lock; object tags are random\n";
 /// One reserved staging file, outside all namespaces. Holding the root lock
 /// throughout a write lets the next mutation safely reap it after a crash.
 const STAGE: &str = ".fyrr-storage.stage";
@@ -353,7 +358,6 @@ impl LocalStore {
     /// also when the process dies.
     fn lock(&self) -> std::io::Result<File> {
         let root = self.root_directory()?;
-        let lock = self.root_path.join(LOCK);
         let mut file = File::from(rustix::fs::openat(
             &root.file,
             LOCK,
@@ -386,34 +390,31 @@ impl LocalStore {
                 Err(std::fs::TryLockError::Error(error)) => return Err(error),
             }
         }
+        self.hand_over(&root, &mut file)?;
+        Ok(file)
+    }
+
+    /// Takes a root over from a release that numbered versions from a
+    /// counter on the lock file, and marks a new root the same way: the lock
+    /// file is non-empty and has no counter. Such a release then fails every
+    /// mutation at its counter check, and its tags stay valid, because a tag
+    /// is only ever compared for equality.
+    fn hand_over(&self, root: &Directory, file: &mut File) -> std::io::Result<()> {
+        let mut changed = false;
         if file.metadata()?.len() == 0 {
-            match read_version(&file) {
-                Ok(0) => {} // A crash before the initialization marker was written.
-                Err(error)
-                    if error.raw_os_error() == Some(rustix::io::Errno::NODATA.raw_os_error()) =>
-                {
-                    // Objects are written only after this file exists. A new
-                    // counter beside them would repeat their versions.
-                    if root.entry("namespaces")?.is_some() {
-                        return Err(std::io::Error::other(
-                            "storage counter is missing beside existing objects",
-                        ));
-                    }
-                    set_version(&file, 0)?;
-                }
-                _ => {
-                    return Err(std::io::Error::other(
-                        "invalid storage counter initialization",
-                    ));
-                }
-            }
-            file.write_all(b"fyrr local version counter\n")?;
-            sync_file(&file, &lock)?;
+            file.write_all(NO_COUNTER)?;
+            changed = true;
+        }
+        match rustix::fs::fremovexattr(&*file, VERSION) {
+            Ok(()) => changed = true,
+            Err(rustix::io::Errno::NODATA) => {}
+            Err(error) => return Err(error.into()),
+        }
+        if changed {
+            sync_file(file, &root.path.join(LOCK))?;
             root.sync()?;
         }
-        // Missing or damaged counter metadata must never reset the sequence.
-        read_version(&file)?;
-        Ok(file)
+        Ok(())
     }
 
     fn put_blocking(
@@ -422,10 +423,8 @@ impl LocalStore {
         payload: PutPayload,
         mode: PutMode,
     ) -> Result<PutResult> {
-        // The lock is taken before any directory is created: its first use
-        // tells a new root from one that lost its counter.
         self.names(location)?;
-        let lock = self
+        let _lock = self
             .lock()
             .map_err(|error| failure(&self.root_path.join(LOCK), error))?;
         let place = self.place(location, true)?;
@@ -440,7 +439,7 @@ impl LocalStore {
         )
         .map(File::from)
         .map_err(|error| io(error.into()))?;
-        let result = self.publish(&place, &mut file, &payload, mode, &lock);
+        let result = self.publish(&place, &mut file, &payload, mode);
         if result.is_err() {
             let _ = root.unlink(STAGE);
         }
@@ -457,7 +456,6 @@ impl LocalStore {
         file: &mut File,
         payload: &PutPayload,
         mode: PutMode,
-        lock: &File,
     ) -> Result<PutResult> {
         let io = |error| failure(&place.path, error);
         let (root, parent) = (&place.chain[0], place.parent());
@@ -522,13 +520,7 @@ impl LocalStore {
                 directory.sync().map_err(io)?;
             }
         }
-        let next = read_version(lock)
-            .map_err(io)?
-            .checked_add(1)
-            .ok_or_else(|| io(std::io::Error::other("version counter exhausted")))?;
-        set_version(lock, next).map_err(io)?;
-        // Persist the reservation before any object can expose this version.
-        sync_file(lock, &root.path.join(LOCK)).map_err(io)?;
+        let next = new_tag().map_err(io)?;
         set_version(file, next).map_err(io)?;
         sync_file(file, &staged).map_err(io)?;
         #[cfg(test)]
@@ -622,7 +614,7 @@ impl LocalStore {
             version: None,
         };
         // Lance's immutable files are written by LocalFileSystem directly.
-        // Only our control objects carry the durable counter version. Missing
+        // Only our control objects carry a tag. Missing
         // metadata is valid solely for files owned by Lance.
         match read_version(&file) {
             Ok(version) => meta.e_tag = Some(version_tag(version)),
@@ -783,6 +775,22 @@ impl LocalStore {
                 source: Box::new(error),
             })?
     }
+}
+
+/// A tag no other write has: 128 bits from the operating system's generator.
+/// A failure to obtain them fails the write.
+fn new_tag() -> std::io::Result<u128> {
+    let mut bytes = [0u8; 16];
+    let mut filled = 0;
+    while filled < bytes.len() {
+        match rustix::rand::getrandom(&mut bytes[filled..], rustix::rand::GetRandomFlags::empty()) {
+            Ok(0) => return Err(std::io::Error::other("no random bytes for an object tag")),
+            Ok(read) => filled += read,
+            Err(rustix::io::Errno::INTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(u128::from_be_bytes(bytes))
 }
 
 fn read_version(file: &File) -> std::io::Result<u128> {

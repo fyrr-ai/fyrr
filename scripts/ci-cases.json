@@ -395,7 +395,7 @@
         "tier": "quick",
         "seconds": 9.929
       },
-      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_never_restarts_the_counter_over_existing_objects": {
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_takes_a_root_over_from_the_version_counter": {
         "tier": "quick",
         "seconds": 0.202
       },
