@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Use cases · fyrr</title>
+<meta name="description" content="What fyrr is used for: search for your AI agent over your own notes, a team&rsquo;s shared knowledge, a whole company behind its login, or the agents you build.">
+<meta property="og:title" content="Use cases · fyrr">
+<meta property="og:description" content="Start on one laptop, grow to the whole company: permission-aware search for AI agents.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2016%2016%27%20shape-rendering%3D%27crispEdges%27%3E%3Crect%20width%3D%2716%27%20height%3D%2716%27%20fill%3D%27%23000%27%2F%3E%3Cg%20transform%3D%27translate%280%203%29%27%20fill%3D%27%23ffea5d%27%3E%3Crect%20x%3D%2710%27%20y%3D%270%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%271%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%271%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2711%27%20y%3D%271%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%272%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%272%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%272%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2711%27%20y%3D%272%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2712%27%20y%3D%272%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%276%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2711%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2712%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2713%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%276%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%277%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2711%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2712%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2713%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2714%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%276%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%277%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%278%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%276%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%276%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%272%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%273%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%276%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%277%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%278%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%279%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2711%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2712%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2713%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2714%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%273%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%276%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%277%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%278%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%279%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2711%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2712%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2713%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%276%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%277%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%278%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%279%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2711%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%2712%27%20y%3D%279%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&display=swap" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&display=swap"></noscript>
+<style>
+/*BASE*/
+/*SECTIONS*/
+  .top { padding: 128px var(--gutter) 72px; }
+  .top .wrap, .last .wrap { max-width: 1280px; }
+  .lede { max-width: 46ch; margin-top: 24px; font-size: 20px; line-height: 30px; color: var(--fg-muted); text-wrap: balance; }
+
+  .steps { max-width: calc(1280px + 2 * var(--gutter)); margin: 0 auto; padding: 0 var(--gutter) 96px; }
+  .step { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); }
+  .step__fog { z-index: -1; left: -40px; top: -56px; width: calc(100% + 80px); height: calc(100% + 112px); opacity: .5; }
+  .step__scene { position: relative; min-height: 300px; }
+  .step__sea { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; image-rendering: crisp-edges; }
+  .step__body { display: flex; flex-direction: column; padding: 40px 0 40px 48px; }
+  .step__body .title { font-size: clamp(32px, 3.6vw, 48px); }
+  .step__body .sub { margin-top: 12px; }
+  .step__body .title, .step__body .sub { position: relative; z-index: 1; width: fit-content; padding-right: 16px; background: #000; }   /* the fog stays behind the cards */
+  .step__stage { position: relative; isolation: isolate; margin-top: 32px; }
+  .step__uses { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  .step__uses--4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .step__uses .panel { display: flex; flex-direction: column; }
+  .step__uses .panel__body { flex: 1; display: flex; flex-direction: column; }
+  .step__uses .panel__body > span { font-size: 15px; line-height: 22px; color: var(--fg-muted); text-wrap: pretty; }
+  .step__uses .sources { margin-top: auto; padding-top: 24px; gap: 6px; }
+  .step__uses .sources li { padding: 6px 10px; font-size: 12px; }
+
+  .last { padding: 96px var(--gutter) 48px; border-top: 1px solid var(--line); }
+  .last__row { display: flex; justify-content: space-between; align-items: flex-end; gap: 32px; flex-wrap: wrap; }
+  .last .buttons { margin-top: 0; }
+  .legal { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 64px; font-size: 12px; line-height: 16px; color: var(--fg-dim); }
+  .legal a:hover { color: var(--fg); }
+
+  @media (max-width: 1000px) {
+    .step__fog { left: -16px; top: -40px; width: calc(100% + 32px); height: calc(100% + 80px); }
+    .step { grid-template-columns: minmax(0, 1fr); }
+    .step__scene { min-height: 180px; }
+    .step__body { padding: 8px 0 40px; }
+  }
+  @media (max-width: 640px) {
+    .top { padding: 96px var(--gutter) 48px; }
+    .lede { font-size: 17px; line-height: 26px; }
+      .step__uses { grid-template-columns: minmax(0, 1fr); }
+    .steps { padding-bottom: 64px; }
+    .last { padding-top: 64px; }
+  }
+</style>
+</head>
+<body>
+<!--HEADER-->
+<main>
+<section class="top">
+  <div class="wrap">
+    <p class="eyebrow">Use cases</p>
+    <h1 class="title">Start on one laptop.<br>Grow to the whole company.</h1>
+    <p class="lede">Search for AI agents over your company&rsquo;s knowledge. Everyone sees only what they may.</p>
+  </div>
+</section>
+<div class="steps">
+  <section class="step" id="you">
+    <div class="step__scene"><canvas class="step__sea" data-scene="you" aria-hidden="true"></canvas></div>
+    <div class="step__body">
+      <h2 class="title">Just you</h2>
+      <p class="sub">A folder on your laptop.</p>
+      <div class="step__stage"><canvas class="stage__fog step__fog" data-seed="7" data-pace="2.2" aria-hidden="true"></canvas><ul class="step__uses"><li class="panel"><p class="panel__bar"><span>Agent memory</span></p><div class="panel__body"><span>Your agent searches your notes, tickets and chats, so it remembers what you already decided.</span><ul class="sources"><li>Local files</li><li>Slack</li><li>Jira</li><li>Notion</li></ul></div></li><li class="panel"><p class="panel__bar"><span>Coding context</span></p><div class="panel__body"><span>Before the first line, your coding agent reads the ticket, the pull requests and the threads behind them.</span><ul class="sources"><li>GitHub</li><li>Jira</li><li>Slack</li></ul></div></li><li class="panel"><p class="panel__bar"><span>Local docs</span></p><div class="panel__body"><span>Search folders of Markdown, text and code by meaning and by exact words, on your own disk.</span><ul class="sources"><li>Local files</li></ul></div></li></ul></div>
+    </div>
+  </section>
+  <section class="step" id="team">
+    <div class="step__scene"><canvas class="step__sea" data-scene="team" aria-hidden="true"></canvas></div>
+    <div class="step__body">
+      <h2 class="title">Your team</h2>
+      <p class="sub">One S3 bucket. No server.</p>
+      <div class="step__stage"><canvas class="stage__fog step__fog" data-seed="4" data-pace="2.2" aria-hidden="true"></canvas><ul class="step__uses step__uses--4"><li class="panel"><p class="panel__bar"><span>Shared knowledge</span></p><div class="panel__body"><span>Index the team&rsquo;s docs, chats, tickets and code once. Every teammate&rsquo;s agent searches the same index.</span><ul class="sources"><li>Google Drive</li><li>Notion</li><li>Slack</li><li>GitHub</li></ul></div></li><li class="panel"><p class="panel__bar"><span>Code search</span></p><div class="panel__body"><span>Search code, pull requests and issues across your repositories, by meaning and by exact names.</span><ul class="sources"><li>GitHub</li><li>Local files</li></ul></div></li><li class="panel"><p class="panel__bar"><span>Onboarding</span></p><div class="panel__body"><span>New people ask their agent how things work and why, instead of interrupting the team.</span><ul class="sources"><li>Notion</li><li>Google Drive</li><li>GitHub</li><li>Slack</li></ul></div></li><li class="panel"><p class="panel__bar"><span>Support</span></p><div class="panel__body"><span>Answer customers from product docs, past tickets and the threads where the fix was explained.</span><ul class="sources"><li>Jira</li><li>Slack</li><li>Notion</li><li>Google Drive</li></ul></div></li></ul></div>
+    </div>
+  </section>
+  <section class="step" id="company">
+    <div class="step__scene"><canvas class="step__sea" data-scene="company" aria-hidden="true"></canvas></div>
+    <div class="step__body">
+      <h2 class="title">The company</h2>
+      <p class="sub">One reader behind your login.</p>
+      <div class="step__stage"><canvas class="stage__fog step__fog" data-seed="3" data-pace="2.2" aria-hidden="true"></canvas><ul class="step__uses"><li class="panel"><p class="panel__bar"><span>Company search</span></p><div class="panel__body"><span>One search across every source, from the AI apps people already use, behind your company login.</span><ul class="sources"><li>Any MCP client</li><li>OIDC login</li></ul></div></li><li class="panel"><p class="panel__bar"><span>Permissions kept</span></p><div class="panel__body"><span>fyrr checks each person&rsquo;s access inside the search, so nobody sees a document they could not open.</span><ul class="sources"><li>Keycloak</li><li>SCIM</li></ul></div></li><li class="panel"><p class="panel__bar"><span>Your cloud</span></p><div class="panel__body"><span>The index and its permissions live in your own S3 bucket. No database or search cluster to run.</span><ul class="sources"><li>S3 bucket</li><li>Local disk</li></ul></div></li></ul></div>
+    </div>
+  </section>
+  <section class="step" id="builders">
+    <div class="step__scene"><canvas class="step__sea" data-scene="builders" aria-hidden="true"></canvas></div>
+    <div class="step__body">
+      <h2 class="title">Builders</h2>
+      <p class="sub">Your own agents, models and sources.</p>
+      <div class="step__stage"><canvas class="stage__fog step__fog" data-seed="9" data-pace="2.2" aria-hidden="true"></canvas><ul class="step__uses"><li class="panel"><p class="panel__bar"><span>Agent tools</span></p><div class="panel__body"><span>Give the agents you build search, fetch and filters over MCP, for one user or many.</span><ul class="sources"><li>MCP stdio</li><li>MCP HTTP</li></ul></div></li><li class="panel"><p class="panel__bar"><span>Train &amp; evaluate</span></p><div class="panel__body"><span>Train and test search agents on one fixed snapshot of the index, so every run sees the same documents.</span><ul class="sources"><li>Snapshots</li><li>Rollback</li></ul></div></li><li class="panel"><p class="panel__bar"><span>Any source</span></p><div class="panel__body"><span>Write a connector for any internal system. Documents and permissions sync like built-in ones.</span><ul class="sources"><li>Python SDK</li></ul></div></li></ul></div>
+    </div>
+  </section>
+</div>
+<section class="last">
+  <div class="wrap">
+    <div class="last__row">
+      <div>
+        <p class="eyebrow">Get started</p>
+        <h2 class="title">Start with<br>one question.</h2>
+      </div>
+      <div class="buttons">
+        <a href="/docs/quickstart" class="btn btn--primary">Run the quickstart</a>
+        <a href="https://github.com/fyrr-ai/fyrr" class="btn">View on GitHub</a>
+      </div>
+    </div>
+    <p class="legal"><span>Apache-2.0</span><a href="https://github.com/fyrr-ai/fyrr/blob/main/SECURITY.md">Security</a><a href="https://github.com/fyrr-ai/fyrr/blob/main/CONTRIBUTING.md">Contributing</a><a href="https://github.com/fyrr-ai/fyrr/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></p>
+  </div>
+</section>
+</main>
+<!--SCRIPTS-->
+<script>
+(function () {
+  'use strict';
+  /* each step gets its own water: one ship, three sailing together, a busy harbour, a dock */
+  watchFog(document.querySelectorAll('.stage__fog'));
+  Array.prototype.forEach.call(document.querySelectorAll('.step__sea'), function (c) {
+    var kind = c.dataset.scene;
+    if (kind === 'you') sailShips(c, 1, { stay: true, band: 0.4, wake: 6 });
+    else if (kind === 'team') sailShips(c, 1, { seed: 311, formation: [[0, 0], [18, -9], [18, 9]], stay: true, band: 0.3, wake: 6 });
+    else if (kind === 'company') sailShips(c, function (width) { return width < 400 ? 5 : 8; }, { seed: 97, speed: 1.3, drift: 5, margin: 16, wake: 6 });
+    else buildShips(c, 5);
+  });
+})();
+</script>
+</body>
+</html>
