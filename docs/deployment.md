@@ -13,6 +13,8 @@
 Monitoring, maintenance, restore and upgrades of a running deployment are
 in [operations](operations.md).
 
+For an experimental serverless reader, see [Run the reader on AWS Lambda](lambda.md).
+
 ## Topology
 
 Writers on different hosts take expiring leases per source and sync kind;

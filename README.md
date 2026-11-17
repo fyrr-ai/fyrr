@@ -94,6 +94,7 @@ The example's top hit is `notes/backup.md`, with the answer:
 | [Security model](docs/security.md) | Trust boundaries, permissions and secrets |
 | [HTTP login and users](docs/http-users.md) | Authenticate and enroll HTTP users |
 | [Deployment](docs/deployment.md) | Production setup, images and scheduling |
+| [AWS Lambda](docs/lambda.md) | Experimental reader deployment |
 | [Operations](docs/operations.md) | Monitor, restore, retire and upgrade |
 | [Configuration](docs/configuration.md) | Storage, embeddings, sources and secrets |
 | [Identity](docs/identity.md) | Users, directories, keys and OIDC |

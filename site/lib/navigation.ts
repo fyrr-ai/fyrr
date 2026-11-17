@@ -33,6 +33,11 @@ export const navigation = [
         "Cron is a perfectly good captain."
       ],
       [
+        "lambda.md",
+        "AWS Lambda (experimental)",
+        "Run the reader with a private mirror per execution environment."
+      ],
+      [
         "operations.md",
         "Operations",
         "Keep the lamp lit. Roll back when the sea turns."
