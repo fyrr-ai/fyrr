@@ -181,11 +181,7 @@ async fn delete_blocks_source_workers_during_verification_on_local_storage() {
     assert!(matches!(source, Err(fyrr_writer::WriterError::SyncBusy)));
     deletion_boundary.release();
     let output = process.finish_bounded();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", report(&output));
     assert!(
         fyrr_reader::storage::optional_head(&config)
             .await

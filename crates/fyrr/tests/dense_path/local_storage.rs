@@ -38,20 +38,12 @@ async fn local_storage_publishes_and_serves_with_permission_filtering() {
     };
     assert!(!storage.exists());
     let check = run(&config, &["config", "check"]);
-    assert!(
-        check.status.success(),
-        "{}",
-        String::from_utf8_lossy(&check.stderr)
-    );
+    assert!(check.status.success(), "{}", report(&check));
 
     success(&config, &["writer", "namespace", "create"]);
     assert_eq!(mode(&storage), 0o700, "fyrr creates the root private");
     let sync = run(&config, &["writer", "sync"]);
-    assert!(
-        sync.status.success(),
-        "{}",
-        String::from_utf8_lossy(&sync.stderr)
-    );
+    assert!(sync.status.success(), "{}", report(&sync));
     assert_eq!(String::from_utf8_lossy(&sync.stdout).lines().count(), 2);
     success(&config, &["writer", "commit"]);
 
@@ -114,11 +106,7 @@ async fn local_storage_publishes_and_serves_with_permission_filtering() {
     // A commit with nothing pending, maintenance and verification converge.
     success(&config, &["writer", "commit"]);
     let maintain = run(&config, &["writer", "maintain"]);
-    assert!(
-        maintain.status.success(),
-        "{}",
-        String::from_utf8_lossy(&maintain.stderr)
-    );
+    assert!(maintain.status.success(), "{}", report(&maintain));
     assert_eq!(success(&config, &["writer", "verify"])["verified"], true);
     success(&config, &["reader", "check"]);
 
@@ -155,7 +143,10 @@ async fn local_storage_reaps_abandoned_uploads_but_protects_live_staging() {
     )
     .unwrap();
     success(&config, &["writer", "namespace", "create"]);
-    assert!(run(&config, &["writer", "sync"]).status.success());
+    {
+        let output = run(&config, &["writer", "sync"]);
+        assert!(output.status.success(), "{}", report(&output));
+    }
     success(&config, &["writer", "commit"]);
     let loaded = fyrr_core::config::load(&config).unwrap();
     let Some(StorageBackend::Local { root: storage }) = loaded.config.storage.backend() else {

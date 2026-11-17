@@ -82,7 +82,10 @@ async fn retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_storag
             snapshot.to_str().unwrap(),
         ],
     );
-    assert!(run(&config, &["writer", "sync"]).status.success());
+    {
+        let output = run(&config, &["writer", "sync"]);
+        assert!(output.status.success(), "{}", report(&output));
+    }
     success(&config, &["writer", "commit"]);
     let mut live = Vec::<(super::tools::Mcp, PathBuf)>::new();
     for (cohort, permitted) in [
@@ -160,11 +163,7 @@ async fn retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_storag
                     &route_config,
                     &["reader", "search", "routing-only query", "--limit", "10"],
                 );
-                assert!(
-                    result.status.success(),
-                    "{}",
-                    String::from_utf8_lossy(&result.stderr)
-                );
+                assert!(result.status.success(), "{}", report(&result));
                 let value: Value = serde_json::from_slice(&result.stdout).unwrap();
                 let hits = &value["hits"];
                 let take_config = root.join(format!("{cohort}-{route}-take.toml"));
@@ -325,7 +324,10 @@ async fn retrieval_publication_authorization_cache_budget_on_storage() {
         &config,
         &["writer", "directory", "--snapshot", input.to_str().unwrap()],
     );
-    assert!(run(&config, &["writer", "sync"]).status.success());
+    {
+        let output = run(&config, &["writer", "sync"]);
+        assert!(output.status.success(), "{}", report(&output));
+    }
     success(&config, &["writer", "commit"]);
     directory.built_at = fyrr_core::clock::now();
     directory.users[0].active = false;

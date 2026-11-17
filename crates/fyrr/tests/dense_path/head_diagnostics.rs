@@ -133,11 +133,7 @@ async fn ec2_metadata_opt_out_preserves_other_credential_sources_on_real_s3() {
         .args(["writer", "namespace", "create"])
         .output()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", report(&output));
     assert_eq!(
         requests.load(Ordering::SeqCst),
         0,

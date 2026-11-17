@@ -168,11 +168,7 @@ async fn committer_indexes_and_stale_prepared_acl_on_storage() {
             .args(["writer", "commit", "--stage-timings"])
             .output()
             .unwrap();
-        assert!(
-            result.status.success(),
-            "{}",
-            String::from_utf8_lossy(&result.stderr)
-        );
+        assert!(result.status.success(), "{}", report(&result));
         success(&commit, &["writer", "verify"]);
         let mut client = super::tools::Mcp::open(&config);
         let result = client.call("fetch", json!({"source_id":"incremental","root_id":"a"}));
@@ -200,11 +196,7 @@ async fn committer_indexes_and_stale_prepared_acl_on_storage() {
                 .args(["writer", "commit", "--stage-timings"])
                 .output()
                 .unwrap();
-            assert!(
-                result.status.success(),
-                "{}",
-                String::from_utf8_lossy(&result.stderr)
-            );
+            assert!(result.status.success(), "{}", report(&result));
             success(&commit, &["writer", "verify"]);
             let mut client = super::tools::Mcp::open(&config);
             let result = client.call("fetch", json!({"source_id":"incremental","root_id":"a"}));
@@ -388,11 +380,7 @@ async fn serve_isolates_failed_providers_while_publishing_on_storage() {
         .status()
         .unwrap();
     let result = process.finish();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    assert!(result.status.success(), "{}", report(&result));
     success(&commit, &["writer", "verify"]);
 }
 

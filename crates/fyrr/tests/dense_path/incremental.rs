@@ -460,11 +460,7 @@ async fn incremental_section_readers_survive_a_later_permission_state_on_storage
         .args(["writer", "rollback"])
         .output()
         .unwrap();
-    assert!(
-        rollback.status.success(),
-        "{}",
-        String::from_utf8_lossy(&rollback.stderr)
-    );
+    assert!(rollback.status.success(), "{}", report(&rollback));
     assert_eq!(section_readers(&rows(&worker).await, "s"), both);
 }
 

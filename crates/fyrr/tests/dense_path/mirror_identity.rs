@@ -15,11 +15,7 @@ fn publish(config: &Path, root: &FixtureRoot, text: &str) {
     root.embedding.insert_both(text, vector);
     success(config, &["writer", "namespace", "create"]);
     let sync = run(config, &["writer", "sync"]);
-    assert!(
-        sync.status.success(),
-        "{}",
-        String::from_utf8_lossy(&sync.stderr)
-    );
+    assert!(sync.status.success(), "{}", report(&sync));
     success(config, &["writer", "commit"]);
 }
 
@@ -119,11 +115,7 @@ fn sync_texts(config: &Path, root: &FixtureRoot, texts: &[(&str, &str)]) {
         root.embedding.insert_both(text, vector);
     }
     let sync = run(config, &["writer", "sync"]);
-    assert!(
-        sync.status.success(),
-        "{}",
-        String::from_utf8_lossy(&sync.stderr)
-    );
+    assert!(sync.status.success(), "{}", report(&sync));
 }
 
 /// `namespace delete --export` after writing the verified export it demands.
@@ -378,11 +370,7 @@ async fn running_http_replacement(backend: Backend) {
         .args(["writer", "sync", "--directory"])
         .output()
         .unwrap();
-    assert!(
-        pull.status.success(),
-        "{}",
-        String::from_utf8_lossy(&pull.stderr)
-    );
+    assert!(pull.status.success(), "{}", report(&pull));
     let second = super::coordination::publication(&commit).await.1;
     assert_ne!(second.publication_id, first.publication_id);
 

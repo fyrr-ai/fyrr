@@ -76,14 +76,19 @@ fn run(config: &Path, args: &[&str]) -> Output {
         .output()
         .expect("execute fyrr")
 }
+/// Everything a failed command reported. Commands such as `writer sync` name
+/// their error on stdout, so a failure message needs both streams.
+fn report(output: &Output) -> String {
+    format!(
+        "status={}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
 fn success(config: &Path, args: &[&str]) -> Value {
     let output = run(config, args);
-    assert!(
-        output.status.success(),
-        "{args:?}: status={} stderr={}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{args:?}: {}", report(&output));
     serde_json::from_slice(&output.stdout).expect("JSON output")
 }
 
