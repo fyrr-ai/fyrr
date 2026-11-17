@@ -9,12 +9,17 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
-- Local storage (`file://`) tags each object write with 128 random bits
-  instead of a number from a counter on `.fyrr-storage.lock`. Existing roots
-  need no migration: the first write of this release removes the counter,
-  and objects keep the tags they have. Earlier releases then refuse to write
-  to that root, so upgrade every process that writes to it together; going
-  back to an earlier release is not supported.
+- Local storage (`file://`) no longer serializes every write through one
+  lock on the storage root. Creating an object takes no lock, replacing or
+  removing one locks only that object, and nothing is flushed under a lock,
+  so a busy disk no longer fails `writer sync` with `storage_unavailable` or
+  `sync_lease_lost`. Each write is tagged with 128 random bits instead of a
+  number from a counter on `.fyrr-storage.lock`, and stages in
+  `.fyrr-storage.stage.d/`. Existing roots need no migration: the first
+  write of this release removes the counter, and objects keep the tags they
+  have. Earlier releases then refuse to write to that root, so upgrade every
+  process that writes to it together; going back to an earlier release is
+  not supported.
 - Default fusion weights favour the dense lane more (dense_weight 0.5,
   lexical_candidates 200). Configuration schema 4.0 records the new defaults;
   dense candidates and rescoring are unchanged. Existing publications retain
