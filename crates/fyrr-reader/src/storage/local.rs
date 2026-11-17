@@ -20,6 +20,13 @@
 //! - the single reserved staging file is reaped under the lock before every
 //!   mutation, so a killed writer cannot leave unlisted data through a purge.
 //!
+//! - every object is reached by walking from the held root descriptor, one
+//!   `openat` per directory with `O_NOFOLLOW`, and is then read, published or
+//!   removed relative to its parent descriptor. A symlink or a replaced
+//!   directory cannot redirect an operation outside the root between a check
+//!   and its use. Listings find names with `LocalFileSystem` and re-read each
+//!   one this way.
+//!
 //! Reads take no lock. The lock is advisory and local to one kernel, so the
 //! directory must not be shared between hosts; network file systems are
 //! refused where `statfs` names them.
@@ -37,9 +44,10 @@ use object_store::{
     ObjectMeta, ObjectStore, PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult,
     Result,
 };
-use std::fs::{File, Metadata, OpenOptions};
+use rustix::fs::{Mode, OFlags};
+use std::fs::{File, Metadata};
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -70,16 +78,87 @@ const REMOTE_FILE_SYSTEMS: [u64; 7] = [
 pub(super) struct LocalStore {
     inner: Arc<LocalFileSystem>,
     root: Path,
-    lock: PathBuf,
+    root_path: PathBuf,
     directory: Arc<File>,
     root_identity: (u64, u64),
-    cleanup_directories: Option<Arc<std::sync::Mutex<std::collections::BTreeSet<PathBuf>>>>,
+    cleanup_directories: Option<Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, File>>>>,
 }
 
 impl std::fmt::Display for LocalStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(STORE)
     }
+}
+
+/// A directory at or below the storage root, opened by walking from the held
+/// root descriptor. `path` only names it in errors and the test recorder.
+#[derive(Debug)]
+struct Directory {
+    file: File,
+    path: PathBuf,
+}
+
+impl Directory {
+    fn sync(&self) -> std::io::Result<()> {
+        sync_file(&self.file, &self.path)
+    }
+
+    /// The entry `name` without following it, or `None` when it is missing.
+    fn entry(&self, name: &str) -> std::io::Result<Option<rustix::fs::Stat>> {
+        match rustix::fs::statat(&self.file, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(entry) => Ok(Some(entry)),
+            Err(rustix::io::Errno::NOENT) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Opens the regular file `name` for reading; a symlink is refused.
+    fn object(&self, name: &str) -> std::io::Result<(File, Metadata)> {
+        let file = File::from(rustix::fs::openat(
+            &self.file,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::other("not a regular file"));
+        }
+        Ok((file, metadata))
+    }
+
+    fn unlink(&self, name: &str) -> std::io::Result<()> {
+        Ok(rustix::fs::unlinkat(
+            &self.file,
+            name,
+            rustix::fs::AtFlags::empty(),
+        )?)
+    }
+}
+
+/// Where an object lives: its directories from the root down to its parent,
+/// each opened from the one above without following symlinks, and its name.
+/// Every operation on the object goes through the parent descriptor, so no
+/// path is resolved again between a check and its use.
+#[derive(Debug)]
+struct Place {
+    chain: Vec<Directory>,
+    name: String,
+    path: PathBuf,
+}
+
+impl Place {
+    fn parent(&self) -> &Directory {
+        self.chain.last().expect("the chain starts at the root")
+    }
+}
+
+fn is_symlink(entry: &rustix::fs::Stat) -> bool {
+    rustix::fs::FileType::from_raw_mode(entry.st_mode) == rustix::fs::FileType::Symlink
+}
+
+fn is_regular(entry: &rustix::fs::Stat) -> bool {
+    rustix::fs::FileType::from_raw_mode(entry.st_mode) == rustix::fs::FileType::RegularFile
 }
 
 impl LocalStore {
@@ -112,7 +191,7 @@ impl LocalStore {
         Ok(Self {
             inner: Arc::new(LocalFileSystem::new().with_fsync(true)),
             root: Path::from_absolute_path(root).map_err(std::io::Error::other)?,
-            lock: root.join(LOCK),
+            root_path: root.to_path_buf(),
             directory,
             root_identity: (metadata.dev(), metadata.ino()),
             cleanup_directories: None,
@@ -124,29 +203,25 @@ impl LocalStore {
         dataset: &Path,
         files: &[fyrr_core::envelope::FileRef],
     ) -> std::io::Result<()> {
-        let mut directories = std::collections::BTreeSet::new();
+        let mut directories = std::collections::BTreeMap::new();
         for file in files {
             let location = Path::from(format!("{dataset}/{}", file.path));
             if location.prefix_match(dataset).is_none() || !self.is_native_file(&location) {
                 return Err(std::io::Error::other("native file outside dataset"));
             }
-            let target = self.target(&location).map_err(std::io::Error::other)?;
-            let (opened, metadata) = open_object(&target)?;
+            let place = self.place(&location, false)?;
+            let (opened, metadata) = place.parent().object(&place.name)?;
             if metadata.len() != file.size_bytes {
                 return Err(std::io::Error::other("native file size changed"));
             }
-            sync_file(&opened, &target)?;
-            let mut parent = target.parent();
-            while let Some(directory) =
-                parent.filter(|directory| directory.starts_with(self.lock.parent().expect("root")))
-            {
-                directories.insert(directory.to_path_buf());
-                parent = directory.parent();
+            sync_file(&opened, &place.path)?;
+            for directory in place.chain {
+                directories.entry(directory.path).or_insert(directory.file);
             }
         }
         // Descendants before ancestors, including newly created native directories.
-        for directory in directories.into_iter().rev() {
-            sync_file(&File::open(&directory)?, &directory)?;
+        for (path, directory) in directories.iter().rev() {
+            sync_file(directory, path)?;
         }
         Ok(())
     }
@@ -162,15 +237,13 @@ impl LocalStore {
         self.blocking(|store| {
             let directories = store.cleanup_directories.as_ref().expect("cleanup batch");
             let mut directories = directories.lock().expect("cleanup directories lock");
-            for directory in directories.iter() {
-                File::open(directory)
-                    .and_then(|file| sync_file(&file, directory))
-                    .map_err(|error| failure(directory, error))?;
+            for (path, directory) in directories.iter() {
+                sync_file(directory, path).map_err(|error| failure(path, error))?;
             }
             directories.clear();
             #[cfg(feature = "test-store")]
-            super::test_store::sync::acknowledged("cleanup", &store.lock)
-                .map_err(|error| failure(&store.lock, error))?;
+            super::test_store::sync::acknowledged("cleanup", &store.root_path)
+                .map_err(|error| failure(&store.root_path, error))?;
             Ok(())
         })
         .await
@@ -189,19 +262,104 @@ impl LocalStore {
         })
     }
 
+    /// The held root descriptor, after checking that the root path still
+    /// names it: a replaced or redirected root must not be served.
+    fn root_directory(&self) -> std::io::Result<Directory> {
+        let current = std::fs::symlink_metadata(&self.root_path)?;
+        if !current.is_dir() || (current.dev(), current.ino()) != self.root_identity {
+            return Err(std::io::Error::other("storage root changed"));
+        }
+        Ok(Directory {
+            file: self.directory.try_clone()?,
+            path: self.root_path.clone(),
+        })
+    }
+
+    /// The names of `location` below the root; only objects of this store.
+    fn names(&self, location: &Path) -> Result<Vec<String>> {
+        let outside = || unsupported("path outside the namespace");
+        if self.is_internal(location) {
+            return Err(outside());
+        }
+        let names: Vec<String> = location
+            .prefix_match(&self.root)
+            .ok_or_else(outside)?
+            .map(|part| part.as_ref().to_owned())
+            .collect();
+        if names.is_empty()
+            || names
+                .iter()
+                .any(|name| matches!(name.as_str(), "" | "." | "..") || name.contains('/'))
+        {
+            return Err(outside());
+        }
+        Ok(names)
+    }
+
+    /// Opens the directories `names` one below the other, starting at the
+    /// held root descriptor. No component is followed when it is a symlink,
+    /// so the result is beneath the root whatever happens to the tree
+    /// meanwhile. `create` makes missing directories private.
+    fn chain(&self, names: &[String], create: bool) -> std::io::Result<Vec<Directory>> {
+        let mut chain = vec![self.root_directory()?];
+        for name in names {
+            let above = chain.last().expect("the chain starts at the root");
+            let open = || {
+                rustix::fs::openat(
+                    &above.file,
+                    name.as_str(),
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+            };
+            let opened = match open() {
+                Err(rustix::io::Errno::NOENT) if create => {
+                    match rustix::fs::mkdirat(&above.file, name.as_str(), Mode::RWXU) {
+                        Ok(()) | Err(rustix::io::Errno::EXIST) => open(),
+                        Err(error) => Err(error),
+                    }
+                }
+                opened => opened,
+            };
+            let file = match opened {
+                Ok(file) => File::from(file),
+                Err(error) => {
+                    return Err(match above.entry(name) {
+                        Ok(Some(entry)) if is_symlink(&entry) => {
+                            std::io::Error::other("symlink in storage path")
+                        }
+                        Ok(Some(_)) => std::io::Error::from(ErrorKind::NotADirectory),
+                        _ => error.into(),
+                    });
+                }
+            };
+            let path = above.path.join(name);
+            chain.push(Directory { file, path });
+        }
+        Ok(chain)
+    }
+
+    fn place(&self, location: &Path, create: bool) -> Result<Place> {
+        let mut names = self.names(location)?;
+        let name = names.pop().expect("an object has a name");
+        let path = self.inner.path_to_filesystem(location)?;
+        let chain = self
+            .chain(&names, create)
+            .map_err(|error| failure(&path, error))?;
+        Ok(Place { chain, name, path })
+    }
+
     /// The exclusive lock every mutation holds; released when the file closes,
     /// also when the process dies.
     fn lock(&self) -> std::io::Result<File> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(
-                (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32,
-            )
-            .open(&self.lock)?;
+        let root = self.root_directory()?;
+        let lock = self.root_path.join(LOCK);
+        let mut file = File::from(rustix::fs::openat(
+            &root.file,
+            LOCK,
+            OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )?);
         let meta = file.metadata()?;
         if !meta.is_file()
             || meta.uid() != rustix::process::getuid().as_raw()
@@ -236,12 +394,7 @@ impl LocalStore {
                 {
                     // Objects are written only after this file exists. A new
                     // counter beside them would repeat their versions.
-                    if self
-                        .lock
-                        .with_file_name("namespaces")
-                        .symlink_metadata()
-                        .is_ok()
-                    {
+                    if root.entry("namespaces")?.is_some() {
                         return Err(std::io::Error::other(
                             "storage counter is missing beside existing objects",
                         ));
@@ -255,8 +408,8 @@ impl LocalStore {
                 }
             }
             file.write_all(b"fyrr local version counter\n")?;
-            sync_file(&file, &self.lock)?;
-            sync_parent(&self.lock)?;
+            sync_file(&file, &lock)?;
+            root.sync()?;
         }
         // Missing or damaged counter metadata must never reset the sequence.
         read_version(&file)?;
@@ -269,47 +422,46 @@ impl LocalStore {
         payload: PutPayload,
         mode: PutMode,
     ) -> Result<PutResult> {
-        let target = self.target(location)?;
-        let io = |error| failure(&target, error);
-        let lock = self.lock().map_err(io)?;
-        self.reap_stage().map_err(io)?;
-        let parent = target
-            .parent()
-            .ok_or_else(|| io(std::io::Error::other("object has no directory")))?;
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)
-            .map_err(io)?;
-        let staged = self.lock.with_file_name(STAGE);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(&staged)
-            .map_err(io)?;
-        let result = self.publish(&target, &mut file, &staged, &payload, mode, &lock);
+        // The lock is taken before any directory is created: its first use
+        // tells a new root from one that lost its counter.
+        self.names(location)?;
+        let lock = self
+            .lock()
+            .map_err(|error| failure(&self.root_path.join(LOCK), error))?;
+        let place = self.place(location, true)?;
+        let io = |error| failure(&place.path, error);
+        let root = &place.chain[0];
+        self.reap_stage(root).map_err(io)?;
+        let mut file = rustix::fs::openat(
+            &root.file,
+            STAGE,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .map(File::from)
+        .map_err(|error| io(error.into()))?;
+        let result = self.publish(&place, &mut file, &payload, mode, &lock);
         if result.is_err() {
-            let _ = std::fs::remove_file(&staged);
+            let _ = root.unlink(STAGE);
         }
         #[cfg(feature = "test-store")]
         if result.is_ok() {
-            super::test_store::sync::acknowledged("put", &target).map_err(io)?;
+            super::test_store::sync::acknowledged("put", &place.path).map_err(io)?;
         }
         result
     }
 
     fn publish(
         &self,
-        target: &std::path::Path,
+        place: &Place,
         file: &mut File,
-        staged: &std::path::Path,
         payload: &PutPayload,
         mode: PutMode,
         lock: &File,
     ) -> Result<PutResult> {
-        let io = |error| failure(target, error);
+        let io = |error| failure(&place.path, error);
+        let (root, parent) = (&place.chain[0], place.parent());
+        let staged = root.path.join(STAGE);
         for chunk in payload.iter() {
             file.write_all(chunk).map_err(io)?;
         }
@@ -317,13 +469,15 @@ impl LocalStore {
         tests::pause("staged");
         #[cfg(test)]
         tests::pause("locked");
-        let current = match std::fs::symlink_metadata(target) {
-            Ok(meta) if meta.is_file() => Some(meta),
-            Ok(_) => return Err(io(std::io::Error::other("not a regular file"))),
-            Err(error) if error.kind() == ErrorKind::NotFound => None,
-            Err(error) => return Err(io(error)),
+        let current = match parent.entry(&place.name).map_err(io)? {
+            Some(entry) if is_symlink(&entry) => {
+                return Err(io(std::io::Error::other("symlink in storage path")));
+            }
+            Some(entry) if is_regular(&entry) => Some(entry),
+            Some(_) => return Err(io(std::io::Error::other("not a regular file"))),
+            None => None,
         };
-        let path = target.display().to_string();
+        let path = place.path.display().to_string();
         if matches!(&mode, PutMode::Update(expected) if expected.version.is_some()) {
             return Err(unsupported("historical object versions"));
         }
@@ -344,7 +498,7 @@ impl LocalStore {
                 Some(tag)
                     if *tag
                         == version_tag(
-                            read_version(&open_object(target).map_err(io)?.0).map_err(io)?,
+                            read_version(&parent.object(&place.name).map_err(io)?.0).map_err(io)?,
                         ) => {}
                 Some(_) => {
                     return Err(Error::Precondition {
@@ -364,24 +518,8 @@ impl LocalStore {
         if current.is_none() {
             // Another writer or Lance may have created these directory names
             // without persisting them. New objects depend on the whole chain.
-            let root = self
-                .lock
-                .parent()
-                .ok_or_else(|| io(std::io::Error::other("missing storage root")))?;
-            let mut directory = target
-                .parent()
-                .ok_or_else(|| io(std::io::Error::other("missing object parent")))?;
-            loop {
-                File::open(directory)
-                    .and_then(|file| sync_file(&file, directory))
-                    .map_err(io)?;
-                if directory == root {
-                    break;
-                }
-                directory = directory
-                    .parent()
-                    .filter(|parent| parent.starts_with(root))
-                    .ok_or_else(|| io(std::io::Error::other("object outside storage root")))?;
+            for directory in place.chain.iter().rev() {
+                directory.sync().map_err(io)?;
             }
         }
         let next = read_version(lock)
@@ -390,22 +528,31 @@ impl LocalStore {
             .ok_or_else(|| io(std::io::Error::other("version counter exhausted")))?;
         set_version(lock, next).map_err(io)?;
         // Persist the reservation before any object can expose this version.
-        sync_file(lock, &self.lock).map_err(io)?;
+        sync_file(lock, &root.path.join(LOCK)).map_err(io)?;
         set_version(file, next).map_err(io)?;
-        sync_file(file, staged).map_err(io)?;
+        sync_file(file, &staged).map_err(io)?;
         #[cfg(test)]
         tests::pause("versioned");
         #[cfg(feature = "test-store")]
-        super::test_store::sync::publishing(target, staged, payload).map_err(io)?;
+        super::test_store::sync::publishing(&place.path, &staged, payload).map_err(io)?;
+        let name = place.name.as_str();
         if matches!(mode, PutMode::Create) {
-            std::fs::hard_link(staged, target).map_err(io)?;
+            rustix::fs::linkat(
+                &root.file,
+                STAGE,
+                &parent.file,
+                name,
+                rustix::fs::AtFlags::empty(),
+            )
+            .map_err(|error| io(error.into()))?;
             // Publication succeeded, but a cleanup error still fails the call.
-            std::fs::remove_file(staged).map_err(io)?;
+            root.unlink(STAGE).map_err(io)?;
         } else {
-            std::fs::rename(staged, target).map_err(io)?;
+            rustix::fs::renameat(&root.file, STAGE, &parent.file, name)
+                .map_err(|error| io(error.into()))?;
         }
-        sync_parent(target).map_err(io)?;
-        sync_parent(staged).map_err(io)?;
+        parent.sync().map_err(io)?;
+        root.sync().map_err(io)?;
         Ok(PutResult {
             e_tag: Some(version_tag(next)),
             version: None,
@@ -416,82 +563,21 @@ impl LocalStore {
     /// Only a dead writer can leave this file while another writer holds
     /// the lock. Reap it before *any* mutation, so purge cannot leave behind
     /// unlisted temporary objects containing retired content.
-    fn reap_stage(&self) -> std::io::Result<()> {
-        let staged = self.lock.with_file_name(STAGE);
-        match std::fs::symlink_metadata(&staged) {
-            Ok(meta)
-                if meta.is_file()
-                    && meta.uid() == rustix::process::getuid().as_raw()
-                    && meta.mode() & 0o077 == 0 =>
+    fn reap_stage(&self, root: &Directory) -> std::io::Result<()> {
+        match root.entry(STAGE)? {
+            Some(entry)
+                if is_regular(&entry)
+                    && entry.st_uid == rustix::process::getuid().as_raw()
+                    && entry.st_mode & 0o077 == 0 =>
             {
-                std::fs::remove_file(&staged)?;
-                sync_parent(&staged)
+                root.unlink(STAGE)?;
+                root.sync()
             }
-            Ok(_) => Err(std::io::Error::other(
+            Some(_) => Err(std::io::Error::other(
                 "staging object is not a private regular file",
             )),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
+            None => Ok(()),
         }
-    }
-
-    /// Keep all object paths within this root and reject symlinks in every
-    /// existing component. The private root is owned by the cooperating user;
-    /// external mutation of its directory tree is unsupported.
-    fn target(&self, location: &Path) -> Result<PathBuf> {
-        if location.prefix_match(&self.root).is_none() || self.is_internal(location) {
-            return Err(unsupported("path outside the namespace"));
-        }
-        let target = self.inner.path_to_filesystem(location)?;
-        // The handle stays bound to the opened root. Refuse path replacement;
-        // absolute-path I/O must still resolve to that same private directory.
-        let root_path = self.lock.parent().expect("storage root");
-        let current_root =
-            std::fs::symlink_metadata(root_path).map_err(|error| failure(&target, error))?;
-        if !current_root.is_dir() || (current_root.dev(), current_root.ino()) != self.root_identity
-        {
-            return Err(failure(
-                &target,
-                std::io::Error::other("storage root changed"),
-            ));
-        }
-        let relative = target
-            .strip_prefix(self.lock.parent().expect("storage root"))
-            .map_err(|_| unsupported("path outside the namespace"))?;
-        let mut relative_ancestor = PathBuf::new();
-        let mut components = relative.components().peekable();
-        while let Some(component) = components.next() {
-            let std::path::Component::Normal(name) = component else {
-                return Err(unsupported("path outside the namespace"));
-            };
-            relative_ancestor.push(name);
-            // Every prefix is checked in this operation. The root descriptor
-            // anchors lookup, and NOFOLLOW rejects each prefix's final symlink.
-            match rustix::fs::statat(
-                &self.directory,
-                &relative_ancestor,
-                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
-            ) {
-                Ok(metadata) => {
-                    let kind = rustix::fs::FileType::from_raw_mode(metadata.st_mode);
-                    if kind == rustix::fs::FileType::Symlink {
-                        return Err(failure(
-                            &target,
-                            std::io::Error::other("symlink in storage path"),
-                        ));
-                    }
-                    if components.peek().is_some() && kind != rustix::fs::FileType::Directory {
-                        return Err(failure(
-                            &target,
-                            std::io::Error::from(ErrorKind::NotADirectory),
-                        ));
-                    }
-                }
-                Err(rustix::io::Errno::NOENT) => break,
-                Err(error) => return Err(failure(&target, error.into())),
-            }
-        }
-        Ok(target)
     }
 
     /// Lance owns the files below the dataset, including native commit
@@ -511,9 +597,23 @@ impl LocalStore {
     }
 
     fn get_blocking(&self, location: Path, options: GetOptions) -> Result<GetResult> {
-        let target = self.target(&location)?;
-        let io = |error| failure(&target, error);
-        let (file, metadata) = open_object(&target).map_err(io)?;
+        let place = self.place(&location, false)?;
+        let path = place.path.clone();
+        self.read(place.parent(), &place.name, path, location, options)
+    }
+
+    /// Reads the object `name` of `parent`: the bytes, metadata and version
+    /// all come from the one descriptor opened here.
+    fn read(
+        &self,
+        parent: &Directory,
+        name: &str,
+        path: PathBuf,
+        location: Path,
+        options: GetOptions,
+    ) -> Result<GetResult> {
+        let io = |error| failure(&path, error);
+        let (file, metadata) = parent.object(name).map_err(io)?;
         let mut meta = ObjectMeta {
             location,
             last_modified: metadata.modified().map_err(io)?.into(),
@@ -543,7 +643,7 @@ impl LocalStore {
             None => 0..meta.size,
         };
         Ok(GetResult {
-            payload: GetResultPayload::File(file, target),
+            payload: GetResultPayload::File(file, path),
             meta,
             range,
             attributes: Default::default(),
@@ -555,22 +655,43 @@ impl LocalStore {
     /// since the directory walk is no longer part of the listing, as on S3.
     fn current(&self, listed: Vec<ObjectMeta>) -> Result<Vec<ObjectMeta>> {
         let mut objects = Vec::with_capacity(listed.len());
+        // Listings arrive grouped by directory: walk each directory once.
+        let mut walked: Option<(Vec<String>, Vec<Directory>)> = None;
         for object in listed {
             if self.is_internal(&object.location) {
                 continue;
             }
+            let mut names = self.names(&object.location)?;
+            let name = names.pop().expect("an object has a name");
+            let path = self.inner.path_to_filesystem(&object.location)?;
+            if walked.as_ref().is_none_or(|(known, _)| *known != names) {
+                walked = match self.chain(&names, false) {
+                    Ok(chain) => Some((names, chain)),
+                    Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                    Err(error) => return Err(failure(&path, error)),
+                };
+            }
+            let parent = walked
+                .as_ref()
+                .and_then(|(_, chain)| chain.last())
+                .expect("the chain starts at the root");
             if self.is_native_file(&object.location) {
                 // Native files use the listing metadata and have no version xattr.
                 // Validate containment for this listing operation, without reopening
                 // every immutable file merely to reconstruct the same metadata.
-                match self.target(&object.location) {
-                    Ok(_) => objects.push(object),
-                    Err(Error::NotFound { .. }) => {}
-                    Err(error) => return Err(error),
+                match parent.entry(&name).map_err(|error| failure(&path, error))? {
+                    Some(entry) if is_symlink(&entry) => {
+                        return Err(failure(
+                            &path,
+                            std::io::Error::other("symlink in storage path"),
+                        ));
+                    }
+                    Some(_) => objects.push(object),
+                    None => {}
                 }
                 continue;
             }
-            match self.get_blocking(object.location, GetOptions::default()) {
+            match self.read(parent, &name, path, object.location, GetOptions::default()) {
                 Ok(read) => objects.push(read.meta),
                 Err(Error::NotFound { .. }) => {}
                 Err(error) => return Err(error),
@@ -581,23 +702,24 @@ impl LocalStore {
 
     pub(super) async fn delete_if_match(&self, location: Path, expected: String) -> Result<()> {
         self.blocking(move |store| {
-            let target = store.target(&location)?;
-            let io = |error| failure(&target, error);
+            let place = store.place(&location, false)?;
+            let io = |error| failure(&place.path, error);
+            let parent = place.parent();
             let _lock = store.lock().map_err(io)?;
-            store.reap_stage().map_err(io)?;
-            let (file, _) = open_object(&target).map_err(io)?;
+            store.reap_stage(&place.chain[0]).map_err(io)?;
+            let (file, _) = parent.object(&place.name).map_err(io)?;
             if version_tag(read_version(&file).map_err(io)?) != expected {
                 return Err(Error::Precondition {
                     path: location.to_string(),
                     source: "namespace head changed".into(),
                 });
             }
-            std::fs::remove_file(&target).map_err(io)?;
+            parent.unlink(&place.name).map_err(io)?;
             #[cfg(feature = "test-store")]
-            super::test_store::sync::unlinked(&target).map_err(io)?;
-            sync_parent(&target).map_err(io)?;
+            super::test_store::sync::unlinked(&place.path).map_err(io)?;
+            parent.sync().map_err(io)?;
             #[cfg(feature = "test-store")]
-            super::test_store::sync::acknowledged("delete", &target).map_err(io)?;
+            super::test_store::sync::acknowledged("delete", &place.path).map_err(io)?;
             Ok(())
         })
         .await
@@ -605,28 +727,42 @@ impl LocalStore {
 
     /// Deleting a missing object succeeds, as on S3.
     fn delete_blocking(&self, location: &Path) -> Result<()> {
-        let target = self.target(location)?;
-        let io = |error| failure(&target, error);
+        let place = match self.place(location, false) {
+            Ok(place) => place,
+            Err(Error::NotFound { .. }) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let io = |error| failure(&place.path, error);
+        let parent = place.parent();
         let _lock = self.lock().map_err(io)?;
-        self.reap_stage().map_err(io)?;
-        match std::fs::remove_file(&target) {
+        self.reap_stage(&place.chain[0]).map_err(io)?;
+        match parent.entry(&place.name).map_err(io)? {
+            Some(entry) if is_symlink(&entry) => {
+                return Err(io(std::io::Error::other("symlink in storage path")));
+            }
+            Some(_) => {}
+            None => return Ok(()),
+        }
+        match parent.unlink(&place.name) {
             Ok(()) => {
                 #[cfg(feature = "test-store")]
-                super::test_store::sync::unlinked(&target).map_err(io)?;
+                super::test_store::sync::unlinked(&place.path).map_err(io)?;
                 if let Some(directories) = &self.cleanup_directories {
+                    let directory = parent.file.try_clone().map_err(io)?;
                     directories
                         .lock()
                         .expect("cleanup directories lock")
-                        .insert(target.parent().expect("object directory").to_path_buf());
+                        .entry(parent.path.clone())
+                        .or_insert(directory);
                     #[cfg(test)]
                     tests::pause("unlinked");
                     #[cfg(feature = "test-store")]
-                    super::test_store::sync::acknowledged("deferred", &target).map_err(io)?;
+                    super::test_store::sync::acknowledged("deferred", &place.path).map_err(io)?;
                     Ok(())
                 } else {
-                    sync_parent(&target).map_err(io)?;
+                    parent.sync().map_err(io)?;
                     #[cfg(feature = "test-store")]
-                    super::test_store::sync::acknowledged("delete", &target).map_err(io)?;
+                    super::test_store::sync::acknowledged("delete", &place.path).map_err(io)?;
                     Ok(())
                 }
             }
@@ -647,18 +783,6 @@ impl LocalStore {
                 source: Box::new(error),
             })?
     }
-}
-
-fn open_object(path: &std::path::Path) -> std::io::Result<(File, Metadata)> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
-        .open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(std::io::Error::other("not a regular file"));
-    }
-    Ok((file, metadata))
 }
 
 fn read_version(file: &File) -> std::io::Result<u128> {
@@ -714,13 +838,6 @@ fn sync_file(file: &File, path: &std::path::Path) -> std::io::Result<()> {
     #[cfg(not(feature = "test-store"))]
     let _ = path;
     Ok(())
-}
-
-fn sync_parent(target: &std::path::Path) -> std::io::Result<()> {
-    let parent = target
-        .parent()
-        .ok_or_else(|| std::io::Error::other("object has no directory"))?;
-    sync_file(&File::open(parent)?, parent)
 }
 
 fn failure(target: &std::path::Path, error: std::io::Error) -> Error {
@@ -814,7 +931,14 @@ impl ObjectStore for LocalStore {
         let mut result = self.inner.list_with_delimiter(Some(prefix)).await?;
         result.objects = self.current(result.objects)?;
         for prefix in &result.common_prefixes {
-            self.target(prefix)?;
+            let names = self.names(prefix)?;
+            match self.chain(&names, false) {
+                Ok(_) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(failure(&self.inner.path_to_filesystem(prefix)?, error));
+                }
+            }
         }
         result.objects.sort_by(|a, b| a.location.cmp(&b.location));
         result.common_prefixes.sort();
