@@ -146,6 +146,16 @@ try {
       assert.equal(await page.locator('.hero-evidence [data-system="fyrr@jev-rerank"]').count(), 0, 'Headline only compares defaults');
       await variant.uncheck();
     }
+    if (results.systems.some(system => system.variant === 'concurrency-8')) {
+      const sized = page.locator('[data-select-system][value="fyrr@concurrency-8"]');
+      assert.equal(await sized.isChecked(), false);
+      await sized.check();
+      assert(await page.locator('#view-first_ask_c8_p50_ms .chart-row[data-system="fyrr@concurrency-8"]').isVisible(), 'Sized reader has a separate C8 row');
+      assert.match(await page.locator('#view-first_ask_c8_p50_ms .chart-row[data-system="fyrr@concurrency-8"] .run-note').textContent(), /reader.concurrency=8/);
+      for (const id of ['view-first_ask_c1_p50_ms', 'detail-ingest', 'detail-quality']) assert.equal(await page.locator(`#${id} .chart-row[data-system="fyrr@concurrency-8"]`).count(), 0, 'Sized C8 row cannot imply an unmeasured track');
+      assert.equal(await page.locator('.hero-evidence [data-system="fyrr@concurrency-8"]').count(), 0);
+      await sized.uncheck();
+    }
     await page.locator('.metrics-select summary').click();
     await page.locator('[data-select-metric][value="answer_correctness"]').uncheck();
     assert.equal(await page.locator('#detail-quality [data-metric="answer_correctness"]').isVisible(), false);

@@ -702,7 +702,7 @@
         }
       }
     ],
-    "variant_note": "Optional extra: fyrr + Jev reranker uses jev-1.14.0 through a benchmark adapter. It is excluded from the headline, adds reranking latency and per-query provider cost, and remains n/e until measured. Adapter and public artifact links are not published yet.",
+    "variant_note": "Optional notebook rows are excluded from the headline, overview and main story comparisons. fyrr + Jev reranker uses jev-1.14.0 through a benchmark adapter, adding reranking latency and per-query provider cost. fyrr sized for C8 uses reader.concurrency=8 on the same index, with no re-ingest; only C8 is measured and no answer batch is run. Both remain n/e until measured. Public artifact links are not published yet.",
     "overview_metrics": [
       "recall_at_10",
       "first_ask_c1_p50_ms",
@@ -2744,6 +2744,110 @@
       "footprint": {},
       "notes": [
         "Not evaluated: optional Jev reranker variant; no product measurement is available."
+      ],
+      "artifacts": {}
+    },
+    {
+      "id": "fyrr",
+      "name": "fyrr",
+      "variant": "concurrency-8",
+      "version": {},
+      "config": {},
+      "date": "",
+      "status": "n/e",
+      "metrics": {
+        "warm_c8_p50_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "attempted": 0,
+          "expected": 750,
+          "missing": 750,
+          "ci95": null,
+          "method": "linear percentile; 3 passes; repeated-query warm cache; failures excluded and counted",
+          "artifact": "runtime/fyrr-full/latency.jsonl",
+          "notes": [
+            "Not evaluated: optional sized C8 reader; no measurement is available."
+          ]
+        },
+        "warm_c8_p95_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "attempted": 0,
+          "expected": 750,
+          "missing": 750,
+          "ci95": null,
+          "method": "linear percentile; 3 passes; repeated-query warm cache; failures excluded and counted",
+          "artifact": "runtime/fyrr-full/latency.jsonl",
+          "notes": [
+            "Not evaluated: optional sized C8 reader; no measurement is available."
+          ]
+        },
+        "warm_c8_embedding_p50_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 750,
+          "attempted": 0,
+          "missing": 750,
+          "ci95": null,
+          "method": "Product-reported embedding stage, including query cache lookup; not a novel-query API estimate",
+          "provider_calls": 0,
+          "artifact": "runtime/fyrr-full/latency.jsonl",
+          "notes": [
+            "Not evaluated: optional sized C8 reader; no measurement is available."
+          ]
+        },
+        "warm_c8_embedding_p95_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 750,
+          "attempted": 0,
+          "missing": 750,
+          "ci95": null,
+          "method": "Product-reported embedding stage, including query cache lookup; not a novel-query API estimate",
+          "provider_calls": 0,
+          "artifact": "runtime/fyrr-full/latency.jsonl",
+          "notes": [
+            "Not evaluated: optional sized C8 reader; no measurement is available."
+          ]
+        },
+        "first_ask_c8_p50_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "Not evaluated: optional sized C8 reader; no measurement is available."
+          ]
+        },
+        "first_ask_c8_p95_ms": {
+          "status": "n/e",
+          "value": null,
+          "unit": "ms",
+          "n": 0,
+          "expected": 250,
+          "attempted": 0,
+          "missing": 250,
+          "ci95": null,
+          "notes": [
+            "Not evaluated: optional sized C8 reader; no measurement is available."
+          ]
+        }
+      },
+      "footprint": {},
+      "notes": [
+        "Planned: reader.concurrency=8; reuse the default index without another ingest. Measure C8 only; no answer-quality batch."
       ],
       "artifacts": {}
     }
@@ -28961,6 +29065,23 @@
         "model": "jev-1.14.0",
         "candidates": 50,
         "mode": "native_via_research_proxy"
+      }
+    },
+    "concurrency-8": {
+      "label": "fyrr \u00b7 sized for C8",
+      "headline": false,
+      "reranker": null,
+      "description": "C8 only; reader.concurrency=8; same index, no re-ingest; excluded from answers.",
+      "metric_prefixes": [
+        "first_ask_c8_",
+        "warm_c8_"
+      ],
+      "measured_concurrency": [
+        8
+      ],
+      "index_reused": true,
+      "changes": {
+        "reader.concurrency": 8
       }
     }
   }

@@ -102,6 +102,9 @@ It extends the benchmark's schema 1.1 envelope: `benchmark`, `protocol`,
 `method`, `artifact`, and notes. Run identity is `(id, variant)`; a missing
 variant means `default`. Optional extra variants have their own checkbox
 and rows in the notebook, while the headline and overview use defaults.
+A variant catalogue may include `description` and `metric_prefixes` to scope
+notebook rows. The sized C8 variant changes only `reader.concurrency=8`, reuses
+the default index and is excluded from C1, ingestion and answer metrics.
 Each run also exports its own JSON under `/compare/runs/`.
 Unavailable/invalid measurements have null values. Partial values carry
 an asterisk and cannot establish a product win. Fraction axes cover

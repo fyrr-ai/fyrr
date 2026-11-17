@@ -93,7 +93,13 @@
 
   function update() {
     var systems = selected(systemInputs), metrics = selected(metricInputs);
-    document.querySelectorAll('[data-system]').forEach(function (cell) { cell.hidden = !systems.includes(cell.dataset.system); });
+    document.querySelectorAll('[data-system]').forEach(function (cell) {
+      var system = results.systems.find(function (item) { return (!item.variant || item.variant === 'default' ? item.id : item.id + '@' + item.variant) === cell.dataset.system; });
+      var prefixes = system && results.variants && results.variants[system.variant || 'default'] && results.variants[system.variant || 'default'].metric_prefixes;
+      var panel = cell.closest('[data-metric]');
+      var key = panel ? panel.dataset.metric : cell.closest('.detail-table') ? detailMetric.value : null;
+      cell.hidden = !systems.includes(cell.dataset.system) || Boolean(prefixes && key && !prefixes.some(function (prefix) { return key.startsWith(prefix); }));
+    });
     document.querySelectorAll('[data-product]').forEach(function (cell) { cell.hidden = !systems.some(function (id) { return id.split('@')[0] === cell.dataset.product; }); });
     document.querySelectorAll('[data-score-metric]').forEach(function (cell) { cell.hidden = !metrics.includes(cell.dataset.scoreMetric); });
     var overview = document.querySelector('.scoreboard');

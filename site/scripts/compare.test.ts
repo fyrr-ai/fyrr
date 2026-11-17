@@ -23,7 +23,7 @@ test('draft data cannot be published, even by removing the draft flag', () => {
 });
 test('unavailable metrics have no bars and are never encoded as zero', () => {
   const html = renderMetric(fixture, 'answer_correctness');
-  assert.equal((html.match(/class="bar(?: bar--fyrr)? is-empty"/g) ?? []).length, fixture.systems.length);
+  assert.equal((html.match(/class="bar(?: bar--fyrr)? is-empty"/g) ?? []).length, fixture.systems.filter(system => system.variant !== 'concurrency-8').length);
   assert(!html.includes('<i style='));
   assert(html.includes('n/e'));
   const bad = structuredClone(fixture);
@@ -209,6 +209,27 @@ test('an optional variant has its own row and cannot win the default headline', 
   assert.equal((renderProducts(data).match(/class="product-card/g) ?? []).length, new Set(data.systems.map(system => system.id)).size);
   data.systems.push(structuredClone(data.systems[0]));
   assert.throws(() => parseResults({ ...data, draft: true }), /unique product\/variant/);
+});
+test('sized C8 variant stays separate from default wins and out of unmeasured tracks', () => {
+  const data = structuredClone(fixture);
+  const sized = data.systems.find(system => system.variant === 'concurrency-8')!;
+  assert(sized);
+  data.systems[0].metrics.first_ask_c8_p50_ms = { status: 'partial', value: 100, unit: 'ms', n: 200, expected: 250, attempted: 250, missing: 50, ci95: [90, 110] };
+  const before = structuredClone(data.systems[0]);
+  sized.metrics.first_ask_c8_p50_ms = { status: 'measured', value: 1, unit: 'ms', n: 250, expected: 250, attempted: 250, missing: 0, ci95: [1, 1] };
+  const c8 = renderMetric(parseResults(data), 'first_ask_c8_p50_ms');
+  assert(c8.includes('data-system="fyrr@concurrency-8"'));
+  assert(c8.includes('reader.concurrency=8'));
+  assert(c8.includes('valid 200 / attempted 250 · missing 50'));
+  assert(c8.includes('partial · unranked'));
+  for (const key of ['first_ask_c1_p50_ms', 'warm_c1_p50_ms', 'ingest_wall_s', 'answer_correctness', 'recall_at_10']) assert(!renderMetric(data, key).includes('data-system="fyrr@concurrency-8"'));
+  assert(!renderScoreboard(data).includes('fyrr@concurrency-8'));
+  assert(!renderStories(data).includes('fyrr@concurrency-8'));
+  data.draft = false;
+  data.systems.forEach((system, index) => { system.metrics.recall_at_10 = { status: 'measured', value: system.variant === 'concurrency-8' ? 1 : index === 1 ? .9 : .8, unit: 'fraction', n: 1, expected: 1, attempted: 1, missing: 0, ci95: [0, 1], sample_ids: ['a'] }; });
+  assert(headlineVerdict(data).startsWith(data.systems[1].name));
+  // Rendering never mutates the default run's original C8 refusal evidence.
+  assert.deepEqual(data.systems[0].metrics.first_ask_c8_p50_ms, before.metrics.first_ask_c8_p50_ms);
 });
 test('synthetic or smoke fixtures cannot overwrite the committed results', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fyrr-site-import-'));
