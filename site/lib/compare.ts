@@ -45,6 +45,7 @@ export type Results = {
     headline_note?: string;
     default_ingest_baseline?: { docs_per_min?: number | null; interval_seconds?: number | null; newly_completed_documents?: number | null; projected_20000_seconds?: number | null; artifact?: string; notes?: string[] };
     ingest_diagnostics?: (Record<string, unknown> & { configuration_id: string; comparable: false; docs_per_min?: number | null; interval_seconds?: number | null; newly_completed_documents?: number | null; projected_20000_seconds?: number | null; notes?: string[] })[];
+    ingest_completion?: { status: 'verified_complete_after_resume'; verified_searchable: true; canonical_timing_valid: false; artifact: string; resume_evidence: Record<string, unknown> & { submitted: number; accepted: number; rejected: number; documents: number; native_inventory_verified: true; native_inventory_count: number; late_probe_verified: true } };
     ingest_coverage?: { submitted: number | null; accepted: number | null; rejected: number | null; rejected_documents: unknown[] };
   }[];
   website: {
@@ -78,17 +79,18 @@ export function headlineSystems(results: Results) {
   for (const system of results.systems) {
     if (!system.variant || system.variant === 'default') representatives.set(system.id, system);
   }
+  const hasSearchEvidence = (system: Results['systems'][number]) => Object.entries(system.metrics).some(([key, metric]) => ['retrieval', 'speed'].includes(results.website.metrics[key]?.group) && canCompare(results.website.metrics[key]) && ['measured', 'partial'].includes(metric.status) && metric.value != null);
   for (const system of results.systems) {
     if (!system.variant || system.variant === 'default') continue;
     const variant = results.variants?.[system.variant];
     if (!variant?.headline || variant.systems && !variant.systems.includes(system.id)) continue;
-    // An authorized alternative replaces its default only after the full ingest
-    // and a retrieval result exist, including honest partial retrieval evidence.
-    const complete = system.metrics.ingest_wall_s?.status === 'measured' && system.metrics[results.website.headline_metric]?.value != null;
+    // Search evidence is independent of a valid ingest clock. An interrupted
+    // observer must not hide valid retrieval, latency or verified coverage.
+    const observed = hasSearchEvidence(system);
     const previous = representatives.get(system.id);
-    if (!complete && previous) continue;
+    if (!observed && previous) continue;
     requireField(Boolean((system.headline_note || variant.description)?.trim()) && Boolean(variant.source_url), 'non-default headline requires a visible configuration note and source');
-    requireField(!complete || !previous?.variant || previous.variant === 'default' || previous.metrics.ingest_wall_s?.status !== 'measured' || previous.metrics[results.website.headline_metric]?.value == null, 'one authorized headline representative per product');
+    requireField(!observed || !previous?.variant || previous.variant === 'default' || !hasSearchEvidence(previous), 'one authorized headline representative per product');
     representatives.set(system.id, system);
   }
   return [...representatives.values()];
@@ -188,6 +190,14 @@ export function parseResults(data: unknown): Results {
         requireField(Number(coverage.accepted) + Number(coverage.rejected) === coverage.submitted && coverage.rejected_documents.length === coverage.rejected, `${system.id} ingest coverage must reconcile`);
       }
     }
+  }
+  for (const system of data.systems) if (system.ingest_completion !== undefined) {
+    const completion = system.ingest_completion;
+    requireField(object(completion) && completion.status === 'verified_complete_after_resume' && completion.verified_searchable === true && completion.canonical_timing_valid === false && typeof completion.artifact === 'string' && object(completion.resume_evidence), `${system.id} verified resume completion`);
+    const evidence = completion.resume_evidence;
+    requireField(evidence.native_inventory_verified === true && evidence.late_probe_verified === true && ['submitted', 'accepted', 'rejected', 'documents', 'native_inventory_count'].every(key => count(evidence[key])) && Number(evidence.accepted) + Number(evidence.rejected) === evidence.submitted && evidence.documents === evidence.accepted && evidence.native_inventory_count === evidence.accepted, `${system.id} resume completion needs verified inventory and late probe`);
+    requireField(object(system.ingest_coverage) && ['submitted', 'accepted', 'rejected'].every(key => system.ingest_coverage[key] === evidence[key]), `${system.id} resume coverage must match verified partition`);
+    requireField(['ingest_wall_s', 'ingest_docs_per_min'].every(key => object(system.metrics[key]) && system.metrics[key].value === null), `${system.id} resumed completion cannot invent canonical ingest timing`);
   }
   const w = data.website;
   requireField(object(w) && typeof w.headline_metric === 'string' && Array.isArray(w.groups) && object(w.metrics) && object(w.products) && Array.isArray(w.methodology), 'website presentation metadata');
@@ -323,10 +333,13 @@ function renderRunNotes(results: Results, system: Results['systems'][number], cl
   const variant = results.variants?.[system.variant ?? 'default'];
   const alternative = system.variant && system.variant !== 'default';
   const note = system.headline_note?.trim() || (alternative ? variant?.description?.trim() || `Non-default configuration: ${name(system.variant!)}` : '');
-  const missing = alternative && variant?.headline && system.metrics[results.website.headline_metric]?.value == null;
+  const missingMeasurements = [];
+  if (system.metrics[results.website.headline_metric]?.value == null) missingMeasurements.push('retrieval');
+  if (system.metrics.first_ask_c1_p50_ms?.value == null) missingMeasurements.push('new-question C1 latency');
+  const missing = alternative && variant?.headline && missingMeasurements.length > 0;
   const brief = note.length > 220 ? note.slice(0, 220).replace(/\s+\S*$/, '') + '…' : note;
   const marker = note ? `<small class="${className}">${escape(brief)}${variant?.source_url ? ` <a href="${link(variant.source_url)}">Configuration source ↗</a>` : ''}</small>` : '';
-  const unavailable = missing ? `<small class="${className} unavailable-reason">Full 20k retrieval and query latency: n/e. See the run’s interruption and configuration notes.</small>` : '';
+  const unavailable = missing ? `<small class="${className} unavailable-reason">${escape(missingMeasurements.join(' and '))}: n/e. See the run’s interruption and configuration notes.</small>` : '';
   const baseline = system.default_ingest_baseline;
   const expanded = includeBaseline && (note.length > 220 || missing || baseline?.notes?.length) ? `<details class="${className} run-notes-expanded"><summary>Full configuration &amp; interruption notes</summary>${note ? `<p>${escape(note)}</p>` : ''}${system.notes.map(note => `<p>${escape(note)}</p>`).join('')}${baseline?.notes?.map(note => `<p>${escape(note)}</p>`).join('') ?? ''}</details>` : '';
   if (!baseline || !includeBaseline) return marker + unavailable + expanded;
@@ -426,6 +439,16 @@ function comparisonNarrative(results: Results) {
     result.cost = result.fractionOfCost ? `A fraction of the estimated running cost (${format(value / rival, 'fraction')} of the cheapest alternative)` : result.cheaper ? 'Lower estimated monthly running cost' : value === rival ? `Estimated monthly running cost ties ${label(cheapest)}` : `${label(cheapest)} has lower estimated monthly running cost`;
   }
   return result;
+}
+export function comparisonScope(results: Results) {
+  const fields = [[results.website.headline_metric, 'retrieval'], ['first_ask_c1_p50_ms', 'new-question latency'], ['ingest_wall_s', 'ingest time'], ['monthly_cost_usd', 'total cost']];
+  const notes = headlineSystems(results).flatMap(system => {
+    const missing = fields.filter(([key]) => system.metrics[key]?.status !== 'measured' || system.metrics[key]?.value == null);
+    if (!missing.length) return [];
+    if (missing.length === fields.length && system.ingest_coverage?.accepted == null) return [`${system.name}: 20k run not completed; see notes.`];
+    return [`${system.name}: ${missing.map(([key, label]) => `${label} ${system.metrics[key]?.status === 'partial' ? 'partial' : 'n/e'}`).join(', ')}; see notes.`];
+  });
+  return notes.length ? `Compared where measured. ${notes.join(' ')}` : 'Compared on complete measurements for each metric.';
 }
 export function headlineVerdict(results: Results) {
   const meta = results.website.metrics[results.website.headline_metric];

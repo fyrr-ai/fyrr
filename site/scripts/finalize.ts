@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { gzipSync, brotliCompressSync, constants } from 'node:zlib';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { readResults, verifyEvidenceArchive, assertPublishable, escape, headlineVerdict, renderScoreboard, renderStories, renderFeatures, renderSections, renderProducts, renderMethodology, renderControls, renderDetailView, clientResults, renderProvenance } from '../lib/compare';
+import { readResults, verifyEvidenceArchive, assertPublishable, escape, headlineVerdict, comparisonScope, renderScoreboard, renderStories, renderFeatures, renderSections, renderProducts, renderMethodology, renderControls, renderDetailView, clientResults, renderProvenance } from '../lib/compare';
 
 const comparison = await readResults();
 if (process.env.SITE_ALLOW_DRAFT_COMPARE !== '1') assertPublishable(comparison);
@@ -46,7 +46,7 @@ const compare = (await read('compare.html')).replace('/*BASE*/', base)
   .replace('<!--NOTICE-->', comparison.draft ? `<aside class="draft-notice" aria-label="Data status"><div class="wrap"><span>${measuredReview ? 'PRELIMINARY MEASURED RESULTS · Owner review pending' : 'PRELIMINARY / PLACEHOLDER DATA · EnterpriseRAG results pending'}</span><a href="#methodology">Read the method ↗</a></div></aside>` : '')
   .replace('<!--ROBOTS-->', comparison.draft ? '<meta name="robots" content="noindex,nofollow">' : '')
   .replace('<!--VERDICT-->', escape(headlineVerdict(comparison)))
-  .replace('<!--COMPARISON-SCOPE-->', comparison.systems.some(system => system.id === 'pipeshub' && system.metrics.recall_at_10?.value == null) ? 'Compared where measured. PipesHub: 20k run not completed; see notes.' : 'Compared on complete measurements for each metric.')
+  .replace('<!--COMPARISON-SCOPE-->', escape(comparisonScope(comparison)))
   .replace('<!--SYNTHETIC-->', comparison.synthetic_design_preview ? '<div class="synthetic-watermark">SYNTHETIC DESIGN PREVIEW<br><small>INVENTED VALUES · NO BENCHMARK CLAIMS</small></div>' : '')
   .replace('<!--SCOREBOARD-->', renderScoreboard(comparison))
   .replace('<!--STORIES-->', renderStories(comparison))

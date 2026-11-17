@@ -125,9 +125,10 @@ It extends the benchmark's schema 1.1 envelope: `benchmark`, `protocol`,
 `method`, `artifact`, and notes. Run identity is `(id, variant)`; a missing
 variant means `default`. Optional extra variants have their own checkbox
 and rows in the notebook. The headline and overview use defaults unless a
-completed alternative is explicitly authorized by variant `headline: true` and
-`systems`. That representative replaces its default once ingest is measured and a
-retrieval result exists. Its non-default marker, source, and any observed default
+measured alternative is explicitly authorized by variant `headline: true` and
+`systems`. That representative replaces its default when actual retrieval or latency
+evidence exists. A missing or invalid ingest clock does not invalidate independent
+search measurements or verified accepted coverage. Its non-default marker, source, and any observed default
 ingest baseline/projection stay visible. Projections never enter measured bars.
 If a product has only an incomplete authorized attempt, that actual attempt stays
 visible as unavailable with its reason. Import drops empty site placeholders for
