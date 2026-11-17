@@ -44,6 +44,7 @@ export type Results = {
     notes: string[]; artifacts?: Record<string, unknown>;
     headline_note?: string;
     default_ingest_baseline?: { docs_per_min?: number | null; interval_seconds?: number | null; newly_completed_documents?: number | null; projected_20000_seconds?: number | null; artifact?: string; notes?: string[] };
+    ingest_diagnostics?: (Record<string, unknown> & { configuration_id: string; comparable: false; docs_per_min?: number | null; interval_seconds?: number | null; newly_completed_documents?: number | null; projected_20000_seconds?: number | null; notes?: string[] })[];
     ingest_coverage?: { submitted: number | null; accepted: number | null; rejected: number | null; rejected_documents: unknown[] };
   }[];
   website: {
@@ -164,6 +165,15 @@ export function parseResults(data: unknown): Results {
     if (system.default_ingest_baseline !== undefined) {
       const baseline = system.default_ingest_baseline;
       requireField(object(baseline) && ['docs_per_min', 'interval_seconds', 'projected_20000_seconds'].every(key => baseline[key] === undefined || baseline[key] === null || finite(baseline[key]) && Number(baseline[key]) >= 0) && (baseline.newly_completed_documents == null || count(baseline.newly_completed_documents)) && (baseline.notes === undefined || strings(baseline.notes)) && (baseline.artifact === undefined || typeof baseline.artifact === 'string'), `${system.id} default ingest baseline`);
+    }
+    if (system.ingest_diagnostics !== undefined) {
+      requireField(Array.isArray(system.ingest_diagnostics), `${system.id} ingest diagnostics`);
+      const configurations = new Set<string>();
+      for (const diagnostic of system.ingest_diagnostics) {
+        requireField(object(diagnostic) && typeof diagnostic.configuration_id === 'string' && !configurations.has(diagnostic.configuration_id) && diagnostic.comparable === false, `${system.id} distinct noncomparable ingest diagnostics`);
+        configurations.add(diagnostic.configuration_id);
+        requireField(['docs_per_min', 'interval_seconds', 'projected_20000_seconds'].every(key => diagnostic[key] == null || finite(diagnostic[key]) && Number(diagnostic[key]) >= 0) && (diagnostic.newly_completed_documents == null || count(diagnostic.newly_completed_documents)) && (diagnostic.notes === undefined || strings(diagnostic.notes)), `${system.id} ingest diagnostic observations`);
+      }
     }
     if (system.ingest_coverage !== undefined) {
       const coverage = system.ingest_coverage;
@@ -312,6 +322,17 @@ function renderRunNotes(results: Results, system: Results['systems'][number], cl
   const baseline = system.default_ingest_baseline;
   if (!baseline || !includeBaseline) return marker + unavailable;
   return marker + unavailable + `<small class="${className} default-ingest-baseline">Default ingest: ${baseline.docs_per_min != null ? `${escape(format(baseline.docs_per_min, 'docs/min'))} docs/min observed${baseline.interval_seconds != null ? ` over ${escape(format(baseline.interval_seconds, 'seconds'))} s` : ''}` : 'steady rate n/e'}; 20,000 documents: ${baseline.projected_20000_seconds != null ? `PROJECTED ${escape(format(baseline.projected_20000_seconds, 'seconds'))} s` : 'projection n/e'}. Default 20k ingest not completed. Projection is excluded from measured ingest bars.${baseline.notes?.length ? ` ${escape(baseline.notes.join(' '))}` : ''}</small>`;
+}
+
+function renderIngestDiagnostics(results: Results) {
+  return results.systems.filter(system => system.ingest_diagnostics?.length).map(system => {
+    const diagnostics = system.ingest_diagnostics!;
+    return `<aside class="ingest-diagnostics" data-system="${escape(runKey(system))}"><h3>${escape(system.name)} / separate ingest observations</h3><p class="note">These runs use different corpus sizes, models, configurations and sampling windows. Observed rates and linear projections are diagnostics, not completed 20,000-document results or a controlled comparison. They do not enter the ingest bars or headline.</p><div class="detail-scroll"><table class="detail-table"><thead><tr><th>Configuration / sample</th><th>Observed rate</th><th>Observed window</th><th>20,000 documents</th></tr></thead><tbody>${diagnostics.map(diagnostic => {
+      const corpus = diagnostic.smoke_corpus_documents ?? diagnostic.full_corpus_documents ?? diagnostic.submitted_documents;
+      const complete = diagnostic.completed_1000_ingest === true;
+      return `<tr><th>${escape(name(diagnostic.configuration_id.replaceAll('-', ' ')))}<small>${finite(corpus) ? `${format(corpus, 'documents')} documents · ` : ''}${complete ? '1,000-document ingest completed' : 'interrupted / partial window'}</small>${typeof diagnostic.profile_label === 'string' ? `<small>${escape(diagnostic.profile_label)}</small>` : ''}</th><td>${diagnostic.docs_per_min != null ? `${format(diagnostic.docs_per_min, 'docs/min')} docs/min` : 'n/e'}</td><td>${diagnostic.interval_seconds != null ? `${format(diagnostic.interval_seconds, 'seconds')} s` : 'n/e'}<small>${diagnostic.newly_completed_documents != null ? `${format(diagnostic.newly_completed_documents, 'documents')} newly searchable` : 'count n/e'}</small></td><td>${diagnostic.projected_20000_seconds != null ? `PROJECTED ${(diagnostic.projected_20000_seconds / 3600).toFixed(2)} h` : 'projection n/e'}<small>20k not completed</small></td></tr>`;
+    }).join('')}</tbody></table></div><details><summary>Sampling, configuration &amp; limitations</summary>${diagnostics.map(diagnostic => `<h4>${escape(name(diagnostic.configuration_id.replaceAll('-', ' ')))}</h4>${diagnostic.notes?.map(note => `<p class="note">${escape(note)}</p>`).join('') ?? ''}<pre>${escape(JSON.stringify(diagnostic, null, 2))}</pre>`).join('')}</details></aside>`;
+  }).join('');
 }
 
 function axisScale(value: number, unit: string) {
@@ -510,7 +531,7 @@ export function renderStories(results: Results) {
   return (results.website.stories ?? []).map((story, index) => {
     const chart = story.group === 'ingest' ? renderMetric(baseline, story.metrics[0], { ingest: true }) : story.group === 'speed' ? renderSpeedStory(baseline) : story.metrics.length === 1 ? renderMetric(baseline, story.metrics[0]) : renderMetricSet(baseline, story.group, story.metrics, `${story.id}-`);
     const title = story.group === 'footprint' ? narrative.fractionOfCost ? 'Costs a fraction to run.' : narrative.cheaper ? 'Lower estimated running cost.' : 'What it costs to run.' : story.group === 'speed' ? narrative.fasterQueries ? 'Answers fast.' : 'Time to the evidence.' : story.group === 'ingest' ? narrative.fasterIngest ? 'Indexes fast.' : 'Indexing time.' : story.group === 'retrieval' ? `Finds the right documents${narrative.comparable ? ' (comparable)' : ''}.` : story.title;
-    return `<section class="section story-section${index === 0 && story.group === 'footprint' ? ' story-section--lead' : ''}" id="${escape(story.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">0${index + 1} / ${escape(results.website.groups.find(group => group.id === story.group)?.label ?? story.group)}</p><h2>${escape(title)}</h2><p class="sub">${escape(story.description)}</p></div>${story.group === 'footprint' ? architecture : ''}${chart}${story.group === 'footprint' ? renderCostAssumptions(baseline) + renderLambdaProjection(results) : ''}<a class="text-link" href="#detail-${escape(story.group)}">${escape(results.website.groups.find(group => group.id === story.group)?.label ?? 'Full')} details <span aria-hidden="true">↘</span></a></div></section>`;
+    return `<section class="section story-section${index === 0 && story.group === 'footprint' ? ' story-section--lead' : ''}" id="${escape(story.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">0${index + 1} / ${escape(results.website.groups.find(group => group.id === story.group)?.label ?? story.group)}</p><h2>${escape(title)}</h2><p class="sub">${escape(story.description)}</p></div>${story.group === 'footprint' ? architecture : ''}${chart}${story.group === 'footprint' ? renderCostAssumptions(baseline) + renderLambdaProjection(results) : story.group === 'ingest' ? renderIngestDiagnostics(baseline) : ''}<a class="text-link" href="#detail-${escape(story.group)}">${escape(results.website.groups.find(group => group.id === story.group)?.label ?? 'Full')} details <span aria-hidden="true">↘</span></a></div></section>`;
   }).join('');
 }
 function renderSpeedStory(results: Results) {
