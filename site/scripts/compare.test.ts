@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readResults, parseResults, assertPublishable, headlineVerdict, headlineSystems, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderDetailView, renderControls, relativeValue } from '../lib/compare';
+import { readResults, parseResults, assertPublishable, headlineVerdict, headlineSystems, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderDetailView, renderControls, renderLambdaProjection, lambdaProjectionCost, relativeValue } from '../lib/compare';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -419,8 +419,37 @@ test('private rows and provenance cannot enter public views or imported JSON', (
     assert.notEqual(child.status, 0);
     assert.match(child.stderr, /private benchmark data/);
     assert.equal(readFileSync(canonical, 'utf8'), before);
-    assert(!/\bjev\b|c2a34a3/i.test(JSON.stringify(fixture)));
+    assert(!/\bjev\b|c2a34a3/i.test(JSON.stringify({ ...fixture, website: { ...fixture.website, lambda_projection: undefined } })));
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+test('Lambda projection retains every cold sample and prices only its separate synthetic workload', () => {
+  const trial = fixture.website.lambda_projection!;
+  assert(trial);
+  parseResults(fixture);
+  const warm = lambdaProjectionCost(trial, 100000, 0);
+  const cold = lambdaProjectionCost(trial, 100000, .01);
+  assert(Math.abs(warm.total_usd - .3310250065911755) < 1e-12);
+  assert(Math.abs(cold.total_usd - .44184185189117553) < 1e-12);
+  assert(cold.total_usd > warm.total_usd);
+  const html = renderLambdaProjection(fixture);
+  for (const text of ['134 ms', '289 ms', '2.198 s', '2.305 s', '35.756 s', 'Experimental / separate cost projection', '/docs/lambda']) assert(html.includes(text));
+  assert(!html.includes('data-metric='));
+  assert(html.includes('Synthetic embedding and identity services'));
+  const changed = structuredClone(fixture);
+  changed.website.lambda_projection!.prices.lambda_gb_second_usd = 0;
+  assert.equal(headlineVerdict(changed), headlineVerdict(fixture));
+  assert.equal(renderScoreboard(changed), renderScoreboard(fixture));
+});
+test('Lambda trial provenance exception cannot admit old comparison rows or hide cold observations', () => {
+  const oldRow = structuredClone(fixture);
+  oldRow.systems[0].version.commit = oldRow.website.lambda_projection!.reader_commit;
+  assert.throws(() => parseResults(oldRow), /private benchmark data/);
+  const relabelled = structuredClone(fixture);
+  relabelled.website.lambda_projection!.documents = 20000;
+  assert.throws(() => parseResults(relabelled), /private benchmark data|Lambda trial scope/);
+  const missingCold = structuredClone(fixture);
+  missingCold.website.lambda_projection!.cold_client_ms = [2198, 2305];
+  assert.throws(() => parseResults(missingCold), /Lambda projection workload/);
 });
 test('answer scoring and its protocol or artifact metadata cannot enter public data', () => {
   for (const mutate of [

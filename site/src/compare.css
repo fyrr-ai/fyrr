@@ -30,6 +30,15 @@ h1 { font-size: clamp(48px, 4.5vw, 64px); line-height: 1.02; font-weight: 400; l
 .section { padding: 96px var(--gutter); border-bottom: 1px solid var(--line); }
 .story-section--lead { padding-block: 120px; background: #0b0a05; }
 .story-section--lead h2 { font-size: clamp(40px, 4.8vw, 64px); }
+.lambda-projection { margin-top: 40px; padding: 28px; border: 1px solid #645b2b; background: #121108; }
+.lambda-projection h3 { font-size: 28px; font-weight: 400; letter-spacing: -.035em; }
+.lambda-projection a { text-decoration: underline; text-underline-offset: 3px; }
+.lambda-projection .eyebrow { margin-bottom: 12px; }
+.lambda-observations { display: grid; grid-template-columns: 1fr 1fr 1.5fr; gap: 20px; margin-top: 28px; }
+.lambda-observations dt { font-size: 11px; color: var(--fg-muted); }
+.lambda-observations dd { margin: 8px 0 0; font-size: 20px; line-height: 27px; font-variant-numeric: tabular-nums; }
+.lambda-observations small { display: block; font-size: 10px; color: var(--fg-dim); }
+.lambda-cost-table { margin-top: 12px; min-width: 620px; }
 .cost-assumptions { margin-top: 32px; }
 .cost-assumptions > h3 { font-size: 24px; font-weight: 400; letter-spacing: -.03em; }
 .cost-assumptions-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 20px; margin-top: 20px; }
@@ -246,6 +255,8 @@ summary { cursor: pointer; padding-block: 6px; }
   .hero-meta { flex-direction: column; gap: 6px; }
   .section-nav .wrap { gap: 24px; }
   .section { padding-block: 64px; }
+  .lambda-projection { padding: 20px 16px; }
+  .lambda-observations { grid-template-columns: 1fr; }
   .section-head, .charts, .method-grid, .start, .latency-pair { grid-template-columns: 1fr; }
   .section-head { gap: 20px; margin-bottom: 28px; }
   .section-head .eyebrow { margin: 0; }

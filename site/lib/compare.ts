@@ -18,6 +18,18 @@ export type Metric = {
 type Group = { id: string; number: string; label: string; title: string; description: string };
 type Product = { type: string; pros: string[]; cons: string[]; sources: { label: string; url: string }[] };
 type Feature = { label: string; cells: Record<string, { text: string; sources: { label: string; url: string }[] }> };
+export type LambdaProjection = {
+  id: 'aws-lambda-300-docs-2026-11-17'; status: 'projection'; experimental: boolean;
+  region: string; architecture: string; date: string; docs_path: string | null;
+  reader_commit: string; documents: number; memory_mib: number; index_bytes: number;
+  warm_execution_median_ms: number; warm_billed_ms: number; warm_n: number;
+  warm_client_median_ms: number; warm_client_n: number; cold_client_ms: number[];
+  cold_billed_allowance_ms: number; cold_fraction: number; control_reads: number; cold_extra_reads: number;
+  request_volumes: number[];
+  prices: { lambda_gb_second_usd: number; lambda_request_usd: number; s3_get_usd: number; s3_storage_gb_month_usd: number };
+  sources: { label: string; url: string; date: string }[];
+  evidence_sha256: Record<string, string>; notes: string[]; excluded: string[];
+};
 export type Results = {
   schema_version: '1.1';
   draft: boolean;
@@ -35,6 +47,7 @@ export type Results = {
     ingest_coverage?: { submitted: number | null; accepted: number | null; rejected: number | null; rejected_documents: unknown[] };
   }[];
   website: {
+    lambda_projection?: LambdaProjection;
     headline_metric: string; groups: Group[];
     metrics: Record<string, { key: string; label: string; unit: string; group: string; direction: 'higher_is_better' | 'lower_is_better'; ci: Record<string, unknown> | null; tier?: 'primary' | 'secondary'; scope?: string; description?: string; comparable?: boolean; stage_of?: string; stage_order?: number }>;
     products: Record<string, Product>;
@@ -111,7 +124,14 @@ export function parseResults(data: unknown): Results {
   requireField(object(data) && data.schema_version === '1.1', 'schema_version must be 1.1');
   requireField(typeof data.draft === 'boolean', 'explicit draft flag required');
   const serialized = JSON.stringify(data);
-  requireField(!/\bjev(?:\b|[_-])|TypeSafe System One|c2a34a3/i.test(serialized), 'private benchmark data cannot enter public results');
+  requireField(!/\bjev(?:\b|[_-])|TypeSafe System One/i.test(serialized), 'private benchmark data cannot enter public results');
+  const publicWebsite = object(data.website) ? data.website : {};
+  const trial = publicWebsite.lambda_projection;
+  // The independently authorized Lambda trial may name its exact reader image.
+  // This exception cannot admit old EnterpriseRAG rows or other provenance.
+  const approvedTrial = object(trial) && trial.id === 'aws-lambda-300-docs-2026-11-17' && trial.status === 'projection' && trial.documents === 300 && trial.memory_mib === 1024 && trial.reader_commit === 'c2a34a3db86a9568e4e9754c86a4da46f100cdae';
+  const comparison = approvedTrial ? JSON.stringify({ ...data, website: { ...publicWebsite, lambda_projection: { ...trial, reader_commit: undefined } } }) : serialized;
+  requireField(!/c2a34a3/i.test(comparison), 'private benchmark data cannot enter public results');
   requireField(!/"(?:answer_(?:correctness|completeness)|native_answer[^"]*)"\s*:/i.test(serialized), 'private answer measurements cannot enter public results');
   requireField(object(data.benchmark) && typeof data.benchmark.id === 'string', 'benchmark');
   if (data.synthetic_design_preview) requireField(data.benchmark.publishable === false, 'synthetic preview must set benchmark.publishable to false');
@@ -148,6 +168,16 @@ export function parseResults(data: unknown): Results {
   }
   const w = data.website;
   requireField(object(w) && typeof w.headline_metric === 'string' && Array.isArray(w.groups) && object(w.metrics) && object(w.products) && Array.isArray(w.methodology), 'website presentation metadata');
+  if (w.lambda_projection !== undefined) {
+    const projection = w.lambda_projection;
+    requireField(object(projection) && approvedTrial && typeof projection.experimental === 'boolean' && typeof projection.region === 'string' && typeof projection.architecture === 'string' && typeof projection.date === 'string' && (projection.docs_path === null || typeof projection.docs_path === 'string' && /^\/docs\/[a-z0-9/-]+$/.test(projection.docs_path)), 'separate Lambda trial scope');
+    for (const key of ['index_bytes', 'warm_execution_median_ms', 'warm_billed_ms', 'warm_n', 'warm_client_median_ms', 'warm_client_n', 'cold_billed_allowance_ms', 'control_reads', 'cold_extra_reads']) requireField(finite(projection[key]) && Number(projection[key]) > 0, `Lambda ${key}`);
+    requireField(finite(projection.cold_fraction) && projection.cold_fraction >= 0 && projection.cold_fraction <= 1 && Array.isArray(projection.cold_client_ms) && projection.cold_client_ms.length === 3 && projection.cold_client_ms.every(value => finite(value) && value > 0) && Array.isArray(projection.request_volumes) && projection.request_volumes.length > 0 && projection.request_volumes.every(value => count(value) && Number(value) > 0), 'Lambda projection workload');
+    requireField(object(projection.prices), 'Lambda projection prices');
+    const prices = projection.prices;
+    requireField(['lambda_gb_second_usd', 'lambda_request_usd', 's3_get_usd', 's3_storage_gb_month_usd'].every(key => finite(prices[key]) && Number(prices[key]) >= 0), 'Lambda projection prices');
+    requireField(Array.isArray(projection.sources) && projection.sources.every(source => object(source) && typeof source.label === 'string' && typeof source.url === 'string' && /^https:\/\//.test(source.url) && typeof source.date === 'string') && strings(projection.notes) && strings(projection.excluded) && object(projection.evidence_sha256) && Object.values(projection.evidence_sha256).every(hash => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash)), 'Lambda projection provenance');
+  }
   const groups = new Set<string>();
   for (const group of w.groups) {
     requireField(object(group) && ['id', 'number', 'label', 'title', 'description'].every(key => typeof group[key] === 'string'), 'group');
@@ -472,7 +502,7 @@ export function renderStories(results: Results) {
   return (results.website.stories ?? []).map((story, index) => {
     const chart = story.group === 'ingest' ? renderMetric(baseline, story.metrics[0], { ingest: true }) : story.group === 'speed' ? renderSpeedStory(baseline) : story.metrics.length === 1 ? renderMetric(baseline, story.metrics[0]) : renderMetricSet(baseline, story.group, story.metrics, `${story.id}-`);
     const title = story.group === 'footprint' ? narrative.fractionOfCost ? 'Costs a fraction to run.' : narrative.cheaper ? 'Lower estimated running cost.' : 'What it costs to run.' : story.group === 'speed' ? narrative.fasterQueries ? 'Answers fast.' : 'Time to the evidence.' : story.group === 'ingest' ? narrative.fasterIngest ? 'Indexes fast.' : 'Indexing time.' : story.group === 'retrieval' ? `Finds the right documents${narrative.comparable ? ' (comparable)' : ''}.` : story.title;
-    return `<section class="section story-section${index === 0 && story.group === 'footprint' ? ' story-section--lead' : ''}" id="${escape(story.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">0${index + 1} / ${escape(results.website.groups.find(group => group.id === story.group)?.label ?? story.group)}</p><h2>${escape(title)}</h2><p class="sub">${escape(story.description)}</p></div>${story.group === 'footprint' ? architecture : ''}${chart}${story.group === 'footprint' ? renderCostAssumptions(baseline) : ''}<a class="text-link" href="#detail-${escape(story.group)}">${escape(results.website.groups.find(group => group.id === story.group)?.label ?? 'Full')} details <span aria-hidden="true">↘</span></a></div></section>`;
+    return `<section class="section story-section${index === 0 && story.group === 'footprint' ? ' story-section--lead' : ''}" id="${escape(story.id)}"><div class="wrap"><div class="section-head"><p class="eyebrow">0${index + 1} / ${escape(results.website.groups.find(group => group.id === story.group)?.label ?? story.group)}</p><h2>${escape(title)}</h2><p class="sub">${escape(story.description)}</p></div>${story.group === 'footprint' ? architecture : ''}${chart}${story.group === 'footprint' ? renderCostAssumptions(baseline) + renderLambdaProjection(results) : ''}<a class="text-link" href="#detail-${escape(story.group)}">${escape(results.website.groups.find(group => group.id === story.group)?.label ?? 'Full')} details <span aria-hidden="true">↘</span></a></div></section>`;
   }).join('');
 }
 function renderSpeedStory(results: Results) {
@@ -504,6 +534,26 @@ function renderCostAssumptions(results: Results) {
     const sources = Array.isArray(model.sources) ? model.sources : [];
     return `<article class="cost-card" data-system="${escape(runKey(system))}"><h4>${escape(runLabel(results, system))}</h4><dl>${facts.map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join('')}</dl>${Array.isArray(model.missing) && model.missing.length ? `<p class="note">Missing: ${escape(model.missing.join('; '))}</p>` : ''}${Array.isArray(model.notes) && model.notes.length ? `<p class="note">${escape(model.notes.join(' '))}</p>` : ''}<p class="note">Scenario: ${fact(assumptions.hours, '')} h/month · ${fact(assumptions.documents, '')} documents · ${fact(assumptions.searches_month, '')} searches/month · ${fact(assumptions.updated_documents_daily_fraction, 'fraction')} documents updated daily.</p>${sources.map(source => object(source) && typeof source.url === 'string' ? `<p class="note"><a href="${link(source.url)}">${escape(source.label ?? 'Price source')} ↗</a>${typeof source.date === 'string' ? ` · ${escape(source.date)}` : ''}</p>` : '').join('')}<details><summary>Workload, prices &amp; full calculation</summary><pre>${escape(JSON.stringify(model, null, 2))}</pre></details></article>`;
   }).join('')}</div></aside>`;
+}
+export function lambdaProjectionCost(projection: LambdaProjection, requests: number, coldFraction: number) {
+  const seconds = requests * ((1 - coldFraction) * projection.warm_billed_ms + coldFraction * projection.cold_billed_allowance_ms) / 1000;
+  const lambda = seconds * projection.memory_mib / 1024 * projection.prices.lambda_gb_second_usd + requests * projection.prices.lambda_request_usd;
+  const s3Requests = requests * (projection.control_reads + coldFraction * projection.cold_extra_reads) * projection.prices.s3_get_usd;
+  const storage = projection.index_bytes / 1024 ** 3 * projection.prices.s3_storage_gb_month_usd;
+  return { lambda_usd: lambda, s3_requests_usd: s3Requests, s3_storage_usd: storage, total_usd: lambda + s3Requests + storage };
+}
+export function renderLambdaProjection(results: Results) {
+  const trial = results.website.lambda_projection;
+  if (!trial) return '';
+  const rows = trial.request_volumes.map(requests => {
+    const warm = lambdaProjectionCost(trial, requests, 0), cold = lambdaProjectionCost(trial, requests, trial.cold_fraction);
+    return `<tr><th scope="row">${escape(format(requests, 'requests'))}</th><td>${format(warm.lambda_usd, 'USD')}</td><td>${format(warm.s3_requests_usd + warm.s3_storage_usd, 'USD')}</td><td>${format(warm.total_usd, 'USD')}</td><td>${format(cold.total_usd, 'USD')}</td></tr>`;
+  }).join('');
+  return `<aside class="lambda-projection" id="lambda-projection" data-product="fyrr"><p class="eyebrow">Experimental / separate cost projection</p><h3>fyrr reader on AWS Lambda</h3><p class="note">${trial.documents} synthetic documents · ${trial.memory_mib} MB (${trial.memory_mib / 1024} GiB) · ${escape(trial.region)} · ${escape(trial.architecture)}. Trial reader image: <code>${escape(trial.reader_commit.slice(0, 7))}</code>. Synthetic embedding and identity services. These trial observations do not enter the EnterpriseRAG latency charts, rankings or headline cost.</p>
+    <dl class="lambda-observations"><div><dt>Warm execution inside Lambda</dt><dd>${Math.round(trial.warm_execution_median_ms)} ms<small>median · n=${trial.warm_n}</small></dd></div><div><dt>Warm client-observed search</dt><dd>${Math.round(trial.warm_client_median_ms)} ms<small>varied-query median · n=${trial.warm_client_n}</small></dd></div><div><dt>Cold client-observed searches</dt><dd>${[...trial.cold_client_ms].sort((a, b) => a - b).map(value => `${(value / 1000).toFixed(3)} s`).join(' · ')}<small>all ${trial.cold_client_ms.length} samples, including the outlier</small></dd></div></dl>
+    <p class="note">Projected monthly reader subtotal for the same tiny index, using ${trial.warm_billed_ms} ms warm billed duration. No free tier or discounts. Request-volume projections are billing models, not capacity measurements.</p><div class="detail-scroll"><table class="detail-table lambda-cost-table"><thead><tr><th scope="col">Search requests / month</th><th scope="col">Lambda<br>warm only</th><th scope="col">S3 reads + index storage<br>warm only</th><th scope="col">Projected subtotal<br>warm only</th><th scope="col">Projected subtotal<br>${format(trial.cold_fraction, 'fraction')} cold</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="note">S3 index: ${format(trial.index_bytes, 'bytes')} across the captured trial prefix. The cold scenario assumes ${(trial.cold_billed_allowance_ms / 1000).toFixed(3)} s billed per cold request, ${trial.control_reads} control reads per search and ${trial.cold_extra_reads} additional reads per cold request.</p><p class="note">Excluded: ${escape(trial.excluded.join(', '))}.</p>
+    ${trial.notes.map(note => `<p class="note">${escape(note)}</p>`).join('')}<p class="note">${trial.sources.map(source => `<a href="${link(source.url)}">${escape(source.label)} ↗</a> (${escape(source.date)})`).join(' · ')}${trial.docs_path ? ` · <a href="${link(trial.docs_path)}">Experimental Lambda setup ↗</a>` : ''}</p><details class="run-config"><summary>Projection inputs, trial provenance &amp; evidence hashes</summary><pre>${escape(JSON.stringify(trial, null, 2))}</pre></details></aside>`;
 }
 
 export function renderSections(results: Results, prefix = '') {
