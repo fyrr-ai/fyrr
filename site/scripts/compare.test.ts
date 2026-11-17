@@ -112,7 +112,7 @@ test('cost-led narrative makes only supported claims and lets competitors win', 
     const cost = index === 0 ? 10 : index * 50;
     system.metrics.monthly_cost_usd = { status: 'measured', value: cost, unit: 'USD/month', n: 1, expected: 1, attempted: 1, missing: 0 };
     system.metrics.load_rss_peak_bytes = { status: 'measured', value: 1024 ** 3, unit: 'bytes', n: 1 };
-    system.footprint.monthly_cost_estimate = { basis: 'documented-production', model_version: 2, status: 'estimate', total_usd: cost, assumptions: { hours_per_month: 730, documents: 20000, queries_per_month: 100000, daily_changed_fraction: .01 }, components: { compute_usd_month: cost, storage_usd_month: 0, network_usd_month: 0, control_plane_usd_month: 0, security_usd_month: 0, observability_usd_month: 0, api_usd_month: 0, embedding_usd_per_document: 0, llm_enrichment_usd_per_document: 0 }, line_items: [{ key: 'compute', label: 'Compute', required: true, usd_month: cost, deployment_source: 'https://example.test/deployment', price_source: { url: 'https://example.test/pricing' } }], missing: [], sources: [{ label: 'Test tariff, dated', url: 'https://example.test/pricing' }] };
+    system.footprint.monthly_cost_estimate = { basis: 'documented-production', model_version: 2, status: 'estimate', total_usd: cost, assumptions: { hours_per_month: 730, documents: 20000, queries_per_month: 100000, daily_changed_fraction: .01 }, components: { compute_usd_month: cost, storage_usd_month: 0, network_usd_month: 0, control_plane_usd_month: 0, security_usd_month: 0, observability_usd_month: 0, api_usd_month: 0, embedding_usd_per_document: 0, llm_enrichment_usd_per_document: 0 }, line_items: [{ key: 'compute', label: 'Compute', required: true, usd_month: cost, deployment_source: 'https://example.test/deployment', price_source: { url: 'https://example.test/pricing' } }, { key: 'embeddings', kind: 'api', label: 'Embeddings', required: true, usd_month: 0, deployment_source: null, price_source: { url: 'https://example.test/pricing' } }], missing: [], sources: [{ label: 'Test tariff, dated', url: 'https://example.test/pricing' }] };
   });
   const verdict = headlineVerdict(data);
   assert.equal(verdict, 'Similar search quality. A fraction of the estimated running cost. Faster queries and indexing.');
@@ -128,6 +128,8 @@ test('cost-led narrative makes only supported claims and lets competitors win', 
     (weaker: typeof data) => { weaker.systems[0].metrics.first_ask_c1_p50_ms.ci95 = [90, 220]; },
     (weaker: typeof data) => { weaker.systems[0].metrics.ingest_wall_s.value = 300; },
     (weaker: typeof data) => { weaker.systems[0].footprint.monthly_cost_estimate = { status: 'n/e' }; },
+    (weaker: typeof data) => { (weaker.systems[0].footprint.monthly_cost_estimate as any).line_items[0].deployment_source = null; },
+    (weaker: typeof data) => { (weaker.systems[0].footprint.monthly_cost_estimate as any).line_items[1].price_source = null; },
   ]) {
     const weaker = structuredClone(data);
     weaken(weaker);
@@ -467,6 +469,21 @@ test('an authorized completed alternative represents its product once with visib
   data.variants!['another-alternative'] = { ...data.variants!['parallel-partitions'] };
   data.draft = true;
   assert.throws(() => parseResults(data), /one authorized headline representative per product/);
+});
+test('experimental Lambda measurements remain optional notebook variants', () => {
+  const data = structuredClone(fixture);
+  const extra = { ...structuredClone(data.systems[0]), variant: 'lambda-reader', notes: ['Real 20k experiment; cold starts retained.'] };
+  extra.metrics.recall_at_10 = { status: 'measured', value: .95, unit: 'fraction', n: 1, expected: 1, attempted: 1, missing: 0, sample_ids: ['a'], ci95: [.9, 1] };
+  data.systems.push(extra);
+  data.variants!['lambda-reader'] = { label: 'fyrr on AWS Lambda, 4096 MiB', headline: false, experimental: true, reranker: null, systems: ['fyrr'], description: 'Real 20k experiment; cold starts retained.' };
+  const parsed = parseResults(data);
+  const controls = renderControls(parsed);
+  assert(controls.includes('fyrr on AWS Lambda, 4096 MiB · experimental'));
+  assert(!controls.includes('value="fyrr@lambda-reader" checked'));
+  assert(!renderScoreboard(parsed).includes('fyrr@lambda-reader'));
+  assert(!renderStories(parsed).includes('fyrr@lambda-reader'));
+  assert(renderSections(parsed).includes('fyrr@lambda-reader'));
+  assert(renderSections(parsed).includes('Real 20k experiment; cold starts retained.'));
 });
 test('synthetic or smoke fixtures cannot overwrite the committed results', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fyrr-site-import-'));
