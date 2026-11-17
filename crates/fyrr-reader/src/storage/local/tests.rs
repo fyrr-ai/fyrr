@@ -302,7 +302,7 @@ async fn local_store_e_tags_never_repeat_and_conditions_fail_closed() {
     );
 
     // A tight loop of same-size rewrites: inodes are recycled and many writes
-    // share a timestamp tick, yet the durable counter never repeats.
+    // share a timestamp tick, yet no tag repeats.
     let mut seen = BTreeSet::from([first.e_tag.clone().unwrap()]);
     let mut previous = first.e_tag.clone();
     let mut stale = Vec::new();
@@ -375,28 +375,29 @@ async fn local_store_e_tags_never_repeat_and_conditions_fail_closed() {
         "{untagged:?}"
     );
 
-    // A damaged durable counter is an I/O failure, never a successful
-    // fallback or a reset that could reuse a stale version.
-    let lock = OpenOptions::new()
+    // A tag is only compared for equality, so one issued by a release that
+    // numbered versions from a counter stays valid for its holder.
+    let numbered = OpenOptions::new()
         .read(true)
         .write(true)
-        .open(root.join(LOCK))
+        .open(&file)
         .unwrap();
-    rustix::fs::fsetxattr(&lock, VERSION, b"bad", rustix::fs::XattrFlags::empty()).unwrap();
-    let before = store.get(&path).await.unwrap().bytes().await.unwrap();
-    assert!(
-        store
-            .put(&path, b"must not publish".to_vec().into())
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        store.get(&path).await.unwrap().bytes().await.unwrap(),
-        before
-    );
+    set_version(&numbered, 7).unwrap();
+    assert_eq!(store.head(&path).await.unwrap().e_tag, Some(version_tag(7)));
+    previous = store
+        .put_opts(
+            &path,
+            payload(401, 0).into(),
+            PutMode::Update(version(Some(version_tag(7)))).into(),
+        )
+        .await
+        .unwrap()
+        .e_tag;
+    assert!(seen.insert(previous.clone().unwrap()));
     assert_eq!(store.head(&path).await.unwrap().e_tag, previous);
-    // A control object whose version metadata disappeared is not an
-    // unversioned Lance file; reads must fail rather than invent an e-tag.
+    // A control object whose tag disappeared is not an untagged Lance file;
+    // reads must fail rather than invent an e-tag.
+    let file = store.inner.path_to_filesystem(&path).unwrap();
     let control = OpenOptions::new()
         .read(true)
         .write(true)
@@ -415,8 +416,8 @@ async fn local_store_root_is_private_and_behaves_like_s3() {
         let mode = std::fs::metadata(directory).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "{}", directory.display());
     }
-    // Recover a first opener killed after initializing the counter xattr but
-    // before writing its initialization marker. No version was reserved yet.
+    // An earlier release's first opener, killed after it initialized its
+    // version counter and before it wrote its marker, left an empty lock file.
     let initial = OpenOptions::new()
         .read(true)
         .write(true)
@@ -528,7 +529,7 @@ async fn local_store_root_is_private_and_behaves_like_s3() {
     std::fs::remove_file(root.join(STAGE)).unwrap();
     std::fs::remove_file(&external).unwrap();
 
-    // Native Lance files have no counter xattr and retain LocalFileSystem's
+    // Native Lance files have no tag xattr and retain LocalFileSystem's
     // metadata. That exception must not apply to a control object.
     let native_path = at(&store, "namespaces/ns/dataset.lance/data/native.lance");
     let native = LocalFileSystem::new();
@@ -649,8 +650,9 @@ async fn local_store_listing_tolerates_concurrent_deletes() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// Versions come from one counter, so an object deleted and created again
-/// never matches a tag of an earlier incarnation, whatever inode it reuses.
+/// Every write draws a new random tag, so an object deleted and created
+/// again never matches a tag of an earlier incarnation, whatever inode it
+/// reuses and whatever bytes it holds.
 #[tokio::test]
 async fn local_store_recreated_objects_never_match_earlier_tags() {
     let root = scratch("recreate");
@@ -706,48 +708,103 @@ async fn local_store_recreated_objects_never_match_earlier_tags() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// The counter lives on the lock file. Without it a new counter would issue
-/// versions that existing objects already carry, so a stale holder's
-/// conditional update could match: the store must refuse, not restart at 0.
+/// What a release that numbered versions from a counter on the lock file
+/// does before every mutation: a non-empty lock file must carry the counter.
+fn counter_release_refuses(root: &std::path::Path) -> bool {
+    let lock = File::open(root.join(LOCK)).unwrap();
+    lock.metadata().unwrap().len() > 0 && read_version(&lock).is_err()
+}
+
+/// A root written by a release with a version counter is taken over by the
+/// first mutation: the counter is removed, so that release fails closed from
+/// then on, and the objects and tags it wrote stay valid.
 #[tokio::test]
-async fn local_store_never_restarts_the_counter_over_existing_objects() {
-    let root = scratch("counter");
+async fn local_store_takes_a_root_over_from_the_version_counter() {
+    let root = scratch("handover");
     let store = LocalStore::open(&root).unwrap();
     let path = object(&store);
-    let mut held = None;
-    for round in 0..5 {
-        held = store
-            .put(&path, payload(round, 0).into())
+    // The earlier release's root: a marked lock file with its counter at 5,
+    // and an object carrying version 5.
+    let lock = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(root.join(LOCK))
+        .unwrap();
+    std::io::Write::write_all(&mut &lock, b"fyrr local version counter\n").unwrap();
+    set_version(&lock, 5).unwrap();
+    drop(lock);
+    let file = store.inner.path_to_filesystem(&path).unwrap();
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let old = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&file)
+        .unwrap();
+    std::io::Write::write_all(&mut &old, b"written before").unwrap();
+    set_version(&old, 5).unwrap();
+    drop(old);
+    assert!(!counter_release_refuses(&root));
+
+    // Reads need no handover and report the old version as the tag.
+    let held = store.head(&path).await.unwrap().e_tag;
+    assert_eq!(held, Some(version_tag(5)));
+    assert!(!counter_release_refuses(&root));
+
+    // The first mutation hands the root over; the old tag still matches once.
+    let other = at(&store, "namespaces/ns/other.json");
+    store.put(&other, b"other".to_vec().into()).await.unwrap();
+    assert!(counter_release_refuses(&root));
+    let updated = store
+        .put_opts(
+            &path,
+            b"written after".to_vec().into(),
+            PutMode::Update(version(held.clone())).into(),
+        )
+        .await
+        .unwrap()
+        .e_tag;
+    assert_ne!(updated, held);
+    let stale = store
+        .put_opts(
+            &path,
+            b"stale holder".to_vec().into(),
+            PutMode::Update(version(held)).into(),
+        )
+        .await;
+    assert!(
+        matches!(stale, Err(Error::Precondition { .. })),
+        "{stale:?}"
+    );
+
+    // A root that lost its lock file needs no counter to stay safe: writes
+    // continue with new tags, and the lock file is marked again.
+    std::fs::remove_file(root.join(LOCK)).unwrap();
+    for store in [store.clone(), LocalStore::open(&root).unwrap()] {
+        let written = store
+            .put(&other, b"again".to_vec().into())
             .await
             .unwrap()
             .e_tag;
+        assert_ne!(written, updated);
+        assert!(counter_release_refuses(&root));
     }
-    let before = store.get(&path).await.unwrap().bytes().await.unwrap();
-    std::fs::remove_file(root.join(LOCK)).unwrap();
-
-    // Every mutation fails closed, also from a newly opened store.
-    let other = at(&store, "namespaces/ns/other.json");
-    for store in [store.clone(), LocalStore::open(&root).unwrap()] {
-        for _ in 0..8 {
-            assert!(store.put(&other, b"other".to_vec().into()).await.is_err());
-        }
-        let refused = store
-            .put_opts(
-                &path,
-                b"stale holder".to_vec().into(),
-                PutMode::Update(version(held.clone())).into(),
-            )
-            .await;
-        assert!(refused.is_err(), "{refused:?}");
-        assert!(store.delete(&path).await.is_err());
-    }
+    assert_eq!(store.head(&path).await.unwrap().e_tag, updated);
     assert_eq!(
         store.get(&path).await.unwrap().bytes().await.unwrap(),
-        before,
-        "reads still work and the object is unchanged"
+        b"written after".as_slice()
     );
-    assert_eq!(store.head(&path).await.unwrap().e_tag, held);
-    assert!(!root.join("namespaces/ns/other.json").exists());
+
+    // A new root is marked by its first mutation, before any object exists.
+    let fresh = scratch("handover-fresh");
+    let store = LocalStore::open(&fresh).unwrap();
+    store
+        .put(&object(&store), b"first".to_vec().into())
+        .await
+        .unwrap();
+    assert!(counter_release_refuses(&fresh));
+    std::fs::remove_dir_all(fresh).unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
 

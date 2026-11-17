@@ -12,7 +12,7 @@ pub(in crate::storage) fn seed(
         return Ok(());
     }
     let store = LocalStore::open(root)?;
-    let lock = store.lock()?;
+    let _lock = store.lock()?;
     store.reap_stage(&store.root_directory()?)?;
     let prefix = store.root.clone().join("namespaces").join(namespace);
     // One descriptor chain per directory, however many objects it receives.
@@ -31,20 +31,12 @@ pub(in crate::storage) fn seed(
         }
         targets.push((names, name));
     }
-    // Reserve every version durably before exposing any fixture object. Future
-    // real puts continue beyond the reservation, including after a setup error.
-    let first = read_version(&lock)?;
-    let last = first
-        .checked_add(entries.len() as u128)
-        .ok_or_else(|| std::io::Error::other("fixture version counter exhausted"))?;
-    set_version(&lock, last)?;
-    lock.sync_all()?;
     let parent = |names: &Vec<String>| {
         directories[names]
             .last()
             .expect("the chain starts at the root")
     };
-    for (index, ((names, name), (_, bytes))) in targets.iter().zip(entries).enumerate() {
+    for ((names, name), (_, bytes)) in targets.iter().zip(entries) {
         let mut file = File::from(rustix::fs::openat(
             &parent(names).file,
             name.as_str(),
@@ -52,7 +44,7 @@ pub(in crate::storage) fn seed(
             Mode::RUSR | Mode::WUSR,
         )?);
         file.write_all(&bytes)?;
-        set_version(&file, first + index as u128 + 1)?;
+        set_version(&file, new_tag()?)?;
     }
     // Bound open files and flush concurrency. Keep the real root lock until
     // every file and its directory entries are durable.

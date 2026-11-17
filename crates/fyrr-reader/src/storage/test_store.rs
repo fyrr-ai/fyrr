@@ -19,7 +19,7 @@ pub(super) fn native_wrapper(
 }
 
 /// Seed new control objects in an inert fixture, before starting any CLI.
-/// Each object has a genuine private file, durable version xattr and contents.
+/// Each object has a genuine private file, tag xattr and contents.
 pub fn seed_local_fixture(
     config: &fyrr_core::config::Config,
     entries: Vec<(object_store::path::Path, Vec<u8>)>,

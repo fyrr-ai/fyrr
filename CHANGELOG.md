@@ -9,6 +9,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- Local storage (`file://`) tags each object write with 128 random bits
+  instead of a number from a counter on `.fyrr-storage.lock`. Existing roots
+  need no migration: the first write of this release removes the counter,
+  and objects keep the tags they have. Earlier releases then refuse to write
+  to that root, so upgrade every process that writes to it together; going
+  back to an earlier release is not supported.
 - Default fusion weights favour the dense lane more (dense_weight 0.5,
   lexical_candidates 200). Configuration schema 4.0 records the new defaults;
   dense candidates and rescoring are unchanged. Existing publications retain
