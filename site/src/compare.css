@@ -293,3 +293,5 @@ summary { cursor: pointer; padding-block: 6px; }
 .run-notes-expanded p{margin-top:8px}.run-notes-expanded{font-size:10px;line-height:16px}
 
 .hero-scope{margin-top:12px;font-size:12px;line-height:18px;color:var(--fg-dim)}.score-services{display:block;margin-top:4px;font-size:9px;line-height:13px;color:var(--fg-muted)}
+
+#notebook-status{padding:24px var(--gutter)}#notebook-status .btn{margin-top:12px}#provenance-body .btn{display:block;margin-top:12px}

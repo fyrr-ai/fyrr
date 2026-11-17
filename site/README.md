@@ -205,3 +205,11 @@ The overview rounds numbers for reading. It derives deployment-component counts
 from the production model (including the scheduled writer and TLS proxy), keeping
 measured resident-process counts in the notebook. Known cost subtotals and
 interrupted-ingest diagnostic rates are labelled and never receive metric bars.
+
+The first response renders the overview and all story charts with small chart/filter
+inputs. Per-question tables, notebook charts and full provenance live in a
+content-hashed JSON payload, fetched only when their section opens (or an optional
+run is selected). Modern browsers fetch its gzip file and decompress it with
+`DecompressionStream`; older browsers use the ordinary JSON representation and
+HTTP compression. A failed load exposes a retry and never substitutes empty scores.
+The raw results and per-run JSON downloads retain the complete reviewed data.

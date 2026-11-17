@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
+import { gzipSync, brotliCompressSync, constants } from 'node:zlib';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { readResults, verifyEvidenceArchive, assertPublishable, escape, headlineVerdict, renderScoreboard, renderStories, renderFeatures, renderSections, renderProducts, renderMethodology, renderControls, renderDetailView } from '../lib/compare';
+import { readResults, verifyEvidenceArchive, assertPublishable, escape, headlineVerdict, renderScoreboard, renderStories, renderFeatures, renderSections, renderProducts, renderMethodology, renderControls, renderDetailView, clientResults, renderProvenance } from '../lib/compare';
 
 const comparison = await readResults();
 if (process.env.SITE_ALLOW_DRAFT_COMPARE !== '1') assertPublishable(comparison);
@@ -25,6 +27,16 @@ if (comparison.benchmark.evidence_archive) {
   await cp(`data/evidence/${archive.url.split('/').at(-1)}`, `dist${archive.url}`);
 }
 const compareScripts = await Promise.all(['lighthouse.js', 'chart.js', 'live.js', 'sea.js', 'compare.js'].map(read));
+const notebook = JSON.stringify({ version: 1,
+  html: renderDetailView(comparison) + `<div id="results">${renderSections(comparison, 'detail-')}</div>`,
+  provenance: renderProvenance(comparison), systems: clientResults(comparison).systems,
+});
+const notebookHash = createHash('sha256').update(notebook).digest('hex').slice(0, 12);
+const notebookPath = `/compare/notebook-${notebookHash}.json`;
+const notebookGzip = gzipSync(notebook, { level: 9 });
+await writeFile(`dist${notebookPath}`, notebook);
+await writeFile(`dist${notebookPath}.gz`, notebookGzip);
+const initialData = { ...clientResults(comparison, true), notebook: { url: `${notebookPath}.gz`, fallback: notebookPath } };
 const measuredReview = !comparison.synthetic_design_preview && comparison.systems.some(system => Object.values(system.metrics).some(metric => metric.status === 'measured'));
 const compare = (await read('compare.html')).replace('/*BASE*/', base)
   .replace('<!--FAVICON-->', home.match(/<link rel="icon"[^>]+>/)![0])
@@ -40,14 +52,17 @@ const compare = (await read('compare.html')).replace('/*BASE*/', base)
   .replace('<!--STORIES-->', renderStories(comparison))
   .replace('<!--FEATURES-->', renderFeatures(comparison))
   .replace('<!--NAV-->', '<a href="#overview">Overview</a>' + (comparison.website.stories ?? []).map(story => `<a href="#${escape(story.id)}">${escape(comparison.website.groups.find(group => group.id === story.group)?.label ?? story.group)}</a>`).join('') + '<a href="#products">Trade-offs</a><a href="#details">Details</a><a href="#methodology">Method</a>')
-  .replace('<!--SECTIONS-->', renderSections(comparison, 'detail-'))
+  .replace('<!--SECTIONS-->', '')
   .replace('<!--CONTROLS-->', renderControls(comparison))
-  .replace('<!--DETAIL-->', renderDetailView(comparison))
-  .replace('<!--DATA-->', `<script type="application/json" id="compare-data">${JSON.stringify(comparison).replaceAll('<', '\\u003c')}</script>`)
+  .replace('<!--DETAIL-->', '<div id="notebook-status" role="status"><p id="notebook-message" class="note">The detailed notebook loads when opened.</p><button type="button" class="btn" id="notebook-retry" hidden>Retry loading</button><noscript><p><a href="/compare/results.json">Download the full results JSON</a> to inspect all measurements.</p></noscript></div><div id="notebook-body"></div>')
+  .replace('<!--DATA-->', `<script type="application/json" id="compare-data">${JSON.stringify(initialData).replaceAll('<', '\\u003c')}</script>`)
   .replace('<!--PRODUCTS-->', renderProducts(comparison))
-  .replace('<!--METHODOLOGY-->', renderMethodology(comparison))
+  .replace('<!--METHODOLOGY-->', renderMethodology(comparison, true))
   .replace('<!--SCRIPTS-->', compareScripts.map(code => `<script>\n${code}</script>\n`).join(''));
 await writeFile('dist/compare/index.html', compare);
+const bytes = Buffer.from(compare);
+console.log(`Comparison HTML: ${bytes.length} bytes; gzip ${gzipSync(bytes, { level: 9 }).length}; brotli ${brotliCompressSync(bytes, { params: { [constants.BROTLI_PARAM_QUALITY]: 5 } }).length}. Inline chart data: ${Buffer.byteLength(JSON.stringify(initialData))} bytes. Notebook on demand: ${notebookGzip.length} gzip bytes.`);
+
 await writeFile('dist/compare/results.json', JSON.stringify(comparison, null, 2) + '\n');
 await mkdir('dist/compare/runs', { recursive: true });
 for (const system of comparison.systems) {
