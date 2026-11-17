@@ -554,6 +554,10 @@
       {
         "label": "Cost assumptions",
         "text": "Reference scenario: 730 hours per month, one node, 20,000 documents, 100,000 searches and 1% of documents updated daily. Separate recurring hosting, variable API charges and one-time ingestion. Unit prices need dated sources. No estimate until all inputs are known."
+      },
+      {
+        "label": "Headline wording",
+        "text": "Headline clauses are evaluated separately on complete comparable measurements. Search quality refers to recall@10 versus the strongest alternative: comparable is a descriptive label when the gap is at most 2 percentage points or the 95% intervals overlap, with the measured gap shown; it is not an equivalence test. Query speed uses first-ask C1 medians; ingest uses accepted-document wall time. A fraction of running cost requires a complete stated model and at most half the least expensive alternative\u2019s estimated monthly cost. Missing evidence produces a pending statement, not a win."
       }
     ],
     "features": [
@@ -704,35 +708,38 @@
     ],
     "variant_note": "Headline rows use product defaults unless an authorized, source-documented alternative is explicitly marked. The optional sized C8 reader remains outside the headline: reader.concurrency=8, same index, no re-ingest or answer batch. Default partial baselines remain available in the notebook. Public artifact links are not published yet.",
     "overview_metrics": [
-      "recall_at_10",
-      "first_ask_c1_p50_ms",
-      "ingest_wall_s",
       "monthly_cost_usd",
       "service_count",
-      "idle_rss_bytes"
+      "idle_rss_bytes",
+      "first_ask_c1_p50_ms",
+      "ingest_wall_s",
+      "recall_at_10"
     ],
     "overview_labels": {
       "recall_at_10": "Quality",
       "monthly_cost_usd": "Monthly cost",
       "service_count": "Services",
       "idle_rss_bytes": "Memory",
-      "first_ask_c1_p50_ms": "Speed \u00b7 first ask",
+      "first_ask_c1_p50_ms": "Query speed",
       "ingest_wall_s": "Ingest"
     },
     "stories": [
       {
-        "id": "story-quality",
-        "title": "Find the right documents.",
-        "description": "Recall@10 measures whether the evidence your agent needs appears in its first ten documents. Higher is better.",
-        "group": "retrieval",
+        "id": "story-footprint",
+        "title": "Costs a fraction to run.",
+        "description": "Monthly cost starts with an instance sized for measured memory, then storage and variable API usage. Embedding and document-enrichment costs are explicit. Missing inputs stay n/e.",
+        "group": "footprint",
         "metrics": [
-          "recall_at_10"
+          "monthly_cost_usd",
+          "service_count",
+          "idle_rss_bytes",
+          "index_and_data_bytes"
         ]
       },
       {
         "id": "story-speed",
-        "title": "Get to the evidence quickly.",
-        "description": "First-ask search at concurrency 1: median and tail latency with fresh query caches. Each question is asked once after an unrelated index warm-up; embedding-provider time is included.",
+        "title": "Answers fast.",
+        "description": "First-ask search at concurrency 1: median and tail time to evidence with fresh query caches. Each question is asked once after an unrelated index warm-up; embedding-provider time is included, answer generation is excluded.",
         "group": "speed",
         "metrics": [
           "first_ask_c1_p50_ms",
@@ -749,15 +756,12 @@
         ]
       },
       {
-        "id": "story-footprint",
-        "title": "See what stays running.",
-        "description": "Service count, memory, disk and monthly cost belong beside retrieval quality. For fyrr, the shared index lives as files on S3.",
-        "group": "footprint",
+        "id": "story-quality",
+        "title": "Finds the right documents.",
+        "description": "Recall@10 measures whether the evidence your agent needs appears in its first ten documents. Higher is better.",
+        "group": "retrieval",
         "metrics": [
-          "service_count",
-          "idle_rss_bytes",
-          "index_and_data_bytes",
-          "monthly_cost_usd"
+          "recall_at_10"
         ]
       }
     ]
@@ -1160,28 +1164,16 @@
         "monthly_cost_estimate": {
           "status": "n/e",
           "total_usd": null,
-          "hosting_scenario_usd": 83,
-          "assumptions": {
-            "hours": 730,
-            "nodes": 1,
-            "vcpus": 4,
-            "ram_gib": 16,
-            "compute_usd_hour": 0.1,
-            "disk_gb": 100,
-            "storage_usd_gb_month": 0.1,
-            "documents": 20000,
-            "searches_month": 100000,
-            "updated_documents_daily_fraction": 0.01,
-            "tariff": "Illustrative USD tariff, not a provider quote or sizing recommendation"
-          },
+          "assumptions": {},
+          "components": {},
           "missing": [
-            "Provider-billed document/query token usage",
-            "Provider free-credit balance",
-            "Validated capacity for reference workload"
+            "Instance selected from measured memory and dated compute price",
+            "Storage capacity and dated price",
+            "Per-document embedding and document-enrichment cost",
+            "Complete reference workload assumptions"
           ],
           "notes": [
-            "USD83 = 730h*0.10 + 100GB*0.10; excludes variable APIs and one-time ingestion",
-            "Subscription answer/judge is benchmark-only and not deployment hosting"
+            "No price or capacity estimate is inferred from illustrative tariffs."
           ]
         }
       },

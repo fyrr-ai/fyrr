@@ -71,11 +71,49 @@ test('headline follows complete retrieval evidence and stays neutral on mismatch
   data.systems.forEach((system, index) => {
     system.metrics.recall_at_10 = { status: 'measured', value: index === 1 ? .9 : .8, unit: 'fraction', n: 2, expected: 2, attempted: 2, missing: 0, ci95: index === 1 ? [.85, .95] : [.75, .85], sample_ids: ['a', 'b'] };
   });
-  assert(headlineVerdict(data).startsWith(`${data.systems[1].name} has the highest observed Recall@10`.replace('Recall@10', 'recall@10')));
+  assert(headlineVerdict(data).includes(`10.0 pp behind ${data.systems[1].name}`));
   data.systems[1].metrics.recall_at_10.sample_ids = ['a', 'different'];
-  assert(headlineVerdict(data).includes('still being measured'));
+  assert(headlineVerdict(data).startsWith('Search quality is still being measured'));
   data.systems[1].metrics.recall_at_10.status = 'partial';
-  assert(headlineVerdict(data).includes('still being measured'));
+  assert(headlineVerdict(data).startsWith('Search quality is still being measured'));
+});
+test('cost-led narrative makes only supported claims and lets competitors win', () => {
+  const data = structuredClone(fixture);
+  data.draft = false;
+  data.systems.filter(system => !system.variant || system.variant === 'default').forEach((system, index) => {
+    const quality = index === 1 ? .91 : .9;
+    system.metrics.recall_at_10 = { status: 'measured', value: quality, unit: 'fraction', n: 2, expected: 2, attempted: 2, missing: 0, ci95: [quality - .01, quality + .01], sample_ids: ['a', 'b'] };
+    system.metrics.first_ask_c1_p50_ms = { status: 'measured', value: 100 * (index + 1), unit: 'ms', n: 2, expected: 2, attempted: 2, missing: 0, ci95: [95 * (index + 1), 105 * (index + 1)] };
+    system.metrics.ingest_wall_s = { status: 'measured', value: 100 * (index + 1), unit: 'seconds', n: 1, expected: 1, attempted: 1, missing: 0 };
+    const cost = index === 0 ? 10 : index * 50;
+    system.metrics.monthly_cost_usd = { status: 'measured', value: cost, unit: 'USD/month', n: 1, expected: 1, attempted: 1, missing: 0 };
+    system.metrics.load_rss_peak_bytes = { status: 'measured', value: 1024 ** 3, unit: 'bytes', n: 1 };
+    system.footprint.monthly_cost_estimate = { status: 'estimated', total_usd: cost, assumptions: { instance_name: 'Test instance', instance_ram_gib: 2, hours: 730, documents: 20000, searches_month: 100000, updated_documents_daily_fraction: .01 }, components: { compute_usd_month: cost, storage_usd_month: 0, embedding_usd_per_document: 0, llm_enrichment_usd_per_document: 0 }, missing: [], sources: [{ label: 'Test tariff, dated', url: 'https://example.test/pricing' }] };
+  });
+  const verdict = headlineVerdict(data);
+  assert(verdict.startsWith('Comparable observed search quality (1.0 pp behind Onyx)'));
+  assert(verdict.includes('Faster queries. Faster measured indexing. A fraction of the estimated running cost (20.0%'));
+  const stories = renderStories(data);
+  assert(stories.indexOf('id="story-footprint"') < stories.indexOf('id="story-speed"'));
+  assert(stories.indexOf('id="story-speed"') < stories.indexOf('id="story-ingest"'));
+  assert(stories.indexOf('id="story-ingest"') < stories.indexOf('id="story-quality"'));
+  assert(stories.includes('Costs a fraction to run.'));
+  assert(stories.includes('Finds the right documents (comparable).'));
+  assert(stories.includes('LLM enrichment / accepted document'));
+  const own = data.systems[0];
+  own.metrics.recall_at_10.value = .5;
+  own.metrics.recall_at_10.ci95 = [.49, .51];
+  own.metrics.first_ask_c1_p50_ms.value = 1000;
+  own.metrics.first_ask_c1_p50_ms.ci95 = [950, 1050];
+  own.metrics.ingest_wall_s.value = 1000;
+  own.footprint.monthly_cost_estimate = { status: 'n/e', total_usd: null, assumptions: {}, components: {}, missing: ['LLM enrichment cost'] };
+  const revised = headlineVerdict(data);
+  assert(revised.includes('41.0 pp behind Onyx'));
+  assert(revised.includes('Onyx has lower observed median query latency'));
+  assert(revised.includes('Onyx has lower measured indexing time'));
+  assert(revised.includes('Monthly operating cost is not yet estimated'));
+  assert(!revised.includes('Comparable'));
+  assert(!renderStories(data).includes('Costs a fraction to run.'));
 });
 test('zero is a measured result, ratios handle zero baselines and axes stay round', () => {
   const data = structuredClone(fixture);
@@ -172,7 +210,7 @@ test('ingest story stacks only exposed elapsed stages within total wall time', (
   data.website.metrics.ingest_preprocessing_seconds = { key: 'ingest_preprocessing_seconds', label: 'Preprocessing', unit: 'seconds', group: 'ingest', direction: 'lower_is_better', ci: null, stage_of: 'ingest_wall_s', stage_order: 0 };
   system.metrics.ingest_preprocessing_seconds = { status: 'measured', value: 300, unit: 'seconds', n: 1 };
   const html = renderStories(parseResults(data));
-  assert(html.includes('Indexes fast.'));
+  assert(html.includes('Indexing time.'));
   assert(html.includes('class="ingest-segment" style="width:25%'));
   assert(html.includes('class="ingest-segment" style="width:75%'));
   assert(html.includes('Other / unreported: 900 s'));
@@ -232,7 +270,7 @@ test('an optional variant has its own row and cannot win the default headline', 
     const value = system.variant && system.variant !== 'default' ? 1 : index === 1 ? .9 : .8;
     system.metrics.recall_at_10 = { status: 'measured', value, unit: 'fraction', n: 2, expected: 2, attempted: 2, missing: 0, ci95: [value - .05, Math.min(1, value + .05)], sample_ids: ['a', 'b'] };
   });
-  assert(headlineVerdict(data).startsWith(data.systems[1].name));
+  assert(headlineVerdict(data).includes(`10.0 pp behind ${data.systems[1].name}`));
   assert(renderMetric(data, 'first_ask_c8_p50_ms').includes('data-system="fyrr@concurrency-8"'));
   assert.equal((renderProducts(data).match(/class="product-card/g) ?? []).length, new Set(data.systems.map(system => system.id)).size);
   data.systems.push(structuredClone(data.systems[0]));
@@ -255,7 +293,7 @@ test('sized C8 variant stays separate from default wins and out of unmeasured tr
   assert(!renderStories(data).includes('fyrr@concurrency-8'));
   data.draft = false;
   data.systems.forEach((system, index) => { system.metrics.recall_at_10 = { status: 'measured', value: system.variant === 'concurrency-8' ? 1 : index === 1 ? .9 : .8, unit: 'fraction', n: 1, expected: 1, attempted: 1, missing: 0, ci95: [0, 1], sample_ids: ['a'] }; });
-  assert(headlineVerdict(data).startsWith(data.systems[1].name));
+  assert(headlineVerdict(data).includes(`10.0 pp behind ${data.systems[1].name}`));
   // Rendering never mutates the default run's original C8 refusal evidence.
   assert.deepEqual(data.systems[0].metrics.first_ask_c8_p50_ms, before.metrics.first_ask_c8_p50_ms);
 });
@@ -286,7 +324,7 @@ test('an authorized completed alternative represents its product once with visib
   assert(controls.includes('value="pipeshub@parallel-partitions" checked'));
   assert(!controls.includes('value="pipeshub" checked'));
   parsed.draft = false;
-  assert(headlineVerdict(parsed).startsWith('PipesHub (non-default configuration) has the highest'));
+  assert(headlineVerdict(parsed).includes('15.0 pp behind PipesHub (non-default configuration)'));
   data.variants!['parallel-partitions'].systems = ['onyx'];
   assert.equal(headlineSystems(data).find(system => system.id === 'pipeshub')?.variant, 'default', 'Representative authorization is product scoped');
   data.variants!['parallel-partitions'].systems = ['pipeshub'];
