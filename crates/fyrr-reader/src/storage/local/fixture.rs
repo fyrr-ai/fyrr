@@ -13,7 +13,7 @@ pub(in crate::storage) fn seed(
     }
     let store = LocalStore::open(root)?;
     let _lock = store.lock()?;
-    store.reap_stage(&store.root_directory()?)?;
+    store.reap(&store.root_directory()?)?;
     let prefix = store.root.clone().join("namespaces").join(namespace);
     // One descriptor chain per directory, however many objects it receives.
     let mut directories = BTreeMap::<Vec<String>, Vec<Directory>>::new();
