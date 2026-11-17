@@ -127,6 +127,8 @@
   .mp-t { font-size: 8px; letter-spacing: .1em; fill: var(--fg-dim); }
   .mp-k { fill: var(--fg); }
   /* serverless */
+  .lambda-note { margin: -8px 0 32px; color: var(--fg-muted); font-size: 14px; line-height: 22px; }
+  .lambda-note a { color: var(--yellow); text-decoration: underline; text-underline-offset: 3px; }
   .sub--side { margin-top: 0; max-width: 44ch; }
   .sub--small { margin-top: 24px; font-size: 15px; }
   .pxflow { position: relative; padding: 40px 0; }
@@ -326,6 +328,7 @@
         <h2 class="title">No database.<br>Just a bucket.</h2>
       </div>
       <p class="sub sub--side">Everything fyrr knows lives as files in one S3 bucket. Small teams run nothing around the clock; a whole company adds one small service.</p>
+      <p class="lambda-note rv">The reader also runs on <a href="/docs/lambda">AWS Lambda (experimental)</a>: no always-on reader server, pay per request.</p>
     </div>
     <div class="pxflow rv">
       <canvas class="stage__fog" data-seed="3" aria-hidden="true"></canvas>
