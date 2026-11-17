@@ -310,7 +310,7 @@ function comparisonNarrative(results: Results) {
     result.comparable = Math.abs(gap) <= 2 + 1e-10 || overlap;
     const gapLabel = gap !== 0 && Math.abs(gap) < .05 ? Math.abs(gap).toLocaleString('en', { maximumSignificantDigits: 2 }) : Math.abs(gap).toFixed(1);
     const comparison = gap === 0 ? `tied with ${label(best)}` : `${gapLabel} pp ${gap > 0 ? 'ahead of' : 'behind'} ${label(best)}`;
-    result.quality = result.comparable ? `Comparable observed search quality (${comparison}${Math.abs(gap) > 2 ? '; 95% intervals overlap' : ''})` : `${results.website.metrics[qualityKey].label} is ${comparison}`;
+    result.quality = result.comparable ? `Similar observed search quality (${comparison}${Math.abs(gap) > 2 ? '; 95% intervals overlap' : ''})` : `${results.website.metrics[qualityKey].label} is ${comparison}`;
   }
   const queryKey = 'first_ask_c1_p50_ms';
   if (complete(queryKey, false, true)) {
@@ -336,7 +336,7 @@ function comparisonNarrative(results: Results) {
     const sameWorkload = ['hours', 'documents', 'searches_month', 'updated_documents_daily_fraction'].every(key => finite(assumptions[key]) && Number(assumptions[key]) >= 0 && assumptions[key] === common[key]);
     const ram = assumptions.instance_ram_gib ?? assumptions.ram_gib;
     const peak = system.metrics.load_rss_peak_bytes;
-    return sameWorkload && ['measured', 'estimated'].includes(String(model.status)) && model.total_usd === system.metrics.monthly_cost_usd.value && Array.isArray(model.missing) && model.missing.length === 0 && finite(ram) && peak?.status === 'measured' && peak.value != null && ram * 1024 ** 3 >= peak.value && ['compute_usd_month', 'storage_usd_month', 'embedding_usd_per_document', 'llm_enrichment_usd_per_document'].every(key => finite(components[key]) && Number(components[key]) >= 0) && Array.isArray(model.sources) && model.sources.length > 0;
+    return sameWorkload && ['measured', 'estimated'].includes(String(model.status)) && model.total_usd === system.metrics.monthly_cost_usd.value && Array.isArray(model.missing) && model.missing.length === 0 && finite(ram) && peak?.status === 'measured' && peak.value != null && ram * 1024 ** 3 >= peak.value && ['compute_usd_month', 'storage_usd_month', 'embedding_usd_per_document', 'llm_enrichment_usd_per_document'].every(key => finite(components[key]) && Number(components[key]) >= 0) && Array.isArray(model.sources) && model.sources.length > 0 && model.sources.every(source => object(source) && typeof source.url === 'string' && /^https:\/\//.test(source.url));
   })) {
     const cheapest = peers.reduce((best, peer) => peer.metrics.monthly_cost_usd.value! < best.metrics.monthly_cost_usd.value! ? peer : best);
     const value = own.metrics.monthly_cost_usd.value!, rival = cheapest.metrics.monthly_cost_usd.value!;
@@ -350,6 +350,7 @@ export function headlineVerdict(results: Results) {
   const meta = results.website.metrics[results.website.headline_metric];
   if (!canCompare(meta)) return `${meta?.label ?? 'This metric'} is a diagnostic; it does not establish a product ranking.`;
   const narrative = comparisonNarrative(results);
+  if (narrative.comparable && narrative.fractionOfCost && narrative.query === 'Faster queries' && narrative.fasterIngest) return 'Similar search quality. A fraction of the estimated running cost. Faster queries and indexing.';
   return [narrative.quality, narrative.query, narrative.ingest, narrative.cost].join('. ') + '.';
 }
 

@@ -56,6 +56,11 @@ try {
     await assertDiagnosticsUnranked(page);
     assert.equal(await page.locator('.draft-notice').count(), results.draft ? 1 : 0);
     assert.equal(await page.locator('.product-card').count(), new Set(results.systems.map(system => system.id)).size);
+    assert.equal(await page.locator('#detail-quality').count(), 0, 'Answer scoring is excluded');
+    assert(!Object.keys(results.website.metrics).some(key => /^(?:answer_|native_answer)/.test(key)));
+    assert.deepEqual(await page.locator('.score-head [data-score-metric]').evaluateAll(cells => cells.map(cell => cell.dataset.scoreMetric)), ['monthly_cost_usd', 'service_count', 'idle_rss_bytes', 'first_ask_c1_p50_ms', 'ingest_wall_s', 'recall_at_10'], 'Overview leads with cost');
+    assert.deepEqual(await page.locator('.story-section').evaluateAll(sections => sections.map(section => section.id)), ['story-footprint', 'story-speed', 'story-ingest', 'story-quality'], 'Stories lead with cost');
+    assert(await page.locator('#story-footprint').evaluate(element => element.classList.contains('story-section--lead')));
     const keys = new Set(results.systems.flatMap(system => Object.keys(system.metrics)));
     const covered = await page.locator('#results .metric-panel').evaluateAll(panels => [...new Set(panels.flatMap(panel => [panel.dataset.metric, panel.dataset.companion].filter(Boolean)))]);
     assert.deepEqual(covered.sort(), [...keys].sort());
@@ -75,6 +80,7 @@ try {
     assert.equal(await page.locator('.score-row:visible .score-cell[data-score-metric="ingest_wall_s"] .score-rate').count(), headlineRuns.length, 'Every representative row exposes ingest throughput');
     assert.equal(await page.locator('#story-ingest .metric-panel').count(), 1, 'Ingest story has one wall-time chart');
     assert.equal(await page.locator('#story-ingest .ingest-cost').count(), headlineRuns.length, 'Embedding cost is a secondary line for each representative product');
+    assert.equal(await page.locator('#story-footprint .cost-card').count(), headlineRuns.length, 'Cost assumptions accompany every representative');
     for (const system of headlineRuns) {
       const key = !system.variant || system.variant === 'default' ? system.id : system.id + '@' + system.variant;
       if (system.variant && system.variant !== 'default') {
