@@ -101,6 +101,11 @@ question search and the notebook's open state. Higher-is-better scores
 show percentage-point gaps; time, cost and footprint show ratios to the
 best selected complete result.
 
+Cost assumptions have light/C1 and team/C8 controls. Top-level estimates and
+headline cost stay light/C1. Team figures retain their measured configuration;
+missing C8 evidence remains n/e. Capacity rows show pinned CPU count, p95 versus
+its limit, valid attempts/errors and pass/fail, with measured RAM plus 25% headroom.
+
 The cost story also contains a separately labelled experimental Lambda projection
 from a 300-document synthetic trial. It never supplies benchmark scores, the
 monthly-cost metric or the verdict. It keeps all cold samples and explicitly
