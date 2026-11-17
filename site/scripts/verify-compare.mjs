@@ -27,6 +27,11 @@ async function assertBarWidths(page) {
     return Math.abs(width / bounds.width - 1) > .01;
   }).length);
   assert.equal(stackErrors, 0, 'Ingest stages must fill their measured total within 1%');
+  const crowdedAxes = await page.locator('.metric-panel--compact:visible .axis').evaluateAll(axes => axes.filter(axis => {
+    const labels = Array.from(axis.children).filter(label => getComputedStyle(label).visibility !== 'hidden').map(label => label.getBoundingClientRect());
+    return labels.some((label, index) => index > 0 && label.left < labels[index - 1].right + 1);
+  }).length);
+  assert.equal(crowdedAxes, 0, 'Visible compact axis labels must not overlap');
 }
 let cases = 0;
 async function assertDiagnosticsUnranked(page) {
@@ -85,14 +90,18 @@ try {
     if (results.website.lambda_projection) {
       assert.equal(await page.locator('#lambda-projection').count(), 1);
       assert.equal(await page.locator('#lambda-projection .metric-panel').count(), 0, 'Lambda projection never becomes a benchmark chart');
-      assert.match(await page.locator('#lambda-projection').innerText(), /35\.756 s/);
-      assert.match(await page.locator('#lambda-projection').innerText(), /300 synthetic documents/);
+      assert.match(await page.locator('#lambda-projection').textContent(), /35\.756 s/);
+      assert.match(await page.locator('#lambda-projection').textContent(), /300 synthetic documents/);
       assert.equal(await page.locator('#lambda-projection a[href="/docs/lambda"]').count(), 1);
     }
     const keys = new Set(results.systems.flatMap(system => Object.keys(system.metrics)));
     assert.equal(await page.locator('#results').count(), 0, 'Notebook charts are absent from the initial HTML');
     assert.equal(await page.locator('[data-detail-metric]').count(), 0, 'No per-question rows in the first response');
     assert.equal(notebookRequests.length, 0, 'Opening the page and story views must not fetch the notebook');
+    assert.equal(await page.locator('details[open]').count(), 0, 'Every supporting disclosure starts closed');
+    assert.equal(await page.locator('.story-section .metric-panel:visible').count(), 5, 'Only four compact story views are exposed');
+    assert.equal(await page.locator('.score-run-note:visible, .score-coverage:visible, .cost-card:visible, .feature-table:visible').count(), 0);
+
     assert(await page.locator('#story-speed-c1 .metric-panel').first().isVisible(), 'Static story charts remain complete');
     assert.equal(await page.locator('a[aria-current="page"]').textContent(), 'Compare');
     assert(await page.locator('nav[aria-label="Main"] a[href="/compare"]').isVisible());
@@ -107,51 +116,46 @@ try {
     assert(headlineRuns.every(Boolean));
     assert.equal(new Set(headlineRuns.map(system => system.id)).size, headlineRuns.length, 'Exactly one headline representative per product');
     assert.equal(headlineRuns.length, new Set(results.systems.map(system => system.id)).size);
-    assert.equal(await page.locator('.score-row:visible .score-cell[data-score-metric="ingest_wall_s"] .score-rate').count(), headlineRuns.length, 'Every representative row exposes ingest throughput');
+    assert.equal(await page.locator('.score-row:visible .score-cell[data-score-metric="ingest_wall_s"] .score-secondary').count(), headlineRuns.length, 'Every representative row exposes ingest throughput');
     const memoryRuns = headlineRuns.filter(system => system.metrics.idle_rss_bytes?.status === 'measured');
     if (memoryRuns.length > 1 && memoryRuns.every(system => { const metric = system.metrics.idle_rss_bytes; return metric.n === metric.expected && metric.n === metric.attempted && metric.missing === 0; })) assert.equal(await page.locator('.score-row:visible .score-cell[data-score-metric="idle_rss_bytes"] .is-best').count(), 1, 'Independent memory sampling windows can differ in count without becoming incomplete');
     assert.equal(await page.locator('#story-ingest .metric-panel').count(), 1, 'Ingest story has one wall-time chart');
-    assert.equal(await page.locator('#story-ingest .ingest-cost').count(), headlineRuns.length, 'Embedding cost is a secondary line for each representative product');
+    assert.equal(await page.locator('#ingest-notes .ingest-cost').count(), headlineRuns.length, 'Embedding cost is a secondary line for each representative product');
     assert.equal(await page.locator('#cost-production > .cost-assumptions-grid > .cost-card').count(), headlineRuns.length, 'Production cost assumptions accompany every representative');
     assert.equal(await page.locator('#cost-light .cost-card').count(), headlineRuns.length);
     assert.equal(await page.locator('#cost-team .cost-card').count(), headlineRuns.length);
     assert.equal(await page.locator('#minimum-cost-details').getAttribute('open'), null);
     assert.equal(await page.locator('#cost-light').isVisible(), false);
     assert.equal(await page.locator('#cost-team').isVisible(), false);
-    assert.equal(await page.locator('.score-row:visible .score-repeat:visible').count(), headlineRuns.length, 'Repeated question is visible beneath each overview query speed');
+    assert.equal(await page.locator('.score-row:visible [data-score-metric="first_ask_c1_p50_ms"] .score-secondary').count(), headlineRuns.length, 'Repeated question is visible beneath each overview query speed');
     assert.equal(await page.locator('#story-speed-c1 .metric-panel:visible').count(), 2, 'New and repeated questions are paired in the first story state');
-    assert.equal(await page.locator('#story-speed-c8').isVisible(), false, 'Concurrency 1 is the static first view');
-    assert.equal(await page.locator('#story-speed .cache-summary [data-system]').count(), headlineRuns.length, 'Cache provenance accompanies every representative');
+    assert.equal(await page.locator('#speed-notes-c8').isVisible(), false, 'Concurrency 1 is the static first view');
+    assert.equal(await page.locator('#search-notes .cache-summary [data-system]').count(), headlineRuns.length, 'Cache provenance accompanies every representative');
     for (const system of headlineRuns) {
       const key = !system.variant || system.variant === 'default' ? system.id : system.id + '@' + system.variant;
       if (system.variant && system.variant !== 'default') {
-        assert(await page.locator(`.score-row[data-system="${key}"] .score-run-note`).count() > 0, 'Non-default headline configuration must have a visible marker');
+        assert(await page.locator(`.score-note a[href="#${system.id === 'pipeshub' ? 'pipes-notes' : 'run-notes-' + system.id}"]`).count() > 0, 'Non-default headline configuration has a one-click marker');
         assert.equal(await page.locator(`[data-select-system][value="${key}"]`).isChecked(), true);
         assert.equal(await page.locator(`.score-row[data-system="${key}"] .default-ingest-baseline`).count(), 0, 'Other configuration baselines belong in the diagnostic table');
         const segments = (system.ingest_diagnostics ?? []).filter(row => row.configuration_id.startsWith('full-final-segment') && Number.isFinite(row.docs_per_min));
         if (system.metrics.ingest_wall_s?.value == null && segments.length) {
           const cell = page.locator(`.score-row[data-system="${key}"] [data-score-metric="ingest_wall_s"]`);
           const range = [...new Set([Math.round(Math.min(...segments.map(row => row.docs_per_min))), Math.round(Math.max(...segments.map(row => row.docs_per_min)))])].map(value => value.toLocaleString('en')).join('–');
-          assert.equal(await cell.locator('.score-value').innerText(), `about ${range} docs/min`);
-          assert.match(await cell.locator('.score-rate').innerText(), /Measured segments; full 20k time n\/e \(harness interruption\)/);
+          assert.equal((await cell.locator('.score-value').innerText()).replace('†', ''), `~${range} docs/min`);
+          assert.match(await cell.locator('.score-secondary').innerText(), /Segments; full time n\/e/);
           assert.equal(await cell.locator('.bar i').count(), 0, 'Interrupted observation rates cannot become completed-ingest bars');
         }
       }
       if (system.background_activity?.enrichment_active) {
-        assert.match(await page.locator(`.score-row[data-system="${key}"] .background-activity`).innerText(), /Background document enrichment active.*Enrichment completed:/);
+        assert.match(await page.locator(`#${system.id === 'pipeshub' ? 'pipes-notes' : 'run-notes-' + system.id} .background-activity`).textContent(), /Background document enrichment active.*Enrichment completed:/);
       }
       const coverage = system.ingest_coverage;
       if (!coverage || !['submitted', 'accepted', 'rejected'].every(key => Number.isInteger(coverage[key]))) continue;
       const partial = Number.isInteger(coverage.searchable) && Number.isInteger(coverage.pending);
       const label = `${coverage.accepted.toLocaleString('en')} / ${coverage.submitted.toLocaleString('en')} accepted · ${coverage.rejected.toLocaleString('en')} rejected${partial ? ` · ${coverage.searchable.toLocaleString('en')} / ${coverage.submitted.toLocaleString('en')} searchable · ${coverage.pending.toLocaleString('en')} pending` : ''}`;
-      if (partial && coverage.pending > 0) {
-        assert.match(await page.locator(`.score-row[data-system="${key}"] .partial-coverage`).innerText(), /Partial searchability/);
-        for (const metric of ['recall_at_10', 'first_ask_c1_p50_ms']) {
-          if (system.metrics[metric]?.status === 'measured') assert.notEqual(await page.locator(`.score-row[data-system="${key}"] [data-score-metric="${metric}"] .score-value`).innerText(), 'n/e', 'Partial input coverage must not hide complete measured scores');
-        }
-      }
-      assert.equal(await page.locator(`.score-row[data-system="${key}"] .score-coverage`).textContent(), label);
-      assert.equal(await page.locator(`#story-ingest .chart-row[data-system="${key}"] .ingest-coverage`).textContent(), label, 'Accepted coverage must remain prominent next to ingest time');
+      assert((await page.locator(`#${system.id === 'pipeshub' ? 'pipes-notes' : 'run-notes-' + system.id}`).textContent()).includes(label));
+      assert.equal(await page.locator(`.score-row[data-system="${key}"] .score-coverage`).count(), 0, 'Overview counts are behind the footnote');
+
     }
     const suffix = `${width}${motion === 'reduce' ? '-reduced' : ''}`;
     if (width === 390 && headlineRuns.every(system => !system.variant || system.variant === 'default')) {
@@ -175,6 +179,23 @@ try {
     await page.screenshot({ path: `${report}/footer-${suffix}.png` });
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({ path: `${report}/full-${suffix}.png`, fullPage: true, style: '.skip{visibility:hidden!important}' });
+    await page.evaluate(() => { location.hash = 'minimum-cost-details'; });
+    await page.waitForFunction(() => document.getElementById('cost-notes').open && document.getElementById('minimum-cost-details').open);
+    await page.reload();
+    await page.waitForFunction(() => document.getElementById('cost-notes').open && document.getElementById('minimum-cost-details').open);
+    assert(new URL(page.url()).searchParams.get('open').includes('minimum-cost-details'), 'Nested disclosure state survives its permalink');
+    await page.locator('#cost-notes > summary').click();
+    await page.waitForFunction(() => !document.getElementById('minimum-cost-details').open && location.hash === '');
+    if (await page.locator('#pipes-notes').count()) {
+      await page.locator('.score-note a[href="#pipes-notes"]').click();
+      await page.waitForFunction(() => document.getElementById('pipes-notes').open);
+      assert(new URL(page.url()).searchParams.get('open').includes('pipes-notes'));
+      await page.reload();
+      await page.waitForFunction(() => document.getElementById('pipes-notes').open);
+      assert(await page.locator('#pipes-notes .partial-coverage').isVisible(), 'Footnote deep link restores the matching caveat');
+      await page.locator('#pipes-notes > summary').click();
+    }
+    await page.locator('#comparison-options > summary').click();
     await page.locator('.comparison-controls').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await page.screenshot({ path: `${report}/controls-${suffix}.png` });
     await page.locator('#story-speed').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
@@ -187,16 +208,20 @@ try {
     }
     await page.locator('#story-speed-c1').screenshot({ path: `${report}/speed-pair-${suffix}.png`, style: elementShotStyle });
     const queryBefore = await page.locator('.score-row .score-cell[data-score-metric="first_ask_c1_p50_ms"] .score-value').allTextContents();
-    await page.locator('#story-speed-tab-c8').click();
-    assert.equal(await page.locator('#story-speed-c8 .metric-panel:visible').count(), 2, 'One concurrency toggle switches both timing measures');
-    assert(await page.locator('#story-speed-c8 [data-metric="first_ask_c8_p50_ms"]').isVisible());
-    assert(await page.locator('#story-speed-c8 [data-metric="warm_c8_p50_ms"]').isVisible());
+    if (!(await page.locator('#search-notes').evaluate(element => element.open))) await page.locator('#search-notes > summary').click();
+    await page.locator('#speed-notes-tab-c8').click();
+    assert.equal(await page.locator('#speed-notes-c8 .metric-panel:visible').count(), 2, 'One concurrency toggle switches both timing measures');
+    assert(await page.locator('#speed-notes-c8 [data-metric="first_ask_c8_p50_ms"]').isVisible());
+    assert(await page.locator('#speed-notes-c8 [data-metric="warm_c8_p50_ms"]').isVisible());
     assert.deepEqual(await page.locator('.score-row .score-cell[data-score-metric="first_ask_c1_p50_ms"] .score-value').allTextContents(), queryBefore, 'Story repeat/C8 selection cannot replace headline first-ask speed');
-    await page.locator('#story-speed-tab-c1').click();
+    await page.locator('#speed-notes-tab-c1').click();
     await page.locator('#story-ingest').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await assertBarWidths(page);
     await page.screenshot({ path: `${report}/ingest-${suffix}.png` });
+    await page.locator('#ingest-notes > summary').click();
     for (const diagnostic of await page.locator('.ingest-diagnostics').all()) await diagnostic.screenshot({ path: `${report}/ingest-diagnostics-${suffix}.png`, style: elementShotStyle });
+    await page.locator('#ingest-notes > summary').click();
+    await page.locator('#cost-notes > summary').click();
     await page.locator('#story-footprint').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await page.waitForTimeout(1500);
     await page.screenshot({ path: `${report}/footprint-${suffix}.png` });
@@ -210,7 +235,12 @@ try {
     await page.locator('#cost-tab-light').click();
     await page.locator('#minimum-cost-details').screenshot({ path: `${report}/minimum-cost-${suffix}.png`, style: elementShotStyle });
     await page.locator('#minimum-cost-details > summary').click();
-    if (results.website.lambda_projection) await page.locator('#lambda-projection').screenshot({ path: `${report}/lambda-${suffix}.png`, style: elementShotStyle });
+    if (results.website.lambda_projection) {
+      await page.locator('#lambda-notes > summary').click();
+      await page.locator('#lambda-projection').screenshot({ path: `${report}/lambda-${suffix}.png`, style: elementShotStyle });
+      await page.locator('#lambda-notes > summary').click();
+    }
+    await page.locator('#cost-notes > summary').click();
     await page.locator('#products').evaluate(element => window.scrollTo(0, element.offsetTop - 64));
     await page.screenshot({ path: `${report}/products-${suffix}.png` });
     assert.equal(notebookRequests.length, 0, 'Story interactions do not load per-question data');
@@ -259,14 +289,16 @@ try {
     await assertDiagnosticsUnranked(page);
     assert.equal(await page.locator('.chart-row[data-system="fyrr"]:visible').count(), 0);
     assert(new URL(page.url()).searchParams.get('systems').includes('onyx'));
-    await page.locator('#story-speed-tab-c8').click();
+    await page.locator('#speed-notes-tab-c8').click();
     await page.getByRole('button', { name: 'Copy selection link' }).click();
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), await page.locator('.permalink input').inputValue());
     await page.reload();
     await page.locator('#details[data-load-state="ready"]').waitFor();
     assert.equal(await page.locator('[data-select-system][value="fyrr"]').isChecked(), false, 'Permalink restores systems');
     assert.equal(await page.locator('#tab-first_ask_c8_p50_ms').getAttribute('aria-selected'), 'true', 'Permalink restores concurrency');
-    assert.equal(await page.locator('#story-speed-tab-c8').getAttribute('aria-selected'), 'true', 'Permalink restores paired story concurrency');
+    assert.equal(await page.locator('#speed-notes-tab-c8').getAttribute('aria-selected'), 'true', 'Permalink restores paired story concurrency');
+    assert(await page.locator('#comparison-options').evaluate(element => element.open));
+    assert(await page.locator('#search-notes').evaluate(element => element.open), 'Permalink restores the open disclosure');
     await page.locator('[data-select-system][value="fyrr"]').check();
     assert.equal(await page.locator('[data-select-system][value="fyrr@jev-rerank"]').count(), 0, 'Private reranker never enters public filters');
     if (results.systems.some(system => system.variant === 'concurrency-8')) {
@@ -306,8 +338,8 @@ try {
     }
     await page.locator('.metrics-select summary').click();
     for (const p of [50, 95]) await page.locator(`[data-select-metric][value="first_ask_c8_p${p}_ms"]`).uncheck();
-    assert(await page.locator('#story-speed-tab-c8').isVisible(), 'Repeated measure keeps the paired concurrency view available');
-    assert(await page.locator('#story-speed-c8 [data-metric="warm_c8_p50_ms"]').isVisible());
+    assert(await page.locator('#speed-notes-tab-c8').isVisible(), 'Repeated measure keeps the paired concurrency view available');
+    assert(await page.locator('#speed-notes-c8 [data-metric="warm_c8_p50_ms"]').isVisible());
     for (const p of [50, 95]) await page.locator(`[data-select-metric][value="first_ask_c8_p${p}_ms"]`).check();
     await page.locator('[data-select-metric][value="ingest_docs_per_min"]').uncheck();
     assert.equal(await page.locator('#detail-ingest [data-metric="ingest_docs_per_min"]').isVisible(), false);
@@ -315,6 +347,7 @@ try {
     await details.locator('summary').click();
     assert(await details.getAttribute('open') !== null);
     await page.screenshot({ path: `${report}/uncertainty-${suffix}.png` });
+    if (!(await page.locator('#methodology').evaluate(element => element.open))) await page.locator('#methodology > summary').click();
     const [download] = await Promise.all([
       page.waitForEvent('download'),
       page.getByRole('link', { name: 'Download results JSON' }).click(),

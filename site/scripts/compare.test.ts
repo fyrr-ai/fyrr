@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { type Results, readResults, parseResults, assertPublishable, headlineVerdict, comparisonScope, headlineSystems, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderDetailView, renderControls, renderLambdaProjection, lambdaProjectionCost, renderMethodology, renderProvenance, clientResults, verifyEvidenceArchive, relativeValue } from '../lib/compare';
+import { type Results, readResults, parseResults, assertPublishable, headlineVerdict, comparisonScope, headlineSystems, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderSupportingDetails, renderDetailView, renderControls, renderLambdaProjection, lambdaProjectionCost, renderMethodology, renderProvenance, clientResults, verifyEvidenceArchive, relativeValue } from '../lib/compare';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -179,7 +179,7 @@ test('cost-led narrative makes only supported claims and lets competitors win', 
   assert(stories.indexOf('id="story-ingest"') < stories.indexOf('id="story-quality"'));
   assert(stories.includes('Costs a fraction to run.'));
   assert(stories.includes('Finds the right documents (comparable).'));
-  assert(stories.includes('LLM enrichment estimate / document'));
+  assert(renderSupportingDetails(data).includes('LLM enrichment estimate / document'));
   for (const weaken of [
     (weaker: typeof data) => { weaker.systems[0].metrics.recall_at_10.value = .889; weaker.systems[0].metrics.recall_at_10.ci95 = [.888, .89]; },
     (weaker: typeof data) => { const peer = weaker.systems.find(system => system.id === 'pipeshub')!; peer.metrics.recall_at_10.value = .5; peer.metrics.recall_at_10.ci95 = [.49, .51]; },
@@ -229,7 +229,7 @@ test('light and team cost assumptions stay separate and expose capacity pass cri
     },
   };
   const before = renderScoreboard(data);
-  const html = renderStories(data);
+  const html = renderSupportingDetails(data);
   assert(html.includes('id="cost-light"'));
   assert(html.includes('id="cost-team"'));
   assert(html.includes('reader.concurrency=8; measured sized reader'));
@@ -251,7 +251,7 @@ test('documented production costs retain unknown required items and keep the min
     missing: ['Snapshot used blocks'], notes: ['Availability and topology differ.'],
   };
   data.systems[0].footprint.minimum_deployment_cost_estimate = { status: 'estimate', total_usd: 10 };
-  const html = renderStories(data);
+  const html = renderSupportingDetails(data);
   assert(html.includes('Known subtotal: $42 / month · incomplete'));
   assert(html.includes('Snapshot used blocks'));
   assert(html.includes('Used blocks unknown'));
@@ -263,7 +263,8 @@ test('documented production costs retain unknown required items and keep the min
   const firstCard = html.slice(html.indexOf('id="cost-production"'), html.indexOf('id="minimum-cost-details"'));
   assert(firstCard.includes('class="cost-total">n/e / month'));
   assert(!firstCard.includes('class="cost-total">$42'));
-  assert(renderScoreboard(data).includes('Minimum to run: $10'));
+  assert(!renderScoreboard(data).includes('Minimum to run:'));
+  assert(html.includes('$10'));
   assert.equal(data.systems[0].metrics.monthly_cost_usd.value, null, 'The minimum never fills the main cost metric');
 });
 test('overview separates documented deployment counts, cost bounds and diagnostic ingest from measurements', () => {
@@ -276,15 +277,31 @@ test('overview separates documented deployment counts, cost bounds and diagnosti
   const html = renderScoreboard(data);
   assert(html.includes('data-overview-deployment="true" data-status="measured" data-value="3"'));
   assert(html.includes('data-overview-deployment="true" data-status="measured" data-value="15"'));
-  assert(html.includes('reader + writer job + TLS proxy; plus S3'));
-  assert(html.includes('≥ $2,552/month'));
-  assert(html.includes('Known subtotal; enrichment n/e'));
-  assert(html.includes('about 71–87 docs/min'));
-  assert(html.includes('Measured segments; full 20k time n/e (harness interruption)'));
+  assert(html.includes('plus S3'));
+  assert(html.includes('≥ $2,552'));
+  assert(html.includes('Known subtotal / month'));
+  assert(html.includes('~71–87 docs/min'));
+  assert(html.includes('Segments; full time n/e'));
   assert(!html.includes('7.8 docs/min'));
   assert(!html.includes('projected ~43 h'));
-  assert(renderStories(data).includes('7.8 docs/min'));
+  assert(renderSupportingDetails(data).includes('7.8 docs/min'));
   for (const key of ['service_count', 'monthly_cost_usd', 'ingest_wall_s']) assert.equal(pipes.metrics[key].value, null, 'Raw measurements are never overwritten by deployment or diagnostic display values');
+});
+test('the first read stays compact and every supporting fact remains disclosed', () => {
+  const data = structuredClone(fixture), before = JSON.stringify(data);
+  const stories = renderStories(data), supporting = renderSupportingDetails(data), board = renderScoreboard(data), products = renderProducts(data);
+  assert.equal((stories.match(/class="panel metric-panel/g) ?? []).length, 5);
+  assert(!stories.includes('cost-assumptions-grid'));
+  assert(!stories.includes('ingest-diagnostics'));
+  assert(!stories.includes('class="run-note"'));
+  assert(!board.includes('score-coverage'));
+  assert(!board.includes('score-run-note'));
+  for (const id of ['cost-notes', 'search-notes', 'ingest-notes', 'minimum-cost-details', 'lambda-notes']) assert(supporting.includes(`id="${id}"`));
+  assert(products.includes('id="pipes-notes"'));
+  assert(!/\bopen(?:=|>)/.test(supporting));
+  assert(stories.includes('href="#cost-notes"'));
+  assert(board.includes('href="#run-notes-fyrr"'));
+  assert.equal(JSON.stringify(data), before, 'Presentation cannot modify any result or guard input');
 });
 test('zero is a measured result, ratios handle zero baselines and axes stay round', () => {
   const data = structuredClone(fixture);
@@ -325,9 +342,9 @@ test('new and repeated questions stay visible together without changing headline
       system.metrics[`warm_c1_p${p}_ms`] = { status: 'measured', value: repeat * multiplier, unit: 'ms', n: 6, expected: 6, attempted: 6, missing: 0, ci95: [repeat * multiplier, repeat * multiplier] };
     }
   });
-  const html = renderStories(data);
-  const c1 = html.slice(html.indexOf('id="story-speed-c1"'), html.indexOf('id="story-speed-c8"'));
-  const c8 = html.slice(html.indexOf('id="story-speed-c8"'));
+  const html = renderSupportingDetails(data);
+  const c1 = html.slice(html.indexOf('id="speed-notes-c1"'), html.indexOf('id="speed-notes-c8"'));
+  const c8 = html.slice(html.indexOf('id="speed-notes-c8"'));
   for (const [block, c] of [[c1, 1], [c8, 8]] as const) {
     assert(block.includes(`data-metric="first_ask_c${c}_p50_ms"`));
     assert(block.includes(`data-metric="warm_c${c}_p50_ms"`));
@@ -339,7 +356,7 @@ test('new and repeated questions stay visible together without changing headline
   assert(html.includes('does not reuse cached query embeddings'));
   const ids = [...(html + renderSections(data)).matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
   assert.equal(new Set(ids).size, ids.length);
-  assert(renderScoreboard(data).includes('Repeated question<br>p50 1 ms · p95 2 ms'));
+  assert(renderScoreboard(data).includes('Repeated: 1 ms'));
   assert(renderControls(data).includes('value="warm_c1_p50_ms" checked'));
   assert(headlineVerdict(data).includes('Onyx has lower observed median query latency'));
   assert(!headlineVerdict(data).includes('Faster queries'));
@@ -398,7 +415,7 @@ test('ingest overview uses the reported throughput and never infers a missing ra
   assert(!html.includes('1,000 docs/min'));
   assert(!html.includes('2,000 docs/min'));
   assert(!html.includes('Infinity'));
-  assert.equal((html.match(/n\/e docs\/min/g) ?? []).length, 2);
+  assert.equal((html.match(/Throughput n\/e/g) ?? []).length, 2);
   assert(!html.includes('fyrr@concurrency-8'));
   data.systems[0].metrics.ingest_docs_per_min.value = 0;
   assert(renderScoreboard(data).includes('0 docs/min'));
@@ -412,15 +429,15 @@ test('ingest story stacks only exposed elapsed stages within total wall time', (
   system.metrics.embedding_cost_usd = { status: 'measured', value: 2, unit: 'USD', n: 1 };
   data.website.metrics.ingest_preprocessing_seconds = { key: 'ingest_preprocessing_seconds', label: 'Preprocessing', unit: 'seconds', group: 'ingest', direction: 'lower_is_better', ci: null, stage_of: 'ingest_wall_s', stage_order: 0 };
   system.metrics.ingest_preprocessing_seconds = { status: 'measured', value: 300, unit: 'seconds', n: 1 };
-  const html = renderStories(parseResults(data));
-  assert(html.includes('Indexing time.'));
+  const html = renderSupportingDetails(parseResults(data));
+  assert(renderStories(data).includes('Indexing time.'));
   assert(html.includes('class="ingest-segment" style="width:25%'));
   assert(html.includes('class="ingest-segment" style="width:75%'));
   assert(html.includes('Other / unreported: 900 s'));
   assert(html.includes('Embedding cost: $2'));
   assert(html.includes('Stage breakdown n/e; total wall time only.'));
   system.metrics.ingest_preprocessing_seconds.value = 1500;
-  const overlapping = renderStories(parseResults(data));
+  const overlapping = renderSupportingDetails(parseResults(data));
   assert(!overlapping.includes('class="ingest-segment"'));
   assert(overlapping.includes('Stages cannot be stacked against this wall time'));
   data.website.metrics.ingest_preprocessing_seconds.unit = 'ms';
@@ -431,7 +448,7 @@ test('ingest diagnostics retain their distinct scopes without filling canonical 
   const product = data.systems.find(system => system.id === 'pipeshub')!;
   product.ingest_diagnostics = ['default', 'parallel-partitions', 'scaled-indexing'].map((configuration_id, index) => ({ configuration_id, comparable: false, docs_per_min: 5 + index, interval_seconds: 120, newly_completed_documents: 10 + index, projected_20000_seconds: 20000, smoke_corpus_documents: index === 1 ? undefined : 1000, submitted_documents: index === 1 ? 20000 : undefined, completed_1000_ingest: index === 2, notes: [`Limit for ${configuration_id}`] }));
   const parsed = parseResults(data);
-  const stories = renderStories(parsed);
+  const stories = renderSupportingDetails(parsed);
   assert(stories.includes('separate ingest observations'));
   assert(stories.includes('Scaled indexing'));
   assert(stories.includes('1,000-document ingest completed'));
@@ -458,9 +475,10 @@ test('ingest discloses accepted coverage and rejects inconsistent rejection coun
   data.systems[1].metrics.ingest_coverage_fraction = { status: 'measured', value: 1, unit: 'fraction', n: 1 };
   const parsed = parseResults(data);
   const expected = '19,999 / 20,000 accepted · 1 rejected';
-  assert(renderScoreboard(parsed).includes(expected));
+  assert(!renderScoreboard(parsed).includes(expected));
+  assert(renderProducts(parsed).includes(expected));
   assert(renderScoreboard(parsed).includes('1,000 docs/min'));
-  const story = renderStories(parsed);
+  const story = renderSupportingDetails(parsed);
   assert(story.includes(expected));
   assert(story.includes('until every accepted document is searchable'));
   assert(story.includes('Coverage n/e'));
@@ -473,7 +491,7 @@ test('ingest discloses accepted coverage and rejects inconsistent rejection coun
   system.ingest_coverage.rejected_documents = [];
   assert.throws(() => parseResults(data), /ingest coverage must reconcile/);
   system.ingest_coverage = { submitted: null, accepted: null, rejected: null, rejected_documents: [] };
-  assert(renderStories(parseResults(data)).includes('Coverage n/e'));
+  assert(renderSupportingDetails(parseResults(data)).includes('Coverage n/e'));
 });
 test('deploy guard rejects draft even when the local preview opt-in is set', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fyrr-site-draft-'));
@@ -536,8 +554,9 @@ test('an authorized completed alternative represents its product once with visib
   assert.equal(selected.find(system => system.id === 'pipeshub')?.variant, 'parallel-partitions');
   const board = renderScoreboard(parsed);
   assert.equal((board.match(/class="score-row/g) ?? []).length, 3);
-  assert(board.includes('/compare/runs/pipeshub--parallel-partitions.json'));
-  assert(board.includes('FAIR_SCHEDULING_PARALLEL_PARTITIONS=true, non-default'));
+  assert(renderProducts(parsed).includes('/compare/runs/pipeshub--parallel-partitions.json'));
+  assert(board.includes('href="#pipes-notes"'));
+  assert(renderProducts(parsed).includes('FAIR_SCHEDULING_PARALLEL_PARTITIONS=true, non-default'));
   assert(!board.includes('10 docs/min observed'));
   assert(!board.includes('PROJECTED 33.33 h'));
   assert(!board.includes('default-ingest-baseline'));
@@ -574,10 +593,10 @@ test('a missing ingest clock cannot hide independent search evidence or verified
     assert.equal(representative.variant, 'parallel-partitions');
     assert.equal(representative.metrics.ingest_wall_s.value, null);
     assert(renderMetric(parsed, key).includes('data-system="pipeshub@parallel-partitions"'));
-    assert(renderScoreboard(parsed).includes('20,000 / 20,000 accepted'));
+    assert(renderProducts(parsed).includes('20,000 / 20,000 accepted'));
     assert(comparisonScope(parsed).includes('ingest time n/e'));
     assert(!comparisonScope(parsed).includes('PipesHub: 20k run not completed'));
-    const story = renderStories(parsed);
+    const story = renderSupportingDetails(parsed);
     if (key === 'first_ask_c1_p50_ms') { assert(story.includes('retrieval: n/e')); assert(!story.includes('retrieval and new-question C1 latency: n/e')); }
     assert.equal(headlineSystems(parsed).filter(system => system.id === 'pipeshub').length, 1);
     run.ingest_completion.resume_evidence.late_probe_verified = false as true;
@@ -632,7 +651,7 @@ test('partial input coverage retains measured search scores and discloses pendin
   assert.equal(selected.metrics.ingest_wall_s.value, null);
   assert.equal(selected.metrics.ingest_coverage_fraction.value, 1);
   assert.equal(selected.metrics.searchable_coverage_fraction.value, .9999);
-  for (const html of [renderScoreboard(parsed), renderMetric(parsed, 'recall_at_10'), renderMetric(parsed, 'first_ask_c1_p50_ms')]) {
+  for (const html of [renderProducts(parsed), renderMetric(parsed, 'recall_at_10'), renderMetric(parsed, 'first_ask_c1_p50_ms')]) {
     assert(html.includes('Partial searchability'));
     assert(html.includes('Background document enrichment active'));
     assert(html.includes('Enrichment completed: 10 → 20'));
@@ -838,7 +857,8 @@ test('a sole incomplete product attempt stays visible without a fictional defaul
       if (!realDefault) {
         const board = renderScoreboard(imported);
         assert(board.includes('data-system="pipeshub@parallel-partitions"'));
-        assert(board.includes('No accepted inventory or shared probe'));
+        assert(renderProducts(imported).includes('No accepted inventory or shared probe'));
+        assert(board.includes('href="#pipes-notes"'));
         assert.equal(imported.details?.some(row => (!row.variant || row.variant === 'default') && row.results.pipeshub), false);
       }
     }
