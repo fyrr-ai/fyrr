@@ -90,3 +90,48 @@ rescores them with their stored float16 vectors.
 | `sparse_read` | `masked_scan` | How the stored vectors of candidates are read for rescoring: `masked_scan` (a scan restricted to the candidate rows) or `take_rows` (direct row reads). |
 | `memory_max_bytes` | `2304MiB` | Memory budget for native caches and for preparing a new publication. |
 | `memory_headroom_bytes` | `128MiB` | Left unused while preparing a new publication; must be smaller than `memory_max_bytes`. |
+
+
+Memory sizing must include private prepared readers as well as shared caches.
+The preparation accounting allows 64 bytes per physical Lance row per prepared
+reader for admission bitmaps and worst-case unindexed row sets. For `R` rows and
+concurrency `C`, the cold-generation allowance is
+`32 MiB + 64 * R * (1 + C * (1 + reader_live))` bytes; `reader_live` is 0 or 1.
+At 20,000 rows, each prepared reader adds 1.22 MiB; the default `C = 8` needs
+10.99 MiB of row state, or 20.75 MiB with live embeddings, plus the 32 MiB base.
+At 1,000,000 physical rows, each prepared reader adds 64,000,000 bytes
+(61.04 MiB). Eight workers plus the template require 576,000,000 bytes
+(549.32 MiB) of row state; with live embeddings, sixteen workers plus the
+template require 1,088,000,000 bytes (1037.60 MiB), in addition to the 32 MiB
+base. Two warm generation claims at this scale can exceed the default budget
+once native caches and startup RSS are included, so raise the memory envelope
+or lower concurrency before serving that index.
+
+Native Lance sessions, vector roots, identity/policy artifacts and query-vector
+caches are shared within the serving generation. Their memory is additional,
+not eight copies. Warm preparation adds decoded vector-index inputs and scratch;
+a publication handover reserves two warm claims and native cache capacity.
+The shared authorization cache has a separate 128 MiB allowance, and startup RSS
+and configured headroom are subtracted before allocating the preparation pool.
+
+This derivation is an accounting allowance, not an RSS measurement. Leave space
+for active scans, embeddings, response buffers and allocator retention; measure
+peak RSS with representative row counts, query concurrency and publication
+handover. Increase the process/container limit with the reader budget, or lower
+`concurrency` if requests exhaust the envelope. Eight is a fixed default because
+I/O and provider waits overlap even on a two-core host; CPU count alone does not
+predict concurrent client demand. Keep the documented 1–16 bound.
+
+
+A separate idle sizing measurement on the preserved 20,000-document index
+(20,020 physical rows) compared fresh processes at concurrency 1/8/8/1, with live
+embeddings, two CPUs and the same frozen query vector. Each process had one
+template plus 2 or 16 prepared workers. Median RSS was 102,830,080 / 108,007,424 /
+107,204,608 / 102,801,408 bytes: the mean difference divided by fourteen extra
+workers was about **342,162 bytes (0.33 MiB) per prepared reader**. This measures
+idle incremental RSS on that index, including private metadata; it is not a peak
+request or handover bound. The conservative row-state allowance there is
+**1,281,280 bytes (1.22 MiB) per prepared reader**. Use the allowance and peak-load
+measurements for sizing rather than extrapolating the smaller idle measurement.
+Raw RSS/PSS/private samples are retained under
+`target/investigation/prepared-reader-cost/`.

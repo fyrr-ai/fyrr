@@ -17,7 +17,7 @@ and memory are under [advanced tuning](tuning.md#advanced-tuning).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `concurrency` | `2` | 1–16 requests executing at once; the waiting queue has the same bound, then `busy`. |
+| `concurrency` | `8` | 1–16 requests executing at once; the waiting queue has the same bound, then `busy`. |
 | `filter_count_max_rows` | `1000000` | 1–10,000,000 authorized rows one `list_filters` call may inspect; over it, `busy`. |
 | `mirror_path` | absent (`$XDG_CACHE_HOME/fyrr/<namespace>`, else `~/.cache/fyrr/<namespace>`) | Private local directory of immutable read-through files (mode 0700, files 0600, owned by the process, not a symlink), created on first use. The default does not depend on the working directory; a relative `mirror_path` resolves against it. Without the setting and without an absolute `XDG_CACHE_HOME` or `HOME`, the reader refuses to start (`storage_configuration_invalid`). |
 | `mirror_max_bytes` | `8589934592` | Disk limit of the mirror in bytes (8 GiB). An integer; unit suffixes are refused. |
@@ -27,6 +27,25 @@ and memory are under [advanced tuning](tuning.md#advanced-tuning).
 | `max_preparation` | `15m` | Upper bound on preparing a new generation. |
 | `max_response_bytes` | absent | 4096–16777216: budget for a serialized search result. Over it, whole hits are dropped from the end of the rank order (each query keeps at least four), then the lowest-ranked hits lose their excerpt or content; `truncated` and `omitted_bytes` report what was removed. |
 | `http` | absent | Streamable HTTP MCP, see below. |
+
+The fixed default of eight supports eight simultaneous clients even on two-core
+hosts, where embedding and storage waits can overlap. Set `concurrency` explicitly
+(1–16) for your workload. Each request uses an independent prepared reader;
+shared native caches are not multiplied by concurrency. Its accounted private
+row-state cost is **64 bytes per physical Lance row per prepared reader**:
+20,000 rows cost 1,280,000 bytes (1.22 MiB). Documents can span many rows.
+The scheduler prepares `concurrency` workers, or twice that when
+`embedding.reader_live = true`, plus one template. At eight and 20,000 rows,
+that is 10.99 MiB (20.75 MiB with live embeddings), plus the shared 32 MiB
+base reservation. These are derived preparation allowances, not measured total
+RSS or a ceiling on per-request scan and response allocations. See
+[memory sizing](tuning.md#reader-search-and-memory) before raising concurrency.
+On the preserved 20,000-document index (20,020 physical rows), a measurement
+with fresh processes found about 0.33 MiB of additional idle RSS per prepared
+reader; the conservative row-state allowance is 1.22 MiB. Active requests and
+handover require additional space. See the measurement and 1M-row example in
+[memory sizing](tuning.md#reader-search-and-memory).
+Pin `concurrency = 2` to retain the previous request and queue limits.
 
 ### `[reader.http]`
 

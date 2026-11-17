@@ -20,6 +20,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   have. Earlier releases then refuse to write to that root, so upgrade every
   process that writes to it together; going back to an earlier release is
   not supported.
+- Reader concurrency defaults to eight independent requests (configuration
+  schema 5.0). Pin `reader.concurrency = 2` for the previous limit; memory sizing
+  accounts for 64 bytes per physical row per prepared reader plus shared caches.
+
 - Default fusion weights favour the dense lane more (dense_weight 0.5,
   lexical_candidates 200). Configuration schema 4.0 records the new defaults;
   dense candidates and rescoring are unchanged. Existing publications retain

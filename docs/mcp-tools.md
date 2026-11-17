@@ -150,7 +150,7 @@ arrives and ends before protocol output. Telemetry contains no user data.
 Authorization is checked before retrieval and again before any result or
 error leaves the process ([how](architecture.md#authorization)).
 
-`reader.concurrency` (default 2) requests execute at once, each on an
+`reader.concurrency` (default 8) requests execute at once, each on an
 independent prepared reader; the waiting queue has the same bound, and
 beyond it the response is `busy`. Requests may finish out of arrival order.
 

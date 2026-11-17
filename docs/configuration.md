@@ -90,7 +90,7 @@ Use local storage for one host and user:
   fresh namespace on the other storage.
 
 See [local storage mechanics](architecture.md#local-storage) for coordination,
-cleanup and mirror behavior. The configuration schema is revision `4.0`.
+cleanup and mirror behavior. The configuration schema is revision `5.0`.
 
 ## `[embedding]`
 

@@ -223,6 +223,7 @@ fn example_and_minimal_files_are_valid() {
     let minimal = parse(MINIMAL).expect("minimal parses");
     assert_eq!(errors(&minimal), Vec::<String>::new());
     assert_eq!(minimal.config.writer.purge_window.to_string(), "1d");
+    assert_eq!(minimal.config.reader.concurrency, 8);
     assert_eq!(
         minimal.config.reader.version_check_interval.to_string(),
         "30s"
