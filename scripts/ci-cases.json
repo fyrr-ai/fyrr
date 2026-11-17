@@ -550,6 +550,10 @@
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_frozen_holder_bounds_lock_acquisition": {
         "tier": "quick",
         "seconds": 5.1
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_reaps_only_unlocked_staging_files": {
+        "tier": "quick",
+        "seconds": 0.02
       }
     },
     "children": {

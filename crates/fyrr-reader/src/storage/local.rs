@@ -18,8 +18,13 @@
 //!   persisted explicitly before the contracts that reference them. Finally,
 //!   its directory is flushed. A crash leaves the old object or the new one.
 //!
-//! - the single reserved staging file is reaped under the lock before every
-//!   mutation, so a killed writer cannot leave unlisted data through a purge.
+//! - each write stages its bytes in its own file under
+//!   `.fyrr-storage.stage.d/` and holds an exclusive `flock` on it while the
+//!   name exists. A staging file nobody locks belongs to a dead writer; the
+//!   first mutation of a store handle, every delete outside a cleanup batch
+//!   and the end of a batch remove such files, so a killed writer cannot
+//!   leave unlisted data through a purge. A stopped writer keeps its lock
+//!   and its file.
 //!
 //! - every object is reached by walking from the held root descriptor, one
 //!   `openat` per directory with `O_NOFOLLOW`, and is then read, published or
@@ -62,9 +67,14 @@ const LOCK: &str = ".fyrr-storage.lock";
 /// that numbered versions from a counter on this file refuse a non-empty
 /// lock file without one, so they cannot write beside this release.
 const NO_COUNTER: &[u8] = b"fyrr local storage lock; object tags are random\n";
-/// One reserved staging file, outside all namespaces. Holding the root lock
-/// throughout a write lets the next mutation safely reap it after a crash.
-const STAGE: &str = ".fyrr-storage.stage";
+/// The staging directory, outside all namespaces: one file per write in
+/// progress, named by the write's tag and locked by its writer.
+const STAGES: &str = ".fyrr-storage.stage.d";
+/// The single staging file of releases that staged under the root lock. One
+/// left behind by a killed writer is removed after the handover.
+const LEGACY_STAGE: &str = ".fyrr-storage.stage";
+/// How long a mutation polls for a `flock` before it fails without writing.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// `statfs` types of network and remote file systems, whose `flock`, rename
 /// and timestamps do not give single-host guarantees: NFS, SMB, CIFS, SMB2,
 /// AFS, Ceph and 9p.
@@ -87,6 +97,18 @@ pub(super) struct LocalStore {
     directory: Arc<File>,
     root_identity: (u64, u64),
     cleanup_directories: Option<Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, File>>>>,
+    /// Whether this handle already removed abandoned staging files.
+    reaped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// A write's staging file. The writer's `flock` on `file` marks it as live.
+#[derive(Debug)]
+struct Stage {
+    directory: Directory,
+    name: String,
+    file: File,
+    path: PathBuf,
+    tag: u128,
 }
 
 impl std::fmt::Display for LocalStore {
@@ -200,6 +222,7 @@ impl LocalStore {
             directory,
             root_identity: (metadata.dev(), metadata.ino()),
             cleanup_directories: None,
+            reaped: Arc::default(),
         })
     }
 
@@ -246,6 +269,12 @@ impl LocalStore {
                 sync_file(directory, path).map_err(|error| failure(path, error))?;
             }
             directories.clear();
+            let root = store
+                .root_directory()
+                .map_err(|error| failure(&store.root_path, error))?;
+            store
+                .reap(&root)
+                .map_err(|error| failure(&store.root_path, error))?;
             #[cfg(feature = "test-store")]
             super::test_store::sync::acknowledged("cleanup", &store.root_path)
                 .map_err(|error| failure(&store.root_path, error))?;
@@ -262,8 +291,7 @@ impl LocalStore {
     fn is_internal(&self, location: &Path) -> bool {
         location.prefix_match(&self.root).is_some_and(|mut rest| {
             rest.next()
-                .is_some_and(|part| matches!(part.as_ref(), LOCK | STAGE))
-                && rest.next().is_none()
+                .is_some_and(|part| matches!(part.as_ref(), LOCK | STAGES | LEGACY_STAGE))
         })
     }
 
@@ -371,25 +399,7 @@ impl LocalStore {
         {
             return Err(std::io::Error::other("storage lock is not private"));
         }
-        // A stopped writer may retain this lock indefinitely. Never park a
-        // storage worker behind it: contention must fail closed within a bound.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            match file.try_lock() {
-                Ok(()) => break,
-                Err(std::fs::TryLockError::WouldBlock) => {
-                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                    if remaining.is_zero() {
-                        return Err(std::io::Error::new(
-                            ErrorKind::WouldBlock,
-                            "storage lock acquisition deadline exceeded",
-                        ));
-                    }
-                    std::thread::sleep(remaining.min(std::time::Duration::from_millis(5)));
-                }
-                Err(std::fs::TryLockError::Error(error)) => return Err(error),
-            }
-        }
+        lock_exclusive(&file)?;
         self.hand_over(&root, &mut file)?;
         Ok(file)
     }
@@ -430,18 +440,13 @@ impl LocalStore {
         let place = self.place(location, true)?;
         let io = |error| failure(&place.path, error);
         let root = &place.chain[0];
-        self.reap_stage(root).map_err(io)?;
-        let mut file = rustix::fs::openat(
-            &root.file,
-            STAGE,
-            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::RUSR | Mode::WUSR,
-        )
-        .map(File::from)
-        .map_err(|error| io(error.into()))?;
-        let result = self.publish(&place, &mut file, &payload, mode);
+        if !self.reaped.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            self.reap(root).map_err(io)?;
+        }
+        let mut stage = self.stage(root).map_err(io)?;
+        let result = self.publish(&place, &mut stage, &payload, mode);
         if result.is_err() {
-            let _ = root.unlink(STAGE);
+            let _ = stage.directory.unlink(&stage.name);
         }
         #[cfg(feature = "test-store")]
         if result.is_ok() {
@@ -453,15 +458,14 @@ impl LocalStore {
     fn publish(
         &self,
         place: &Place,
-        file: &mut File,
+        stage: &mut Stage,
         payload: &PutPayload,
         mode: PutMode,
     ) -> Result<PutResult> {
         let io = |error| failure(&place.path, error);
-        let (root, parent) = (&place.chain[0], place.parent());
-        let staged = root.path.join(STAGE);
+        let parent = place.parent();
         for chunk in payload.iter() {
-            file.write_all(chunk).map_err(io)?;
+            stage.file.write_all(chunk).map_err(io)?;
         }
         #[cfg(test)]
         tests::pause("staged");
@@ -520,56 +524,170 @@ impl LocalStore {
                 directory.sync().map_err(io)?;
             }
         }
-        let next = new_tag().map_err(io)?;
-        set_version(file, next).map_err(io)?;
-        sync_file(file, &staged).map_err(io)?;
+        set_version(&stage.file, stage.tag).map_err(io)?;
+        sync_file(&stage.file, &stage.path).map_err(io)?;
         #[cfg(test)]
         tests::pause("versioned");
         #[cfg(feature = "test-store")]
-        super::test_store::sync::publishing(&place.path, &staged, payload).map_err(io)?;
-        let name = place.name.as_str();
+        super::test_store::sync::publishing(&place.path, &stage.path, payload).map_err(io)?;
+        let (stages, staged, name) = (&stage.directory, stage.name.as_str(), place.name.as_str());
         if matches!(mode, PutMode::Create) {
             rustix::fs::linkat(
-                &root.file,
-                STAGE,
+                &stages.file,
+                staged,
                 &parent.file,
                 name,
                 rustix::fs::AtFlags::empty(),
             )
             .map_err(|error| io(error.into()))?;
             // Publication succeeded, but a cleanup error still fails the call.
-            root.unlink(STAGE).map_err(io)?;
+            stages.unlink(staged).map_err(io)?;
         } else {
-            rustix::fs::renameat(&root.file, STAGE, &parent.file, name)
+            rustix::fs::renameat(&stages.file, staged, &parent.file, name)
                 .map_err(|error| io(error.into()))?;
         }
+        // The staging name is gone with the publication. Should a crash bring
+        // it back, it is one more name of the object and is reaped as such.
         parent.sync().map_err(io)?;
-        root.sync().map_err(io)?;
         Ok(PutResult {
-            e_tag: Some(version_tag(next)),
+            e_tag: Some(version_tag(stage.tag)),
             version: None,
             extensions: Default::default(),
         })
     }
 
-    /// Only a dead writer can leave this file while another writer holds
-    /// the lock. Reap it before *any* mutation, so purge cannot leave behind
-    /// unlisted temporary objects containing retired content.
-    fn reap_stage(&self, root: &Directory) -> std::io::Result<()> {
-        match root.entry(STAGE)? {
-            Some(entry)
-                if is_regular(&entry)
-                    && entry.st_uid == rustix::process::getuid().as_raw()
-                    && entry.st_mode & 0o077 == 0 =>
-            {
-                root.unlink(STAGE)?;
-                root.sync()
+    /// The private staging directory of the root; `create` makes it.
+    fn stages(&self, root: &Directory, create: bool) -> std::io::Result<Option<Directory>> {
+        let open = || {
+            rustix::fs::openat(
+                &root.file,
+                STAGES,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+        };
+        let file = match open() {
+            Err(rustix::io::Errno::NOENT) if !create => return Ok(None),
+            Err(rustix::io::Errno::NOENT) => {
+                match rustix::fs::mkdirat(&root.file, STAGES, Mode::RWXU) {
+                    Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+                    Err(error) => return Err(error.into()),
+                }
+                root.sync()?;
+                open()?
             }
-            Some(_) => Err(std::io::Error::other(
-                "staging object is not a private regular file",
-            )),
-            None => Ok(()),
+            opened => opened?,
+        };
+        let file = File::from(file);
+        let meta = file.metadata()?;
+        if meta.uid() != rustix::process::getuid().as_raw() || meta.mode() & 0o077 != 0 {
+            return Err(std::io::Error::other("staging directory is not private"));
         }
+        Ok(Some(Directory {
+            file,
+            path: root.path.join(STAGES),
+        }))
+    }
+
+    /// A new staging file, named by a new tag and locked by this writer.
+    fn stage(&self, root: &Directory) -> std::io::Result<Stage> {
+        let directory = self
+            .stages(root, true)?
+            .expect("the staging directory was created");
+        loop {
+            let tag = new_tag()?;
+            let name = format!("{tag:032x}");
+            let file = File::from(rustix::fs::openat(
+                &directory.file,
+                name.as_str(),
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )?);
+            // A reaper may have found the file between its creation and this
+            // lock and removed it as abandoned. Then stage under a new name.
+            lock_exclusive(&file)?;
+            if file.metadata()?.nlink() == 0 {
+                continue;
+            }
+            let path = directory.path.join(&name);
+            return Ok(Stage {
+                directory,
+                name,
+                file,
+                path,
+                tag,
+            });
+        }
+    }
+
+    /// Removes the staging files of dead writers: those nobody holds a lock
+    /// on. A stopped writer keeps its lock, so its file stays. Anything in
+    /// the staging directory that is not a private regular file fails the
+    /// caller, which then changes nothing.
+    fn reap(&self, root: &Directory) -> std::io::Result<()> {
+        let private = |entry: &rustix::fs::Stat| {
+            is_regular(entry)
+                && entry.st_uid == rustix::process::getuid().as_raw()
+                && entry.st_mode & 0o077 == 0
+        };
+        let foreign = || std::io::Error::other("staging object is not a private regular file");
+        // Releases that staged under the root lock cannot write after the
+        // handover, so their single staging file has no live writer.
+        match root.entry(LEGACY_STAGE)? {
+            Some(entry) if private(&entry) => {
+                root.unlink(LEGACY_STAGE)?;
+                root.sync()?;
+            }
+            Some(_) => return Err(foreign()),
+            None => {}
+        }
+        let Some(stages) = self.stages(root, false)? else {
+            return Ok(());
+        };
+        let mut removed = false;
+        for entry in rustix::fs::Dir::read_from(&stages.file)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if matches!(name.as_str(), "." | "..") {
+                continue;
+            }
+            let file = match rustix::fs::openat(
+                &stages.file,
+                name.as_str(),
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            ) {
+                Ok(file) => File::from(file),
+                // Published or removed since the directory was read.
+                Err(rustix::io::Errno::NOENT) => continue,
+                Err(rustix::io::Errno::LOOP) => return Err(foreign()),
+                Err(error) => return Err(error.into()),
+            };
+            let opened = rustix::fs::fstat(&file)?;
+            if !private(&opened) {
+                return Err(foreign());
+            }
+            match file.try_lock() {
+                Ok(()) => {}
+                Err(std::fs::TryLockError::WouldBlock) => continue,
+                Err(std::fs::TryLockError::Error(error)) => return Err(error),
+            }
+            // Only the name that still means the locked inode is removed.
+            if stages
+                .entry(&name)?
+                .is_some_and(|named| (named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino))
+            {
+                match stages.unlink(&name) {
+                    Ok(()) => removed = true,
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        if removed {
+            stages.sync()?;
+        }
+        Ok(())
     }
 
     /// Lance owns the files below the dataset, including native commit
@@ -698,7 +816,7 @@ impl LocalStore {
             let io = |error| failure(&place.path, error);
             let parent = place.parent();
             let _lock = store.lock().map_err(io)?;
-            store.reap_stage(&place.chain[0]).map_err(io)?;
+            store.reap(&place.chain[0]).map_err(io)?;
             let (file, _) = parent.object(&place.name).map_err(io)?;
             if version_tag(read_version(&file).map_err(io)?) != expected {
                 return Err(Error::Precondition {
@@ -727,7 +845,11 @@ impl LocalStore {
         let io = |error| failure(&place.path, error);
         let parent = place.parent();
         let _lock = self.lock().map_err(io)?;
-        self.reap_stage(&place.chain[0]).map_err(io)?;
+        if self.cleanup_directories.is_none()
+            || !self.reaped.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.reap(&place.chain[0]).map_err(io)?;
+        }
         match parent.entry(&place.name).map_err(io)? {
             Some(entry) if is_symlink(&entry) => {
                 return Err(io(std::io::Error::other("symlink in storage path")));
@@ -774,6 +896,29 @@ impl LocalStore {
                 store: STORE,
                 source: Box::new(error),
             })?
+    }
+}
+
+/// Polls for an exclusive `flock` on `file` for at most [`LOCK_WAIT`].
+/// `flock` cannot be revoked and a waiter cannot tell a stopped holder from
+/// a slow one, so the caller fails closed instead of waiting forever.
+fn lock_exclusive(file: &File) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    return Err(std::io::Error::new(
+                        ErrorKind::WouldBlock,
+                        "storage lock acquisition deadline exceeded",
+                    ));
+                }
+                std::thread::sleep(remaining.min(std::time::Duration::from_millis(5)));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+        }
     }
 }
 

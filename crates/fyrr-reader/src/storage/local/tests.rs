@@ -3,6 +3,7 @@ use super::*;
 use object_store::{ObjectStoreExt, UpdateVersion};
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::process::{Child, Command};
 use std::time::Duration;
@@ -19,6 +20,15 @@ pub(super) fn pause(stage: &str) {
         loop {
             std::thread::sleep(Duration::from_secs(60));
         }
+    }
+}
+
+/// The staging files currently present in `root`.
+fn staged(root: &std::path::Path) -> Vec<PathBuf> {
+    match std::fs::read_dir(root.join(STAGES)) {
+        Ok(entries) => entries.map(|entry| entry.unwrap().path()).collect(),
+        Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
+        Err(error) => panic!("{error}"),
     }
 }
 
@@ -236,8 +246,9 @@ fn local_store_crash_before_publication_keeps_the_old_object() {
         process.kill().unwrap();
         process.wait().unwrap();
         assert!(!result.exists());
-        assert!(
-            root.join(STAGE).is_file(),
+        assert_eq!(
+            staged(&root).len(),
+            1,
             "the killed writer left its staging file"
         );
         assert_eq!(read(&store, &root), payload(round, 0), "{stage}");
@@ -259,11 +270,16 @@ fn local_store_crash_before_publication_keeps_the_old_object() {
         // The writer that saw the surviving version still wins, so the dead
         // process left no lock behind.
         let mode = PutMode::Update(version(Some(expected.clone())));
-        put(&store, &payload(round + 1, 0), mode).unwrap();
+        put(
+            &LocalStore::open(&root).unwrap(),
+            &payload(round + 1, 0),
+            mode,
+        )
+        .unwrap();
         assert_ne!(current(&store), expected);
         assert!(
-            !root.join(STAGE).exists(),
-            "recovery reaps the abandoned stage"
+            staged(&root).is_empty(),
+            "the next store handle reaps the abandoned stage"
         );
     }
     std::fs::remove_dir_all(root).unwrap();
@@ -477,8 +493,12 @@ async fn local_store_root_is_private_and_behaves_like_s3() {
         .unwrap();
     assert!(empty.is_empty());
     let gone = at(&store, "namespaces/ns/c");
-    std::fs::write(root.join(STAGE), b"retired private content").unwrap();
-    std::fs::set_permissions(root.join(STAGE), std::fs::Permissions::from_mode(0o600)).unwrap();
+    // Abandoned staging files: one of this layout, one of the single-file
+    // layout of earlier releases.
+    for abandoned in [root.join(STAGES).join("abandoned"), root.join(LEGACY_STAGE)] {
+        std::fs::write(&abandoned, b"retired private content").unwrap();
+        std::fs::set_permissions(&abandoned, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
     let staged_listing: Vec<_> = store.list(None).try_collect().await.unwrap();
     assert!(
         staged_listing
@@ -487,7 +507,7 @@ async fn local_store_root_is_private_and_behaves_like_s3() {
     );
     store.delete(&gone).await.unwrap();
     assert!(
-        !root.join(STAGE).exists(),
+        staged(&root).is_empty() && !root.join(LEGACY_STAGE).exists(),
         "purge must reap abandoned staged content"
     );
     store.delete(&gone).await.unwrap();
@@ -523,10 +543,19 @@ async fn local_store_root_is_private_and_behaves_like_s3() {
             .is_err()
     );
     assert_eq!(std::fs::read(&external).unwrap(), b"unchanged");
-    std::os::unix::fs::symlink(&external, root.join(STAGE)).unwrap();
+    // Neither a redirected staging directory nor a foreign entry in it is
+    // written through, followed or removed.
+    let stages = root.join(STAGES);
+    std::os::unix::fs::symlink(&external, stages.join("link")).unwrap();
+    assert!(store.delete(&gone).await.is_err());
+    assert!(stages.join("link").is_symlink());
+    std::fs::remove_file(stages.join("link")).unwrap();
+    std::fs::remove_dir(&stages).unwrap();
+    std::os::unix::fs::symlink(root.parent().unwrap(), &stages).unwrap();
     assert!(store.put(&gone, b"changed".to_vec().into()).await.is_err());
+    assert!(store.delete(&gone).await.is_err());
     assert_eq!(std::fs::read(&external).unwrap(), b"unchanged");
-    std::fs::remove_file(root.join(STAGE)).unwrap();
+    std::fs::remove_file(&stages).unwrap();
     std::fs::remove_file(&external).unwrap();
 
     // Native Lance files have no tag xattr and retain LocalFileSystem's
@@ -805,6 +834,40 @@ async fn local_store_takes_a_root_over_from_the_version_counter() {
         .unwrap();
     assert!(counter_release_refuses(&fresh));
     std::fs::remove_dir_all(fresh).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A staging file is abandoned exactly when nobody holds its lock. The
+/// reaper removes those and leaves a live writer's file alone.
+#[test]
+fn local_store_reaps_only_unlocked_staging_files() {
+    let root = scratch("reap");
+    let store = LocalStore::open(&root).unwrap();
+    put(&store, b"object", PutMode::Create).unwrap();
+    let directory = store.root_directory().unwrap();
+    let live = store.stage(&directory).unwrap();
+    let abandoned = root.join(STAGES).join("abandoned");
+    std::fs::write(&abandoned, b"retired private content").unwrap();
+    std::fs::set_permissions(&abandoned, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(staged(&root).len(), 2);
+
+    store.reap(&directory).unwrap();
+    assert_eq!(
+        staged(&root),
+        std::slice::from_ref(&live.path),
+        "only the locked file stays"
+    );
+    // A delete reaps every time, and still leaves the live writer's file.
+    store
+        .delete_blocking(&at(&store, "namespaces/ns/missing"))
+        .unwrap();
+    assert_eq!(staged(&root), std::slice::from_ref(&live.path));
+
+    // The writer is gone without publishing: its file is abandoned now.
+    drop(live);
+    store.reap(&directory).unwrap();
+    assert!(staged(&root).is_empty());
+    assert_eq!(read(&store, &root), b"object");
     std::fs::remove_dir_all(root).unwrap();
 }
 
