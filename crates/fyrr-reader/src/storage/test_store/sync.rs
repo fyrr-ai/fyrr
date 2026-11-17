@@ -10,6 +10,8 @@ fn record(mut value: serde_json::Value) -> std::io::Result<()> {
     // Which process flushed matters: a publisher must persist what it
     // observed itself, not rely on the writer having got there first.
     value["pid"] = std::process::id().into();
+    // One blocking mutation runs on one thread from start to end.
+    value["thread"] = format!("{:?}", std::thread::current().id()).into();
     let mut line = serde_json::to_vec(&value).map_err(std::io::Error::other)?;
     line.push(b'\n');
     std::fs::OpenOptions::new()
@@ -22,6 +24,13 @@ pub(crate) fn synced(path: &Path, directory: bool) -> std::io::Result<()> {
 }
 pub(crate) fn unlinked(path: &Path) -> std::io::Result<()> {
     record(serde_json::json!({"event":"unlink","path":path}))
+}
+/// The object's lock was obtained, and released again.
+pub(crate) fn locked(path: &Path) -> std::io::Result<()> {
+    record(serde_json::json!({"event":"lock","path":path}))
+}
+pub(crate) fn unlocked(path: &Path) -> std::io::Result<()> {
+    record(serde_json::json!({"event":"unlock","path":path}))
 }
 /// A create is about to report that its object already exists.
 pub(crate) fn existing(path: &Path) -> std::io::Result<()> {

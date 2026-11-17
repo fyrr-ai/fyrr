@@ -6,17 +6,34 @@
 //! reused, and a same-size rewrite may land in the same timestamp tick.
 //! [`LocalStore`] adds what fyrr's coordination needs on top of it:
 //!
-//! - every mutation holds one exclusive `flock` on the root's lock file, so a
-//!   conditional write compares the current e-tag and publishes its object
-//!   with no other fyrr process changing the object in between;
 //! - each write gets a tag of 128 random bits from the operating system,
 //!   stored as an xattr on its staging inode before publication. A tag never
 //!   depends on timestamps, inode numbers or content, so a rewrite of the
 //!   same bytes and an object created again after a delete get new ones;
-//! - an object and its version xattr are flushed on a staging inode, then
-//!   published by `rename` (replace) or `link` (create only). Native files are
-//!   persisted explicitly before the contracts that reference them. Finally,
-//!   its directory is flushed. A crash leaves the old object or the new one.
+//! - an object and its tag are flushed on a staging inode before the object
+//!   gets its name. A create publishes with `renameat2(RENAME_NOREPLACE)`,
+//!   which is atomic and needs no lock. After the publication the writer
+//!   flushes the object's directory, and only then acknowledges. A crash
+//!   leaves the old object or the new one, each complete;
+//! - a write that replaces or removes an object locks that object: an
+//!   exclusive `flock` on the inode the name currently means, then a check
+//!   that the name still means it. If not, someone replaced the object and
+//!   the writer starts over with the new inode. Every move of a name away
+//!   from an inode needs that inode's lock, so two writers cannot both
+//!   compare the same tag and publish. Only the comparison and the `rename`
+//!   or `unlink` happen under the lock; nothing is flushed there. Writes to
+//!   different objects never wait for each other;
+//! - `flock` cannot be revoked, and a waiter cannot tell a stopped holder
+//!   from a slow one. A writer therefore polls for an object's lock for at
+//!   most [`LOCK_WAIT`] and then fails without writing. A process stopped
+//!   inside that short section blocks later replacements and removals of
+//!   that one object; creates and all other objects proceed;
+//! - a reader can see an object before its writer flushed the directory.
+//!   Whoever publishes a reference to something it only observed makes it
+//!   durable first: a create that finds its object present flushes it before
+//!   reporting so, and [`LocalStore::persist_control`] covers the rest.
+//!   Native files are persisted explicitly before the contracts that
+//!   reference them;
 //!
 //! - each write stages its bytes in its own file under
 //!   `.fyrr-storage.stage.d/` and holds an exclusive `flock` on it while the
@@ -33,8 +50,8 @@
 //!   and its use. Listings find names with `LocalFileSystem` and re-read each
 //!   one this way.
 //!
-//! Reads take no lock. The lock is advisory and local to one kernel, so the
-//! directory must not be shared between hosts; network file systems are
+//! Reads take no lock. The locks are advisory and local to one kernel, so
+//! the directory must not be shared between hosts; network file systems are
 //! refused where `statfs` names them.
 //!
 //! Object paths are absolute paths without their leading `/`, as Lance names
@@ -62,6 +79,9 @@ const VERSION: &str = "user.fyrr.version";
 
 const STORE: &str = "fyrr local storage";
 /// In the root, outside `namespaces/`, so no namespace listing returns it.
+/// Releases that serialized every mutation held a `flock` on this file and
+/// kept a version counter in its xattr. Nothing locks it any more, except
+/// once to take a root over from such a release.
 const LOCK: &str = ".fyrr-storage.lock";
 /// The content of a lock file that carries no version counter. Releases
 /// that numbered versions from a counter on this file refuse a non-empty
@@ -74,6 +94,7 @@ const STAGES: &str = ".fyrr-storage.stage.d";
 /// left behind by a killed writer is removed after the handover.
 const LEGACY_STAGE: &str = ".fyrr-storage.stage";
 /// How long a mutation polls for a `flock` before it fails without writing.
+/// Nothing is flushed under a lock, so a live holder is done in far less.
 const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// `statfs` types of network and remote file systems, whose `flock`, rename
 /// and timestamps do not give single-host guarantees: NFS, SMB, CIFS, SMB2,
@@ -99,6 +120,22 @@ pub(super) struct LocalStore {
     cleanup_directories: Option<Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, File>>>>,
     /// Whether this handle already removed abandoned staging files.
     reaped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The lock on an object: an exclusive `flock` on the inode its name means.
+/// Dropping it releases the lock.
+#[derive(Debug)]
+struct Key {
+    file: File,
+    #[cfg_attr(not(feature = "test-store"), allow(dead_code))]
+    path: PathBuf,
+}
+
+impl Drop for Key {
+    fn drop(&mut self) {
+        #[cfg(feature = "test-store")]
+        let _ = super::test_store::sync::unlocked(&self.path);
+    }
 }
 
 /// A write's staging file. The writer's `flock` on `file` marks it as live.
@@ -407,10 +444,14 @@ impl LocalStore {
         Ok(Place { chain, name, path })
     }
 
-    /// The exclusive lock every mutation holds; released when the file closes,
-    /// also when the process dies.
-    fn lock(&self) -> std::io::Result<File> {
-        let root = self.root_directory()?;
+    /// Makes sure no release that serialized mutations through the root lock
+    /// can write to this root: the lock file is non-empty and carries no
+    /// version counter, which such a release refuses at its counter check.
+    /// A root in that state costs one open and two reads here. Otherwise the
+    /// root lock is taken once, so that a mutation such a release has in
+    /// progress finishes first; then the counter is removed. The tags it
+    /// wrote stay valid, because a tag is only ever compared for equality.
+    fn hand_over(&self, root: &Directory) -> std::io::Result<()> {
         let mut file = File::from(rustix::fs::openat(
             &root.file,
             LOCK,
@@ -424,29 +465,27 @@ impl LocalStore {
         {
             return Err(std::io::Error::other("storage lock is not private"));
         }
+        let counted = match rustix::fs::fgetxattr(&file, VERSION, &mut [0u8; 0][..]) {
+            Ok(_) => true,
+            Err(rustix::io::Errno::NODATA) => false,
+            Err(error) => return Err(error.into()),
+        };
+        if meta.len() > 0 && !counted {
+            return Ok(());
+        }
         lock_exclusive(&file)?;
-        self.hand_over(&root, &mut file)?;
-        Ok(file)
-    }
-
-    /// Takes a root over from a release that numbered versions from a
-    /// counter on the lock file, and marks a new root the same way: the lock
-    /// file is non-empty and has no counter. Such a release then fails every
-    /// mutation at its counter check, and its tags stay valid, because a tag
-    /// is only ever compared for equality.
-    fn hand_over(&self, root: &Directory, file: &mut File) -> std::io::Result<()> {
         let mut changed = false;
         if file.metadata()?.len() == 0 {
             file.write_all(NO_COUNTER)?;
             changed = true;
         }
-        match rustix::fs::fremovexattr(&*file, VERSION) {
+        match rustix::fs::fremovexattr(&file, VERSION) {
             Ok(()) => changed = true,
             Err(rustix::io::Errno::NODATA) => {}
             Err(error) => return Err(error.into()),
         }
         if changed {
-            sync_file(file, &root.path.join(LOCK))?;
+            sync_file(&file, &root.path.join(LOCK))?;
             root.sync()?;
         }
         Ok(())
@@ -458,18 +497,24 @@ impl LocalStore {
         payload: PutPayload,
         mode: PutMode,
     ) -> Result<PutResult> {
+        if matches!(&mode, PutMode::Update(expected) if expected.version.is_some()) {
+            return Err(unsupported("historical object versions"));
+        }
         self.names(location)?;
-        let _lock = self
-            .lock()
+        let root = self
+            .root_directory()
+            .map_err(|error| failure(&self.root_path, error))?;
+        self.hand_over(&root)
             .map_err(|error| failure(&self.root_path.join(LOCK), error))?;
         let place = self.place(location, true)?;
         let io = |error| failure(&place.path, error);
-        let root = &place.chain[0];
         if !self.reaped.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            self.reap(root).map_err(io)?;
+            self.reap(&root).map_err(io)?;
         }
-        let mut stage = self.stage(root).map_err(io)?;
-        let result = self.publish(&place, &mut stage, &payload, mode);
+        // A write that cannot succeed is refused before it stages anything.
+        self.admit(&place, &mode, None)?;
+        let stage = self.stage(&root).map_err(io)?;
+        let result = self.publish(&place, &stage, &payload, &mode);
         if result.is_err() {
             let _ = stage.directory.unlink(&stage.name);
         }
@@ -480,115 +525,228 @@ impl LocalStore {
         result
     }
 
+    /// Whether `mode` can apply to the object as it is now. `locked` is the
+    /// held lock of the object when the answer must stay true until the
+    /// caller publishes; without it the answer is only good for refusing,
+    /// which is always correct: an object that exists was created, and a tag
+    /// that does not match never matches again.
+    fn admit(&self, place: &Place, mode: &PutMode, locked: Option<&Key>) -> Result<()> {
+        let io = |error| failure(&place.path, error);
+        let path = || place.path.display().to_string();
+        let missing = || Error::Precondition {
+            path: path(),
+            source: "object does not exist".into(),
+        };
+        let current = match locked {
+            Some(key) => Some(key.file.try_clone().map_err(io)?),
+            None => match place.parent().entry(&place.name).map_err(io)? {
+                Some(entry) if is_symlink(&entry) => {
+                    return Err(io(std::io::Error::other("symlink in storage path")));
+                }
+                Some(entry) if !is_regular(&entry) => {
+                    return Err(io(std::io::Error::other("not a regular file")));
+                }
+                Some(_) => match place.parent().object(&place.name) {
+                    Ok((file, _)) => Some(file),
+                    Err(error) if error.kind() == ErrorKind::NotFound => None,
+                    Err(error) => return Err(io(error)),
+                },
+                None => None,
+            },
+        };
+        match (mode, current) {
+            (PutMode::Create, Some(_)) => {
+                self.settle_existing(place).map_err(io)?;
+                Err(Error::AlreadyExists {
+                    path: path(),
+                    source: "object exists".into(),
+                })
+            }
+            (PutMode::Update(_), None) => Err(missing()),
+            (PutMode::Update(expected), Some(file)) => match &expected.e_tag {
+                Some(tag) if *tag == version_tag(read_version(&file).map_err(io)?) => Ok(()),
+                Some(_) => Err(Error::Precondition {
+                    path: path(),
+                    source: "e-tag does not match".into(),
+                }),
+                None => Err(Error::Generic {
+                    store: STORE,
+                    source: "a conditional update needs an e-tag".into(),
+                }),
+            },
+            _ => Ok(()),
+        }
+    }
+
+    /// Publishes the staged object: flush, give it the name, release, flush
+    /// the directory. Nothing is flushed while an object's lock is held.
     fn publish(
         &self,
         place: &Place,
-        stage: &mut Stage,
+        stage: &Stage,
         payload: &PutPayload,
-        mode: PutMode,
+        mode: &PutMode,
     ) -> Result<PutResult> {
         let io = |error| failure(&place.path, error);
         let parent = place.parent();
+        let mut file = &stage.file;
         for chunk in payload.iter() {
-            stage.file.write_all(chunk).map_err(io)?;
+            file.write_all(chunk).map_err(io)?;
         }
         #[cfg(test)]
         tests::pause("staged");
-        #[cfg(test)]
-        tests::pause("locked");
-        let current = match parent.entry(&place.name).map_err(io)? {
-            Some(entry) if is_symlink(&entry) => {
-                return Err(io(std::io::Error::other("symlink in storage path")));
-            }
-            Some(entry) if is_regular(&entry) => Some(entry),
-            Some(_) => return Err(io(std::io::Error::other("not a regular file"))),
-            None => None,
-        };
-        let path = place.path.display().to_string();
-        if matches!(&mode, PutMode::Update(expected) if expected.version.is_some()) {
-            return Err(unsupported("historical object versions"));
-        }
-        match (&mode, &current) {
-            (PutMode::Create, Some(_)) => {
-                self.settle_existing(place).map_err(io)?;
-                return Err(Error::AlreadyExists {
-                    path,
-                    source: "object exists".into(),
-                });
-            }
-            (PutMode::Update(_), None) => {
-                return Err(Error::Precondition {
-                    path,
-                    source: "object does not exist".into(),
-                });
-            }
-            (PutMode::Update(expected), Some(_)) => match &expected.e_tag {
-                Some(tag)
-                    if *tag
-                        == version_tag(
-                            read_version(&parent.object(&place.name).map_err(io)?.0).map_err(io)?,
-                        ) => {}
-                Some(_) => {
-                    return Err(Error::Precondition {
-                        path,
-                        source: "e-tag does not match".into(),
-                    });
-                }
-                None => {
-                    return Err(Error::Generic {
-                        store: STORE,
-                        source: "a conditional update needs an e-tag".into(),
-                    });
-                }
-            },
-            _ => {}
-        }
-        if current.is_none() {
-            // Another writer or Lance may have created these directory names
-            // without persisting them. New objects depend on the whole chain.
-            for directory in place.chain.iter().rev() {
-                directory.sync().map_err(io)?;
-            }
-        }
         set_version(&stage.file, stage.tag).map_err(io)?;
         sync_file(&stage.file, &stage.path).map_err(io)?;
         #[cfg(test)]
         tests::pause("versioned");
         #[cfg(feature = "test-store")]
         super::test_store::sync::publishing(&place.path, &stage.path, payload).map_err(io)?;
-        let (stages, staged, name) = (&stage.directory, stage.name.as_str(), place.name.as_str());
-        if matches!(mode, PutMode::Create) {
-            match rustix::fs::linkat(
-                &stages.file,
-                staged,
+        let deadline = std::time::Instant::now() + LOCK_WAIT;
+        let replace = |key: Key| -> Result<()> {
+            #[cfg(test)]
+            tests::pause("locked");
+            rustix::fs::renameat(
+                &stage.directory.file,
+                stage.name.as_str(),
                 &parent.file,
-                name,
-                rustix::fs::AtFlags::empty(),
-            ) {
-                Ok(()) => {}
-                Err(rustix::io::Errno::EXIST) => {
-                    self.settle_existing(place).map_err(io)?;
-                    return Err(Error::AlreadyExists {
-                        path,
-                        source: "object exists".into(),
-                    });
+                place.name.as_str(),
+            )
+            .map_err(|error| io(error.into()))?;
+            drop(key);
+            Ok(())
+        };
+        let created = loop {
+            match mode {
+                PutMode::Create => {
+                    if self.create(place, stage).map_err(io)? {
+                        break true;
+                    }
+                    // Lost to another creator; this reports and flushes it.
+                    self.admit(place, mode, None)?;
                 }
-                Err(error) => return Err(io(error.into())),
+                PutMode::Update(_) => {
+                    let Some(key) = self.key(place, deadline).map_err(io)? else {
+                        return Err(Error::Precondition {
+                            path: place.path.display().to_string(),
+                            source: "object does not exist".into(),
+                        });
+                    };
+                    self.admit(place, mode, Some(&key))?;
+                    replace(key)?;
+                    break false;
+                }
+                PutMode::Overwrite => {
+                    if self.create(place, stage).map_err(io)? {
+                        break true;
+                    }
+                    if let Some(key) = self.key(place, deadline).map_err(io)? {
+                        replace(key)?;
+                        break false;
+                    }
+                    // Removed since the create found it; create again.
+                }
             }
-            // Publication succeeded, but a cleanup error still fails the call.
-            stages.unlink(staged).map_err(io)?;
-        } else {
-            rustix::fs::renameat(&stages.file, staged, &parent.file, name)
-                .map_err(|error| io(error.into()))?;
-        }
-        // The staging name is gone with the publication. Should a crash bring
-        // it back, it is one more name of the object and is reaped as such.
+            if std::time::Instant::now() >= deadline {
+                return Err(io(lock_deadline()));
+            }
+        };
+        // The published inode still carries this writer's staging lock, which
+        // is now a lock on the object. Release it before anything slow.
+        stage.file.unlock().map_err(io)?;
         parent.sync().map_err(io)?;
+        if created {
+            // Another writer or Lance may have created these directory names
+            // without persisting them. A new object depends on the whole chain.
+            for directory in place.chain.iter().rev().skip(1) {
+                directory.sync().map_err(io)?;
+            }
+        }
         Ok(PutResult {
             e_tag: Some(version_tag(stage.tag)),
             version: None,
             extensions: Default::default(),
         })
+    }
+
+    /// Gives the staged object its name unless the name is taken; atomic, so
+    /// it needs no lock. `false` when the object exists.
+    fn create(&self, place: &Place, stage: &Stage) -> std::io::Result<bool> {
+        use rustix::io::Errno;
+        let (stages, staged) = (&stage.directory, stage.name.as_str());
+        let (parent, name) = (place.parent(), place.name.as_str());
+        match rustix::fs::renameat_with(
+            &stages.file,
+            staged,
+            &parent.file,
+            name,
+            rustix::fs::RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => return Ok(true),
+            Err(Errno::EXIST) => return Ok(false),
+            // A file system without `RENAME_NOREPLACE`: link, then drop the
+            // staging name. Between the two the object has both names, and a
+            // reaper that finds the second removes only that name.
+            Err(Errno::INVAL | Errno::NOSYS | Errno::OPNOTSUPP) => {}
+            Err(error) => return Err(error.into()),
+        }
+        match rustix::fs::linkat(
+            &stages.file,
+            staged,
+            &parent.file,
+            name,
+            rustix::fs::AtFlags::empty(),
+        ) {
+            Ok(()) => {}
+            Err(Errno::EXIST) => return Ok(false),
+            Err(error) => return Err(error.into()),
+        }
+        stages.unlink(staged)?;
+        Ok(true)
+    }
+
+    /// Locks the object: the inode its name means now. `None` when there is
+    /// no object. A lock obtained on an inode the name no longer means is
+    /// worthless, because someone replaced or removed the object while this
+    /// writer waited; then the new inode is locked instead. The descriptor
+    /// held while waiting keeps the old inode number from being reused, so
+    /// the comparison cannot be fooled.
+    fn key(&self, place: &Place, deadline: std::time::Instant) -> std::io::Result<Option<Key>> {
+        let (parent, name) = (place.parent(), place.name.as_str());
+        loop {
+            let file = match rustix::fs::openat(
+                &parent.file,
+                name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            ) {
+                Ok(file) => File::from(file),
+                Err(rustix::io::Errno::NOENT) => return Ok(None),
+                Err(rustix::io::Errno::LOOP) => {
+                    return Err(std::io::Error::other("symlink in storage path"));
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let opened = rustix::fs::fstat(&file)?;
+            if !is_regular(&opened) {
+                return Err(std::io::Error::other("not a regular file"));
+            }
+            #[cfg(test)]
+            tests::hold("opened");
+            lock_until(&file, deadline)?;
+            match parent.entry(name)? {
+                Some(named) if (named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino) => {
+                    #[cfg(feature = "test-store")]
+                    super::test_store::sync::locked(&place.path)?;
+                    return Ok(Some(Key {
+                        file,
+                        path: place.path.clone(),
+                    }));
+                }
+                Some(_) if std::time::Instant::now() >= deadline => return Err(lock_deadline()),
+                Some(_) => {}
+                None => return Ok(None),
+            }
+        }
     }
 
     /// Before a create reports that its object exists: callers treat that
@@ -868,17 +1026,21 @@ impl LocalStore {
         self.blocking(move |store| {
             let place = store.place(&location, false)?;
             let io = |error| failure(&place.path, error);
-            let parent = place.parent();
-            let _lock = store.lock().map_err(io)?;
-            store.reap(&place.chain[0]).map_err(io)?;
-            let (file, _) = parent.object(&place.name).map_err(io)?;
-            if version_tag(read_version(&file).map_err(io)?) != expected {
+            let (root, parent) = (&place.chain[0], place.parent());
+            store.hand_over(root).map_err(io)?;
+            store.reap(root).map_err(io)?;
+            let deadline = std::time::Instant::now() + LOCK_WAIT;
+            let Some(key) = store.key(&place, deadline).map_err(io)? else {
+                return Err(io(ErrorKind::NotFound.into()));
+            };
+            if version_tag(read_version(&key.file).map_err(io)?) != expected {
                 return Err(Error::Precondition {
                     path: location.to_string(),
                     source: "namespace head changed".into(),
                 });
             }
             parent.unlink(&place.name).map_err(io)?;
+            drop(key);
             #[cfg(feature = "test-store")]
             super::test_store::sync::unlinked(&place.path).map_err(io)?;
             parent.sync().map_err(io)?;
@@ -897,46 +1059,61 @@ impl LocalStore {
             Err(error) => return Err(error),
         };
         let io = |error| failure(&place.path, error);
-        let parent = place.parent();
-        let _lock = self.lock().map_err(io)?;
+        let (root, parent) = (&place.chain[0], place.parent());
+        self.hand_over(root).map_err(io)?;
         if self.cleanup_directories.is_none()
             || !self.reaped.swap(true, std::sync::atomic::Ordering::SeqCst)
         {
-            self.reap(&place.chain[0]).map_err(io)?;
+            self.reap(root).map_err(io)?;
         }
-        match parent.entry(&place.name).map_err(io)? {
-            Some(entry) if is_symlink(&entry) => {
-                return Err(io(std::io::Error::other("symlink in storage path")));
-            }
-            Some(_) => {}
-            None => return Ok(()),
-        }
-        match parent.unlink(&place.name) {
-            Ok(()) => {
-                #[cfg(feature = "test-store")]
-                super::test_store::sync::unlinked(&place.path).map_err(io)?;
-                if let Some(directories) = &self.cleanup_directories {
-                    let directory = parent.file.try_clone().map_err(io)?;
-                    directories
-                        .lock()
-                        .expect("cleanup directories lock")
-                        .entry(parent.path.clone())
-                        .or_insert(directory);
-                    #[cfg(test)]
-                    tests::pause("unlinked");
-                    #[cfg(feature = "test-store")]
-                    super::test_store::sync::acknowledged("deferred", &place.path).map_err(io)?;
-                    Ok(())
-                } else {
-                    parent.sync().map_err(io)?;
-                    #[cfg(feature = "test-store")]
-                    super::test_store::sync::acknowledged("delete", &place.path).map_err(io)?;
-                    Ok(())
+        let gone = |result: std::io::Result<()>| match result {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        };
+        let removed = if self.is_native_file(location) {
+            // Lance's files are immutable and never replaced through this
+            // store, so there is no comparison to protect.
+            match parent.entry(&place.name).map_err(io)? {
+                Some(entry) if is_symlink(&entry) => {
+                    return Err(io(std::io::Error::other("symlink in storage path")));
                 }
+                Some(_) => gone(parent.unlink(&place.name)).map_err(io)?,
+                None => false,
             }
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(io(error)),
+        } else {
+            let deadline = std::time::Instant::now() + LOCK_WAIT;
+            match self.key(&place, deadline).map_err(io)? {
+                Some(key) => {
+                    let removed = gone(parent.unlink(&place.name)).map_err(io)?;
+                    drop(key);
+                    removed
+                }
+                None => false,
+            }
+        };
+        if !removed {
+            return Ok(());
         }
+        #[cfg(feature = "test-store")]
+        super::test_store::sync::unlinked(&place.path).map_err(io)?;
+        if let Some(directories) = &self.cleanup_directories {
+            let directory = parent.file.try_clone().map_err(io)?;
+            directories
+                .lock()
+                .expect("cleanup directories lock")
+                .entry(parent.path.clone())
+                .or_insert(directory);
+            #[cfg(test)]
+            tests::pause("unlinked");
+            #[cfg(feature = "test-store")]
+            super::test_store::sync::acknowledged("deferred", &place.path).map_err(io)?;
+        } else {
+            parent.sync().map_err(io)?;
+            #[cfg(feature = "test-store")]
+            super::test_store::sync::acknowledged("delete", &place.path).map_err(io)?;
+        }
+        Ok(())
     }
 
     async fn blocking<T: Send + 'static>(
@@ -985,27 +1162,34 @@ fn sync_below(directory: &Directory, skip: Option<&str>) -> std::io::Result<()> 
     Ok(())
 }
 
-/// Polls for an exclusive `flock` on `file` for at most [`LOCK_WAIT`].
+fn lock_deadline() -> std::io::Error {
+    std::io::Error::new(
+        ErrorKind::WouldBlock,
+        "storage lock acquisition deadline exceeded",
+    )
+}
+
+/// Polls for an exclusive `flock` on `file` until `deadline`.
 /// `flock` cannot be revoked and a waiter cannot tell a stopped holder from
 /// a slow one, so the caller fails closed instead of waiting forever.
-fn lock_exclusive(file: &File) -> std::io::Result<()> {
-    let deadline = std::time::Instant::now() + LOCK_WAIT;
+fn lock_until(file: &File, deadline: std::time::Instant) -> std::io::Result<()> {
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(()),
             Err(std::fs::TryLockError::WouldBlock) => {
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                 if remaining.is_zero() {
-                    return Err(std::io::Error::new(
-                        ErrorKind::WouldBlock,
-                        "storage lock acquisition deadline exceeded",
-                    ));
+                    return Err(lock_deadline());
                 }
                 std::thread::sleep(remaining.min(std::time::Duration::from_millis(5)));
             }
             Err(std::fs::TryLockError::Error(error)) => return Err(error),
         }
     }
+}
+
+fn lock_exclusive(file: &File) -> std::io::Result<()> {
+    lock_until(file, std::time::Instant::now() + LOCK_WAIT)
 }
 
 /// A tag no other write has: 128 bits from the operating system's generator.
