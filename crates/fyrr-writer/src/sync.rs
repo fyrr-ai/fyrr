@@ -333,6 +333,9 @@ fn worker_pool(
             match worker.poll() {
                 Ok(None) => still.push((index, worker)),
                 Ok(Some(outcome)) => finish(index, Ok(outcome)),
+                Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+                    finish(index, Ok(Outcome::TimedOut(options.timeout)));
+                }
                 Err(_) => finish(index, Err(WriterError::WorkerFailure.into())),
             }
         }
@@ -541,6 +544,14 @@ pub fn prepared(
             eprintln!("error: worker_failure");
             return;
         };
+        if let Outcome::TimedOut(timeout) = &outcome {
+            failed = true;
+            eprintln!(
+                "error: worker_failure: timeout after {}ms; increase --timeout",
+                timeout.as_millis()
+            );
+            return;
+        }
         failed |= outcome.failure().is_some();
         if let Some(report) = outcome
             .result_line()

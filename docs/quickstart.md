@@ -8,6 +8,11 @@ about 10 GiB free. Install Claude Code before connecting the client.
 Clone below, or use an existing checkout. Run the remaining commands from
 its root in one shell.
 
+For a larger first load, use `fyrr writer sync --full --timeout 1h` instead of
+relying on the ten-minute per-source default. A killed sync keeps durable
+prepared envelopes and cached vectors; wait for its source lease to expire before
+retrying. See [interrupted syncs](deployment.md#scheduling) for details.
+
 ## 1. Build and start toy embeddings
 
 ```sh

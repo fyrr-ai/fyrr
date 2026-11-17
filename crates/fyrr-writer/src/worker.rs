@@ -50,7 +50,9 @@ impl std::fmt::Display for Diagnostic {
                 "the source does not match its provider; run `fyrr config check`"
             }
             Self::WorkerFailure => "the worker failed",
-            Self::TimedOut => "the worker timed out and its process group was killed",
+            Self::TimedOut => {
+                "the worker timed out and its process group was killed; increase --timeout"
+            }
             Self::InvalidReport => "the worker result was missing or invalid",
         })
     }
