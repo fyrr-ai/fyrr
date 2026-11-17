@@ -968,7 +968,11 @@ fn correction_inflight_identity_change_on_storage() {
     // The CLI uses the same semantic output boundary.
     revoke.store(1, Ordering::SeqCst);
     let refused = run(&proxied, &arguments);
-    assert_eq!(revoke.load(Ordering::SeqCst), 0, "CLI revocation hook fired");
+    assert_eq!(
+        revoke.load(Ordering::SeqCst),
+        0,
+        "CLI revocation hook fired"
+    );
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("authorization_unavailable"));
     assert!(refused.stdout.is_empty(), "no stale CLI result is printed");

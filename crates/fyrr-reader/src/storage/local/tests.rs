@@ -1073,7 +1073,9 @@ fn local_store_frozen_holder_bounds_lock_acquisition() {
         .unwrap()
         .expect_err("a frozen holder retains exclusion");
     assert!(
-        error.to_string().contains("storage lock acquisition deadline exceeded"),
+        error
+            .to_string()
+            .contains("storage lock acquisition deadline exceeded"),
         "unexpected storage failure: {error}"
     );
     assert_eq!(read(&store, &root), b"original");
