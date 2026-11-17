@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readResults, parseResults, assertPublishable, headlineVerdict, headlineSystems, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderDetailView, renderControls, renderLambdaProjection, lambdaProjectionCost, relativeValue } from '../lib/compare';
+import { readResults, parseResults, assertPublishable, headlineVerdict, headlineSystems, renderMetric, renderSections, renderProducts, renderScoreboard, renderStories, renderDetailView, renderControls, renderLambdaProjection, lambdaProjectionCost, renderMethodology, verifyEvidenceArchive, relativeValue } from '../lib/compare';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,6 +21,29 @@ test('draft data cannot be published, even by removing the draft flag', () => {
   assert.throws(() => parseResults({ ...fixture, draft: false }), /hashes|measurements/);
   const { draft: _, ...missing } = fixture;
   assert.throws(() => parseResults(missing), /draft flag/);
+});
+test('evidence downloads require the reviewed local filename, size and digest', async () => {
+  const data = structuredClone(fixture);
+  const payload = Buffer.from('reviewed test evidence');
+  const sha256 = createHash('sha256').update(payload).digest('hex');
+  const filename = `enterpriserag-small-v1-${sha256.slice(0, 12)}.tar.gz`;
+  data.benchmark.evidence_archive = { url: `/compare/evidence/${filename}`, sha256, bytes: payload.length, label: 'Evidence bundle' };
+  const directory = mkdtempSync(join(tmpdir(), 'fyrr-evidence-'));
+  try {
+    writeFileSync(join(directory, filename), payload);
+    await verifyEvidenceArchive(parseResults(data), directory);
+    assert(renderMethodology(data).includes('Evidence bundle'));
+    assert(renderMethodology(data).includes(sha256));
+    writeFileSync(join(directory, filename), 'changed');
+    await assert.rejects(verifyEvidenceArchive(data, directory), /reviewed digest and size/);
+    for (const url of ['https://example.test/bundle.tar.gz', '/compare/evidence/../../private.tar.gz', '/compare/evidence/mismatch.tar.gz']) {
+      (data.benchmark.evidence_archive as any).url = url;
+      assert.throws(() => parseResults(data), /archive path, digest and size/);
+    }
+    (data.benchmark.evidence_archive as any).url = `/compare/evidence/${filename}`;
+    (data.benchmark.evidence_archive as any).bytes = 20_000_001;
+    assert.throws(() => parseResults(data), /at most 20 MB/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 test('unavailable metrics have no bars and are never encoded as zero', () => {
   const html = renderMetric(fixture, 'recall_at_10');
@@ -128,7 +152,7 @@ test('light and team cost assumptions stay separate and expose capacity pass cri
   const data = structuredClone(fixture);
   data.systems[0].footprint.minimum_deployment_cost_estimate = {
     status: 'estimate', total_usd: 10, assumptions: {}, components: {}, scenarios: {
-      light: { status: 'estimate', total_usd: 10, assumptions: { load_concurrency: 1 }, components: {}, sizing: {} },
+      light: { status: 'estimate', total_usd: 10, assumptions: { load_concurrency: 1, hours_per_month: 730, corpus_documents: 20000, queries_per_month: 100000, daily_changed_fraction: .01 }, components: {}, sizing: {} },
       team: { status: 'estimate', total_usd: 20, configuration_note: 'reader.concurrency=8; measured sized reader', assumptions: { load_concurrency: 8 }, components: {}, sizing: { selected_cpus: 2, measured_peak_rss_bytes: 1024 ** 3, ram_headroom_fraction: .25, capacity_tests: [
         { cpus: 2, concurrency: 8, expected: 250, valid: 250, errors: 0, p95_ms: 120, threshold_p95_ms: 150, pass: true },
         { cpus: 4, concurrency: 8, expected: 250, valid: 249, errors: 1, p95_ms: 130, threshold_p95_ms: 150, pass: true },
@@ -144,6 +168,7 @@ test('light and team cost assumptions stay separate and expose capacity pass cri
   assert(html.includes('pass<small>250 / 250 valid · 0 errors'));
   assert(html.includes('fail<small>249 / 250 valid · 1 errors'));
   assert(html.includes('peak memory plus 25% headroom'));
+  assert(html.includes('730 h/month · 20,000 documents · 100,000 searches/month · 1.0% documents updated daily.'));
   (data.systems[0].footprint.minimum_deployment_cost_estimate as any).scenarios.team.total_usd = 999;
   assert.equal(renderScoreboard(data), before, 'Team estimates cannot replace headline cost');
 });
