@@ -34,7 +34,7 @@ export type Results = {
   schema_version: '1.1';
   draft: boolean;
   synthetic_design_preview?: boolean;
-  variants?: Record<string, { label: string; headline: boolean; reranker: Record<string, unknown> | null; description?: string; metric_prefixes?: string[]; systems?: string[]; source_url?: string; replaces_headline_variant?: string }>;
+  variants?: Record<string, { label: string; headline: boolean; experimental?: boolean; reranker: Record<string, unknown> | null; description?: string; metric_prefixes?: string[]; systems?: string[]; source_url?: string; replaces_headline_variant?: string }>;
   details?: { id: string; label: string; kind: 'category' | 'question'; metric: string; variant?: string; results: Record<string, Metric> }[];
   benchmark: Record<string, unknown>;
   protocol: Record<string, unknown>;
@@ -66,7 +66,7 @@ const strings = (value: unknown): value is string[] => Array.isArray(value) && v
 const count = (value: unknown) => Number.isInteger(value) && Number(value) >= 0;
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 export const runKey = (system: { id: string; variant?: string }) => !system.variant || system.variant === 'default' ? system.id : `${system.id}@${system.variant}`;
-const runLabel = (results: Results, system: Results['systems'][number]) => !system.variant || system.variant === 'default' ? system.name : results.variants?.[system.variant]?.label ?? `${system.name} (${name(system.variant)})`;
+const runLabel = (results: Results, system: Results['systems'][number]) => !system.variant || system.variant === 'default' ? system.name : `${results.variants?.[system.variant]?.label ?? `${system.name} (${name(system.variant)})`}${results.variants?.[system.variant]?.experimental ? ' · experimental' : ''}`;
 function supportsMetric(results: Results, system: Results['systems'][number], key: string) {
   const prefixes = results.variants?.[system.variant ?? 'default']?.metric_prefixes;
   return !prefixes || prefixes.some(prefix => key.startsWith(prefix));
@@ -231,7 +231,7 @@ export function parseResults(data: unknown): Results {
   }
   if (data.variants !== undefined) {
     requireField(object(data.variants), 'variants catalogue');
-    for (const [key, variant] of Object.entries(data.variants)) requireField(/^[a-z][a-z0-9_-]*$/.test(key) && object(variant) && typeof variant.label === 'string' && typeof variant.headline === 'boolean' && (variant.reranker === null || object(variant.reranker)) && (variant.description === undefined || typeof variant.description === 'string') && (variant.metric_prefixes === undefined || strings(variant.metric_prefixes) && variant.metric_prefixes.length > 0 && variant.metric_prefixes.every(prefix => /^[a-z][a-z0-9_]*$/.test(prefix))), 'variant metadata');
+    for (const [key, variant] of Object.entries(data.variants)) requireField(/^[a-z][a-z0-9_-]*$/.test(key) && object(variant) && typeof variant.label === 'string' && typeof variant.headline === 'boolean' && (variant.experimental === undefined || typeof variant.experimental === 'boolean') && (variant.reranker === null || object(variant.reranker)) && (variant.description === undefined || typeof variant.description === 'string') && (variant.metric_prefixes === undefined || strings(variant.metric_prefixes) && variant.metric_prefixes.length > 0 && variant.metric_prefixes.every(prefix => /^[a-z][a-z0-9_]*$/.test(prefix))), 'variant metadata');
     for (const variant of Object.values(data.variants)) {
       requireField(object(variant) && (variant.systems === undefined || strings(variant.systems)) && (variant.source_url === undefined || typeof variant.source_url === 'string' && /^https:\/\//.test(variant.source_url)) && (variant.replaces_headline_variant === undefined || typeof variant.replaces_headline_variant === 'string'), 'headline variant metadata');
     }
@@ -398,7 +398,7 @@ function comparisonNarrative(results: Results) {
     const common = reference.assumptions;
     const sameWorkload = ['hours_per_month', 'documents', 'queries_per_month', 'daily_changed_fraction'].every(key => finite(assumptions[key]) && Number(assumptions[key]) >= 0 && assumptions[key] === common[key]);
     const items = Array.isArray(model.line_items) ? model.line_items : [];
-    const priced = items.length > 0 && items.every(item => object(item) && (!item.required || finite(item.usd_month) && item.usd_month >= 0 && typeof item.deployment_source === 'string' && /^https:\/\//.test(item.deployment_source) && object(item.price_source) && typeof item.price_source.url === 'string' && /^https:\/\//.test(item.price_source.url)));
+    const priced = items.length > 0 && items.every(item => object(item) && (!item.required || finite(item.usd_month) && item.usd_month >= 0 && (item.kind === 'api' || typeof item.deployment_source === 'string' && /^https:\/\//.test(item.deployment_source)) && object(item.price_source) && typeof item.price_source.url === 'string' && /^https:\/\//.test(item.price_source.url)));
     return model.basis === 'documented-production' && model.model_version === 2 && sameWorkload && ['estimated', 'estimate'].includes(String(model.status)) && model.total_usd === system.metrics.monthly_cost_usd.value && Array.isArray(model.missing) && model.missing.length === 0 && priced && ['compute_usd_month', 'storage_usd_month', 'network_usd_month', 'control_plane_usd_month', 'security_usd_month', 'observability_usd_month', 'api_usd_month', 'embedding_usd_per_document', 'llm_enrichment_usd_per_document'].every(key => finite(components[key]) && Number(components[key]) >= 0) && Array.isArray(model.sources) && model.sources.length > 0 && model.sources.every(source => object(source) && typeof source.url === 'string' && /^https:\/\//.test(source.url));
   })) {
     const cheapest = peers.reduce((best, peer) => peer.metrics.monthly_cost_usd.value! < best.metrics.monthly_cost_usd.value! ? peer : best);
