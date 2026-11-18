@@ -43,6 +43,13 @@ pub async fn reject(config: &Config, envelope: &PreparedEnvelope, reason: &str) 
         start_cursor: envelope.cursor.start.clone(),
         reason: reason.into(),
     };
+    // The marker outlives the envelope it rejects only if the envelope's
+    // name was never flushed: its worker may still be flushing, or be dead.
+    // A re-prepared envelope has the same ID and would then count as
+    // rejected. Flush what was observed before the marker exists.
+    fyrr_reader::storage::observed_durability(config)?
+        .persist()
+        .await?;
     crate::prepare::put_immutable(
         store.as_ref(),
         &root
