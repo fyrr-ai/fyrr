@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Builds, tests and measures the two images and both
-# provider install paths. Slow (a clean build compiles Lance in
-# release mode) and needs the network for base images, so it runs as
+# provider install paths. Needs the network for base images, so it runs as
 # `scripts/release` or directly as `scripts/images`.
 #
-#   scripts/images             build, test and measure both images
+#   scripts/images             compile both binaries in the pinned builder
+#                              stage (slow: a clean build compiles Lance with
+#                              fat LTO), then build, test and measure both images
+#   scripts/images --binaries DIR
+#                              package DIR/fyrr and DIR/fyrr-reader instead of
+#                              compiling; scripts/release passes its binaries
 #   scripts/images --no-cache  build without the layer cache (cargo's cache
 #                              mounts stay; the first build on a host is clean)
 #
@@ -20,12 +24,25 @@ cd "$ROOT"
 umask 022
 
 NO_CACHE=()
-for arg in "$@"; do
-  case "$arg" in
-    --no-cache) NO_CACHE=(--no-cache) ;;
-    *) die "unknown argument $arg (use --no-cache)" ;;
+BINARIES=""
+while (($#)); do
+  case "$1" in
+    --no-cache) NO_CACHE=(--no-cache); shift ;;
+    --binaries)
+      [[ -n "${2:-}" ]] || die "--binaries requires a directory"
+      BINARIES="$(realpath -- "$2")"
+      shift 2
+      ;;
+    *) die "unknown argument $1 (use --binaries DIR, --no-cache)" ;;
   esac
 done
+SOURCE=()
+if [[ -n "$BINARIES" ]]; then
+  for binary in fyrr fyrr-reader; do
+    [[ -f "$BINARIES/$binary" && -x "$BINARIES/$binary" ]] || die "$BINARIES/$binary is not an executable file"
+  done
+  SOURCE=(--build-arg BINARIES=prebuilt --build-context "release=$BINARIES")
+fi
 
 TAG="$(worktree_image_tag)"
 LABEL="org.fyrr.worktree=$TAG"
@@ -55,7 +72,7 @@ build() {
   local target="$1" tag="$2" started
   started=$SECONDS
   log "building $tag (--target $target)"
-  docker build "${NO_CACHE[@]}" --file docker/Dockerfile --target "$target" \
+  docker build "${NO_CACHE[@]}" "${SOURCE[@]}" --file docker/Dockerfile --target "$target" \
     --label "$LABEL" --tag "$tag" . >"$OUT/build-$target.log" 2>&1 ||
     { tail -n 40 "$OUT/build-$target.log"; die "building $tag failed (log: target/images/build-$target.log)"; }
   echo "$target $((SECONDS - started))" >>"$OUT/build-seconds.txt"
@@ -91,6 +108,18 @@ started=$SECONDS
 build fyrr-reader "$READER"
 build fyrr "$FULL"
 log "both images built in $((SECONDS - started))s"
+if [[ -n "$BINARIES" ]]; then
+  # The images ship the supplied files, byte for byte.
+  for pair in "$READER fyrr-reader" "$FULL fyrr"; do
+    read -r image binary <<<"$pair"
+    container="$(docker create "$image")"
+    docker cp --quiet "$container:/usr/local/bin/fyrr" "$OUT/packaged-$binary"
+    docker rm "$container" >/dev/null
+    cmp --silent "$BINARIES/$binary" "$OUT/packaged-$binary" || die "$image does not contain $BINARIES/$binary"
+    rm -f "$OUT/packaged-$binary"
+    echo "ok   $image packages the prebuilt $binary unchanged"
+  done
+fi
 
 log "building the example provider wheel outside the workspace"
 rm -rf "$WHEELS"

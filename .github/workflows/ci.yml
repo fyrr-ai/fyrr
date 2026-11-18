@@ -1,5 +1,7 @@
 # One local/hosted entry point with declarative case tiers and shared builds.
 # v* tags enter through release.yml's workflow_call, avoiding duplicate CI runs.
+# No tier here compiles release binaries or builds images: release.yml's build
+# job does both once, after this workflow passes.
 name: ci
 
 on:
@@ -78,11 +80,8 @@ jobs:
           CI_PRIVATE: ${{ github.event.repository.private }}
         run: |
           args=()
-          if [[ "$CI_REF" == refs/tags/v* ]]; then
-            args+=(--images)
-          else
-            args+=(--quick)
-          fi
+          # Tags run the full tier; everything else runs the quick tier.
+          if [[ "$CI_REF" != refs/tags/v* ]]; then args+=(--quick); fi
           if [[ "$CI_PRIVATE" == true ]]; then args+=(--debug-only); fi
           mkdir -p target/ci-measurements
           /usr/bin/time -v -o target/ci-measurements/ci.time scripts/ci "${args[@]}"
@@ -100,8 +99,6 @@ jobs:
           name: ci-logs-${{ github.sha }}
           path: |
             target/ci-logs/
-            target/images/*.log
-            target/images/*.txt
             target/ci-measurements/
           if-no-files-found: error
           retention-days: 7

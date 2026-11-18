@@ -65,7 +65,7 @@ annotations; PyArrow's untyped API remains covered by Arrow contract tests.
 ```sh
 scripts/ci --quick      # before a PR: core gates and local security scenarios
 scripts/ci              # full suite: storage, connectors or maintenance changes
-scripts/ci --images     # release tier: full suite plus image checks
+scripts/ci --images     # full suite plus image checks (compiles release binaries)
 scripts/ci --jobs=2     # bound concurrent Rust cases (default: CPU/memory based)
 scripts/ci --step=configuration "--step=schema drift" # exact names; others n/e
 scripts/ci --step="reference docs" # standalone reference-doc verification
@@ -103,13 +103,15 @@ Keycloak and long maintenance/history campaigns. Cases excluded by the tier
 are `n/e` in `case-plan.json` and row results; wholly excluded rows are `n/e`
 in `summary.txt`. A mixed row counts only its selected cases as passed.
 
-PRs and pushes to main run `--quick`; `v*` tags run `--images`, which
-includes the full tier.
+PRs and pushes to main run `--quick`; `v*` tags run the full tier and then
+build the release artifacts and images in a separate job (see
+[Releasing](#releasing)).
 Private repositories use `--debug-only` and skip release artifacts.
 
-This checkout owns its `target/`. Fat-LTO and image checks run only in the
-release tier; quick and full CI check the debug reader-only binary's Python
-independence and report release-only rows as `n/e`.
+This checkout owns its `target/`. Fat-LTO and image checks run only with
+`--images` and in `scripts/release`; quick and full CI check the debug
+reader-only binary's Python independence and report release-only rows as
+`n/e`.
 
 Read `summary.txt` the way CI does:
 
@@ -127,7 +129,7 @@ anything that moves image size also need `scripts/ci --images`.
 | `scripts/s3-fixture start\|env\|status\|stop` | A loopback RustFS container for this checkout; `env` prints the `FYRR_TEST_S3_*` variables. |
 | `scripts/keycloak-fixture start\|env\|status\|stop` | A loopback Keycloak for the identity rows. |
 | `scripts/check-reader-only` | Proves the reader-only build links no writer, Python or PyO3. |
-| `scripts/images` | Builds, tests and measures both images. |
+| `scripts/images` | Builds, tests and measures both images. It compiles the binaries in the pinned builder stage, or packages existing ones with `--binaries DIR`. |
 | `scripts/release` | Assembles versioned local release artifacts with SHA-256 sums; it publishes nothing itself (see [Releasing](#releasing)). |
 
 `scripts/images` retains superseded image IDs. Reclaim their storage manually
@@ -192,8 +194,11 @@ not create.
 
 `scripts/release` uploads nothing. Pushing a `v*` tag that matches the
 workspace version in `Cargo.toml` starts `.github/workflows/release.yml`: it
-runs CI (`scripts/ci`) and, only if CI passes, uploads the output
-of `scripts/release` to a draft GitHub release. It publishes the release
+runs CI (`scripts/ci`, full tier) and, only if CI passes, uploads the output
+of `scripts/release` to a draft GitHub release. That job links each fat-LTO
+binary once; the images package those same files (`image_binaries release`
+in `manifest.txt`) and nothing else in the pipeline compiles a release
+binary. It publishes the release
 after pushing both images to GHCR; reruns resume the draft or leave an
 already published release unchanged. Release logs stay under
 `target/release-logs/<version>/`, outside the downloadable artifacts. Image
@@ -201,6 +206,9 @@ archives retain checkout-owned tags, recorded as `image_tag` in
 `manifest.txt`. Bare binaries use the host ABI; their measured runtime
 requirements are recorded in the same manifest (see
 [downloadable binaries](docs/deployment.md#downloadable-binaries)).
+A local `scripts/release` on a host whose glibc is newer than the runtime
+images' cannot package its binaries: the images then compile their own in
+the builder stage (`image_binaries builder`), a second fat-LTO build.
 After downloading the artifacts, verify and load the full image with:
 
 ```sh

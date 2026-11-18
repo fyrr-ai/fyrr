@@ -96,3 +96,22 @@ build_release() {
   CARGO_ENCODED_RUSTFLAGS="${release_encoded%$'\x1f'}" \
     cargo build --locked --release "$@"
 }
+
+# The one release compile: both shipping binaries, one fat-LTO link each, as
+# <dir>/fyrr and <dir>/fyrr-reader. scripts/release runs it on the host and
+# docker/Dockerfile's builder stage runs it in the pinned builder image.
+release_binaries() {
+  local out="$1" target="${CARGO_TARGET_DIR:-$ROOT/target}" binary
+  mkdir -p "$out"
+  log "building the full release binary"
+  build_release -p fyrr
+  install -m 0755 "$target/release/fyrr" "$out/fyrr"
+  log "building the reader-only release binary"
+  build_release -p fyrr --no-default-features
+  install -m 0755 "$target/release/fyrr" "$out/fyrr-reader"
+  for binary in "$out/fyrr" "$out/fyrr-reader"; do
+    if LC_ALL=C grep -aFq 'FYRR_TEST_CLOCK_FILE' "$binary"; then
+      die "shipping binary contains the test clock hook"
+    fi
+  done
+}

@@ -134,7 +134,8 @@ Tagged releases will publish `ghcr.io/fyrr-ai/fyrr:<version>` and
 
 `docker/Dockerfile` builds both images from the repository root; every base
 image is pinned by digest. Both carry the `LICENSE` and `NOTICE` files under
-`/usr/share/doc/fyrr/`.
+`/usr/share/doc/fyrr/`. Release images package the binaries of the release
+job; a build from a checkout compiles them in the pinned builder stage.
 
 | Target | Base | User | Content |
 | --- | --- | --- | --- |
@@ -153,6 +154,15 @@ set; pass the variables with `-e` and drop it to check them too.
 `scripts/images` builds and tests both images, including a real publication
 on the local S3 fixture and `docker/compose.yaml`. The first build compiles
 [Lance](architecture.md#terms) in release mode and takes a while.
+
+To package binaries you already built instead of compiling, name their
+directory; it must hold `fyrr` and `fyrr-reader`, built for the runtime
+images' glibc or older:
+
+```sh
+docker build --file docker/Dockerfile --target fyrr --tag fyrr:local \
+  --build-arg BINARIES=prebuilt --build-context release=path/to/binaries .
+```
 
 ### Providers in the image
 

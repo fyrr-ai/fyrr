@@ -7,12 +7,19 @@
 # nothing; on a `v*` tag, .github/workflows/release.yml runs CI and then
 # publishes this script's output.
 #
-#   scripts/release [--version V] [--out DIR] [--no-images]
+# Both binaries are compiled once (scripts/lib.sh release_binaries) and the
+# images package those files. A build host whose glibc is newer than the
+# runtime images' cannot do that: its binaries would not start in them. The
+# images then compile their own binaries in the pinned builder stage, and
+# manifest.txt records which happened as `image_binaries`.
 #
-# --version V   artifact version (default: `git describe --tags --always`;
-#               a dirty tree is refused)
-# --out DIR     output directory (default: target/release-artifacts)
-# --no-images   skip the images (their row in manifest.txt is then n/e)
+#   scripts/release [--version V] [--out DIR] [--no-images] [--prebuilt-images]
+#
+# --version V        artifact version (default: `git describe --tags --always`;
+#                    a dirty tree is refused)
+# --out DIR          output directory (default: target/release-artifacts)
+# --no-images        skip the images (their row in manifest.txt is then n/e)
+# --prebuilt-images  fail instead of compiling a second time for the images
 #
 # Output: DIR/fyrr-V/ with LICENSE and NOTICE, the full and reader-only
 # binaries, the SDK wheel, the generated schemas and MCP fixtures (with
@@ -23,12 +30,14 @@ cd "$ROOT"
 VERSION=""
 OUT="$ROOT/target/release-artifacts"
 IMAGES=1
+PREBUILT_ONLY=0
 while (($#)); do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
     --out) OUT="$(realpath -m -- "$2")"; shift 2 ;;
     --no-images) IMAGES=0; shift ;;
-    *) die "unknown argument $1 (use --version V, --out DIR, --no-images)" ;;
+    --prebuilt-images) PREBUILT_ONLY=1; shift ;;
+    *) die "unknown argument $1 (use --version V, --out DIR, --no-images, --prebuilt-images)" ;;
   esac
 done
 
@@ -81,18 +90,11 @@ binary_runtime() {
 }
 
 # --- binaries (the shipping release profile) ------------------
-log "building the full release binary"
-build_release -p fyrr
-cp "$ROOT/target/release/fyrr" "$DIR/fyrr-$VERSION-$PLATFORM"
-log "building the reader-only release binary"
-build_release -p fyrr --no-default-features
-cp "$ROOT/target/release/fyrr" "$DIR/fyrr-reader-$VERSION-$PLATFORM"
-chmod 0755 "$DIR/fyrr-$VERSION-$PLATFORM" "$DIR/fyrr-reader-$VERSION-$PLATFORM"
-for binary in "$DIR/fyrr-$VERSION-$PLATFORM" "$DIR/fyrr-reader-$VERSION-$PLATFORM"; do
-  if LC_ALL=C grep -aFq 'FYRR_TEST_CLOCK_FILE' "$binary"; then
-    die "shipping binary contains the test clock hook"
-  fi
-done
+BINARIES="$ROOT/target/release-binaries"
+rm -rf "$BINARIES"
+release_binaries "$BINARIES"
+install -m 0755 "$BINARIES/fyrr" "$DIR/fyrr-$VERSION-$PLATFORM"
+install -m 0755 "$BINARIES/fyrr-reader" "$DIR/fyrr-reader-$VERSION-$PLATFORM"
 full_runtime="$(binary_runtime "$DIR/fyrr-$VERSION-$PLATFORM")" || die "cannot inspect full binary runtime"
 reader_runtime="$(binary_runtime "$DIR/fyrr-reader-$VERSION-$PLATFORM")" || die "cannot inspect reader binary runtime"
 build_python="${PYO3_PYTHON:-$ROOT/connectors/.venv/bin/python}"
@@ -118,9 +120,20 @@ tar -czf "$DIR/fyrr-contracts-$VERSION.tar.gz" -C "$ROOT" LICENSE NOTICE schemas
 # --- images (built and tested by scripts/images) ------------------------------
 image_row="images  n/e  (--no-images)"
 image_tag=""
+image_binaries=""
 if ((IMAGES)); then
-  log "building and testing both images with scripts/images"
-  "$ROOT/scripts/images" >"$LOGS/images.log" 2>&1 || { tail -n 30 "$LOGS/images.log"; die "scripts/images failed (log: ${LOGS#"$ROOT"/}/images.log)"; }
+  needed_glibc="$(printf '%s\n%s\n' "$full_runtime" "$reader_runtime" | awk '$1 == "glibc_symbols_max" {print $2}' | sort -V | tail -n1)"
+  if [[ "$(printf '%s\n%s\n' "$needed_glibc" "$IMAGE_GLIBC" | sort -V | tail -n1)" == "$IMAGE_GLIBC" ]]; then
+    image_binaries=release
+    image_source=(--binaries "$BINARIES")
+    log "packaging and testing both images from the release binaries with scripts/images"
+  else
+    ((!PREBUILT_ONLY)) || die "the release binaries need glibc $needed_glibc; the runtime images have $IMAGE_GLIBC (--prebuilt-images)"
+    image_binaries=builder
+    image_source=()
+    log "the release binaries need glibc $needed_glibc, newer than the runtime images' $IMAGE_GLIBC: scripts/images compiles in the builder stage"
+  fi
+  "$ROOT/scripts/images" "${image_source[@]}" >"$LOGS/images.log" 2>&1 || { tail -n 30 "$LOGS/images.log"; die "scripts/images failed (log: ${LOGS#"$ROOT"/}/images.log)"; }
   image_tag="$(worktree_image_tag)"
   docker image save "fyrr:$image_tag" | gzip >"$DIR/fyrr-image-$VERSION.tar.gz"
   docker image save "fyrr-reader:$image_tag" | gzip >"$DIR/fyrr-reader-image-$VERSION.tar.gz"
@@ -144,6 +157,7 @@ fi
   echo "$image_row"
   if [[ -n "$image_tag" ]]; then
     echo "image_tag $image_tag"
+    echo "image_binaries $image_binaries"
   fi
   echo
   echo "size  file"

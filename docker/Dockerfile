@@ -5,6 +5,13 @@
 # Build from the repository root; scripts/images builds, tests and measures
 # both. Base images are pinned by digest; both runtimes are Debian 13, like
 # the builder, so the binary's glibc and libpython match.
+#
+# BINARIES selects where the two binaries come from:
+#   builder   (default) compile them here with scripts/lib.sh release_binaries
+#   prebuilt  copy fyrr and fyrr-reader from the `release` build context
+#             (--build-context release=<dir>); nothing is compiled. The
+#             release pipeline packages scripts/release's binaries this way.
+ARG BINARIES=builder
 ARG RUST_IMAGE=rust:1.97.1-trixie@sha256:b1b3c9c0d921d7fa0a6d1f9ec7e4eab87f8c8ec97644c3d791450f131dec813f
 ARG PYTHON_BUILD_IMAGE=python:3.13.17-trixie@sha256:d5a186865324088bd10d1671801b42297a8fe3f8059143fb22b2e2b776ffa6dd
 ARG PYTHON_IMAGE=python:3.13.17-slim-trixie@sha256:d98cc29d3266e535dd9da1099688d9cb3ca4753813571e071763d17725460962
@@ -40,12 +47,14 @@ COPY crates crates
 RUN --mount=type=cache,id=fyrr-cargo-registry,sharing=locked,target=/usr/local/cargo/registry \
     --mount=type=cache,id=fyrr-cargo-git,sharing=locked,target=/usr/local/cargo/git \
     --mount=type=cache,id=fyrr-cargo-target,sharing=locked,target=/cache/target \
-    bash -c 'source scripts/lib.sh; unset -f cargo; mkdir -p /out; \
+    bash -c 'source scripts/lib.sh; unset -f cargo; \
     find crates -type f -exec touch {} +; \
-    build_release -p fyrr; \
-    cp /cache/target/release/fyrr /out/fyrr; \
-    build_release -p fyrr --no-default-features; \
-    cp /cache/target/release/fyrr /out/fyrr-reader'
+    release_binaries /out'
+
+FROM scratch AS prebuilt
+COPY --from=release fyrr fyrr-reader /out/
+
+FROM ${BINARIES} AS binaries
 
 # The connector SDK wheel and its pinned runtime requirements (uv.lock, with
 # hashes): the SDK's own and those of the bundled providers that are built
@@ -62,7 +71,7 @@ RUN uv build --wheel --out-dir /dist /src/connectors \
         --format requirements-txt --output-file /dist/requirements.txt
 
 FROM ${READER_IMAGE} AS fyrr-reader
-COPY --from=builder /out/fyrr-reader /usr/local/bin/fyrr
+COPY --from=binaries /out/fyrr-reader /usr/local/bin/fyrr
 COPY LICENSE NOTICE /usr/share/doc/fyrr/
 # distroless :nonroot runs as uid 65532.
 USER 65532:65532
@@ -77,7 +86,7 @@ RUN --mount=type=bind,from=sdk,source=/dist,target=/dist \
         -r /dist/requirements.txt \
     && pip install --no-cache-dir --disable-pip-version-check --no-deps /dist/fyrr_connectors-*.whl \
     && useradd --uid 10001 --create-home --home-dir /home/fyrr --shell /usr/sbin/nologin fyrr
-COPY --from=builder /out/fyrr /usr/local/bin/fyrr
+COPY --from=binaries /out/fyrr /usr/local/bin/fyrr
 COPY LICENSE NOTICE /usr/share/doc/fyrr/
 COPY docker/fyrr-entrypoint /usr/local/bin/fyrr-entrypoint
 USER 10001:10001
