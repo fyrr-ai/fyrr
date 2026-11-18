@@ -274,7 +274,7 @@ async fn tools_rerank_revoke_before_body_emission_sends_no_text_on_storage() {
             // The connection is established, but the provider does not read yet.
             read_body.acquire().await.unwrap().forget();
             let mut received = Vec::new();
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::time::timeout(std::time::Duration::from_secs(60), async {
                 loop {
                     let mut chunk = [0; 4096];
                     let count = socket.read(&mut chunk).await?;
@@ -301,7 +301,11 @@ async fn tools_rerank_revoke_before_body_emission_sends_no_text_on_storage() {
             received
         }
     });
-    let enabled = configured(&config, &provider, 1.0, 1000, "20s");
+    // Both deadlines are the maximum: the request stays parked while the
+    // revocation is synchronized and committed, however slow the runner is.
+    // An expired request deadline before that commit is a correct
+    // deadline_exceeded, not the refusal this case verifies.
+    let enabled = configured(&config, &provider, 1.0, 1000, "300s");
     let stop = Arc::new(AtomicBool::new(false));
     let resume = Arc::new(AtomicBool::new(false));
     let held = Arc::new(tokio::sync::Notify::new());
@@ -333,15 +337,17 @@ async fn tools_rerank_revoke_before_body_emission_sends_no_text_on_storage() {
     let admitted = coordination::publication(&enabled).await.0;
     let mut client = Mcp::open(&proxied);
     let task = tokio::task::spawn_blocking(move || {
-        let result = client.call("search", query());
+        let mut held = query();
+        held["deadline_ms"] = json!(fyrr_core::limits::mcp::MAX_DEADLINE_MS);
+        let result = client.call("search", held);
         (client, result)
     });
     // The request is parked at its own body-authorization boundary. Provider
     // acceptance and other head reads are unordered with it and gate nothing.
-    tokio::time::timeout(std::time::Duration::from_secs(10), held.notified())
+    tokio::time::timeout(std::time::Duration::from_secs(60), held.notified())
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(10), accepted.notified())
+    tokio::time::timeout(std::time::Duration::from_secs(60), accepted.notified())
         .await
         .unwrap();
     let path = root.join("documents.json");
