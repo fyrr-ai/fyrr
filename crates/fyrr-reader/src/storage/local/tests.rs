@@ -120,41 +120,6 @@ fn staged(root: &std::path::Path) -> Vec<PathBuf> {
     }
 }
 
-#[test]
-fn local_store_refuses_a_symlinked_root_except_through_macos_system_links() {
-    let base = scratch("symlink");
-    std::fs::create_dir_all(base.join("target")).unwrap();
-    std::os::unix::fs::symlink(base.join("target"), base.join("link")).unwrap();
-    for root in [base.join("link"), base.join("link/storage")] {
-        let error = LocalStore::open(&root).unwrap_err();
-        assert_eq!(error.to_string(), "symlink in storage root");
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // /tmp is a system link into /private; a root below it opens there.
-        assert!(std::fs::symlink_metadata("/tmp").unwrap().is_symlink());
-        let name = base.file_name().unwrap();
-        let aliased = std::path::Path::new("/tmp").join(name);
-        let store = LocalStore::open(&aliased.join("storage")).unwrap();
-        assert_eq!(store.root_path, aliased.join("storage"));
-        let real = std::path::Path::new("/private/tmp").join(name);
-        assert!(real.join("storage").is_dir());
-        assert_eq!(
-            system_path(&aliased),
-            real,
-            "only the system link is replaced"
-        );
-        // A link of the user's below the system link is still refused.
-        std::os::unix::fs::symlink(real.join("storage"), real.join("link")).unwrap();
-        let error = LocalStore::open(&aliased.join("link")).unwrap_err();
-        assert_eq!(error.to_string(), "symlink in storage root");
-        // The scratch directories of these tests live below /var.
-        assert!(LocalStore::open(&base.join("storage")).is_ok());
-        std::fs::remove_dir_all(real).unwrap();
-    }
-    std::fs::remove_dir_all(base).unwrap();
-}
-
 fn scratch(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "fyrr-local-{name}-{}-{}",

@@ -104,7 +104,6 @@ const ATTEMPTS: usize = 64;
 /// `statfs` types of network and remote file systems, whose `flock`, rename
 /// and timestamps do not give single-host guarantees: NFS, SMB, CIFS, SMB2,
 /// AFS, Ceph and 9p.
-#[cfg(not(target_os = "macos"))]
 const REMOTE_FILE_SYSTEMS: [u64; 7] = [
     0x6969,
     0x517b,
@@ -223,49 +222,6 @@ impl Place {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn is_remote(root: &std::path::Path) -> std::io::Result<bool> {
-    let kind = (rustix::fs::statfs(root)?.f_type as u64) & 0xffff_ffff;
-    Ok(REMOTE_FILE_SYSTEMS.contains(&kind))
-}
-
-/// macOS marks every file system stored on this machine with `MNT_LOCAL`;
-/// NFS, SMB, AFP and WebDAV mounts lack it.
-#[cfg(target_os = "macos")]
-fn is_remote(root: &std::path::Path) -> std::io::Result<bool> {
-    const MNT_LOCAL: u32 = 0x0000_1000;
-    Ok(rustix::fs::statfs(root)?.f_flags & MNT_LOCAL == 0)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn system_path(root: &std::path::Path) -> PathBuf {
-    root.to_path_buf()
-}
-
-/// macOS keeps `/tmp`, `/var` and `/etc` as symlinks into `/private`, and
-/// its temporary directories live below `/var`. A root spelled through one
-/// of these three system links is checked by the directory the link names.
-/// Nothing else is resolved: any other symlink in the path is refused.
-#[cfg(target_os = "macos")]
-fn system_path(root: &std::path::Path) -> PathBuf {
-    use std::path::{Component, Path as FsPath};
-    let mut parts = root.components();
-    if let (Some(Component::RootDir), Some(Component::Normal(first))) = (parts.next(), parts.next())
-        && ["tmp", "var", "etc"].iter().any(|name| first == *name)
-        && std::fs::read_link(FsPath::new("/").join(first))
-            .is_ok_and(|target| target == FsPath::new("private").join(first))
-    {
-        return FsPath::new("/private").join(first).join(parts.as_path());
-    }
-    root.to_path_buf()
-}
-
-/// The error of reading an xattr the file does not carry.
-#[cfg(not(target_os = "macos"))]
-const NO_XATTR: rustix::io::Errno = rustix::io::Errno::NODATA;
-#[cfg(target_os = "macos")]
-const NO_XATTR: rustix::io::Errno = rustix::io::Errno::NOATTR;
-
 fn is_symlink(entry: &rustix::fs::Stat) -> bool {
     rustix::fs::FileType::from_raw_mode(entry.st_mode) == rustix::fs::FileType::Symlink
 }
@@ -282,10 +238,6 @@ impl LocalStore {
         if !root.is_absolute() {
             return Err(std::io::Error::other("storage root must be absolute"));
         }
-        // Checked and opened by its real path; named as the caller spelled it,
-        // so object paths and the dataset URI keep agreeing.
-        let spelled = root;
-        let root = &system_path(spelled);
         for ancestor in root.ancestors() {
             match std::fs::symlink_metadata(ancestor) {
                 Ok(meta) if meta.file_type().is_symlink() => {
@@ -297,7 +249,8 @@ impl LocalStore {
             }
         }
         crate::mirror::MirrorStore::private_directory(root)?;
-        if is_remote(root)? {
+        let kind = (rustix::fs::statfs(root)?.f_type as u64) & 0xffff_ffff;
+        if REMOTE_FILE_SYSTEMS.contains(&kind) {
             return Err(std::io::Error::other(
                 "network file systems are not supported",
             ));
@@ -306,8 +259,8 @@ impl LocalStore {
         let metadata = directory.metadata()?;
         Ok(Self {
             inner: Arc::new(LocalFileSystem::new().with_fsync(true)),
-            root: Path::from_absolute_path(spelled).map_err(std::io::Error::other)?,
-            root_path: spelled.to_path_buf(),
+            root: Path::from_absolute_path(root).map_err(std::io::Error::other)?,
+            root_path: root.to_path_buf(),
             directory,
             root_identity: (metadata.dev(), metadata.ino()),
             cleanup_directories: None,
@@ -522,7 +475,7 @@ impl LocalStore {
         }
         let counted = match rustix::fs::fgetxattr(&file, VERSION, &mut [0u8; 0][..]) {
             Ok(_) => true,
-            Err(NO_XATTR) => false,
+            Err(rustix::io::Errno::NODATA) => false,
             Err(error) => return Err(error.into()),
         };
         if meta.len() > 0 && !counted {
@@ -536,7 +489,7 @@ impl LocalStore {
         }
         match rustix::fs::fremovexattr(&file, VERSION) {
             Ok(()) => changed = true,
-            Err(NO_XATTR) => {}
+            Err(rustix::io::Errno::NODATA) => {}
             Err(error) => return Err(error.into()),
         }
         if changed {
@@ -747,9 +700,7 @@ impl LocalStore {
             // A file system without `RENAME_NOREPLACE`: link, then drop the
             // staging name. Between the two the object has both names, and a
             // reaper that finds the second removes only that name.
-            // `ENOTSUP` is `EOPNOTSUPP` on Linux and a separate error on macOS.
             Err(Errno::INVAL | Errno::NOSYS | Errno::OPNOTSUPP) => {}
-            Err(error) if error == Errno::NOTSUP => {}
             Err(error) => return Err(error.into()),
         }
         match rustix::fs::linkat(
@@ -1012,7 +963,7 @@ impl LocalStore {
         match read_version(&file) {
             Ok(version) => meta.e_tag = Some(version_tag(version)),
             Err(error)
-                if error.raw_os_error() == Some(NO_XATTR.raw_os_error())
+                if error.raw_os_error() == Some(rustix::io::Errno::NODATA.raw_os_error())
                     && self.is_native_file(&meta.location) => {}
             Err(error) => return Err(io(error)),
         }
@@ -1249,17 +1200,6 @@ fn lock_exclusive(file: &File) -> std::io::Result<()> {
 
 /// A tag no other write has: 128 bits from the operating system's generator.
 /// A failure to obtain them fails the write.
-#[cfg(target_os = "macos")]
-fn new_tag() -> std::io::Result<u128> {
-    use std::io::Read;
-    let mut bytes = [0u8; 16];
-    File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    Ok(u128::from_be_bytes(bytes))
-}
-
-/// A tag no other write has: 128 bits from the operating system's generator.
-/// A failure to obtain them fails the write.
-#[cfg(not(target_os = "macos"))]
 fn new_tag() -> std::io::Result<u128> {
     let mut bytes = [0u8; 16];
     let mut filled = 0;

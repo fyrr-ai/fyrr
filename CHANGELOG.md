@@ -13,12 +13,6 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `fyrr` and `fyrr-reader` images are published for `linux/amd64` and
   `linux/arm64` under one tag.
 
-- fyrr builds from source and runs on macOS on Apple Silicon for
-  development. There are no macOS release binaries or images. Worker
-  isolation is weaker there: the memory limit is not enforced and detached
-  provider processes are not killed. See
-  [macOS: development only](docs/deployment.md#macos-development-only).
-
 ### Changed
 
 - Release binaries and image archives carry their platform in the file

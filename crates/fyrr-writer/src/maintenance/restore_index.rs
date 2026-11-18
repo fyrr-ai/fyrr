@@ -648,8 +648,6 @@ mod tests {
         assert_eq!(u64::from(pages) * 4096, index.cap);
     }
 
-    // Finds the unlinked file through procfs, which macOS lacks.
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn working_file_is_private_unlinked_bounded_and_disposable() {
         let index = Index::new(&config(), &BTreeSet::new(), 0).unwrap();

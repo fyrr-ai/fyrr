@@ -135,25 +135,6 @@ that source.
 The [deployment guide](deployment.md#topology) covers reader hosts; the
 [reader settings](reader-writer.md#reader) specify mirror ownership and modes.
 
-### macOS
-
-macOS is a development platform: fyrr is built from source there and has
-no release binaries or images. Its worker isolation is weaker, so run only
-providers you trust there and do not use it for production:
-
-- the memory limit is set but the kernel does not enforce it, so a provider
-  can use as much memory as the machine allows;
-- a timeout or the end of a worker kills the worker's process group. A
-  provider process that started its own session or process group is not
-  found and keeps running. On Linux the writer adopts and kills such
-  descendants too;
-- the worker's result socket is a file in a private (0700) directory under
-  `TMPDIR`, removed afterwards, instead of a socket without a file.
-
-Timeouts, the absence of core dumps and the discarded provider output are
-the same as on Linux. Storage durability is the same too: every flush uses
-`F_FULLFSYNC`.
-
 ## HTTP boundary
 
 See [HTTP boundary](http-users.md#http-boundary) for host and origin checks,

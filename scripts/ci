@@ -19,10 +19,6 @@ DEBUG_ONLY=0
 JOBS="${FYRR_CI_JOBS:-$(python3 - <<'JOBS'
 import os
 from pathlib import Path
-if not Path('/proc/meminfo').exists():
-    # macOS: no procfs and no CPU affinity. Size by processors alone.
-    print(max(1, (os.cpu_count() or 2) // 2))
-    raise SystemExit
 memory = dict((line.split(':')[0], int(line.split()[1]))
               for line in Path('/proc/meminfo').read_text().splitlines())
 # Reserve 4 GiB for core gates and Docker fixtures. Representative case process trees

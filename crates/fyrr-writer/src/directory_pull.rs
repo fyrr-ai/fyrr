@@ -465,22 +465,12 @@ mod tests {
         let (mut config, root) = crate::lease::tests::local_config("snapshot-blocking");
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("snapshot.fifo");
-        #[cfg(not(target_os = "macos"))]
         rustix::fs::mkfifoat(
             rustix::fs::CWD,
             &path,
             rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
         )
         .unwrap();
-        #[cfg(target_os = "macos")]
-        assert!(
-            std::process::Command::new("mkfifo")
-                .args(["-m", "600"])
-                .arg(&path)
-                .status()
-                .unwrap()
-                .success()
-        );
         config.identity.directory.snapshot_file = Some(path.clone());
         let bytes = fyrr_core::write_contract(&base(&config, "snapshot"));
         let writer = std::thread::spawn(move || {

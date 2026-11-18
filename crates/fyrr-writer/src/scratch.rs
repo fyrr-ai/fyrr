@@ -2,6 +2,7 @@
 use crate::{Result, WriterError};
 use fyrr_core::config::Config;
 use rusqlite::Connection;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
@@ -60,8 +61,10 @@ fn reap_dead_commands(base: &Path) -> Result<()> {
             continue;
         }
         // PID reuse conservatively retains a directory until that process exits.
-        if alive(pid) {
-            continue;
+        match std::fs::symlink_metadata(format!("/proc/{pid}")) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => continue,
         }
         let meta = match entry.path().symlink_metadata() {
             Ok(meta) => meta,
@@ -80,22 +83,6 @@ fn reap_dead_commands(base: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Whether a process with this id exists; an unreadable answer counts as alive.
-#[cfg(not(target_os = "macos"))]
-fn alive(pid: u32) -> bool {
-    match std::fs::symlink_metadata(format!("/proc/{pid}")) {
-        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
-        Ok(_) => true,
-    }
-}
-
-/// macOS has no procfs: probe with signal 0, which delivers nothing.
-#[cfg(target_os = "macos")]
-fn alive(pid: u32) -> bool {
-    rustix::process::Pid::from_raw(pid as i32)
-        .is_none_or(|pid| rustix::process::test_kill_process(pid) != Err(rustix::io::Errno::SRCH))
 }
 
 fn base(config: &Config) -> Result<PathBuf> {
@@ -144,12 +131,26 @@ pub(crate) fn open(scratch: &Path, purpose: &str, created: impl Fn(&Path)) -> Re
         std::process::id(),
         fyrr_core::clock::now().timestamp_nanos_opt().ok_or(ERROR)?
     ));
-    #[cfg(not(target_os = "macos"))]
-    if let Some(db) = anonymous(scratch, &path, &created) {
+    // Do not let SQLite create a named file while probing a deleted inode.
+    let anonymous = rustix::fs::open(
+        scratch,
+        rustix::fs::OFlags::TMPFILE | rustix::fs::OFlags::RDWR | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::from_bits_truncate(0o600),
+    )
+    .ok()
+    .and_then(|fd| {
+        let opened = Connection::open_with_flags(
+            format!("/proc/self/fd/{}", fd.as_raw_fd()),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        );
+        if opened.is_ok() {
+            created(&path);
+        }
+        opened.ok()
+    });
+    if let Some(db) = anonymous {
         return Ok(db);
     }
-    // No `O_TMPFILE` (macOS, or a file system without it): create the file
-    // private, let SQLite open it and remove its name at once.
     let file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -162,27 +163,6 @@ pub(crate) fn open(scratch: &Path, purpose: &str, created: impl Fn(&Path)) -> Re
     drop(file);
     removed.map_err(|_| ERROR)?;
     opened.map_err(|_| ERROR)
-}
-
-/// A file that never had a name. Do not let SQLite create a named file while
-/// probing a deleted inode.
-#[cfg(not(target_os = "macos"))]
-fn anonymous(scratch: &Path, path: &Path, created: &impl Fn(&Path)) -> Option<Connection> {
-    use std::os::fd::AsRawFd;
-    let fd = rustix::fs::open(
-        scratch,
-        rustix::fs::OFlags::TMPFILE | rustix::fs::OFlags::RDWR | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::from_bits_truncate(0o600),
-    )
-    .ok()?;
-    let opened = Connection::open_with_flags(
-        format!("/proc/self/fd/{}", fd.as_raw_fd()),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
-    );
-    if opened.is_ok() {
-        created(path);
-    }
-    opened.ok()
 }
 
 #[cfg(test)]

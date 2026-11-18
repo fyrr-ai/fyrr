@@ -383,10 +383,6 @@
         "tier": "quick",
         "seconds": 0.19
       },
-      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_refuses_a_symlinked_root_except_through_macos_system_links": {
-        "tier": "quick",
-        "seconds": 0.01
-      },
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_updates_are_compare_and_swap_across_processes": {
         "tier": "quick",
         "seconds": 3.2

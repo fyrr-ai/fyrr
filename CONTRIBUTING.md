@@ -9,26 +9,8 @@ through [SECURITY.md](SECURITY.md), not public issues.
 Builds are supported on **Linux x86-64 and aarch64**: the pinned tools
 (`scripts/pins.env`) are Linux binaries for those two architectures and the
 scripts use Bash and GNU utilities. `scripts/ci` runs on x86-64; aarch64 is
-built and its images are checked by the release job.
-
-**macOS on Apple Silicon** is a development host: fyrr builds from source
-there, with weaker worker isolation
-([details](docs/deployment.md#macos-development-only)), and no release
-binaries or images are made for it. The
-scripts need Homebrew's Bash and GNU coreutils ahead of the system's:
-`brew install bash coreutils jq` and put `$(brew --prefix)/bin` and
-`$(brew --prefix)/opt/coreutils/libexec/gnubin` first on `PATH`. Builds use
-plain Cargo there. Run `scripts/doctor --local`, then the subset CI runs on
-macOS:
-
-```sh
-scripts/ci --quick "--step=unit tests" "--step=configuration" \
-  "--step=cli (full build)" "--step=cli (reader-only build)" "--step=local storage"
-```
-
-Docker fixtures, images, the release scripts and the remaining rows are
-Linux-only. CI runs that subset on macOS for pushes to main, without
-blocking. Windows is not supported.
+built and its images are checked by the release job. Linux is the only
+supported build host.
 
 Prerequisites: git, curl, unzip, openssl, Python 3.11 or newer, Docker with the compose
 plugin, rustup, uv,
@@ -236,9 +218,7 @@ link peaks above 12 GB. They run on Blacksmith runners by default
 (`blacksmith-16vcpu-ubuntu-2404` and `blacksmith-16vcpu-ubuntu-2404-arm`),
 which requires the Blacksmith GitHub App on the repository. To use other
 runners, set the repository variables `RELEASE_RUNNER_X86_64` and
-`RELEASE_RUNNER_AARCH64` to labels with at least 24 GB of memory. CI,
-including its macOS job, runs on GitHub's free runners; `CI_RUNNER_MACOS`
-selects another macOS label. Running
+`RELEASE_RUNNER_AARCH64` to labels with at least 24 GB of memory. Running
 the workflow by hand (`workflow_dispatch`) builds and joins the artifacts
 without publishing anything. Without suitable runners, assemble the release
 on a maintainer machine as described below.

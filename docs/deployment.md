@@ -108,10 +108,8 @@ and a writer that runs on its own.
 ## Downloadable binaries
 
 Bare release binaries are dynamically linked Linux executables for x86-64
-(`linux-x86_64`) and 64-bit ARM (`linux-aarch64`). There are none for macOS,
-where fyrr is built from source for development
-([macOS: development only](#macos-development-only)), or for Windows. Each
-platform's `manifest-<platform>.txt` has `binary_runtime`
+(`linux-x86_64`) and 64-bit ARM (`linux-aarch64`); Linux is the only
+supported platform. Each platform's `manifest-<platform>.txt` has `binary_runtime`
 sections that list the maximum required
 GLIBC symbol version, ELF interpreter and shared libraries. Local assembly
 inherits the build host's ABI; official releases use Ubuntu 24.04
@@ -130,28 +128,6 @@ includes this runtime and the bundled providers.
 The release job executes the exported binaries in the pinned runtime
 images before uploading artifacts; it also checks SDK provider
 discovery. Reader-only binaries require no Python.
-
-## macOS: development only
-
-fyrr builds from source and runs on macOS on Apple Silicon so that you can
-develop and try it on a Mac. There are no release binaries or images for
-macOS: clone the repository and build it as [CONTRIBUTING.md](../CONTRIBUTING.md#build-host)
-describes. Do not run production there: provider workers are less isolated
-than on Linux.
-
-- **The worker memory limit is not enforced.** fyrr sets it, but the macOS
-  kernel ignores it; a provider can use all the memory of the machine.
-- **Detached provider processes survive.** Stopping a worker kills its
-  process group. A provider process that started its own session or process
-  group keeps running; on Linux the writer finds and kills those too.
-- Only units, configuration, the CLI and local storage are tested on macOS,
-  and that run does not gate changes. Everything else is verified on Linux.
-
-Storage behaves as on Linux: writes are flushed with `F_FULLFSYNC`, and
-network file systems are refused. Local storage refuses a symlink anywhere
-in its root path. macOS keeps `/tmp`, `/var` and `/etc` as symlinks into
-`/private`, so a `file://` root below one of them is read as the
-`/private/...` directory it names; any other symlink is still refused.
 
 ## Images
 
