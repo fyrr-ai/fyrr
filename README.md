@@ -110,7 +110,8 @@ The example's top hit is `notes/backup.md`, with the answer:
   sent to it.
 - **You run production on macOS, or anything on Windows.** Linux on x86-64
   and aarch64 is the supported platform. macOS on Apple Silicon is for
-  development only: the worker memory limit is not enforced there and
+  development only, built from source with no release binaries: the worker
+  memory limit is not enforced there and
   provider processes that detach from their worker are not killed
   ([details](docs/deployment.md#macos-development-only)). Windows is not
   supported.

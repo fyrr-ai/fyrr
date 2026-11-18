@@ -103,13 +103,17 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # macOS is a development platform (docs/deployment.md): this job proves the
-  # port builds and that units, configuration, the CLI and local storage hold
-  # there. Everything else is verified on Linux only. It runs on GitHub's free
-  # macOS runner; set the repository variable CI_RUNNER_MACOS to use another
-  # macOS label. Blacksmith runners are reserved for release builds.
+  # macOS is a development platform, built from source (docs/deployment.md):
+  # this job shows whether the port still builds and whether units,
+  # configuration, the CLI and local storage hold there. Everything else is
+  # verified on Linux only. GitHub's free macOS capacity is unreliable, so the
+  # job never blocks: it runs on pushes to main and by hand, not on pull
+  # requests or releases, and its failure does not fail the workflow. Set the
+  # repository variable CI_RUNNER_MACOS to use another macOS label.
   macos:
     name: scripts/ci subset on macOS
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+    continue-on-error: true
     runs-on: ${{ vars.CI_RUNNER_MACOS || 'macos-15' }}
     timeout-minutes: 180
     steps:

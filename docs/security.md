@@ -137,8 +137,9 @@ The [deployment guide](deployment.md#topology) covers reader hosts; the
 
 ### macOS
 
-On macOS the worker isolation is weaker, so run only providers you trust
-there and do not use it for production:
+macOS is a development platform: fyrr is built from source there and has
+no release binaries or images. Its worker isolation is weaker, so run only
+providers you trust there and do not use it for production:
 
 - the memory limit is set but the kernel does not enforce it, so a provider
   can use as much memory as the machine allows;

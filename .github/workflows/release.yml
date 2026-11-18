@@ -14,15 +14,11 @@
 # not survive, so the build jobs default to Blacksmith runners:
 #   linux-x86_64   blacksmith-16vcpu-ubuntu-2404      (16 vCPU, 64 GB)
 #   linux-aarch64  blacksmith-16vcpu-ubuntu-2404-arm  (16 vCPU, 48 GB)
-#   macos-aarch64  blacksmith-6vcpu-macos-15          (6 vCPU, 24 GB)
 # They need the Blacksmith GitHub App installed on this repository. To fall
-# back, set the repository variables RELEASE_RUNNER_X86_64,
-# RELEASE_RUNNER_AARCH64 and RELEASE_RUNNER_MACOS to other labels with at
-# least 24 GB of memory (for example GitHub larger runners); nothing else in
-# the workflow changes. A release can also be assembled on a maintainer
-# machine: see CONTRIBUTING.md.
-#
-# macOS produces archives only, for development use (docs/deployment.md).
+# back, set the repository variables RELEASE_RUNNER_X86_64 and
+# RELEASE_RUNNER_AARCH64 to other labels with at least 24 GB of memory (for
+# example GitHub larger runners); nothing else in the workflow changes. A
+# release can also be assembled on a maintainer machine: see CONTRIBUTING.md.
 #
 # workflow_dispatch builds and joins the artifacts of the selected ref without
 # publishing anything, to try the pipeline off a tag.
@@ -173,76 +169,10 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-  build-macos:
-    name: build macos-aarch64
-    if: ${{ !cancelled() && !github.event.repository.private && (needs.ci.result == 'success' || needs.ci.result == 'skipped') }}
-    needs: ci
-    runs-on: ${{ vars.RELEASE_RUNNER_MACOS || 'blacksmith-6vcpu-macos-15' }}
-    timeout-minutes: 360
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Resolve the version
-        id: version
-        env:
-          EVENT: ${{ github.event_name }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
-          if [[ "$EVENT" == push ]]; then
-            [[ "$TAG" == "v$version" ]] || { echo "tag $TAG does not match Cargo.toml version $version" >&2; exit 1; }
-          fi
-          [[ "$(uname -s)-$(uname -m)" == Darwin-arm64 ]] || { echo "runner is not macOS arm64" >&2; exit 1; }
-          echo "version=$version" >>"$GITHUB_OUTPUT"
-
-      # The scripts need Bash 4 and GNU utilities ahead of the system's.
-      - name: Install Bash and GNU coreutils
-        run: |
-          brew install bash coreutils jq
-          brew="$(brew --prefix)"
-          echo "$brew/opt/coreutils/libexec/gnubin" >>"$GITHUB_PATH"
-          echo "$brew/bin" >>"$GITHUB_PATH"
-
-      - name: Install the pinned Rust toolchain
-        run: |
-          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
-          rustup toolchain install "$channel" --profile minimal --component rustfmt,clippy
-          rustup default "$channel"
-
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-
-      - name: scripts/release-macos
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          mkdir -p target/release-logs
-          /usr/bin/time -l -o target/release-logs/release.time \
-            scripts/release-macos --version "$VERSION" --out dist
-          grep -E 'real|maximum resident' target/release-logs/release.time
-
-      - name: Upload the logs
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: release-logs-macos-aarch64-${{ github.sha }}
-          path: target/release-logs/
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Upload the platform artifacts
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: platform-macos-aarch64
-          path: dist/
-          if-no-files-found: error
-          compression-level: 0
-
   combine:
     name: join the platforms
-    if: ${{ !cancelled() && needs.build.result == 'success' && needs.build-macos.result == 'success' }}
-    needs: [build, build-macos]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -261,8 +191,7 @@ jobs:
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
           scripts/release-combine --version "$version" --out dist \
             "platforms/platform-linux-x86_64/fyrr-$version" \
-            "platforms/platform-linux-aarch64/fyrr-$version" \
-            "platforms/platform-macos-aarch64/fyrr-$version"
+            "platforms/platform-linux-aarch64/fyrr-$version"
 
       - name: Upload the release artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -330,8 +259,6 @@ jobs:
               case "$platform" in
                 linux-x86_64) arch=amd64 ;;
                 linux-aarch64) arch=arm64 ;;
-                # macOS ships archives only.
-                macos-*) continue ;;
                 *) echo "no image architecture for $platform" >&2; exit 1 ;;
               esac
               image_tag="$(awk '$1 == "image_tag" {print $2}' "$dir/manifest-$platform.txt")"

@@ -130,10 +130,6 @@ fn python_home(command: &mut Command) {
         return;
     }
     let Some(venv) = std::env::var_os("VIRTUAL_ENV") else {
-        #[cfg(target_os = "macos")]
-        if let Some(prefix) = platform::bundled_python() {
-            command.env("PYTHONHOME", prefix);
-        }
         return;
     };
     let Ok(text) = std::fs::read_to_string(Path::new(&venv).join("pyvenv.cfg")) else {
@@ -295,22 +291,6 @@ mod platform {
 
     pub(super) fn kill_orphans(_: &BTreeSet<u32>) -> io::Result<usize> {
         Ok(0)
-    }
-
-    /// The Python installation of a release archive: `bin/fyrr` sits in the
-    /// prefix that holds `lib/python3.*`, so the workers use that standard
-    /// library and the connector SDK installed into it.
-    pub(super) fn bundled_python() -> Option<PathBuf> {
-        let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
-        let prefix = executable.parent()?.parent()?;
-        std::fs::read_dir(prefix.join("lib"))
-            .ok()?
-            .flatten()
-            .any(|entry| {
-                entry.file_name().to_string_lossy().starts_with("python3.")
-                    && entry.path().join("os.py").is_file()
-            })
-            .then(|| prefix.to_owned())
     }
 }
 
