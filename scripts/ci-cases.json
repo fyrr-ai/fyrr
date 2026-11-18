@@ -467,6 +467,10 @@
         "tier": "quick",
         "seconds": 1.321
       },
+      "full:fyrr-writer:lib:fyrr_writer/lease::tests::slow_observed_flush_does_not_block_renewal_on_local_storage": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
       "full:fyrr-writer:lib:fyrr_writer/sync_lease::tests::cursor_renewal_finishes_before_release_on_local_storage": {
         "tier": "quick",
         "seconds": 1.313

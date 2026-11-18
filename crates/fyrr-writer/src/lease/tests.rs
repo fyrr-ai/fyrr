@@ -122,6 +122,74 @@ pub(crate) async fn finish_held_renewal(
         .unwrap();
 }
 
+type Gate = (Arc<Notify>, Arc<Notify>);
+/// Armed by one test: its publication announces that the flush of observed
+/// objects is done, then waits, standing in for a flush that takes long.
+static FLUSH_GATE: std::sync::Mutex<Option<Gate>> = std::sync::Mutex::new(None);
+
+pub(super) async fn flushed() {
+    let gate = FLUSH_GATE.lock().unwrap().take();
+    if let Some((entered, resume)) = gate {
+        entered.notify_one();
+        resume.notified().await;
+    }
+}
+
+/// A publication flushes what it observed before it takes the lease state.
+/// While that flush is slow, a renewal still gets the state and the store.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_observed_flush_does_not_block_renewal_on_local_storage() {
+    let (config, root) = local_config("flush-renewal");
+    let mut head: ServingHead = serde_json::from_str(include_str!(
+        "../../../../fixtures/contracts/serving-head/head.json"
+    ))
+    .unwrap();
+    head.namespace = config.namespace.name.clone();
+    head.lease = None;
+    let (store, namespace) = namespace_store(&config).unwrap();
+    cas_put(
+        store.as_ref(),
+        &namespace.join("head.json"),
+        &head,
+        PutMode::Create,
+    )
+    .await
+    .unwrap();
+    let lease = LeaseGuard::acquire(&config).await.unwrap();
+    let (entered, resume) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    *FLUSH_GATE.lock().unwrap() = Some((entered.clone(), resume.clone()));
+    let publishing = {
+        let (lease, head) = (lease.clone(), lease.head().await.unwrap());
+        tokio::spawn(async move { lease.publish(head).await })
+    };
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .expect("the publication reached its flush");
+    // The publication is held at its flush. One renewal runs to completion.
+    let renewed = Arc::new(AtomicBool::new(false));
+    let renewal = {
+        let (guard, renewed) = (lease.clone(), renewed.clone());
+        tokio::spawn(async move {
+            let mut state = guard.state.lock().await;
+            let head = state.head.clone();
+            let written = guard.write(&mut state, head, HeadWriteStage::Renew).await;
+            renewed.store(written.is_ok(), Ordering::SeqCst);
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), renewal)
+        .await
+        .expect("a renewal waited for the publication's flush")
+        .unwrap();
+    assert!(renewed.load(Ordering::SeqCst));
+    resume.notify_one();
+    publishing
+        .await
+        .unwrap()
+        .expect("the publication completes");
+    lease.release().await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 pub(crate) fn local_config(name: &str) -> (Config, std::path::PathBuf) {
     let root = std::env::temp_dir().join(format!(
         "fyrr-{name}-{}-{}",
