@@ -11,6 +11,7 @@
     "preview": "wrangler dev --port 8486",
     "verify:browser": "node scripts/verify-browser.mjs",
     "verify:compare": "node scripts/verify-compare.mjs",
+    "render:banner": "node scripts/render-banner.mjs",
     "test:compare": "bun test scripts/compare.test.ts",
     "content": "bun scripts/prepare.ts && fumadocs-mdx",
     "deploy": "bun scripts/check-compare.ts --publish && wrangler deploy",

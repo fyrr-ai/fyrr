@@ -1,45 +1,76 @@
-# fyrr
+<p align="center">
+  <a href="https://fyrr.dev"><img src="docs/assets/banner.png" alt="fyrr: a dithered sea chart of knowledge islands named after the apps it indexes. Navigate your islands of knowledge." width="100%"></a>
+</p>
 
-**Permission-aware search for AI agents.** fyrr indexes your company's
-documents together with who may read them and serves them over the Model
-Context Protocol (MCP), so every search hit and fetched document is one the
-calling user is allowed to read.
+<h2 align="center">Ask the whole company.<br>Without asking the whole company.</h2>
 
-**Status: pre-1.0. Cloud connectors are tested against synthetic APIs only.**
+<p align="center"><b>The serverless, permission-aware context layer for AI agents. No database. Just a bucket.</b></p>
 
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Rust 1.97+](https://img.shields.io/badge/rust-1.97%2B-orange.svg)](rust-toolchain.toml)
+<p align="center">
+  <a href="https://fyrr.dev">Website</a> ·
+  <a href="https://fyrr.dev/docs/quickstart">Docs</a> ·
+  <a href="https://fyrr.dev/use-cases">Use cases</a> ·
+  <a href="https://fyrr.dev/compare">Compare</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
 
-An agent that searches Drive, Slack, Jira or GitHub on a user's behalf must
-not show that user a document they could not open themselves, yet a search
-index built with one service account sees everything. fyrr syncs each
-source's access rights along with its content and checks the caller's
-rights inside the search itself, before anything is ranked or returned.
-The index lives in an S3 bucket or a private local directory, with no
-database or cluster to operate.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
+  <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/rust-1.97%2B-orange.svg" alt="Rust 1.97+"></a>
+</p>
+
+> **Pre-1.0.** Cloud connectors are tested against synthetic APIs only.
+
+## Why fyrr
+
+- **Find: works in the AI you already use.** Plug fyrr into Claude, Cursor or
+  any MCP app. Ask there, and it searches your docs, chats, tickets and code
+  over stdio or Streamable HTTP ([MCP tools](docs/mcp-tools.md)).
+- **Protect: only what each person may read.** fyrr syncs each document's
+  access rules with its content and checks them inside the search, before
+  anything is ranked. A forbidden document looks exactly like one that does
+  not exist, and missing permission data refuses rather than guesses
+  ([how](docs/architecture.md#authorization), [security](docs/security.md)).
+- **Scale: as many readers as you need.** Readers only read from the bucket
+  and never coordinate, so you add more as you grow
+  ([topology](docs/deployment.md#topology)).
+- **Own: your data stays yours.** It runs in your own cloud. Text leaves it
+  only for the embedding model you choose.
+
+Connectors for local files, Google Drive, Notion, GitHub, Slack and Jira; a
+Python SDK lets you [write your own](docs/connectors/authoring.md).
+
+## 16 milliseconds. Among the best results.
+
+Fast enough for an agent to search at every step: a 16 ms median search, 25 ms
+at p95. Accurate enough to trust what comes back: a 90+ score on
+EnterpriseRAG-Bench, among the best of 43 systems tested. The
+[open comparison](https://fyrr.dev/compare) measures quality, latency, ingest
+and running cost against self-hosted alternatives, with its full protocol.
+
+## No database. Just a bucket.
+
+Everything fyrr knows lives as files in one S3 bucket, or in a private local
+directory. Small teams run nothing around the clock; a whole company adds one
+small service. The reader also runs on [AWS Lambda](docs/lambda.md)
+(experimental): no always-on reader server, pay per request.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/architecture-light.svg">
   <img src="docs/assets/architecture.svg" alt="Sources sync through the writer into S3 or local disk; the reader checks permissions before returning MCP results.">
 </picture>
 
-## Highlights
+## From one laptop to the whole company.
 
-- **Storage is a bucket or a directory.** No database, queue or search cluster: the
-  index, permissions and writer coordination live in S3 or on local disk.
-  Writers run as scheduled commands or one `fyrr writer serve`; readers
-  read publications and keep local caches ([topology](docs/deployment.md#topology)).
-- **Permission filter before ranking.** Candidates come only from rows the
-  caller may read, so a forbidden document is never scored or returned and
-  looks exactly like one that does not exist ([how](docs/architecture.md#authorization)).
-- **Fails closed.** Missing authorization data, an unknown caller or a source
-  whose permission reads went stale refuses or hides; it never guesses
-  ([security](docs/security.md)).
-- **MCP over stdio or HTTP.** `search`, `fetch` and `list_filters` for one
-  user per stdio process, or for many over Streamable HTTP with OIDC access
-  tokens ([MCP tools](docs/mcp-tools.md)).
-- **Connectors and an SDK.** Local files, Google Drive, Notion, GitHub, Slack
-  and Jira, plus a Python SDK for your own ([connectors](docs/connectors/README.md)).
+| Way | What runs |
+| --- | --- |
+| **Just you** | Your files, notes and repos, searched by your coding agent. |
+| **A team** | One shared index, no server. Each teammate's agent searches it directly. |
+| **The company** | One index and one server, behind your company login. |
+| **Training & evals** | A fixed index that changes only when you update it. Search it in parallel. |
+
+Every way: no database. See [use cases](https://fyrr.dev/use-cases) and
+[deployment](docs/deployment.md).
 
 ## Quick start
 
