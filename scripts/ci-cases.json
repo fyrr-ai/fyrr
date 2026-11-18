@@ -992,6 +992,10 @@
         "tier": "full",
         "seconds": 1.558
       },
+      "full:fyrr:test:dense_path/corrections::local::local_observer_only_allows_truncated_payloads_during_teardown": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
       "full:fyrr:test:dense_path/corrections::local::local_native_observer_preserves_warm_mirror_reads": {
         "tier": "full",
         "seconds": 28.184

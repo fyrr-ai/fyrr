@@ -29,7 +29,8 @@ pub(super) fn controller(state: Arc<BoundaryState>, stop: Arc<AtomicBool>) -> (S
                 break;
             }
             let state = state.clone();
-            workers.push(std::thread::spawn(move || serve(stream, &state)));
+            let stopped = stopped.clone();
+            workers.push(std::thread::spawn(move || serve(stream, &state, &stopped)));
         }
         for worker in workers {
             worker.join().unwrap();
@@ -46,23 +47,38 @@ pub(super) fn controller(state: Arc<BoundaryState>, stop: Arc<AtomicBool>) -> (S
     )
 }
 
-fn serve(mut stream: UnixStream, state: &BoundaryState) {
+fn read_event(stream: &mut UnixStream, stopped: &AtomicBool) -> std::io::Result<Option<Event>> {
+    let mut length = [0; 4];
+    if stream.read_exact(&mut length).is_err() {
+        return Ok(None);
+    }
+    let length = u32::from_be_bytes(length) as usize;
+    assert!(
+        length <= 64 * 1024 * 1024,
+        "oversized operation observation"
+    );
+    let mut bytes = vec![0; length];
+    if let Err(error) = stream.read_exact(&mut bytes) {
+        // Killing the observed process can interrupt a frame between its
+        // length and payload. Only explicit teardown permits that disconnect.
+        if error.kind() == std::io::ErrorKind::UnexpectedEof && stopped.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(std::io::Error::other)
+}
+
+fn serve(mut stream: UnixStream, state: &BoundaryState, stopped: &AtomicBool) {
     stream
         .set_read_timeout(Some(Duration::from_secs(120)))
         .unwrap();
     loop {
-        let mut length = [0; 4];
-        if stream.read_exact(&mut length).is_err() {
+        let Some(event) = read_event(&mut stream, stopped).unwrap() else {
             return;
-        }
-        let length = u32::from_be_bytes(length) as usize;
-        assert!(
-            length <= 64 * 1024 * 1024,
-            "oversized operation observation"
-        );
-        let mut bytes = vec![0; length];
-        stream.read_exact(&mut bytes).unwrap();
-        let event: Event = serde_json::from_slice(&bytes).unwrap();
+        };
         // These are operation labels, not evidence of an S3 HTTP exchange. A local
         // enumeration has one completion event and never invents continuation pages.
         let request = if event.method == "LIST" {
@@ -259,6 +275,9 @@ async fn local_native_observer_preserves_warm_mirror_reads() {
         "warm query must perform only its two authority reads; native observations: {:?}",
         &native.lock().unwrap()[initial.len()..],
     );
+    // Background version checks may still be emitting native observations.
+    // Mark teardown before Mcp::drop kills their process mid-frame.
+    controller.stop.store(true, Ordering::SeqCst);
     drop(reader);
     drop(controller);
 }
@@ -359,4 +378,23 @@ async fn bulk_fixture_versions_remain_private_and_support_later_cas() {
         store.get(&a).await.unwrap().bytes().await.unwrap().as_ref(),
         b"changed"
     );
+}
+
+#[test]
+fn local_observer_only_allows_truncated_payloads_during_teardown() {
+    for stopping in [false, true] {
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        sender.write_all(&16_u32.to_be_bytes()).unwrap();
+        sender.write_all(b"partial").unwrap();
+        drop(sender);
+        let result = read_event(&mut receiver, &AtomicBool::new(stopping));
+        if stopping {
+            assert!(result.unwrap().is_none());
+        } else {
+            assert_eq!(
+                result.unwrap_err().kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
+        }
+    }
 }
