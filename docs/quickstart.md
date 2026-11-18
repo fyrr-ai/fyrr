@@ -1,4 +1,4 @@
-# Search your Markdown from Claude Code
+# Quickstart
 
 Index a Markdown folder on your machine, then search and fetch it from
 Claude Code over MCP. No Docker, accounts or embedding keys are needed.

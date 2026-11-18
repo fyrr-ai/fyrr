@@ -30,7 +30,6 @@
   .step__body .title, .step__body .sub { position: relative; z-index: 1; width: fit-content; padding-right: 16px; background: #000; }   /* the fog stays behind the cards */
   .step__stage { position: relative; isolation: isolate; margin-top: 32px; }
   .step__uses { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-  .step__uses--4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .step__uses .panel { display: flex; flex-direction: column; }
   .step__uses .panel__body { flex: 1; display: flex; flex-direction: column; }
   .step__uses .panel__body > span { font-size: 15px; line-height: 22px; color: var(--fg-muted); text-wrap: pretty; }
@@ -82,7 +81,7 @@
     <div class="step__body">
       <h2 class="title">Your team</h2>
       <p class="sub">One S3 bucket. No server.</p>
-      <div class="step__stage"><canvas class="stage__fog step__fog" data-seed="4" data-pace="2.2" aria-hidden="true"></canvas><ul class="step__uses step__uses--4"><li class="panel"><p class="panel__bar"><span>Shared knowledge</span></p><div class="panel__body"><span>Index the team&rsquo;s docs, chats, tickets and code once. Every teammate&rsquo;s agent searches the same index.</span><ul class="sources"><li>Google Drive</li><li>Notion</li><li>Slack</li><li>GitHub</li></ul></div></li><li class="panel"><p class="panel__bar"><span>Code search</span></p><div class="panel__body"><span>Search code, pull requests and issues across your repositories, by meaning and by exact names.</span><ul class="sources"><li>GitHub</li><li>Local files</li></ul></div></li><li class="panel"><p class="panel__bar"><span>Onboarding</span></p><div class="panel__body"><span>New people ask their agent how things work and why, instead of interrupting the team.</span><ul class="sources"><li>Notion</li><li>Google Drive</li><li>GitHub</li><li>Slack</li></ul></div></li><li class="panel"><p class="panel__bar"><span>Support</span></p><div class="panel__body"><span>Answer customers from product docs, past tickets and the threads where the fix was explained.</span><ul class="sources"><li>Jira</li><li>Slack</li><li>Notion</li><li>Google Drive</li></ul></div></li></ul></div>
+      <div class="step__stage"><canvas class="stage__fog step__fog" data-seed="4" data-pace="2.2" aria-hidden="true"></canvas><ul class="step__uses"><li class="panel"><p class="panel__bar"><span>Shared knowledge</span></p><div class="panel__body"><span>Index the team&rsquo;s docs, chats, tickets and code once. Every teammate&rsquo;s agent searches the same index.</span><ul class="sources"><li>Google Drive</li><li>Notion</li><li>Slack</li><li>GitHub</li></ul></div></li><li class="panel"><p class="panel__bar"><span>Code search</span></p><div class="panel__body"><span>Search code, pull requests and issues across your repositories, by meaning and by exact names.</span><ul class="sources"><li>GitHub</li><li>Local files</li></ul></div></li><li class="panel"><p class="panel__bar"><span>Support</span></p><div class="panel__body"><span>Answer customers from product docs, past tickets and the threads where the fix was explained.</span><ul class="sources"><li>Jira</li><li>Slack</li><li>Notion</li><li>Google Drive</li></ul></div></li></ul></div>
     </div>
   </section>
   <section class="step" id="company">
