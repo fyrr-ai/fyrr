@@ -12,6 +12,8 @@ import pytest
 WORKFLOW = Path(__file__).parents[2] / ".github/workflows/release.yml"
 STEP = WORKFLOW.read_text().split("      - name: Publish the release and images\n", 1)[1]
 PUBLICATION = textwrap.dedent(STEP.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
+PLATFORMS = {"linux-x86_64": "amd64", "linux-aarch64": "arm64"}
+MANIFEST = "".join(f"platform {platform} manifest-{platform}.txt\n" for platform in PLATFORMS)
 BOUNDARIES = r"""
 set -euo pipefail
 record() { printf '%s\n' "$*" >> events; }
@@ -34,7 +36,7 @@ docker() {
   record "docker:$*"
   if [[ "$1" == login ]]; then cat >/dev/null; fi
   if [[ "$1" == image && "$2" == load ]]; then cat >/dev/null; fi
-  if [[ "$1" == image && "$2" == push && "$3" == *"/$FAILURE:0.1.0" ]]; then
+  if [[ "$1" == image && "$2" == push && "$3" == *"/$FAILURE:0.1.0-arm64" ]]; then
     return 1
   fi
 }
@@ -47,9 +49,12 @@ docker() {
 def test_release_retry_finishes_before_publication(tmp_path, failure):
     directory = tmp_path / "dist/fyrr-0.1.0"
     directory.mkdir(parents=True)
-    (directory / "manifest.txt").write_text("image_tag wt-0123456789ab\n")
-    for image in ("fyrr", "fyrr-reader"):
-        (directory / f"{image}-image-0.1.0.tar.gz").write_bytes(gzip.compress(b"image"))
+    (directory / "manifest.txt").write_text(MANIFEST)
+    for platform in PLATFORMS:
+        (directory / f"manifest-{platform}.txt").write_text("image_tag wt-0123456789ab\n")
+        for image in ("fyrr", "fyrr-reader"):
+            archive = directory / f"{image}-image-0.1.0-{platform}.tar.gz"
+            archive.write_bytes(gzip.compress(b"image"))
     (directory / "SHA256SUMS").write_text(
         "".join(
             f"{hashlib.sha256(file.read_bytes()).hexdigest()}  {file.name}\n"
@@ -90,7 +95,7 @@ def test_release_retry_finishes_before_publication(tmp_path, failure):
     if failure == "checksum":
         assert not (tmp_path / "draft").exists()
         assert not (tmp_path / "events").exists()
-        (directory / "manifest.txt").write_text("image_tag wt-0123456789ab\n")
+        (directory / "manifest.txt").write_text(MANIFEST)
     elif failure == "view":
         assert not (tmp_path / "draft").exists()
         assert "authentication failed" in interrupted.stderr
@@ -107,10 +112,14 @@ def test_release_retry_finishes_before_publication(tmp_path, failure):
     assert sum(line.startswith("gh:release create") for line in events) == 1
     published = max(i for i, line in enumerate(events) if line.startswith("gh:release edit"))
     for image in ("fyrr", "fyrr-reader"):
-        pushed = max(
-            i
-            for i, line in enumerate(events)
-            if line == f"docker:image push ghcr.io/example/{image}:0.1.0"
-        )
-        assert pushed < published
-        assert f"docker:image tag {image}:wt-0123456789ab ghcr.io/example/{image}:0.1.0" in events
+        name = f"ghcr.io/example/{image}:0.1.0"
+        join = f"docker:buildx imagetools create --tag {name} {name}-amd64 {name}-arm64"
+        joined = events.index(join)
+        assert joined < published
+        for arch in PLATFORMS.values():
+            # Every architecture is pushed before the manifest that joins them.
+            pushed = max(
+                i for i, line in enumerate(events) if line == f"docker:image push {name}-{arch}"
+            )
+            assert pushed < max(i for i, line in enumerate(events) if line == join)
+            assert f"docker:image tag {image}:wt-0123456789ab {name}-{arch}" in events

@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Joins the outputs of scripts/release from several platforms into one
+# release directory. It builds, uploads and publishes nothing.
+#
+#   scripts/release-combine --version V --out DIR PLATFORM_DIR...
+#
+# Each PLATFORM_DIR is a fyrr-V directory written by scripts/release and is
+# verified against its own SHA256SUMS first. The result, DIR/fyrr-V/, holds
+# - every platform's binaries and image archives (their names carry the
+#   platform);
+# - each platform's manifest as manifest-<platform>.txt, unchanged;
+# - LICENSE, NOTICE, the SDK wheel and the contracts archive of the first
+#   PLATFORM_DIR. They are platform independent; the other directories'
+#   copies are dropped;
+# - manifest.txt, which lists the platforms, and SHA256SUMS over every file.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+VERSION=""
+OUT=""
+INPUTS=()
+while (($#)); do
+  case "$1" in
+    --version) VERSION="$2"; shift 2 ;;
+    --out) OUT="$(realpath -m -- "$2")"; shift 2 ;;
+    -*) die "unknown argument $1 (use --version V --out DIR PLATFORM_DIR...)" ;;
+    *) INPUTS+=("$(realpath -- "$1")"); shift ;;
+  esac
+done
+[[ "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$ ]] || die "--version must be a bounded identifier"
+[[ -n "$OUT" ]] || die "--out is required"
+((${#INPUTS[@]})) || die "name at least one platform directory"
+
+DIR="$OUT/fyrr-$VERSION"
+rm -rf "$DIR"
+mkdir -p "$DIR"
+platforms=()
+commit=""
+for input in "${INPUTS[@]}"; do
+  (cd "$input" && sha256sum --check --quiet SHA256SUMS) || die "$input does not match its SHA256SUMS"
+  [[ "$(sed -n 1p "$input/manifest.txt")" == "fyrr $VERSION" ]] || die "$input is not fyrr $VERSION"
+  platform="$(awk '$1 == "platform" {print $2}' "$input/manifest.txt")"
+  [[ "$platform" =~ ^[a-z0-9]+-[a-z0-9_]+$ ]] || die "$input names no platform"
+  [[ ! -e "$DIR/manifest-$platform.txt" ]] || die "platform $platform is given twice"
+  this_commit="$(awk '$1 == "commit" {print $2}' "$input/manifest.txt")"
+  [[ -z "$commit" || "$commit" == "$this_commit" ]] || die "$input was built from $this_commit, not $commit"
+  commit="$this_commit"
+  cp "$input/manifest.txt" "$DIR/manifest-$platform.txt"
+  for file in "$input"/*; do
+    name="$(basename "$file")"
+    case "$name" in
+      manifest.txt | SHA256SUMS) ;;
+      *"-$platform" | *"-$platform".tar.gz) cp "$file" "$DIR/$name" ;;
+      # Platform-independent files: the first directory's copy.
+      *) [[ -e "$DIR/$name" ]] || cp "$file" "$DIR/$name" ;;
+    esac
+  done
+  platforms+=("$platform")
+done
+
+{
+  echo "fyrr $VERSION"
+  echo "commit $commit"
+  for platform in "${platforms[@]}"; do
+    echo "platform $platform manifest-$platform.txt"
+  done
+  echo
+  echo "size  file"
+  for file in "$DIR"/*; do
+    [[ "$(basename "$file")" != manifest.txt ]] || continue
+    printf '%d  %s\n' "$(stat -c %s "$file")" "$(basename "$file")"
+  done
+} >"$DIR/manifest.txt"
+(cd "$DIR" && sha256sum -- * >SHA256SUMS && sha256sum --check --quiet SHA256SUMS)
+log "done: ${DIR} (${#platforms[@]} platform(s), $(grep -c . "$DIR/SHA256SUMS") files, SHA256SUMS verified); nothing was published"
+cat "$DIR/manifest.txt"

@@ -64,11 +64,17 @@ ensure_protoc() {
   if [[ -x "$bin" ]] && "$bin" --version | grep -qx "libprotoc $PROTOC_VERSION"; then
     return 0
   fi
+  local url sha
+  case "$(uname -m)" in
+    x86_64) url="$PROTOC_URL_X86_64" sha="$PROTOC_SHA256_X86_64" ;;
+    aarch64) url="$PROTOC_URL_AARCH64" sha="$PROTOC_SHA256_AARCH64" ;;
+    *) die "no pinned protoc for $(uname -m)" ;;
+  esac
   log "fetching protoc $PROTOC_VERSION"
   local tmp
   tmp="$(mktemp -d)"
-  curl -fsSL --retry 3 -o "$tmp/protoc.zip" "$PROTOC_URL"
-  echo "$PROTOC_SHA256  $tmp/protoc.zip" | sha256sum -c --quiet - || die "protoc checksum mismatch"
+  curl -fsSL --retry 3 -o "$tmp/protoc.zip" "$url"
+  echo "$sha  $tmp/protoc.zip" | sha256sum -c --quiet - || die "protoc checksum mismatch"
   rm -rf "$PROTOC_DIR"
   mkdir -p "$PROTOC_DIR"
   unzip -q "$tmp/protoc.zip" -d "$PROTOC_DIR"

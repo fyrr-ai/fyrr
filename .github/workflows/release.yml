@@ -1,17 +1,38 @@
 # Release: on a `v*` tag, runs ci.yml (`scripts/ci`, full tier) and, only if
-# it passes, assembles the artifacts with scripts/release (both
-# binaries, the connector SDK wheel, the contracts, both images and
-# SHA256SUMS), uploads them to a draft, pushes both images to GHCR, then
-# publishes the release. The tag must match the workspace version in Cargo.toml.
+# it passes, builds the artifacts of every platform with scripts/release (both
+# binaries, the connector SDK wheel, the contracts and both images), joins
+# them with scripts/release-combine (manifest.txt and SHA256SUMS over all of
+# them), uploads them to a draft, pushes both images to GHCR as multi-arch
+# manifests, then publishes the release. The tag must match the workspace
+# version in Cargo.toml.
 #
-# Fat LTO is linked once per binary, in the build job and nowhere else: CI
-# builds debug artifacts only, and the images package the build job's binaries
-# (scripts/release --prebuilt-images) instead of compiling their own.
+# Fat LTO is linked once per binary and platform, in the build jobs and
+# nowhere else: CI builds debug artifacts only, and the images package the
+# build job's binaries (scripts/release --prebuilt-images).
+#
+# Runners. A fat-LTO link peaks above 12 GB, which GitHub's free 16 GB runners
+# do not survive, so the build jobs default to Blacksmith runners:
+#   linux-x86_64   blacksmith-16vcpu-ubuntu-2404      (16 vCPU, 64 GB)
+#   linux-aarch64  blacksmith-16vcpu-ubuntu-2404-arm  (16 vCPU, 48 GB)
+# They need the Blacksmith GitHub App installed on this repository. To fall
+# back, set the repository variables RELEASE_RUNNER_X86_64 and
+# RELEASE_RUNNER_AARCH64 to other labels with at least 24 GB of memory (for
+# example GitHub larger runners); nothing else in the workflow changes. A
+# release can also be assembled on a maintainer machine: see CONTRIBUTING.md.
+#
+# workflow_dispatch builds and joins the artifacts of the selected ref without
+# publishing anything, to try the pipeline off a tag.
 name: release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ci:
+        description: Run the full CI tier first
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -26,36 +47,57 @@ env:
 
 jobs:
   ci:
+    if: ${{ github.event_name == 'push' || inputs.ci }}
     # The documented local form; actionlint rejects the `$/` form.
     uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
 
   build:
-    name: build release artifacts
-    if: ${{ !github.event.repository.private }}
+    name: build ${{ matrix.platform }}
+    # A skipped CI job (workflow_dispatch without `ci`) does not block the build.
+    if: ${{ !cancelled() && !github.event.repository.private && (needs.ci.result == 'success' || needs.ci.result == 'skipped') }}
     needs: ci
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ${{ vars.RELEASE_RUNNER_X86_64 || 'blacksmith-16vcpu-ubuntu-2404' }}
+          - platform: linux-aarch64
+            runner: ${{ vars.RELEASE_RUNNER_AARCH64 || 'blacksmith-16vcpu-ubuntu-2404-arm' }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Check the tag against the workspace version
+      - name: Resolve the version
+        id: version
         env:
+          EVENT: ${{ github.event_name }}
           TAG: ${{ github.ref_name }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
-          [[ "$TAG" == "v$version" ]] || { echo "tag $TAG does not match Cargo.toml version $version" >&2; exit 1; }
+          if [[ "$EVENT" == push ]]; then
+            [[ "$TAG" == "v$version" ]] || { echo "tag $TAG does not match Cargo.toml version $version" >&2; exit 1; }
+          fi
+          [[ "linux-$(uname -m)" == "$PLATFORM" ]] || { echo "runner is linux-$(uname -m), not $PLATFORM" >&2; exit 1; }
+          echo "version=$version" >>"$GITHUB_OUTPUT"
 
       - name: Free disk space for the release and image builds
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
 
-      - name: Add swap for fat-LTO release links
+      # Only a fallback runner is this small; the default runners need no swap.
+      - name: Add swap on runners with less than 24 GB
         run: |
-          sudo fallocate -l 12G /fyrr-swapfile
-          sudo chmod 600 /fyrr-swapfile
-          sudo mkswap /fyrr-swapfile >/dev/null
-          sudo swapon /fyrr-swapfile
+          if (($(awk '/^MemTotal:/ {print $2}' /proc/meminfo) < 24 * 1024 * 1024)); then
+            sudo fallocate -l 12G /fyrr-swapfile
+            sudo chmod 600 /fyrr-swapfile
+            sudo mkswap /fyrr-swapfile >/dev/null
+            sudo swapon /fyrr-swapfile
+          fi
+          free -g
 
       - name: Install the pinned Rust toolchain
         run: |
@@ -78,28 +120,29 @@ jobs:
 
       - name: scripts/release
         env:
-          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           mkdir -p target/release-logs
           /usr/bin/time -v -o target/release-logs/release.time \
-            scripts/release --version "${TAG#v}" --out dist --prebuilt-images
+            scripts/release --version "$VERSION" --out dist --prebuilt-images
           grep -E 'Elapsed|Maximum resident' target/release-logs/release.time
 
       - name: Check release binaries in supported runtime images
         env:
-          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
-          version="${TAG#v}"
-          dir="$PWD/dist/fyrr-$version"
+          dir="$PWD/dist/fyrr-$VERSION"
           image_tag="$(awk '$1 == "image_tag" {print $2}' "$dir/manifest.txt")"
           [[ "$(awk '$1 == "image_binaries" {print $2}' "$dir/manifest.txt")" == release ]]
+          [[ "$(awk '$1 == "platform" {print $2}' "$dir/manifest.txt")" == "$PLATFORM" ]]
           for image in fyrr fyrr-reader; do
             docker run --rm --entrypoint /release-fyrr \
-              --mount "type=bind,src=$dir/$image-$version-linux-x86_64,dst=/release-fyrr,readonly" \
+              --mount "type=bind,src=$dir/$image-$VERSION-$PLATFORM,dst=/release-fyrr,readonly" \
               "$image:$image_tag" --version
           done
           providers="$(docker run --rm --entrypoint /release-fyrr \
-            --mount "type=bind,src=$dir/fyrr-$version-linux-x86_64,dst=/release-fyrr,readonly" \
+            --mount "type=bind,src=$dir/fyrr-$VERSION-$PLATFORM,dst=/release-fyrr,readonly" \
             "fyrr:$image_tag" writer providers)"
           printf '%s\n' "$providers"
           for provider in local-files google-drive notion github slack jira; do
@@ -110,13 +153,45 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: release-logs-${{ github.sha }}
+          name: release-logs-${{ matrix.platform }}-${{ github.sha }}
           path: |
             target/release-logs/
             target/images/*.log
             target/images/*.txt
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Upload the platform artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+
+  combine:
+    name: join the platforms
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the platform artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-linux-*
+          path: platforms/
+
+      - name: scripts/release-combine
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          scripts/release-combine --version "$version" --out dist \
+            "platforms/release-linux-x86_64/fyrr-$version" \
+            "platforms/release-linux-aarch64/fyrr-$version"
 
       - name: Upload the release artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -128,7 +203,8 @@ jobs:
 
   publish:
     name: publish verified artifacts
-    needs: build
+    if: ${{ !cancelled() && needs.combine.result == 'success' && github.event_name == 'push' }}
+    needs: combine
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -167,17 +243,31 @@ jobs:
           fi
           if [[ "$draft" == missing ]]; then
             gh release create "$TAG" --draft --verify-tag --title "fyrr $version" \
-              --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md). Verify downloads with \`sha256sum --check SHA256SUMS\`. The \`image_tag\` in \`manifest.txt\` identifies the checkout-owned tag loaded by each image archive."
+              --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md). Verify downloads with \`sha256sum --check SHA256SUMS\`. The \`image_tag\` in each \`manifest-<platform>.txt\` identifies the checkout-owned tag loaded by that platform's image archives."
           fi
           gh release upload "$TAG" --clobber "$dir"/*
-          image_tag="$(awk '$1 == "image_tag" {print $2}' "$dir/manifest.txt")"
-          [[ "$image_tag" =~ ^wt-[a-f0-9]{12}$ ]]
           registry="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
           printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
           trap 'docker logout ghcr.io; rm -f "$diagnostic"' EXIT
+          # One image per platform under an architecture tag, then one
+          # multi-arch manifest under the version.
+          platforms="$(awk '$1 == "platform" {print $2}' "$dir/manifest.txt")"
+          [[ -n "$platforms" ]]
           for image in fyrr fyrr-reader; do
-            gunzip -c "$dir/$image-image-$version.tar.gz" | docker image load
-            docker image tag "$image:$image_tag" "$registry/$image:$version"
-            docker image push "$registry/$image:$version"
+            pushed=()
+            for platform in $platforms; do
+              case "$platform" in
+                linux-x86_64) arch=amd64 ;;
+                linux-aarch64) arch=arm64 ;;
+                *) echo "no image architecture for $platform" >&2; exit 1 ;;
+              esac
+              image_tag="$(awk '$1 == "image_tag" {print $2}' "$dir/manifest-$platform.txt")"
+              [[ "$image_tag" =~ ^wt-[a-f0-9]{12}$ ]]
+              gunzip -c "$dir/$image-image-$version-$platform.tar.gz" | docker image load
+              docker image tag "$image:$image_tag" "$registry/$image:$version-$arch"
+              docker image push "$registry/$image:$version-$arch"
+              pushed+=("$registry/$image:$version-$arch")
+            done
+            docker buildx imagetools create --tag "$registry/$image:$version" "${pushed[@]}"
           done
           gh release edit "$TAG" --draft=false

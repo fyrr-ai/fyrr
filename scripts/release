@@ -28,6 +28,9 @@
 # Output: DIR/fyrr-V/ with LICENSE and NOTICE, the full and reader-only
 # binaries, the SDK wheel, the generated schemas and MCP fixtures (with
 # LICENSE and NOTICE), the image archives, manifest.txt and SHA256SUMS.
+# Binaries and image archives carry the build host's platform (linux-x86_64
+# or linux-aarch64) in their names; scripts/release-combine joins the
+# directories of several platforms into one release.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT"
 
@@ -65,11 +68,14 @@ else
 fi
 BUILD_OS="$(if [[ -r /etc/os-release ]]; then (source /etc/os-release; printf '%s %s' "${ID:-unknown}" "${VERSION_ID:-unknown}"); else echo unavailable; fi)"
 BUILD_GLIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null || echo unavailable)"
-PLATFORM="linux-x86_64"
+[[ "$(uname -s)" == Linux ]] || die "release artifacts are built on Linux only"
+case "$(uname -m)" in
+  x86_64 | aarch64) PLATFORM="linux-$(uname -m)" ;;
+  *) die "release artifacts are built on x86-64 and aarch64 only" ;;
+esac
 DIR="$OUT/fyrr-$VERSION"
 LOGS="$ROOT/target/release-logs/$VERSION"
 
-[[ "$(uname -s)-$(uname -m)" == "Linux-x86_64" ]] || die "release artifacts are built on Linux x86-64 only"
 rm -rf "$DIR"
 mkdir -p "$DIR"
 mkdir -p "$LOGS"
@@ -157,9 +163,9 @@ if ((IMAGES)); then
   fi
   "$ROOT/scripts/images" "${image_source[@]}" >"$LOGS/images.log" 2>&1 || { tail -n 30 "$LOGS/images.log"; die "scripts/images failed (log: ${LOGS#"$ROOT"/}/images.log)"; }
   image_tag="$(worktree_image_tag)"
-  docker image save "fyrr:$image_tag" | gzip >"$DIR/fyrr-image-$VERSION.tar.gz"
-  docker image save "fyrr-reader:$image_tag" | gzip >"$DIR/fyrr-reader-image-$VERSION.tar.gz"
-  image_row="images  pass  fyrr-image-$VERSION.tar.gz fyrr-reader-image-$VERSION.tar.gz ($(cat "$ROOT/target/images/sizes.txt" | tr '\n' ';'))"
+  docker image save "fyrr:$image_tag" | gzip >"$DIR/fyrr-image-$VERSION-$PLATFORM.tar.gz"
+  docker image save "fyrr-reader:$image_tag" | gzip >"$DIR/fyrr-reader-image-$VERSION-$PLATFORM.tar.gz"
+  image_row="images  pass  fyrr-image-$VERSION-$PLATFORM.tar.gz fyrr-reader-image-$VERSION-$PLATFORM.tar.gz ($(cat "$ROOT/target/images/sizes.txt" | tr '\n' ';'))"
 fi
 
 # --- manifest and sums --------------------------------------------------------
