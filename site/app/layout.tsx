@@ -2,8 +2,8 @@ import type { ReactNode } from 'react';
 import { Provider } from '@/components/provider';
 import './global.css';
 import { GeistMono } from 'geist/font/mono';
-import { favicon } from '@/lib/site';
-export const metadata = { icons: { icon: favicon } };
+import { favicon, ogImage } from '@/lib/site';
+export const metadata = { icons: { icon: favicon }, openGraph: { siteName: 'fyrr', images: [ogImage] }, twitter: { card: 'summary_large_image', images: [ogImage.url] } };
 
 export default function Layout({ children }: { children: ReactNode }) {
   return <html lang="en" className={`dark ${GeistMono.variable}`} suppressHydrationWarning>

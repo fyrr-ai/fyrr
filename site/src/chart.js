@@ -23,6 +23,7 @@
     lighthouses: 7,
     rose: true,
     roseAt: [0.74, 0.34],   // compass rose centre, as fractions of the chart's width and height
+    roseSize: 0.07,         // compass rose radius, as a fraction of the chart's shorter side
     ships: 5,
     avoid: [],
     limits: null,
@@ -183,7 +184,7 @@
     /* 1. terrain ------------------------------------------------------------ */
     const elev = new Float32Array(N), sea = new Uint8Array(N);
     const scale = 1 / (Math.max(w, h) * 0.46);
-    const rose = { x: Math.round(w * opt.roseAt[0]), y: Math.round(h * opt.roseAt[1]), r: Math.min(w, h) * 0.07 };
+    const rose = { x: Math.round(w * opt.roseAt[0]), y: Math.round(h * opt.roseAt[1]), r: Math.min(w, h) * opt.roseSize };
 
     for (let y = 0; y < h; y++) {
       if (y && y % 2 === 0) { await pause(); if (stale()) return null; }

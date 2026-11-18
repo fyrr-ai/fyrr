@@ -2,13 +2,17 @@
 <html lang="en">
 <head>
 <!--HEAD-->
-<title>fyrr · GitHub banner</title>
+<title>fyrr · banner</title>
+<script>if (new URLSearchParams(location.search).has('og')) document.documentElement.className = 'og';</script>
 <meta name="robots" content="noindex">
 <style>
 /*BASE*/
-  /* The README banner: the sea chart edge to edge, the logo and claim at its centre. 1280×520 CSS px. */
-  html, body { width: 1280px; height: 520px; overflow: hidden; }
-  .banner { position: relative; width: 1280px; height: 520px; overflow: hidden; }
+  /* Two pictures from one chart. Default: the README banner, 1280×520, logo and line at the centre.
+     ?og: the link preview (og:image), 1200×630, the compass rose at the centre and the logo in a corner. */
+  html { --w: 1280px; --h: 520px; }
+  html.og { --w: 1200px; --h: 630px; }
+  html, body { width: var(--w); height: var(--h); overflow: hidden; }
+  .banner { position: relative; width: var(--w); height: var(--h); overflow: hidden; }
   .banner__map { position: absolute; inset: 0; }
   .banner__map canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; image-rendering: crisp-edges; }
   .banner__labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
@@ -18,6 +22,9 @@
   .banner__logo svg { display: block; height: 124px; width: auto; color: var(--fg); }
   .banner__line { margin-top: 10px; font-size: 16px; line-height: 34px; letter-spacing: .1em; text-transform: uppercase; color: var(--fg); }
   .banner__line span { padding: 7px 10px; background: var(--paper); }
+  .og .banner__shade, .og .banner__line { display: none; }
+  .og .banner__copy { left: 0; top: 0; transform: none; padding: 22px 30px 18px; background: var(--paper); }
+  .og .banner__logo svg { height: 92px; }
 </style>
 </head>
 <body>
@@ -34,8 +41,9 @@
   'use strict';
   await document.fonts.ready;
   var canvas = document.getElementById('map'), bounds = canvas.getBoundingClientRect(), copy = document.getElementById('copy').getBoundingClientRect();
+  var og = document.documentElement.className === 'og';
   var state = await createChart(canvas, {
-    seed: 1570, roseAt: [0.88, 0.3], labelHost: document.getElementById('map-labels'), ships: 6, lighthouses: 5,
+    seed: 1570, roseAt: og ? [0.5, 0.5] : [0.88, 0.3], roseSize: og ? 0.2 : 0.07, labelHost: document.getElementById('map-labels'), ships: 6, lighthouses: 5,
     limits: { lands: 4, isles: 6, capes: 1, bays: 2, ports: 2, seas: 2 },
     avoid: [[copy.left - bounds.left - 24, copy.top - bounds.top - 24, copy.width + 48, copy.height + 48]]
   });

@@ -6,6 +6,9 @@ const read = (name: string) => readFileSync(`src/${name}`, 'utf8');
 /** Charset, viewport and favicon. */
 export const head = read('head.html');
 export const favicon = head.match(/rel="icon" href="([^"]+)"/)![1];
+/** The link preview image (src/og.png, published as /og.png). */
+const meta = (property: string) => head.match(new RegExp(`property="${property}" content="([^"]+)"`))![1];
+export const ogImage = { url: meta('og:image'), width: Number(meta('og:image:width')), height: Number(meta('og:image:height')), alt: meta('og:image:alt') };
 
 /** The one header. `root` prefixes local links; `current` marks the active section. */
 export function renderHeader(root: string, current?: 'use-cases' | 'compare' | 'docs') {

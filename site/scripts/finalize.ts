@@ -81,6 +81,7 @@ await writeFile('.banner/index.html', (await read('banner.html')).replace('<!--H
   .replace('<!--LOGO-->', () => logo).replace('<!--SCRIPTS-->', () => (['chart.js', 'live.js'].map(name => `<script src="${name}"></script>`).join('\n'))));
 await cp('src/chart.js', '.banner/chart.js');
 await cp('src/live.js', '.banner/live.js');
+await cp('src/og.png', 'dist/og.png');
 await cp('src/_headers', 'dist/_headers');
 await cp('node_modules/geist/LICENSE.txt', 'dist/OFL-Geist.txt');
 const redirects = [
