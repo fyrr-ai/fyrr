@@ -15,7 +15,12 @@
 <style>
 /*BASE*/
 /*SECTIONS*/
-  .top { padding: 128px var(--gutter) 72px; }
+  .top { position: relative; overflow: hidden; padding: 128px var(--gutter) 72px; }
+  .top__map { position: absolute; inset: 0; opacity: .58; pointer-events: none; mask-image: linear-gradient(#000 58%, transparent 100%); }
+  .top__map canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+  .top .wrap { position: relative; }
+  .top__copy { width: fit-content; background: #000; box-shadow: 0 0 40px 30px #000; }   /* the chart stays behind the copy */
+  .chart-label { position: absolute; transform: translate(-50%, -50%); color: var(--fg); background: #000; padding: 2px 4px; font-size: 10px; letter-spacing: .08em; white-space: nowrap; }
   .top .wrap, .last .wrap { max-width: 1280px; }
   .lede { max-width: 46ch; margin-top: 24px; font-size: 20px; line-height: 30px; color: var(--fg-muted); text-wrap: balance; }
 
@@ -61,11 +66,12 @@
 <!--HEADER-->
 <main>
 <section class="top">
-  <div class="wrap">
+  <div class="top__map" aria-hidden="true"><canvas id="top-map"></canvas><div id="map-labels"></div></div>
+  <div class="wrap"><div class="top__copy">
     <p class="eyebrow">Use cases</p>
     <h1 class="title">Start on one laptop.<br>Grow to the whole company.</h1>
     <p class="lede">Search for AI agents over your company&rsquo;s knowledge. Everyone sees only what they may.</p>
-  </div>
+  </div></div>
 </section>
 <div class="steps">
   <section class="step" id="you">
@@ -123,6 +129,27 @@
   'use strict';
   /* each step gets its own water: one ship, three sailing together, a busy harbour, a dock */
   watchFog(document.querySelectorAll('.stage__fog'));
+  /* the same sea chart as the comparison, kept out from under the copy */
+  var map = document.getElementById('top-map'), labels = document.getElementById('map-labels'), copy = document.querySelector('.top__copy');
+  var motion = matchMedia('(prefers-reduced-motion: reduce)'), generation = 0, state = null, stop = null, visible = true, timer;
+  function animate() {
+    if (stop) { stop(); stop = null; }
+    if (state && visible && !motion.matches && !document.hidden) stop = startLive(state);
+  }
+  async function draw() {
+    var current = ++generation, bounds = map.getBoundingClientRect(), content = copy.getBoundingClientRect();
+    state = await createChart(map, {
+      seed: 2718, labelHost: labels, ships: innerWidth < 700 ? 2 : 4,
+      lighthouses: 4, limits: { lands: 2, isles: 3, capes: 1, bays: 1, ports: 1, seas: 1 },
+      avoid: [[0, 0, bounds.width, 56], [content.left - bounds.left - 20, content.top - bounds.top - 20, content.width + 40, content.height + 40]],   /* header bar and copy */
+      stale: function () { return current !== generation; }
+    });
+    if (current === generation) animate();
+  }
+  new IntersectionObserver(function (entries) { visible = entries[0].isIntersecting; animate(); }).observe(map);
+  new ResizeObserver(function () { clearTimeout(timer); timer = setTimeout(draw, 150); }).observe(map);
+  motion.addEventListener('change', animate);
+  document.addEventListener('visibilitychange', animate);
   Array.prototype.forEach.call(document.querySelectorAll('.step__sea'), function (c) {
     var kind = c.dataset.scene;
     if (kind === 'you') sailShips(c, 1, { stay: true, band: 0.4, wake: 6 });

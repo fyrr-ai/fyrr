@@ -77,7 +77,7 @@ await writeFile('dist/404.html', (await read('404.html')).replace('/*BASE*/', ba
   .replace('<!--HEADER-->', header.replaceAll('{ROOT}', '/')));
 await writeFile('dist/use-cases.html', (await read('use-cases.html')).replace('/*BASE*/', base).replace('/*SECTIONS*/', sections)
   .replace('<!--HEADER-->', header.replaceAll('{ROOT}', '/'))
-  .replace('<!--SCRIPTS-->', [scripts[3], scripts[4]].map(code => `<script>\n${code}</script>\n`).join('')));
+  .replace('<!--SCRIPTS-->', [scripts[1], scripts[2], scripts[3], scripts[4]].map(code => `<script>\n${code}</script>\n`).join('')));
 await cp('src/_headers', 'dist/_headers');
 await cp('node_modules/geist/LICENSE.txt', 'dist/OFL-Geist.txt');
 const redirects = [
