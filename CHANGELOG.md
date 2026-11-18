@@ -7,6 +7,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-18
+
 ### Changed
 
 - Local storage (`file://`) no longer serializes every write through one
@@ -80,3 +82,6 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 - Container images for both builds, generated JSON Schemas and contract
   fixtures, and `scripts/ci`, which checks the reference documentation
   against the binaries.
+
+[Unreleased]: https://github.com/fyrr-ai/fyrr/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/fyrr-ai/fyrr/releases/tag/v0.1.0
