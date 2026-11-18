@@ -382,20 +382,21 @@ try {
     assert.equal(await download.failure(), null);
     assert.deepEqual(JSON.parse(await readFile(await download.path(), 'utf8')), results, 'The complete downloaded file preserves every reviewed result');
     if (motion === 'reduce') {
+      // Site rule (src/site.js): ambient art keeps moving; reduced motion only drops entrance effects.
       await page.goto(`${base}/compare`);
       await page.evaluate(() => document.fonts.ready);
+      assert(await page.locator('.rv').first().evaluate(element => element.classList.contains('is-in')), 'Reduced motion reveals content without the entrance effect');
+      const changes = async (selector, label) => {
+        const before = await page.locator(selector).evaluate(canvas => canvas.toDataURL());
+        await page.waitForFunction(([selector, before]) => document.querySelector(selector).toDataURL() !== before, [selector, before], { timeout: 5000 })
+          .catch(() => assert.fail(`${label} keeps moving under reduced motion`));
+      };
       await page.waitForTimeout(1500);
-      const before = await page.locator('#compare-map').evaluate(canvas => canvas.toDataURL());
-      await page.waitForTimeout(300);
-      assert.equal(await page.locator('#compare-map').evaluate(canvas => canvas.toDataURL()), before, 'Reduced motion map is static');
+      await changes('#compare-map', 'Map');
       await page.locator('#lighthouse').scrollIntoViewIfNeeded();
       await page.waitForTimeout(100);
-      const lighthouse = await page.locator('#lighthouse').evaluate(canvas => canvas.toDataURL());
-      await page.waitForTimeout(1600);
-      assert.equal(await page.locator('#lighthouse').evaluate(canvas => canvas.toDataURL()), lighthouse, 'Reduced motion lighthouse is static');
-      const sea = await page.locator('#sea').evaluate(canvas => canvas.toDataURL());
-      await page.waitForTimeout(300);
-      assert.equal(await page.locator('#sea').evaluate(canvas => canvas.toDataURL()), sea, 'Reduced motion footer ships are static');
+      await changes('#lighthouse', 'Lighthouse');
+      await changes('#sea', 'Footer ships');
     }
     await page.goto(`${base}/`);
     assert(await page.getByRole('link', { name: 'Compare', exact: true }).isVisible(), 'Homepage links to Compare on mobile too');
@@ -417,7 +418,7 @@ try {
     assert.deepEqual(errors, [], `Browser errors at ${width}/${motion}`);
     await context.close();
     cases++;
-    console.log(`PASS ${width}px / ${motion}: routing, data, no overflow, settled bar widths within 1%, tabs and keyboard, filters, clipboard permalink roundtrip, details, screenshots${motion === 'reduce' ? ', static map and lighthouse' : ''}`);
+    console.log(`PASS ${width}px / ${motion}: routing, data, no overflow, settled bar widths within 1%, tabs and keyboard, filters, clipboard permalink roundtrip, details, screenshots${motion === 'reduce' ? ', moving map, lighthouse and ships without entrance effects' : ''}`);
   }
 } finally { await browser.close(); }
 console.log(`Comparison browser cases: ${cases} passed, 0 failed, 0 ignored. Screenshots: ${report}`);

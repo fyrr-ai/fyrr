@@ -1,7 +1,6 @@
-/* Reuse the homepage renderers, with a static first frame under reduced motion. */
+/* Reuse the homepage renderers; site.js owns the shared reveal, footer and motion rules. */
 (function () {
   'use strict';
-  document.documentElement.classList.add('js');
   var results = JSON.parse(document.getElementById('compare-data').textContent);
   var systemInputs = Array.from(document.querySelectorAll('[data-select-system]'));
   var metricInputs = Array.from(document.querySelectorAll('[data-select-metric]'));
@@ -217,7 +216,7 @@
       detailMetric.addEventListener('change', update); detailSearch.addEventListener('input', update);
       bindTabs(document.getElementById('notebook-body'));
       bindFolds(document.getElementById('notebook-body'), 'notebook');
-      document.querySelectorAll('#notebook-body .rv').forEach(function (panel) { if (motion.matches) panel.classList.add('is-in'); else reveal.observe(panel); });
+      reveal(document.querySelectorAll('#notebook-body .rv'));
       update();
       notebookReady = true; status.hidden = true; deepDetails.dataset.loadState = 'ready';
       if (current.hash.startsWith('#detail')) {
@@ -266,59 +265,7 @@
     catch (_) { input.select(); document.getElementById('copy-status').textContent = 'Select and copy the link from the adjacent field.'; }
   });
   update();
-  var motion = matchMedia('(prefers-reduced-motion: reduce)');
-  var reveal = new IntersectionObserver(function (entries) {
-    entries.forEach(function (entry) { if (entry.isIntersecting) { entry.target.classList.add('is-in'); reveal.unobserve(entry.target); } });
-  }, { threshold: 0 });
-  document.querySelectorAll('.rv').forEach(function (panel) { if (motion.matches) panel.classList.add('is-in'); else reveal.observe(panel); });
-  var canvas = document.getElementById('compare-map');
-  var labels = document.getElementById('map-labels');
-  var copy = document.querySelector('.hero-content');
-  var generation = 0, state = null, stopMap = null, stopLight = null;
-  var mapVisible = true, lightVisible = false;
-  function animate() {
-    if (stopMap) { stopMap(); stopMap = null; }
-    if (state && mapVisible && !motion.matches && !document.hidden) stopMap = startLive(state);
-  }
-  async function draw() {
-    var current = ++generation;
-    var bounds = canvas.getBoundingClientRect(), content = copy.getBoundingClientRect();
-    state = await createChart(canvas, {
-      seed: 1570, labelHost: labels, ships: innerWidth < 700 ? 2 : 4,
-      lighthouses: 4, limits: { lands: 2, isles: 3, capes: 1, bays: 1, ports: 1, seas: 1 },
-      avoid: [[content.left - bounds.left - 20, content.top - bounds.top - 20, content.width + 40, content.height + 40]],
-      stale: function () { return current !== generation; }
-    });
-    if (current === generation) animate();
-  }
-  var lighthouse = document.getElementById('lighthouse');
-  var footerSea = document.getElementById('sea'), seaVisible = false, stopSea = null;
-  function sea() {
-    if (stopSea) { stopSea(); stopSea = null; }
-    if (seaVisible && !document.hidden) stopSea = startSea(footerSea, !motion.matches);
-  }
-  function light() {
-    if (stopLight) { stopLight(); stopLight = null; }
-    if (!lightVisible || document.hidden) return;
-    stopLight = startLighthouse(lighthouse);
-    // startLighthouse schedules its first paint before this callback.
-    if (motion.matches) requestAnimationFrame(function () { if (stopLight) { stopLight(); stopLight = null; } });
-  }
-  var observer = new IntersectionObserver(function (entries) {
-    entries.forEach(function (entry) {
-      if (entry.target === canvas) { mapVisible = entry.isIntersecting; animate(); }
-      else if (entry.target === footerSea) { seaVisible = entry.isIntersecting; sea(); }
-      else { lightVisible = entry.isIntersecting; light(); }
-    });
-  });
-  observer.observe(canvas);
-  observer.observe(lighthouse);
-  observer.observe(footerSea);
-  new ResizeObserver(sea).observe(footerSea);
-  var timer;
-  new ResizeObserver(function () { clearTimeout(timer); timer = setTimeout(draw, 150); }).observe(canvas);
-  motion.addEventListener('change', function () { animate(); light(); sea(); });
-  document.addEventListener('visibilitychange', function () { animate(); light(); sea(); });
+  chartBehind(document.getElementById('compare-map'), document.getElementById('map-labels'), document.querySelector('.hero-content'), 1570);
   window.addEventListener('hashchange', function () { if (location.hash) openTarget(location.hash); });
   if (initial.hash) openTarget(initial.hash);
   if (deepDetails.open || provenance.open) loadNotebook();

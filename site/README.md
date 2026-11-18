@@ -183,9 +183,12 @@ or resolved configurations; use environment-variable names only.
 
 | Path | Content |
 | --- | --- |
-| `src/page.html`, `src/base.css`, `src/header.html` | Homepage, shared style and header |
-| `src/use-cases.html`, `src/sections.css` | Use-cases page; section and panel styles it shares with the homepage |
-| `src/footer.html` | Shared homepage and comparison footer |
+| `src/base.css` | The one shared stylesheet: tokens, font, header, sections, panels, buttons, call to action and footer. Pages add only their own layout |
+| `src/head.html`, `src/header.html`, `src/cta.html`, `src/footer.html` | Shared charset/viewport/favicon, header, call to action and footer markup |
+| `src/site.js` | Shared reveal, footer sea and lighthouse, and the chart behind a page's opening copy |
+| `lib/site.ts` | Assembles the shared pieces for the static pages (`scripts/finalize.ts`) and the docs layout |
+| `src/page.html` | Homepage |
+| `src/use-cases.html` | Use-cases page |
 | `src/compare.html`, `src/compare.css`, `src/compare.js` | Comparison template, chart skin and motion |
 | `data/compare-results.json`, `lib/compare.ts` | Results, boundary validation and data-driven charts |
 | `src/*.js` | Procedural map, fog, ships and homepage interactions |

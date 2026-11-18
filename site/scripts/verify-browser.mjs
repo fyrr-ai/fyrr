@@ -27,7 +27,7 @@ try {
     await page.waitForURL('**/docs/connectors');
     await page.goto(`${base}/docs/quickstart.html`);
     await page.waitForURL('**/docs/quickstart');
-    await page.locator('.header, .band__title').evaluateAll(elements => Promise.all(elements.flatMap(element => element.getAnimations().map(animation => animation.finished))));
+    await page.locator('.band__title').evaluateAll(elements => Promise.all(elements.flatMap(element => element.getAnimations().map(animation => animation.finished))));
     await page.screenshot({ path: `${process.env.REPORT_DIR ?? '../target'}/fumadocs-quickstart-${width}.png` });
     if (width >= 992) {
       const firstHeading = page.locator('.toc a').first();

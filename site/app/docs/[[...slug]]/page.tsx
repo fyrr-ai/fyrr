@@ -1,7 +1,7 @@
 import { source } from '@/lib/source';
 import { navigation } from '@/lib/navigation';
 import { getMDXComponents } from '@/components/mdx';
-import { Contents, Fog, Lighthouse, OnThisPage, Sidebar } from '@/components/docs-controls';
+import { Contents, Fog, OnThisPage, Sidebar } from '@/components/docs-controls';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 
@@ -43,6 +43,5 @@ export default async function Page({ params }: Props) {
         <p className="edit"><a href={`https://github.com/fyrr-ai/fyrr/blob/main/docs/${entry.file}`}>Edit this page on GitHub ↗</a></p>
       </main><OnThisPage toc={page.data.toc} />
     </div></Contents>
-    <footer className="site-footer"><Lighthouse /><p className="legal"><span>Apache-2.0</span><a href="https://github.com/fyrr-ai/fyrr/blob/main/SECURITY.md">Security</a><a href="https://github.com/fyrr-ai/fyrr/blob/main/CONTRIBUTING.md">Contributing</a><a href="https://github.com/fyrr-ai/fyrr/blob/main/CHANGELOG.md">Changelog</a></p></footer>
   </>;
 }

@@ -9,6 +9,7 @@ import { visit } from 'unist-util-visit';
 import subsetFont from 'subset-font';
 import { navigation } from '../lib/navigation';
 import { readResults, assertPublishable } from '../lib/compare';
+import { siteScripts } from '../lib/site';
 
 const comparison = await readResults();
 if (process.env.SITE_ALLOW_DRAFT_COMPARE !== '1') assertPublishable(comparison);
@@ -95,7 +96,7 @@ await rm('public', { recursive: true, force: true });
 await mkdir('public', { recursive: true });
 await writeFile('public/geist-sans-full.woff2', sans);
 await cp('src/fog.js', 'public/fog.js');
-await cp('src/lighthouse.js', 'public/lighthouse.js');
+await writeFile('public/site.js', siteScripts.join('\n'));
 await mkdir('public/docs', { recursive: true });
 await cp(path.join(repo, 'docs/assets'), 'public/docs/assets', { recursive: true });
 console.log(`Prepared ${pages.length} Fumadocs pages from docs/`);

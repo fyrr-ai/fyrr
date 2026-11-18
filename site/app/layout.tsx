@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Provider } from '@/components/provider';
 import './global.css';
 import { GeistMono } from 'geist/font/mono';
-import { favicon } from '@/lib/brand';
+import { favicon } from '@/lib/site';
 export const metadata = { icons: { icon: favicon } };
 
 export default function Layout({ children }: { children: ReactNode }) {

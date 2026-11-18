@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react';
-import { readFileSync } from 'node:fs';
+import Script from 'next/script';
+import { footer, renderHeader } from '@/lib/site';
 
-const header = readFileSync('src/header.html', 'utf8').replaceAll('{ROOT}', '/');
+const header = renderHeader('/', 'docs');
 export default function Layout({ children }: { children: ReactNode }) {
-  return <><div dangerouslySetInnerHTML={{ __html: header }} />{children}</>;
+  return <><div dangerouslySetInnerHTML={{ __html: header }} />{children}<div dangerouslySetInnerHTML={{ __html: footer }} />
+    <Script src="/site.js" strategy="lazyOnload" /></>;
 }

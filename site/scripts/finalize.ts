@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { gzipSync, brotliCompressSync, constants } from 'node:zlib';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { readResults, verifyEvidenceArchive, assertPublishable, escape, headlineVerdict, renderScoreboard, renderStories, renderSupportingDetails, renderFeatures, renderSections, renderProducts, renderMethodology, renderControls, renderDetailView, clientResults, renderProvenance } from '../lib/compare';
+import { head, renderHeader, renderEnd, footer, siteScripts } from '../lib/site';
 
 const comparison = await readResults();
 if (process.env.SITE_ALLOW_DRAFT_COMPARE !== '1') assertPublishable(comparison);
@@ -10,23 +11,26 @@ await verifyEvidenceArchive(comparison);
 await rm('dist', { recursive: true, force: true });
 await cp('out', 'dist', { recursive: true });
 const read = (name: string) => readFile(`src/${name}`, 'utf8');
-const base = await read('base.css');
-const sections = await read('sections.css');
-const header = await read('header.html');
-const footer = await read('footer.html');
-const scripts = await Promise.all(['lighthouse.js', 'chart.js', 'live.js', 'fog.js', 'ships.js', 'sea.js', 'page.js'].map(read));
-const home = (await read('page.html')).replace('/*BASE*/', base).replace('/*SECTIONS*/', sections)
-  .replace('<!--HEADER-->', header.replaceAll('{ROOT}', ''))
-  .replace('<!--FOOTER-->', footer)
-  .replace('<!--SCRIPTS-->', scripts.map(code => `<script>\n${code}</script>\n`).join(''));
-await writeFile('dist/index.html', home);
+// Every static page gets the same head, style, fonts, header, footer and shared scripts.
+const style = await read('base.css') + await readFile('.content/geist-sans.css', 'utf8');
+async function page(template: string, root: string, current: Parameters<typeof renderHeader>[1], ending: 'end' | 'footer', scripts: string[]) {
+  let html = await read(template);
+  const parts: [string, string][] = [['<!--HEAD-->', head], ['/*BASE*/', style], ['<!--HEADER-->', renderHeader(root, current)],
+    [ending === 'end' ? '<!--END-->' : '<!--FOOTER-->', ending === 'end' ? renderEnd(root) : footer],
+    ['<!--SCRIPTS-->', [...siteScripts, ...await Promise.all(scripts.map(read))].map(code => `<script>\n${code}</script>\n`).join('')]];
+  for (const [marker, value] of parts) {
+    if (html.split(marker).length !== 2) throw new Error(`${template} needs exactly one ${marker}`);
+    html = html.replace(marker, () => value);
+  }
+  return html;
+}
+await writeFile('dist/index.html', await page('page.html', '', undefined, 'end', ['chart.js', 'live.js', 'fog.js', 'ships.js', 'page.js']));
 await mkdir('dist/compare', { recursive: true });
 if (comparison.benchmark.evidence_archive) {
   const archive = comparison.benchmark.evidence_archive as { url: string };
   await mkdir('dist/compare/evidence', { recursive: true });
   await cp(`data/evidence/${archive.url.split('/').at(-1)}`, `dist${archive.url}`);
 }
-const compareScripts = await Promise.all(['lighthouse.js', 'chart.js', 'live.js', 'sea.js', 'compare.js'].map(read));
 const notebook = JSON.stringify({ version: 1,
   html: renderDetailView(comparison) + `<div id="results">${renderSections(comparison, 'detail-')}</div>`,
   provenance: renderProvenance(comparison), systems: clientResults(comparison).systems,
@@ -37,11 +41,8 @@ const notebookGzip = gzipSync(notebook, { level: 9 });
 await writeFile(`dist${notebookPath}`, notebook);
 const initialData = { ...clientResults(comparison, true), notebook: { url: notebookPath } };
 const measuredReview = !comparison.synthetic_design_preview && comparison.systems.some(system => Object.values(system.metrics).some(metric => metric.status === 'measured'));
-const compare = (await read('compare.html')).replace('/*BASE*/', base)
-  .replace('<!--FAVICON-->', home.match(/<link rel="icon"[^>]+>/)![0])
+const compare = (await page('compare.html', '/', 'compare', 'end', ['chart.js', 'live.js', 'compare.js']))
   .replace('/*COMPARE*/', await read('compare.css'))
-  .replace('<!--HEADER-->', header.replaceAll('{ROOT}', '/').replace('href="/compare"', 'href="/compare" aria-current="page"'))
-  .replace('<!--FOOTER-->', footer.replace(/href="docs\//g, 'href="/docs/'))
   .replace('<!--NOTICE-->', comparison.draft ? `<aside class="draft-notice" aria-label="Data status"><div class="wrap"><span>${measuredReview ? 'PRELIMINARY MEASURED RESULTS · Owner review pending' : 'PRELIMINARY / PLACEHOLDER DATA · EnterpriseRAG results pending'}</span><a href="#methodology">Read the method ↗</a></div></aside>` : '')
   .replace('<!--ROBOTS-->', comparison.draft ? '<meta name="robots" content="noindex,nofollow">' : '')
   .replace('<!--VERDICT-->', escape(headlineVerdict(comparison)))
@@ -57,8 +58,7 @@ const compare = (await read('compare.html')).replace('/*BASE*/', base)
   .replace('<!--DETAIL-->', '<div id="notebook-status" role="status"><p id="notebook-message" class="note">The detailed notebook loads when opened.</p><button type="button" class="btn" id="notebook-retry" hidden>Retry loading</button><noscript><p><a href="/compare/results.json">Download the full results JSON</a> to inspect all measurements.</p></noscript></div><div id="notebook-body"></div>')
   .replace('<!--DATA-->', `<script type="application/json" id="compare-data">${JSON.stringify(initialData).replaceAll('<', '\\u003c')}</script>`)
   .replace('<!--PRODUCTS-->', renderProducts(comparison))
-  .replace('<!--METHODOLOGY-->', renderMethodology(comparison, true))
-  .replace('<!--SCRIPTS-->', compareScripts.map(code => `<script>\n${code}</script>\n`).join(''));
+  .replace('<!--METHODOLOGY-->', renderMethodology(comparison, true));
 const bytes = Buffer.from(compare);
 const htmlGzip = gzipSync(bytes, { level: 9 });
 const htmlBrotli = brotliCompressSync(bytes, { params: { [constants.BROTLI_PARAM_QUALITY]: 5 } });
@@ -73,11 +73,8 @@ for (const system of comparison.systems) {
   run.details = run.details?.filter(row => (row.variant ?? 'default') === (system.variant ?? 'default'));
   await writeFile(`dist/compare/runs/${system.id}--${system.variant ?? 'default'}.json`, JSON.stringify(run, null, 2) + '\n');
 }
-await writeFile('dist/404.html', (await read('404.html')).replace('/*BASE*/', base)
-  .replace('<!--HEADER-->', header.replaceAll('{ROOT}', '/')));
-await writeFile('dist/use-cases.html', (await read('use-cases.html')).replace('/*BASE*/', base).replace('/*SECTIONS*/', sections)
-  .replace('<!--HEADER-->', header.replaceAll('{ROOT}', '/'))
-  .replace('<!--SCRIPTS-->', [scripts[1], scripts[2], scripts[3], scripts[4]].map(code => `<script>\n${code}</script>\n`).join('')));
+await writeFile('dist/404.html', await page('404.html', '/', undefined, 'footer', []));
+await writeFile('dist/use-cases.html', await page('use-cases.html', '/', 'use-cases', 'end', ['chart.js', 'live.js', 'fog.js', 'ships.js']));
 await cp('src/_headers', 'dist/_headers');
 await cp('node_modules/geist/LICENSE.txt', 'dist/OFL-Geist.txt');
 const redirects = [

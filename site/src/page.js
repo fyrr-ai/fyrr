@@ -1,10 +1,7 @@
 /* page.js — wires the hero chart to the page, and runs the few things below it that move. */
 (function () {
   'use strict';
-  document.documentElement.classList.add('js');
-  /* The chart, the fog and the ships always move: they are the design. Only the page's own
-     entrance effects (fades, slides) respect a reduced-motion setting. */
-  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  /* Shared reveal, footer and motion rules live in site.js. */
 
   /* ---------- charts: the hero, and the one the page ends on ---------- */
   function limitsFor(width) {
@@ -80,44 +77,9 @@
     setTimeout(startHero, 1200);
   } else requestAnimationFrame(startHero);
 
-  /* ---------- loops run only while their element is on screen ---------- */
-  var lighthouseEl = document.getElementById('lighthouse'), stopLighthouse = null;
-  var watch = new IntersectionObserver(function (entries) {
-    entries.forEach(function (e) {
-      if (e.target === wrapper) { if (heroReady) hero.show(e.isIntersecting); else hero.visible = e.isIntersecting; }
-      else if (e.target === lighthouseEl) {
-        if (e.isIntersecting && !stopLighthouse) stopLighthouse = startLighthouse(lighthouseEl);
-        if (!e.isIntersecting && stopLighthouse) { stopLighthouse(); stopLighthouse = null; }
-      }
-    });
-  }, { rootMargin: '100px 0px' });
-  watch.observe(wrapper);
-  watch.observe(lighthouseEl);
+  /* ---------- the hero chart runs only while on screen ---------- */
+  new IntersectionObserver(function (entries) {
+    if (heroReady) hero.show(entries[0].isIntersecting); else hero.visible = entries[0].isIntersecting;
+  }, { rootMargin: '100px 0px' }).observe(wrapper);
   watchFog(document.querySelectorAll('.stage__fog'));
-
-  /* ---------- a few ships on the open water at the end of the page ---------- */
-  startSea(document.getElementById('sea'));
-
-  /* ---------- numbers count up when they come into view ---------- */
-  function countUp(el) {
-    var to = Number(el.dataset.count), dec = Number(el.dataset.dec || 0), suffix = el.dataset.suffix || '', t0 = performance.now();
-    (function step(now) {
-      var t = Math.min(1, (now - t0) / 1100), f = 1 - Math.pow(1 - t, 3);
-      el.textContent = (to * f).toFixed(dec) + suffix;
-      if (t < 1) requestAnimationFrame(step);
-    })(t0);
-  }
-
-  /* ---------- reveal on scroll ---------- */
-  var rv = document.querySelectorAll('.rv');
-  if (reduce || !('IntersectionObserver' in window)) {
-    Array.prototype.forEach.call(rv, function (el) { el.classList.add('is-in'); });
-  } else {
-    var io = new IntersectionObserver(function (es) {
-      es.forEach(function (e) { if (!e.isIntersecting) return;
-        e.target.classList.add('is-in'); io.unobserve(e.target);
-        Array.prototype.forEach.call(e.target.querySelectorAll('[data-count]'), countUp); });
-    }, { threshold: 0.12 });
-    Array.prototype.forEach.call(rv, function (el) { io.observe(el); });
-  }
 })();

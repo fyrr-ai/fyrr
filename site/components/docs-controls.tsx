@@ -31,18 +31,3 @@ export function Fog({ seed }: { seed: number }) {
   return <><canvas ref={canvas} className="band__fog" data-seed={seed} aria-hidden="true" />
     <Script src="/fog.js" onReady={() => setReady(true)} /></>;
 }
-export function Lighthouse() {
-  const canvas = useRef<HTMLCanvasElement>(null);
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    if (!ready || !canvas.current) return;
-    let stop: (() => void) | undefined;
-    const observer = new IntersectionObserver(([entry]) => {
-      stop?.();
-      stop = entry.isIntersecting ? (window as unknown as { startLighthouse: (canvas: HTMLCanvasElement) => () => void }).startLighthouse(canvas.current!) : undefined;
-    });
-    observer.observe(canvas.current);
-    return () => { observer.disconnect(); stop?.(); };
-  }, [ready]);
-  return <><canvas ref={canvas} aria-hidden="true" /><Script src="/lighthouse.js" strategy="lazyOnload" onReady={() => setReady(true)} /></>;
-}
