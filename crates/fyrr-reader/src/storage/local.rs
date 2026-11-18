@@ -1141,7 +1141,7 @@ fn sync_children(directory: &Directory, skip: &str) -> std::io::Result<()> {
     for entry in rustix::fs::Dir::read_from(&directory.file)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if matches!(name.as_str(), "." | ".." | _ if name == skip) {
+        if matches!(name.as_str(), "." | "..") || name == skip {
             continue;
         }
         match rustix::fs::openat(
