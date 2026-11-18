@@ -13,11 +13,15 @@
 # images then compile their own binaries in the pinned builder stage, and
 # manifest.txt records which happened as `image_binaries`.
 #
-#   scripts/release [--version V] [--out DIR] [--no-images] [--prebuilt-images]
+#   scripts/release [--version V] [--out DIR] [--binaries DIR] [--no-images]
+#                   [--prebuilt-images]
 #
 # --version V        artifact version (default: `git describe --tags --always`;
 #                    a dirty tree is refused)
 # --out DIR          output directory (default: target/release-artifacts)
+# --binaries DIR     assemble from DIR/fyrr and DIR/fyrr-reader instead of
+#                    compiling, for binaries built elsewhere from this commit
+#                    (for example in docker/Dockerfile's builder stage)
 # --no-images        skip the images (their row in manifest.txt is then n/e)
 # --prebuilt-images  fail instead of compiling a second time for the images
 #
@@ -31,13 +35,19 @@ VERSION=""
 OUT="$ROOT/target/release-artifacts"
 IMAGES=1
 PREBUILT_ONLY=0
+SUPPLIED=""
 while (($#)); do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
     --out) OUT="$(realpath -m -- "$2")"; shift 2 ;;
+    --binaries)
+      [[ -n "${2:-}" ]] || die "--binaries requires a directory"
+      SUPPLIED="$(realpath -- "$2")"
+      shift 2
+      ;;
     --no-images) IMAGES=0; shift ;;
     --prebuilt-images) PREBUILT_ONLY=1; shift ;;
-    *) die "unknown argument $1 (use --version V, --out DIR, --no-images, --prebuilt-images)" ;;
+    *) die "unknown argument $1 (use --version V, --out DIR, --binaries DIR, --no-images, --prebuilt-images)" ;;
   esac
 done
 
@@ -92,7 +102,19 @@ binary_runtime() {
 # --- binaries (the shipping release profile) ------------------
 BINARIES="$ROOT/target/release-binaries"
 rm -rf "$BINARIES"
-release_binaries "$BINARIES"
+if [[ -n "$SUPPLIED" ]]; then
+  log "using the binaries in $SUPPLIED"
+  mkdir -p "$BINARIES"
+  for binary in fyrr fyrr-reader; do
+    [[ -f "$SUPPLIED/$binary" ]] || die "$SUPPLIED/$binary is missing"
+    install -m 0755 "$SUPPLIED/$binary" "$BINARIES/$binary"
+    if LC_ALL=C grep -aFq 'FYRR_TEST_CLOCK_FILE' "$BINARIES/$binary"; then
+      die "shipping binary contains the test clock hook"
+    fi
+  done
+else
+  release_binaries "$BINARIES"
+fi
 install -m 0755 "$BINARIES/fyrr" "$DIR/fyrr-$VERSION-$PLATFORM"
 install -m 0755 "$BINARIES/fyrr-reader" "$DIR/fyrr-reader-$VERSION-$PLATFORM"
 full_runtime="$(binary_runtime "$DIR/fyrr-$VERSION-$PLATFORM")" || die "cannot inspect full binary runtime"
@@ -145,10 +167,16 @@ fi
   echo "fyrr $VERSION"
   echo "commit $COMMIT"
   echo "platform $PLATFORM"
-  echo "binary_build host"
-  echo "working_tree $TREE_STATE"
-  echo "build_os $BUILD_OS"
-  echo "build_libc $BUILD_GLIBC"
+  # The build host's facts describe only binaries this run compiled.
+  if [[ -n "$SUPPLIED" ]]; then
+    echo "binary_build supplied"
+    echo "working_tree $TREE_STATE"
+  else
+    echo "binary_build host"
+    echo "working_tree $TREE_STATE"
+    echo "build_os $BUILD_OS"
+    echo "build_libc $BUILD_GLIBC"
+  fi
   echo "$full_runtime"
   echo "$reader_runtime"
   echo "built_at $(date -u +%FT%TZ)"

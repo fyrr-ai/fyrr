@@ -209,6 +209,11 @@ requirements are recorded in the same manifest (see
 A local `scripts/release` on a host whose glibc is newer than the runtime
 images' cannot package its binaries: the images then compile their own in
 the builder stage (`image_binaries builder`), a second fat-LTO build.
+To release from such a host with one build, compile in the builder stage
+(`docker build --file docker/Dockerfile --target builder`), copy `/out/fyrr`
+and `/out/fyrr-reader` out of that image and pass their directory as
+`scripts/release --binaries DIR`; the manifest then records
+`binary_build supplied`.
 After downloading the artifacts, verify and load the full image with:
 
 ```sh
