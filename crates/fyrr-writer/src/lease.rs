@@ -223,14 +223,18 @@ impl LeaseGuard {
 
     /// Renewals and publication share one CAS token, serialized only in this holder.
     pub async fn publish(&self, mut head: ServingHead) -> Result<()> {
+        // The head makes its manifest, policy and identity objects, the
+        // envelopes and rejections they record, and everything those were
+        // derived from reachable. Other processes wrote some of them. The
+        // caller observed them before this call, so flush first: renewals
+        // need the state below, and a flush on a busy disk outlasts a lease.
+        self.observed.persist().await?;
+        #[cfg(test)]
+        tests::flushed().await;
         let mut state = self.state.lock().await;
         self.live(&state)?;
         head.lease = state.head.lease.clone();
         head.schema_version = fyrr_core::publication::PUBLICATION_CONTRACT_VERSION;
-        // The head makes its manifest, policy and identity objects, the
-        // envelopes and rejections they record, and everything those were
-        // derived from reachable. Other processes wrote some of them.
-        self.observed.persist().await?;
         self.write(&mut state, head, HeadWriteStage::Publish).await
     }
 
