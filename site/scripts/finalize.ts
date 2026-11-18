@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { gzipSync, brotliCompressSync, constants } from 'node:zlib';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { readResults, verifyEvidenceArchive, assertPublishable, escape, headlineVerdict, renderScoreboard, renderStories, renderSupportingDetails, renderFeatures, renderSections, renderProducts, renderMethodology, renderControls, renderDetailView, clientResults, renderProvenance } from '../lib/compare';
-import { head, renderHeader, renderEnd, footer, siteScripts } from '../lib/site';
+import { head, renderHeader, renderEnd, footer, siteScripts, logo } from '../lib/site';
 
 const comparison = await readResults();
 if (process.env.SITE_ALLOW_DRAFT_COMPARE !== '1') assertPublishable(comparison);
@@ -75,6 +75,12 @@ for (const system of comparison.systems) {
 }
 await writeFile('dist/404.html', await page('404.html', '/', undefined, 'footer', []));
 await writeFile('dist/use-cases.html', await page('use-cases.html', '/', 'use-cases', 'end', ['chart.js', 'live.js', 'fog.js', 'ships.js']));
+// The README banner is not part of the site: scripts/render-banner.mjs photographs .banner/index.html.
+await mkdir('.banner', { recursive: true });
+await writeFile('.banner/index.html', (await read('banner.html')).replace('<!--HEAD-->', () => head).replace('/*BASE*/', () => style)
+  .replace('<!--LOGO-->', () => logo).replace('<!--SCRIPTS-->', () => (['chart.js', 'live.js'].map(name => `<script src="${name}"></script>`).join('\n'))));
+await cp('src/chart.js', '.banner/chart.js');
+await cp('src/live.js', '.banner/live.js');
 await cp('src/_headers', 'dist/_headers');
 await cp('node_modules/geist/LICENSE.txt', 'dist/OFL-Geist.txt');
 const redirects = [

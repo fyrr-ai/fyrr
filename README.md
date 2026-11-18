@@ -1,8 +1,6 @@
 <p align="center">
-  <a href="https://fyrr.dev"><img src="docs/assets/banner.png" alt="fyrr: a dithered sea chart of knowledge islands named after the apps it indexes. Navigate your islands of knowledge." width="100%"></a>
+  <a href="https://fyrr.dev"><img src="docs/assets/banner.png" alt="fyrr: serverless context layer for AI agents. No database. Just a bucket. The logo over a dithered sea chart of knowledge islands named after the apps it indexes." width="100%"></a>
 </p>
-
-<h2 align="center">Ask the whole company.<br>Without asking the whole company.</h2>
 
 <p align="center"><b>The serverless, permission-aware context layer for AI agents. No database. Just a bucket.</b></p>
 

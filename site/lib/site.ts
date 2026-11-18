@@ -15,6 +15,9 @@ export function renderHeader(root: string, current?: 'use-cases' | 'compare' | '
   return html.replaceAll('{ROOT}', root);
 }
 
+/** The logo mark, as drawn in the header. */
+export const logo = read('header.html').match(/<svg[\s\S]*?<\/svg>/)![0];
+
 /** Lighthouse and legal links; site.js starts the lighthouse. */
 export const footer = read('footer.html');
 
