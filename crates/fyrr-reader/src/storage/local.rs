@@ -1351,6 +1351,10 @@ impl ObjectStore for LocalStore {
         let prefix = prefix.unwrap_or(&self.root);
         let mut result = self.inner.list_with_delimiter(Some(prefix)).await?;
         result.objects = self.current(result.objects)?;
+        // The staging directory is no object prefix, like the lock file.
+        result
+            .common_prefixes
+            .retain(|prefix| !self.is_internal(prefix));
         for prefix in &result.common_prefixes {
             let names = self.names(prefix)?;
             match self.chain(&names, false) {

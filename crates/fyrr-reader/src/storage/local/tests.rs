@@ -578,6 +578,18 @@ async fn local_store_root_is_private_and_behaves_like_s3() {
             .collect::<Vec<_>>(),
         ["namespaces/ns/a", "namespaces/ns/b"]
     );
+    // The root lists like a bucket: the lock file and the staging directory
+    // are neither objects nor prefixes.
+    assert!(root.join(STAGES).is_dir() && root.join(LOCK).is_file());
+    let top = store.list_with_delimiter(None).await.unwrap();
+    assert!(top.objects.is_empty());
+    assert_eq!(
+        top.common_prefixes
+            .iter()
+            .map(|prefix| crate::storage::relative_path(prefix, store.root()))
+            .collect::<Vec<_>>(),
+        ["namespaces"]
+    );
     let empty: Vec<_> = store
         .list(Some(&at(&store, "namespaces/other")))
         .try_collect()
