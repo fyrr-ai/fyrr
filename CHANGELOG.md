@@ -7,19 +7,6 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## [Unreleased]
 
-### Changed
-
-- Update Rust dependencies, including Arrow 58.4.1, while retaining Lance
-  14.0.3 and its Arrow 58, DataFusion 54 and PyO3 0.28 interfaces.
-- Update the connector SDK and example provider's development Ruff to 0.17.5.
-- Update the website to React 19.3.1, TypeScript 7.0.2 and Node types
-  26.6.6; remove the compiler's obsolete `baseUrl` option.
-
-### Fixed
-
-- Include the reader-memory investigation in the website's documentation
-  navigation so the static export can render every document.
-
 ## [0.1.0] - 2026-11-18
 
 ### Changed
