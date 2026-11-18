@@ -30,7 +30,8 @@ fn command(config: &Path, args: &[&str], log: &Path, worker: bool) {
 ///   up to the storage root at some earlier point.
 /// - A delete is acknowledged only after its directory was synced after the
 ///   unlink. A cleanup batch owes that sync when the batch is acknowledged.
-/// - Nothing is synced while an object's lock is held.
+/// - Nothing is synced while an object's lock is held, including the
+///   staging lock a published inode carries until its writer drops it.
 /// - A control object lives in its namespace directory or one directory
 ///   below it, which is as far as the flush of observed objects reaches.
 fn acknowledged_puts(log: &Path, storage: &Path) -> BTreeMap<String, usize> {
@@ -58,8 +59,12 @@ fn acknowledged_puts(log: &Path, storage: &Path) -> BTreeMap<String, usize> {
             event["event"].as_str().unwrap(),
             event["operation"].as_str(),
         ) {
-            ("lock", _) => assert!(held.insert(thread), "one lock per mutation"),
-            ("unlock", _) => assert!(held.remove(&thread), "unlock without lock"),
+            ("lock" | "stage-lock", _) => {
+                assert!(held.insert(thread), "one lock at a time per mutation");
+            }
+            ("unlock" | "stage-unlock", _) => {
+                assert!(held.remove(&thread), "unlock without lock");
+            }
             ("sync", _) if held.contains(&thread) => {
                 panic!("synced under an object's lock: {}", path.display())
             }

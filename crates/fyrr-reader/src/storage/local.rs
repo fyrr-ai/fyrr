@@ -660,7 +660,13 @@ impl LocalStore {
         };
         // The published inode still carries this writer's staging lock, which
         // is now a lock on the object. Release it before anything slow.
+        #[cfg(feature = "test-store")]
+        super::test_store::sync::stage_locked(&place.path).map_err(io)?;
         stage.file.unlock().map_err(io)?;
+        #[cfg(feature = "test-store")]
+        super::test_store::sync::stage_unlocked(&place.path).map_err(io)?;
+        #[cfg(test)]
+        tests::pause("published");
         parent.sync().map_err(io)?;
         if created {
             // Another writer or Lance may have created these directory names
@@ -1101,6 +1107,8 @@ impl LocalStore {
         if !removed {
             return Ok(());
         }
+        #[cfg(test)]
+        tests::pause("removed");
         #[cfg(feature = "test-store")]
         super::test_store::sync::unlinked(&place.path).map_err(io)?;
         if let Some(directories) = &self.cleanup_directories {
