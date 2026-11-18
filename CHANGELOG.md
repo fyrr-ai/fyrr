@@ -46,6 +46,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- A controlled reader-memory investigation and offline replay driver. Four
+  fresh-process runs at 2304/1536/1536/2304 MiB returned identical ranks and scores
+  for all 250 queries; the report retains the original Lambda uncertainty.
+
 - Opt-in ObjectStore boundary diagnostics in a private JSONL file, including
   hashed keys, fixed error codes, latency, and observed S3 HTTP status/retries.
   Native transport facts that the boundary cannot observe remain null.
