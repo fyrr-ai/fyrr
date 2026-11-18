@@ -1128,6 +1128,10 @@ pub fn parse(text: &str) -> Result<LoadedConfig, Issue> {
 /// Fills defaults that follow from other keys of the same file; explicit
 /// values always win. Every derived URL comes from operator configuration.
 fn derive_defaults(config: &mut Config, raw: &toml::Table) {
+    #[cfg(target_os = "macos")]
+    if let Some(uri) = storage::macos_private(&config.storage.uri) {
+        config.storage.uri = uri;
+    }
     let identity = &mut config.identity;
     if let Some(oidc) = &mut identity.oidc {
         if oidc.issuer.is_empty()

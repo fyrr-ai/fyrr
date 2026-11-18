@@ -1,11 +1,14 @@
 //! Bounded worker result channel, process-group cleanup and memory limits.
 //! Provider stdout and stderr are discarded at the OS descriptor boundary.
+//!
+//! macOS is a development platform with weaker worker isolation (see
+//! [`platform`]): the kernel does not enforce the worker's memory limit, and
+//! a provider process that leaves the worker's process group outlives it.
 
 use crate::WriterError;
 use std::collections::BTreeSet;
 use std::io::{self, Read, Write};
-use std::os::linux::net::SocketAddrExt;
-use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -14,10 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use fyrr_core::connector::SyncKind;
-use rustix::process::{
-    Pid, Resource, Rlimit, Signal, WaitOptions, kill_process, kill_process_group,
-    set_child_subreaper, setrlimit, waitpid,
-};
+use rustix::process::{Pid, Resource, Rlimit, Signal, kill_process_group, setrlimit};
 use serde::{Deserialize, Serialize};
 
 pub const POLL: Duration = Duration::from_millis(20);
@@ -130,6 +130,10 @@ fn python_home(command: &mut Command) {
         return;
     }
     let Some(venv) = std::env::var_os("VIRTUAL_ENV") else {
+        #[cfg(target_os = "macos")]
+        if let Some(prefix) = platform::bundled_python() {
+            command.env("PYTHONHOME", prefix);
+        }
         return;
     };
     let Ok(text) = std::fs::read_to_string(Path::new(&venv).join("pyvenv.cfg")) else {
@@ -154,13 +158,13 @@ pub fn initialize() -> io::Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MEMORY);
-    setrlimit(
+    platform::limit_memory(setrlimit(
         Resource::Data,
         Rlimit {
             current: Some(memory),
             maximum: Some(memory),
         },
-    )?;
+    ))?;
     setrlimit(
         Resource::Core,
         Rlimit {
@@ -178,9 +182,136 @@ pub fn send(bytes: &[u8]) -> io::Result<()> {
         return Err(io::ErrorKind::InvalidData.into());
     }
     let name = std::env::var("FYRR_WORKER_RESULT").map_err(|_| io::ErrorKind::NotConnected)?;
-    let address = SocketAddr::from_abstract_name(name)?;
-    let mut stream = UnixStream::connect_addr(&address)?;
+    let mut stream = platform::connect(&name)?;
     stream.write_all(bytes)
+}
+
+#[cfg(not(target_os = "macos"))]
+mod platform {
+    use super::*;
+    use rustix::process::{WaitOptions, kill_process, set_child_subreaper, waitpid};
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::SocketAddr;
+
+    /// The listening end of a result socket; nothing to remove afterwards.
+    #[derive(Debug)]
+    pub(super) struct Endpoint;
+
+    pub(super) fn listen(name: &str) -> io::Result<(UnixListener, String, Endpoint)> {
+        let listener = UnixListener::bind_addr(&SocketAddr::from_abstract_name(name)?)?;
+        Ok((listener, name.to_owned(), Endpoint))
+    }
+
+    pub(super) fn connect(name: &str) -> io::Result<UnixStream> {
+        UnixStream::connect_addr(&SocketAddr::from_abstract_name(name)?)
+    }
+
+    pub(super) fn limit_memory(set: rustix::io::Result<()>) -> io::Result<()> {
+        Ok(set?)
+    }
+
+    /// Descendants that outlive their parent are adopted by this process.
+    pub(super) fn adopt_orphans() -> io::Result<()> {
+        Ok(set_child_subreaper(Some(Pid::INIT))?)
+    }
+
+    /// Kills every child of this process that is not a registered worker and
+    /// returns how many there were.
+    pub(super) fn kill_orphans(live: &BTreeSet<u32>) -> io::Result<usize> {
+        let mut orphans = BTreeSet::new();
+        for task in std::fs::read_dir("/proc/self/task")? {
+            let path = task?.path().join("children");
+            let text = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            for pid in text.split_whitespace() {
+                let pid: u32 = pid.parse().map_err(|_| io::ErrorKind::InvalidData)?;
+                if !live.contains(&pid) {
+                    orphans.insert(pid);
+                }
+            }
+        }
+        for pid in &orphans {
+            if let Some(pid) = Pid::from_raw(*pid as i32) {
+                let _ = kill_process(pid, Signal::KILL);
+                match waitpid(Some(pid), WaitOptions::NOHANG) {
+                    Ok(_) | Err(rustix::io::Errno::CHILD) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        Ok(orphans.len())
+    }
+}
+
+/// macOS has no abstract sockets, no child subreaper and no procfs, and its
+/// kernel does not enforce `RLIMIT_DATA`. The result socket lives in a
+/// private directory. Cleanup kills the worker's process group only: a
+/// provider process that started its own session or group is not found and
+/// keeps running. Use macOS for development, not to run untrusted providers.
+#[cfg(target_os = "macos")]
+mod platform {
+    use super::*;
+    use std::os::unix::fs::DirBuilderExt;
+
+    /// The private directory of a result socket, removed with its socket.
+    #[derive(Debug)]
+    pub(super) struct Endpoint(PathBuf);
+
+    impl Drop for Endpoint {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(self.0.join("result"));
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+
+    pub(super) fn listen(name: &str) -> io::Result<(UnixListener, String, Endpoint)> {
+        // A fresh 0700 directory: `create` fails on an existing name, so no
+        // other user can have placed the socket or redirect it.
+        let directory = std::env::temp_dir().join(name);
+        std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
+        let endpoint = Endpoint(directory);
+        let path = endpoint.0.join("result");
+        let listener = UnixListener::bind(&path)?;
+        let path = path.into_os_string().into_string();
+        let path = path.map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        Ok((listener, path, endpoint))
+    }
+
+    pub(super) fn connect(name: &str) -> io::Result<UnixStream> {
+        UnixStream::connect(name)
+    }
+
+    /// The limit is recorded where the kernel accepts it; it is not enforced.
+    pub(super) fn limit_memory(_: rustix::io::Result<()>) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub(super) fn adopt_orphans() -> io::Result<()> {
+        Ok(())
+    }
+
+    pub(super) fn kill_orphans(_: &BTreeSet<u32>) -> io::Result<usize> {
+        Ok(0)
+    }
+
+    /// The Python installation of a release archive: `bin/fyrr` sits in the
+    /// prefix that holds `lib/python3.*`, so the workers use that standard
+    /// library and the connector SDK installed into it.
+    pub(super) fn bundled_python() -> Option<PathBuf> {
+        let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
+        let prefix = executable.parent()?.parent()?;
+        std::fs::read_dir(prefix.join("lib"))
+            .ok()?
+            .flatten()
+            .any(|entry| {
+                entry.file_name().to_string_lossy().starts_with("python3.")
+                    && entry.path().join("os.py").is_file()
+            })
+            .then(|| prefix.to_owned())
+    }
 }
 
 #[derive(Debug)]
@@ -209,6 +340,7 @@ impl Outcome {
 pub struct Running {
     child: Child,
     listener: UnixListener,
+    _endpoint: platform::Endpoint,
     stream: Option<UnixStream>,
     result: Vec<u8>,
     invalid: bool,
@@ -222,7 +354,7 @@ pub struct Running {
 
 impl Running {
     pub fn spawn_with_memory(job: &Job, timeout: Duration, memory: u64) -> io::Result<Self> {
-        set_child_subreaper(Some(Pid::INIT))?;
+        platform::adopt_orphans()?;
         let mut live = LIVE_WORKERS
             .lock()
             .map_err(|_| io::Error::other("worker registry unavailable"))?;
@@ -231,10 +363,10 @@ impl Running {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        let listener = UnixListener::bind_addr(&SocketAddr::from_abstract_name(&name)?)?;
+        let (listener, address, endpoint) = platform::listen(&name)?;
         listener.set_nonblocking(true)?;
         let child = command(job)?
-            .env("FYRR_WORKER_RESULT", name)
+            .env("FYRR_WORKER_RESULT", address)
             .env("FYRR_WORKER_MEMORY", memory.to_string())
             .spawn()?;
         live.insert(child.id());
@@ -245,6 +377,7 @@ impl Running {
         Ok(Self {
             child,
             listener,
+            _endpoint: endpoint,
             stream: None,
             result: Vec::new(),
             invalid: false,
@@ -345,32 +478,9 @@ impl Running {
             if reaped {
                 live.remove(&self.child.id());
             }
-            let mut orphans = BTreeSet::new();
-            for task in std::fs::read_dir("/proc/self/task")? {
-                let path = task?.path().join("children");
-                let text = match std::fs::read_to_string(path) {
-                    Ok(text) => text,
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                    Err(error) => return Err(error),
-                };
-                for pid in text.split_whitespace() {
-                    let pid: u32 = pid.parse().map_err(|_| io::ErrorKind::InvalidData)?;
-                    if !live.contains(&pid) {
-                        orphans.insert(pid);
-                    }
-                }
-            }
-            for pid in &orphans {
-                if let Some(pid) = Pid::from_raw(*pid as i32) {
-                    let _ = kill_process(pid, Signal::KILL);
-                    match waitpid(Some(pid), WaitOptions::NOHANG) {
-                        Ok(_) | Err(rustix::io::Errno::CHILD) => {}
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-            }
+            let orphans = platform::kill_orphans(&live)?;
             drop(live);
-            if reaped && orphans.is_empty() {
+            if reaped && orphans == 0 {
                 self.cleaned = true;
                 return Ok(());
             }

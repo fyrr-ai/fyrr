@@ -59,6 +59,22 @@ fn local_root(uri: &str) -> Option<PathBuf> {
         .then_some(root)
 }
 
+/// macOS keeps `/tmp`, `/var` and `/etc` as symlinks into `/private`. Local
+/// storage refuses a symlink anywhere in its root path, so a root spelled
+/// through one of the three is rewritten to the directory it names. Only
+/// these system links are resolved; any other symlink is still refused.
+#[cfg(target_os = "macos")]
+pub(super) fn macos_private(uri: &str) -> Option<String> {
+    let path = uri.strip_prefix("file://")?;
+    ["/tmp", "/var", "/etc"]
+        .iter()
+        .find(|link| {
+            path.strip_prefix(**link)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })
+        .map(|_| format!("file:///private{path}"))
+}
+
 /// For a `file://` URI, `[storage]` holds only `uri`: every other key
 /// configures S3 access.
 pub(super) fn local(config: &Config, raw: &toml::Table, error: &mut impl FnMut(&str, String)) {

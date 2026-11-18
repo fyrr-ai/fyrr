@@ -185,6 +185,15 @@ impl PreparationReservation {
             permits: Arc::new(tokio::sync::Semaphore::new(permits)),
         })
     }
+    /// The resident size of this process.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn rss() -> Result<u64> {
+        memory_stats::memory_stats()
+            .map(|stats| stats.physical_mem as u64)
+            .ok_or(StorageUnavailable)
+    }
+    /// The resident size of this process.
+    #[cfg(not(target_os = "macos"))]
     pub(crate) fn rss() -> Result<u64> {
         let status =
             std::fs::read_to_string("/proc/self/status").map_err(|_| StorageUnavailable)?;

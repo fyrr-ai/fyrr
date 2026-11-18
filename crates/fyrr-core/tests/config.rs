@@ -466,6 +466,12 @@ fn local_storage_takes_a_canonical_file_uri_and_no_s3_keys() {
     ] {
         let loaded = parse(&local(uri)).expect("parse");
         assert_eq!(errors(&loaded), Vec::<String>::new(), "{uri}");
+        // macOS names its system symlinks /tmp, /var and /etc by their target.
+        let root = if cfg!(target_os = "macos") && root.starts_with("/var/") {
+            format!("/private{root}")
+        } else {
+            root.to_owned()
+        };
         assert_eq!(
             loaded.config.storage.backend(),
             Some(StorageBackend::Local { root: root.into() })

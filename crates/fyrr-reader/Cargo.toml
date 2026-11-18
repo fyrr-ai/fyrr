@@ -47,6 +47,11 @@ reqwest.workspace = true
 jsonwebtoken.workspace = true
 tokio-util.workspace = true
 
+# macOS has no procfs. This reads the resident size through libproc, so the
+# workspace needs no unsafe code of its own.
+[target.'cfg(target_os = "macos")'.dependencies]
+memory-stats = "1.2"
+
 [dev-dependencies]
 fyrr-core = { workspace = true, features = ["test-clock"] }
 
