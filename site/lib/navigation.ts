@@ -63,6 +63,11 @@ export const navigation = [
         "Knobs for the curious. The defaults already sail."
       ],
       [
+        "investigations/reader-memory-budget.md",
+        "Reader memory investigation",
+        "A controlled check of reader memory and retrieval behavior."
+      ],
+      [
         "reader-writer.md",
         "Reader and writer",
         "Two crews, two sets of limits."
