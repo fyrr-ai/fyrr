@@ -50,13 +50,13 @@ pyo3-build-config = "0.28"
 arrow-pyarrow = "58"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 # Already in the graph through Lance; used for deterministic IDs and digests.
-base64 = { version = "=0.22.1", default-features = false, features = ["std"] }
+base64 = { version = "=0.23.1", default-features = false, features = ["std"] }
 hex = "0.4.3"
 regex = { version = "1.13", default-features = false, features = ["std"] }
 sha2 = "0.11"
 # Safe Unix process-group signals and committed-memory limits for workers.
 rustix = { version = "1.1", features = ["process", "stdio", "fs", "rand"] }
-rusqlite = { version = "0.41", features = ["bundled"] }
+rusqlite = { version = "0.42", features = ["bundled"] }
 half = "2"
 object_store = { version = "0.14", features = ["aws"] }
 async-trait = "0.1"
@@ -71,11 +71,11 @@ url = "=2.5.8"
 # HTTP serving and authenticated encryption.
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
 reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls", "stream"] }
-hyper = { version = "=1.11.1", default-features = false, features = ["http1", "server"] }
+hyper = { version = "=1.12.0", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "=0.1.21", default-features = false, features = ["tokio", "service"] }
 rmcp = { version = "=3.10.0", default-features = false, features = ["server", "transport-io", "transport-streamable-http-server"] }
-jsonwebtoken = { version = "=11.1.0", default-features = false, features = ["aws_lc_rs"] }
-tokio-util = { version = "=0.7.18", default-features = false, features = ["codec", "rt"] }
+jsonwebtoken = { version = "=12.0.0", default-features = false, features = ["aws_lc_rs"] }
+tokio-util = { version = "=0.7.20", default-features = false, features = ["codec", "rt"] }
 ring = { version = "=0.17.14", default-features = false, features = ["std", "alloc"] }
 
 [workspace.lints.rust]

@@ -69,15 +69,15 @@
         {
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "document_changes"
+            },
             "changes": {
               "type": "array",
               "items": {
                 "$ref": "#/$defs/DocumentChange"
               }
-            },
-            "type": {
-              "type": "string",
-              "const": "document_changes"
             }
           },
           "required": [
@@ -88,6 +88,10 @@
         {
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "permission_changes"
+            },
             "documents": {
               "type": "array",
               "items": {
@@ -101,10 +105,6 @@
                 "$ref": "#/$defs/ContainerGrant"
               },
               "default": []
-            },
-            "type": {
-              "type": "string",
-              "const": "permission_changes"
             }
           },
           "required": [

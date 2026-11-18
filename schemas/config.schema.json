@@ -317,14 +317,14 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "mode": {
+              "type": "string",
+              "const": "fixed"
+            },
             "candidates": {
               "type": "integer",
               "format": "uint",
               "minimum": 0
-            },
-            "mode": {
-              "type": "string",
-              "const": "fixed"
             }
           },
           "required": [
@@ -336,6 +336,10 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "mode": {
+              "type": "string",
+              "const": "adaptive"
+            },
             "min_candidates": {
               "type": "integer",
               "format": "uint",
@@ -349,10 +353,6 @@
             "min_gap": {
               "type": "number",
               "format": "double"
-            },
-            "mode": {
-              "type": "string",
-              "const": "adaptive"
             }
           },
           "required": [
