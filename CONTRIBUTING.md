@@ -6,9 +6,11 @@ through [SECURITY.md](SECURITY.md), not public issues.
 
 ## Build host
 
-Builds and tests are supported on **Linux x86-64**: the pinned tools
-(`scripts/pins.env`) are Linux x86-64 binaries and the scripts use Bash and
-GNU utilities. Other platforms are not tested.
+Builds are supported on **Linux x86-64 and aarch64**: the pinned tools
+(`scripts/pins.env`) are Linux binaries for those two architectures and the
+scripts use Bash and GNU utilities. `scripts/ci` runs on x86-64; aarch64 is
+built and its images are checked by the release job. macOS and Windows are
+not supported build hosts.
 
 Prerequisites: git, curl, unzip, openssl, Python 3.11 or newer, Docker with the compose
 plugin, rustup, uv,
@@ -194,18 +196,33 @@ not create.
 
 `scripts/release` uploads nothing. Pushing a `v*` tag that matches the
 workspace version in `Cargo.toml` starts `.github/workflows/release.yml`: it
-runs CI (`scripts/ci`, full tier) and, only if CI passes, uploads the output
-of `scripts/release` to a draft GitHub release. That job links each fat-LTO
-binary once; the images package those same files (`image_binaries release`
-in `manifest.txt`) and nothing else in the pipeline compiles a release
-binary. It publishes the release
-after pushing both images to GHCR; reruns resume the draft or leave an
+runs CI (`scripts/ci`, full tier) and, only if CI passes, runs
+`scripts/release` once per platform (linux-x86_64 and linux-aarch64). Each
+of those jobs links its fat-LTO binaries once; its images package those same
+files (`image_binaries release` in the platform's manifest) and nothing else
+in the pipeline compiles a release binary. `scripts/release-combine` joins
+the platforms: `manifest.txt` lists them, each platform's own manifest is
+kept as `manifest-<platform>.txt`, and `SHA256SUMS` covers every file. The
+workflow uploads that directory to a draft GitHub release, pushes each image
+to GHCR per architecture and as one multi-arch manifest under the version,
+and then publishes the release; reruns resume the draft or leave an
 already published release unchanged. Release logs stay under
 `target/release-logs/<version>/`, outside the downloadable artifacts. Image
-archives retain checkout-owned tags, recorded as `image_tag` in
-`manifest.txt`. Bare binaries use the host ABI; their measured runtime
+archives retain checkout-owned tags, recorded as `image_tag` in the
+platform's manifest. Bare binaries use the host ABI; their measured runtime
 requirements are recorded in the same manifest (see
 [downloadable binaries](docs/deployment.md#downloadable-binaries)).
+
+The build jobs need more memory than GitHub's free runners have: a fat-LTO
+link peaks above 12 GB. They run on Blacksmith runners by default
+(`blacksmith-16vcpu-ubuntu-2404` and `blacksmith-16vcpu-ubuntu-2404-arm`),
+which requires the Blacksmith GitHub App on the repository. To use other
+runners, set the repository variables `RELEASE_RUNNER_X86_64` and
+`RELEASE_RUNNER_AARCH64` to labels with at least 24 GB of memory. Running
+the workflow by hand (`workflow_dispatch`) builds and joins the artifacts
+without publishing anything. Without suitable runners, assemble the release
+on a maintainer machine as described below.
+
 A local `scripts/release` on a host whose glibc is newer than the runtime
 images' cannot package its binaries: the images then compile their own in
 the builder stage (`image_binaries builder`), a second fat-LTO build.
@@ -218,8 +235,8 @@ After downloading the artifacts, verify and load the full image with:
 
 ```sh
 sha256sum --check SHA256SUMS
-image_tag="$(awk '$1 == "image_tag" {print $2}' manifest.txt)"
-docker image load --input fyrr-image-0.1.0.tar.gz
+image_tag="$(awk '$1 == "image_tag" {print $2}' manifest-linux-x86_64.txt)"
+docker image load --input fyrr-image-0.1.1-linux-x86_64.tar.gz
 docker run --rm "fyrr:$image_tag" --version
 ```
 

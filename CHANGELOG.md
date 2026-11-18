@@ -7,6 +7,19 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## [Unreleased]
 
+### Added
+
+- Releases carry `linux-aarch64` binaries next to `linux-x86_64`, and the
+  `fyrr` and `fyrr-reader` images are published for `linux/amd64` and
+  `linux/arm64` under one tag.
+
+### Changed
+
+- Release binaries and image archives carry their platform in the file
+  name, for example `fyrr-image-<version>-linux-x86_64.tar.gz`. Each
+  platform has its own `manifest-<platform>.txt`; `manifest.txt` lists the
+  platforms.
+
 ## [0.1.0] - 2026-11-18
 
 ### Changed

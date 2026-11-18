@@ -108,8 +108,8 @@ The example's top hit is `notes/backup.md`, with the answer:
 - **You cannot send text to an embeddings service.** You provide an
   OpenAI-compatible `/embeddings` endpoint, and document and query text is
   sent to it.
-- **You build on macOS or Windows.** Linux x86-64 is the only supported
-  build host.
+- **You build or run on macOS or Windows.** Linux on x86-64 and aarch64 is
+  the only supported platform, for builds, binaries and images.
 - **You need phrase queries.** The full-text index stores no term positions.
 - **You want TLS built in.** The HTTP listener speaks plain HTTP; outside
   loopback it needs a TLS-terminating proxy.

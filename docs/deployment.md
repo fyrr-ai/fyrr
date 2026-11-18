@@ -107,11 +107,13 @@ and a writer that runs on its own.
 
 ## Downloadable binaries
 
-Bare release binaries are dynamically linked Linux x86-64 executables.
-Their `binary_runtime` sections in `manifest.txt` list the maximum required
+Bare release binaries are dynamically linked Linux executables for x86-64
+(`linux-x86_64`) and 64-bit ARM (`linux-aarch64`); there are none for macOS
+or Windows. Each platform's `manifest-<platform>.txt` has `binary_runtime`
+sections that list the maximum required
 GLIBC symbol version, ELF interpreter and shared libraries. Local assembly
-inherits the build host's ABI; official releases use the Ubuntu 24.04
-release job. The manifest records the actual build provenance and runtime
+inherits the build host's ABI; official releases use Ubuntu 24.04
+release jobs. The manifest records the actual build provenance and runtime
 requirements. A GLIBC version alone does not guarantee compatibility:
 the interpreter and all required libraries must also be available.
 
@@ -129,8 +131,11 @@ discovery. Reader-only binaries require no Python.
 
 ## Images
 
-Tagged releases will publish `ghcr.io/fyrr-ai/fyrr:<version>` and
-`ghcr.io/fyrr-ai/fyrr-reader:<version>`.
+Tagged releases publish `ghcr.io/fyrr-ai/fyrr:<version>` and
+`ghcr.io/fyrr-ai/fyrr-reader:<version>` as multi-arch images for
+`linux/amd64` and `linux/arm64`; `<version>-amd64` and `<version>-arm64`
+name one architecture. The release also carries each image as an archive
+per platform.
 
 `docker/Dockerfile` builds both images from the repository root; every base
 image is pinned by digest. Both carry the `LICENSE` and `NOTICE` files under
