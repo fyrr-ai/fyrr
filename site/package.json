@@ -7,6 +7,7 @@
     "build": "bun run content && next build && bun scripts/finalize.ts && bun scripts/check-links.ts",
     "build:preview": "SITE_ALLOW_DRAFT_COMPARE=1 bun run build",
     "typecheck": "tsc --noEmit",
+    "audit": "bun audit --ignore GHSA-fc5q-39xc-vjpf",
     "preview": "wrangler dev --port 8486",
     "verify:browser": "node scripts/verify-browser.mjs",
     "verify:compare": "node scripts/verify-compare.mjs",

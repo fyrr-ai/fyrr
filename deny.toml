@@ -4,7 +4,7 @@
 # Website build (site/bun.lock): Fumadocs, Next and React are MIT;
 # TypeScript is Apache-2.0 and Geist fonts use OFL-1.1.
 # These build dependencies are separate from the Rust graph and never enter
-# the CLI or container images. Check advisories with `cd site && bun audit`.
+# the CLI or container images. Check advisories with `cd site && bun run audit`.
 
 [graph]
 # Both builds share one dependency graph apart from fyrr-writer.

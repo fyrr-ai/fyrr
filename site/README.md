@@ -56,8 +56,16 @@ With the preview server running:
 bun run verify:browser
 bun run test:compare
 bun run verify:compare
-bun audit
+bun run audit
 ```
+
+The audit command temporarily excludes only `GHSA-fc5q-39xc-vjpf` in
+`picomatch` (ReDoS through repeated single-branch extglob patterns). No
+published version fixes it. Fumadocs and tinyglobby use it with
+repository-controlled build-time glob patterns, rather than patterns from
+site visitors. Remove the exception once a patched compatible version is
+available, and reassess it if glob patterns can come from untrusted input.
+Every other advisory remains fatal.
 
 The browser check visits every docs page on desktop and phone, checks for
 horizontal overflow and browser errors, and exercises search, result
