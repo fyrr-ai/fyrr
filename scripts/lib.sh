@@ -53,7 +53,14 @@ export MBX_EAGER_INCREMENTAL="${MBX_EAGER_INCREMENTAL:-0}"
 cargo() {
   case "${1:-}" in
     # mbx supplies the one rustc wrapper for this build; wrappers cannot stack.
-    build|test|check|clippy) env -u RUSTC_WRAPPER mbx "$@" ;;
+    # macOS, a development platform, builds with plain Cargo.
+    build|test|check|clippy)
+      if [[ "$(uname -s)" == Darwin ]]; then
+        "$CARGO_BIN/cargo" "$@"
+      else
+        env -u RUSTC_WRAPPER mbx "$@"
+      fi
+      ;;
     *) "$CARGO_BIN/cargo" "$@" ;;
   esac
 }
@@ -65,10 +72,11 @@ ensure_protoc() {
     return 0
   fi
   local url sha
-  case "$(uname -m)" in
-    x86_64) url="$PROTOC_URL_X86_64" sha="$PROTOC_SHA256_X86_64" ;;
-    aarch64) url="$PROTOC_URL_AARCH64" sha="$PROTOC_SHA256_AARCH64" ;;
-    *) die "no pinned protoc for $(uname -m)" ;;
+  case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) url="$PROTOC_URL_X86_64" sha="$PROTOC_SHA256_X86_64" ;;
+    Linux-aarch64) url="$PROTOC_URL_AARCH64" sha="$PROTOC_SHA256_AARCH64" ;;
+    Darwin-arm64) url="$PROTOC_URL_MACOS_ARM64" sha="$PROTOC_SHA256_MACOS_ARM64" ;;
+    *) die "no pinned protoc for $(uname -s) $(uname -m)" ;;
   esac
   log "fetching protoc $PROTOC_VERSION"
   local tmp

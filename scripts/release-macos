@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Assembles the macOS (Apple Silicon) release archives on a macOS host. macOS
+# is a development platform: see docs/deployment.md for what its worker
+# isolation lacks. This script uploads and publishes nothing.
+#
+#   scripts/release-macos [--version V] [--out DIR]
+#
+# Needs Homebrew's Bash and GNU coreutils first on PATH, and the Xcode
+# command line tools (otool, install_name_tool, codesign).
+#
+# Output: DIR/fyrr-V/ with
+# - fyrr-reader-V-macos-aarch64.tar.gz: the reader-only binary, which links
+#   no Python;
+# - fyrr-V-macos-aarch64.tar.gz: the full binary inside the Python
+#   installation it was linked against (bin/fyrr beside lib/libpython and the
+#   standard library), with the connector SDK and the bundled providers'
+#   locked requirements installed. Nothing else is needed to run providers;
+# - LICENSE, NOTICE, manifest.txt and SHA256SUMS, in the layout
+#   scripts/release-combine joins with the Linux platforms.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+cd "$ROOT"
+
+VERSION=""
+OUT="$ROOT/target/release-artifacts"
+while (($#)); do
+  case "$1" in
+    --version) VERSION="$2"; shift 2 ;;
+    --out) OUT="$(realpath -m -- "$2")"; shift 2 ;;
+    *) die "unknown argument $1 (use --version V, --out DIR)" ;;
+  esac
+done
+[[ "$(uname -s)-$(uname -m)" == Darwin-arm64 ]] || die "scripts/release-macos runs on macOS arm64 only"
+if [[ -z "$VERSION" ]]; then
+  [[ -z "$(git -C "$ROOT" status --porcelain)" ]] || die "the tree has uncommitted changes; commit them or pass --version"
+  VERSION="$(git -C "$ROOT" describe --tags --always)"
+fi
+[[ "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$ ]] || die "version must be a bounded identifier"
+COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unavailable)"
+if tree_status="$(git -C "$ROOT" status --porcelain 2>/dev/null)"; then
+  [[ -z "$tree_status" ]] && TREE_STATE=clean || TREE_STATE=dirty
+else
+  TREE_STATE=unavailable
+fi
+PLATFORM="macos-aarch64"
+DIR="$OUT/fyrr-$VERSION"
+LOGS="$ROOT/target/release-logs/$VERSION"
+WORK="$ROOT/target/release-macos"
+rm -rf "$DIR" "$WORK"
+mkdir -p "$DIR" "$LOGS" "$WORK"
+log "assembling fyrr $VERSION for $PLATFORM in ${DIR#"$ROOT"/}"
+
+"$ROOT/scripts/doctor" --local >"$LOGS/doctor.log" 2>&1 || { tail -n 20 "$LOGS/doctor.log"; die "scripts/doctor failed"; }
+
+# --- binaries (the shipping release profile, one fat-LTO link each) ----------
+release_binaries "$WORK/binaries"
+
+# The shared libraries a binary loads, without the system's own.
+linked() { otool -L "$1" | awk 'NR > 1 {print $1}' | grep -vE '^(/usr/lib/|/System/)' || true; }
+
+reader="$WORK/binaries/fyrr-reader"
+[[ -z "$(linked "$reader")" ]] || die "the reader-only binary links $(linked "$reader" | tr '\n' ' ')"
+"$reader" --version | grep -q 'reader-only build' || die "the reader binary does not report the reader-only build"
+
+# --- the reader-only archive -------------------------------------------------
+stage="$WORK/fyrr-reader-$VERSION-$PLATFORM"
+mkdir -p "$stage/bin"
+install -m 0755 "$reader" "$stage/bin/fyrr"
+cp LICENSE NOTICE "$stage/"
+tar -czf "$DIR/fyrr-reader-$VERSION-$PLATFORM.tar.gz" -C "$WORK" "$(basename "$stage")"
+
+# --- the full archive: the binary inside its Python installation --------------
+python="$(realpath -- "$ROOT/connectors/.venv/bin/python")"
+prefix="$(cd "$(dirname "$python")/.." && pwd -P)"
+library="$(linked "$WORK/binaries/fyrr" | grep -E 'libpython3\.[0-9]+\.dylib$')" || die "the full binary links no libpython"
+[[ "$(wc -l <<<"$library")" -eq 1 ]] || die "the full binary links several libpython"
+name="$(basename "$library")"
+[[ -f "$prefix/lib/$name" ]] || die "$prefix/lib/$name is missing: the build linked another interpreter"
+[[ -z "$(linked "$WORK/binaries/fyrr" | grep -v "$name\$")" ]] ||
+  die "the full binary links $(linked "$WORK/binaries/fyrr" | grep -v "$name\$" | tr '\n' ' ')"
+
+stage="$WORK/fyrr-$VERSION-$PLATFORM"
+log "copying the Python installation $prefix"
+cp -R "$prefix" "$stage"
+# Only this bundle's interpreter may be used: no bytecode of the build host.
+find "$stage" -name __pycache__ -type d -prune -exec rm -rf {} +
+install -m 0755 "$WORK/binaries/fyrr" "$stage/bin/fyrr"
+# Load libpython from the bundle, wherever the archive is unpacked.
+install_name_tool -change "$library" "@rpath/$name" "$stage/bin/fyrr"
+install_name_tool -add_rpath "@loader_path/../lib" "$stage/bin/fyrr"
+# Editing an arm64 binary invalidates its ad-hoc signature.
+codesign --force --sign - "$stage/bin/fyrr"
+cp LICENSE NOTICE "$stage/"
+
+log "installing the connector SDK into the bundle"
+# The copy is this archive's own environment, no longer uv's managed one.
+find "$stage/lib" -maxdepth 2 -name EXTERNALLY-MANAGED -delete
+rm -rf "$WORK/sdk"
+uv build --wheel --quiet --out-dir "$WORK/sdk" "$ROOT/connectors"
+uv export --project "$ROOT/connectors" --frozen --no-dev --no-emit-project \
+  --extra google-drive --extra notion --extra github --extra slack --extra jira \
+  --format requirements-txt --output-file "$WORK/sdk/requirements.txt" >/dev/null
+bundled=("$stage/bin/python3" -m pip install --quiet --no-cache-dir --disable-pip-version-check --no-deps)
+"${bundled[@]}" --require-hashes -r "$WORK/sdk/requirements.txt" >"$LOGS/pip.log" 2>&1 ||
+  { tail -n 20 "$LOGS/pip.log"; die "installing the SDK requirements failed"; }
+"${bundled[@]}" "$WORK"/sdk/fyrr_connectors-*.whl >>"$LOGS/pip.log" 2>&1 ||
+  { tail -n 20 "$LOGS/pip.log"; die "installing the SDK failed"; }
+find "$stage" -name __pycache__ -type d -prune -exec rm -rf {} +
+tar -czf "$DIR/fyrr-$VERSION-$PLATFORM.tar.gz" -C "$WORK" "$(basename "$stage")"
+
+# --- check the archives as a user gets them ------------------------------------
+check="$WORK/check"
+mkdir -p "$check"
+tar -xzf "$DIR/fyrr-$VERSION-$PLATFORM.tar.gz" -C "$check"
+tar -xzf "$DIR/fyrr-reader-$VERSION-$PLATFORM.tar.gz" -C "$check"
+clean=(env -i "HOME=$check" "PATH=/usr/bin:/bin" "TMPDIR=${TMPDIR:-/tmp}")
+"${clean[@]}" "$check/fyrr-reader-$VERSION-$PLATFORM/bin/fyrr" --version | grep -q 'reader-only build' ||
+  die "the unpacked reader binary does not run"
+"${clean[@]}" "$check/fyrr-$VERSION-$PLATFORM/bin/fyrr" --version | grep -q 'full build' ||
+  die "the unpacked full binary does not run"
+providers="$("${clean[@]}" "$check/fyrr-$VERSION-$PLATFORM/bin/fyrr" writer providers)" ||
+  die "the unpacked full binary cannot list providers"
+printf '%s\n' "$providers" | tee "$LOGS/providers.txt"
+for provider in local-files google-drive notion github slack jira; do
+  grep -qE "^${provider}[[:space:]].*[[:space:]]ok$" <<<"$providers" || die "provider $provider is not ok in the unpacked archive"
+done
+
+# --- manifest and sums ----------------------------------------------------------
+cp LICENSE NOTICE "$DIR/"
+{
+  echo "fyrr $VERSION"
+  echo "commit $COMMIT"
+  echo "platform $PLATFORM"
+  echo "binary_build host"
+  echo "working_tree $TREE_STATE"
+  echo "build_os macos $(sw_vers -productVersion)"
+  echo "minimum_os $(otool -l "$stage/bin/fyrr" | awk '/LC_BUILD_VERSION/ {f = 1} f && $1 == "minos" {print $2; exit}')"
+  echo "python $("$stage/bin/python3" -c 'import platform; print(platform.python_version())') (bundled in the full archive)"
+  echo "worker_isolation development-only"
+  echo "built_at $(date -u +%FT%TZ)"
+  echo "rustc $(rustc --version)"
+  echo "images  n/e  (no macOS images)"
+  echo
+  echo "size  file"
+  for file in "$DIR"/*; do
+    [[ -f "$file" && "$(basename "$file")" != manifest.txt ]] || continue
+    printf '%d  %s\n' "$(stat -c %s "$file")" "$(basename "$file")"
+  done
+} >"$DIR/manifest.txt"
+(cd "$DIR" && sha256sum -- * >SHA256SUMS && sha256sum --check --quiet SHA256SUMS)
+log "done: ${DIR#"$ROOT"/} ($(grep -c . "$DIR/SHA256SUMS") files, SHA256SUMS verified); nothing was published"
+cat "$DIR/manifest.txt"

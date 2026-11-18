@@ -58,7 +58,8 @@ def build():
             args.append("--no-default-features")
         messages = output(
             [
-                "mbx",
+                # macOS, a development platform, builds with plain Cargo.
+                "cargo" if sys.platform == "darwin" else "mbx",
                 "test",
                 "--locked",
                 *args,
@@ -328,7 +329,8 @@ async def pool(manifest, logs, jobs, rows):
         # Sum resident memory over each owned process tree. Shared pages can be
         # counted twice; this is a conservative sizing signal, not physical PSS.
         page_kib = os.sysconf("SC_PAGE_SIZE") // 1024
-        while True:
+        # Without procfs (macOS) there is no per-case memory signal.
+        while Path("/proc/self/stat").exists():
             processes = {}
             for entry in Path("/proc").iterdir():
                 if not entry.name.isdigit():

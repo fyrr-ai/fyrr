@@ -64,9 +64,18 @@ if (cd connectors && uv sync --locked --quiet); then
 else
   bad "cannot create connectors/.venv; run: cd connectors && uv sync --locked"
 fi
-for tool in readelf; do
-  if command -v "$tool" >/dev/null; then ok "$tool: $(command -v "$tool")"; else bad "$tool is not installed (binutils)"; fi
-done
+if [[ "$(uname -s)" == Darwin ]]; then
+  # Homebrew's Bash and GNU coreutils must come first on PATH (CONTRIBUTING.md).
+  if ((BASH_VERSINFO[0] >= 4)); then ok "bash ${BASH_VERSION}"; else bad "bash ${BASH_VERSION} is too old; run: brew install bash"; fi
+  if realpath -m / >/dev/null 2>&1; then ok "GNU coreutils"; else bad "GNU coreutils are not first on PATH; run: brew install coreutils"; fi
+  for tool in otool install_name_tool codesign; do
+    if command -v "$tool" >/dev/null; then ok "$tool: $(command -v "$tool")"; else bad "$tool is not installed (Xcode command line tools)"; fi
+  done
+else
+  for tool in readelf; do
+    if command -v "$tool" >/dev/null; then ok "$tool: $(command -v "$tool")"; else bad "$tool is not installed (binutils)"; fi
+  done
+fi
 if ((!LOCAL)); then
   if command -v docker >/dev/null; then ok "docker: $(command -v docker)"; else bad "docker is not installed"; fi
   if docker compose version >/dev/null 2>&1; then ok "docker compose (scripts/images)"; else warn "docker compose missing; scripts/images needs it"; fi

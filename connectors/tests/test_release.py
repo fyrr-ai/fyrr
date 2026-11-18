@@ -13,7 +13,10 @@ WORKFLOW = Path(__file__).parents[2] / ".github/workflows/release.yml"
 STEP = WORKFLOW.read_text().split("      - name: Publish the release and images\n", 1)[1]
 PUBLICATION = textwrap.dedent(STEP.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
 PLATFORMS = {"linux-x86_64": "amd64", "linux-aarch64": "arm64"}
-MANIFEST = "".join(f"platform {platform} manifest-{platform}.txt\n" for platform in PLATFORMS)
+# macOS is a platform without images: publication must skip it.
+MANIFEST = "".join(
+    f"platform {platform} manifest-{platform}.txt\n" for platform in [*PLATFORMS, "macos-aarch64"]
+)
 BOUNDARIES = r"""
 set -euo pipefail
 record() { printf '%s\n' "$*" >> events; }
