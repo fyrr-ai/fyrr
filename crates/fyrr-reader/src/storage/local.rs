@@ -237,6 +237,29 @@ fn is_remote(root: &std::path::Path) -> std::io::Result<bool> {
     Ok(rustix::fs::statfs(root)?.f_flags & MNT_LOCAL == 0)
 }
 
+#[cfg(not(target_os = "macos"))]
+fn system_path(root: &std::path::Path) -> PathBuf {
+    root.to_path_buf()
+}
+
+/// macOS keeps `/tmp`, `/var` and `/etc` as symlinks into `/private`, and
+/// its temporary directories live below `/var`. A root spelled through one
+/// of these three system links is checked by the directory the link names.
+/// Nothing else is resolved: any other symlink in the path is refused.
+#[cfg(target_os = "macos")]
+fn system_path(root: &std::path::Path) -> PathBuf {
+    use std::path::{Component, Path as FsPath};
+    let mut parts = root.components();
+    if let (Some(Component::RootDir), Some(Component::Normal(first))) = (parts.next(), parts.next())
+        && ["tmp", "var", "etc"].iter().any(|name| first == *name)
+        && std::fs::read_link(FsPath::new("/").join(first))
+            .is_ok_and(|target| target == FsPath::new("private").join(first))
+    {
+        return FsPath::new("/private").join(first).join(parts.as_path());
+    }
+    root.to_path_buf()
+}
+
 /// The error of reading an xattr the file does not carry.
 #[cfg(not(target_os = "macos"))]
 const NO_XATTR: rustix::io::Errno = rustix::io::Errno::NODATA;
@@ -259,6 +282,10 @@ impl LocalStore {
         if !root.is_absolute() {
             return Err(std::io::Error::other("storage root must be absolute"));
         }
+        // Checked and opened by its real path; named as the caller spelled it,
+        // so object paths and the dataset URI keep agreeing.
+        let spelled = root;
+        let root = &system_path(spelled);
         for ancestor in root.ancestors() {
             match std::fs::symlink_metadata(ancestor) {
                 Ok(meta) if meta.file_type().is_symlink() => {
@@ -279,8 +306,8 @@ impl LocalStore {
         let metadata = directory.metadata()?;
         Ok(Self {
             inner: Arc::new(LocalFileSystem::new().with_fsync(true)),
-            root: Path::from_absolute_path(root).map_err(std::io::Error::other)?,
-            root_path: root.to_path_buf(),
+            root: Path::from_absolute_path(spelled).map_err(std::io::Error::other)?,
+            root_path: spelled.to_path_buf(),
             directory,
             root_identity: (metadata.dev(), metadata.ino()),
             cleanup_directories: None,
