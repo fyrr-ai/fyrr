@@ -32,6 +32,14 @@ pub(crate) fn locked(path: &Path) -> std::io::Result<()> {
 pub(crate) fn unlocked(path: &Path) -> std::io::Result<()> {
     record(serde_json::json!({"event":"unlock","path":path}))
 }
+/// The published inode still carries its writer's staging lock, which locks
+/// the object until the writer drops it.
+pub(crate) fn stage_locked(path: &Path) -> std::io::Result<()> {
+    record(serde_json::json!({"event":"stage-lock","path":path}))
+}
+pub(crate) fn stage_unlocked(path: &Path) -> std::io::Result<()> {
+    record(serde_json::json!({"event":"stage-unlock","path":path}))
+}
 /// A create is about to report that its object already exists.
 pub(crate) fn existing(path: &Path) -> std::io::Result<()> {
     record(serde_json::json!({"event":"exists","path":path}))

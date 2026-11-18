@@ -238,6 +238,15 @@ fn local_store_child_process() {
     if std::env::var("FYRR_TEST_LOCAL_ACTION").as_deref() == Ok("stress") {
         return stress(&store);
     }
+    if std::env::var("FYRR_TEST_LOCAL_ACTION").as_deref() == Ok("delete") {
+        store.delete_blocking(&object(&store)).unwrap();
+        std::fs::write(
+            std::env::var_os("FYRR_TEST_LOCAL_RESULT").unwrap(),
+            "deleted",
+        )
+        .unwrap();
+        return;
+    }
     let bytes = std::env::var("FYRR_TEST_LOCAL_PAYLOAD")
         .unwrap()
         .into_bytes();
@@ -374,6 +383,60 @@ fn local_store_crash_before_publication_keeps_the_old_object() {
             "the next store handle reaps the abandoned stage"
         );
     }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A writer killed after it gave the object its name, or removed it, and
+/// before it flushed the directory: the change is visible and complete,
+/// nothing was acknowledged, and no lock or staging file is left behind.
+#[test]
+fn local_store_crash_after_publication_leaves_a_complete_object() {
+    let root = scratch("crash-published");
+    let store = LocalStore::open(&root).unwrap();
+    let killed = |action: &str, stage: &str, expected: Option<&str>| {
+        let marker = root.join(format!("paused-{action}"));
+        let result = root.join(format!("result-{action}"));
+        let pause = format!("FYRR_TEST_LOCAL_PAUSE_{stage}");
+        let mut extra = vec![
+            (pause.as_str(), marker.as_os_str()),
+            ("FYRR_TEST_LOCAL_PAYLOAD", action.as_ref()),
+            ("FYRR_TEST_LOCAL_RESULT", result.as_os_str()),
+        ];
+        if let Some(expected) = expected {
+            extra.push(("FYRR_TEST_LOCAL_EXPECTED", expected.as_ref()));
+        }
+        let mut process = child(&root, action, &extra);
+        reached(&marker, &mut process);
+        process.kill().unwrap();
+        process.wait().unwrap();
+        assert!(!result.exists(), "{action} was not acknowledged");
+        assert!(staged(&root).is_empty(), "{action} left a staging file");
+    };
+
+    killed("create", "PUBLISHED", None);
+    assert_eq!(read(&store, &root), b"create");
+    let created = current(&store);
+
+    killed("update", "PUBLISHED", Some(&created));
+    assert_eq!(read(&store, &root), b"update");
+    let updated = current(&store);
+    assert_ne!(updated, created);
+    // The published object is not locked by the dead writer, and only its
+    // own tag matches.
+    let fresh = LocalStore::open(&root).unwrap();
+    let stale = put(&fresh, b"stale", PutMode::Update(version(Some(created))));
+    assert_eq!(outcome(stale), Outcome::Precondition);
+    put(&fresh, b"next", PutMode::Update(version(Some(updated)))).unwrap();
+    assert_eq!(read(&store, &root), b"next");
+
+    killed("delete", "REMOVED", None);
+    assert!(!root.join("namespaces/ns/head.json").exists());
+    assert!(matches!(
+        store.get_blocking(object(&store), GetOptions::default()),
+        Err(Error::NotFound { .. })
+    ));
+    put(&fresh, b"again", PutMode::Create).unwrap();
+    assert_eq!(read(&store, &root), b"again");
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1434,17 +1497,19 @@ fn local_store_waiter_across_delete_and_recreate_acts_on_the_new_object() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// Several processes write the same and different objects at once. No
+/// Several processes write the same and different objects at once, while
+/// one of them is stopped and resumed repeatedly and another is killed. No
 /// compare-and-swap is lost or applied twice, each contested create has one
 /// winner, every acknowledged object keeps its bytes, and nothing is left
 /// in the staging directory.
 #[test]
 fn local_store_processes_stress_the_same_and_different_objects() {
-    const PROCESSES: usize = 6;
+    use rustix::process::{Pid, Signal, kill_process};
+    const PROCESSES: usize = 7;
+    const KILLED: usize = PROCESSES - 1;
     let root = scratch("stress");
     let store = LocalStore::open(&root).unwrap();
     put_at(&store, "namespaces/ns/counter", b"0", PutMode::Create).unwrap();
-    let initial = read_at(&store, "namespaces/ns/counter").1;
     let go = root.join("go");
     let mut children: Vec<_> = (0..PROCESSES)
         .map(|id| {
@@ -1464,11 +1529,37 @@ fn local_store_processes_stress_the_same_and_different_objects() {
         .collect();
     std::thread::sleep(Duration::from_millis(500));
     std::fs::write(&go, b"").unwrap();
+    // SIGKILL one contender once it is writing: wherever it dies, its locks
+    // go with it and its unfinished write is not acknowledged.
+    let started = std::time::Instant::now();
+    let first = root.join(format!("namespaces/ns/own/{KILLED}-0"));
+    while !first.exists() && started.elapsed() < Duration::from_secs(30) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    children[KILLED].0.kill().unwrap();
+    // SIGSTOP and SIGCONT another, for less than the lock bound each time:
+    // the others wait for it at most that long, and a reaper leaves the
+    // stopped writer's staging file alone.
+    let stopped = Pid::from_child(&children[0].0);
+    for _ in 0..10 {
+        let _ = kill_process(stopped, Signal::STOP);
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = kill_process(stopped, Signal::CONT);
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let mut swapped = BTreeSet::new();
     let mut winners = std::collections::BTreeMap::new();
+    let mut finished = Vec::new();
     for (id, (process, result)) in children.iter_mut().enumerate() {
-        assert!(process.wait().unwrap().success(), "contender {id}");
-        for line in std::fs::read_to_string(result).unwrap().lines() {
+        let status = process.wait().unwrap();
+        // The killed contender may have finished first on a fast disk.
+        let Ok(log) = std::fs::read_to_string(result) else {
+            assert!(id == KILLED && !status.success(), "contender {id}");
+            continue;
+        };
+        assert!(status.success() || id == KILLED, "contender {id}");
+        finished.push(id);
+        for line in log.lines() {
             let (event, value) = line.split_once(' ').unwrap();
             match event {
                 "swapped" => assert!(
@@ -1485,26 +1576,26 @@ fn local_store_processes_stress_the_same_and_different_objects() {
             }
         }
     }
-    let total = PROCESSES * STRESS_ROUNDS;
+    assert!(finished.len() >= PROCESSES - 1);
+    let acknowledged = finished.len() * STRESS_ROUNDS;
     let (bytes, last) = read_at(&store, "namespaces/ns/counter");
-    assert_eq!(
-        String::from_utf8(bytes).unwrap(),
-        total.to_string(),
-        "an increment was lost or applied twice"
+    let counter: usize = String::from_utf8(bytes).unwrap().parse().unwrap();
+    // Every acknowledged increment is there. The killed contender adds the
+    // increments it published, acknowledged or not, and never more.
+    assert!(
+        (acknowledged..=PROCESSES * STRESS_ROUNDS).contains(&counter),
+        "{counter} increments for {acknowledged} acknowledged"
     );
-    assert_eq!(swapped.len(), total);
-    assert!(swapped.contains(&initial) && !swapped.contains(&last));
-    assert_eq!(
-        winners.len(),
-        STRESS_ROUNDS,
-        "every contested create has a winner"
-    );
+    assert_eq!(swapped.len(), acknowledged);
+    assert!(!swapped.contains(&last));
     for round in 0..STRESS_ROUNDS {
+        // A round without a logged winner was won by the killed contender.
+        let winner = winners.get(&round).copied().unwrap_or(KILLED);
         let raced = read_at(&store, &format!("namespaces/ns/raced/{round}")).0;
-        assert_eq!(raced, payload(round, winners[&round]), "round {round}");
-        for id in 0..PROCESSES {
+        assert_eq!(raced, payload(round, winner), "round {round}");
+        for id in &finished {
             let own = read_at(&store, &format!("namespaces/ns/own/{id}-{round}")).0;
-            assert_eq!(own, payload(round, id));
+            assert_eq!(own, payload(round, *id));
         }
     }
     LocalStore::open(&root)
