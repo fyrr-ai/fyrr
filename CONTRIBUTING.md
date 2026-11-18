@@ -9,8 +9,24 @@ through [SECURITY.md](SECURITY.md), not public issues.
 Builds are supported on **Linux x86-64 and aarch64**: the pinned tools
 (`scripts/pins.env`) are Linux binaries for those two architectures and the
 scripts use Bash and GNU utilities. `scripts/ci` runs on x86-64; aarch64 is
-built and its images are checked by the release job. macOS and Windows are
-not supported build hosts.
+built and its images are checked by the release job.
+
+**macOS on Apple Silicon** is a development host with weaker worker
+isolation ([details](docs/deployment.md#macos-development-only)). The
+scripts need Homebrew's Bash and GNU coreutils ahead of the system's:
+`brew install bash coreutils jq` and put `$(brew --prefix)/bin` and
+`$(brew --prefix)/opt/coreutils/libexec/gnubin` first on `PATH`. Builds use
+plain Cargo there. Run `scripts/doctor --local`, then the subset CI runs on
+macOS:
+
+```sh
+scripts/ci --quick "--step=unit tests" "--step=configuration" \
+  "--step=cli (full build)" "--step=cli (reader-only build)" "--step=local storage"
+```
+
+Docker fixtures, images and the remaining rows are Linux-only.
+`scripts/release-macos` assembles the macOS archives. Windows is not
+supported.
 
 Prerequisites: git, curl, unzip, openssl, Python 3.11 or newer, Docker with the compose
 plugin, rustup, uv,
@@ -197,7 +213,9 @@ not create.
 `scripts/release` uploads nothing. Pushing a `v*` tag that matches the
 workspace version in `Cargo.toml` starts `.github/workflows/release.yml`: it
 runs CI (`scripts/ci`, full tier) and, only if CI passes, runs
-`scripts/release` once per platform (linux-x86_64 and linux-aarch64). Each
+`scripts/release` once per Linux platform (linux-x86_64 and linux-aarch64)
+and `scripts/release-macos` for macos-aarch64, which has archives and no
+images. Each
 of those jobs links its fat-LTO binaries once; its images package those same
 files (`image_binaries release` in the platform's manifest) and nothing else
 in the pipeline compiles a release binary. `scripts/release-combine` joins
@@ -215,10 +233,12 @@ requirements are recorded in the same manifest (see
 
 The build jobs need more memory than GitHub's free runners have: a fat-LTO
 link peaks above 12 GB. They run on Blacksmith runners by default
-(`blacksmith-16vcpu-ubuntu-2404` and `blacksmith-16vcpu-ubuntu-2404-arm`),
-which requires the Blacksmith GitHub App on the repository. To use other
-runners, set the repository variables `RELEASE_RUNNER_X86_64` and
-`RELEASE_RUNNER_AARCH64` to labels with at least 24 GB of memory. Running
+(`blacksmith-16vcpu-ubuntu-2404`, `blacksmith-16vcpu-ubuntu-2404-arm` and
+`blacksmith-6vcpu-macos-15`), which requires the Blacksmith GitHub App on
+the repository. To use other runners, set the repository variables
+`RELEASE_RUNNER_X86_64`, `RELEASE_RUNNER_AARCH64` and `RELEASE_RUNNER_MACOS`
+to labels with at least 24 GB of memory; `CI_RUNNER_MACOS` selects the
+runner of the macOS CI job. Running
 the workflow by hand (`workflow_dispatch`) builds and joins the artifacts
 without publishing anything. Without suitable runners, assemble the release
 on a maintainer machine as described below.
