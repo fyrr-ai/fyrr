@@ -237,8 +237,8 @@ link peaks above 12 GB. They run on Blacksmith runners by default
 `blacksmith-6vcpu-macos-15`), which requires the Blacksmith GitHub App on
 the repository. To use other runners, set the repository variables
 `RELEASE_RUNNER_X86_64`, `RELEASE_RUNNER_AARCH64` and `RELEASE_RUNNER_MACOS`
-to labels with at least 24 GB of memory; `CI_RUNNER_MACOS` selects the
-runner of the macOS CI job. Running
+to labels with at least 24 GB of memory. CI, including its macOS job, runs on
+GitHub's free runners; `CI_RUNNER_MACOS` selects another macOS label. Running
 the workflow by hand (`workflow_dispatch`) builds and joins the artifacts
 without publishing anything. Without suitable runners, assemble the release
 on a maintainer machine as described below.

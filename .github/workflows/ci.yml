@@ -105,12 +105,12 @@ jobs:
 
   # macOS is a development platform (docs/deployment.md): this job proves the
   # port builds and that units, configuration, the CLI and local storage hold
-  # there. Everything else is verified on Linux only. The runner defaults to
-  # Blacksmith; set the repository variable CI_RUNNER_MACOS to use another
-  # macOS arm64 label, for example GitHub's macos-15.
+  # there. Everything else is verified on Linux only. It runs on GitHub's free
+  # macOS runner; set the repository variable CI_RUNNER_MACOS to use another
+  # macOS label. Blacksmith runners are reserved for release builds.
   macos:
     name: scripts/ci subset on macOS
-    runs-on: ${{ vars.CI_RUNNER_MACOS || 'blacksmith-6vcpu-macos-15' }}
+    runs-on: ${{ vars.CI_RUNNER_MACOS || 'macos-15' }}
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
