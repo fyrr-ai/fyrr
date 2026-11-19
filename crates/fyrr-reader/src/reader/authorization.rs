@@ -55,8 +55,14 @@ impl PreparedReader {
             )?;
             let mut eligible = RowAddrTreeMap::new();
             let mut scan = self.dataset.scan();
-            scan.project(&["source_id"])
-                .map_err(|_| PublicationInvalid)?;
+            // `source_id` serves only the hidden-source exclusion and report; with
+            // no hidden source every matching row is admitted and none is reported.
+            if self.hidden_sources.is_empty() {
+                scan.project::<&str>(&[]).map_err(|_| PublicationInvalid)?;
+            } else {
+                scan.project(&["source_id"])
+                    .map_err(|_| PublicationInvalid)?;
+            }
             scan.filter(&predicate)
                 .map_err(|_| AuthorizationUnavailable)?
                 .with_row_id();
@@ -68,6 +74,12 @@ impl PreparedReader {
                 .map_err(|_| StorageUnavailable)?;
             let mut readable_hidden = BTreeSet::new();
             while let Some(batch) = stream.try_next().await.map_err(|_| StorageUnavailable)? {
+                if self.hidden_sources.is_empty() {
+                    for id in ids(&batch)?.values() {
+                        eligible.insert(*id);
+                    }
+                    continue;
+                }
                 let sources = strings(&batch, "source_id")?;
                 for (row, id) in ids(&batch)?.values().iter().enumerate() {
                     let source = sources.value(row);
