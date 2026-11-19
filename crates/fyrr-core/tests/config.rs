@@ -1061,6 +1061,40 @@ fn dense_rq_bits_defaults_to_one_bit_and_is_bounded_without_changing_the_digest(
     }
 }
 #[test]
+fn dense_partition_rows_defaults_to_550_and_is_bounded_without_changing_the_digest() {
+    let legacy = parse(MINIMAL).unwrap().config.namespace;
+    assert_eq!(legacy.dense_partition_rows, 550);
+    for good in ["32", "1000", "4096"] {
+        let configured = parse(&MINIMAL.replace(
+            "[namespace]",
+            &format!("[namespace]\ndense_partition_rows={good}"),
+        ))
+        .unwrap();
+        assert!(errors(&configured).is_empty());
+        assert_eq!(
+            configured.config.namespace.dense_partition_rows.to_string(),
+            good
+        );
+        assert_eq!(
+            configured.config.namespace.retrieval_digest(),
+            legacy.retrieval_digest()
+        );
+    }
+    for bad in ["31", "4097"] {
+        let rejected = parse(&MINIMAL.replace(
+            "[namespace]",
+            &format!("[namespace]\ndense_partition_rows={bad}"),
+        ))
+        .unwrap();
+        assert!(
+            errors(&rejected)
+                .iter()
+                .any(|error| error.contains("namespace.dense_partition_rows")),
+            "{bad}"
+        );
+    }
+}
+#[test]
 fn rescore_depth_keeps_legacy_digest_and_expands_only_at_small_gaps() {
     use fyrr_core::config::RescoreDepth;
     let baseline = parse(MINIMAL).unwrap().config.namespace;

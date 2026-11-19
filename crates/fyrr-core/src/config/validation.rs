@@ -372,6 +372,12 @@ fn ranges(config: &Config, error: &mut impl FnMut(&str, String)) {
             DENSE_RQ_BITS_MAX,
         ),
         (
+            "namespace.dense_partition_rows".to_owned(),
+            u64::from(config.namespace.dense_partition_rows),
+            DENSE_PARTITION_ROWS_MIN,
+            DENSE_PARTITION_ROWS_MAX,
+        ),
+        (
             "embedding.dimensions".to_owned(),
             u64::from(config.embedding.dimensions),
             1,

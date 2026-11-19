@@ -124,6 +124,7 @@ pub(crate) async fn publish(
         chunk_profile: chunk_identity(),
         fts: config.namespace.fts_settings(),
         dense_rq_bits: config.namespace.dense_rq_bits,
+        dense_partition_rows: config.namespace.dense_partition_rows,
         retrieval_policy_digest: config.namespace.retrieval_digest(),
         indexes,
         files,
@@ -192,6 +193,11 @@ pub(super) async fn previous_manifest(
         .is_some_and(|manifest| manifest.dense_rq_bits != config.namespace.dense_rq_bits)
     {
         return Err(WriterError::DenseRqBitsMismatch);
+    }
+    if previous_manifest.as_ref().is_some_and(|manifest| {
+        manifest.dense_partition_rows != config.namespace.dense_partition_rows
+    }) {
+        return Err(WriterError::DensePartitionRowsMismatch);
     }
     Ok(previous_manifest)
 }

@@ -17,6 +17,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   dimension of the vector index. The value is recorded in the content
   manifest (publication contract 3.1) and fixed once a namespace is
   published; see [tuning](docs/tuning.md).
+- `namespace.dense_partition_rows` (32 to 4096, default 550) sets the target
+  rows per partition of the vector index, recorded and fixed like
+  `dense_rq_bits`.
 
 ## [0.1.1] - 2026-11-19
 

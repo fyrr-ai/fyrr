@@ -57,6 +57,13 @@
       "description": "RaBitQ bits per dimension of the vector index; absent in manifests\nwritten before 3.1, which means 1.",
       "default": 1
     },
+    "dense_partition_rows": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "description": "Target rows per partition of the vector index; absent in manifests\nwritten before 3.1, which means 550.",
+      "default": 550
+    },
     "retrieval_policy_digest": {
       "type": "string",
       "description": "Digest of the retrieval policy, including the result composition."

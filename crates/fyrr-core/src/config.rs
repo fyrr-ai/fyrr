@@ -46,6 +46,11 @@ pub const PROVIDER_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
 pub const FTS_MAX_TOKEN_LENGTH_MAX: u64 = 1024;
 /// Bit widths Lance accepts for an IVF_RQ index.
 pub const DENSE_RQ_BITS_MAX: u64 = 9;
+/// Smallest and largest target rows per IVF_RQ partition. The floor keeps
+/// Lance's partition-join threshold (a quarter of the target) above a few
+/// rows; the ceiling is Lance's own default target for IVF_RQ.
+pub const DENSE_PARTITION_ROWS_MIN: u64 = 32;
+pub const DENSE_PARTITION_ROWS_MAX: u64 = 4096;
 pub const DIMENSIONS_MAX: u64 = 8192;
 pub const BATCH_SIZE_MAX: u64 = 2048;
 pub const MAX_RETRIES_MAX: u64 = 10;
@@ -147,6 +152,12 @@ pub struct NamespaceConfig {
     #[serde(default = "default_dense_rq_bits")]
     #[schemars(range(min = 1, max = DENSE_RQ_BITS_MAX))]
     pub dense_rq_bits: u8,
+    /// Target rows per partition of the dense vector index. Fixed when the
+    /// namespace is first published; a writer with another value refuses to
+    /// extend the index.
+    #[serde(default = "default_dense_partition_rows")]
+    #[schemars(range(min = DENSE_PARTITION_ROWS_MIN, max = DENSE_PARTITION_ROWS_MAX))]
+    pub dense_partition_rows: u32,
 }
 
 /// Optional reranking after fusion; absent configuration makes no provider calls.
@@ -1509,6 +1520,9 @@ fn default_fts_max_token_length() -> u32 {
 }
 fn default_dense_rq_bits() -> u8 {
     crate::publication::LEGACY_DENSE_RQ_BITS
+}
+fn default_dense_partition_rows() -> u32 {
+    crate::publication::LEGACY_DENSE_PARTITION_ROWS
 }
 fn default_region() -> String {
     "us-east-1".to_owned()

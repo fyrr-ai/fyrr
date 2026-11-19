@@ -251,6 +251,28 @@ fn manifest_without_dense_rq_bits_means_one_bit() {
 }
 
 #[test]
+fn manifest_without_dense_partition_rows_means_550() {
+    let mut value = common::read_json("fixtures/contracts/content-manifest/manifest.json");
+    assert_eq!(value["dense_partition_rows"], 550);
+    value["dense_partition_rows"] = json!(128);
+    assert_eq!(
+        parse::<ContentManifest>(&value)
+            .unwrap()
+            .dense_partition_rows,
+        128
+    );
+    let object = value.as_object_mut().unwrap();
+    object.remove("dense_partition_rows");
+    object.insert("schema_version".into(), json!("3.0"));
+    assert_eq!(
+        parse::<ContentManifest>(&value)
+            .unwrap()
+            .dense_partition_rows,
+        550
+    );
+}
+
+#[test]
 fn arrow_document_changes_schema_is_checked_before_rows() {
     let schema = document_changes_arrow_schema();
     assert_eq!(
