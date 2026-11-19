@@ -165,9 +165,10 @@
     const { rnd, fbm } = noise;
     const stale = () => !!(opt.stale && opt.stale());
 
-    // one chart pixel = `pix` screen pixels; grows with the viewport so big screens keep the same scale
+    // one chart pixel = 2 screen pixels at every width: a coarser grain on big screens made the print look rough
     const host = canvas.parentElement;
-    const pix = Math.max(2, Math.round(host.clientWidth / 720));
+    const pix = 2;
+    const zoom = 1 + (Math.max(2, Math.round(host.clientWidth / 720)) - 2) * 0.22;   // labels still grow a little with the screen
     const w = Math.max(1, Math.round(host.clientWidth / pix));
     const h = Math.max(1, Math.round(host.clientHeight / pix));
     const N = w * h;
@@ -269,7 +270,7 @@
     await pause(); if (stale()) return null;
     /* 4. features drawn on the engraving --------------------------------------- */
     const classic = !!opt.classic;   // the original desktop layout rules, kept exactly
-    const labels = makeLabeler(w, h, pix, avoid, 1 + (pix - 2) * 0.22, classic);   // labels grow a little with the chart pixel
+    const labels = makeLabeler(w, h, pix, avoid, zoom, classic);
     const taken = [[rose.x, rose.y]];
     if (classic) taken.push([w * 0.2, h * 0.8], [w * 0.84 + 32, h * 0.9]);              // caption, scale bar
     else avoid.forEach(r => taken.push([r[0] + r[2] / 2, r[1] + r[3] / 2]));
