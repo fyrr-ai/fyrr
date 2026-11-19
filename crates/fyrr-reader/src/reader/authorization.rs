@@ -86,7 +86,7 @@ impl PreparedReader {
                 readable_hidden.into_iter().take(64).collect::<Vec<_>>(),
             )
         };
-        // Run containers and exact-size arrays; the rows themselves are unchanged.
+        // Converts containers to runs where that is smaller; the rows are unchanged.
         eligible.optimize();
         let unindexed = Self::unindexed_rows(&eligible, |fragment| {
             self.indexes

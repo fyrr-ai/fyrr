@@ -199,6 +199,9 @@ pub(crate) struct Admission {
     fallback_probes: usize,
 }
 impl Admission {
+    /// Charged per roaring container on top of the serialized bitmap size.
+    const CONTAINER_OVERHEAD_BYTES: usize = 128;
+
     /// Admits nothing; the state of a reader before its first binding.
     pub(crate) fn nothing() -> Self {
         Self {
@@ -236,11 +239,27 @@ impl Admission {
             + self.partition_bytes()
             + self.hidden_bytes()
     }
-    /// What the subject cache charges for retaining this admission: its own
-    /// size, with the bitmaps counted twice because Lance's serialized size
-    /// omits the spare capacity of array containers.
+    /// Roaring containers of both bitmaps. Each costs a container struct, its
+    /// own allocation and allocator slack that the serialized size omits; a
+    /// sparse mask (a few rows per 65,536-row chunk) is mostly that overhead.
+    fn bitmap_containers(&self) -> usize {
+        let containers = |rows: &RowAddrTreeMap| {
+            rows.iter()
+                .map(|(fragment, _)| {
+                    rows.get_fragment_bitmap(*fragment)
+                        .map_or(1, |bitmap| bitmap.statistics().n_containers as usize)
+                })
+                .sum::<usize>()
+        };
+        self.eligible.allow_list().map_or(0, containers) + containers(&self.unindexed)
+    }
+    /// What the subject cache charges for retaining this admission: an
+    /// estimate above its own size. The bitmaps are counted twice because
+    /// Lance's serialized size omits the spare capacity of array containers,
+    /// plus a fixed charge per container for the overhead it also omits.
     pub(crate) fn memory_bound(&self) -> usize {
         1024 + 2 * self.bitmap_bytes()
+            + Self::CONTAINER_OVERHEAD_BYTES * self.bitmap_containers()
             + self.partition_bytes()
             + self.maps.as_ref().map_or(0, |m| m.len() * 128)
             + self.hidden_bytes()
@@ -284,7 +303,7 @@ impl AuthorizationCache {
         Some(result)
     }
     /// Evict before reserving; held entries keep their permits after eviction.
-    /// The caller must not make the retained private copy until this succeeds.
+    /// The caller must not insert the entry until this succeeds.
     fn reserve(
         &mut self,
         key: &AuthorizationCacheKey,

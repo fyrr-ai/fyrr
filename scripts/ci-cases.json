@@ -195,6 +195,10 @@
         "tier": "quick",
         "seconds": 0.005
       },
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::sparse_admission_is_charged_for_every_container": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
       "full:fyrr-reader:lib:fyrr_reader/search::tests::unindexed_fragment_bitmap_equals_the_per_row_tail": {
         "tier": "quick",
         "seconds": 0.1
