@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://fyrr.dev"><img src="docs/assets/banner.png" alt="fyrr: serverless context layer for AI agents. No database. Just a bucket. The logo over a dithered sea chart of knowledge islands named after the apps it indexes." width="100%"></a>
+  <a href="https://fyrr.dev"><img src="docs/assets/banner.png" alt="fyrr: serverless context layer for software factories and AI agents. No database. Just a bucket. The logo over a dithered sea chart of knowledge islands named after the apps it indexes." width="100%"></a>
 </p>
 
 <p align="center"><b>Blazing-fast, serverless context layer for software factories and AI agents. No database. Just a bucket.</b></p>
