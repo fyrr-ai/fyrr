@@ -8,7 +8,7 @@ use crate::error::*;
 use crate::generation::{GenerationState, MemoryPool, NativeSession, PreparationReservation};
 use crate::mirror::{MirrorLease, MirrorRequest, MirrorStore};
 use crate::retrieval::{Candidate, compose};
-use crate::routing::{CentroidRouter, RoutingFallback, strategy};
+use crate::routing::{CentroidRouter, RoutingFallback, strategy, take_probes};
 use crate::storage::*;
 use arrow_array::{Array, Float32Array, RecordBatch, StringArray, UInt32Array, UInt64Array};
 use futures::TryStreamExt;
@@ -55,13 +55,31 @@ fn routing_telemetry(telemetry: &mut Telemetry, fallback: Option<RoutingFallback
     telemetry.routing_fallback = telemetry.routing_fallback.or(fallback);
 }
 
-/// Per-partition admission flags of one vector segment. The map names its
+/// Per-partition admitted row counts of one vector segment. The map names its
 /// segment but does not own the root: a cached admission must not keep a
 /// generation's native index (and the memory its reservation pays for) alive.
 #[derive(Debug)]
 pub struct PartitionMap {
     segment: String,
-    allowed: Vec<bool>,
+    /// Rows the subject may read in each partition; zero means the partition
+    /// is never probed for this subject.
+    admitted: Vec<u32>,
+    /// Rows of the segment's partitions that belong to covered fragments.
+    indexed_rows: u64,
+}
+
+impl PartitionMap {
+    fn allowed_partitions(&self) -> usize {
+        self.admitted.iter().filter(|rows| **rows > 0).count()
+    }
+
+    /// Admitted rows a query should inspect: as many as `nprobes` partitions
+    /// of average size hold, which is what an unrestricted query inspects.
+    fn probe_target(&self, nprobes: usize) -> u64 {
+        let partitions = self.admitted.len().max(1) as u128;
+        u64::try_from(u128::from(self.indexed_rows) * nprobes as u128 / partitions)
+            .unwrap_or(u64::MAX)
+    }
 }
 
 // Completion order selects the sample. Retain the existing embedding and
@@ -220,7 +238,7 @@ impl Admission {
         self.maps.as_ref().map_or(0, |m| {
             std::mem::size_of_val(m.as_slice())
                 + m.iter()
-                    .map(|p| p.allowed.capacity() + p.segment.capacity())
+                    .map(|p| p.admitted.capacity() * 4 + p.segment.capacity())
                     .sum::<usize>()
         })
     }

@@ -74,8 +74,7 @@ impl PreparedReader {
                 || self.admission.maps.as_deref().is_some_and(|maps| {
                     filtered_index_pays(
                         self.selected_rows().max_len().unwrap_or(0),
-                        maps.iter()
-                            .map(|map| map.allowed.iter().filter(|a| **a).count()),
+                        maps.iter().map(PartitionMap::allowed_partitions),
                         self.config.reader.nprobes,
                         shortlist,
                     )
@@ -399,7 +398,7 @@ impl PreparedReader {
             return Err(PartitionMapUnavailable);
         }
         for (map_no, (map, index)) in maps.iter().zip(roots).enumerate() {
-            if map.allowed.len() != index.total_partitions() {
+            if map.admitted.len() != index.total_partitions() {
                 return Err(PartitionMapUnavailable);
             }
             let key = arrow_array::Float16Array::from(
@@ -418,8 +417,8 @@ impl PreparedReader {
                 k: shortlist,
                 lower_bound: None,
                 upper_bound: None,
-                minimum_nprobes: map.allowed.len(),
-                maximum_nprobes: Some(map.allowed.len()),
+                minimum_nprobes: map.admitted.len(),
+                maximum_nprobes: Some(map.admitted.len()),
                 search_effort: 0.5,
                 ef: None,
                 refine_factor: None,
@@ -447,8 +446,9 @@ impl PreparedReader {
                             Arc::new(Float32Array::from_iter_values(
                                 normalized.values().iter().map(|v| v.to_f32()),
                             )),
-                            &map.allowed,
+                            &map.admitted,
                             self.config.reader.nprobes,
+                            map.probe_target(self.config.reader.nprobes),
                         )
                     });
                 routing_telemetry(telemetry, outcome.as_ref().err().copied(), outcome.is_ok());
@@ -463,18 +463,16 @@ impl PreparedReader {
                 let (partitions, distances) = index
                     .find_partitions(&query)
                     .map_err(|_| PartitionMapUnavailable)?;
-                let mut selected = Vec::new();
-                let mut selected_distances = Vec::new();
-                for row in 0..partitions.len() {
-                    let id = partitions.value(row) as usize;
-                    if map.allowed[id] {
-                        selected.push(u32::try_from(id).map_err(|_| PartitionMapUnavailable)?);
-                        selected_distances.push(distances.value(row));
-                        if selected.len() == self.config.reader.nprobes {
-                            break;
-                        }
-                    }
-                }
+                let (selected, selected_distances, _) = take_probes(
+                    partitions
+                        .values()
+                        .iter()
+                        .copied()
+                        .zip(distances.values().iter().copied()),
+                    &map.admitted,
+                    self.config.reader.nprobes,
+                    map.probe_target(self.config.reader.nprobes),
+                );
                 (selected, selected_distances)
             };
             let count = selected.len();
