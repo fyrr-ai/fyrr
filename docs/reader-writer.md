@@ -68,6 +68,7 @@ Pin `concurrency = 2` to retain the previous request and queue limits.
 | `document_max_bytes` | `8MiB` | Larger documents are quarantined. |
 | `envelope_max_rows` | `50000` | At least 1. Provider content batches are further capped by `writer.commit.group_max_rows` and 256. |
 | `envelope_max_bytes` | `256MiB` | Must exceed every document size limit. |
+| `threads` | absent | At least 1. Bounds the CPU threads of each writer process: its async runtime, [Lance](architecture.md#terms)'s compute runtime, the parallel-iterator pool used by vector index builds, and the full-text build (`threads / 2` workers, at least 1, each holding up to 2 GiB while building). Absent uses every CPU. `fyrr writer sync` and `serve` run up to `--jobs` provider workers, each with the same bound. On a small host start with half its cores, for example `threads = 2` on 4 CPUs and 8 GiB. |
 | `worker_memory_max_bytes` | `2GiB` | Committed-memory ceiling of one [provider](architecture.md#terms) worker (`RLIMIT_DATA`). |
 | `credentials` | `{}` | Maps a provider's environment reference to a stored credential name (`fyrr writer credential`). |
 

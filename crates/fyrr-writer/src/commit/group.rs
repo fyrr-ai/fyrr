@@ -432,6 +432,10 @@ async fn build_indexes(
         .stem(config.namespace.fts_stem)
         .remove_stop_words(config.namespace.fts_remove_stop_words)
         .ascii_folding(config.namespace.fts_ascii_folding);
+    let fts = match config.writer.threads {
+        Some(threads) => fts.num_workers(crate::threads::pools(threads).fts_workers),
+        None => fts,
+    };
     for &(column, name, kind, _) in INDEXES {
         if (name == "fts_idx" && !fts_changed) || (name != "fts_idx" && !first) {
             continue;

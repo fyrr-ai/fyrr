@@ -9,6 +9,15 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `writer.threads` (absent by default) bounds the CPU threads of each writer
+  process: its async runtime, Lance's compute runtime, the parallel-iterator
+  pool used by vector index builds and the full-text build workers. See
+  [reader and writer settings](docs/reader-writer.md).
+
+## [0.1.1] - 2026-11-19
+
+### Added
+
 - Releases carry `linux-aarch64` binaries next to `linux-x86_64`, and the
   `fyrr` and `fyrr-reader` images are published for `linux/amd64` and
   `linux/arm64` under one tag.
@@ -96,5 +105,6 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   fixtures, and `scripts/ci`, which checks the reference documentation
   against the binaries.
 
-[Unreleased]: https://github.com/fyrr-ai/fyrr/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/fyrr-ai/fyrr/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/fyrr-ai/fyrr/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/fyrr-ai/fyrr/releases/tag/v0.1.0
