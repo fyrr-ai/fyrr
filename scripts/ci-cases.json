@@ -167,6 +167,18 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::broad_admission_beyond_the_old_row_floor_is_charged_by_size_and_cached": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::cache_hits_share_one_immutable_admission": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::compacted_mask_selects_exactly_the_scanned_rows": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
       "full:fyrr-reader:lib:fyrr_reader/search::tests::lexical_request_mask_precedes_topk_and_preserves_sql_scores": {
         "tier": "quick",
         "seconds": 0.027
@@ -182,6 +194,10 @@
       "full:fyrr-reader:lib:fyrr_reader/search::tests::recall_at_10_accepts_authorized_boundary_ties_in_opposite_lane_order": {
         "tier": "quick",
         "seconds": 0.005
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::unindexed_fragment_bitmap_equals_the_per_row_tail": {
+        "tier": "quick",
+        "seconds": 0.1
       },
       "full:fyrr-reader:lib:fyrr_reader/storage::tests::only_an_absent_directory_needs_no_freshness_proof": {
         "tier": "quick",
