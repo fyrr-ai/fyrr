@@ -1,43 +1,67 @@
 use super::*;
 
-/// A request filter searches the vector index only when the probed
-/// partitions are expected to hold at least this many rows that pass both
-/// authorization and the filter for every rescore candidate. Below it the
-/// request keeps the exact scan of the selected rows, whose cost is bounded
-/// by the selection and whose recall is perfect. The unfiltered query and the
-/// authorization mask are not gated: the partition maps already route them to
-/// partitions that hold admitted rows.
+/// How far a filtered query probes, and whether that beats the exact scan.
 ///
-/// The factor is deliberately high. Partition maps describe the subject's
-/// rows, not the filter's, so under a filter some probes visit partitions
-/// without a selected row, and the selected rows nearest to the query lie
-/// farther away than the unfiltered ones. With an authorization mask of the
-/// same selectivity, recall@10 was 0.55-0.71 at 1 % selectivity when the
-/// probed partitions held about four rescore pools of admitted rows and
-/// 0.74-0.89 at about forty; it passed 0.93 only with wider probing. No
-/// factor is proven safe for scattered or correlated selections, so the
-/// default keeps exact search except for large selections. A rule on the
-/// selection alone would ignore `nprobes`, the partition count and the
-/// rescore depth, which together set how many rows an indexed query inspects.
-const FILTERED_INDEX_MIN_HITS_PER_CANDIDATE: u128 = 64;
+/// The filter's rows are assumed to spread over partitions like the subject's
+/// admitted rows, so the probe walk of [`take_probes`] needs `admitted ÷
+/// selected` times the admitted rows it needs without a filter to see as many
+/// selected rows. The index path reads a RaBitQ code for every row of the
+/// partitions it probes plus the stored vectors of its rescore pool; the exact
+/// scan reads the stored vector of every selected row. The cheaper one wins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct FilterPlan {
+    /// Probe targets are multiplied by `scale.0 / scale.1` (at least 1).
+    pub(super) scale: (u128, u128),
+    pub(super) indexed: bool,
+}
 
-/// Whether an indexed query under a filter that selects `selected` rows is
-/// expected to see enough of them. `allowed_partitions` holds, per vector
-/// segment, how many partitions contain rows the subject may read; a query
-/// probes `nprobes` of them. Selected rows are assumed to spread like the
-/// subject's rows, so the expected number inside the probed partitions is
-/// `selected * probed / allowed`. Integer arithmetic; no per-row work.
-pub(super) fn filtered_index_pays(
-    selected: u64,
-    allowed_partitions: impl Iterator<Item = usize> + Clone,
-    nprobes: usize,
-    shortlist: usize,
-) -> bool {
-    let allowed: u128 = allowed_partitions.clone().map(|n| n as u128).sum();
-    let probed: u128 = allowed_partitions.map(|n| n.min(nprobes) as u128).sum();
-    allowed > 0
-        && u128::from(selected) * probed
-            >= FILTERED_INDEX_MIN_HITS_PER_CANDIDATE * shortlist as u128 * allowed
+impl FilterPlan {
+    pub(super) fn new(
+        maps: &[PartitionMap],
+        selected: u64,
+        nprobes: usize,
+        shortlist: usize,
+        dimensions: u32,
+        rq_bits: u8,
+    ) -> Self {
+        let admitted: u128 = maps.iter().map(|m| u128::from(m.admitted_rows())).sum();
+        let selected = u128::from(selected);
+        let scale = (admitted.max(selected).max(1), selected.max(1));
+        let dims = u128::from(dimensions);
+        // Stored vectors are f16; a RaBitQ code has `bits` per dimension and
+        // a few f32 factors per row.
+        let vector_bytes = 2 * dims;
+        let code_bytes = (dims * u128::from(rq_bits)).div_ceil(8) + 16;
+        let probed_rows: u128 = maps
+            .iter()
+            .map(|map| {
+                let rows_in_allowed = map.rows_in_allowed_partitions();
+                let wanted = u128::from(map.probe_target(nprobes)) * scale.0 / scale.1;
+                let admitted = u128::from(map.admitted_rows()).max(1);
+                rows_in_allowed.min(wanted * rows_in_allowed / admitted)
+            })
+            .sum();
+        let index = probed_rows * code_bytes + shortlist as u128 * vector_bytes;
+        let exact = selected * vector_bytes;
+        Self {
+            scale,
+            indexed: admitted > 0 && selected > 0 && index < exact,
+        }
+    }
+
+    const UNFILTERED: Self = Self {
+        scale: (1, 1),
+        indexed: true,
+    };
+    const EXACT: Self = Self {
+        scale: (1, 1),
+        indexed: false,
+    };
+
+    pub(super) fn target(&self, map: &PartitionMap, nprobes: usize) -> u64 {
+        u64::try_from(u128::from(map.probe_target(nprobes)) * self.scale.0 / self.scale.1)
+            .unwrap_or(u64::MAX)
+    }
 }
 
 enum DenseRefinement {
@@ -68,17 +92,21 @@ impl PreparedReader {
         let depth = &self.config.namespace.retrieval.rescore_depth;
         let mut shortlist = depth.initial(k);
         // An unfiltered request and the authorization mask always use the
-        // index. A filter does so only when its selection is large enough.
-        let indexed = self.maps_enabled
-            && (self.filter_selection.is_none()
-                || self.admission.maps.as_deref().is_some_and(|maps| {
-                    filtered_index_pays(
-                        self.selected_rows().max_len().unwrap_or(0),
-                        maps.iter().map(PartitionMap::allowed_partitions),
-                        self.config.reader.nprobes,
-                        shortlist,
-                    )
-                }));
+        // index. A filter does so when probing reads fewer bytes than the
+        // exact scan of its selection, and then probes further.
+        let plan = match (&self.filter_selection, self.admission.maps.as_deref()) {
+            (None, _) => FilterPlan::UNFILTERED,
+            (Some(_), None) => FilterPlan::EXACT,
+            (Some(_), Some(maps)) => FilterPlan::new(
+                maps,
+                self.selected_rows().max_len().unwrap_or(0),
+                self.config.reader.nprobes,
+                shortlist,
+                self.config.embedding.dimensions,
+                self.config.namespace.dense_rq_bits,
+            ),
+        };
+        let indexed = self.maps_enabled && plan.indexed;
         loop {
             let before = self.mirror.counters();
             let start = Instant::now();
@@ -88,7 +116,7 @@ impl PreparedReader {
                 routing_telemetry(telemetry, Some(RoutingFallback::Absent), false);
             }
             let candidates = if self.preparation_reservation.warm() && indexed {
-                match self.candidates(vector, shortlist, telemetry).await {
+                match self.candidates(vector, shortlist, &plan, telemetry).await {
                     Ok(candidates) => Some(candidates),
                     Err(PartitionMapUnavailable) => None,
                     Err(error) => return Err(error),
@@ -378,6 +406,7 @@ impl PreparedReader {
         &self,
         vector: &[f32],
         shortlist: usize,
+        plan: &FilterPlan,
         telemetry: &mut Telemetry,
     ) -> Result<BTreeSet<u64>> {
         let indexes = &self.indexes;
@@ -448,7 +477,7 @@ impl PreparedReader {
                             )),
                             &map.admitted,
                             self.config.reader.nprobes,
-                            map.probe_target(self.config.reader.nprobes),
+                            plan.target(map, self.config.reader.nprobes),
                         )
                     });
                 routing_telemetry(telemetry, outcome.as_ref().err().copied(), outcome.is_ok());
@@ -471,7 +500,7 @@ impl PreparedReader {
                         .zip(distances.values().iter().copied()),
                     &map.admitted,
                     self.config.reader.nprobes,
-                    map.probe_target(self.config.reader.nprobes),
+                    plan.target(map, self.config.reader.nprobes),
                 );
                 (selected, selected_distances)
             };

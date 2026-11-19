@@ -231,7 +231,7 @@
         "tier": "quick",
         "seconds": 0.1
       },
-      "full:fyrr-reader:lib:fyrr_reader/search::tests::filtered_index_search_needs_many_expected_hits_per_candidate": {
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::filtered_index_search_reads_fewer_bytes_than_the_exact_scan": {
         "tier": "quick",
         "seconds": 0.0
       },

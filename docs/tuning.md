@@ -115,18 +115,24 @@ that hold the caller's rows, not with `nprobes`.
 #### Dense search under a request filter
 
 A search with `sources`, `authors`, `updated_after` or another filter ranks
-only the rows that pass both the caller's permissions and the filter. When
-that selection is small, the dense lane scans exactly those rows: the result
-is the exact top candidates and the cost grows with the selection. When the
-partitions that `nprobes` visits are expected to hold at least 64 selected rows
-for every rescored candidate, the dense lane searches the vector index with
-the selection as its row filter, as it does without a filter, and so returns
-approximate candidates. The expected count is the selection times the probed partitions divided by
-the partitions that hold readable rows, summed over index segments; it assumes
-the selected rows spread like the caller's readable rows. A larger `nprobes`, a smaller `dense_candidates` or
-`rescore_depth`, or a larger selection therefore moves a request to the index.
-If the index returns fewer candidates than wanted, the request is answered by
-the exact scan. Rows the filter or the permissions exclude are never scored.
+only the rows that pass both the caller's permissions and the filter. The dense
+lane takes whichever of two paths reads fewer bytes:
+
+- **Exact scan:** reads the stored vector of every selected row and returns
+  the exact top candidates. Its cost grows with the selection.
+- **Vector index:** reads the compressed code of every row in the partitions
+  it probes, plus the stored vectors of the rescored candidates. It probes
+  partitions nearest first, as for [callers who read few rows](#callers-who-read-few-rows),
+  until they are expected to hold as many selected rows as `nprobes`
+  partitions of average size hold. The estimate assumes the selected rows
+  spread over partitions like the caller's readable rows.
+
+A small selection therefore stays exact; a larger one takes the index and
+returns approximate candidates, with about the recall of an unfiltered search
+at the same `nprobes`. More bits per dimension (`dense_rq_bits`) make the codes
+larger and keep more selections on the exact scan. If the index returns fewer
+candidates than wanted, the request is answered by the exact scan. Rows the
+filter or the permissions exclude are never scored.
 
 Memory sizing must include private prepared readers as well as shared caches.
 The preparation accounting allows 64 bytes per physical Lance row per prepared

@@ -591,32 +591,32 @@ fn pinned_publication_serves_only_its_own_namespace_incarnation() {
 }
 
 #[test]
-fn filtered_index_search_needs_many_expected_hits_per_candidate() {
-    use super::dense::filtered_index_pays;
-    // Every partition is probed: the rows seen are the selected rows, and
-    // the bar is 64 rescore pools of them.
-    let all = || [16usize].into_iter();
-    assert!(!filtered_index_pays(64 * 40 - 1, all(), 16, 40));
-    assert!(filtered_index_pays(64 * 40, all(), 16, 40));
-    assert!(filtered_index_pays(64 * 40, all(), 1 << 16, 40));
-    // Probing a quarter of the partitions sees a quarter of the selection.
-    assert!(!filtered_index_pays(64 * 40 * 4 - 1, all(), 4, 40));
-    assert!(filtered_index_pays(64 * 40 * 4, all(), 4, 40));
-    // A deeper rescore pool raises the bar in proportion.
-    assert!(!filtered_index_pays(64 * 40, all(), 16, 300));
-    assert!(filtered_index_pays(64 * 300, all(), 16, 300));
-    // Segments add up: 4 of 8 partitions probed in total.
-    let two = || [4usize, 4].into_iter();
-    assert!(!filtered_index_pays(64 * 40 * 2 - 1, two(), 2, 40));
-    assert!(filtered_index_pays(64 * 40 * 2, two(), 2, 40));
-    // No admitted partition or no selection never takes the index path.
-    assert!(!filtered_index_pays(u64::MAX, [0usize].into_iter(), 4, 40));
-    assert!(!filtered_index_pays(0, all(), 16, 40));
-    // The product stays exact beyond 64 bits.
-    assert!(filtered_index_pays(
-        u64::MAX,
-        [usize::MAX].into_iter(),
-        usize::MAX,
-        usize::MAX >> 8
-    ));
+fn filtered_index_search_reads_fewer_bytes_than_the_exact_scan() {
+    use super::dense::FilterPlan;
+    let map = |admitted: u32| PartitionMap {
+        segment: String::new(),
+        admitted: vec![admitted; 182],
+        indexed_rows: 182 * 550,
+    };
+    let plan = |maps: &[PartitionMap], selected| FilterPlan::new(maps, selected, 16, 300, 1024, 1);
+    let full = [map(550)];
+    // 16 probes of 550 rows see 8,800 rows. A filter of 1,000 rows would
+    // need the whole index (14 MB of codes) against 2 MB of stored vectors.
+    assert!(!plan(&full, 1_000).indexed);
+    // 9,000 rows: probing ~98,000 rows of codes beats 18 MB of vectors.
+    let nine = plan(&full, 9_000);
+    assert!(nine.indexed);
+    assert_eq!(nine.scale, (100_100, 9_000));
+    assert_eq!(nine.target(&full[0], 16), 8_800 * 100_100 / 9_000);
+    assert!(plan(&full, 50_000).indexed);
+    // A subject with ten rows per partition, filter selecting all of them:
+    // the walk would read every partition, the exact scan 1,820 vectors.
+    assert!(!plan(&[map(10)], 1_820).indexed);
+    // More bits per dimension make codes dearer: 9,000 rows go exact.
+    assert!(!FilterPlan::new(&full, 9_000, 16, 300, 1024, 5).indexed);
+    // No admitted row or no selection never takes the index path.
+    assert!(!plan(&[map(0)], 9_000).indexed);
+    assert!(!plan(&full, 0).indexed);
+    // Without a filter the targets are unscaled.
+    assert_eq!(plan(&full, 100_100).target(&full[0], 16), 8_800);
 }
