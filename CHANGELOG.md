@@ -31,6 +31,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   authorization cache and its workers instead of copying it, and the cache
   charges an entry by an estimate of its size rather than 32 bytes per
   readable row. A subject with millions of readable rows is now cached.
+- A search with a request filter (sources, authors, time range, labels)
+  selects its rows from the scalar indexes of both the filter and the
+  subject's grants. It no longer reads the filter columns of every row the
+  subject may read. Results and authorization are unchanged.
 
 ## [0.1.1] - 2026-11-19
 
