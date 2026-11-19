@@ -62,6 +62,8 @@ const AUTHORIZATION_CACHE_SUBJECTS_MAX: u64 = 1024;
 const CONCURRENCY_MAX: u64 = 16;
 const FILTER_COUNT_MAX_ROWS: u64 = 10_000_000;
 const NPROBES_MAX: u64 = 65536;
+const FTS_SEARCH_CHUNK_MAX: u64 = 1024;
+const FTS_PARTITION_MEMORY_MB_MAX: u64 = 1_048_576;
 const RESPONSE_BYTES_MIN: u64 = 4096;
 const RESPONSE_BYTES_MAX: u64 = 16 * 1024 * 1024;
 
@@ -599,6 +601,15 @@ pub struct ReaderConfig {
     /// IVF centroid routing; exact stays the default until scale calibration.
     #[serde(default)]
     pub routing: RoutingStrategy,
+    /// Full-text partitions scored by one task of a query. With 1 every
+    /// partition of an index segment is its own task, so one query scores
+    /// several partitions at once on spare compute threads. Absent keeps
+    /// Lance's default of 16, which scores up to 16 partitions one after
+    /// another. Scores do not depend on it. It takes effect only for indexes
+    /// of several partitions (`writer.fts_partition_memory_mb`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = FTS_SEARCH_CHUNK_MAX))]
+    pub fts_search_chunk: Option<usize>,
     /// Local immutable-file mirror directory; default
     /// `$XDG_CACHE_HOME/fyrr/<namespace>`, else `$HOME/.cache/fyrr/<namespace>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -680,6 +691,17 @@ pub struct WriterConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1))]
     pub threads: Option<usize>,
+    /// Build target for one full-text index partition, in MiB of builder
+    /// memory per full-text worker (Lance's partition size, 2048 by default).
+    /// A smaller target makes a full-text index of several partitions, which a
+    /// reader can search concurrently (`reader.fts_search_chunk`); it also
+    /// keeps that size when index segments are merged. Scores do not depend on
+    /// it. The count is roughly total builder memory divided by the target.
+    /// Absent keeps Lance's default, usually one partition. Applies to the
+    /// next full-text build and merge, not to an index already published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = FTS_PARTITION_MEMORY_MB_MAX))]
+    pub fts_partition_memory_mb: Option<u32>,
     /// Deleted or revoked content leaves old versions and the mirror within it.
     #[serde(default = "default_purge_window")]
     pub purge_window: ConfigDuration,

@@ -228,6 +228,15 @@ fn example_and_minimal_files_are_valid() {
     let bounded = parse(&format!("{MINIMAL}\n[writer]\nthreads = 2\n")).expect("threads parse");
     assert_eq!(errors(&bounded), Vec::<String>::new());
     assert_eq!(bounded.config.writer.threads, Some(2));
+    assert_eq!(minimal.config.writer.fts_partition_memory_mb, None);
+    assert_eq!(minimal.config.reader.fts_search_chunk, None);
+    let partitioned = parse(&format!(
+        "{MINIMAL}\n[writer]\nfts_partition_memory_mb = 64\n[reader]\nfts_search_chunk = 1\n"
+    ))
+    .expect("full-text partition settings parse");
+    assert_eq!(errors(&partitioned), Vec::<String>::new());
+    assert_eq!(partitioned.config.writer.fts_partition_memory_mb, Some(64));
+    assert_eq!(partitioned.config.reader.fts_search_chunk, Some(1));
     assert_eq!(
         minimal.config.reader.version_check_interval.to_string(),
         "30s"
@@ -325,6 +334,19 @@ fn secrets_in_the_file_are_refused_without_echo() {
 #[test]
 fn cross_field_rules_are_enforced() {
     assert_error("[writer]\nthreads = 0", "writer.threads");
+    assert_error(
+        "[writer]\nfts_partition_memory_mb = 0",
+        "writer.fts_partition_memory_mb",
+    );
+    assert_error(
+        "[writer]\nfts_partition_memory_mb = 1048577",
+        "writer.fts_partition_memory_mb",
+    );
+    assert_error("[reader]\nfts_search_chunk = 0", "reader.fts_search_chunk");
+    assert_error(
+        "[reader]\nfts_search_chunk = 1025",
+        "reader.fts_search_chunk",
+    );
     assert_error(
         "[writer]\npurge_window = \"1h\"\nversion_grace = \"1h\"",
         "writer.purge_window",
