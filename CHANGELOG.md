@@ -31,6 +31,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   authorization cache and its workers instead of copying it, and the cache
   charges an entry by an estimate of its size rather than 32 bytes per
   readable row. A subject with millions of readable rows is now cached.
+- The reader fills its mirror with up to 16 files at once instead of one
+  after another and reads the manifest, policy and identity of a publication
+  together. When a fill fails for a storage reason and another runs out of
+  mirror space in the same batch, the storage failure is the one reported.
 
 ## [0.1.1] - 2026-11-19
 

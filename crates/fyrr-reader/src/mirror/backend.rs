@@ -203,7 +203,77 @@ impl MirrorStore {
     }
 
     // The caller holds global locks; active partial lengths reserve incoming bytes.
+    //
+    // Every change to the counted bytes (a partial's reservation, its rename, an
+    // eviction, a sweep) happens under those same locks, in this or another
+    // process, so a listing taken here is exact. It is read without a stat: a
+    // `.blob` has the size of the object its name addresses, and a `.partial` is
+    // reserved at its final length, so a file already seen under the same name
+    // and inode keeps its size. Only the evicting path below scans the directory
+    // and the leases.
     fn make_room(&self, incoming: u64) -> Result<bool> {
+        if self.used_bytes()?.saturating_add(incoming) <= self.max_bytes {
+            return Ok(true);
+        }
+        self.make_room_by_eviction(incoming)
+    }
+
+    // Apparent bytes of every `.blob` and `.partial` seen under its name. A name
+    // fixes its size (mirrored objects are immutable), so an entry is statted
+    // once; a dead partial stays counted until the eviction path or a sweep
+    // removes it, which only makes this count conservative.
+    fn used_bytes(&self) -> Result<u64> {
+        #[cfg(test)]
+        self.room_probes.listings.fetch_add(1, Ordering::SeqCst);
+        let mut known = crate::sync::lock(&self.sizes);
+        let mut seen = BTreeMap::new();
+        for entry in std::fs::read_dir(&self.directory).map_err(|_| Self::failure())? {
+            let entry = entry.map_err(|_| Self::failure())?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let partial = Self::cache_name(&name, ".partial");
+            if !partial && !Self::cache_name(&name, ".blob") {
+                continue;
+            }
+            let inode = std::os::unix::fs::DirEntryExt::ino(&entry);
+            if let Some(&(known_inode, size)) = known.get(&name)
+                && known_inode == inode
+            {
+                seen.insert(name, (inode, size));
+                continue;
+            }
+            #[cfg(test)]
+            self.room_probes.stats.fetch_add(1, Ordering::SeqCst);
+            let path = entry.path();
+            if partial {
+                let lock = Self::private_file(&path.with_extension("download"), true)
+                    .map_err(|_| Self::failure())?;
+                match lock.try_lock() {
+                    Ok(()) => {
+                        Self::remove_partial(&path).map_err(|_| Self::failure())?;
+                        Self::remove_partial(&path.with_extension("download"))
+                            .map_err(|_| Self::failure())?;
+                        continue;
+                    }
+                    Err(std::fs::TryLockError::WouldBlock) => {}
+                    Err(_) => return Err(Self::failure()),
+                }
+            }
+            let meta = path.symlink_metadata().map_err(|_| Self::failure())?;
+            if !Self::owned_private_file(&meta) {
+                return Err(Self::failure());
+            }
+            seen.insert(name, (inode, meta.len()));
+        }
+        let used = seen.values().map(|&(_, size)| size).sum();
+        *known = seen;
+        Ok(used)
+    }
+
+    // The exact accounting: idle partials are removed, unpinned blobs are
+    // evicted oldest first until the incoming bytes fit.
+    fn make_room_by_eviction(&self, incoming: u64) -> Result<bool> {
+        #[cfg(test)]
+        self.room_probes.scans.fetch_add(1, Ordering::SeqCst);
         let pinned_files = self.live_files().map_err(|_| Self::failure())?;
         let mut entries = Vec::new();
         let mut used = 0;

@@ -463,6 +463,22 @@ mod recall;
 #[path = "reader/routing.rs"]
 mod routing;
 
+/// Index opens kept in flight at once. Each is a few small reads (footers and
+/// lookup tables), and Lance bounds its own I/O below them.
+const INDEX_OPEN_CONCURRENCY: usize = 16;
+
+/// The index kinds every namespace carries, in the order they are verified.
+const INDEX_KINDS: [(&str, &str, IndexType); 8] = [
+    ("readers", "readers_idx", IndexType::LabelList),
+    ("searchable_text", Layout::FTS_INDEX, IndexType::Inverted),
+    ("source_uri", "source_uri_idx", IndexType::BTree),
+    ("source_type", "source_type_idx", IndexType::Bitmap),
+    ("project", "project_idx", IndexType::Bitmap),
+    ("author", "author_idx", IndexType::Bitmap),
+    ("updated_at", "updated_at_idx", IndexType::BTree),
+    ("attributes", "attributes_idx", IndexType::LabelList),
+];
+
 /// Verify native index kinds and coverage without opening a query embedding cache.
 pub async fn verify_indices(
     dataset: &Dataset,
@@ -473,47 +489,85 @@ pub async fn verify_indices(
         .load_indices()
         .await
         .map_err(|_| IndexVerificationError::StorageUnavailable)?;
-    for (column, name, kind) in [
-        ("readers", "readers_idx", IndexType::LabelList),
-        ("searchable_text", Layout::FTS_INDEX, IndexType::Inverted),
-        ("source_uri", "source_uri_idx", IndexType::BTree),
-        ("source_type", "source_type_idx", IndexType::Bitmap),
-        ("project", "project_idx", IndexType::Bitmap),
-        ("author", "author_idx", IndexType::Bitmap),
-        ("updated_at", "updated_at_idx", IndexType::BTree),
-        ("attributes", "attributes_idx", IndexType::LabelList),
-    ] {
+    let fts_compatible = manifest.fts == config.namespace.fts_settings()
+        && manifest.retrieval_policy_digest == config.namespace.retrieval_digest();
+    let fragments: Vec<u32> = dataset
+        .manifest()
+        .fragments
+        .iter()
+        .map(|f| coverage_fragment(f.id))
+        .collect();
+    verify_loaded_indices(
+        &indexes,
+        &fragments,
+        fts_compatible,
+        |column, index| async move {
+            dataset
+                .open_generic_index(column, &index.uuid, &NoOpMetricsCollector)
+                .await
+                .map(|opened| opened.index_type())
+                .map_err(|_| IndexVerificationError::StorageUnavailable)
+        },
+    )
+    .await?;
+    Ok(indexes)
+}
+
+/// The checks of `verify_indices` over loaded index metadata. Opening is the
+/// only I/O: up to `INDEX_OPEN_CONCURRENCY` opens run at once, in the order the
+/// checks consume them, and the checks run in the fixed kind order. The error
+/// reported is therefore the one a strictly sequential pass reports: an open or
+/// kind failure of an earlier index, or a coverage or compatibility failure of
+/// an earlier kind, always wins over anything later.
+async fn verify_loaded_indices<F, Fut>(
+    indexes: &[lance_table::format::IndexMetadata],
+    fragments: &[u32],
+    fts_compatible: bool,
+    open: F,
+) -> Result<(), IndexVerificationError>
+where
+    F: Fn(&'static str, lance_table::format::IndexMetadata) -> Fut,
+    Fut: std::future::Future<Output = Result<IndexType, IndexVerificationError>>,
+{
+    use futures::StreamExt;
+    let mut queued = std::collections::VecDeque::new();
+    for (column, name, _) in INDEX_KINDS {
+        for index in indexes.iter().filter(|i| i.name == name) {
+            queued.push_back((column, index.clone()));
+        }
+    }
+    let mut opened = futures::stream::FuturesOrdered::new();
+    for (column, name, kind) in INDEX_KINDS {
         let error = if column == "readers" {
             IndexVerificationError::ReadersIndexMissing
         } else {
             IndexVerificationError::IncompatibleIndex
         };
-        if name == Layout::FTS_INDEX
-            && (manifest.fts != config.namespace.fts_settings()
-                || manifest.retrieval_policy_digest != config.namespace.retrieval_digest())
-        {
+        if name == Layout::FTS_INDEX && !fts_compatible {
             return Err(IndexVerificationError::IncompatibleIndex);
         }
-        for index in indexes.iter().filter(|i| i.name == name) {
-            let actual = dataset
-                .open_generic_index(column, &index.uuid, &NoOpMetricsCollector)
-                .await
-                .map_err(|_| IndexVerificationError::StorageUnavailable)?;
-            if actual.index_type() != kind {
+        for _ in indexes.iter().filter(|i| i.name == name) {
+            while opened.len() < INDEX_OPEN_CONCURRENCY
+                && let Some((column, index)) = queued.pop_front()
+            {
+                opened.push_back(open(column, index));
+            }
+            let Some(actual) = opened.next().await else {
+                unreachable!("one open is queued for every index of every kind");
+            };
+            if actual? != kind {
                 return Err(error);
             }
         }
-        let coverage = coverage(&indexes, name);
-        if dataset
-            .manifest()
-            .fragments
+        let coverage = coverage(indexes, name);
+        if fragments
             .iter()
-            .any(|f| !coverage.contains(&coverage_fragment(f.id)))
+            .any(|fragment| !coverage.contains(fragment))
         {
             return Err(error);
         }
     }
-    Ok(indexes)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -531,3 +585,7 @@ mod routing_tests;
 #[cfg(test)]
 #[path = "reader/tests/authorization_cache_tests.rs"]
 mod authorization_cache_tests;
+
+#[cfg(all(test, feature = "test-store"))]
+#[path = "reader/tests/open_tests.rs"]
+mod open_tests;

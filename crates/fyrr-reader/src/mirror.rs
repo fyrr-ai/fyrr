@@ -27,6 +27,8 @@ pub struct MirrorStore {
     verified_read: Arc<crate::serve::TestGate>,
     #[cfg(test)]
     sweep_runs: Arc<AtomicU64>,
+    #[cfg(test)]
+    room_probes: Arc<RoomProbes>,
     directory: PathBuf,
     max_bytes: u64,
     oversized: Arc<std::sync::Mutex<std::collections::BTreeSet<PathBuf>>>,
@@ -36,9 +38,23 @@ pub struct MirrorStore {
     counters: Arc<std::sync::RwLock<Arc<IoCounters>>>,
     totals: Arc<IoCounters>,
     verified: Arc<std::sync::Mutex<BTreeMap<PathBuf, CachedFile>>>,
+    /// Apparent sizes of the `.blob` and `.partial` files seen by `make_room`.
+    sizes: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
     dataset_cache_key: Arc<std::sync::Mutex<Option<(String, String)>>>,
     /// The content publication that version manifest entries are bound to.
     publication: Option<String>,
+}
+
+/// Counts the directory work of `make_room`, for tests.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct RoomProbes {
+    /// Names-only directory listings of the cheap used-bytes check.
+    listings: AtomicU64,
+    /// Entries stat-ed because the check had not seen them before.
+    stats: AtomicU64,
+    /// Full directory scans: every entry stat-ed, every lease read.
+    scans: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -387,6 +403,8 @@ impl MirrorStore {
             verified_read: Arc::default(),
             #[cfg(test)]
             sweep_runs: Arc::default(),
+            #[cfg(test)]
+            room_probes: Arc::default(),
             directory,
             max_bytes,
             oversized: Arc::default(),
@@ -396,6 +414,7 @@ impl MirrorStore {
             counters: Arc::default(),
             totals: Arc::default(),
             verified: Arc::default(),
+            sizes: Arc::default(),
             dataset_cache_key: Arc::default(),
             publication: None,
         })
@@ -841,6 +860,21 @@ impl MirrorStore {
             return result.map_err(std::io::Error::other);
         }
     }
+    /// Files filled at once by `prewarm`. A download streams its body to disk in
+    /// chunks, so one in-flight fill holds a few buffers and a sparse file of its
+    /// own size, not the object. Sixteen streams are within what one host's
+    /// network sustains (about 27 MB/s each was measured for a single stream) and
+    /// within the bounded S3 client pool. The byte budget does not depend on this
+    /// number: every fill reserves its length under the global locks first.
+    const PREWARM_CONCURRENCY: usize = 16;
+
+    /// Fill and verify every manifest file. At most `PREWARM_CONCURRENCY` files
+    /// are filled at once. The first failure stops new fills and in-flight
+    /// fills finish. Fills reserve their bytes in the order their responses
+    /// arrive, so under a tight budget a later file can take the room of an
+    /// earlier one: a capacity failure may then be a consequence of another
+    /// failure in the same batch. A failure other than capacity is therefore
+    /// reported first; within one kind, the file earliest in manifest order.
     pub(crate) async fn prewarm(
         &self,
         store: Arc<dyn ObjectStore>,
@@ -850,32 +884,70 @@ impl MirrorStore {
             .clone()
             .ok_or(StorageUnavailable)?;
         let store = self.wrap(&prefix, store);
-        for file in files {
-            let path = Path::from(format!("{root}/{}", file.path));
-            let result = store
-                .get_opts(
-                    &path,
-                    GetOptions {
-                        head: true,
-                        ..Default::default()
-                    },
-                )
-                .await
-                .map_err(|_| StorageUnavailable)?;
-            if result.meta.size != file.size_bytes {
-                return Err(StorageUnavailable);
-            }
-            let blob = self.directory.join(
-                self.blob_name(&prefix, path.as_ref())
-                    .ok_or(StorageUnavailable)?,
-            );
-            if !self
-                .verified_file(&blob)
-                .await
-                .map_err(|_| StorageUnavailable)?
+        let mut pending = files.iter().enumerate();
+        let mut running = futures::stream::FuturesUnordered::new();
+        // Ordered by (capacity failure, manifest index); the smallest wins.
+        let mut first: Option<((bool, usize), ReaderError)> = None;
+        loop {
+            while first.is_none()
+                && running.len() < Self::PREWARM_CONCURRENCY
+                && let Some((index, file)) = pending.next()
             {
-                return Err(MirrorCapacityExhausted);
+                running.push(self.prewarm_file(&store, &prefix, &root, index, file));
             }
+            let Some((index, result)) = running.next().await else {
+                break;
+            };
+            if let Err(error) = result {
+                let rank = (error == MirrorCapacityExhausted, index);
+                if first.as_ref().is_none_or(|(earlier, _)| rank < *earlier) {
+                    first = Some((rank, error));
+                }
+            }
+        }
+        first.map_or(Ok(()), |(_, error)| Err(error))
+    }
+    async fn prewarm_file(
+        &self,
+        store: &Arc<dyn ObjectStore>,
+        prefix: &str,
+        root: &str,
+        index: usize,
+        file: &fyrr_core::envelope::FileRef,
+    ) -> (usize, Result<(), ReaderError>) {
+        (index, self.fill_file(store, prefix, root, file).await)
+    }
+    async fn fill_file(
+        &self,
+        store: &Arc<dyn ObjectStore>,
+        prefix: &str,
+        root: &str,
+        file: &fyrr_core::envelope::FileRef,
+    ) -> Result<(), ReaderError> {
+        let path = Path::from(format!("{root}/{}", file.path));
+        let result = store
+            .get_opts(
+                &path,
+                GetOptions {
+                    head: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|_| StorageUnavailable)?;
+        if result.meta.size != file.size_bytes {
+            return Err(StorageUnavailable);
+        }
+        let blob = self.directory.join(
+            self.blob_name(prefix, path.as_ref())
+                .ok_or(StorageUnavailable)?,
+        );
+        if !self
+            .verified_file(&blob)
+            .await
+            .map_err(|_| StorageUnavailable)?
+        {
+            return Err(MirrorCapacityExhausted);
         }
         Ok(())
     }
