@@ -20,7 +20,14 @@ use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
 
 /// The publication contract version (manifest and head) written by this build.
-pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(3, 0);
+pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(3, 1);
+
+/// Bit width of publications that predate `ContentManifest::dense_rq_bits`.
+pub const LEGACY_DENSE_RQ_BITS: u8 = 1;
+
+/// Target partition rows of publications that predate
+/// `ContentManifest::dense_partition_rows`.
+pub const LEGACY_DENSE_PARTITION_ROWS: u32 = 550;
 
 /// Immutable policy generation used by the reader's admission path.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -102,6 +109,14 @@ pub struct ContentManifest {
     pub embedding: EmbeddingIdentity,
     pub chunk_profile: ChunkProfileIdentity,
     pub fts: FtsSettings,
+    /// RaBitQ bits per dimension of the vector index; absent in manifests
+    /// written before 3.1, which means 1.
+    #[serde(default = "legacy_dense_rq_bits")]
+    pub dense_rq_bits: u8,
+    /// Target rows per partition of the vector index; absent in manifests
+    /// written before 3.1, which means 550.
+    #[serde(default = "legacy_dense_partition_rows")]
+    pub dense_partition_rows: u32,
     /// Digest of the retrieval policy, including the result composition.
     pub retrieval_policy_digest: String,
     pub indexes: Vec<IndexIdentity>,
@@ -140,6 +155,14 @@ pub struct CommitLineage {
 pub struct LineageTransaction {
     pub version: u64,
     pub transaction_id: String,
+}
+
+fn legacy_dense_rq_bits() -> u8 {
+    LEGACY_DENSE_RQ_BITS
+}
+
+fn legacy_dense_partition_rows() -> u32 {
+    LEGACY_DENSE_PARTITION_ROWS
 }
 
 /// FTS analyzer settings, part of the publication identity.

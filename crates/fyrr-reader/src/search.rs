@@ -521,6 +521,10 @@ pub async fn verify_indices(
 mod tests;
 
 #[cfg(test)]
+#[path = "reader/tests/fts_partition_tests.rs"]
+mod fts_partition_tests;
+
+#[cfg(test)]
 #[path = "reader/tests/routing_tests.rs"]
 mod routing_tests;
 

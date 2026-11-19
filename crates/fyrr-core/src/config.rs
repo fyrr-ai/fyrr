@@ -31,7 +31,7 @@ use crate::units::{ByteSize, ConfigDuration};
 
 /// Configuration schema revision: adding a storage backend changes the URI
 /// contract beyond an optional field, so it starts a new major revision.
-pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(5, 0);
+pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(5, 1);
 
 /// Namespace IDs: lowercase letters, digits and `-`, at most 63 bytes.
 pub const NAMESPACE_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
@@ -44,6 +44,13 @@ pub const SOURCE_ID_PATTERN: &str = r"^[a-z0-9][a-z0-9_-]{0,62}$";
 /// Connector provider names.
 pub const PROVIDER_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
 pub const FTS_MAX_TOKEN_LENGTH_MAX: u64 = 1024;
+/// Bit widths Lance accepts for an IVF_RQ index.
+pub const DENSE_RQ_BITS_MAX: u64 = 9;
+/// Smallest and largest target rows per IVF_RQ partition. The floor keeps
+/// Lance's partition-join threshold (a quarter of the target) above a few
+/// rows; the ceiling is Lance's own default target for IVF_RQ.
+pub const DENSE_PARTITION_ROWS_MIN: u64 = 32;
+pub const DENSE_PARTITION_ROWS_MAX: u64 = 4096;
 pub const DIMENSIONS_MAX: u64 = 8192;
 pub const BATCH_SIZE_MAX: u64 = 2048;
 pub const MAX_RETRIES_MAX: u64 = 10;
@@ -62,6 +69,8 @@ const AUTHORIZATION_CACHE_SUBJECTS_MAX: u64 = 1024;
 const CONCURRENCY_MAX: u64 = 16;
 const FILTER_COUNT_MAX_ROWS: u64 = 10_000_000;
 const NPROBES_MAX: u64 = 65536;
+const FTS_SEARCH_CHUNK_MAX: u64 = 1024;
+const FTS_PARTITION_MEMORY_MB_MAX: u64 = 1_048_576;
 const RESPONSE_BYTES_MIN: u64 = 4096;
 const RESPONSE_BYTES_MAX: u64 = 16 * 1024 * 1024;
 
@@ -139,6 +148,18 @@ pub struct NamespaceConfig {
     /// Publication-level ASCII folding; changing it rebuilds the FTS index.
     #[serde(default)]
     pub fts_ascii_folding: bool,
+    /// RaBitQ bits per dimension of the dense vector index. Fixed when the
+    /// namespace is first published; a writer with another value refuses to
+    /// extend the index.
+    #[serde(default = "default_dense_rq_bits")]
+    #[schemars(range(min = 1, max = DENSE_RQ_BITS_MAX))]
+    pub dense_rq_bits: u8,
+    /// Target rows per partition of the dense vector index. Fixed when the
+    /// namespace is first published; a writer with another value refuses to
+    /// extend the index.
+    #[serde(default = "default_dense_partition_rows")]
+    #[schemars(range(min = DENSE_PARTITION_ROWS_MIN, max = DENSE_PARTITION_ROWS_MAX))]
+    pub dense_partition_rows: u32,
 }
 
 /// Optional reranking after fusion; absent configuration makes no provider calls.
@@ -599,6 +620,15 @@ pub struct ReaderConfig {
     /// IVF centroid routing; exact stays the default until scale calibration.
     #[serde(default)]
     pub routing: RoutingStrategy,
+    /// Full-text partitions scored by one task of a query. With 1 every
+    /// partition of an index segment is its own task, so one query scores
+    /// several partitions at once on spare compute threads. Absent keeps
+    /// Lance's default of 16, which scores up to 16 partitions one after
+    /// another. Scores do not depend on it. It takes effect only for indexes
+    /// of several partitions (`writer.fts_partition_memory_mb`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = FTS_SEARCH_CHUNK_MAX))]
+    pub fts_search_chunk: Option<usize>,
     /// Local immutable-file mirror directory; default
     /// `$XDG_CACHE_HOME/fyrr/<namespace>`, else `$HOME/.cache/fyrr/<namespace>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -674,6 +704,23 @@ pub struct WriterConfig {
     /// Per-worker committed-memory ceiling (RLIMIT_DATA); virtual address reservations are unrestricted.
     #[serde(default = "default_worker_memory_max_bytes")]
     pub worker_memory_max_bytes: ByteSize,
+    /// CPU threads of each writer process: its async runtime, Lance's compute
+    /// runtime, the parallel-iterator pool and the full-text build workers.
+    /// Absent uses every CPU of the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub threads: Option<usize>,
+    /// Build target for one full-text index partition, in MiB of builder
+    /// memory per full-text worker (Lance's partition size, 2048 by default).
+    /// A smaller target makes a full-text index of several partitions, which a
+    /// reader can search concurrently (`reader.fts_search_chunk`); it also
+    /// keeps that size when index segments are merged. Scores do not depend on
+    /// it. The count is roughly total builder memory divided by the target.
+    /// Absent keeps Lance's default, usually one partition. Applies to the
+    /// next full-text build and merge, not to an index already published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = FTS_PARTITION_MEMORY_MB_MAX))]
+    pub fts_partition_memory_mb: Option<u32>,
     /// Deleted or revoked content leaves old versions and the mirror within it.
     #[serde(default = "default_purge_window")]
     pub purge_window: ConfigDuration,
@@ -1492,6 +1539,12 @@ fn holds_table(value: &toml::Value) -> bool {
 
 fn default_fts_max_token_length() -> u32 {
     40
+}
+fn default_dense_rq_bits() -> u8 {
+    crate::publication::LEGACY_DENSE_RQ_BITS
+}
+fn default_dense_partition_rows() -> u32 {
+    crate::publication::LEGACY_DENSE_PARTITION_ROWS
 }
 fn default_region() -> String {
     "us-east-1".to_owned()

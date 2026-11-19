@@ -50,6 +50,7 @@ pub mod source;
 pub mod sync;
 pub mod sync_lease;
 mod telemetry;
+mod threads;
 pub mod worker;
 
 use fyrr_core::config::{Config, Issue};

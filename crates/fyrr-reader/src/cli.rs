@@ -37,6 +37,8 @@ pub fn run(command: &ReaderCommand, config: &Path) -> ExitCode {
         Ok(loaded) => loaded,
         Err(code) => return code,
     };
+    // No runtime, Lance call or worker thread exists yet.
+    crate::fts_layout::apply(&loaded.config.reader);
     // SDK dispatch stays ordered on one reactor; native work uses the bounded workers.
     let runtime = if matches!(command, ReaderCommand::Serve) {
         tokio::runtime::Builder::new_current_thread()

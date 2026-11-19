@@ -98,9 +98,9 @@ and cursors; each step is idempotent, so an interrupted purge is run again.
 
 ## Upgrades
 
-The current configuration schema is `5.0`, the prepared-envelope and
+The current configuration schema is `5.1`, the prepared-envelope and
 rejection contracts are `4.0`, and content manifests and serving heads are
-`3.0`. Embedding settings are required even for the default BGE-M3 model.
+`3.1`. Embedding settings are required even for the default BGE-M3 model.
 Republish older namespaces before using this build.
 
 Configuration schema `4.0` changes the default retrieval policy to

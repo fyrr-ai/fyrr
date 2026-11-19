@@ -235,6 +235,10 @@
         "tier": "quick",
         "seconds": 0.234
       },
+      "full:fyrr-writer:lib:fyrr_writer/threads::tests::threads_size_every_pool_and_the_full_text_workers": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-writer:lib:fyrr_writer/batch::tests::contract_rows_convert_and_count": {
         "tier": "quick",
         "seconds": 0.01
@@ -378,6 +382,14 @@
       "full:fyrr-writer:lib:fyrr_writer/narrowing_tests::narrowing_preserves_existing_low_bits": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::group::tests::vector_index_uses_the_configured_rabitq_bits": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::group::tests::vector_index_uses_the_configured_partition_rows": {
+        "tier": "quick",
+        "seconds": 0.01
       },
       "full:fyrr-writer:lib:fyrr_writer/commit::history::tests::replacement_read_preserves_rejection_fences": {
         "tier": "quick",
@@ -606,6 +618,34 @@
       "full:fyrr-reader:lib:fyrr_reader/storage::diagnostics::tests::diagnostic_sink_refuses_symlinks_and_public_files": {
         "tier": "quick",
         "seconds": 1.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/fts_layout::tests::chunk_follows_lance_parsing": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/fts_layout::tests::layout_reports_whether_one_query_can_run_in_parallel": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/fts_layout::tests::apply_sets_the_variable_lance_reads_and_absent_leaves_it": {
+        "tier": "quick",
+        "seconds": 0.3
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::fts_partition_tests::target_makes_several_partitions_and_scores_do_not_depend_on_them": {
+        "tier": "quick",
+        "seconds": 0.7
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::fts_partition_tests::partition_search_width_does_not_change_scores": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/threads::tests::partition_target_sets_lances_per_worker_partition_size": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::group::fts_partition_tests::absent_target_keeps_one_partition_and_a_set_target_keeps_several_through_merges": {
+        "tier": "quick",
+        "seconds": 0.5
       }
     },
     "children": {
@@ -645,6 +685,24 @@
         "parents": [
           "full:fyrr-writer:lib:fyrr_writer/embedding::tests::local_cache_crash_boundaries_recover_as_misses"
         ]
+      },
+      "full:fyrr-reader:lib:fyrr_reader/fts_layout::tests::apply_child_process": {
+        "tier": "quick",
+        "parents": [
+          "full:fyrr-reader:lib:fyrr_reader/fts_layout::tests::apply_sets_the_variable_lance_reads_and_absent_leaves_it"
+        ]
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::fts_partition_tests::identity_report_child_process": {
+        "tier": "quick",
+        "parents": [
+          "full:fyrr-reader:lib:fyrr_reader/search::fts_partition_tests::partition_search_width_does_not_change_scores"
+        ]
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::group::fts_partition_tests::partition_child_process": {
+        "tier": "quick",
+        "parents": [
+          "full:fyrr-writer:lib:fyrr_writer/commit::group::fts_partition_tests::absent_target_keeps_one_partition_and_a_set_target_keeps_several_through_merges"
+        ]
       }
     }
   },
@@ -667,6 +725,14 @@
       "full:fyrr-core:test:config/cross_field_rules_are_enforced": {
         "tier": "quick",
         "seconds": 0.001
+      },
+      "full:fyrr-core:test:config/dense_rq_bits_defaults_to_one_bit_and_is_bounded_without_changing_the_digest": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
+      "full:fyrr-core:test:config/dense_partition_rows_defaults_to_550_and_is_bounded_without_changing_the_digest": {
+        "tier": "quick",
+        "seconds": 0.01
       },
       "full:fyrr-core:test:config/every_schema_constraint_is_enforced": {
         "tier": "quick",
@@ -773,6 +839,14 @@
       "full:fyrr-core:test:contracts/arrow_nested_additions_follow_the_minor_rule": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "full:fyrr-core:test:contracts/manifest_without_dense_rq_bits_means_one_bit": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
+      "full:fyrr-core:test:contracts/manifest_without_dense_partition_rows_means_550": {
+        "tier": "quick",
+        "seconds": 0.01
       },
       "full:fyrr-core:test:contracts/committed_compat_fixtures_behave": {
         "tier": "quick",
