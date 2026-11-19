@@ -525,6 +525,10 @@ mod tests;
 mod fts_partition_tests;
 
 #[cfg(test)]
+#[path = "reader/tests/filter_selection_tests.rs"]
+mod filter_selection_tests;
+
+#[cfg(test)]
 #[path = "reader/tests/routing_tests.rs"]
 mod routing_tests;
 
