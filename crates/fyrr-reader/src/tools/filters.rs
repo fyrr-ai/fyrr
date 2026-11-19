@@ -101,7 +101,7 @@ impl PreparedReader {
         scan.filter(&predicate)
             .map_err(|_| IncompatibleIndex)?
             .with_row_id()
-            .with_row_id_prefilter(self.eligible.clone());
+            .with_row_id_prefilter(self.admission.eligible.clone());
         let mut allowed = RowAddrTreeMap::new();
         #[cfg(test)]
         self.test_hooks.filter_scan.wait_once().await;
@@ -111,7 +111,7 @@ impl PreparedReader {
             .map_err(|_| StorageUnavailable)?;
         while let Some(batch) = stream.try_next().await.map_err(|_| StorageUnavailable)? {
             for id in ids(&batch)?.values() {
-                if !self.eligible.selected(*id) {
+                if !self.admission.eligible.selected(*id) {
                     return Err(AuthorizationUnavailable);
                 }
                 allowed.insert(*id);

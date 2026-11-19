@@ -28,7 +28,7 @@ impl PreparedReader {
     pub(crate) fn selected_rows(&self) -> &RowAddrMask {
         self.filter_selection
             .as_ref()
-            .map_or(&self.eligible, |filter| &filter.eligible)
+            .map_or(&self.admission.eligible, |filter| &filter.eligible)
     }
     pub(crate) fn request_predicate(&self) -> Result<String> {
         let authorization = self.admission_predicate()?;

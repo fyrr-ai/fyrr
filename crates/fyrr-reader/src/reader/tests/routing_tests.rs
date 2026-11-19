@@ -73,7 +73,7 @@ async fn routing_fallbacks_on_storage() {
         "query":"routing-only query", "sources":all_sources, "limit":10
     }))
     .unwrap();
-    let base_rows = reader.eligible.max_len();
+    let base_rows = reader.admission.eligible.max_len();
     let selected = reader.search_input(&filtered, None, None).await.unwrap();
     assert_eq!(selected.hits, exact);
     assert_eq!(
@@ -81,7 +81,7 @@ async fn routing_fallbacks_on_storage() {
         Some(RoutingMethod::Exact)
     );
     assert_eq!(selected.metadata.telemetry.routing_fallback, None);
-    assert_eq!(reader.eligible.max_len(), base_rows);
+    assert_eq!(reader.admission.eligible.max_len(), base_rows);
     assert!(reader.filter_selection.is_none());
 
     reader.config.reader.nprobes = 65536;

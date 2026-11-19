@@ -119,7 +119,7 @@ async fn reference_rows(reader: &PreparedReader, vector: &[f32]) -> Vec<(String,
         .filter(&reader.request_predicate().unwrap())
         .unwrap()
         .prefilter(true)
-        .with_row_id_prefilter(reader.eligible.clone());
+        .with_row_id_prefilter(reader.admission.eligible.clone());
     scan.project(&["root_id", "_distance"]).unwrap();
     let batch = scan.try_into_batch().await.unwrap();
     let distances = batch

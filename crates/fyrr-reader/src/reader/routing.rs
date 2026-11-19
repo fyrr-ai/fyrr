@@ -35,7 +35,7 @@ impl PreparedReader {
                 .preparation_reservation
                 .settle(roots.iter().map(|root| root.deep_size_of() as u64).sum())?
         {
-            self.maps = None;
+            self.maps_enabled = false;
             self.vector_roots = Arc::default();
             self.centroid_routers = Arc::default();
             self.generation_state = GenerationState::Cold;

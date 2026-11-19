@@ -138,7 +138,14 @@ impl ParkedEmbedding {
         });
         let mut reader = PreparedReader::open(&config).await.unwrap();
         reader.prewarm().await.unwrap();
-        let probe_row = reader.eligible.iter_addrs().unwrap().next().unwrap().into();
+        let probe_row = reader
+            .admission
+            .eligible
+            .iter_addrs()
+            .unwrap()
+            .next()
+            .unwrap()
+            .into();
         let hooks = reader.test_hooks.clone();
         let memory = reader.preparation_budget.permits.clone();
         let pin = reader.mirror_pin.clone();
