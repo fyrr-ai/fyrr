@@ -629,7 +629,7 @@ export function renderScoreboard(results: Results) {
   const scales = new Map(keys.map(key => [key, axisScale(Math.max(0, ...systems.flatMap(system => {
     const metric = displayMetric(system, key); return metric?.value != null ? [metric.value, metric.ci95?.[1] ?? 0] : [];
   })) * 1.1 || 1, results.website.metrics[key]?.unit ?? '').max]));
-  return `<div class="scoreboard rv" style="--score-cols:${keys.length}"><p class="score-intro">Quality: the right documents in the top 10. Services: always-on services the product ships and requires.</p><div class="score-head"><span>System</span>${keys.map(key => `<span data-score-metric="${escape(key)}">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span>`).join('')}</div>${systems.map(system => `<div class="score-row${system.id === 'fyrr' ? ' is-fyrr' : ''}" data-system="${escape(runKey(system))}"><span class="score-product">${escape(system.name)}${runFootnote(system)}</span>${keys.map(key => {
+  return `<div class="scoreboard rv" style="--score-cols:${keys.length}"><p class="score-intro">Quality: the right documents in the top 10. New-question latency includes a fresh embedding request. Services: always-on services the product ships and requires.</p><div class="score-head"><span>System</span>${keys.map(key => `<span data-score-metric="${escape(key)}">${escape(results.website.overview_labels?.[key] ?? results.website.metrics[key]?.label ?? name(key))}</span>`).join('')}</div>${systems.map(system => `<div class="score-row${system.id === 'fyrr' ? ' is-fyrr' : ''}" data-system="${escape(runKey(system))}"><span class="score-product">${escape(system.name)}${runFootnote(system)}</span>${keys.map(key => {
     const metric = displayMetric(system, key), unit = metric?.unit ?? results.website.metrics[key]?.unit ?? '', max = scales.get(key) ?? 0;
     const pct = (value: number) => `${max ? value / max * 100 : 0}%`;
     const model = system.footprint.monthly_cost_estimate;
@@ -645,7 +645,7 @@ export function renderScoreboard(results: Results) {
 
 export function renderStories(results: Results) {
   const baseline = { ...results, systems: headlineSystems(results) }, narrative = comparisonNarrative(results);
-  const copy: Record<string, string> = { footprint: 'Estimated monthly cost on AWS Frankfurt, with the same reference workload.', speed: 'New questions include query embedding; repeated questions preserve each product’s native caching.', ingest: 'Wall time to make accepted documents searchable, from the same 20,000-document submission.', retrieval: 'Recall@10 measures whether the right documents appear in the first ten results.' };
+  const copy: Record<string, string> = { footprint: 'Estimated monthly cost on AWS Frankfurt, with the same reference workload.', speed: 'New questions include a fresh embedding request. Repeated questions preserve each product’s caching behavior.', ingest: 'Wall time to make accepted documents searchable, from the same 20,000-document submission.', retrieval: 'Recall@10 measures whether the right documents appear in the first ten results.' };
   return (results.website.stories ?? []).map((story, index) => {
     const chart = story.group === 'speed' ? renderSpeedStory(baseline, true) : renderMetric(baseline, story.metrics[0], { ingest: story.group === 'ingest', compact: true });
     const title = story.group === 'footprint' ? narrative.fractionOfCost ? 'Costs a fraction to run.' : narrative.cheaper ? 'Lower estimated running cost.' : 'What it costs to run.' : story.group === 'speed' ? narrative.fasterQueries ? 'Answers fast.' : 'Time to the evidence.' : story.group === 'ingest' ? narrative.fasterIngest ? 'Indexes fast.' : 'Indexing time.' : story.group === 'retrieval' ? `Finds the right documents${narrative.comparable ? ' (comparable)' : ''}.` : story.title;
@@ -662,7 +662,22 @@ export function renderSupportingDetails(results: Results) {
 }
 
 function renderSpeedStory(results: Results, compact = false) {
-  if (compact) return `<div id="story-speed-c1" class="latency-pair">${renderMetric(results, 'first_ask_c1_p50_ms', { tailKey: 'first_ask_c1_p95_ms', title: 'New question', compact: true })}${renderMetric(results, 'warm_c1_p50_ms', { tailKey: 'warm_c1_p95_ms', title: 'Repeated question', compact: true })}</div>`;
+  if (compact) {
+    const fyrr = results.systems.find(system => system.id === 'fyrr' && (system.variant ?? 'default') === 'default');
+    const repeat = fyrr?.metrics.warm_c1_p50_ms;
+    const cached = repeat?.status === 'measured' && repeat.value != null
+      ? `With the query embedding cached, Fyrr answers a repeated question in ${overviewFormat(repeat.value, 'ms')} at the median.`
+      : '';
+    const embedding = fyrr?.metrics.first_ask_c1_embedding_p50_ms;
+    const probe = fyrr?.metrics.voyage_probe_c1_p50_ms;
+    const timing = embedding?.status === 'measured' && embedding.value != null
+      ? `Fyrr’s median embedding time on new questions was ${overviewFormat(embedding.value, 'ms')}.`
+      : probe?.value != null && (probe.status === 'measured' || probe.status === 'partial')
+        ? `Separate requests to Voyage took ${overviewFormat(probe.value, 'ms')} at the median (${probe.n} valid probes, including network time). The embedding time inside Fyrr’s search requests is unavailable.`
+        : '';
+    const explanation = [cached, timing].filter(Boolean).join(' ');
+    return `${explanation ? `<p class="latency-explainer">${escape(explanation)}</p>` : ''}<div id="story-speed-c1" class="latency-pair">${renderMetric(results, 'first_ask_c1_p50_ms', { tailKey: 'first_ask_c1_p95_ms', title: 'New question', compact: true })}${renderMetric(results, 'warm_c1_p50_ms', { tailKey: 'warm_c1_p95_ms', title: 'Repeated question', compact: true })}</div>`;
+  }
   const latency: Record<string, unknown> = object(results.protocol.latency) ? results.protocol.latency : {};
   const caches: Record<string, unknown> = object(latency.query_embedding_cache_summary) ? latency.query_embedding_cache_summary : object(latency.query_embedding_cache) ? latency.query_embedding_cache : {};
   const summaries = results.systems.map(system => {
