@@ -155,6 +155,22 @@
         "tier": "quick",
         "seconds": 0.05
       },
+      "full:fyrr-reader:lib:fyrr_reader/search::open_tests::manifest_policy_and_identity_are_read_in_one_round": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::open_tests::publication_read_failures_keep_their_sequential_order": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::open_tests::index_opens_overlap_up_to_their_bound": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::open_tests::index_verification_reports_the_error_a_sequential_pass_reports": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/rerank::tests::both_envelopes_require_exact_finite_index_coverage": {
         "tier": "quick",
         "seconds": 0.0
