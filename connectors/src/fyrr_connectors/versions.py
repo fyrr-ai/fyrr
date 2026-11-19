@@ -8,7 +8,7 @@ versions are `major.minor` and must equal the Rust contracts (`schemas/*.json`,
 """
 
 #: The SDK version; equals the `fyrr-connectors` distribution version.
-SDK_VERSION = "0.1.0"
+SDK_VERSION = "0.1.1"
 #: The connector contract (batches, cursors, Arrow document changes).
 CONNECTOR_CONTRACT_VERSION = "1.3"
 #: The provider metadata contract (`schemas/connector-provider.schema.json`).

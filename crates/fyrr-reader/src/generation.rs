@@ -33,7 +33,7 @@ pub(crate) enum GenerationState {
     WarmReady,
 }
 
-/// Keep the reservation until all generation workers and cached maps release it.
+/// Keep the reservation until all generation workers release it.
 /// Reservations govern preparation allocations, not publication or authorization.
 #[derive(Debug)]
 pub(crate) struct PreparationReservation {

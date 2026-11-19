@@ -442,6 +442,28 @@ fn broad_admission_beyond_the_old_row_floor_is_charged_by_size_and_cached() {
 }
 
 #[test]
+fn sparse_admission_is_charged_for_every_container() {
+    // One row per 65,536-row chunk: the serialized size is a few bytes per
+    // container, the resident size is dominated by the containers themselves.
+    let mut rows = RowAddrTreeMap::new();
+    for chunk in 0..4_000u64 {
+        rows.insert(chunk << 16);
+    }
+    rows.optimize();
+    let admission = Admission {
+        unindexed: rows.clone(),
+        eligible: RowAddrMask::from_allowed(rows),
+        ..Admission::nothing()
+    };
+    assert_eq!(admission.bitmap_containers(), 8_000);
+    assert!(
+        admission.memory_bound() >= 8_000 * Admission::CONTAINER_OVERHEAD_BYTES,
+        "{}",
+        admission.memory_bound()
+    );
+}
+
+#[test]
 fn compacted_mask_selects_exactly_the_scanned_rows() {
     // Scattered rows plus a long run in one fragment, and a second fragment.
     let ids: Vec<u64> = (0..70_000u64)

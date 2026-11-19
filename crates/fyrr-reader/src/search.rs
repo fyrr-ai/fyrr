@@ -199,6 +199,9 @@ pub(crate) struct Admission {
     fallback_probes: usize,
 }
 impl Admission {
+    /// Charged per roaring container on top of the serialized bitmap size.
+    const CONTAINER_OVERHEAD_BYTES: usize = 128;
+
     /// Admits nothing; the state of a reader before its first binding.
     pub(crate) fn nothing() -> Self {
         Self {
@@ -236,11 +239,27 @@ impl Admission {
             + self.partition_bytes()
             + self.hidden_bytes()
     }
-    /// What the subject cache charges for retaining this admission: its own
-    /// size, with the bitmaps counted twice because Lance's serialized size
-    /// omits the spare capacity of array containers.
+    /// Roaring containers of both bitmaps. Each costs a container struct, its
+    /// own allocation and allocator slack that the serialized size omits; a
+    /// sparse mask (a few rows per 65,536-row chunk) is mostly that overhead.
+    fn bitmap_containers(&self) -> usize {
+        let containers = |rows: &RowAddrTreeMap| {
+            rows.iter()
+                .map(|(fragment, _)| {
+                    rows.get_fragment_bitmap(*fragment)
+                        .map_or(1, |bitmap| bitmap.statistics().n_containers as usize)
+                })
+                .sum::<usize>()
+        };
+        self.eligible.allow_list().map_or(0, containers) + containers(&self.unindexed)
+    }
+    /// What the subject cache charges for retaining this admission: an
+    /// estimate above its own size. The bitmaps are counted twice because
+    /// Lance's serialized size omits the spare capacity of array containers,
+    /// plus a fixed charge per container for the overhead it also omits.
     pub(crate) fn memory_bound(&self) -> usize {
         1024 + 2 * self.bitmap_bytes()
+            + Self::CONTAINER_OVERHEAD_BYTES * self.bitmap_containers()
             + self.partition_bytes()
             + self.maps.as_ref().map_or(0, |m| m.len() * 128)
             + self.hidden_bytes()
@@ -284,7 +303,7 @@ impl AuthorizationCache {
         Some(result)
     }
     /// Evict before reserving; held entries keep their permits after eviction.
-    /// The caller must not make the retained private copy until this succeeds.
+    /// The caller must not insert the entry until this succeeds.
     fn reserve(
         &mut self,
         key: &AuthorizationCacheKey,
@@ -444,6 +463,22 @@ mod recall;
 #[path = "reader/routing.rs"]
 mod routing;
 
+/// Index opens kept in flight at once. Each is a few small reads (footers and
+/// lookup tables), and Lance bounds its own I/O below them.
+const INDEX_OPEN_CONCURRENCY: usize = 16;
+
+/// The index kinds every namespace carries, in the order they are verified.
+const INDEX_KINDS: [(&str, &str, IndexType); 8] = [
+    ("readers", "readers_idx", IndexType::LabelList),
+    ("searchable_text", Layout::FTS_INDEX, IndexType::Inverted),
+    ("source_uri", "source_uri_idx", IndexType::BTree),
+    ("source_type", "source_type_idx", IndexType::Bitmap),
+    ("project", "project_idx", IndexType::Bitmap),
+    ("author", "author_idx", IndexType::Bitmap),
+    ("updated_at", "updated_at_idx", IndexType::BTree),
+    ("attributes", "attributes_idx", IndexType::LabelList),
+];
+
 /// Verify native index kinds and coverage without opening a query embedding cache.
 pub async fn verify_indices(
     dataset: &Dataset,
@@ -454,52 +489,94 @@ pub async fn verify_indices(
         .load_indices()
         .await
         .map_err(|_| IndexVerificationError::StorageUnavailable)?;
-    for (column, name, kind) in [
-        ("readers", "readers_idx", IndexType::LabelList),
-        ("searchable_text", Layout::FTS_INDEX, IndexType::Inverted),
-        ("source_uri", "source_uri_idx", IndexType::BTree),
-        ("source_type", "source_type_idx", IndexType::Bitmap),
-        ("project", "project_idx", IndexType::Bitmap),
-        ("author", "author_idx", IndexType::Bitmap),
-        ("updated_at", "updated_at_idx", IndexType::BTree),
-        ("attributes", "attributes_idx", IndexType::LabelList),
-    ] {
+    let fts_compatible = manifest.fts == config.namespace.fts_settings()
+        && manifest.retrieval_policy_digest == config.namespace.retrieval_digest();
+    let fragments: Vec<u32> = dataset
+        .manifest()
+        .fragments
+        .iter()
+        .map(|f| coverage_fragment(f.id))
+        .collect();
+    verify_loaded_indices(
+        &indexes,
+        &fragments,
+        fts_compatible,
+        |column, index| async move {
+            dataset
+                .open_generic_index(column, &index.uuid, &NoOpMetricsCollector)
+                .await
+                .map(|opened| opened.index_type())
+                .map_err(|_| IndexVerificationError::StorageUnavailable)
+        },
+    )
+    .await?;
+    Ok(indexes)
+}
+
+/// The checks of `verify_indices` over loaded index metadata. Opening is the
+/// only I/O: up to `INDEX_OPEN_CONCURRENCY` opens run at once, in the order the
+/// checks consume them, and the checks run in the fixed kind order. The error
+/// reported is therefore the one a strictly sequential pass reports: an open or
+/// kind failure of an earlier index, or a coverage or compatibility failure of
+/// an earlier kind, always wins over anything later.
+async fn verify_loaded_indices<F, Fut>(
+    indexes: &[lance_table::format::IndexMetadata],
+    fragments: &[u32],
+    fts_compatible: bool,
+    open: F,
+) -> Result<(), IndexVerificationError>
+where
+    F: Fn(&'static str, lance_table::format::IndexMetadata) -> Fut,
+    Fut: std::future::Future<Output = Result<IndexType, IndexVerificationError>>,
+{
+    use futures::StreamExt;
+    let mut queued = std::collections::VecDeque::new();
+    for (column, name, _) in INDEX_KINDS {
+        for index in indexes.iter().filter(|i| i.name == name) {
+            queued.push_back((column, index.clone()));
+        }
+    }
+    let mut opened = futures::stream::FuturesOrdered::new();
+    for (column, name, kind) in INDEX_KINDS {
         let error = if column == "readers" {
             IndexVerificationError::ReadersIndexMissing
         } else {
             IndexVerificationError::IncompatibleIndex
         };
-        if name == Layout::FTS_INDEX
-            && (manifest.fts != config.namespace.fts_settings()
-                || manifest.retrieval_policy_digest != config.namespace.retrieval_digest())
-        {
+        if name == Layout::FTS_INDEX && !fts_compatible {
             return Err(IndexVerificationError::IncompatibleIndex);
         }
-        for index in indexes.iter().filter(|i| i.name == name) {
-            let actual = dataset
-                .open_generic_index(column, &index.uuid, &NoOpMetricsCollector)
-                .await
-                .map_err(|_| IndexVerificationError::StorageUnavailable)?;
-            if actual.index_type() != kind {
+        for _ in indexes.iter().filter(|i| i.name == name) {
+            while opened.len() < INDEX_OPEN_CONCURRENCY
+                && let Some((column, index)) = queued.pop_front()
+            {
+                opened.push_back(open(column, index));
+            }
+            let Some(actual) = opened.next().await else {
+                unreachable!("one open is queued for every index of every kind");
+            };
+            if actual? != kind {
                 return Err(error);
             }
         }
-        let coverage = coverage(&indexes, name);
-        if dataset
-            .manifest()
-            .fragments
+        let coverage = coverage(indexes, name);
+        if fragments
             .iter()
-            .any(|f| !coverage.contains(&coverage_fragment(f.id)))
+            .any(|fragment| !coverage.contains(fragment))
         {
             return Err(error);
         }
     }
-    Ok(indexes)
+    Ok(())
 }
 
 #[cfg(test)]
 #[path = "reader/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "reader/tests/fts_partition_tests.rs"]
+mod fts_partition_tests;
 
 #[cfg(test)]
 #[path = "reader/tests/routing_tests.rs"]
@@ -508,3 +585,7 @@ mod routing_tests;
 #[cfg(test)]
 #[path = "reader/tests/authorization_cache_tests.rs"]
 mod authorization_cache_tests;
+
+#[cfg(all(test, feature = "test-store"))]
+#[path = "reader/tests/open_tests.rs"]
+mod open_tests;
