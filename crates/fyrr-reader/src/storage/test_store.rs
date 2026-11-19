@@ -1,6 +1,8 @@
 //! Test-only operation observation; shipping package graphs exclude this module.
 #[path = "test_store/boundary.rs"]
 pub mod boundary;
+#[path = "test_store/latency.rs"]
+pub mod latency;
 #[path = "test_store/sync.rs"]
 pub(crate) mod sync;
 use lance_io::object_store::{ChainedWrappingObjectStore, WrappingObjectStore};
