@@ -493,3 +493,82 @@ fn fts_params(config: &Config) -> lance_index::scalar::InvertedIndexParams {
 #[cfg(test)]
 #[path = "group/fts_partition_tests.rs"]
 mod fts_partition_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::Array;
+    use arrow_array::types::Float16Type;
+    use arrow_array::{ArrayRef, FixedSizeListArray, RecordBatch, RecordBatchIterator};
+    use arrow_schema::{Field, Schema};
+
+    const DIM: i32 = 32;
+    const ROWS: usize = 600;
+
+    async fn index_stats(tag: &str, rq_bits: u8, partition_rows: u32) -> serde_json::Value {
+        let vectors =
+            FixedSizeListArray::from_iter_primitive::<Float16Type, _, _>(
+                (0..ROWS).map(|row| {
+                    Some((0..DIM as usize).map(move |d| {
+                        Some(half::f16::from_f32(((row * 7 + d * 3) % 17) as f32 - 8.0))
+                    }))
+                }),
+                DIM,
+            );
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "vector",
+            vectors.data_type().clone(),
+            false,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(vectors) as ArrayRef]).unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/lance-pin")
+            .join(format!("{tag}-{}", std::process::id()));
+        let mut dataset = Dataset::write(
+            RecordBatchIterator::new(vec![Ok(batch)], schema),
+            root.to_str().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        dataset
+            .create_index(
+                &["vector"],
+                IndexType::Vector,
+                Some("vector_idx".into()),
+                &vector_index_params(ROWS, rq_bits, partition_rows),
+                true,
+            )
+            .await
+            .unwrap();
+        let stats =
+            serde_json::from_str(&dataset.index_statistics("vector_idx").await.unwrap()).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        stats
+    }
+
+    #[tokio::test]
+    async fn vector_index_uses_the_configured_rabitq_bits() {
+        for bits in [1u8, 3] {
+            let stats = index_stats(&format!("rq-bits-{bits}"), bits, 550).await;
+            assert_eq!(
+                stats["indices"][0]["sub_index"]["num_bits"], bits,
+                "{stats}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn vector_index_uses_the_configured_partition_rows() {
+        for (partition_rows, partitions) in [(550u32, 2), (100, 6), (64, 10)] {
+            let stats = index_stats(
+                &format!("partition-rows-{partition_rows}"),
+                1,
+                partition_rows,
+            )
+            .await;
+            assert_eq!(stats["indices"][0]["num_partitions"], partitions, "{stats}");
+        }
+    }
+}
