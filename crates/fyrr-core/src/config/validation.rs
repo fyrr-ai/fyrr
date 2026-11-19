@@ -553,6 +553,9 @@ fn writer_bounds(config: &Config, error: &mut impl FnMut(&str, String)) {
             ),
         );
     }
+    if writer.threads == Some(0) {
+        error("writer.threads", "must be at least 1".into());
+    }
     if writer.worker_memory_max_bytes.as_u64() == 0
         || writer.worker_memory_max_bytes.as_u64() > i64::MAX as u64
     {

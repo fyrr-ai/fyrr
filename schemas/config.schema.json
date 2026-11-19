@@ -1021,6 +1021,15 @@
           "description": "Per-worker committed-memory ceiling (RLIMIT_DATA); virtual address reservations are unrestricted.",
           "default": "2GiB"
         },
+        "threads": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 1,
+          "description": "CPU threads of each writer process: its async runtime, Lance's compute\nruntime, the parallel-iterator pool and the full-text build workers.\nAbsent uses every CPU of the host."
+        },
         "purge_window": {
           "$ref": "#/$defs/Duration",
           "description": "Deleted or revoked content leaves old versions and the mirror within it.",
@@ -1321,5 +1330,5 @@
       "description": "When each of a source's syncs is due."
     }
   },
-  "x-fyrr-schema-version": "5.0"
+  "x-fyrr-schema-version": "5.1"
 }

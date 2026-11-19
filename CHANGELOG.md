@@ -7,6 +7,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## [Unreleased]
 
+### Added
+
+- `writer.threads` (absent by default) bounds the CPU threads of each writer
+  process: its async runtime, Lance's compute runtime, the parallel-iterator
+  pool used by vector index builds and the full-text build workers. See
+  [reader and writer settings](docs/reader-writer.md).
+
 ## [0.1.1] - 2026-11-19
 
 ### Added

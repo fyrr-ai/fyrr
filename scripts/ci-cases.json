@@ -215,6 +215,10 @@
         "tier": "quick",
         "seconds": 0.234
       },
+      "full:fyrr-writer:lib:fyrr_writer/threads::tests::threads_size_every_pool_and_the_full_text_workers": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-writer:lib:fyrr_writer/batch::tests::contract_rows_convert_and_count": {
         "tier": "quick",
         "seconds": 0.01
