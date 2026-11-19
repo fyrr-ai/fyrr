@@ -31,7 +31,7 @@ use crate::units::{ByteSize, ConfigDuration};
 
 /// Configuration schema revision: adding a storage backend changes the URI
 /// contract beyond an optional field, so it starts a new major revision.
-pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(5, 0);
+pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(5, 1);
 
 /// Namespace IDs: lowercase letters, digits and `-`, at most 63 bytes.
 pub const NAMESPACE_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
@@ -674,6 +674,12 @@ pub struct WriterConfig {
     /// Per-worker committed-memory ceiling (RLIMIT_DATA); virtual address reservations are unrestricted.
     #[serde(default = "default_worker_memory_max_bytes")]
     pub worker_memory_max_bytes: ByteSize,
+    /// CPU threads of each writer process: its async runtime, Lance's compute
+    /// runtime, the parallel-iterator pool and the full-text build workers.
+    /// Absent uses every CPU of the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub threads: Option<usize>,
     /// Deleted or revoked content leaves old versions and the mirror within it.
     #[serde(default = "default_purge_window")]
     pub purge_window: ConfigDuration,
