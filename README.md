@@ -70,9 +70,17 @@ small service. The reader also runs on [AWS Lambda](docs/lambda.md)
 Every way: no database. See [use cases](https://fyrr.dev/use-cases) and
 [deployment](docs/deployment.md).
 
+**Running a software factory?** A fleet of unattended coding agents reads
+the same bucket, one reader per agent, and every response names the
+publication it read. See [software factories](docs/software-factory.md).
+
 ## Quick start
 
-Follow the [quickstart](docs/quickstart.md) to search a Markdown folder from
+With Docker, the [published image](docs/quickstart.md#fastest-the-published-image)
+indexes a Markdown folder and answers over MCP in a few commands, with no
+build.
+
+To build from source, follow the [quickstart](docs/quickstart.md) to search a Markdown folder from
 Claude Code using a private local directory. It needs Linux x86-64 and the
 tools git, curl, unzip, openssl, Python 3.11+, rustup, uv, a C compiler, jq,
 binutils, network access and about 10 GiB free; no accounts
@@ -100,7 +108,8 @@ The example's top hit is `notes/backup.md`, with the answer:
 
 - **You need a stable release.** fyrr is pre-1.0: storage formats and the
   MCP schema may break before 1.0; data is then republished, not migrated.
-  Releases (binaries, images, the SDK wheel) will be published from `v*` tags.
+  [Releases](https://github.com/fyrr-ai/fyrr/releases) carry binaries, images
+  and the SDK wheel.
 - **You need proven cloud connectors.** Google Drive, Notion, GitHub, Slack
   and Jira have been tested only against synthetic APIs, not real workspaces.
 - **Your documents are not text.** There is no PDF, Office or image
@@ -125,6 +134,7 @@ The example's top hit is `notes/backup.md`, with the answer:
 | [Deployment](docs/deployment.md) | Production setup, images and scheduling |
 | [AWS Lambda](docs/lambda.md) | Experimental reader deployment |
 | [Operations](docs/operations.md) | Monitor, restore, retire and upgrade |
+| [Software factories](docs/software-factory.md) | Context for a fleet of unattended coding agents |
 | [Configuration](docs/configuration.md) | Storage, embeddings, sources and secrets |
 | [Identity](docs/identity.md) | Users, directories, keys and OIDC |
 | [Tuning](docs/tuning.md) | Namespace and retrieval settings |
