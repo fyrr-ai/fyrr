@@ -383,6 +383,19 @@ async fn refresh_policy(
     Ok((policy_changed, acl_changed))
 }
 
+fn vector_index_params(rows: usize, rq_bits: u8, partition_rows: u32) -> VectorIndexParams {
+    VectorIndexParams::with_ivf_rq_params(
+        DistanceType::Cosine,
+        IvfBuildParams {
+            num_partitions: Some(rows.div_ceil(partition_rows as usize).max(1)),
+            target_partition_size: Some(partition_rows as usize),
+            sample_rate: 256,
+            ..Default::default()
+        },
+        RQBuildParams::new(rq_bits),
+    )
+}
+
 #[allow(clippy::print_stderr)]
 async fn build_indexes(
     config: &Config,
@@ -409,15 +422,10 @@ async fn build_indexes(
     } else {
         0
     };
-    let vector = VectorIndexParams::with_ivf_rq_params(
-        DistanceType::Cosine,
-        IvfBuildParams {
-            num_partitions: Some(count.div_ceil(550).max(1)),
-            target_partition_size: Some(550),
-            sample_rate: 256,
-            ..Default::default()
-        },
-        RQBuildParams::new(1),
+    let vector = vector_index_params(
+        count,
+        config.namespace.dense_rq_bits,
+        config.namespace.dense_partition_rows,
     );
     let scalar = ScalarIndexParams::default();
     let fts = fts_params(config);
