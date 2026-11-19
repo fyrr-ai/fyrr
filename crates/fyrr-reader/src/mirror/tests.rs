@@ -755,9 +755,10 @@ mod latency {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn prewarm_reports_the_failure_earliest_in_manifest_order() {
+    async fn prewarm_reports_a_storage_failure_before_a_capacity_failure() {
         // The first file is larger than the whole budget and the second is
-        // missing: a sequential pass fails on the first.
+        // missing. A capacity failure can be caused by another failure in the
+        // batch, so the storage failure is the one reported.
         let Fixture {
             directory,
             mirror,
@@ -780,7 +781,7 @@ mod latency {
         let store = LatencyStore::new(source.clone(), LATENCY);
         assert_eq!(
             mirror.prewarm(Arc::new(store), &files).await,
-            Err(MirrorCapacityExhausted)
+            Err(StorageUnavailable)
         );
         std::fs::remove_dir_all(directory).unwrap();
         // Now the missing file comes first: file 0 fits, 1 is missing, and

@@ -869,9 +869,12 @@ impl MirrorStore {
     const PREWARM_CONCURRENCY: usize = 16;
 
     /// Fill and verify every manifest file. At most `PREWARM_CONCURRENCY` files
-    /// are filled at once. The first failure stops new fills, in-flight fills
-    /// finish, and the failure of the file earliest in manifest order is
-    /// returned, which is the file a sequential pass would have failed on.
+    /// are filled at once. The first failure stops new fills and in-flight
+    /// fills finish. Fills reserve their bytes in the order their responses
+    /// arrive, so under a tight budget a later file can take the room of an
+    /// earlier one: a capacity failure may then be a consequence of another
+    /// failure in the same batch. A failure other than capacity is therefore
+    /// reported first; within one kind, the file earliest in manifest order.
     pub(crate) async fn prewarm(
         &self,
         store: Arc<dyn ObjectStore>,
@@ -883,7 +886,8 @@ impl MirrorStore {
         let store = self.wrap(&prefix, store);
         let mut pending = files.iter().enumerate();
         let mut running = futures::stream::FuturesUnordered::new();
-        let mut first: Option<(usize, ReaderError)> = None;
+        // Ordered by (capacity failure, manifest index); the smallest wins.
+        let mut first: Option<((bool, usize), ReaderError)> = None;
         loop {
             while first.is_none()
                 && running.len() < Self::PREWARM_CONCURRENCY
@@ -894,10 +898,11 @@ impl MirrorStore {
             let Some((index, result)) = running.next().await else {
                 break;
             };
-            if let Err(error) = result
-                && first.as_ref().is_none_or(|(earlier, _)| index < *earlier)
-            {
-                first = Some((index, error));
+            if let Err(error) = result {
+                let rank = (error == MirrorCapacityExhausted, index);
+                if first.as_ref().is_none_or(|(earlier, _)| rank < *earlier) {
+                    first = Some((rank, error));
+                }
             }
         }
         first.map_or(Ok(()), |(_, error)| Err(error))

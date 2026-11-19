@@ -135,7 +135,7 @@
         "tier": "quick",
         "seconds": 0.05
       },
-      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::latency::prewarm_reports_the_failure_earliest_in_manifest_order": {
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::latency::prewarm_reports_a_storage_failure_before_a_capacity_failure": {
         "tier": "quick",
         "seconds": 0.05
       },

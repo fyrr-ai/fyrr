@@ -218,7 +218,10 @@ impl MirrorStore {
         self.make_room_by_eviction(incoming)
     }
 
-    // Apparent bytes of every `.blob` and live `.partial`, as the full scan counts them.
+    // Apparent bytes of every `.blob` and `.partial` seen under its name. A name
+    // fixes its size (mirrored objects are immutable), so an entry is statted
+    // once; a dead partial stays counted until the eviction path or a sweep
+    // removes it, which only makes this count conservative.
     fn used_bytes(&self) -> Result<u64> {
         #[cfg(test)]
         self.room_probes.listings.fetch_add(1, Ordering::SeqCst);
