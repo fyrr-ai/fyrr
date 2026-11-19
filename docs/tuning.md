@@ -81,6 +81,12 @@ rescores them with their stored float16 vectors.
 | --- | --- | --- |
 | `rescore_depth` | `{ mode = "legacy" }` | How many index candidates are rescored. `{ mode = "legacy" }` rescores four times `dense_candidates`; `{ mode = "fixed", candidates = N }` rescores `N` (1 to 1200), but never fewer than `dense_candidates + 1`; `{ mode = "adaptive", min_candidates, max_candidates, min_gap }` starts at `min_candidates` and doubles, up to `max_candidates`, while the score gap at the cut is below `min_gap`. |
 
+### `[namespace]` vector index
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `dense_rq_bits` | `1` | 1–9: RaBitQ bits per dimension of the vector index. More bits make the index candidates closer to the exact order at the cost of a larger index. The value is recorded in each publication and fixed once the namespace has one: a writer configured with another value fails with `dense_rq_bits_mismatch` instead of extending the index. To change it, publish into a new namespace. |
+
 ### `[reader]` search and memory
 
 | Key | Default | Meaning |

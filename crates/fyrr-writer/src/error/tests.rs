@@ -29,6 +29,7 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
         ("prepared_rows_invalid", true),
         ("fragment_write_failed", true),
         ("chunk_profile_mismatch", false),
+        ("dense_rq_bits_mismatch", false),
         ("embedding_local_cache_configuration_invalid", false),
         ("embedding_local_cache_unavailable", true),
         ("embedding_local_cache_invalid", true),
