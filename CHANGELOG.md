@@ -35,6 +35,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   after another and reads the manifest, policy and identity of a publication
   together. When a fill fails for a storage reason and another runs out of
   mirror space in the same batch, the storage failure is the one reported.
+- A search with a request filter searches the vector index when the filter
+  selects many rows, and keeps the exact scan of the selected rows otherwise;
+  see [tuning](docs/tuning.md#dense-search-under-a-request-filter). A large
+  filtered selection therefore returns approximate dense candidates, as an
+  unfiltered search does.
 - A search with a request filter (sources, authors, time range, labels)
   selects its rows from the scalar indexes of both the filter and the
   subject's grants. It no longer reads the filter columns of every row the

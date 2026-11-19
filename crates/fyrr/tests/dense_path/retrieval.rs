@@ -239,7 +239,7 @@ async fn retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_storag
     let broad_config = root.join("broad-exact.toml");
     let test_binary = std::env::var_os("FYRR_ROUTING_TEST_BINARY")
         .expect("reader test binary built by real-S3 setup");
-    let fallbacks = Command::new(test_binary)
+    let fallbacks = Command::new(&test_binary)
         .args([
             "search::routing_tests::routing_fallbacks_on_storage",
             "--exact",
@@ -273,6 +273,39 @@ async fn retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_storag
             && !stderr.contains("fixture-broad")
             && !stderr.contains("fixture document")
     );
+    // The request filter's index route, per grant cohort of the same
+    // publication; the fixture's partitions are too few for it by default.
+    for cohort in ["broad", "selective", "correlated"] {
+        let filtered = Command::new(&test_binary)
+            .args([
+                "search::routing_tests::filtered_ann_on_storage",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(
+                "FYRR_TEST_ROUTING_CONFIG",
+                root.join(format!("{cohort}-exact.toml")),
+            )
+            .output()
+            .unwrap();
+        std::fs::write(
+            root.join(format!("filtered-ann-{cohort}.log")),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&filtered.stdout),
+                String::from_utf8_lossy(&filtered.stderr)
+            ),
+        )
+        .unwrap();
+        assert!(
+            filtered.status.success(),
+            "{cohort}: {}{}",
+            String::from_utf8_lossy(&filtered.stdout),
+            String::from_utf8_lossy(&filtered.stderr)
+        );
+        assert!(String::from_utf8_lossy(&filtered.stdout).contains("1 passed; 0 failed"));
+    }
 }
 
 #[tokio::test]

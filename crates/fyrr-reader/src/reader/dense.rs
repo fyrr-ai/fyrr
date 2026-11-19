@@ -1,5 +1,45 @@
 use super::*;
 
+/// A request filter searches the vector index only when the probed
+/// partitions are expected to hold at least this many rows that pass both
+/// authorization and the filter for every rescore candidate. Below it the
+/// request keeps the exact scan of the selected rows, whose cost is bounded
+/// by the selection and whose recall is perfect. The unfiltered query and the
+/// authorization mask are not gated: the partition maps already route them to
+/// partitions that hold admitted rows.
+///
+/// The factor is deliberately high. Partition maps describe the subject's
+/// rows, not the filter's, so under a filter some probes visit partitions
+/// without a selected row, and the selected rows nearest to the query lie
+/// farther away than the unfiltered ones. With an authorization mask of the
+/// same selectivity, recall@10 was 0.55-0.71 at 1 % selectivity when the
+/// probed partitions held about four rescore pools of admitted rows and
+/// 0.74-0.89 at about forty; it passed 0.93 only with wider probing. No
+/// factor is proven safe for scattered or correlated selections, so the
+/// default keeps exact search except for large selections. A rule on the
+/// selection alone would ignore `nprobes`, the partition count and the
+/// rescore depth, which together set how many rows an indexed query inspects.
+const FILTERED_INDEX_MIN_HITS_PER_CANDIDATE: u128 = 64;
+
+/// Whether an indexed query under a filter that selects `selected` rows is
+/// expected to see enough of them. `allowed_partitions` holds, per vector
+/// segment, how many partitions contain rows the subject may read; a query
+/// probes `nprobes` of them. Selected rows are assumed to spread like the
+/// subject's rows, so the expected number inside the probed partitions is
+/// `selected * probed / allowed`. Integer arithmetic; no per-row work.
+pub(super) fn filtered_index_pays(
+    selected: u64,
+    allowed_partitions: impl Iterator<Item = usize> + Clone,
+    nprobes: usize,
+    shortlist: usize,
+) -> bool {
+    let allowed: u128 = allowed_partitions.clone().map(|n| n as u128).sum();
+    let probed: u128 = allowed_partitions.map(|n| n.min(nprobes) as u128).sum();
+    allowed > 0
+        && u128::from(selected) * probed
+            >= FILTERED_INDEX_MIN_HITS_PER_CANDIDATE * shortlist as u128 * allowed
+}
+
 enum DenseRefinement {
     Expand(usize),
     Rows(Vec<Candidate>),
@@ -27,6 +67,19 @@ impl PreparedReader {
         }
         let depth = &self.config.namespace.retrieval.rescore_depth;
         let mut shortlist = depth.initial(k);
+        // An unfiltered request and the authorization mask always use the
+        // index. A filter does so only when its selection is large enough.
+        let indexed = self.maps_enabled
+            && (self.filter_selection.is_none()
+                || self.admission.maps.as_deref().is_some_and(|maps| {
+                    filtered_index_pays(
+                        self.selected_rows().max_len().unwrap_or(0),
+                        maps.iter()
+                            .map(|map| map.allowed.iter().filter(|a| **a).count()),
+                        self.config.reader.nprobes,
+                        shortlist,
+                    )
+                }));
         loop {
             let before = self.mirror.counters();
             let start = Instant::now();
@@ -35,10 +88,7 @@ impl PreparedReader {
             {
                 routing_telemetry(telemetry, Some(RoutingFallback::Absent), false);
             }
-            let candidates = if self.preparation_reservation.warm()
-                && self.maps_enabled
-                && self.filter_selection.is_none()
-            {
+            let candidates = if self.preparation_reservation.warm() && indexed {
                 match self.candidates(vector, shortlist, telemetry).await {
                     Ok(candidates) => Some(candidates),
                     Err(PartitionMapUnavailable) => None,

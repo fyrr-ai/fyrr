@@ -99,6 +99,21 @@ rescores them with their stored float16 vectors.
 | `memory_headroom_bytes` | `128MiB` | Left unused while preparing a new publication; must be smaller than `memory_max_bytes`. |
 | `fts_search_chunk` | absent (16, [Lance](architecture.md#terms)'s own default) | 1–1024 full-text partitions scored one after another by one compute task of a query. With `1`, every partition of an index segment is its own task, so one query scores several partitions at once; see [full-text partitions](#full-text-partitions). Needs a full-text index of several partitions. Does not change scores. |
 
+#### Dense search under a request filter
+
+A search with `sources`, `authors`, `updated_after` or another filter ranks
+only the rows that pass both the caller's permissions and the filter. When
+that selection is small, the dense lane scans exactly those rows: the result
+is the exact top candidates and the cost grows with the selection. When the
+partitions that `nprobes` visits are expected to hold at least 64 selected rows
+for every rescored candidate, the dense lane searches the vector index with
+the selection as its row filter, as it does without a filter, and so returns
+approximate candidates. The expected count is the selection times the probed partitions divided by
+the partitions that hold readable rows, summed over index segments; it assumes
+the selected rows spread like the caller's readable rows. A larger `nprobes`, a smaller `dense_candidates` or
+`rescore_depth`, or a larger selection therefore moves a request to the index.
+If the index returns fewer candidates than wanted, the request is answered by
+the exact scan. Rows the filter or the permissions exclude are never scored.
 
 Memory sizing must include private prepared readers as well as shared caches.
 The preparation accounting allows 64 bytes per physical Lance row per prepared

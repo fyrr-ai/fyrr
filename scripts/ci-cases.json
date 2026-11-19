@@ -223,6 +223,10 @@
         "tier": "quick",
         "seconds": 0.1
       },
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::filtered_index_search_needs_many_expected_hits_per_candidate": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::selection_equals_the_masked_scan_for_every_subject_and_filter": {
         "tier": "quick",
         "seconds": 0.1
@@ -1678,6 +1682,12 @@
         "tier": "full",
         "parents": [
           "full:fyrr:test:dense_path/retrieval::retrieval_publication_authorization_cache_budget_on_storage"
+        ]
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::routing_tests::filtered_ann_on_storage": {
+        "tier": "full",
+        "parents": [
+          "full:fyrr:test:dense_path/retrieval::retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_storage"
         ]
       },
       "full:fyrr-reader:lib:fyrr_reader/search::routing_tests::routing_fallbacks_on_storage": {
