@@ -159,6 +159,14 @@
           "maximum": 9,
           "description": "RaBitQ bits per dimension of the dense vector index. Fixed when the\nnamespace is first published; a writer with another value refuses to\nextend the index.",
           "default": 1
+        },
+        "dense_partition_rows": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 32,
+          "description": "Target rows per partition of the dense vector index. Fixed when the\nnamespace is first published; a writer with another value refuses to\nextend the index.",
+          "maximum": 4096,
+          "default": 550
         }
       },
       "required": [

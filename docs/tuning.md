@@ -86,6 +86,7 @@ rescores them with their stored float16 vectors.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `dense_rq_bits` | `1` | 1–9: RaBitQ bits per dimension of the vector index. More bits make the index candidates closer to the exact order at the cost of a larger index. The value is recorded in each publication and fixed once the namespace has one: a writer configured with another value fails with `dense_rq_bits_mismatch` instead of extending the index. To change it, publish into a new namespace. |
+| `dense_partition_rows` | `550` | 32–4096: target rows per partition of the vector index. Smaller partitions scan fewer rows per probe but give more centroids to route over and a costlier index build; larger ones do the opposite. The value is recorded in each publication and fixed once the namespace has one: a writer configured with another value fails with `dense_partition_rows_mismatch` instead of extending the index. To change it, publish into a new namespace. |
 
 ### `[reader]` search and memory
 

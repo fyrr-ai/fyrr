@@ -36,6 +36,7 @@
     "with_position": false
   },
   "dense_rq_bits": 1,
+  "dense_partition_rows": 550,
   "retrieval_policy_digest": "sha256:17fba65c79e337ef6c14fca1ce3a800a69e8812aacee1261bb4283c1102a716b",
   "indexes": [
     {

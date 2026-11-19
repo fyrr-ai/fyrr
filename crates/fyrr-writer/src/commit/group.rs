@@ -383,12 +383,12 @@ async fn refresh_policy(
     Ok((policy_changed, acl_changed))
 }
 
-fn vector_index_params(rows: usize, rq_bits: u8) -> VectorIndexParams {
+fn vector_index_params(rows: usize, rq_bits: u8, partition_rows: u32) -> VectorIndexParams {
     VectorIndexParams::with_ivf_rq_params(
         DistanceType::Cosine,
         IvfBuildParams {
-            num_partitions: Some(rows.div_ceil(550).max(1)),
-            target_partition_size: Some(550),
+            num_partitions: Some(rows.div_ceil(partition_rows as usize).max(1)),
+            target_partition_size: Some(partition_rows as usize),
             sample_rate: 256,
             ..Default::default()
         },
@@ -422,7 +422,11 @@ async fn build_indexes(
     } else {
         0
     };
-    let vector = vector_index_params(count, config.namespace.dense_rq_bits);
+    let vector = vector_index_params(
+        count,
+        config.namespace.dense_rq_bits,
+        config.namespace.dense_partition_rows,
+    );
     let scalar = ScalarIndexParams::default();
     let fts = lance_index::scalar::InvertedIndexParams::default()
         .base_tokenizer("simple".into())
@@ -482,10 +486,10 @@ mod tests {
     use arrow_array::{ArrayRef, FixedSizeListArray, RecordBatch, RecordBatchIterator};
     use arrow_schema::{Field, Schema};
 
-    #[tokio::test]
-    async fn vector_index_uses_the_configured_rabitq_bits() {
-        const DIM: i32 = 32;
-        const ROWS: usize = 600;
+    const DIM: i32 = 32;
+    const ROWS: usize = 600;
+
+    async fn index_stats(tag: &str, rq_bits: u8, partition_rows: u32) -> serde_json::Value {
         let vectors =
             FixedSizeListArray::from_iter_primitive::<Float16Type, _, _>(
                 (0..ROWS).map(|row| {
@@ -502,35 +506,53 @@ mod tests {
         )]));
         let batch =
             RecordBatch::try_new(schema.clone(), vec![Arc::new(vectors) as ArrayRef]).unwrap();
-        for bits in [1u8, 3] {
-            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/lance-pin")
-                .join(format!("rq-bits-{bits}-{}", std::process::id()));
-            let mut dataset = Dataset::write(
-                RecordBatchIterator::new(vec![Ok(batch.clone())], schema.clone()),
-                root.to_str().unwrap(),
-                None,
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/lance-pin")
+            .join(format!("{tag}-{}", std::process::id()));
+        let mut dataset = Dataset::write(
+            RecordBatchIterator::new(vec![Ok(batch)], schema),
+            root.to_str().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        dataset
+            .create_index(
+                &["vector"],
+                IndexType::Vector,
+                Some("vector_idx".into()),
+                &vector_index_params(ROWS, rq_bits, partition_rows),
+                true,
             )
             .await
             .unwrap();
-            dataset
-                .create_index(
-                    &["vector"],
-                    IndexType::Vector,
-                    Some("vector_idx".into()),
-                    &vector_index_params(ROWS, bits),
-                    true,
-                )
-                .await
-                .unwrap();
-            let stats: serde_json::Value =
-                serde_json::from_str(&dataset.index_statistics("vector_idx").await.unwrap())
-                    .unwrap();
+        let stats =
+            serde_json::from_str(&dataset.index_statistics("vector_idx").await.unwrap()).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        stats
+    }
+
+    #[tokio::test]
+    async fn vector_index_uses_the_configured_rabitq_bits() {
+        for bits in [1u8, 3] {
+            let stats = index_stats(&format!("rq-bits-{bits}"), bits, 550).await;
             assert_eq!(
                 stats["indices"][0]["sub_index"]["num_bits"], bits,
                 "{stats}"
             );
-            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn vector_index_uses_the_configured_partition_rows() {
+        for (partition_rows, partitions) in [(550u32, 2), (100, 6), (64, 10)] {
+            let stats = index_stats(
+                &format!("partition-rows-{partition_rows}"),
+                1,
+                partition_rows,
+            )
+            .await;
+            assert_eq!(stats["indices"][0]["num_partitions"], partitions, "{stats}");
         }
     }
 }

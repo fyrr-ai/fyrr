@@ -49,6 +49,7 @@ writer_errors! {
     FragmentWriteFailed => ("fragment_write_failed", true),
     ChunkProfileMismatch => ("chunk_profile_mismatch", false),
     DenseRqBitsMismatch => ("dense_rq_bits_mismatch", false),
+    DensePartitionRowsMismatch => ("dense_partition_rows_mismatch", false),
     EmbeddingLocalCacheConfigurationInvalid => ("embedding_local_cache_configuration_invalid", false),
     EmbeddingLocalCacheUnavailable => ("embedding_local_cache_unavailable", true),
     EmbeddingLocalCacheInvalid => ("embedding_local_cache_invalid", true),
