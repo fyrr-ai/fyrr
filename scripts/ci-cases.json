@@ -706,6 +706,22 @@
       "full:fyrr-writer:lib:fyrr_writer/commit::group::fts_partition_tests::absent_target_keeps_one_partition_and_a_set_target_keeps_several_through_merges": {
         "tier": "quick",
         "seconds": 0.5
+      },
+      "full:fyrr-reader:lib:fyrr_reader/routing::tests::lazy_exact_walk_equals_the_walk_over_complete_flags": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-reader:lib:fyrr_reader/routing::tests::lazy_router_selection_equals_the_selection_over_complete_flags": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::partition_memo_answers_are_final_when_requests_race": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::filtered_selection_below_the_minimum_never_pays": {
+        "tier": "quick",
+        "seconds": 0.1
       }
     },
     "children": {
@@ -1706,6 +1722,12 @@
         "tier": "full",
         "parents": [
           "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_storage"
+        ]
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::routing_tests::lazy_partition_admission_on_storage": {
+        "tier": "full",
+        "parents": [
+          "full:fyrr:test:dense_path/retrieval::retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_storage"
         ]
       }
     }

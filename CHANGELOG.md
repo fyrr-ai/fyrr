@@ -44,6 +44,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   selects its rows from the scalar indexes of both the filter and the
   subject's grants. It no longer reads the filter columns of every row the
   subject may read. Results and authorization are unchanged.
+- Binding a subject no longer reads every partition of the vector index.
+  Whether a partition holds a row the subject may read is resolved when a
+  query reaches that partition and is remembered for the subject and
+  publication; the partitions a query probes are unchanged.
 
 ## [0.1.1] - 2026-11-19
 

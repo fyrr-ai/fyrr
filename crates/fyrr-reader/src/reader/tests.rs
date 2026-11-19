@@ -620,3 +620,70 @@ fn filtered_index_search_needs_many_expected_hits_per_candidate() {
         usize::MAX >> 8
     ));
 }
+
+#[test]
+fn partition_memo_answers_are_final_when_requests_race() {
+    // Requests that consider the same partitions concurrently each see a
+    // partition as unknown or with its one answer, never another value.
+    let truth: Vec<bool> = (0..4096).map(|p| p % 7 < 3).collect();
+    let memo = Arc::new(PartitionMemo::new(truth.len()));
+    assert!((0..truth.len()).all(|p| memo.get(p).is_none()));
+    assert_eq!(memo.get(truth.len()), None);
+    let threads: Vec<_> = (0..4)
+        .map(|worker| {
+            let (memo, truth) = (memo.clone(), truth.clone());
+            std::thread::spawn(move || {
+                let mut resolved = 0;
+                for step in 0..truth.len() * 4 {
+                    // Each worker walks in its own order and resolves what it finds unknown.
+                    let p = (step * (2 * worker + 1) + worker) % truth.len();
+                    match memo.get(p) {
+                        Some(answer) => assert_eq!(answer, truth[p]),
+                        None => {
+                            memo.set(p, truth[p]);
+                            resolved += 1;
+                        }
+                    }
+                }
+                resolved
+            })
+        })
+        .collect();
+    let resolved: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
+    assert!(resolved >= truth.len());
+    assert!((0..truth.len()).all(|p| memo.get(p) == Some(truth[p])));
+}
+
+#[test]
+fn filtered_selection_below_the_minimum_never_pays() {
+    use super::dense::{filtered_index_pays, filtered_index_possible};
+    // `filtered_index_possible` must hold wherever `filtered_index_pays` does,
+    // for any partition counts, so rejecting early never changes the answer.
+    for shortlist in [1usize, 4, 40, 300] {
+        for nprobes in [1usize, 2, 16, 65536] {
+            for counts in [
+                vec![0usize],
+                vec![1],
+                vec![8],
+                vec![8, 3],
+                vec![1000, 1],
+                vec![5, 0, 9],
+            ] {
+                for selected in (0..=64 * 300 * 2).step_by(7) {
+                    let pays = filtered_index_pays(
+                        selected as u64,
+                        counts.iter().copied(),
+                        nprobes,
+                        shortlist,
+                    );
+                    assert!(
+                        !pays || filtered_index_possible(selected as u64, shortlist),
+                        "{selected} {counts:?} {nprobes} {shortlist}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(!filtered_index_possible(64 * 40 - 1, 40));
+    assert!(filtered_index_possible(64 * 40, 40));
+}

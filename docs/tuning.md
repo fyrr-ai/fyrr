@@ -115,6 +115,22 @@ the selected rows spread like the caller's readable rows. A larger `nprobes`, a 
 If the index returns fewer candidates than wanted, the request is answered by
 the exact scan. Rows the filter or the permissions exclude are never scored.
 
+#### Which partitions hold readable rows
+
+Building a caller's admission for a publication does not read the vector
+index. The first request that ranks the partitions for a query asks, for each
+partition it walks nearest first, whether it holds a row the caller may read,
+and stops at the `nprobes` partitions that do (for `rabitq` routing, at the
+shortlist of `4 * nprobes`). Each answer is kept with the cached admission, one
+byte per partition, so a partition is read at most once per caller and
+publication. The partitions probed are the same as if every partition had been
+checked first. A caller who can read few partitions near the query is therefore
+served after reading a few partitions; one whose readable partitions are all
+far away, or fewer than `nprobes` (or than the `rabitq` shortlist), makes the
+first request read every partition. A request filter with a
+large selection also needs the number of partitions that hold readable rows
+and resolves the remaining ones once.
+
 Memory sizing must include private prepared readers as well as shared caches.
 The preparation accounting allows 64 bytes per physical Lance row per prepared
 reader for admission bitmaps and worst-case unindexed row sets. For `R` rows and

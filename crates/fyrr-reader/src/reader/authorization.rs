@@ -55,8 +55,14 @@ impl PreparedReader {
             )?;
             let mut eligible = RowAddrTreeMap::new();
             let mut scan = self.dataset.scan();
-            scan.project(&["source_id"])
-                .map_err(|_| PublicationInvalid)?;
+            // `source_id` serves only the hidden-source exclusion and report; with
+            // no hidden source every matching row is admitted and none is reported.
+            if self.hidden_sources.is_empty() {
+                scan.project::<&str>(&[]).map_err(|_| PublicationInvalid)?;
+            } else {
+                scan.project(&["source_id"])
+                    .map_err(|_| PublicationInvalid)?;
+            }
             scan.filter(&predicate)
                 .map_err(|_| AuthorizationUnavailable)?
                 .with_row_id();
@@ -68,6 +74,12 @@ impl PreparedReader {
                 .map_err(|_| StorageUnavailable)?;
             let mut readable_hidden = BTreeSet::new();
             while let Some(batch) = stream.try_next().await.map_err(|_| StorageUnavailable)? {
+                if self.hidden_sources.is_empty() {
+                    for id in ids(&batch)?.values() {
+                        eligible.insert(*id);
+                    }
+                    continue;
+                }
                 let sources = strings(&batch, "source_id")?;
                 for (row, id) in ids(&batch)?.values().iter().enumerate() {
                     let source = sources.value(row);
@@ -100,7 +112,7 @@ impl PreparedReader {
         })?;
         let eligible = RowAddrMask::from_allowed(eligible);
         let mut maps = None;
-        if let Ok(found) = self.partition_admission(&eligible).await
+        if let Ok(found) = self.partition_maps().await
             && !found.is_empty()
         {
             maps = Some(found);
@@ -191,13 +203,16 @@ impl PreparedReader {
                     && segments().count() == maps.len()
                     && segments().zip(roots).zip(maps).all(|((meta, root), map)| {
                         map.segment == meta.uuid.to_string()
-                            && map.allowed.len() == root.total_partitions()
+                            && map.memo.len() == root.total_partitions()
                     })
             })
         })
     }
 
-    async fn partition_admission(&mut self, eligible: &RowAddrMask) -> Result<Vec<PartitionMap>> {
+    /// One empty memo per vector segment. Opening the roots is the only
+    /// storage access: which partitions hold readable rows is decided when a
+    /// request first considers a partition (`partition_allowed`).
+    async fn partition_maps(&mut self) -> Result<Vec<PartitionMap>> {
         let indexes = &self.indexes;
         let mut maps = Vec::new();
 
@@ -224,42 +239,91 @@ impl PreparedReader {
             .filter(|i| i.name == Layout::VECTOR_INDEX)
             .zip(roots)
         {
-            let index = index.clone();
             self.fallback_probes = self.fallback_probes.max(index.total_partitions());
-            let mut allowed = Vec::new();
-            for partition in 0..index.total_partitions() {
-                let mut stream = index
-                    .partition_reader(partition, false, &NoOpMetricsCollector)
-                    .await
-                    .map_err(|_| PartitionMapUnavailable)?;
-                let mut permitted = false;
-                while let Some(batch) = stream
-                    .try_next()
-                    .await
-                    .map_err(|_| PartitionMapUnavailable)?
-                {
-                    let batch_ids = ids(&batch)?;
-                    for id in batch_ids.values() {
-                        // Index membership is only a routing
-                        // hint. Row admission remains native.
-                        if metadata
-                            .fragment_bitmap
-                            .as_ref()
-                            .is_some_and(|b| b.contains((id >> 32) as u32))
-                            && eligible.selected(*id)
-                        {
-                            permitted = true;
-                        }
-                    }
-                }
-                allowed.push(permitted);
-            }
             maps.push(PartitionMap {
                 segment: metadata.uuid.to_string(),
-                allowed,
+                memo: PartitionMemo::new(index.total_partitions()),
             });
         }
         Ok::<_, ReaderError>(maps)
+    }
+
+    /// Whether a partition of the `map_no`-th vector segment holds a row the
+    /// subject may read. The answer is read from the memo or computed from the
+    /// partition's row ids once. A partition that cannot be read stays
+    /// unknown and fails the request's index route, never admitting it.
+    pub(super) async fn partition_allowed(&self, map_no: usize, partition: usize) -> Result<bool> {
+        let map = self
+            .admission
+            .maps
+            .as_deref()
+            .and_then(|maps| maps.get(map_no))
+            .ok_or(PartitionMapUnavailable)?;
+        if let Some(known) = map.memo.get(partition) {
+            return Ok(known);
+        }
+        if partition >= map.memo.len() {
+            return Err(PartitionMapUnavailable);
+        }
+        let index = self
+            .vector_roots
+            .get()
+            .and_then(|roots| roots.get(map_no))
+            .ok_or(PartitionMapUnavailable)?;
+        let metadata = self
+            .indexes
+            .iter()
+            .filter(|i| i.name == Layout::VECTOR_INDEX)
+            .nth(map_no)
+            .ok_or(PartitionMapUnavailable)?;
+        #[cfg(test)]
+        self.test_hooks
+            .partition_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut stream = index
+            .partition_reader(partition, false, &NoOpMetricsCollector)
+            .await
+            .map_err(|_| PartitionMapUnavailable)?;
+        let mut permitted = false;
+        while let Some(batch) = stream
+            .try_next()
+            .await
+            .map_err(|_| PartitionMapUnavailable)?
+        {
+            for id in ids(&batch).map_err(|_| PartitionMapUnavailable)?.values() {
+                // Index membership is only a routing hint. Row admission
+                // remains native.
+                if metadata
+                    .fragment_bitmap
+                    .as_ref()
+                    .is_some_and(|b| b.contains((id >> 32) as u32))
+                    && self.admission.eligible.selected(*id)
+                {
+                    permitted = true;
+                }
+            }
+        }
+        map.memo.set(partition, permitted);
+        Ok(permitted)
+    }
+
+    /// How many partitions of each vector segment hold a readable row. This
+    /// resolves every partition not yet answered.
+    pub(super) async fn allowed_partition_counts(&self) -> Result<Vec<usize>> {
+        let maps = self
+            .admission
+            .maps
+            .as_deref()
+            .ok_or(PartitionMapUnavailable)?;
+        let mut counts = Vec::with_capacity(maps.len());
+        for (map_no, map) in maps.iter().enumerate() {
+            let mut allowed = 0;
+            for partition in 0..map.memo.len() {
+                allowed += usize::from(self.partition_allowed(map_no, partition).await?);
+            }
+            counts.push(allowed);
+        }
+        Ok(counts)
     }
 
     pub(crate) fn principal(&self) -> Result<String> {

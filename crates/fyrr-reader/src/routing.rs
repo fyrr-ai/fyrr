@@ -214,31 +214,32 @@ impl CentroidRouter {
         ))
     }
 
-    pub(crate) fn select(
+    /// The `count` centroids nearest to the query by RaBitQ distance, ties by
+    /// partition id, in that order. Every centroid is scored; none is dropped.
+    pub(crate) fn nearest(
         &self,
-        query: Arc<Float32Array>,
-        allowed: &[bool],
-        nprobes: usize,
-    ) -> Result<(Vec<u32>, Vec<f32>), RoutingFallback> {
-        let shortlist = 4 * nprobes;
-        if allowed.iter().filter(|v| **v).count() < shortlist {
-            return Err(RoutingFallback::EligibleShortlist);
-        }
+        query: &Arc<Float32Array>,
+        count: usize,
+    ) -> Result<Vec<(OrderedFloat, u32)>, RoutingFallback> {
+        self.nearest_where(query, count, |_| true)
+    }
+
+    fn nearest_where(
+        &self,
+        query: &Arc<Float32Array>,
+        count: usize,
+        allowed: impl Fn(usize) -> bool,
+    ) -> Result<Vec<(OrderedFloat, u32)>, RoutingFallback> {
         // D <= 8192, nprobes <= 65536: LUT/rotation/key <= 24D bytes,
-        // heap <= 8*(4*nprobes) bytes; selected IDs/distances <= 8*nprobes.
-        // Under 3 MiB per worker plus bounded Arrow headers; no query permits.
-        let mut heap = BinaryHeap::with_capacity(shortlist);
+        // heap <= 8*count bytes.
+        let mut heap = BinaryHeap::with_capacity(count);
         let norm = query.values().iter().map(|v| v * v).sum();
+        let total = self.centroids.len();
         for (chunk_no, chunk) in self.chunks.iter().enumerate() {
             let calculator = chunk.dist_calculator(query.clone(), norm);
             let start = chunk_no * self.chunk_rows;
-            for (id, permitted) in allowed
-                .iter()
-                .enumerate()
-                .take((start + self.chunk_rows).min(allowed.len()))
-                .skip(start)
-            {
-                if !permitted {
+            for id in start..(start + self.chunk_rows).min(total) {
+                if !allowed(id) {
                     continue;
                 }
                 let distance = calculator
@@ -247,7 +248,7 @@ impl CentroidRouter {
                     OrderedFloat(distance),
                     u32::try_from(id).map_err(|_| RoutingFallback::BuildFailed)?,
                 );
-                if heap.len() < shortlist {
+                if heap.len() < count {
                     heap.push(candidate);
                 } else if let Some(mut worst) = heap.peek_mut()
                     && candidate < *worst
@@ -256,6 +257,16 @@ impl CentroidRouter {
                 }
             }
         }
+        Ok(heap.into_sorted_vec())
+    }
+
+    /// Re-rank a shortlist by exact centroid distance and keep `nprobes`.
+    pub(crate) fn finish(
+        &self,
+        query: &Float32Array,
+        shortlist: Vec<(OrderedFloat, u32)>,
+        nprobes: usize,
+    ) -> Result<(Vec<u32>, Vec<f32>), RoutingFallback> {
         let dim = self.centroids.value_length() as usize;
         let matrix = self
             .centroids
@@ -264,7 +275,7 @@ impl CentroidRouter {
             .downcast_ref::<Float32Array>()
             .ok_or(RoutingFallback::BuildFailed)?
             .values();
-        let mut ranked = heap.into_vec();
+        let mut ranked = shortlist;
         for (distance, id) in &mut ranked {
             *distance = OrderedFloat(l2_distance(
                 query.values(),
@@ -278,6 +289,93 @@ impl CentroidRouter {
             ranked.iter().map(|r| r.0.0).collect(),
         ))
     }
+
+    /// The router's choice among the partitions `ask` admits: the
+    /// `4 * nprobes` nearest by RaBitQ distance, re-ranked exactly. Nearest
+    /// centroids are taken in growing prefixes and `ask` is called down the
+    /// order, once per partition reached, until the shortlist is full. That
+    /// shortlist is the one over a complete admission slice. Fewer admitted
+    /// partitions than the shortlist is the `EligibleShortlist` fallback; it
+    /// is reached only after every partition has been asked.
+    pub(crate) async fn select_lazily<E, Fut>(
+        &self,
+        query: &Arc<Float32Array>,
+        total: usize,
+        nprobes: usize,
+        ask: impl Fn(usize) -> Fut,
+    ) -> Result<Result<(Vec<u32>, Vec<f32>), RoutingFallback>, E>
+    where
+        Fut: std::future::Future<Output = Result<bool, E>>,
+    {
+        let shortlist = 4 * nprobes;
+        if total < shortlist {
+            return Ok(Err(RoutingFallback::EligibleShortlist));
+        }
+        let mut prefix = shortlist.max(1);
+        loop {
+            let nearest = match self.nearest(query, prefix.min(total)) {
+                Ok(nearest) => nearest,
+                Err(reason) => return Ok(Err(reason)),
+            };
+            let mut found = Vec::with_capacity(shortlist);
+            for candidate in nearest {
+                if found.len() == shortlist {
+                    break;
+                }
+                if ask(candidate.1 as usize).await? {
+                    found.push(candidate);
+                }
+            }
+            if found.len() == shortlist {
+                return Ok(self.finish(query, found, nprobes));
+            }
+            if prefix >= total {
+                return Ok(Err(RoutingFallback::EligibleShortlist));
+            }
+            prefix = prefix.saturating_mul(2);
+        }
+    }
+
+    /// The selection over a complete per-partition admission slice. Requests
+    /// select lazily; this is the reference they must equal.
+    #[cfg(test)]
+    pub(crate) fn select(
+        &self,
+        query: Arc<Float32Array>,
+        allowed: &[bool],
+        nprobes: usize,
+    ) -> Result<(Vec<u32>, Vec<f32>), RoutingFallback> {
+        let shortlist = 4 * nprobes;
+        if allowed.iter().filter(|v| **v).count() < shortlist {
+            return Err(RoutingFallback::EligibleShortlist);
+        }
+        let ranked = self.nearest_where(&query, shortlist, |id| allowed[id])?;
+        self.finish(&query, ranked, nprobes)
+    }
+}
+
+/// The first `limit` partitions of a nearest-first ranking that `ask` admits,
+/// with their distances. `ask` runs only for the partitions the walk reaches.
+pub(crate) async fn first_admitted<E, Fut>(
+    ranked: impl Iterator<Item = (u32, f32)>,
+    limit: usize,
+    ask: impl Fn(usize) -> Fut,
+) -> Result<(Vec<u32>, Vec<f32>), E>
+where
+    Fut: std::future::Future<Output = Result<bool, E>>,
+{
+    let mut selected = Vec::new();
+    let mut distances = Vec::new();
+    for (id, distance) in ranked {
+        if ask(id as usize).await? {
+            selected.push(id);
+            distances.push(distance);
+            if selected.len() == limit {
+                break;
+            }
+        }
+    }
+    Ok((selected, distances))
 }
 
 #[cfg(test)]
