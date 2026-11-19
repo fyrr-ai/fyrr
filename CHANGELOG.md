@@ -40,6 +40,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   see [tuning](docs/tuning.md#dense-search-under-a-request-filter). A large
   filtered selection therefore returns approximate dense candidates, as an
   unfiltered search does.
+- A search with a request filter (sources, authors, time range, labels)
+  selects its rows from the scalar indexes of both the filter and the
+  subject's grants. It no longer reads the filter columns of every row the
+  subject may read. Results and authorization are unchanged.
 
 ## [0.1.1] - 2026-11-19
 

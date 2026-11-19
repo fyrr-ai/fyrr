@@ -227,6 +227,18 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::selection_equals_the_masked_scan_for_every_subject_and_filter": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::selection_reads_the_scalar_indexes_and_not_the_admitted_rows": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::selection_refuses_a_row_outside_the_admission": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
       "full:fyrr-reader:lib:fyrr_reader/search::tests::lexical_request_mask_precedes_topk_and_preserves_sql_scores": {
         "tier": "quick",
         "seconds": 0.027
