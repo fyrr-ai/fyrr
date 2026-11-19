@@ -3,6 +3,7 @@ import { gzipSync, brotliCompressSync, constants } from 'node:zlib';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { readResults, verifyEvidenceArchive, assertPublishable, escape, headlineVerdict, renderScoreboard, renderStories, renderSupportingDetails, renderFeatures, renderSections, renderProducts, renderMethodology, renderControls, renderDetailView, clientResults, renderProvenance } from '../lib/compare';
 import { head, renderHeader, renderEnd, footer, siteScripts, logo } from '../lib/site';
+import { navigation } from '../lib/navigation';
 
 const comparison = await readResults();
 if (process.env.SITE_ALLOW_DRAFT_COMPARE !== '1') assertPublishable(comparison);
@@ -83,6 +84,28 @@ await cp('src/chart.js', '.banner/chart.js');
 await cp('src/live.js', '.banner/live.js');
 await cp('src/og.png', 'dist/og.png');
 await cp('src/_headers', 'dist/_headers');
+// What crawlers and agents read first: robots.txt, the sitemap and llms.txt, from the same navigation as the docs.
+const origin = 'https://fyrr.dev';
+const docsPages = navigation.flatMap(([group, items]) => items.map(([file, title]) =>
+  ({ group, title, url: `${origin}/docs/${file.replace(/\/?README\.md$/, '').replace(/\.md$/, '')}` })));
+const pages = [`${origin}/`, `${origin}/use-cases`, ...(comparison.draft ? [] : [`${origin}/compare`]), ...docsPages.map(doc => doc.url)];
+await writeFile('dist/robots.txt', `User-agent: *\nAllow: /\n\nSitemap: ${origin}/sitemap.xml\n`);
+await writeFile('dist/sitemap.xml', `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${pages.map(url => `<url><loc>${url}</loc></url>`).join('\n')}\n</urlset>\n`);
+await writeFile('dist/llms.txt', [
+  '# fyrr',
+  '',
+  '> The serverless, permission-aware context layer for AI agents. No database. Just a bucket. fyrr indexes a company\'s docs, chats, tickets and code into one S3 bucket and serves them over MCP (search, fetch, list_filters), filtered by each caller\'s permissions before ranking. Open source, Apache-2.0.',
+  '',
+  'Used by one person\'s coding agent, a team sharing one index, a whole company behind its login, and software factories: fleets of unattended coding agents that each run their own reader on the same bucket.',
+  '',
+  '## Overview',
+  '',
+  `- [Use cases](${origin}/use-cases): from one laptop to the whole company, software factories and agent builders`,
+  ...(comparison.draft ? [] : [`- [Compare](${origin}/compare): measured retrieval quality, latency, ingest and cost against self-hosted alternatives`]),
+  '- [Source code](https://github.com/fyrr-ai/fyrr): the repository, changelog and issues',
+  ...navigation.flatMap(([group]) => ['', `## ${group}`, '', ...docsPages.filter(doc => doc.group === group).map(doc => `- [${doc.title}](${doc.url})`)]),
+  '',
+].join('\n'));
 await cp('node_modules/geist/LICENSE.txt', 'dist/OFL-Geist.txt');
 const redirects = [
   ['/docs', '/docs/quickstart'],
