@@ -1329,5 +1329,5 @@
       "description": "When each of a source's syncs is due."
     }
   },
-  "x-fyrr-schema-version": "5.0"
+  "x-fyrr-schema-version": "5.1"
 }
