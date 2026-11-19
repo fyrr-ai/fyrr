@@ -19,7 +19,36 @@
 
 > **Pre-1.0.** Cloud connectors are tested against synthetic APIs only.
 
-## Why fyrr
+## For coding agents
+
+**Coding agents know your code. fyrr gives them everything else.** An agent
+that writes code on its own sees only the repository. It does not know why
+the ticket exists, what the team agreed in chat or what was already tried.
+fyrr lets it look that up.
+
+- **Understand: it reads the ticket and the discussion first.** Before it
+  writes code, the agent searches your tickets, chats, pull requests and docs
+  for what was asked, agreed and already tried
+  ([MCP tools](docs/mcp-tools.md)).
+- **Scale: run as many agents as you like.** Every agent searches the same
+  index straight from your S3 bucket. There is no server to grow when you add
+  more agents ([topology](docs/deployment.md#topology)).
+- **Protect: each agent sees only what it needs.** Let bug-fixing agents read
+  engineering docs and nothing else. If a malicious issue tricks one into
+  looking for salaries, it finds nothing ([security](docs/security.md)).
+- **Trace: see what the agent had read.** Every search result says which
+  version of your knowledge it came from. When a change goes wrong, you can
+  check what the agent knew.
+
+A software factory is a set of coding agents that turn tickets into pull
+requests with nobody watching each step.
+[Set one up with fyrr](docs/software-factory.md).
+
+## For people and their AI
+
+**Ask the whole company. Without asking the whole company.** The same context
+layer answers the AI apps your people already use. Everyone asks in their own
+words and gets only what they are allowed to read.
 
 - **Find: works in the AI you already use.** Plug fyrr into Claude, Cursor or
   any MCP app. Ask there, and it searches your docs, chats, tickets and code
@@ -30,8 +59,7 @@
   not exist, and missing permission data refuses rather than guesses
   ([how](docs/architecture.md#authorization), [security](docs/security.md)).
 - **Scale: as many readers as you need.** Readers only read from the bucket
-  and never coordinate, so you add more as you grow
-  ([topology](docs/deployment.md#topology)).
+  and never coordinate, so you add more as you grow.
 - **Own: your data stays yours.** It runs in your own cloud. Text leaves it
   only for the embedding model you choose.
 
@@ -69,10 +97,6 @@ small service. The reader also runs on [AWS Lambda](docs/lambda.md)
 
 Every way: no database. See [use cases](https://fyrr.dev/use-cases) and
 [deployment](docs/deployment.md).
-
-**Running a software factory?** A fleet of unattended coding agents reads
-the same bucket, one reader per agent, and every response names the
-publication it read. See [software factories](docs/software-factory.md).
 
 ## Quick start
 
