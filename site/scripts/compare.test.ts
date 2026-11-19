@@ -388,7 +388,10 @@ test('new and repeated questions stay visible together without changing headline
   assert(html.includes('does not reuse cached query embeddings'));
   const ids = [...(html + renderSections(data)).matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
   assert.equal(new Set(ids).size, ids.length);
-  assert(renderScoreboard(data).includes('Repeated: 1 ms'));
+  const scoreboard = renderScoreboard(data);
+  assert(scoreboard.includes('1 ms search with cached embedding<br>≈199 ms extra with a fresh embedding'));
+  assert(scoreboard.includes('Repeated: 50 ms'));
+  assert(scoreboard.includes('class="score-value">200 ms total'));
   assert(renderControls(data).includes('value="warm_c1_p50_ms" checked'));
   assert(headlineVerdict(data).includes('Onyx has lower observed median query latency'));
   assert(!headlineVerdict(data).includes('Faster queries'));
