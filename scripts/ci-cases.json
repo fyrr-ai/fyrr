@@ -127,6 +127,34 @@
         "tier": "quick",
         "seconds": 0.103
       },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::latency::prewarm_fills_files_within_the_concurrency_bound": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::latency::prewarm_failure_stops_new_fills_and_keeps_the_error": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::latency::prewarm_reports_the_failure_earliest_in_manifest_order": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::latency::concurrent_fills_never_exceed_the_byte_budget": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::make_room_scans_only_when_a_fill_does_not_fit": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::make_room_accounts_files_left_by_an_earlier_process": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::make_room_sees_files_another_process_added_since_its_last_call": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/rerank::tests::both_envelopes_require_exact_finite_index_coverage": {
         "tier": "quick",
         "seconds": 0.0

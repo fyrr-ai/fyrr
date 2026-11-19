@@ -514,3 +514,323 @@ async fn retired_request_drops_schedule_one_sweep() {
     drop(lease);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+fn blob_bytes(directory: &std::path::Path) -> u64 {
+    std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            MirrorStore::cache_name(&name, ".blob") || MirrorStore::cache_name(&name, ".partial")
+        })
+        .map(|entry| entry.metadata().unwrap().len())
+        .sum()
+}
+
+fn temporary_directory(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "fyrr-mirror-{name}-{}-{}",
+        std::process::id(),
+        fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
+    ))
+}
+
+/// `count` objects of `size` bytes under `dataset.lance/data/`, named in manifest order.
+async fn numbered_files(
+    source: &object_store::memory::InMemory,
+    count: usize,
+    size: usize,
+) -> Vec<fyrr_core::envelope::FileRef> {
+    let mut files = Vec::new();
+    for index in 0..count {
+        let path = format!("data/f{index:03}.lance");
+        let bytes = vec![u8::try_from(index % 251).unwrap(); size];
+        source
+            .put(&Path::from(format!("dataset.lance/{path}")), bytes.into())
+            .await
+            .unwrap();
+        files.push(fyrr_core::envelope::FileRef {
+            path,
+            size_bytes: size as u64,
+        });
+    }
+    files
+}
+
+fn bound_mirror(directory: &std::path::Path, max_bytes: u64) -> Arc<MirrorStore> {
+    let mirror = Arc::new(MirrorStore::new(directory.to_owned(), max_bytes).unwrap());
+    mirror.bind_dataset("s3://bucket/dataset.lance").unwrap();
+    mirror
+}
+
+fn probes(mirror: &MirrorStore) -> (u64, u64, u64) {
+    let probes = &mirror.room_probes;
+    (
+        probes.listings.load(Ordering::SeqCst),
+        probes.stats.load(Ordering::SeqCst),
+        probes.scans.load(Ordering::SeqCst),
+    )
+}
+
+#[tokio::test]
+async fn make_room_scans_only_when_a_fill_does_not_fit() {
+    let directory = temporary_directory("room-fit");
+    let mirror = bound_mirror(&directory, 1000);
+    let source = Arc::new(object_store::memory::InMemory::new());
+    let files = numbered_files(&source, 8, 10).await;
+    mirror.prewarm(source.clone(), &files).await.unwrap();
+    let (listings, stats, scans) = probes(&mirror);
+    assert_eq!(listings, 8, "one names-only listing per miss");
+    assert_eq!(scans, 0, "nothing needed eviction, so nothing was scanned");
+    assert!(
+        stats <= 16,
+        "each file is stat-ed when first seen, as a partial and as a blob: {stats}"
+    );
+    // Every entry is a hit now: no miss, no make_room, no directory work.
+    mirror.prewarm(source.clone(), &files).await.unwrap();
+    assert_eq!(probes(&mirror), (listings, stats, 0));
+    assert_eq!(mirror.totals().hits, 8);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn make_room_accounts_files_left_by_an_earlier_process() {
+    let directory = temporary_directory("room-earlier");
+    let source = Arc::new(object_store::memory::InMemory::new());
+    let files = numbered_files(&source, 5, 100).await;
+    let earlier = bound_mirror(&directory, 1000);
+    earlier.prewarm(source.clone(), &files[..3]).await.unwrap();
+    assert_eq!(blob_bytes(&directory), 300);
+    drop(earlier);
+    // A new process with a smaller budget starts on the same directory.
+    let mirror = bound_mirror(&directory, 350);
+    let store = mirror.wrap("s3$bucket", source.clone());
+    store
+        .get(&Path::from("dataset.lance/data/f003.lance"))
+        .await
+        .unwrap();
+    // 300 + 100 > 350: the files of the earlier process were counted, so one
+    // of them was evicted to make room.
+    assert_eq!(probes(&mirror).2, 1);
+    assert_eq!(blob_bytes(&directory), 300);
+    // A budget the earlier files leave room in needs no scan.
+    let roomy = bound_mirror(&directory, 1000);
+    roomy
+        .wrap("s3$bucket", source.clone())
+        .get(&Path::from("dataset.lance/data/f004.lance"))
+        .await
+        .unwrap();
+    assert_eq!(probes(&roomy).2, 0);
+    assert_eq!(blob_bytes(&directory), 400);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn make_room_sees_files_another_process_added_since_its_last_call() {
+    let directory = temporary_directory("room-foreign");
+    let source = Arc::new(object_store::memory::InMemory::new());
+    let files = numbered_files(&source, 6, 100).await;
+    let ours = bound_mirror(&directory, 300);
+    let other = bound_mirror(&directory, 300);
+    ours.prewarm(source.clone(), &files[..1]).await.unwrap();
+    // The other process fills two more files. Our last view held one.
+    other.prewarm(source.clone(), &files[1..3]).await.unwrap();
+    let store = ours.wrap("s3$bucket", source.clone());
+    store
+        .get(&Path::from("dataset.lance/data/f003.lance"))
+        .await
+        .unwrap();
+    assert!(blob_bytes(&directory) <= 300, "{}", blob_bytes(&directory));
+    assert_eq!(
+        probes(&ours).2,
+        1,
+        "the stale view did not fit and was scanned"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(feature = "test-store")]
+mod latency {
+    use super::*;
+    use crate::storage::test_store::latency::LatencyStore;
+    use std::time::Duration;
+
+    const LATENCY: Duration = Duration::from_secs(1);
+
+    struct Fixture {
+        directory: PathBuf,
+        mirror: Arc<MirrorStore>,
+        source: Arc<object_store::memory::InMemory>,
+        files: Vec<fyrr_core::envelope::FileRef>,
+    }
+    async fn fixture(name: &str, count: usize, size: usize, max_bytes: u64) -> Fixture {
+        let directory = temporary_directory(name);
+        let mirror = bound_mirror(&directory, max_bytes);
+        let source = Arc::new(object_store::memory::InMemory::new());
+        let files = numbered_files(&source, count, size).await;
+        Fixture {
+            directory,
+            mirror,
+            source,
+            files,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn prewarm_fills_files_within_the_concurrency_bound() {
+        let Fixture {
+            directory,
+            mirror,
+            source,
+            files,
+        } = fixture("prewarm-rounds", 40, 10, 1024).await;
+        let _lease = mirror.pin(&files).await.unwrap();
+        let store = LatencyStore::new(source, LATENCY);
+        let start = tokio::time::Instant::now();
+        mirror
+            .prewarm(Arc::new(store.clone()), &files)
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
+        assert_eq!(store.requests(), 40, "one object GET per file");
+        assert_eq!(store.bytes(), 400);
+        assert!(
+            store
+                .reads()
+                .iter()
+                .all(|read| !read.head && read.range.is_none())
+        );
+        assert_eq!(store.peak_in_flight(), MirrorStore::PREWARM_CONCURRENCY);
+        assert_eq!(
+            store.rounds(elapsed),
+            40_u128.div_ceil(MirrorStore::PREWARM_CONCURRENCY as u128),
+            "a sequential pass takes 40 rounds: {elapsed:?}"
+        );
+        let totals = mirror.totals();
+        assert_eq!((totals.requests, totals.bytes), (40, 400));
+        for file in &files {
+            let path = Path::from(format!("dataset.lance/{}", file.path));
+            let blob = directory.join(mirror.blob_name("s3$bucket", path.as_ref()).unwrap());
+            assert!(mirror.verified_file(&blob).await.unwrap());
+            assert!(blob.with_extension("checksum").exists());
+        }
+        assert_eq!(blob_bytes(&directory), 400);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn prewarm_failure_stops_new_fills_and_keeps_the_error() {
+        let Fixture {
+            directory,
+            mirror,
+            source,
+            mut files,
+        } = fixture("prewarm-missing", 60, 10, 4096).await;
+        source
+            .delete(&Path::from("dataset.lance/data/f007.lance"))
+            .await
+            .unwrap();
+        let _lease = mirror.pin(&files).await.unwrap();
+        let store = LatencyStore::new(source.clone(), LATENCY);
+        assert_eq!(
+            mirror.prewarm(Arc::new(store.clone()), &files).await,
+            Err(StorageUnavailable)
+        );
+        assert!(
+            store.requests() < 2 * MirrorStore::PREWARM_CONCURRENCY,
+            "no new fill starts once one failed: {}",
+            store.requests()
+        );
+        // A size mismatch is the same failure as a missing object.
+        source
+            .put(&Path::from("dataset.lance/data/f007.lance"), "x".into())
+            .await
+            .unwrap();
+        files[7].size_bytes = 10;
+        assert_eq!(
+            mirror.prewarm(source.clone(), &files).await,
+            Err(StorageUnavailable)
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn prewarm_reports_the_failure_earliest_in_manifest_order() {
+        // The first file is larger than the whole budget and the second is
+        // missing: a sequential pass fails on the first.
+        let Fixture {
+            directory,
+            mirror,
+            source,
+            mut files,
+        } = fixture("prewarm-order", 6, 10, 25).await;
+        source
+            .put(
+                &Path::from("dataset.lance/data/f000.lance"),
+                vec![0u8; 30].into(),
+            )
+            .await
+            .unwrap();
+        files[0].size_bytes = 30;
+        source
+            .delete(&Path::from("dataset.lance/data/f001.lance"))
+            .await
+            .unwrap();
+        let _lease = mirror.pin(&files).await.unwrap();
+        let store = LatencyStore::new(source.clone(), LATENCY);
+        assert_eq!(
+            mirror.prewarm(Arc::new(store), &files).await,
+            Err(MirrorCapacityExhausted)
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+        // Now the missing file comes first: file 0 fits, 1 is missing, and
+        // later files beyond the budget are out of capacity.
+        let Fixture {
+            directory,
+            mirror,
+            source,
+            files,
+        } = fixture("prewarm-order-second", 6, 10, 25).await;
+        source
+            .delete(&Path::from("dataset.lance/data/f001.lance"))
+            .await
+            .unwrap();
+        let _lease = mirror.pin(&files).await.unwrap();
+        let store = LatencyStore::new(source, LATENCY);
+        assert_eq!(
+            mirror.prewarm(Arc::new(store), &files).await,
+            Err(StorageUnavailable)
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn concurrent_fills_never_exceed_the_byte_budget() {
+        let budget = 205;
+        let Fixture {
+            directory,
+            mirror,
+            source,
+            files,
+        } = fixture("prewarm-budget", 40, 10, budget).await;
+        let _lease = mirror.pin(&files).await.unwrap();
+        let worst = Arc::new(AtomicU64::new(0));
+        let store = LatencyStore::new(source, LATENCY).observed({
+            let (directory, worst) = (directory.clone(), worst.clone());
+            move |_| {
+                worst.fetch_max(blob_bytes(&directory), Ordering::SeqCst);
+            }
+        });
+        // 40 pinned files of 10 bytes cannot all fit 205 bytes, so the fill fails
+        // the way a sequential one fails: out of capacity.
+        assert_eq!(
+            mirror.prewarm(Arc::new(store.clone()), &files).await,
+            Err(MirrorCapacityExhausted)
+        );
+        assert!(store.peak_in_flight() <= MirrorStore::PREWARM_CONCURRENCY);
+        assert!(worst.load(Ordering::SeqCst) <= budget);
+        let used = blob_bytes(&directory);
+        assert!(used <= budget && used >= 190, "{used}");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
