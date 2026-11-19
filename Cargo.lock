@@ -2527,7 +2527,7 @@ dependencies = [
 
 [[package]]
 name = "fyrr"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arrow-array",
  "axum",
@@ -2551,7 +2551,7 @@ dependencies = [
 
 [[package]]
 name = "fyrr-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arrow-schema",
  "chrono",
@@ -2570,7 +2570,7 @@ dependencies = [
 
 [[package]]
 name = "fyrr-reader"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -2610,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "fyrr-writer"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arrow-array",
  "arrow-buffer",

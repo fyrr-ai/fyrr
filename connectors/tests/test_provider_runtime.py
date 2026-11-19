@@ -33,7 +33,7 @@ def test_provider_info_derives_kinds_and_config_schema() -> None:
 
 def test_bundled_connectors_are_installed_providers() -> None:
     discovered = json.loads(runtime.discover())
-    assert discovered["sdk_version"] == "0.1.0"
+    assert discovered["sdk_version"] == "0.1.1"
     names = [entry["entry_point"] for entry in discovered["providers"]]
     assert names == BUNDLED
     for entry in discovered["providers"]:

@@ -7,6 +7,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-19
+
 ### Added
 
 - Releases carry `linux-aarch64` binaries next to `linux-x86_64`, and the
@@ -96,5 +98,6 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   fixtures, and `scripts/ci`, which checks the reference documentation
   against the binaries.
 
-[Unreleased]: https://github.com/fyrr-ai/fyrr/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/fyrr-ai/fyrr/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/fyrr-ai/fyrr/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/fyrr-ai/fyrr/releases/tag/v0.1.0
