@@ -224,6 +224,28 @@ async fn authorization_cache_budget_on_storage() {
         "exclude":[{"source_id":"allowed", "root_id":"cache-next.txt"}],
     }))
     .unwrap();
+    // Two workers binding one subject share the cache's allocation: a hit
+    // copies nothing, and nothing a worker does can change another's mask.
+    {
+        let (mut first, mut second) = (
+            reader.worker().await.unwrap(),
+            reader.worker().await.unwrap(),
+        );
+        first.bind_subject(&subjects[0]).await.unwrap();
+        second.bind_subject(&subjects[0]).await.unwrap();
+        assert!(Arc::ptr_eq(&first.admission, &second.admission));
+        let cached = cache
+            .lock()
+            .unwrap()
+            .entries
+            .iter()
+            .find(|(key, _)| key.subject == subjects[0].key)
+            .map(|(_, entry)| entry.admission.clone())
+            .unwrap();
+        assert!(Arc::ptr_eq(&cached, &first.admission));
+        assert!(first.maps_enabled && first.admission.maps.is_some());
+        cache.lock().unwrap().entries.clear();
+    }
     let service = crate::serve::start(reader).await.unwrap();
     let mut exact = Vec::new();
     let mut exact_filters = Vec::new();

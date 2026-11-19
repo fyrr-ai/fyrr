@@ -107,6 +107,7 @@ impl PreparedReader {
             )
             .await?;
         let indexes = verify_indices(&dataset, &manifest, config).await?;
+        crate::fts_layout::report(&dataset, &indexes).await;
         let mut reader = Self {
             #[cfg(test)]
             test_hooks: Arc::default(),
@@ -116,7 +117,6 @@ impl PreparedReader {
             dataset,
             manifest,
             hidden_sources: Self::hidden(config, &head, &policy)?,
-            reported_hidden_sources: Vec::new(),
             head,
             policy,
             identity,
@@ -125,11 +125,10 @@ impl PreparedReader {
             scope: scope::RequestScope::new(config.reader.http.is_some()),
             admission_cache,
             admission_build_us: 0,
-            eligible: RowAddrMask::allow_nothing(),
+            admission: Arc::new(Admission::nothing()),
+            maps_enabled: false,
             indexes,
-            unindexed: BTreeSet::new(),
             fallback_probes: config.reader.nprobes.saturating_mul(2),
-            maps: None,
             vector_roots: Arc::default(),
             centroid_routers: Arc::default(),
             mirror,
@@ -387,7 +386,6 @@ impl PreparedReader {
                 manifest: manifest.clone(),
                 head: head.clone(),
                 hidden_sources: hidden_sources.clone(),
-                reported_hidden_sources: Vec::new(),
                 policy_cache: policy_cache.clone(),
                 identity_cache: identity_cache.clone(),
                 policy: policy.clone(),
@@ -395,11 +393,10 @@ impl PreparedReader {
                 scope: scope.clone(),
                 admission_cache: admission_cache.clone(),
                 admission_build_us: 0,
-                eligible: RowAddrMask::allow_nothing(),
+                admission: Arc::new(Admission::nothing()),
+                maps_enabled: false,
                 indexes: indexes.clone(),
-                unindexed: BTreeSet::new(),
                 fallback_probes,
-                maps: None,
                 vector_roots: vector_roots.clone(),
                 centroid_routers: centroid_routers.clone(),
                 mirror,
@@ -459,7 +456,7 @@ impl PreparedReader {
         }
         let changed = self.generation_state != GenerationState::Cold;
         self.generation_state = GenerationState::Cold;
-        self.maps = None;
+        self.maps_enabled = false;
         if self.vector_roots.get().is_some() {
             self.vector_roots = Arc::default();
             self.centroid_routers = Arc::default();

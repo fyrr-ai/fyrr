@@ -366,6 +366,18 @@ fn ranges(config: &Config, error: &mut impl FnMut(&str, String)) {
             FTS_MAX_TOKEN_LENGTH_MAX,
         ),
         (
+            "namespace.dense_rq_bits".to_owned(),
+            u64::from(config.namespace.dense_rq_bits),
+            1,
+            DENSE_RQ_BITS_MAX,
+        ),
+        (
+            "namespace.dense_partition_rows".to_owned(),
+            u64::from(config.namespace.dense_partition_rows),
+            DENSE_PARTITION_ROWS_MIN,
+            DENSE_PARTITION_ROWS_MAX,
+        ),
+        (
             "embedding.dimensions".to_owned(),
             u64::from(config.embedding.dimensions),
             1,
@@ -482,6 +494,11 @@ fn reader(config: &Config, error: &mut impl FnMut(&str, String)) {
             error(path, message);
         }
     }
+    if let Some(chunk) = reader.fts_search_chunk
+        && let Some(message) = range_issue(chunk as u64, 1, FTS_SEARCH_CHUNK_MAX)
+    {
+        error("reader.fts_search_chunk", message);
+    }
     if reader.mirror_path.as_deref().is_some_and(str::is_empty) {
         error(
             "reader.mirror_path",
@@ -552,6 +569,14 @@ fn writer_bounds(config: &Config, error: &mut impl FnMut(&str, String)) {
                 "must be between 1ms and {envelope_age_limit} (Lance keeps unreferenced fragments for {LANCE_UNREFERENCED_RETENTION}, minus a {ENVELOPE_AGE_MARGIN} margin)"
             ),
         );
+    }
+    if writer.threads == Some(0) {
+        error("writer.threads", "must be at least 1".into());
+    }
+    if let Some(megabytes) = writer.fts_partition_memory_mb
+        && let Some(message) = range_issue(u64::from(megabytes), 1, FTS_PARTITION_MEMORY_MB_MAX)
+    {
+        error("writer.fts_partition_memory_mb", message);
     }
     if writer.worker_memory_max_bytes.as_u64() == 0
         || writer.worker_memory_max_bytes.as_u64() > i64::MAX as u64

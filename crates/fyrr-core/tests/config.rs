@@ -224,6 +224,19 @@ fn example_and_minimal_files_are_valid() {
     assert_eq!(errors(&minimal), Vec::<String>::new());
     assert_eq!(minimal.config.writer.purge_window.to_string(), "1d");
     assert_eq!(minimal.config.reader.concurrency, 8);
+    assert_eq!(minimal.config.writer.threads, None);
+    let bounded = parse(&format!("{MINIMAL}\n[writer]\nthreads = 2\n")).expect("threads parse");
+    assert_eq!(errors(&bounded), Vec::<String>::new());
+    assert_eq!(bounded.config.writer.threads, Some(2));
+    assert_eq!(minimal.config.writer.fts_partition_memory_mb, None);
+    assert_eq!(minimal.config.reader.fts_search_chunk, None);
+    let partitioned = parse(&format!(
+        "{MINIMAL}\n[writer]\nfts_partition_memory_mb = 64\n[reader]\nfts_search_chunk = 1\n"
+    ))
+    .expect("full-text partition settings parse");
+    assert_eq!(errors(&partitioned), Vec::<String>::new());
+    assert_eq!(partitioned.config.writer.fts_partition_memory_mb, Some(64));
+    assert_eq!(partitioned.config.reader.fts_search_chunk, Some(1));
     assert_eq!(
         minimal.config.reader.version_check_interval.to_string(),
         "30s"
@@ -320,6 +333,20 @@ fn secrets_in_the_file_are_refused_without_echo() {
 
 #[test]
 fn cross_field_rules_are_enforced() {
+    assert_error("[writer]\nthreads = 0", "writer.threads");
+    assert_error(
+        "[writer]\nfts_partition_memory_mb = 0",
+        "writer.fts_partition_memory_mb",
+    );
+    assert_error(
+        "[writer]\nfts_partition_memory_mb = 1048577",
+        "writer.fts_partition_memory_mb",
+    );
+    assert_error("[reader]\nfts_search_chunk = 0", "reader.fts_search_chunk");
+    assert_error(
+        "[reader]\nfts_search_chunk = 1025",
+        "reader.fts_search_chunk",
+    );
     assert_error(
         "[writer]\npurge_window = \"1h\"\nversion_grace = \"1h\"",
         "writer.purge_window",
@@ -1026,6 +1053,67 @@ fn analyzer_flags_are_publication_settings_with_legacy_defaults() {
         assert_eq!(fts.stem, flag == "fts_stem");
         assert_eq!(fts.remove_stop_words, flag == "fts_remove_stop_words");
         assert_eq!(fts.ascii_folding, flag == "fts_ascii_folding");
+    }
+}
+#[test]
+fn dense_rq_bits_defaults_to_one_bit_and_is_bounded_without_changing_the_digest() {
+    let legacy = parse(MINIMAL).unwrap().config.namespace;
+    assert_eq!(legacy.dense_rq_bits, 1);
+    for good in ["1", "5", "9"] {
+        let configured =
+            parse(&MINIMAL.replace("[namespace]", &format!("[namespace]\ndense_rq_bits={good}")))
+                .unwrap();
+        assert!(errors(&configured).is_empty());
+        assert_eq!(configured.config.namespace.dense_rq_bits.to_string(), good);
+        assert_eq!(
+            configured.config.namespace.retrieval_digest(),
+            legacy.retrieval_digest()
+        );
+    }
+    for bad in ["0", "10"] {
+        let rejected =
+            parse(&MINIMAL.replace("[namespace]", &format!("[namespace]\ndense_rq_bits={bad}")))
+                .unwrap();
+        assert!(
+            errors(&rejected)
+                .iter()
+                .any(|error| error.contains("namespace.dense_rq_bits")),
+            "{bad}"
+        );
+    }
+}
+#[test]
+fn dense_partition_rows_defaults_to_550_and_is_bounded_without_changing_the_digest() {
+    let legacy = parse(MINIMAL).unwrap().config.namespace;
+    assert_eq!(legacy.dense_partition_rows, 550);
+    for good in ["32", "1000", "4096"] {
+        let configured = parse(&MINIMAL.replace(
+            "[namespace]",
+            &format!("[namespace]\ndense_partition_rows={good}"),
+        ))
+        .unwrap();
+        assert!(errors(&configured).is_empty());
+        assert_eq!(
+            configured.config.namespace.dense_partition_rows.to_string(),
+            good
+        );
+        assert_eq!(
+            configured.config.namespace.retrieval_digest(),
+            legacy.retrieval_digest()
+        );
+    }
+    for bad in ["31", "4097"] {
+        let rejected = parse(&MINIMAL.replace(
+            "[namespace]",
+            &format!("[namespace]\ndense_partition_rows={bad}"),
+        ))
+        .unwrap();
+        assert!(
+            errors(&rejected)
+                .iter()
+                .any(|error| error.contains("namespace.dense_partition_rows")),
+            "{bad}"
+        );
     }
 }
 #[test]
