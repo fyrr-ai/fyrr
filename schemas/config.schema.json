@@ -151,6 +151,14 @@
           "type": "boolean",
           "description": "Publication-level ASCII folding; changing it rebuilds the FTS index.",
           "default": false
+        },
+        "dense_rq_bits": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 1,
+          "maximum": 9,
+          "description": "RaBitQ bits per dimension of the dense vector index. Fixed when the\nnamespace is first published; a writer with another value refuses to\nextend the index.",
+          "default": 1
         }
       },
       "required": [

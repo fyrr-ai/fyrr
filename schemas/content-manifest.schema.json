@@ -49,6 +49,14 @@
     "fts": {
       "$ref": "#/$defs/FtsSettings"
     },
+    "dense_rq_bits": {
+      "type": "integer",
+      "format": "uint8",
+      "minimum": 0,
+      "maximum": 255,
+      "description": "RaBitQ bits per dimension of the vector index; absent in manifests\nwritten before 3.1, which means 1.",
+      "default": 1
+    },
     "retrieval_policy_digest": {
       "type": "string",
       "description": "Digest of the retrieval policy, including the result composition."
@@ -421,5 +429,5 @@
     }
   },
   "x-fyrr-contract": "content-manifest",
-  "x-fyrr-schema-version": "3.0"
+  "x-fyrr-schema-version": "3.1"
 }

@@ -1034,6 +1034,33 @@ fn analyzer_flags_are_publication_settings_with_legacy_defaults() {
     }
 }
 #[test]
+fn dense_rq_bits_defaults_to_one_bit_and_is_bounded_without_changing_the_digest() {
+    let legacy = parse(MINIMAL).unwrap().config.namespace;
+    assert_eq!(legacy.dense_rq_bits, 1);
+    for good in ["1", "5", "9"] {
+        let configured =
+            parse(&MINIMAL.replace("[namespace]", &format!("[namespace]\ndense_rq_bits={good}")))
+                .unwrap();
+        assert!(errors(&configured).is_empty());
+        assert_eq!(configured.config.namespace.dense_rq_bits.to_string(), good);
+        assert_eq!(
+            configured.config.namespace.retrieval_digest(),
+            legacy.retrieval_digest()
+        );
+    }
+    for bad in ["0", "10"] {
+        let rejected =
+            parse(&MINIMAL.replace("[namespace]", &format!("[namespace]\ndense_rq_bits={bad}")))
+                .unwrap();
+        assert!(
+            errors(&rejected)
+                .iter()
+                .any(|error| error.contains("namespace.dense_rq_bits")),
+            "{bad}"
+        );
+    }
+}
+#[test]
 fn rescore_depth_keeps_legacy_digest_and_expands_only_at_small_gaps() {
     use fyrr_core::config::RescoreDepth;
     let baseline = parse(MINIMAL).unwrap().config.namespace;

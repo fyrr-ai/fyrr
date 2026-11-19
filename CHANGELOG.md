@@ -13,6 +13,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   process: its async runtime, Lance's compute runtime, the parallel-iterator
   pool used by vector index builds and the full-text build workers. See
   [reader and writer settings](docs/reader-writer.md).
+- `namespace.dense_rq_bits` (1 to 9, default 1) sets the RaBitQ bits per
+  dimension of the vector index. The value is recorded in the content
+  manifest (publication contract 3.1) and fixed once a namespace is
+  published; see [tuning](docs/tuning.md).
 
 ## [0.1.1] - 2026-11-19
 

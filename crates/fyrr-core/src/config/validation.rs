@@ -366,6 +366,12 @@ fn ranges(config: &Config, error: &mut impl FnMut(&str, String)) {
             FTS_MAX_TOKEN_LENGTH_MAX,
         ),
         (
+            "namespace.dense_rq_bits".to_owned(),
+            u64::from(config.namespace.dense_rq_bits),
+            1,
+            DENSE_RQ_BITS_MAX,
+        ),
+        (
             "embedding.dimensions".to_owned(),
             u64::from(config.embedding.dimensions),
             1,

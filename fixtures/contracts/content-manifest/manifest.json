@@ -1,5 +1,5 @@
 {
-  "schema_version": "3.0",
+  "schema_version": "3.1",
   "namespace": "acme",
   "publication_id": "pub-000042",
   "sequence": 42,
@@ -35,6 +35,7 @@
     "ascii_folding": true,
     "with_position": false
   },
+  "dense_rq_bits": 1,
   "retrieval_policy_digest": "sha256:17fba65c79e337ef6c14fca1ce3a800a69e8812aacee1261bb4283c1102a716b",
   "indexes": [
     {

@@ -363,6 +363,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-writer:lib:fyrr_writer/commit::group::tests::vector_index_uses_the_configured_rabitq_bits": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
       "full:fyrr-writer:lib:fyrr_writer/commit::history::tests::replacement_read_preserves_rejection_fences": {
         "tier": "quick",
         "seconds": 0.0
@@ -652,6 +656,10 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-core:test:config/dense_rq_bits_defaults_to_one_bit_and_is_bounded_without_changing_the_digest": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
       "full:fyrr-core:test:config/every_schema_constraint_is_enforced": {
         "tier": "quick",
         "seconds": 0.025
@@ -757,6 +765,10 @@
       "full:fyrr-core:test:contracts/arrow_nested_additions_follow_the_minor_rule": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "full:fyrr-core:test:contracts/manifest_without_dense_rq_bits_means_one_bit": {
+        "tier": "quick",
+        "seconds": 0.01
       },
       "full:fyrr-core:test:contracts/committed_compat_fixtures_behave": {
         "tier": "quick",

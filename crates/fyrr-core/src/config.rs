@@ -44,6 +44,8 @@ pub const SOURCE_ID_PATTERN: &str = r"^[a-z0-9][a-z0-9_-]{0,62}$";
 /// Connector provider names.
 pub const PROVIDER_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
 pub const FTS_MAX_TOKEN_LENGTH_MAX: u64 = 1024;
+/// Bit widths Lance accepts for an IVF_RQ index.
+pub const DENSE_RQ_BITS_MAX: u64 = 9;
 pub const DIMENSIONS_MAX: u64 = 8192;
 pub const BATCH_SIZE_MAX: u64 = 2048;
 pub const MAX_RETRIES_MAX: u64 = 10;
@@ -139,6 +141,12 @@ pub struct NamespaceConfig {
     /// Publication-level ASCII folding; changing it rebuilds the FTS index.
     #[serde(default)]
     pub fts_ascii_folding: bool,
+    /// RaBitQ bits per dimension of the dense vector index. Fixed when the
+    /// namespace is first published; a writer with another value refuses to
+    /// extend the index.
+    #[serde(default = "default_dense_rq_bits")]
+    #[schemars(range(min = 1, max = DENSE_RQ_BITS_MAX))]
+    pub dense_rq_bits: u8,
 }
 
 /// Optional reranking after fusion; absent configuration makes no provider calls.
@@ -1498,6 +1506,9 @@ fn holds_table(value: &toml::Value) -> bool {
 
 fn default_fts_max_token_length() -> u32 {
     40
+}
+fn default_dense_rq_bits() -> u8 {
+    crate::publication::LEGACY_DENSE_RQ_BITS
 }
 fn default_region() -> String {
     "us-east-1".to_owned()
