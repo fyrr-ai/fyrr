@@ -885,6 +885,16 @@
           "description": "IVF centroid routing; exact stays the default until scale calibration.",
           "default": "exact"
         },
+        "fts_search_chunk": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 1,
+          "description": "Full-text partitions scored by one task of a query. With 1 every\npartition of an index segment is its own task, so one query scores\nseveral partitions at once on spare compute threads. Absent keeps\nLance's default of 16, which scores up to 16 partitions one after\nanother. Scores do not depend on it. It takes effect only for indexes\nof several partitions (`writer.fts_partition_memory_mb`).",
+          "maximum": 1024
+        },
         "mirror_path": {
           "type": [
             "string",
@@ -1045,6 +1055,16 @@
           "format": "uint",
           "minimum": 1,
           "description": "CPU threads of each writer process: its async runtime, Lance's compute\nruntime, the parallel-iterator pool and the full-text build workers.\nAbsent uses every CPU of the host."
+        },
+        "fts_partition_memory_mb": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 1,
+          "description": "Build target for one full-text index partition, in MiB of builder\nmemory per full-text worker (Lance's partition size, 2048 by default).\nA smaller target makes a full-text index of several partitions, which a\nreader can search concurrently (`reader.fts_search_chunk`); it also\nkeeps that size when index segments are merged. Scores do not depend on\nit. The count is roughly total builder memory divided by the target.\nAbsent keeps Lance's default, usually one partition. Applies to the\nnext full-text build and merge, not to an index already published.",
+          "maximum": 1048576
         },
         "purge_window": {
           "$ref": "#/$defs/Duration",

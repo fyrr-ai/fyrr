@@ -20,6 +20,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 - `namespace.dense_partition_rows` (32 to 4096, default 550) sets the target
   rows per partition of the vector index, recorded and fixed like
   `dense_rq_bits`.
+- `writer.fts_partition_memory_mb` and `reader.fts_search_chunk` (both absent
+  by default) build a full-text index of several partitions and let one query
+  score them concurrently. Scores and rankings do not change; see
+  [tuning](docs/tuning.md#full-text-partitions).
 
 ## [0.1.1] - 2026-11-19
 

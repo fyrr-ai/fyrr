@@ -1,8 +1,11 @@
-//! `writer.threads`: one bound for every CPU pool of a writer process.
+//! Writer settings that Lance reads from the environment once per process:
+//! `writer.threads` bounds every CPU pool, `writer.fts_partition_memory_mb`
+//! sizes full-text index partitions.
 //!
-//! Each pool reads its size once from an environment variable, so the bound
-//! is applied by setting those variables before the first thread exists.
-//! Worker subprocesses inherit them and apply the same bound again.
+//! Each is applied by setting its variables before the first thread exists
+//! (the only writer of the environment is
+//! [`fyrr_reader::process_env::set_at_startup`]). Worker subprocesses inherit
+//! them and apply the same settings again.
 
 /// Environment settings that bound the pools for `threads` CPU threads, and
 /// the full-text build workers for the same bound.
@@ -34,19 +37,26 @@ pub(crate) fn pools(threads: usize) -> Pools {
     }
 }
 
-/// Bounds this process's pools; absent `threads` changes nothing.
+/// Lance's full-text partition size, in MiB of builder memory per worker. A
+/// build flushes a partition at this size and an index merge repacks to it, so
+/// one value keeps the geometry through both; Lance's `memory_limit_mb`
+/// parameter is a total split over the workers it ends up with, which cannot
+/// be matched by a merge.
+pub(crate) fn fts_partition_env(megabytes: u32) -> (&'static str, String) {
+    ("LANCE_FTS_PARTITION_SIZE", megabytes.to_string())
+}
+
+/// Applies the process-level writer settings; absent settings change nothing.
 ///
 /// Call it before the first Tokio runtime, Lance call or other thread of the
 /// process.
-#[allow(unsafe_code)]
-pub(crate) fn apply(threads: Option<usize>) {
-    let Some(threads) = threads else { return };
-    for (name, value) in pools(threads).env {
-        // SAFETY: the process is still single-threaded here (the callers run
-        // before any runtime or worker thread starts), so no other thread
-        // can read the environment concurrently.
-        unsafe { std::env::set_var(name, value) };
-    }
+pub(crate) fn apply(writer: &fyrr_core::config::WriterConfig) {
+    let threads = writer
+        .threads
+        .into_iter()
+        .flat_map(|threads| pools(threads).env);
+    let partition = writer.fts_partition_memory_mb.map(fts_partition_env);
+    fyrr_reader::process_env::set_at_startup(threads.chain(partition));
 }
 
 #[cfg(test)]
@@ -68,5 +78,13 @@ mod tests {
         assert_eq!(pools.fts_workers, 4);
         assert_eq!(super::pools(1).fts_workers, 1);
         assert_eq!(super::pools(3).fts_workers, 1);
+    }
+
+    #[test]
+    fn partition_target_sets_lances_per_worker_partition_size() {
+        assert_eq!(
+            super::fts_partition_env(256),
+            ("LANCE_FTS_PARTITION_SIZE", "256".to_owned())
+        );
     }
 }

@@ -428,18 +428,7 @@ async fn build_indexes(
         config.namespace.dense_partition_rows,
     );
     let scalar = ScalarIndexParams::default();
-    let fts = lance_index::scalar::InvertedIndexParams::default()
-        .base_tokenizer("simple".into())
-        .with_position(false)
-        .max_token_length(Some(config.namespace.fts_max_token_length as usize))
-        .lower_case(true)
-        .stem(config.namespace.fts_stem)
-        .remove_stop_words(config.namespace.fts_remove_stop_words)
-        .ascii_folding(config.namespace.fts_ascii_folding);
-    let fts = match config.writer.threads {
-        Some(threads) => fts.num_workers(crate::threads::pools(threads).fts_workers),
-        None => fts,
-    };
+    let fts = fts_params(config);
     for &(column, name, kind, _) in INDEXES {
         if (name == "fts_idx" && !fts_changed) || (name != "fts_idx" && !first) {
             continue;
@@ -481,6 +470,29 @@ async fn build_indexes(
     }
     Ok(())
 }
+
+/// Parameters of the full-text index. The partition size
+/// (`writer.fts_partition_memory_mb`) is not set here: Lance reads it from the
+/// environment (see `threads::apply`) for builds and for index merges alike,
+/// which keeps the partition geometry through both.
+fn fts_params(config: &Config) -> lance_index::scalar::InvertedIndexParams {
+    let fts = lance_index::scalar::InvertedIndexParams::default()
+        .base_tokenizer("simple".into())
+        .with_position(false)
+        .max_token_length(Some(config.namespace.fts_max_token_length as usize))
+        .lower_case(true)
+        .stem(config.namespace.fts_stem)
+        .remove_stop_words(config.namespace.fts_remove_stop_words)
+        .ascii_folding(config.namespace.fts_ascii_folding);
+    match config.writer.threads {
+        Some(threads) => fts.num_workers(crate::threads::pools(threads).fts_workers),
+        None => fts,
+    }
+}
+
+#[cfg(test)]
+#[path = "group/fts_partition_tests.rs"]
+mod fts_partition_tests;
 
 #[cfg(test)]
 mod tests {

@@ -494,6 +494,11 @@ fn reader(config: &Config, error: &mut impl FnMut(&str, String)) {
             error(path, message);
         }
     }
+    if let Some(chunk) = reader.fts_search_chunk
+        && let Some(message) = range_issue(chunk as u64, 1, FTS_SEARCH_CHUNK_MAX)
+    {
+        error("reader.fts_search_chunk", message);
+    }
     if reader.mirror_path.as_deref().is_some_and(str::is_empty) {
         error(
             "reader.mirror_path",
@@ -567,6 +572,11 @@ fn writer_bounds(config: &Config, error: &mut impl FnMut(&str, String)) {
     }
     if writer.threads == Some(0) {
         error("writer.threads", "must be at least 1".into());
+    }
+    if let Some(megabytes) = writer.fts_partition_memory_mb
+        && let Some(message) = range_issue(u64::from(megabytes), 1, FTS_PARTITION_MEMORY_MB_MAX)
+    {
+        error("writer.fts_partition_memory_mb", message);
     }
     if writer.worker_memory_max_bytes.as_u64() == 0
         || writer.worker_memory_max_bytes.as_u64() > i64::MAX as u64
