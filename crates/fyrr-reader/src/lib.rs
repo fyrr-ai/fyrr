@@ -28,6 +28,7 @@ mod file_digest;
 mod generation;
 mod http;
 mod mirror;
+pub mod process_env;
 mod provider;
 mod readiness;
 mod rerank;

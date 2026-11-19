@@ -323,7 +323,7 @@ fn with_config(path: &Path, body: impl FnOnce(&LoadedConfig) -> ExitCode) -> Exi
                 ExitCode::from(exit::CONFIG)
             } else {
                 // No runtime, Lance call or worker thread exists yet.
-                crate::threads::apply(loaded.config.writer.threads);
+                crate::threads::apply(&loaded.config.writer);
                 body(&loaded)
             }
         }
