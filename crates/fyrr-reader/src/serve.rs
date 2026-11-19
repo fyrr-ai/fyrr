@@ -241,7 +241,7 @@ impl TestHooks {
                 before_cleanup,
                 worker: Arc::as_ptr(&reader.mirror) as usize,
                 head: reader.head.clone(),
-                selected: reader.eligible.selected(probe.row),
+                selected: reader.admission.eligible.selected(probe.row),
             });
         }
     }

@@ -25,6 +25,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   score them concurrently. Scores and rankings do not change; see
   [tuning](docs/tuning.md#full-text-partitions).
 
+### Changed
+
+- The reader shares one immutable admission per subject between its
+  authorization cache and its workers instead of copying it, and the cache
+  charges an entry by an estimate of its size rather than 32 bytes per
+  readable row. A subject with millions of readable rows is now cached.
+
 ## [0.1.1] - 2026-11-19
 
 ### Added

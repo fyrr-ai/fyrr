@@ -55,9 +55,12 @@ fn routing_telemetry(telemetry: &mut Telemetry, fallback: Option<RoutingFallback
     telemetry.routing_fallback = telemetry.routing_fallback.or(fallback);
 }
 
-#[derive(Debug, Clone)]
+/// Per-partition admission flags of one vector segment. The map names its
+/// segment but does not own the root: a cached admission must not keep a
+/// generation's native index (and the memory its reservation pays for) alive.
+#[derive(Debug)]
 pub struct PartitionMap {
-    index: Arc<dyn VectorIndex>,
+    segment: String,
     allowed: Vec<bool>,
 }
 
@@ -182,54 +185,96 @@ impl AuthorizationCacheKey {
             + self.hidden.iter().map(String::capacity).sum::<usize>()
     }
 }
+/// One completed admission: the rows a caller may read and the routing hints
+/// derived from them. It is immutable once built. The subject cache and every
+/// prepared reader that binds the subject share one `Arc` of it, so a request
+/// can neither alter what another request sees nor pay for a private copy.
 #[derive(Debug)]
-struct CachedAdmission {
-    _cache_claim: Arc<tokio::sync::OwnedSemaphorePermit>,
-    eligible: RowAddrMask,
+pub(crate) struct Admission {
+    pub(crate) eligible: RowAddrMask,
+    /// Eligible rows of fragments outside the vector index coverage.
+    unindexed: RowAddrTreeMap,
     maps: Option<Vec<PartitionMap>>,
-    unindexed: BTreeSet<u64>,
     reported_hidden_sources: Vec<String>,
     fallback_probes: usize,
-    _reservation: Arc<PreparationReservation>,
-    _native_session: Arc<NativeSession>,
 }
-impl CachedAdmission {
-    /// Lance bitmap accounting and owned buffers, excluding shared native indexes.
-    /// Allocator and shared-cache costs are measured separately from private copies.
-    fn estimated_private_bytes(&self) -> usize {
+impl Admission {
+    /// Charged per roaring container on top of the serialized bitmap size.
+    const CONTAINER_OVERHEAD_BYTES: usize = 128;
+
+    /// Admits nothing; the state of a reader before its first binding.
+    pub(crate) fn nothing() -> Self {
+        Self {
+            eligible: RowAddrMask::allow_nothing(),
+            unindexed: RowAddrTreeMap::new(),
+            maps: None,
+            reported_hidden_sources: Vec::new(),
+            fallback_probes: 0,
+        }
+    }
+    fn bitmap_bytes(&self) -> usize {
         use lance::cache::DeepSizeOf;
-        std::mem::size_of::<Self>()
-            + self.eligible.deep_size_of()
-            + self.unindexed.deep_size_of()
-            + self.maps.as_ref().map_or(0, |m| {
-                m.capacity() * std::mem::size_of::<PartitionMap>()
-                    + m.iter().map(|p| p.allowed.capacity()).sum::<usize>()
-            })
-            + self.reported_hidden_sources.capacity() * std::mem::size_of::<String>()
+        self.eligible.deep_size_of() + self.unindexed.deep_size_of()
+    }
+    fn partition_bytes(&self) -> usize {
+        self.maps.as_ref().map_or(0, |m| {
+            std::mem::size_of_val(m.as_slice())
+                + m.iter()
+                    .map(|p| p.allowed.capacity() + p.segment.capacity())
+                    .sum::<usize>()
+        })
+    }
+    fn hidden_bytes(&self) -> usize {
+        self.reported_hidden_sources.capacity() * std::mem::size_of::<String>()
             + self
                 .reported_hidden_sources
                 .iter()
                 .map(String::capacity)
                 .sum::<usize>()
     }
+    /// Lance bitmap accounting and owned buffers, excluding shared native indexes.
+    fn estimated_private_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.bitmap_bytes()
+            + self.partition_bytes()
+            + self.hidden_bytes()
+    }
+    /// Roaring containers of both bitmaps. Each costs a container struct, its
+    /// own allocation and allocator slack that the serialized size omits; a
+    /// sparse mask (a few rows per 65,536-row chunk) is mostly that overhead.
+    fn bitmap_containers(&self) -> usize {
+        let containers = |rows: &RowAddrTreeMap| {
+            rows.iter()
+                .map(|(fragment, _)| {
+                    rows.get_fragment_bitmap(*fragment)
+                        .map_or(1, |bitmap| bitmap.statistics().n_containers as usize)
+                })
+                .sum::<usize>()
+        };
+        self.eligible.allow_list().map_or(0, containers) + containers(&self.unindexed)
+    }
+    /// What the subject cache charges for retaining this admission: an
+    /// estimate above its own size. The bitmaps are counted twice because
+    /// Lance's serialized size omits the spare capacity of array containers,
+    /// plus a fixed charge per container for the overhead it also omits.
+    pub(crate) fn memory_bound(&self) -> usize {
+        1024 + 2 * self.bitmap_bytes()
+            + Self::CONTAINER_OVERHEAD_BYTES * self.bitmap_containers()
+            + self.partition_bytes()
+            + self.maps.as_ref().map_or(0, |m| m.len() * 128)
+            + self.hidden_bytes()
+            + self.reported_hidden_sources.len() * 32
+    }
 }
-/// Conservative private-copy bound including deque/Arc allocation overhead.
-fn admission_memory_bound(
-    eligible: &RowAddrMask,
-    maps: Option<&[PartitionMap]>,
-    unindexed: &BTreeSet<u64>,
-    hidden: &[String],
-) -> usize {
-    use lance::cache::DeepSizeOf;
-    1024 + eligible.deep_size_of().max(
-        usize::try_from(eligible.max_len().unwrap_or(0))
-            .unwrap_or_else(|_| unreachable!("resident admission row count fits usize"))
-            * 32,
-    ) + unindexed.deep_size_of().max(unindexed.len() * 48)
-        + maps.map_or(0, |m| {
-            std::mem::size_of_val(m) + m.iter().map(|p| p.allowed.capacity() + 128).sum::<usize>()
-        })
-        + hidden.iter().map(|s| s.capacity() + 32).sum::<usize>()
+#[derive(Debug)]
+struct CachedAdmission {
+    _cache_claim: Arc<tokio::sync::OwnedSemaphorePermit>,
+    admission: Arc<Admission>,
+}
+impl CachedAdmission {
+    fn estimated_private_bytes(&self) -> usize {
+        std::mem::size_of::<Self>() + self.admission.estimated_private_bytes()
+    }
 }
 
 #[derive(Debug)]
@@ -258,7 +303,7 @@ impl AuthorizationCache {
         Some(result)
     }
     /// Evict before reserving; held entries keep their permits after eviction.
-    /// The caller must not make the retained private copy until this succeeds.
+    /// The caller must not insert the entry until this succeeds.
     fn reserve(
         &mut self,
         key: &AuthorizationCacheKey,
@@ -347,13 +392,14 @@ pub struct PreparedReader {
     scope: scope::RequestScope,
     pub(crate) admission_cache: Arc<std::sync::Mutex<AuthorizationCache>>,
     pub(crate) admission_build_us: u64,
-    pub(crate) eligible: RowAddrMask,
+    /// The binding's admission, shared with the subject cache.
+    pub(crate) admission: Arc<Admission>,
+    /// Whether this reader may route by the admission's partition maps.
+    maps_enabled: bool,
     indexes: Arc<Vec<lance_table::format::IndexMetadata>>,
-    unindexed: BTreeSet<u64>,
     fallback_probes: usize,
-    maps: Option<Vec<PartitionMap>>,
     // Native v2 reconstruction allocates scratch per root. Subjects and workers
-    // share these publication-bound roots, but never share their admission masks.
+    // share these publication-bound roots; admissions are immutable and shared.
     pub(crate) vector_roots: Arc<tokio::sync::OnceCell<Vec<Arc<dyn VectorIndex>>>>,
     pub(crate) centroid_routers:
         Arc<tokio::sync::OnceCell<Vec<Result<CentroidRouter, RoutingFallback>>>>,
@@ -373,7 +419,6 @@ pub struct PreparedReader {
     pub(crate) response_claim: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
     pub(crate) execution_slot: Option<Arc<crate::serve::ExecutionSlot>>,
     pub(crate) hidden_sources: BTreeSet<String>,
-    reported_hidden_sources: Vec<String>,
 }
 
 #[allow(clippy::cast_possible_truncation)] // Preserve native fragment-key bit extraction.

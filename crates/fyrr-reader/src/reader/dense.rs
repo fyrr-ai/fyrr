@@ -36,7 +36,7 @@ impl PreparedReader {
                 routing_telemetry(telemetry, Some(RoutingFallback::Absent), false);
             }
             let candidates = if self.preparation_reservation.warm()
-                && self.maps.is_some()
+                && self.maps_enabled
                 && self.filter_selection.is_none()
             {
                 match self.candidates(vector, shortlist, telemetry).await {
@@ -93,9 +93,12 @@ impl PreparedReader {
             }
             self.stage(telemetry, "dense_refinement", refine_start, refine_counters);
             telemetry.unindexed_rows_scanned += self
+                .admission
                 .unindexed
-                .iter()
-                .filter(|id| self.selected_rows().selected(**id))
+                .row_addrs()
+                .into_iter()
+                .flatten()
+                .filter(|addr| self.selected_rows().selected(u64::from(*addr)))
                 .count() as u64;
             return Ok(rows);
         }
@@ -335,13 +338,20 @@ impl PreparedReader {
             Some(Box::new(RowAdmission(self.selected_rows().clone()))),
         ));
         let mut candidates = BTreeMap::<u64, f32>::new();
-        for (map_no, map) in self
+        let maps = self
+            .admission
             .maps
-            .as_ref()
-            .ok_or(PartitionMapUnavailable)?
-            .iter()
-            .enumerate()
-        {
+            .as_deref()
+            .filter(|_| self.maps_enabled)
+            .ok_or(PartitionMapUnavailable)?;
+        let roots = self.vector_roots.get().ok_or(PartitionMapUnavailable)?;
+        if roots.len() != maps.len() {
+            return Err(PartitionMapUnavailable);
+        }
+        for (map_no, (map, index)) in maps.iter().zip(roots).enumerate() {
+            if map.allowed.len() != index.total_partitions() {
+                return Err(PartitionMapUnavailable);
+            }
             let key = arrow_array::Float16Array::from(
                 vector
                     .iter()
@@ -369,7 +379,7 @@ impl PreparedReader {
                 dist_q_c: 0.0,
                 approx_mode: ApproxMode::default(),
             };
-            let route = strategy(self.config.reader.routing, map.index.total_partitions());
+            let route = strategy(self.config.reader.routing, index.total_partitions());
             let routed = if route == RoutingStrategy::Rabitq {
                 let outcome = self
                     .centroid_routers
@@ -400,8 +410,7 @@ impl PreparedReader {
             let (selected, selected_distances) = if let Some(routed) = routed {
                 routed
             } else {
-                let (partitions, distances) = map
-                    .index
+                let (partitions, distances) = index
                     .find_partitions(&query)
                     .map_err(|_| PartitionMapUnavailable)?;
                 let mut selected = Vec::new();
@@ -419,8 +428,7 @@ impl PreparedReader {
                 (selected, selected_distances)
             };
             let count = selected.len();
-            let mut stream = map
-                .index
+            let mut stream = index
                 .clone()
                 .search_partitions(
                     query,
@@ -453,7 +461,14 @@ impl PreparedReader {
         ranked.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
         ranked.truncate(shortlist);
         let mut result: BTreeSet<_> = ranked.into_iter().map(|(id, _)| id).collect();
-        result.extend(self.unindexed.iter().copied());
+        result.extend(
+            self.admission
+                .unindexed
+                .row_addrs()
+                .into_iter()
+                .flatten()
+                .map(u64::from),
+        );
         Ok(result)
     }
 }

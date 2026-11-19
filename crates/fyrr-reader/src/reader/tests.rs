@@ -327,46 +327,236 @@ fn pruning_old_admissions_releases_only_unheld_reservations() {
         content: 1,
         hidden: Vec::new(),
     };
+    let session = NativeSession::acquire(
+        crate::generation::MemoryPool {
+            cap: capacity as u64 * 4096,
+            permits: pool.clone(),
+        },
+        (0, 0),
+        0,
+        None,
+    )
+    .unwrap();
     let claim = cache.reserve(&key, 4096, 1).unwrap();
     cache.insert(
         key.clone(),
         CachedAdmission {
             _cache_claim: claim,
-            eligible: RowAddrMask::allow_nothing(),
-            maps: None,
-            unindexed: BTreeSet::new(),
-            reported_hidden_sources: Vec::new(),
-            fallback_probes: 1,
-            _reservation: held.clone(),
-            _native_session: NativeSession::acquire(
-                crate::generation::MemoryPool {
-                    cap: capacity as u64 * 4096,
-                    permits: pool.clone(),
-                },
-                (0, 0),
-                0,
-                None,
-            )
-            .unwrap(),
+            admission: Arc::new(Admission::nothing()),
         },
         1,
     );
     let cached = cache.get(&key).unwrap();
+    // An entry owns no generation memory: the old generation's reservation
+    // and native session are free as soon as its readers go, even while the
+    // entry is cached and held.
+    drop(held);
+    drop(session);
+    assert_eq!(pool.available_permits(), capacity);
     cache.retain_content(2);
     assert_eq!(cache.entries.capacity(), 0);
     assert_eq!(
         cache.budget.available_permits(),
         AUTHORIZATION_CACHE_MAX_BYTES - 4096
     );
-    assert_eq!(pool.available_permits(), remaining);
-    drop(held);
-    assert_eq!(pool.available_permits(), remaining);
     drop(cached);
-    assert_eq!(pool.available_permits(), capacity);
     assert_eq!(
         cache.budget.available_permits(),
         AUTHORIZATION_CACHE_MAX_BYTES
     );
+}
+
+fn cache_key(subject: &str) -> AuthorizationCacheKey {
+    AuthorizationCacheKey {
+        namespace: "budget".into(),
+        subject: subject.into(),
+        identity: "identity".into(),
+        identity_generation: 1,
+        policy: "policy".into(),
+        policy_generation: 1,
+        content: 1,
+        hidden: Vec::new(),
+    }
+}
+
+#[test]
+fn cache_hits_share_one_immutable_admission() {
+    let mut cache = AuthorizationCache::default();
+    let key = cache_key("subject");
+    let mut rows = RowAddrTreeMap::new();
+    rows.insert(7);
+    let admission = Arc::new(Admission {
+        eligible: RowAddrMask::from_allowed(rows),
+        ..Admission::nothing()
+    });
+    let claim = cache
+        .reserve(&key, key.memory_bound() + admission.memory_bound(), 4)
+        .unwrap();
+    cache.insert(
+        key.clone(),
+        CachedAdmission {
+            _cache_claim: claim,
+            admission: admission.clone(),
+        },
+        4,
+    );
+    let first = cache.get(&key).unwrap().admission.clone();
+    let second = cache.get(&key).unwrap().admission.clone();
+    assert!(Arc::ptr_eq(&first, &second));
+    assert!(Arc::ptr_eq(&first, &admission));
+    assert!(first.eligible.selected(7) && !first.eligible.selected(8));
+}
+
+#[test]
+fn broad_admission_beyond_the_old_row_floor_is_charged_by_size_and_cached() {
+    let mut cache = AuthorizationCache::default();
+    let key = cache_key("broad");
+    // 5 M allowed rows, built as one run: the old 32 B per row floor charged
+    // 160 MB and never cached it. The real size is a few bytes.
+    let mut rows = RowAddrTreeMap::new();
+    rows.insert_range(0..5_000_000);
+    rows.optimize();
+    let admission = Arc::new(Admission {
+        eligible: RowAddrMask::from_allowed(rows),
+        ..Admission::nothing()
+    });
+    let allowed = usize::try_from(admission.eligible.max_len().unwrap()).unwrap();
+    assert!(allowed * 32 > AUTHORIZATION_CACHE_MAX_BYTES);
+    let incoming = key.memory_bound() + admission.memory_bound();
+    assert!(incoming < 64 * 1024, "{incoming}");
+    let claim = cache.reserve(&key, incoming, 1).unwrap();
+    cache.insert(
+        key.clone(),
+        CachedAdmission {
+            _cache_claim: claim,
+            admission,
+        },
+        1,
+    );
+    let hit = cache.get(&key).unwrap();
+    assert_eq!(hit.admission.eligible.max_len(), Some(allowed as u64));
+    assert_eq!(
+        cache.budget.available_permits(),
+        AUTHORIZATION_CACHE_MAX_BYTES - incoming
+    );
+}
+
+#[test]
+fn sparse_admission_is_charged_for_every_container() {
+    // One row per 65,536-row chunk: the serialized size is a few bytes per
+    // container, the resident size is dominated by the containers themselves.
+    let mut rows = RowAddrTreeMap::new();
+    for chunk in 0..4_000u64 {
+        rows.insert(chunk << 16);
+    }
+    rows.optimize();
+    let admission = Admission {
+        unindexed: rows.clone(),
+        eligible: RowAddrMask::from_allowed(rows),
+        ..Admission::nothing()
+    };
+    assert_eq!(admission.bitmap_containers(), 8_000);
+    assert!(
+        admission.memory_bound() >= 8_000 * Admission::CONTAINER_OVERHEAD_BYTES,
+        "{}",
+        admission.memory_bound()
+    );
+}
+
+#[test]
+fn compacted_mask_selects_exactly_the_scanned_rows() {
+    // Scattered rows plus a long run in one fragment, and a second fragment.
+    let ids: Vec<u64> = (0..70_000u64)
+        .filter(|row| row % 7 != 3)
+        .chain((1u64 << 32) + 5..(1u64 << 32) + 50_000)
+        .collect();
+    let mut plain = RowAddrTreeMap::new();
+    for id in &ids {
+        plain.insert(*id);
+    }
+    let mut compact = plain.clone();
+    compact.optimize();
+    assert!(compact.serialized_size() < plain.serialized_size());
+    let (plain, compact) = (
+        RowAddrMask::from_allowed(plain),
+        RowAddrMask::from_allowed(compact),
+    );
+    assert_eq!(plain.max_len(), compact.max_len());
+    assert!(
+        plain
+            .iter_addrs()
+            .unwrap()
+            .eq(compact.iter_addrs().unwrap())
+    );
+    for probe in (0..80_000u64).chain((1u64 << 32)..(1u64 << 32) + 60_000) {
+        assert_eq!(plain.selected(probe), compact.selected(probe));
+    }
+}
+
+/// The reader's former construction: every eligible row filtered by coverage.
+fn unindexed_by_row(eligible: &RowAddrMask, covered: &BTreeSet<u32>) -> BTreeSet<u64> {
+    eligible
+        .iter_addrs()
+        .unwrap()
+        .map(u64::from)
+        .filter(|id| !covered.contains(&((id >> 32) as u32)))
+        .collect()
+}
+
+#[test]
+fn unindexed_fragment_bitmap_equals_the_per_row_tail() {
+    // Deterministic pseudo-random fixtures: fragments 0..12 with uneven sizes,
+    // deleted offsets (absent from the scan), and several coverage sets that
+    // include uncovered fragments, an empty coverage and full coverage.
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for round in 0..40 {
+        let mut eligible = RowAddrTreeMap::new();
+        for fragment in 0..12u64 {
+            if next() % 4 == 0 {
+                continue; // fragment without eligible rows
+            }
+            let size = next() % 150_000;
+            let density = 1 + next() % 9;
+            for offset in 0..size {
+                let deleted = next() % 11 == 0;
+                if !deleted && next() % 10 < density {
+                    eligible.insert((fragment << 32) | offset);
+                }
+            }
+        }
+        if round % 2 == 0 {
+            eligible.optimize();
+        }
+        let covered: BTreeSet<u32> = match round % 5 {
+            0 => BTreeSet::new(),
+            1 => (0..12).collect(),
+            _ => (0..12).filter(|_| next() % 2 == 0).collect(),
+        };
+        let mask = RowAddrMask::from_allowed(eligible.clone());
+        let tail = PreparedReader::unindexed_rows(&eligible, |f| covered.contains(&f)).unwrap();
+        let expected = unindexed_by_row(&mask, &covered);
+        let actual: BTreeSet<u64> = tail
+            .row_addrs()
+            .into_iter()
+            .flatten()
+            .map(u64::from)
+            .collect();
+        assert_eq!(actual, expected, "round {round}");
+        // The same order as the old BTreeSet iteration.
+        assert!(
+            tail.row_addrs()
+                .into_iter()
+                .flatten()
+                .map(u64::from)
+                .eq(expected.iter().copied())
+        );
+    }
 }
 
 #[test]

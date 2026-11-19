@@ -38,31 +38,15 @@ impl PreparedReader {
             .lock()
             .map_err(|_| AuthorizationUnavailable)?
             .get(&key)
-            && (!self.preparation_reservation.warm()
-                || entry.maps.as_ref().is_some_and(|maps| {
-                    self.vector_roots.get().is_some_and(|roots| {
-                        roots.len() == maps.len()
-                            && roots
-                                .iter()
-                                .zip(maps)
-                                .all(|(root, map)| Arc::ptr_eq(root, &map.index))
-                    })
-                }))
+            && (!self.preparation_reservation.warm() || self.maps_match(&entry.admission))
         {
-            self.eligible = entry.eligible.clone();
-            self.maps = if self.preparation_reservation.warm() {
-                entry.maps.clone()
-            } else {
-                None
-            };
-            self.unindexed = entry.unindexed.clone();
-            self.reported_hidden_sources = entry.reported_hidden_sources.clone();
-            self.fallback_probes = entry.fallback_probes;
+            self.maps_enabled = self.preparation_reservation.warm();
+            self.fallback_probes = entry.admission.fallback_probes;
+            self.admission = entry.admission.clone();
             self.scope.admitted(self.head.identity.clone());
             return Ok(());
         }
-        {
-            let indexes = &self.indexes;
+        let (mut eligible, reported_hidden_sources) = {
             let predicate = Self::predicate(
                 &self.config,
                 &self.identity,
@@ -97,32 +81,37 @@ impl PreparedReader {
                     }
                 }
             }
-            self.reported_hidden_sources = readable_hidden.into_iter().take(64).collect();
-            self.eligible = RowAddrMask::from_allowed(eligible);
-            let coverage: BTreeSet<_> = indexes
+            (
+                eligible,
+                readable_hidden.into_iter().take(64).collect::<Vec<_>>(),
+            )
+        };
+        // Converts containers to runs where that is smaller; the rows are unchanged.
+        eligible.optimize();
+        let unindexed = Self::unindexed_rows(&eligible, |fragment| {
+            self.indexes
                 .iter()
                 .filter(|i| i.name == Layout::VECTOR_INDEX)
-                .flat_map(|i| i.fragment_bitmap.iter().flat_map(|b| b.iter()))
-                .collect();
-            self.unindexed = self
-                .eligible
-                .iter_addrs()
-                .ok_or(AuthorizationUnavailable)?
-                .map(u64::from)
-                .filter(|id| !coverage.contains(&((id >> 32) as u32)))
-                .collect();
-        }
-        self.maps = None;
-        if let Ok(maps) = self.partition_admission().await
-            && !maps.is_empty()
+                .any(|i| {
+                    i.fragment_bitmap
+                        .as_ref()
+                        .is_some_and(|b| b.contains(fragment))
+                })
+        })?;
+        let eligible = RowAddrMask::from_allowed(eligible);
+        let mut maps = None;
+        if let Ok(found) = self.partition_admission(&eligible).await
+            && !found.is_empty()
         {
-            self.maps = Some(maps);
+            maps = Some(found);
         }
-        if let Some(maps) = &self.maps {
+        if maps.is_some() {
             use lance::cache::DeepSizeOf;
-            let roots = maps.iter().map(|p| p.index.deep_size_of() as u64).sum();
+            let roots = self.vector_roots.get().map_or(0, |roots| {
+                roots.iter().map(|r| r.deep_size_of() as u64).sum()
+            });
             if !self.preparation_reservation.settle(roots)? {
-                self.maps = None;
+                maps = None;
                 self.vector_roots = Arc::default();
                 self.centroid_routers = Arc::default();
                 self.generation_state = GenerationState::Cold;
@@ -132,6 +121,15 @@ impl PreparedReader {
                     .retain_content(u64::MAX);
             }
         }
+        self.maps_enabled = maps.is_some();
+        let admission = Arc::new(Admission {
+            eligible,
+            unindexed,
+            maps,
+            reported_hidden_sources,
+            fallback_probes: self.fallback_probes,
+        });
+        self.admission = admission.clone();
         self.admission_build_us = micros(build_started.elapsed());
         self.scope.admitted(self.head.identity.clone());
         let cap = self
@@ -140,36 +138,66 @@ impl PreparedReader {
             .http
             .as_ref()
             .map_or(16, |h| h.authorization_cache_subjects);
-        // Measure borrowed worker buffers. The generation pays for worker copies;
-        // this separate allowance pays only for the retained cache copy.
-        let incoming = key.memory_bound()
-            + admission_memory_bound(
-                &self.eligible,
-                self.maps.as_deref(),
-                &self.unindexed,
-                &self.reported_hidden_sources,
-            );
+        // The cache pays for the one shared admission. Workers that bind it
+        // hold the same allocation, so no per-worker copy exists to charge.
+        let incoming = key.memory_bound() + admission.memory_bound();
         let mut cache = self
             .admission_cache
             .lock()
             .map_err(|_| AuthorizationUnavailable)?;
         if let Some(claim) = cache.reserve(&key, incoming, cap) {
-            let entry = CachedAdmission {
-                _cache_claim: claim,
-                eligible: self.eligible.clone(),
-                maps: self.maps.clone(),
-                unindexed: self.unindexed.clone(),
-                reported_hidden_sources: self.reported_hidden_sources.clone(),
-                fallback_probes: self.fallback_probes,
-                _reservation: self.preparation_reservation.clone(),
-                _native_session: self.native_session.clone(),
-            };
-            cache.insert(key, entry, cap);
+            cache.insert(
+                key,
+                CachedAdmission {
+                    _cache_claim: claim,
+                    admission,
+                },
+                cap,
+            );
         }
         Ok(())
     }
 
-    async fn partition_admission(&mut self) -> Result<Vec<PartitionMap>> {
+    /// Eligible rows in fragments that no vector segment covers. Equal to
+    /// filtering every eligible row by fragment coverage, without visiting rows.
+    pub(super) fn unindexed_rows(
+        eligible: &RowAddrTreeMap,
+        covered: impl Fn(u32) -> bool,
+    ) -> Result<RowAddrTreeMap> {
+        let mut tail = RowAddrTreeMap::new();
+        for (fragment, _) in eligible.iter() {
+            // The scan inserts rows only, never whole fragments.
+            let rows = eligible
+                .get_fragment_bitmap(*fragment)
+                .ok_or(AuthorizationUnavailable)?;
+            if !covered(*fragment) {
+                tail.insert_bitmap(*fragment, rows.clone());
+            }
+        }
+        Ok(tail)
+    }
+
+    /// Whether a cached admission's partition maps describe this reader's
+    /// vector roots: same segments in the same order with the same partitions.
+    fn maps_match(&self, admission: &Admission) -> bool {
+        let segments = || {
+            self.indexes
+                .iter()
+                .filter(|i| i.name == Layout::VECTOR_INDEX)
+        };
+        admission.maps.as_ref().is_some_and(|maps| {
+            self.vector_roots.get().is_some_and(|roots| {
+                roots.len() == maps.len()
+                    && segments().count() == maps.len()
+                    && segments().zip(roots).zip(maps).all(|((meta, root), map)| {
+                        map.segment == meta.uuid.to_string()
+                            && map.allowed.len() == root.total_partitions()
+                    })
+            })
+        })
+    }
+
+    async fn partition_admission(&mut self, eligible: &RowAddrMask) -> Result<Vec<PartitionMap>> {
         let indexes = &self.indexes;
         let mut maps = Vec::new();
 
@@ -218,7 +246,7 @@ impl PreparedReader {
                             .fragment_bitmap
                             .as_ref()
                             .is_some_and(|b| b.contains((id >> 32) as u32))
-                            && self.eligible.selected(*id)
+                            && eligible.selected(*id)
                         {
                             permitted = true;
                         }
@@ -226,7 +254,10 @@ impl PreparedReader {
                 }
                 allowed.push(permitted);
             }
-            maps.push(PartitionMap { index, allowed });
+            maps.push(PartitionMap {
+                segment: metadata.uuid.to_string(),
+                allowed,
+            });
         }
         Ok::<_, ReaderError>(maps)
     }
@@ -382,7 +413,7 @@ impl PreparedReader {
     }
 
     pub(crate) fn reported_hidden_sources(&self) -> Vec<String> {
-        self.reported_hidden_sources.clone()
+        self.admission.reported_hidden_sources.clone()
     }
 
     pub(crate) fn admission_predicate(&self) -> Result<String> {
