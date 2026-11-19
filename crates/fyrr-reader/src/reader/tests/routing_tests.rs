@@ -240,3 +240,270 @@ async fn filtered_ann_on_storage() {
         other => panic!("unexpected fixture grant {other:?}"),
     }
 }
+
+/// The flags the complete maps held: per segment, whether each partition has
+/// a row of a covered fragment that the subject may read. Read straight from
+/// the partitions, independently of the memo.
+async fn complete_flags(reader: &PreparedReader) -> Vec<Vec<bool>> {
+    let roots = reader.vector_roots.get().unwrap();
+    let mut flags = Vec::new();
+    for (metadata, index) in reader
+        .indexes
+        .iter()
+        .filter(|i| i.name == Layout::VECTOR_INDEX)
+        .zip(roots)
+    {
+        let mut segment = Vec::new();
+        for partition in 0..index.total_partitions() {
+            let mut stream = index
+                .partition_reader(partition, false, &NoOpMetricsCollector)
+                .await
+                .unwrap();
+            let mut readable = false;
+            while let Some(batch) = stream.try_next().await.unwrap() {
+                for id in ids(&batch).unwrap().values() {
+                    readable |= metadata
+                        .fragment_bitmap
+                        .as_ref()
+                        .is_some_and(|b| b.contains((id >> 32) as u32))
+                        && reader.admission.eligible.selected(*id);
+                }
+            }
+            segment.push(readable);
+        }
+        flags.push(segment);
+    }
+    flags
+}
+
+/// The partitions the complete maps probed for one segment, and the routing
+/// fallback that route reported: the selection `probed_partitions` replaces.
+fn complete_selection(
+    reader: &PreparedReader,
+    map_no: usize,
+    index: &Arc<dyn VectorIndex>,
+    query: &Query,
+    flags: &[bool],
+) -> ((Vec<u32>, Vec<f32>), Option<RoutingFallback>, bool) {
+    let nprobes = reader.config.reader.nprobes;
+    let mut fallback = None;
+    if strategy(reader.config.reader.routing, index.total_partitions()) == RoutingStrategy::Rabitq {
+        let outcome = reader
+            .centroid_routers
+            .get()
+            .and_then(|routers| routers.get(map_no))
+            .ok_or(RoutingFallback::Absent)
+            .and_then(|router| router.as_ref().map_err(|reason| *reason))
+            .and_then(|router| {
+                let normalized = query
+                    .key
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float16Array>()
+                    .ok_or(RoutingFallback::BuildFailed)?;
+                router.select(
+                    Arc::new(Float32Array::from_iter_values(
+                        normalized.values().iter().map(|v| v.to_f32()),
+                    )),
+                    flags,
+                    nprobes,
+                )
+            });
+        match outcome {
+            Ok(routed) => return (routed, None, true),
+            Err(reason) => fallback = Some(reason),
+        }
+    }
+    let (partitions, distances) = index.find_partitions(query).unwrap();
+    let mut selected = Vec::new();
+    let mut selected_distances = Vec::new();
+    for row in 0..partitions.len() {
+        let id = partitions.value(row) as usize;
+        if flags[id] {
+            selected.push(u32::try_from(id).unwrap());
+            selected_distances.push(distances.value(row));
+            if selected.len() == nprobes {
+                break;
+            }
+        }
+    }
+    ((selected, selected_distances), fallback, false)
+}
+
+/// Query vectors of the fixture's families: the shared base, the spread of
+/// its documents and the correlated cluster around the base.
+fn probe_vectors() -> Vec<Vec<f32>> {
+    let mut vectors = vec![
+        (0..1024)
+            .map(|d| ((d + 7) as f32).sin())
+            .collect::<Vec<_>>(),
+    ];
+    for row in [0usize, 1, 17, 400, 999, 1500, 1999] {
+        vectors.push(
+            (0..1024)
+                .map(|d| (((row + 1) * (d + 7)) as f32).sin())
+                .collect(),
+        );
+    }
+    for row in [0usize, 123, 399] {
+        vectors.push(
+            (0..1024)
+                .map(|d| {
+                    ((d + 7) as f32).sin()
+                        + (row + 1) as f32 * 0.0003 * (((row + 17) * (d + 11)) as f32).sin()
+                })
+                .collect(),
+        );
+    }
+    vectors
+}
+
+/// One worker's probed partitions for a query, with the query.
+async fn probe(
+    worker: &PreparedReader,
+    map_no: usize,
+    index: &Arc<dyn VectorIndex>,
+    vector: &[f32],
+) -> (Query, (Vec<u32>, Vec<f32>)) {
+    let query = PreparedReader::partition_query(vector, 40, index.total_partitions()).unwrap();
+    let lazy = worker
+        .probed_partitions(map_no, index, &query, &mut Telemetry::default())
+        .await
+        .unwrap();
+    (query, lazy)
+}
+
+/// Recompute the subject's admission, with an empty memo.
+async fn fresh_admission(reader: &mut PreparedReader) {
+    reader.admission_cache.lock().unwrap().entries.clear();
+    reader.rebuild_admission().await.unwrap();
+}
+
+/// Every answer the memo holds equals the complete flags.
+fn assert_memo_matches(reader: &PreparedReader, flags: &[Vec<bool>]) {
+    let maps = reader.admission.maps.as_deref().unwrap();
+    for (map, flags) in maps.iter().zip(flags) {
+        assert_eq!(map.memo.len(), flags.len());
+        for (partition, readable) in flags.iter().enumerate() {
+            assert!(
+                map.memo
+                    .get(partition)
+                    .is_none_or(|known| known == *readable)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "real publication supplied by the dense_path routing fixture"]
+async fn lazy_partition_admission_on_storage() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let path = std::env::var_os("FYRR_TEST_ROUTING_CONFIG").expect("routing fixture config");
+    let mut config = fyrr_core::config::load(std::path::Path::new(&path))
+        .unwrap()
+        .config;
+    for routing in [RoutingStrategy::Exact, RoutingStrategy::Rabitq] {
+        config.reader.routing = routing;
+        let mut reader = PreparedReader::open(&config).await.unwrap();
+        let hooks = reader.test_hooks.clone();
+        assert!(reader.maps_enabled);
+        let flags = complete_flags(&reader).await;
+        let partitions: usize = flags.iter().map(Vec::len).sum();
+        let readable: usize = flags.iter().flatten().filter(|f| **f).count();
+        assert!(readable > 0 && partitions > 0);
+
+        // A miss builds the admission without reading a partition.
+        fresh_admission(&mut reader).await;
+        let before = hooks.partition_reads.load(SeqCst);
+        fresh_admission(&mut reader).await;
+        assert_eq!(hooks.partition_reads.load(SeqCst), before);
+        assert!(reader.maps_enabled);
+
+        // The lazy selection equals the complete maps' for every query,
+        // probe count and (empty or already warm) memo, and the memo only
+        // ever holds the complete maps' answers.
+        for nprobes in [1usize, 2, 3, 4, 8, 65536] {
+            reader.config.reader.nprobes = nprobes;
+            fresh_admission(&mut reader).await;
+            for vector in probe_vectors() {
+                let roots = reader.vector_roots.get().unwrap().clone();
+                for (map_no, index) in roots.iter().enumerate() {
+                    let query =
+                        PreparedReader::partition_query(&vector, 40, index.total_partitions())
+                            .unwrap();
+                    let mut telemetry = Telemetry::default();
+                    let lazy = reader
+                        .probed_partitions(map_no, index, &query, &mut telemetry)
+                        .await
+                        .unwrap();
+                    let (expected, fallback, rabitq) =
+                        complete_selection(&reader, map_no, index, &query, &flags[map_no]);
+                    assert_eq!(lazy, expected, "{routing:?} nprobes={nprobes}");
+                    assert_eq!(telemetry.routing_fallback, fallback);
+                    assert_eq!(
+                        telemetry.routing_strategy,
+                        Some(if rabitq {
+                            RoutingMethod::Rabitq
+                        } else {
+                            RoutingMethod::Exact
+                        })
+                    );
+                    assert_memo_matches(&reader, &flags);
+                }
+            }
+        }
+
+        // Two workers share one admission and race to fill its memo.
+        reader.config.reader.nprobes = 2;
+        fresh_admission(&mut reader).await;
+        let (first, second) = (
+            reader.worker().await.unwrap(),
+            reader.worker().await.unwrap(),
+        );
+        assert!(Arc::ptr_eq(&first.admission, &second.admission));
+        let vectors = probe_vectors();
+        let roots = first.vector_roots.get().unwrap().clone();
+        for (map_no, index) in roots.iter().enumerate() {
+            for pair in vectors.chunks(2) {
+                let other = pair.last().unwrap();
+                let ((qa, a), (qb, b)) = tokio::join!(
+                    probe(&first, map_no, index, &pair[0]),
+                    probe(&second, map_no, index, other)
+                );
+                assert_eq!(
+                    a,
+                    complete_selection(&first, map_no, index, &qa, &flags[map_no]).0
+                );
+                assert_eq!(
+                    b,
+                    complete_selection(&second, map_no, index, &qb, &flags[map_no]).0
+                );
+                assert_memo_matches(&first, &flags);
+            }
+        }
+        drop((first, second));
+
+        // A narrow subject whose rows share the partition nearest to the
+        // query is decided by reading that partition, not the namespace.
+        if routing == RoutingStrategy::Exact && reader.admission.eligible.max_len() == Some(401) {
+            reader.config.reader.nprobes = 1;
+            fresh_admission(&mut reader).await;
+            let before = hooks.partition_reads.load(SeqCst);
+            let vector = &probe_vectors()[0];
+            let roots = reader.vector_roots.get().unwrap().clone();
+            for (map_no, index) in roots.iter().enumerate() {
+                let query =
+                    PreparedReader::partition_query(vector, 40, index.total_partitions()).unwrap();
+                let (selected, _) = reader
+                    .probed_partitions(map_no, index, &query, &mut Telemetry::default())
+                    .await
+                    .unwrap();
+                assert_eq!(selected.len(), 1);
+            }
+            let read = hooks.partition_reads.load(SeqCst) - before;
+            assert!(
+                read >= roots.len() && read < partitions,
+                "{read} of {partitions}"
+            );
+        }
+    }
+}

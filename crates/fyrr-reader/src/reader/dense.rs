@@ -40,6 +40,14 @@ pub(super) fn filtered_index_pays(
             >= FILTERED_INDEX_MIN_HITS_PER_CANDIDATE * shortlist as u128 * allowed
 }
 
+/// Whether `filtered_index_pays` can be true for a selection of `selected`
+/// rows at all. It is not when the selection is below the per-candidate
+/// minimum: the probed partitions are a subset of the partitions holding
+/// readable rows, so the expected hits never exceed `selected`.
+pub(super) fn filtered_index_possible(selected: u64, shortlist: usize) -> bool {
+    u128::from(selected) >= FILTERED_INDEX_MIN_HITS_PER_CANDIDATE * shortlist as u128
+}
+
 enum DenseRefinement {
     Expand(usize),
     Rows(Vec<Candidate>),
@@ -70,16 +78,7 @@ impl PreparedReader {
         // An unfiltered request and the authorization mask always use the
         // index. A filter does so only when its selection is large enough.
         let indexed = self.maps_enabled
-            && (self.filter_selection.is_none()
-                || self.admission.maps.as_deref().is_some_and(|maps| {
-                    filtered_index_pays(
-                        self.selected_rows().max_len().unwrap_or(0),
-                        maps.iter()
-                            .map(|map| map.allowed.iter().filter(|a| **a).count()),
-                        self.config.reader.nprobes,
-                        shortlist,
-                    )
-                }));
+            && (self.filter_selection.is_none() || self.filtered_index_pays_here(shortlist).await);
         loop {
             let before = self.mirror.counters();
             let start = Instant::now();
@@ -375,6 +374,123 @@ impl PreparedReader {
         }
     }
 
+    /// `filtered_index_pays` for the current filter. The partition counts it
+    /// needs are not known until partitions are resolved, so a selection that
+    /// cannot pay is rejected first and only the others resolve them. A
+    /// partition that cannot be read means no index route, as a failed map
+    /// always has.
+    async fn filtered_index_pays_here(&self, shortlist: usize) -> bool {
+        let selected = self.selected_rows().max_len().unwrap_or(0);
+        if !filtered_index_possible(selected, shortlist) {
+            return false;
+        }
+        match self.allowed_partition_counts().await {
+            Ok(counts) => filtered_index_pays(
+                selected,
+                counts.into_iter(),
+                self.config.reader.nprobes,
+                shortlist,
+            ),
+            Err(_) => false,
+        }
+    }
+
+    /// The partitions of the `map_no`-th segment the query probes, nearest
+    /// first, with their centroid distances: the nearest `nprobes` that hold a
+    /// readable row. Ranking covers every partition; admission is asked only
+    /// of the partitions the walk reaches.
+    pub(super) async fn probed_partitions(
+        &self,
+        map_no: usize,
+        index: &Arc<dyn VectorIndex>,
+        query: &Query,
+        telemetry: &mut Telemetry,
+    ) -> Result<(Vec<u32>, Vec<f32>)> {
+        let total = index.total_partitions();
+        let nprobes = self.config.reader.nprobes;
+        let route = strategy(self.config.reader.routing, total);
+        let routed = if route == RoutingStrategy::Rabitq {
+            let outcome = match self
+                .centroid_routers
+                .get()
+                .and_then(|routers| routers.get(map_no))
+                .ok_or(RoutingFallback::Absent)
+                .and_then(|router| router.as_ref().map_err(|reason| *reason))
+            {
+                Ok(router) => match query
+                    .key
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float16Array>()
+                {
+                    Some(normalized) => {
+                        let key = Arc::new(Float32Array::from_iter_values(
+                            normalized.values().iter().map(|v| v.to_f32()),
+                        ));
+                        router
+                            .select_lazily(&key, total, nprobes, |id| {
+                                self.partition_allowed(map_no, id)
+                            })
+                            .await?
+                    }
+                    None => Err(RoutingFallback::BuildFailed),
+                },
+                Err(reason) => Err(reason),
+            };
+            routing_telemetry(telemetry, outcome.as_ref().err().copied(), outcome.is_ok());
+            outcome.ok()
+        } else {
+            routing_telemetry(telemetry, None, false);
+            None
+        };
+        if let Some(routed) = routed {
+            return Ok(routed);
+        }
+        let (partitions, distances) = index
+            .find_partitions(query)
+            .map_err(|_| PartitionMapUnavailable)?;
+        first_admitted(
+            (0..partitions.len()).map(|row| (partitions.value(row), distances.value(row))),
+            nprobes,
+            |id| self.partition_allowed(map_no, id),
+        )
+        .await
+    }
+
+    /// The index query that ranks every one of `partitions` partitions.
+    pub(super) fn partition_query(
+        vector: &[f32],
+        shortlist: usize,
+        partitions: usize,
+    ) -> Result<Query> {
+        let key = arrow_array::Float16Array::from(
+            vector
+                .iter()
+                .copied()
+                .map(half::f16::from_f32)
+                .collect::<Vec<_>>(),
+        );
+        let key = lance_linalg::kernels::normalize_arrow(&key)
+            .map_err(|_| EmbeddingInvalid)?
+            .0;
+        Ok(Query {
+            column: "vector".into(),
+            key,
+            k: shortlist,
+            lower_bound: None,
+            upper_bound: None,
+            minimum_nprobes: partitions,
+            maximum_nprobes: Some(partitions),
+            search_effort: 0.5,
+            ef: None,
+            refine_factor: None,
+            metric_type: None,
+            use_index: true,
+            query_parallelism: 1,
+            dist_q_c: 0.0,
+            approx_mode: ApproxMode::default(),
+        })
+    }
+
     pub(super) async fn candidates(
         &self,
         vector: &[f32],
@@ -399,84 +515,13 @@ impl PreparedReader {
             return Err(PartitionMapUnavailable);
         }
         for (map_no, (map, index)) in maps.iter().zip(roots).enumerate() {
-            if map.allowed.len() != index.total_partitions() {
+            if map.memo.len() != index.total_partitions() {
                 return Err(PartitionMapUnavailable);
             }
-            let key = arrow_array::Float16Array::from(
-                vector
-                    .iter()
-                    .copied()
-                    .map(half::f16::from_f32)
-                    .collect::<Vec<_>>(),
-            );
-            let key = lance_linalg::kernels::normalize_arrow(&key)
-                .map_err(|_| EmbeddingInvalid)?
-                .0;
-            let query = Query {
-                column: "vector".into(),
-                key,
-                k: shortlist,
-                lower_bound: None,
-                upper_bound: None,
-                minimum_nprobes: map.allowed.len(),
-                maximum_nprobes: Some(map.allowed.len()),
-                search_effort: 0.5,
-                ef: None,
-                refine_factor: None,
-                metric_type: None,
-                use_index: true,
-                query_parallelism: 1,
-                dist_q_c: 0.0,
-                approx_mode: ApproxMode::default(),
-            };
-            let route = strategy(self.config.reader.routing, index.total_partitions());
-            let routed = if route == RoutingStrategy::Rabitq {
-                let outcome = self
-                    .centroid_routers
-                    .get()
-                    .and_then(|routers| routers.get(map_no))
-                    .ok_or(RoutingFallback::Absent)
-                    .and_then(|router| router.as_ref().map_err(|reason| *reason))
-                    .and_then(|router| {
-                        let normalized = query
-                            .key
-                            .as_any()
-                            .downcast_ref::<arrow_array::Float16Array>()
-                            .ok_or(RoutingFallback::BuildFailed)?;
-                        router.select(
-                            Arc::new(Float32Array::from_iter_values(
-                                normalized.values().iter().map(|v| v.to_f32()),
-                            )),
-                            &map.allowed,
-                            self.config.reader.nprobes,
-                        )
-                    });
-                routing_telemetry(telemetry, outcome.as_ref().err().copied(), outcome.is_ok());
-                outcome.ok()
-            } else {
-                routing_telemetry(telemetry, None, false);
-                None
-            };
-            let (selected, selected_distances) = if let Some(routed) = routed {
-                routed
-            } else {
-                let (partitions, distances) = index
-                    .find_partitions(&query)
-                    .map_err(|_| PartitionMapUnavailable)?;
-                let mut selected = Vec::new();
-                let mut selected_distances = Vec::new();
-                for row in 0..partitions.len() {
-                    let id = partitions.value(row) as usize;
-                    if map.allowed[id] {
-                        selected.push(u32::try_from(id).map_err(|_| PartitionMapUnavailable)?);
-                        selected_distances.push(distances.value(row));
-                        if selected.len() == self.config.reader.nprobes {
-                            break;
-                        }
-                    }
-                }
-                (selected, selected_distances)
-            };
+            let query = Self::partition_query(vector, shortlist, map.memo.len())?;
+            let (selected, selected_distances) = self
+                .probed_partitions(map_no, index, &query, telemetry)
+                .await?;
             let count = selected.len();
             let mut stream = index
                 .clone()

@@ -8,7 +8,7 @@ use crate::error::*;
 use crate::generation::{GenerationState, MemoryPool, NativeSession, PreparationReservation};
 use crate::mirror::{MirrorLease, MirrorRequest, MirrorStore};
 use crate::retrieval::{Candidate, compose};
-use crate::routing::{CentroidRouter, RoutingFallback, strategy};
+use crate::routing::{CentroidRouter, RoutingFallback, first_admitted, strategy};
 use crate::storage::*;
 use arrow_array::{Array, Float32Array, RecordBatch, StringArray, UInt32Array, UInt64Array};
 use futures::TryStreamExt;
@@ -55,13 +55,51 @@ fn routing_telemetry(telemetry: &mut Telemetry, fallback: Option<RoutingFallback
     telemetry.routing_fallback = telemetry.routing_fallback.or(fallback);
 }
 
-/// Per-partition admission flags of one vector segment. The map names its
-/// segment but does not own the root: a cached admission must not keep a
-/// generation's native index (and the memory its reservation pays for) alive.
+/// What one vector segment's partitions are known to hold for a subject. The
+/// map names its segment but does not own the root: a cached admission must
+/// not keep a generation's native index (and the memory its reservation pays
+/// for) alive. Answers are filled in as requests consider partitions.
 #[derive(Debug)]
 pub struct PartitionMap {
     segment: String,
-    allowed: Vec<bool>,
+    memo: PartitionMemo,
+}
+
+/// One byte per partition: unknown, no readable row, or a readable row. A
+/// byte only ever moves from unknown to its final answer, which depends on
+/// nothing but the immutable admission and the published partition, so
+/// requests that race on one partition store the same value and a reader
+/// sees either "unknown" or the answer. Nothing here is held across an await.
+#[derive(Debug)]
+struct PartitionMemo(Box<[std::sync::atomic::AtomicU8]>);
+impl PartitionMemo {
+    const NO_ROWS: u8 = 1;
+    const ROWS: u8 = 2;
+    fn new(partitions: usize) -> Self {
+        Self((0..partitions).map(|_| Default::default()).collect())
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn get(&self, partition: usize) -> Option<bool> {
+        match self
+            .0
+            .get(partition)?
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            Self::NO_ROWS => Some(false),
+            Self::ROWS => Some(true),
+            _ => None,
+        }
+    }
+    fn set(&self, partition: usize, readable: bool) {
+        if let Some(cell) = self.0.get(partition) {
+            cell.store(
+                if readable { Self::ROWS } else { Self::NO_ROWS },
+                std::sync::atomic::Ordering::Release,
+            );
+        }
+    }
 }
 
 // Completion order selects the sample. Retain the existing embedding and
@@ -217,7 +255,7 @@ impl Admission {
         self.maps.as_ref().map_or(0, |m| {
             std::mem::size_of_val(m.as_slice())
                 + m.iter()
-                    .map(|p| p.allowed.capacity() + p.segment.capacity())
+                    .map(|p| p.memo.len() + p.segment.capacity())
                     .sum::<usize>()
         })
     }

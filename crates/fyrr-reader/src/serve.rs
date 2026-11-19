@@ -217,6 +217,8 @@ pub(crate) struct TestHooks {
     pub(crate) filter_scan: TestGate,
     pub(crate) admission_probe: std::sync::Mutex<Option<AdmissionProbe>>,
     pub(crate) cache_warming: TestGate,
+    /// Partitions whose row ids were read to decide admission.
+    pub(crate) partition_reads: std::sync::atomic::AtomicUsize,
 }
 
 #[cfg(test)]

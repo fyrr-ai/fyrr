@@ -273,38 +273,44 @@ async fn retrieval_publication_rabitq_authorized_routing_and_fallbacks_on_storag
             && !stderr.contains("fixture-broad")
             && !stderr.contains("fixture document")
     );
-    // The request filter's index route, per grant cohort of the same
-    // publication; the fixture's partitions are too few for it by default.
-    for cohort in ["broad", "selective", "correlated"] {
-        let filtered = Command::new(&test_binary)
-            .args([
-                "search::routing_tests::filtered_ann_on_storage",
-                "--exact",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env(
-                "FYRR_TEST_ROUTING_CONFIG",
-                root.join(format!("{cohort}-exact.toml")),
+    // The request filter's index route and the lazily resolved partition
+    // admission, per grant cohort of the same publication; the fixture's
+    // partitions are too few for the filter's index route by default.
+    for (test, log) in [
+        ("filtered_ann_on_storage", "filtered-ann"),
+        ("lazy_partition_admission_on_storage", "lazy-partitions"),
+    ] {
+        for cohort in ["broad", "selective", "correlated"] {
+            let output = Command::new(&test_binary)
+                .args([
+                    &format!("search::routing_tests::{test}"),
+                    "--exact",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env(
+                    "FYRR_TEST_ROUTING_CONFIG",
+                    root.join(format!("{cohort}-exact.toml")),
+                )
+                .output()
+                .unwrap();
+            std::fs::write(
+                root.join(format!("{log}-{cohort}.log")),
+                format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
             )
-            .output()
             .unwrap();
-        std::fs::write(
-            root.join(format!("filtered-ann-{cohort}.log")),
-            format!(
-                "{}{}",
-                String::from_utf8_lossy(&filtered.stdout),
-                String::from_utf8_lossy(&filtered.stderr)
-            ),
-        )
-        .unwrap();
-        assert!(
-            filtered.status.success(),
-            "{cohort}: {}{}",
-            String::from_utf8_lossy(&filtered.stdout),
-            String::from_utf8_lossy(&filtered.stderr)
-        );
-        assert!(String::from_utf8_lossy(&filtered.stdout).contains("1 passed; 0 failed"));
+            assert!(
+                output.status.success(),
+                "{test} {cohort}: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+        }
     }
 }
 
