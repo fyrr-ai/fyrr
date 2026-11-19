@@ -147,7 +147,9 @@ A `search` runs two candidate lanes over the permission-filtered rows:
 - **dense**: IVF vector search on the query embedding. The query is embedded
   only after admission and only when `embedding.reader_live = true`;
   otherwise, or when the embedding call fails, the lexical lane answers
-  alone and the response reports `degraded: ["dense"]`.
+  alone and the response reports `degraded: ["dense"]`. Under a request
+  filter, a small selection is scanned exactly and a large one is searched
+  through the index ([tuning](tuning.md#dense-search-under-a-request-filter)).
 
 The two score lists are normalized, fused (weight 0.5 lexical, 0.5 dense
 by default) and grouped to one hit per document. A soft per-source cap
