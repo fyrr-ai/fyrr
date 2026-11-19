@@ -151,13 +151,14 @@ impl PreparedReader {
         args: &SearchInput,
         telemetry: Telemetry,
     ) -> Result<SearchOutput> {
+        // No row mask: Lance selects the rows from the scalar indexes of the
+        // predicate, and every row it returns is checked against the selection.
         let mut scan = self.dataset.scan();
         scan.project(&["source_id", "root_id", "record_id"])
             .map_err(|_| IncompatibleIndex)?;
         scan.filter(&self.request_predicate()?)
             .map_err(|_| IncompatibleIndex)?
-            .with_row_id()
-            .with_row_id_prefilter(self.selected_rows().clone());
+            .with_row_id();
         scan.order_by(Some(vec![
             ordering("updated_at", false),
             ordering("source_id", true),
@@ -174,6 +175,9 @@ impl PreparedReader {
         let limit = args.limit.unwrap_or(50) as usize;
         'scan: while let Some(batch) = stream.try_next().await.map_err(|_| StorageUnavailable)? {
             for row in 0..batch.num_rows() {
+                if !self.selected_rows().selected(ids(&batch)?.value(row)) {
+                    return Err(AuthorizationUnavailable);
+                }
                 let source = strings(&batch, "source_id")?.value(row);
                 let root = strings(&batch, "root_id")?.value(row);
                 if roots.insert((source.to_owned(), root.to_owned())) {
@@ -223,9 +227,10 @@ impl PreparedReader {
             let mut scan = self.dataset.scan();
             scan.project(&["source_id", "root_id", "project", "source_type", "author"])
                 .map_err(|_| IncompatibleIndex)?;
+            // No row mask, as in `listing`; rows are checked below.
             scan.filter(&self.request_predicate()?)
                 .map_err(|_| IncompatibleIndex)?
-                .with_row_id_prefilter(self.selected_rows().clone());
+                .with_row_id();
             scan.limit(
                 Some((self.config.reader.filter_count_max_rows + 1) as i64),
                 None,
@@ -244,6 +249,9 @@ impl PreparedReader {
                     return Err(Busy);
                 }
                 for row in 0..batch.num_rows() {
+                    if !self.selected_rows().selected(ids(&batch)?.value(row)) {
+                        return Err(AuthorizationUnavailable);
+                    }
                     let key = (
                         strings(&batch, "source_id")?.value(row).to_owned(),
                         strings(&batch, "root_id")?.value(row).to_owned(),
