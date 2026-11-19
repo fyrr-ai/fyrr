@@ -383,6 +383,19 @@ async fn refresh_policy(
     Ok((policy_changed, acl_changed))
 }
 
+fn vector_index_params(rows: usize, rq_bits: u8, partition_rows: u32) -> VectorIndexParams {
+    VectorIndexParams::with_ivf_rq_params(
+        DistanceType::Cosine,
+        IvfBuildParams {
+            num_partitions: Some(rows.div_ceil(partition_rows as usize).max(1)),
+            target_partition_size: Some(partition_rows as usize),
+            sample_rate: 256,
+            ..Default::default()
+        },
+        RQBuildParams::new(rq_bits),
+    )
+}
+
 #[allow(clippy::print_stderr)]
 async fn build_indexes(
     config: &Config,
@@ -409,25 +422,13 @@ async fn build_indexes(
     } else {
         0
     };
-    let vector = VectorIndexParams::with_ivf_rq_params(
-        DistanceType::Cosine,
-        IvfBuildParams {
-            num_partitions: Some(count.div_ceil(550).max(1)),
-            target_partition_size: Some(550),
-            sample_rate: 256,
-            ..Default::default()
-        },
-        RQBuildParams::new(1),
+    let vector = vector_index_params(
+        count,
+        config.namespace.dense_rq_bits,
+        config.namespace.dense_partition_rows,
     );
     let scalar = ScalarIndexParams::default();
-    let fts = lance_index::scalar::InvertedIndexParams::default()
-        .base_tokenizer("simple".into())
-        .with_position(false)
-        .max_token_length(Some(config.namespace.fts_max_token_length as usize))
-        .lower_case(true)
-        .stem(config.namespace.fts_stem)
-        .remove_stop_words(config.namespace.fts_remove_stop_words)
-        .ascii_folding(config.namespace.fts_ascii_folding);
+    let fts = fts_params(config);
     for &(column, name, kind, _) in INDEXES {
         if (name == "fts_idx" && !fts_changed) || (name != "fts_idx" && !first) {
             continue;
@@ -468,4 +469,106 @@ async fn build_indexes(
         stage(stage_timings, "fts_merge", start);
     }
     Ok(())
+}
+
+/// Parameters of the full-text index. The partition size
+/// (`writer.fts_partition_memory_mb`) is not set here: Lance reads it from the
+/// environment (see `threads::apply`) for builds and for index merges alike,
+/// which keeps the partition geometry through both.
+fn fts_params(config: &Config) -> lance_index::scalar::InvertedIndexParams {
+    let fts = lance_index::scalar::InvertedIndexParams::default()
+        .base_tokenizer("simple".into())
+        .with_position(false)
+        .max_token_length(Some(config.namespace.fts_max_token_length as usize))
+        .lower_case(true)
+        .stem(config.namespace.fts_stem)
+        .remove_stop_words(config.namespace.fts_remove_stop_words)
+        .ascii_folding(config.namespace.fts_ascii_folding);
+    match config.writer.threads {
+        Some(threads) => fts.num_workers(crate::threads::pools(threads).fts_workers),
+        None => fts,
+    }
+}
+
+#[cfg(test)]
+#[path = "group/fts_partition_tests.rs"]
+mod fts_partition_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::Array;
+    use arrow_array::types::Float16Type;
+    use arrow_array::{ArrayRef, FixedSizeListArray, RecordBatch, RecordBatchIterator};
+    use arrow_schema::{Field, Schema};
+
+    const DIM: i32 = 32;
+    const ROWS: usize = 600;
+
+    async fn index_stats(tag: &str, rq_bits: u8, partition_rows: u32) -> serde_json::Value {
+        let vectors =
+            FixedSizeListArray::from_iter_primitive::<Float16Type, _, _>(
+                (0..ROWS).map(|row| {
+                    Some((0..DIM as usize).map(move |d| {
+                        Some(half::f16::from_f32(((row * 7 + d * 3) % 17) as f32 - 8.0))
+                    }))
+                }),
+                DIM,
+            );
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "vector",
+            vectors.data_type().clone(),
+            false,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(vectors) as ArrayRef]).unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/lance-pin")
+            .join(format!("{tag}-{}", std::process::id()));
+        let mut dataset = Dataset::write(
+            RecordBatchIterator::new(vec![Ok(batch)], schema),
+            root.to_str().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        dataset
+            .create_index(
+                &["vector"],
+                IndexType::Vector,
+                Some("vector_idx".into()),
+                &vector_index_params(ROWS, rq_bits, partition_rows),
+                true,
+            )
+            .await
+            .unwrap();
+        let stats =
+            serde_json::from_str(&dataset.index_statistics("vector_idx").await.unwrap()).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        stats
+    }
+
+    #[tokio::test]
+    async fn vector_index_uses_the_configured_rabitq_bits() {
+        for bits in [1u8, 3] {
+            let stats = index_stats(&format!("rq-bits-{bits}"), bits, 550).await;
+            assert_eq!(
+                stats["indices"][0]["sub_index"]["num_bits"], bits,
+                "{stats}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn vector_index_uses_the_configured_partition_rows() {
+        for (partition_rows, partitions) in [(550u32, 2), (100, 6), (64, 10)] {
+            let stats = index_stats(
+                &format!("partition-rows-{partition_rows}"),
+                1,
+                partition_rows,
+            )
+            .await;
+            assert_eq!(stats["indices"][0]["num_partitions"], partitions, "{stats}");
+        }
+    }
 }

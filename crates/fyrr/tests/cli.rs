@@ -319,7 +319,7 @@ mod providers {
                 .to_owned()
         };
         assert!(
-            stdout.starts_with("fyrr-connectors SDK 0.1.0 (this fyrr build loads SDK series 0.1)")
+            stdout.starts_with("fyrr-connectors SDK 0.1.1 (this fyrr build loads SDK series 0.1)")
         );
         for bundled in [
             "github",

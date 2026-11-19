@@ -9,6 +9,46 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `writer.threads` (absent by default) bounds the CPU threads of each writer
+  process: its async runtime, Lance's compute runtime, the parallel-iterator
+  pool used by vector index builds and the full-text build workers. See
+  [reader and writer settings](docs/reader-writer.md).
+- `namespace.dense_rq_bits` (1 to 9, default 1) sets the RaBitQ bits per
+  dimension of the vector index. The value is recorded in the content
+  manifest (publication contract 3.1) and fixed once a namespace is
+  published; see [tuning](docs/tuning.md).
+- `namespace.dense_partition_rows` (32 to 4096, default 550) sets the target
+  rows per partition of the vector index, recorded and fixed like
+  `dense_rq_bits`.
+- `writer.fts_partition_memory_mb` and `reader.fts_search_chunk` (both absent
+  by default) build a full-text index of several partitions and let one query
+  score them concurrently. Scores and rankings do not change; see
+  [tuning](docs/tuning.md#full-text-partitions).
+
+### Changed
+
+- The reader shares one immutable admission per subject between its
+  authorization cache and its workers instead of copying it, and the cache
+  charges an entry by an estimate of its size rather than 32 bytes per
+  readable row. A subject with millions of readable rows is now cached.
+- The reader fills its mirror with up to 16 files at once instead of one
+  after another and reads the manifest, policy and identity of a publication
+  together. When a fill fails for a storage reason and another runs out of
+  mirror space in the same batch, the storage failure is the one reported.
+- A search with a request filter searches the vector index when the filter
+  selects many rows, and keeps the exact scan of the selected rows otherwise;
+  see [tuning](docs/tuning.md#dense-search-under-a-request-filter). A large
+  filtered selection therefore returns approximate dense candidates, as an
+  unfiltered search does.
+- Binding a subject no longer reads every partition of the vector index.
+  Whether a partition holds a row the subject may read is resolved when a
+  query reaches that partition and is remembered for the subject and
+  publication; the partitions a query probes are unchanged.
+
+## [0.1.1] - 2026-11-19
+
+### Added
+
 - Releases carry `linux-aarch64` binaries next to `linux-x86_64`, and the
   `fyrr` and `fyrr-reader` images are published for `linux/amd64` and
   `linux/arm64` under one tag.
@@ -96,5 +136,6 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   fixtures, and `scripts/ci`, which checks the reference documentation
   against the binaries.
 
-[Unreleased]: https://github.com/fyrr-ai/fyrr/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/fyrr-ai/fyrr/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/fyrr-ai/fyrr/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/fyrr-ai/fyrr/releases/tag/v0.1.0

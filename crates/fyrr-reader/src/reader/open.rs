@@ -82,47 +82,17 @@ impl PreparedReader {
             return Err(AuthorizationUnavailable);
         }
         let pointer = head.content.as_ref().ok_or(PublicationUnavailable)?;
-        let manifest: ContentManifest = read_contract(
+        let (manifest, policy, identity) = Self::read_publication(
             store.as_ref(),
-            &object_store::path::Path::from(format!("{root}/{}", pointer.manifest)),
+            &root,
+            &head,
+            pointer,
+            &config.namespace.name,
+            &embedding::identity(&config.embedding),
+            (&policy_cache, &identity_cache),
         )
         .await?;
-        if manifest.namespace != config.namespace.name
-            || manifest.publication_id != pointer.publication_id
-            || manifest.lance_version != pointer.lance_version
-        {
-            return Err(PublicationInvalid);
-        }
-        if manifest.embedding != embedding::identity(&config.embedding) {
-            return Err(EmbeddingProfileMismatch);
-        }
         let mirror = Arc::new(mirror.for_publication(&manifest));
-        let policy = {
-            let mut cached = policy_cache.lock().await;
-            if cached
-                .as_ref()
-                .is_none_or(|(pointer, _)| pointer != &head.policy)
-            {
-                let policy = artifact::<PolicyArtifact>(store.as_ref(), &root, &head.policy)
-                    .await
-                    .map_err(|_| AuthorizationUnavailable)?;
-                *cached = Some((head.policy.clone(), Arc::new(policy)));
-            }
-            cached.as_ref().ok_or(AuthorizationUnavailable)?.1.clone()
-        };
-        let identity = {
-            let mut cached = identity_cache.lock().await;
-            if cached
-                .as_ref()
-                .is_none_or(|(pointer, _)| pointer != &head.identity)
-            {
-                let identity = artifact::<IdentityArtifact>(store.as_ref(), &root, &head.identity)
-                    .await
-                    .map_err(|_| AuthorizationUnavailable)?;
-                *cached = Some((head.identity.clone(), Arc::new(identity)));
-            }
-            cached.as_ref().ok_or(AuthorizationUnavailable)?.1.clone()
-        };
         if config.reader.http.is_none() {
             Self::predicate(config, &identity, &policy, None)?;
         }
@@ -137,6 +107,7 @@ impl PreparedReader {
             )
             .await?;
         let indexes = verify_indices(&dataset, &manifest, config).await?;
+        crate::fts_layout::report(&dataset, &indexes).await;
         let mut reader = Self {
             #[cfg(test)]
             test_hooks: Arc::default(),
@@ -192,6 +163,66 @@ impl PreparedReader {
             .await
             .map_err(|_| StorageUnavailable)?;
         Ok(reader)
+    }
+
+    /// Read the pinned manifest, policy and identity. All three locations are
+    /// known from the head, so the reads run together instead of one after
+    /// another. Their results are then judged in the order the sequential code
+    /// judged them (manifest read, manifest checks, policy, identity), so every
+    /// failure reports the error it reported before.
+    pub(super) async fn read_publication(
+        store: &dyn object_store::ObjectStore,
+        root: &object_store::path::Path,
+        head: &ServingHead,
+        pointer: &fyrr_core::publication::ContentPointer,
+        namespace: &str,
+        embedding: &fyrr_core::envelope::EmbeddingIdentity,
+        (policy_cache, identity_cache): (
+            &ArtifactCache<PolicyArtifact>,
+            &ArtifactCache<IdentityArtifact>,
+        ),
+    ) -> Result<(ContentManifest, Arc<PolicyArtifact>, Arc<IdentityArtifact>)> {
+        let manifest_path = object_store::path::Path::from(format!("{root}/{}", pointer.manifest));
+        let (manifest, policy, identity) = tokio::join!(
+            read_contract::<ContentManifest>(store, &manifest_path),
+            async {
+                let mut cached = policy_cache.lock().await;
+                if cached
+                    .as_ref()
+                    .is_none_or(|(pointer, _)| pointer != &head.policy)
+                {
+                    let policy = artifact::<PolicyArtifact>(store, root, &head.policy)
+                        .await
+                        .map_err(|_| AuthorizationUnavailable)?;
+                    *cached = Some((head.policy.clone(), Arc::new(policy)));
+                }
+                Ok::<_, ReaderError>(cached.as_ref().ok_or(AuthorizationUnavailable)?.1.clone())
+            },
+            async {
+                let mut cached = identity_cache.lock().await;
+                if cached
+                    .as_ref()
+                    .is_none_or(|(pointer, _)| pointer != &head.identity)
+                {
+                    let identity = artifact::<IdentityArtifact>(store, root, &head.identity)
+                        .await
+                        .map_err(|_| AuthorizationUnavailable)?;
+                    *cached = Some((head.identity.clone(), Arc::new(identity)));
+                }
+                Ok::<_, ReaderError>(cached.as_ref().ok_or(AuthorizationUnavailable)?.1.clone())
+            },
+        );
+        let manifest = manifest?;
+        if manifest.namespace != namespace
+            || manifest.publication_id != pointer.publication_id
+            || manifest.lance_version != pointer.lance_version
+        {
+            return Err(PublicationInvalid);
+        }
+        if &manifest.embedding != embedding {
+            return Err(EmbeddingProfileMismatch);
+        }
+        Ok((manifest, policy?, identity?))
     }
 
     async fn open_generation(
