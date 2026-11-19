@@ -322,6 +322,8 @@ fn with_config(path: &Path, body: impl FnOnce(&LoadedConfig) -> ExitCode) -> Exi
             if issues.iter().any(|i| i.severity == config::Severity::Error) {
                 ExitCode::from(exit::CONFIG)
             } else {
+                // No runtime, Lance call or worker thread exists yet.
+                crate::threads::apply(loaded.config.writer.threads);
                 body(&loaded)
             }
         }

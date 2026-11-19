@@ -224,6 +224,10 @@ fn example_and_minimal_files_are_valid() {
     assert_eq!(errors(&minimal), Vec::<String>::new());
     assert_eq!(minimal.config.writer.purge_window.to_string(), "1d");
     assert_eq!(minimal.config.reader.concurrency, 8);
+    assert_eq!(minimal.config.writer.threads, None);
+    let bounded = parse(&format!("{MINIMAL}\n[writer]\nthreads = 2\n")).expect("threads parse");
+    assert_eq!(errors(&bounded), Vec::<String>::new());
+    assert_eq!(bounded.config.writer.threads, Some(2));
     assert_eq!(
         minimal.config.reader.version_check_interval.to_string(),
         "30s"
@@ -320,6 +324,7 @@ fn secrets_in_the_file_are_refused_without_echo() {
 
 #[test]
 fn cross_field_rules_are_enforced() {
+    assert_error("[writer]\nthreads = 0", "writer.threads");
     assert_error(
         "[writer]\npurge_window = \"1h\"\nversion_grace = \"1h\"",
         "writer.purge_window",

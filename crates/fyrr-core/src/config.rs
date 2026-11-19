@@ -693,6 +693,12 @@ pub struct WriterConfig {
     /// Per-worker committed-memory ceiling (RLIMIT_DATA); virtual address reservations are unrestricted.
     #[serde(default = "default_worker_memory_max_bytes")]
     pub worker_memory_max_bytes: ByteSize,
+    /// CPU threads of each writer process: its async runtime, Lance's compute
+    /// runtime, the parallel-iterator pool and the full-text build workers.
+    /// Absent uses every CPU of the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub threads: Option<usize>,
     /// Deleted or revoked content leaves old versions and the mirror within it.
     #[serde(default = "default_purge_window")]
     pub purge_window: ConfigDuration,
