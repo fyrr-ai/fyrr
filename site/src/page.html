@@ -314,21 +314,21 @@
   <div class="wrap">
     <div class="head head--row rv">
       <div>
-        <p class="eyebrow">Coding agents</p>
-        <h2 class="title">The context layer<br>for software factories.</h2>
+        <p class="eyebrow">Software factories</p>
+        <h2 class="title">Coding agents know your code.<br>fyrr gives them everything else.</h2>
       </div>
-      <p class="sub sub--side">A software factory is a fleet of coding agents that ship work with nobody watching. fyrr gives each agent the tickets, pull requests and threads behind its task, and only what it may see.</p>
+      <p class="sub sub--side">An agent that writes code on its own sees only the repository. It does not know why the ticket exists, what the team agreed in chat or what was already tried. fyrr lets it look that up.</p>
     </div>
     <div class="stage stage--wide rv">
       <canvas class="stage__fog" data-seed="5" aria-hidden="true"></canvas>
       <ol class="pillars">
-        <li class="panel"><p class="panel__bar"><span>Context</span><span>01</span></p><div class="panel__body"><b>The ticket, the pull requests, the threads</b><span>Every agent reads what is behind its task, with nobody there to paste it in.</span></div></li>
-        <li class="panel"><p class="panel__bar"><span>Fleet</span><span>02</span></p><div class="panel__body"><b>A reader per agent</b><span>Each agent runs its own reader on the same bucket. Readers never coordinate, so a bigger fleet needs no extra service.</span></div></li>
-        <li class="panel"><p class="panel__bar"><span>Limits</span><span>03</span></p><div class="panel__body"><b>An identity per kind of agent</b><span>Each role sees only what its work needs. An agent talked into searching for payroll finds nothing.</span></div></li>
-        <li class="panel"><p class="panel__bar"><span>Record</span><span>04</span></p><div class="panel__body"><b>What it knew</b><span>Every answer names the version of the index it read. Keep it with the run, for when nobody reads the diff.</span></div></li>
+        <li class="panel"><p class="panel__bar"><span>Understand</span><span>01</span></p><div class="panel__body"><b>It reads the ticket and the discussion first</b><span>Before it writes code, the agent searches your tickets, chats, pull requests and docs for what was asked, agreed and already tried.</span></div></li>
+        <li class="panel"><p class="panel__bar"><span>Scale</span><span>02</span></p><div class="panel__body"><b>Run as many agents as you like</b><span>Every agent searches the same index straight from your S3 bucket. There is no server to grow when you add more agents.</span></div></li>
+        <li class="panel"><p class="panel__bar"><span>Protect</span><span>03</span></p><div class="panel__body"><b>Each agent sees only what it needs</b><span>Let bug-fixing agents read engineering docs and nothing else. If a malicious issue tricks one into looking for salaries, it finds nothing.</span></div></li>
+        <li class="panel"><p class="panel__bar"><span>Trace</span><span>04</span></p><div class="panel__body"><b>See what the agent had read</b><span>Every search result says which version of your knowledge it came from. When a change goes wrong, you can check what the agent knew.</span></div></li>
       </ol>
     </div>
-    <p class="note"><a href="docs/software-factory">Set up a software factory</a></p>
+    <p class="note">A software factory is a set of coding agents that turn tickets into pull requests with nobody watching each step. <a href="docs/software-factory">Set one up with fyrr</a></p>
   </div>
 </section>
 
