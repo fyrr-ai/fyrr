@@ -1,7 +1,8 @@
 # Quickstart
 
 Index a Markdown folder on your machine, then search and fetch it from
-Claude Code over MCP. No Docker, accounts or embedding keys are needed.
+Claude Code over MCP. No accounts or embedding keys are needed. With Docker,
+[use the published image](#fastest-the-published-image) and skip the build.
 The first build downloads dependencies. You need Linux x86-64, git, curl,
 unzip, openssl, Python 3.11+, rustup, uv, a C compiler, jq, binutils and
 about 10 GiB free. Install Claude Code before connecting the client.
@@ -12,6 +13,67 @@ For a larger first load, use `fyrr writer sync --full --timeout 1h` instead of
 relying on the ten-minute per-source default. A killed sync keeps durable
 prepared envelopes and cached vectors; wait for its source lease to expire before
 retrying. See [interrupted syncs](deployment.md#scheduling) for details.
+
+## Fastest: the published image
+
+With Docker you can skip the build. This indexes a folder of Markdown with
+the release image and needs only Docker, curl, openssl and Python 3:
+
+```sh
+mkdir fyrr-try && cd fyrr-try
+curl -fsSLO https://raw.githubusercontent.com/fyrr-ai/fyrr/v0.1.0/examples/quickstart/toy-embeddings.py
+python3 toy-embeddings.py &
+openssl rand -hex 32 > identity.key && chmod 600 identity.key
+export FYRR_IDENTITY_KEY="$(cat identity.key)"
+export NOTES="$HOME/notes"          # your folder of Markdown
+cat > fyrr.toml <<'TOML'
+[namespace]
+name = "notes"
+[storage]
+uri = "file:///home/fyrr/index"
+[embedding]
+endpoint = "http://127.0.0.1:8089/v1"
+model = "toy-hash-1024"
+dimensions = 1024
+reader_live = true
+[embedding.spend]
+limit_microusd = 100000
+max_call_microusd = 1
+[identity]
+stdio_user = "me"
+stdio_readers = ["usr:me"]
+hashing_key = { env = "FYRR_IDENTITY_KEY" }
+[[sources]]
+id = "notes"
+type = "local-files"
+permissions = "fixed"
+readers = ["usr:me"]
+[sources.scope]
+paths = ["/notes"]
+include = ["**/*.md"]
+TOML
+fyrr() {
+  docker run --rm -i --network host -e FYRR_IDENTITY_KEY \
+    -v "$PWD/fyrr.toml:/etc/fyrr/fyrr.toml:ro" -v "$NOTES:/notes:ro" \
+    -v fyrr-quickstart:/home/fyrr ghcr.io/fyrr-ai/fyrr:0.1.0 --config /etc/fyrr/fyrr.toml "$@"
+}
+fyrr writer namespace create && fyrr writer sync && fyrr writer commit
+fyrr reader search 'a question about your notes' --limit 3
+```
+
+The index lives in the Docker volume `fyrr-quickstart`; the folder must be
+readable by other users, because the image runs as its own user. Connect
+Claude Code to the same container:
+
+```sh
+claude mcp add fyrr --scope user -e FYRR_IDENTITY_KEY="$FYRR_IDENTITY_KEY" \
+  -- docker run --rm -i --network host -e FYRR_IDENTITY_KEY \
+  -v "$PWD/fyrr.toml:/etc/fyrr/fyrr.toml:ro" -v fyrr-quickstart:/home/fyrr \
+  ghcr.io/fyrr-ai/fyrr:0.1.0 --config /etc/fyrr/fyrr.toml reader serve
+```
+
+The toy service matches words only; keep it running while you search. The
+rest of this page builds fyrr from source and explains each step.
 
 ## 1. Build and start toy embeddings
 

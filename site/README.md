@@ -29,6 +29,8 @@ routing, compression, headers, redirects and 404 handling.
 The build copies `../docs/`, exports Fumadocs and search, adds the homepage,
 the use-cases page and the 404 page, and checks links,
 anchors, assets and navigation coverage. Links outside `docs/` point to GitHub.
+It also writes `robots.txt`, `sitemap.xml` and `llms.txt` from the docs
+navigation, so a new docs page is listed in all three.
 
 ## Cloudflare Workers deployment
 

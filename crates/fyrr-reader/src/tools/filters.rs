@@ -41,6 +41,46 @@ impl PreparedReader {
             .stage_us
             .insert("total".into(), micros(start.elapsed()));
     }
+    /// The rows of `dataset` that satisfy `predicate`, which is the admission
+    /// predicate and the request filter. The scan carries no row mask, so
+    /// Lance answers both sides from their scalar indexes; an external mask
+    /// would demote the whole filter to a read of every admitted row. The
+    /// predicate was built from the same state as `admitted`, and every row it
+    /// selects is checked against `admitted`, so a row outside the admission
+    /// fails closed.
+    pub(crate) async fn filter_rows(
+        dataset: &lance::Dataset,
+        predicate: &str,
+        admitted: &RowAddrMask,
+    ) -> Result<RowAddrTreeMap> {
+        let scan = Self::filter_scan(dataset, predicate)?;
+        let mut allowed = RowAddrTreeMap::new();
+        let mut stream = scan
+            .try_into_stream()
+            .await
+            .map_err(|_| StorageUnavailable)?;
+        while let Some(batch) = stream.try_next().await.map_err(|_| StorageUnavailable)? {
+            for id in ids(&batch)?.values() {
+                if !admitted.selected(*id) {
+                    return Err(AuthorizationUnavailable);
+                }
+                allowed.insert(*id);
+            }
+        }
+        Ok(allowed)
+    }
+    /// The scan of `filter_rows`: no projection and no row mask.
+    pub(crate) fn filter_scan(
+        dataset: &lance::Dataset,
+        predicate: &str,
+    ) -> Result<lance::dataset::scanner::Scanner> {
+        let mut scan = dataset.scan();
+        scan.project::<&str>(&[]).map_err(|_| IncompatibleIndex)?;
+        scan.filter(predicate)
+            .map_err(|_| IncompatibleIndex)?
+            .with_row_id();
+        Ok(scan)
+    }
     pub(crate) async fn apply_filters(&mut self, args: &SearchInput) -> Result<()> {
         let mut terms = Vec::new();
         for (column, values) in [
@@ -96,27 +136,10 @@ impl PreparedReader {
         }
         let filter = terms.join(" AND ");
         let predicate = format!("({}) AND ({filter})", self.admission_predicate()?);
-        let mut scan = self.dataset.scan();
-        scan.project::<&str>(&[]).map_err(|_| IncompatibleIndex)?;
-        scan.filter(&predicate)
-            .map_err(|_| IncompatibleIndex)?
-            .with_row_id()
-            .with_row_id_prefilter(self.admission.eligible.clone());
-        let mut allowed = RowAddrTreeMap::new();
         #[cfg(test)]
         self.test_hooks.filter_scan.wait_once().await;
-        let mut stream = scan
-            .try_into_stream()
-            .await
-            .map_err(|_| StorageUnavailable)?;
-        while let Some(batch) = stream.try_next().await.map_err(|_| StorageUnavailable)? {
-            for id in ids(&batch)?.values() {
-                if !self.admission.eligible.selected(*id) {
-                    return Err(AuthorizationUnavailable);
-                }
-                allowed.insert(*id);
-            }
-        }
+        let allowed =
+            Self::filter_rows(&self.dataset, &predicate, &self.admission.eligible).await?;
         self.filter_selection = Some(FilterSelection {
             predicate: filter,
             eligible: RowAddrMask::from_allowed(allowed),
