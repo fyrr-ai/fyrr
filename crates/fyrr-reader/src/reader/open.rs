@@ -137,6 +137,7 @@ impl PreparedReader {
             )
             .await?;
         let indexes = verify_indices(&dataset, &manifest, config).await?;
+        crate::fts_layout::report(&dataset, &indexes).await;
         let mut reader = Self {
             #[cfg(test)]
             test_hooks: Arc::default(),

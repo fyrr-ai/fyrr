@@ -25,6 +25,7 @@ pub mod embedding;
 mod error;
 mod excerpt;
 mod file_digest;
+mod fts_layout;
 mod generation;
 mod http;
 mod mirror;
