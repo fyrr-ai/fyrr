@@ -12,13 +12,11 @@ body:not(:has(.draft-notice)) .compare-hero { margin-top: 48px; }
 .text-link { display: inline-flex; gap: 24px; margin-top: 32px; font-size: 13px; border-bottom: 1px solid #555; padding-bottom: 6px; }
 .text-link:hover { color: var(--yellow); border-color: var(--yellow); }
 .hero-evidence { box-shadow: 0 0 50px 15px #0009; }
-.hero-meta { position: relative; display: flex; justify-content: space-between; gap: 16px; padding: 18px 0; color: var(--fg-dim); font-size: 11px; letter-spacing: .02em; border-top: 1px solid #333; }
-.section-nav { border-block: 1px solid var(--line); padding: 0 var(--gutter); }
+.hero-meta { position: relative; display: flex; justify-content: space-between; gap: 16px; padding: 18px 0; color: var(--fg-dim); font-size: 11px; letter-spacing: .02em; }
+.section-nav { padding: 0 var(--gutter); }
 .section-nav .wrap { display: flex; gap: 32px; overflow-x: auto; scrollbar-width: thin; }
 .section-nav a { flex: none; padding: 18px 0; font-size: 12px; color: var(--fg-muted); }
 .section-nav a:hover { color: var(--yellow); }
-.section { border-bottom: 1px solid var(--line); }
-.story-section--lead { padding-block: 120px; background: #0b0a05; }
 .story-section--lead .title { font-size: clamp(40px, 4.8vw, 64px); }
 .lambda-projection { margin-top: 40px; padding: 28px; border: 1px solid #645b2b; background: #121108; }
 .lambda-projection h3 { font-size: 28px; font-weight: 400; letter-spacing: -.035em; }

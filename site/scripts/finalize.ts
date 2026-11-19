@@ -94,7 +94,7 @@ await writeFile('dist/sitemap.xml', `<?xml version="1.0" encoding="UTF-8"?>\n<ur
 await writeFile('dist/llms.txt', [
   '# fyrr',
   '',
-  '> The serverless, permission-aware context layer for AI agents. No database. Just a bucket. fyrr indexes a company\'s docs, chats, tickets and code into one S3 bucket and serves them over MCP (search, fetch, list_filters), filtered by each caller\'s permissions before ranking. Open source, Apache-2.0.',
+  '> Blazing-fast, serverless context layer for software factories and AI agents. No database. Just a bucket. fyrr indexes a company\'s docs, chats, tickets and code into one S3 bucket and serves them over MCP (search, fetch, list_filters), filtered by each caller\'s permissions before ranking. Open source, Apache-2.0.',
   '',
   'Used by one person\'s coding agent, a team sharing one index, a whole company behind its login, and software factories: fleets of unattended coding agents that each run their own reader on the same bucket.',
   '',
