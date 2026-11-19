@@ -22,10 +22,40 @@ use lance_index::vector::{
     transform::Transformer,
 };
 use lance_linalg::distance::{DistanceType, l2::l2_distance};
-use std::{collections::BinaryHeap, sync::Arc};
+use std::sync::Arc;
 
 const AUTO_CENTROIDS: usize = 8192; // Unmeasured until scale calibration picks it.
 const BUILD_SCRATCH: usize = 24 * 1024 * 1024;
+
+/// Takes `(partition, distance)` pairs in `ranked` order, skipping partitions
+/// without an admitted row, until at least `nprobes` are taken and they hold
+/// at least `target` admitted rows, or the ranking ends. An unrestricted
+/// subject stops at `nprobes` when its partitions are of average size; a
+/// sparse subject probes further, so that it inspects about as many of its
+/// own rows as an unrestricted query inspects rows. Returns the taken
+/// partitions, their distances and how many entries of `ranked` were consumed.
+pub(crate) fn take_probes(
+    ranked: impl IntoIterator<Item = (u32, f32)>,
+    admitted: &[u32],
+    nprobes: usize,
+    target: u64,
+) -> (Vec<u32>, Vec<f32>, usize) {
+    let (mut ids, mut distances, mut seen, mut consumed) = (Vec::new(), Vec::new(), 0u64, 0);
+    for (partition, distance) in ranked {
+        if ids.len() >= nprobes && seen >= target {
+            break;
+        }
+        consumed += 1;
+        let rows = admitted.get(partition as usize).copied().unwrap_or(0);
+        if rows == 0 {
+            continue;
+        }
+        ids.push(partition);
+        distances.push(distance);
+        seen += u64::from(rows);
+    }
+    (ids, distances, consumed)
+}
 
 pub(crate) fn strategy(configured: RoutingStrategy, centroids: usize) -> RoutingStrategy {
     match configured {
@@ -217,45 +247,60 @@ impl CentroidRouter {
     pub(crate) fn select(
         &self,
         query: Arc<Float32Array>,
-        allowed: &[bool],
+        admitted: &[u32],
         nprobes: usize,
+        target: u64,
     ) -> Result<(Vec<u32>, Vec<f32>), RoutingFallback> {
-        let shortlist = 4 * nprobes;
-        if allowed.iter().filter(|v| **v).count() < shortlist {
+        if admitted.iter().filter(|v| **v > 0).count() < 4 * nprobes {
             return Err(RoutingFallback::EligibleShortlist);
         }
-        // D <= 8192, nprobes <= 65536: LUT/rotation/key <= 24D bytes,
-        // heap <= 8*(4*nprobes) bytes; selected IDs/distances <= 8*nprobes.
-        // Under 3 MiB per worker plus bounded Arrow headers; no query permits.
-        let mut heap = BinaryHeap::with_capacity(shortlist);
+        // D <= 8192: LUT/rotation/key <= 24D bytes; the approximate ranking
+        // holds 8 bytes per admitted partition. No query permits.
+        let mut approximate = Vec::new();
         let norm = query.values().iter().map(|v| v * v).sum();
         for (chunk_no, chunk) in self.chunks.iter().enumerate() {
             let calculator = chunk.dist_calculator(query.clone(), norm);
             let start = chunk_no * self.chunk_rows;
-            for (id, permitted) in allowed
+            for (id, rows) in admitted
                 .iter()
                 .enumerate()
-                .take((start + self.chunk_rows).min(allowed.len()))
+                .take((start + self.chunk_rows).min(admitted.len()))
                 .skip(start)
             {
-                if !permitted {
+                if *rows == 0 {
                     continue;
                 }
                 let distance = calculator
                     .distance(u32::try_from(id - start).map_err(|_| RoutingFallback::BuildFailed)?);
-                let candidate = (
+                approximate.push((
                     OrderedFloat(distance),
                     u32::try_from(id).map_err(|_| RoutingFallback::BuildFailed)?,
-                );
-                if heap.len() < shortlist {
-                    heap.push(candidate);
-                } else if let Some(mut worst) = heap.peek_mut()
-                    && candidate < *worst
-                {
-                    *worst = candidate;
-                }
+                ));
             }
         }
+        // Exact distances are taken for four times the partitions the
+        // approximate order needs; a sparse subject needs more than nprobes.
+        let mut sorted = (4 * nprobes).min(approximate.len());
+        let shortlist = loop {
+            approximate.select_nth_unstable(sorted - 1);
+            approximate[..sorted].sort_unstable();
+            let (_, _, consumed) = take_probes(
+                approximate[..sorted].iter().map(|r| (r.1, r.0.0)),
+                admitted,
+                nprobes,
+                target,
+            );
+            let wanted = if consumed < sorted || sorted == approximate.len() {
+                (4 * consumed).min(approximate.len())
+            } else {
+                (2 * sorted).min(approximate.len())
+            };
+            if wanted <= sorted {
+                break wanted;
+            }
+            sorted = wanted;
+        };
+        approximate.truncate(shortlist);
         let dim = self.centroids.value_length() as usize;
         let matrix = self
             .centroids
@@ -264,19 +309,20 @@ impl CentroidRouter {
             .downcast_ref::<Float32Array>()
             .ok_or(RoutingFallback::BuildFailed)?
             .values();
-        let mut ranked = heap.into_vec();
-        for (distance, id) in &mut ranked {
+        for (distance, id) in &mut approximate {
             *distance = OrderedFloat(l2_distance(
                 query.values(),
                 &matrix[*id as usize * dim..(*id as usize + 1) * dim],
             ));
         }
-        ranked.sort_unstable();
-        ranked.truncate(nprobes);
-        Ok((
-            ranked.iter().map(|r| r.1).collect(),
-            ranked.iter().map(|r| r.0.0).collect(),
-        ))
+        approximate.sort_unstable();
+        let (ids, distances, _) = take_probes(
+            approximate.iter().map(|r| (r.1, r.0.0)),
+            admitted,
+            nprobes,
+            target,
+        );
+        Ok((ids, distances))
     }
 }
 

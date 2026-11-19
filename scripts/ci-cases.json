@@ -199,6 +199,14 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/routing::tests::probes_stop_at_nprobes_for_full_partitions_and_widen_for_sparse_ones": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/routing::tests::router_takes_the_nearest_admitted_partitions_until_the_target": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/routing::tests::router_yields_to_next_warm_claim": {
         "tier": "quick",
         "seconds": 0.0

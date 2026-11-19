@@ -35,6 +35,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   after another and reads the manifest, policy and identity of a publication
   together. When a fill fails for a storage reason and another runs out of
   mirror space in the same batch, the storage failure is the one reported.
+- A caller who may read only part of a namespace searches more vector-index
+  partitions: nearest first, until they hold as many of the caller's rows as
+  `nprobes` partitions of average size hold. Recall of such callers no longer
+  drops with their share of the rows; see
+  [tuning](docs/tuning.md#callers-who-read-few-rows).
 - A search with a request filter searches the vector index when the filter
   selects many rows, and keeps the exact scan of the selected rows otherwise;
   see [tuning](docs/tuning.md#dense-search-under-a-request-filter). A large

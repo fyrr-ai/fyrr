@@ -92,12 +92,25 @@ rescores them with their stored float16 vectors.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `nprobes` | `256` | 1–65536 vector-index partitions searched per index segment, counting only partitions that hold rows the caller may read. |
+| `nprobes` | `256` | 1–65536: the fewest vector-index partitions searched per index segment, counting only partitions that hold rows the caller may read. A caller who may read only part of the rows searches more partitions, nearest first, until they hold as many of its rows as `nprobes` partitions of average size hold; see [callers who read few rows](#callers-who-read-few-rows). |
 | `routing` | `exact` | How the dense lane picks partitions: `exact` compares the query with every partition centroid, `rabitq` with compressed (RaBitQ) centroids, `auto` uses `rabitq` from 8192 centroids. |
 | `sparse_read` | `masked_scan` | How the stored vectors of candidates are read for rescoring: `masked_scan` (a scan restricted to the candidate rows) or `take_rows` (direct row reads). |
 | `memory_max_bytes` | `2304MiB` | Memory budget for native caches and for preparing a new publication. |
 | `memory_headroom_bytes` | `128MiB` | Left unused while preparing a new publication; must be smaller than `memory_max_bytes`. |
 | `fts_search_chunk` | absent (16, [Lance](architecture.md#terms)'s own default) | 1–1024 full-text partitions scored one after another by one compute task of a query. With `1`, every partition of an index segment is its own task, so one query scores several partitions at once; see [full-text partitions](#full-text-partitions). Needs a full-text index of several partitions. Does not change scores. |
+
+#### Callers who read few rows
+
+A caller's rows are spread over many partitions, so the `nprobes` nearest
+partitions that hold any of them may hold only a few. The dense lane therefore
+keeps searching partitions in order of distance, skipping those without a row
+the caller may read, until the searched partitions hold at least
+`nprobes` × (indexed rows ÷ partitions) of the caller's rows, or until it has
+searched every partition that holds one. A caller who may read every row
+searches `nprobes` partitions, or one or two more when the nearest ones are
+smaller than average. A caller whose few rows are spread over most partitions
+searches most of the index; the cost of a query then grows with the partitions
+that hold the caller's rows, not with `nprobes`.
 
 #### Dense search under a request filter
 

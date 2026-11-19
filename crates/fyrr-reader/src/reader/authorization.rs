@@ -191,7 +191,7 @@ impl PreparedReader {
                     && segments().count() == maps.len()
                     && segments().zip(roots).zip(maps).all(|((meta, root), map)| {
                         map.segment == meta.uuid.to_string()
-                            && map.allowed.len() == root.total_partitions()
+                            && map.admitted.len() == root.total_partitions()
                     })
             })
         })
@@ -226,13 +226,14 @@ impl PreparedReader {
         {
             let index = index.clone();
             self.fallback_probes = self.fallback_probes.max(index.total_partitions());
-            let mut allowed = Vec::new();
+            let mut admitted = Vec::new();
+            let mut indexed_rows = 0u64;
             for partition in 0..index.total_partitions() {
                 let mut stream = index
                     .partition_reader(partition, false, &NoOpMetricsCollector)
                     .await
                     .map_err(|_| PartitionMapUnavailable)?;
-                let mut permitted = false;
+                let mut rows = 0u32;
                 while let Some(batch) = stream
                     .try_next()
                     .await
@@ -246,17 +247,18 @@ impl PreparedReader {
                             .fragment_bitmap
                             .as_ref()
                             .is_some_and(|b| b.contains((id >> 32) as u32))
-                            && eligible.selected(*id)
                         {
-                            permitted = true;
+                            indexed_rows += 1;
+                            rows += u32::from(eligible.selected(*id));
                         }
                     }
                 }
-                allowed.push(permitted);
+                admitted.push(rows);
             }
             maps.push(PartitionMap {
                 segment: metadata.uuid.to_string(),
-                allowed,
+                admitted,
+                indexed_rows,
             });
         }
         Ok::<_, ReaderError>(maps)
