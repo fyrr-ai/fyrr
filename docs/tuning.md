@@ -90,6 +90,7 @@ rescores them with their stored float16 vectors.
 | `sparse_read` | `masked_scan` | How the stored vectors of candidates are read for rescoring: `masked_scan` (a scan restricted to the candidate rows) or `take_rows` (direct row reads). |
 | `memory_max_bytes` | `2304MiB` | Memory budget for native caches and for preparing a new publication. |
 | `memory_headroom_bytes` | `128MiB` | Left unused while preparing a new publication; must be smaller than `memory_max_bytes`. |
+| `fts_search_chunk` | absent (16, [Lance](architecture.md#terms)'s own default) | 1–1024 full-text partitions scored one after another by one compute task of a query. With `1`, every partition of an index segment is its own task, so one query scores several partitions at once; see [full-text partitions](#full-text-partitions). Needs a full-text index of several partitions. Does not change scores. |
 
 
 Memory sizing must include private prepared readers as well as shared caches.
@@ -135,3 +136,59 @@ request or handover bound. The conservative row-state allowance there is
 measurements for sizing rather than extrapolating the smaller idle measurement.
 Raw RSS/PSS/private samples are retained under
 `target/investigation/prepared-reader-cost/`.
+
+### Full-text partitions
+
+A full-text index is built as one or more partitions, and a query scores the
+partitions with global statistics, so a document's score does not depend on
+how many partitions the index has. Lance's default partition size is 2 GiB of
+builder memory, so the index of a small or mid-sized corpus is one partition
+and one query scores it on one thread. Two settings let a single query use
+spare cores; both are off by default, and neither changes scores or rankings:
+
+- [`writer.fts_partition_memory_mb`](reader-writer.md#writer) builds the index
+  as several partitions. The count is roughly the full-text builder memory
+  divided by the target (between that and about twice that plus one), not an
+  exact number; a smaller target makes more partitions. The writer applies the
+  same size to index merges, so merging segments does not collapse the layout.
+  It takes effect at the next full-text build or merge; a published index keeps
+  its layout until the full-text settings change or a merge rewrites it.
+- `reader.fts_search_chunk = 1` makes each partition of a segment its own
+  compute task. Lance reads the value once per process, so `fyrr reader` sets
+  it before its first Lance call. Without it, or with a value at least the
+  partition count, the partitions of a segment are scored one after another in
+  one task and extra partitions give no speed-up. A value of `2` spreads four
+  partitions over two tasks.
+
+At start, and for every new serving generation, the reader logs one line with
+the partition counts and what they allow, for example:
+
+```text
+telemetry fts_search=layout segments=1 partitions_min=4 partitions_max=4 search_chunk=1 compute_threads=6 parallel_tasks=4 concurrent=yes
+```
+
+`concurrent=no` with `partitions_max` above 1 means a query still scores that
+index on one thread: the chunk is at least the partition count, or the compute
+pool has one thread.
+
+What to expect:
+
+- Partitions shorten one query on a host with idle cores. They do not raise
+  throughput under load: the tasks of concurrent requests share the same
+  compute threads (`LANCE_CPU_THREADS`, by default the CPU count minus two),
+  and each request adds some CPU for repeated per-partition work.
+- A host with three or fewer CPUs gains nothing: Lance's compute pool then has
+  one thread.
+- The settings add no threads and no cache. Tasks run on the existing compute
+  pool, so reader memory sizing changes only through the index growth below.
+  With `concurrency` requests in flight, up to
+  `concurrency × partitions × segments` tasks queue for the compute threads.
+- Each partition has its own token dictionary and document table, so the index
+  grows with the partition count. An earlier measurement of a four-partition
+  rebuild on another Lance version found about 11 % more index bytes; it has
+  not been measured on this version. The reader's warm reservation scales with
+  index bytes.
+- Choose the target by building once and reading the logged partition count;
+  start from a quarter of the corpus's full-text builder memory. A build uses
+  up to the target per full-text worker (`writer.threads` sets the worker
+  count), so the writer's peak memory is not larger than before.
