@@ -63,10 +63,12 @@ fyrr reader search 'a question about your notes' --limit 3
 
 The index lives in the Docker volume `fyrr-quickstart`; the folder must be
 readable by other users, because the image runs as its own user. Connect
-Claude Code to the same container:
+Claude Code to the same volume, then start Claude Code from this shell so
+that the container gets `FYRR_IDENTITY_KEY` (in a new shell, first run
+`export FYRR_IDENTITY_KEY="$(cat identity.key)"` in `fyrr-try`):
 
 ```sh
-claude mcp add fyrr --scope user -e FYRR_IDENTITY_KEY="$FYRR_IDENTITY_KEY" \
+claude mcp add fyrr --scope user \
   -- docker run --rm -i --network host -e FYRR_IDENTITY_KEY \
   -v "$PWD/fyrr.toml:/etc/fyrr/fyrr.toml:ro" -v fyrr-quickstart:/home/fyrr \
   ghcr.io/fyrr-ai/fyrr:0.1.0 --config /etc/fyrr/fyrr.toml reader serve
@@ -137,11 +139,13 @@ user. For a shared/production deployment using S3, see
 
 ```sh
 claude mcp add fyrr --scope user \
-  -e FYRR_IDENTITY_KEY="$FYRR_IDENTITY_KEY" \
   -- "$PWD/target/debug/fyrr" --config "$FYRR_CONFIG" reader serve
 ```
 
-Start Claude anywhere and ask:
+Claude Code passes its own environment to the reader. Start Claude Code in
+any directory, from a shell that has `FYRR_IDENTITY_KEY` exported; the key
+is then not stored in Claude Code's settings. Without it, `/mcp` in Claude
+Code shows the fyrr server as failed. Ask:
 
 > Use fyrr search and fetch to answer: How do I restore a backup? Quote the handbook.
 
