@@ -640,6 +640,7 @@ pub(crate) async fn apply_staged(
         update_mode: None,
         inserted_rows_filter: None,
         updated_fragment_offsets: None,
+        mem_wal_dir_id: None,
     };
     *dataset = native_step(
         lease,

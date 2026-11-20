@@ -16,20 +16,20 @@ license = "Apache-2.0"
 repository = "https://github.com/fyrr-ai/fyrr"
 
 [workspace.dependencies]
-lance-table = { version = "=14.0.3", default-features = false }
+lance-table = { git = "https://github.com/lance-format/lance", tag = "v15.0.0-beta.25", default-features = false }
 fyrr-core = { path = "crates/fyrr-core" }
 fyrr-reader = { path = "crates/fyrr-reader" }
 fyrr-writer = { path = "crates/fyrr-writer" }
 
 # Exact stable crates.io pins keep all native Lance crates on one release.
-# Lance 14.0.3 uses Arrow 58 and DataFusion 54; no LanceDB crate is used.
+# Lance 15.0.0-beta.25 uses Arrow 59 and DataFusion 55; no LanceDB crate is used.
 # Only the `aws` object-store backend is enabled.
-lance = { version = "=14.0.3", default-features = false, features = ["aws"] }
-# Arrow major must match Lance's (58 for 14.0.3).
-arrow-array = "58"
-arrow-select = "58"
-arrow-buffer = "58"
-arrow-schema = { version = "58", features = ["serde"] }
+lance = { git = "https://github.com/lance-format/lance", tag = "v15.0.0-beta.25", default-features = false, features = ["aws"] }
+# Arrow major must match Lance's (59 for 15.0.0-beta.25).
+arrow-array = "59"
+arrow-select = "59"
+arrow-buffer = "59"
+arrow-schema = { version = "59", features = ["serde"] }
 
 chrono = { version = "0.4.45", default-features = false, features = ["std", "serde"] }
 clap = { version = "4.6", default-features = false, features = ["std", "help", "usage", "error-context", "derive", "env"] }
@@ -43,11 +43,11 @@ toml = { version = "1.2.1", default-features = false, features = ["parse", "disp
 # connector providers' config schemas.
 jsonschema = { version = "0.61.2", default-features = false }
 # Embedded Python for connector providers, full build only.
-# arrow-pyarrow 58 imports pyarrow batches through the Arrow C Data Interface
+# arrow-pyarrow 59 imports pyarrow batches through the Arrow C Data Interface
 # (PyCapsules, zero-copy) and requires PyO3 0.28.
 pyo3 = { version = "0.28", default-features = false }
 pyo3-build-config = "0.28"
-arrow-pyarrow = "58"
+arrow-pyarrow = "59"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 # Already in the graph through Lance; used for deterministic IDs and digests.
 base64 = { version = "=0.23.1", default-features = false, features = ["std"] }
@@ -60,10 +60,10 @@ rusqlite = { version = "0.42", features = ["bundled"] }
 half = "2"
 object_store = { version = "0.14", features = ["aws"] }
 async-trait = "0.1"
-lance-index = { version = "=14.0.3", default-features = false }
-lance-core = { version = "=14.0.3", default-features = false }
-lance-io = { version = "=14.0.3", default-features = false }
-lance-linalg = { version = "=14.0.3", default-features = false }
+lance-index = { git = "https://github.com/lance-format/lance", tag = "v15.0.0-beta.25", default-features = false }
+lance-core = { git = "https://github.com/lance-format/lance", tag = "v15.0.0-beta.25", default-features = false }
+lance-io = { git = "https://github.com/lance-format/lance", tag = "v15.0.0-beta.25", default-features = false }
+lance-linalg = { git = "https://github.com/lance-format/lance", tag = "v15.0.0-beta.25", default-features = false }
 httpdate = "=1.0.3"
 hmac = "0.13"
 constant_time_eq = "=0.6.1"
