@@ -137,6 +137,61 @@ async fn version_manifest_entries_are_bound_to_their_publication() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// Lance heads a version under its other manifest name each time it opens
+/// the dataset. A publication lists its version manifests, so the mirror
+/// answers that miss itself.
+#[tokio::test]
+async fn a_version_manifest_the_publication_lacks_needs_no_storage_request() {
+    let directory = std::env::temp_dir().join(format!(
+        "fyrr-mirror-absent-version-{}-{}",
+        std::process::id(),
+        fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
+    ));
+    let mut mirror = MirrorStore::new(directory.clone(), 1024).unwrap();
+    mirror
+        .bind_dataset("s3://bucket/root/namespaces/ns/dataset.lance")
+        .unwrap();
+    let root = "root/namespaces/ns/dataset.lance";
+    let listed = Path::from(format!("{root}/_versions/13.manifest"));
+    let other = Path::from(format!("{root}/_versions/18446744073709551602.manifest"));
+    let original = Arc::new(object_store::memory::InMemory::new());
+    original.put(&listed, "manifest".into()).await.unwrap();
+    let source =
+        crate::storage::test_store::latency::LatencyStore::new(original, std::time::Duration::ZERO);
+    let absent = |error: object_store::Error| matches!(error, object_store::Error::NotFound { .. });
+
+    // Without a publication the mirror cannot know, and asks storage.
+    let store = mirror.wrap("s3$bucket", Arc::new(source.clone()));
+    assert!(absent(store.head(&other).await.unwrap_err()));
+    assert_eq!(source.requests(), 1);
+
+    mirror.publication = Some("publication".into());
+    let file = |path: &str| fyrr_core::envelope::FileRef {
+        path: path.into(),
+        size_bytes: 8,
+    };
+    // A publication that lists no version manifest decides nothing.
+    mirror.version_manifests = Some(MirrorStore::version_manifests(&[file("data/a.lance")]));
+    let store = mirror.wrap("s3$bucket", Arc::new(source.clone()));
+    assert!(absent(store.head(&other).await.unwrap_err()));
+    assert_eq!(source.requests(), 2);
+
+    mirror.version_manifests = Some(MirrorStore::version_manifests(&[
+        file("data/a.lance"),
+        file("_versions/13.manifest"),
+    ]));
+    let store = mirror.wrap("s3$bucket", Arc::new(source.clone()));
+    assert!(absent(store.head(&other).await.unwrap_err()));
+    assert!(absent(store.get(&other).await.unwrap_err()));
+    assert_eq!(source.requests(), 2, "the publication settles it");
+    assert_eq!(
+        store.get(&listed).await.unwrap().bytes().await.unwrap(),
+        "manifest"
+    );
+    assert_eq!(source.requests(), 3);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// The same process-kill boundary mechanism used by the local storage tests.
 pub(super) fn pause(stage: &str) {
     if std::env::var("FYRR_TEST_MIRROR_STAGE").as_deref() == Ok(stage) {

@@ -100,6 +100,12 @@ impl MirrorStore {
         {
             return self.pass_through(location, options, &counters).await;
         }
+        if self.absent_version_manifest(location.as_ref()) {
+            return Err(Error::NotFound {
+                path: location.to_string(),
+                source: "not a version manifest of the publication".into(),
+            });
+        }
         let Some(name) = self.blob_name(&self.prefix, location.as_ref()) else {
             return self.pass_through(location, options, &counters).await;
         };

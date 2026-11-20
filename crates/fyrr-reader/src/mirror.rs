@@ -47,6 +47,8 @@ pub struct MirrorStore {
     verified_pages: Arc<std::sync::Mutex<BTreeMap<PathBuf, range::VerifiedPages>>>,
     /// The content publication that version manifest entries are bound to.
     publication: Option<String>,
+    /// The version manifests of that publication, relative to the dataset root.
+    version_manifests: Option<Arc<std::collections::BTreeSet<String>>>,
 }
 
 /// Counts the directory work of `make_room`, for tests.
@@ -307,6 +309,22 @@ impl MirrorStore {
         };
         Some(format!("{}.blob", &digest(key.as_bytes())[7..]))
     }
+    /// Whether `path` names a version manifest that the bound publication does
+    /// not have. Lance looks for a version under its other naming scheme
+    /// first, every time it opens the dataset; the publication lists the
+    /// manifests of its version, so that miss needs no storage request. A
+    /// publication that lists none decides nothing. Through a bound mirror
+    /// no later version of the dataset is visible either.
+    fn absent_version_manifest(&self, path: &str) -> bool {
+        let Some(manifests) = self.version_manifests.as_ref().filter(|m| !m.is_empty()) else {
+            return false;
+        };
+        let versions = fyrr_core::layout::NamespaceLayout::VERSIONS;
+        crate::sync::lock(&self.dataset_cache_key)
+            .as_ref()
+            .and_then(|(_, root)| path.strip_prefix(root.as_str())?.strip_prefix('/'))
+            .is_some_and(|relative| relative.starts_with(versions) && !manifests.contains(relative))
+    }
     fn version_manifest(&self, path: &str) -> bool {
         let versions = fyrr_core::layout::NamespaceLayout::VERSIONS;
         match crate::sync::lock(&self.dataset_cache_key).as_ref() {
@@ -423,6 +441,7 @@ impl MirrorStore {
             manifest_sizes: Arc::default(),
             verified_pages: Arc::default(),
             publication: None,
+            version_manifests: None,
         })
     }
     /// The same mirror with its version manifest entries bound to `manifest`.
@@ -432,7 +451,21 @@ impl MirrorStore {
     ) -> Self {
         let mut bound = self.clone();
         bound.publication = Some(digest(&fyrr_core::write_contract(manifest)));
+        bound.version_manifests = Some(Self::version_manifests(&manifest.files));
         bound
+    }
+    /// The version manifests among a publication's files.
+    fn version_manifests(
+        files: &[fyrr_core::envelope::FileRef],
+    ) -> Arc<std::collections::BTreeSet<String>> {
+        let versions = fyrr_core::layout::NamespaceLayout::VERSIONS;
+        Arc::new(
+            files
+                .iter()
+                .filter(|file| file.path.starts_with(versions))
+                .map(|file| file.path.clone())
+                .collect(),
+        )
     }
     /// Bind the existing native cache filename convention, including files left by an
     /// earlier process.
