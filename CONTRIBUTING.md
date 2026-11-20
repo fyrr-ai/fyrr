@@ -168,7 +168,7 @@ not create.
   became 5.1 for an additive change stays 5.1 for further additive changes
   and becomes 6.0 after a breaking one. The SDK's `versions.py` must match the
   contracts it ships. The configuration schema has its own
-  `x-fyrr-schema-version`, currently `5.1` (S3 and local storage).
+  `x-fyrr-schema-version`, currently `5.2` (S3 and local storage).
 - **Dependencies.** A new dependency needs a license and advisory verdict in
   `deny.toml`.
 - **Secrets and privacy.** Secrets never enter the repository, configuration

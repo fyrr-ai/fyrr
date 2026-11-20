@@ -3,7 +3,9 @@
 > **In short**
 >
 > - `fyrr reader serve` can serve many users over Streamable HTTP at `/mcp`;
->   each request carries the user's OIDC access token.
+>   each request carries the user's OIDC access token or an API key.
+> - [API keys](#api-keys) need no identity provider: one key per agent role
+>   or per person, each with the groups it may read.
 > - With Keycloak it takes two Keycloak objects, about ten configuration
 >   keys, a writer that pulls the users and a reader behind a TLS proxy.
 > - The [reference](#reference) at the end lists the exact token rules and
@@ -13,12 +15,90 @@
 
 - Every user connects their own MCP client to one URL and signs in with the
   identity [provider](architecture.md#terms); fyrr serves each of them only what they may read.
+- Or a client presents an operator-issued API key instead, with the grants
+  the operator declared for it.
 - Users, groups and deactivations come from the directory on a schedule; a
   deactivated user is refused at the next published pull.
 - One reader process serves everyone; readers and writers share only S3.
 
 The rules behind it (subjects, reader tokens, the canonical directory) are
 in the [security model](security.md).
+
+## API keys
+
+Use an API key when a client cannot sign in through an identity provider:
+an unattended coding agent, or a small team that wants to share one reader
+without running Keycloak. A key is a secret the operator hands out, and the
+operator states in the configuration what it may read.
+
+1. **Generate a key.** Make one per agent role or per person, and keep it
+   in your secret store:
+
+   ```sh
+   echo "fyrr_key_$(openssl rand -hex 32)"
+   ```
+
+2. **Declare it.** On the writer host, export the key (for example as
+   `FYRR_API_KEY_BUGFIX`) and add a table to the
+   [configuration file](configuration.md), next to `[reader.http]`:
+
+   ```toml
+   [identity]
+   hashing_key = { env = "FYRR_IDENTITY_KEY" }
+
+   [[identity.api_keys]]
+   name = "bugfix-agents"
+   key = { env = "FYRR_API_KEY_BUGFIX" }
+   readers = ["grp:engineering"]     # what this key may read, as for stdio_readers
+
+   [reader.http]
+   listen = "127.0.0.1:8080"
+   public_url = "https://fyrr.example.com/mcp"
+   ```
+
+   Without `[identity.oidc]` the reader accepts only keys. A key may carry
+   `expires` and `requests_per_minute` too; see
+   [`[[identity.api_keys]]`](identity.md#identityapi_keys).
+3. **Commit the change.** The writer publishes only a keyed hash of the
+   key. `fyrr writer serve` does it at its next commit (60 seconds by
+   default); otherwise run `fyrr writer commit`. Only the writer needs the
+   key in its environment, and the reader hosts do not.
+4. **Start the reader** behind a TLS-terminating proxy, as in
+   [step 3](#3-start-the-writer-and-the-reader). A key travels in every
+   request: never serve it over plain HTTP outside loopback.
+5. **Connect a client.** Claude Code takes the key as a header:
+
+   ```sh
+   claude mcp add --transport http fyrr https://fyrr.example.com/mcp \
+     --header "Authorization: Bearer $FYRR_API_KEY_BUGFIX"
+   ```
+
+   Codex reads the bearer token from an environment variable that is set
+   when it starts:
+
+   ```sh
+   codex mcp add fyrr --url https://fyrr.example.com/mcp \
+     --bearer-token-env-var FYRR_API_KEY_BUGFIX
+   ```
+
+   Any other client needs one header, `Authorization: Bearer <key>`.
+
+A key has two forms. `readers` gives it reader tokens of its own, exactly as
+`stdio_readers` does for the stdio subject, so it sees what those groups
+and users may read and nothing else. `user = "ada@example.com"` makes it act
+as that [canonical directory user](architecture.md#terms) instead, with
+their groups; it needs a directory ([Keycloak](#1-prepare-keycloak) or
+another provider) and is refused while that user is missing or inactive.
+
+To rotate, add a second key, move the client to it, then remove the first.
+To revoke, remove the table and commit; see
+[API keys in the security model](security.md#api-keys) for how long that
+takes. A refused key always gets the same `401 unauthorized`, whether it is
+unknown, malformed, removed or expired.
+
+## Sign-in with Keycloak
+
+The rest of this page sets up users who sign in through Keycloak.
 
 ## 1. Prepare Keycloak
 
@@ -140,7 +220,9 @@ GitHub with `permissions = "fixed"`.
 Point the client at `https://fyrr.example.com/mcp`. Clients that discover
 OAuth settings read the issuer and scope from
 `/.well-known/oauth-protected-resource`; a 401 carries the same pointer in
-`WWW-Authenticate`. To check by hand with a user's access token:
+`WWW-Authenticate`. Without `[identity.oidc]` there is no authorization
+server: that route answers 404 and a 401 carries a bare `WWW-Authenticate:
+Bearer`, so a client has no sign-in to start and needs its key configured. To check by hand with a user's access token:
 
 ```sh
 curl https://fyrr.example.com/mcp \
@@ -157,6 +239,7 @@ curl https://fyrr.example.com/mcp \
 | --- | --- |
 | `401 unauthorized` | The token failed a [token rule](#tokens): usually the audience (`fyrr:read` is not a default scope of the sign-in client, or its Audience mapper does not add `fyrr` to the access token), an expired token, or a token from another realm. Decode it and compare `iss`, `aud`, `scope` and `typ`. |
 | `503 authorization_unavailable` | The token is valid but its subject is not bound: the user is not yet in a published directory pull, is disabled, or has no verified e-mail in `verified_domains`. It also means the last directory pull is older than `identity.validity_deadline`, or the keys could not be fetched. Check `fyrr writer status`. |
+| `401 unauthorized` with an API key | The key is unknown to the published identity: not committed yet (run `fyrr writer commit`), removed, past its `expires`, malformed (`fyrr_key_` plus 43–128 characters of `[A-Za-z0-9_-]`) or, for a `user` key, its user is missing or inactive (`fyrr writer status` warns `api_key_unbound`). The reader says nothing more, by design. |
 | A user is missing although the e-mail looks right | Keycloak does not mark it verified. Users federated from LDAP need *Trust Email* on the LDAP provider, or a verified flag set by an administrator. |
 | `403 host_mismatch` | The proxy does not pass the public `Host`: set `proxy_set_header Host $host`. The reader logs `http refused code=host_mismatch`. |
 | `403 invalid_argument` | The request had an `Origin` header: browsers cannot call `/mcp` directly. |
@@ -168,7 +251,10 @@ curl https://fyrr.example.com/mcp \
 
 A request is served only when every rule holds. Invalid tokens receive
 `401 unauthorized` with a `WWW-Authenticate` header; unavailable keys or
-subject bindings return `503 authorization_unavailable`.
+subject bindings return `503 authorization_unavailable`. A bearer that
+starts with `fyrr_key_` is an [API key](#api-keys) and takes its own path
+(below); everything else is an OIDC access token, and without
+`[identity.oidc]` it is refused with 401.
 
 - At most 16 KiB, signed with RS256 by a key from `identity.oidc.jwks_url`
   whose `kid` is in the header. The key URL is pinned by the operator;
@@ -184,7 +270,21 @@ subject bindings return `503 authorization_unavailable`.
   the published identity, or the request gets `503
   authorization_unavailable`.
 
-### Keys
+### API key rules
+
+- The bearer is `fyrr_key_` followed by 43–128 characters from
+  `[A-Za-z0-9_-]`; anything else that starts with `fyrr_key_` is refused
+  before it is hashed.
+- Its keyed hash must be bound in the published identity and the binding must
+  not have expired (`expires`, checked on every request). Otherwise the
+  request gets `401 unauthorized`, the same for an unknown, removed and
+  expired key.
+- The key then goes through the same admission as an OIDC subject: directory
+  freshness, `identity.max_tokens_per_user` and the request allowances. A
+  key with `readers` uses its own `requests_per_minute` when the reader's
+  configuration lists it, else `reader.http.user_requests_per_minute`.
+
+### JWKS keys
 
 The JWKS document may hold at most 16 keys with distinct `kid`s in at most
 256 KiB; usable keys are RSA with 2048–4096-bit moduli and exponent 65537.

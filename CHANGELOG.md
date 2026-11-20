@@ -9,6 +9,16 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- API keys for the HTTP reader (`[[identity.api_keys]]`): static bearer
+  secrets with operator-declared grants, either reader tokens (`readers`, as
+  `stdio_readers`) or a canonical directory user (`user`), with an optional
+  `expires` and `requests_per_minute`. They let unattended agents and small
+  teams use `[reader.http]` without an identity provider: `[reader.http]` now
+  needs `identity.oidc`, `identity.api_keys` or both. The writer publishes
+  only a keyed hash of each secret; the identity artifact moves to 1.2 (an
+  optional `expires` on subject bindings, enforced by the reader on every
+  request) and the configuration schema to 5.2. See
+  [HTTP login and users](docs/http-users.md#api-keys).
 - The reader sends `instructions` in the MCP `initialize` result: what
   fyrr searches and a request to search it before looking through files.
   Clients that pass instructions on tell their agent when to search.

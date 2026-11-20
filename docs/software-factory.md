@@ -61,8 +61,10 @@ Three parts of the contract matter for unattended agents:
    commands for Claude Code and Codex.
 
 When a sandbox must not hold bucket credentials, run one HTTP reader for the
-fleet instead. Each request then carries an OIDC access token; see
-[HTTP login and users](http-users.md).
+fleet instead and give each agent role its own API key. A key needs no
+identity provider: you declare what it may read, hand the secret to the
+agents of that role, and revoke it by removing it. See
+[API keys](http-users.md#api-keys).
 
 ## Limit what an injected agent can reach
 
@@ -71,10 +73,25 @@ Text that carries instructions can turn the agent against you, and then the
 agent's access is the attacker's access. Permissions bound that damage.
 
 Give each kind of agent its own identity and only the groups its work
-needs: a configuration for agents that fix bugs, another for agents that
-answer support tickets. A separate configuration file per role, with its own
-`stdio_user` and `stdio_readers`, is enough. An agent that was talked into
-searching for payroll finds nothing, and cannot tell whether payroll exists.
+needs: one for agents that fix bugs, another for agents that answer support
+tickets. With readers in the agents' sandboxes, a separate configuration file
+per role, with its own `stdio_user` and `stdio_readers`, is enough. With one
+HTTP reader for the fleet, one API key per role does the same:
+
+```toml
+[[identity.api_keys]]
+name = "bugfix-agents"
+key = { env = "FYRR_API_KEY_BUGFIX" }
+readers = ["grp:engineering"]
+
+[[identity.api_keys]]
+name = "support-agents"
+key = { env = "FYRR_API_KEY_SUPPORT" }
+readers = ["grp:support"]
+```
+
+An agent that was talked into searching for payroll finds nothing, and
+cannot tell whether payroll exists.
 
 fyrr checks permissions before ranking, so a forbidden document never
 reaches the model's context in the first place.

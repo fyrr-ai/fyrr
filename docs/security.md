@@ -45,11 +45,63 @@ A **subject** is the caller of a request:
   process, one identity);
 - over HTTP, the `sub` claim of a verified OIDC access token, which must be
   bound in the published identity artifact under its issuer (see
-  [HTTP login and users](http-users.md)).
+  [HTTP login and users](http-users.md));
+- over HTTP, an [API key](#api-keys): a static secret that the published
+  identity binds to the grants the operator declared for it.
 
 A subject with more than `identity.max_tokens_per_user` reader tokens (5000
 by default) is refused with `authorization_unavailable`; other subjects are
 unaffected.
+
+## API keys
+
+An API key is for a caller that cannot sign in: an unattended agent, or a
+team without an identity provider. What to know before you issue one:
+
+- **What it is trusted for.** A key proves only that its holder knows the
+  secret. It reads what the operator declared for it in
+  `[[identity.api_keys]]`: `readers`, reader tokens like the stdio subject's
+  `stdio_readers`, or `user`, which acts as one canonical directory user.
+  Nothing a caller sends changes those grants, and a document outside them
+  looks like one that does not exist. A key that stands in for a user is as
+  powerful as that user.
+- **Grants are the operator's.** They come from the configuration file, not
+  from a directory or a source, so a source cannot widen them. Give each
+  agent role its own key with only the groups its work needs
+  ([software factories](software-factory.md#limit-what-an-injected-agent-can-reach)).
+  A key with `readers` is checked against `identity.max_tokens_per_user` and
+  the request allowances like any subject.
+- **The secret is high-entropy, and only a keyed hash is published.** A key is
+  `fyrr_key_` and at least 43 characters, which is at least 256 bits when
+  generated as documented. The writer stores the HMAC of it under
+  `identity.hashing_key`, in a domain of its own, so the identity artifact
+  holds nothing that can be turned back into the secret. Whoever reads the
+  artifact and holds the hashing key can still test a guess, which is why a
+  low-entropy secret is refused by shape and the documented generation is
+  random. The configuration and the writer's environment hold the key; the
+  reader needs neither.
+- **Same answer for every refusal.** An unknown, malformed, removed and
+  expired key all get `401 unauthorized`. The reader hashes first and looks
+  the hash up second, and no key, name or hash is written to logs, errors,
+  telemetry or metrics.
+- **Use TLS.** The key is a bearer secret in every request. Terminate TLS in
+  front of the reader as for OIDC ([HTTP boundary](http-users.md#3-start-the-writer-and-the-reader));
+  never send a key over plain HTTP outside loopback. Prefer a header from a
+  secret store or an environment variable over a key typed into a shell
+  history.
+- **Rotation.** Add a second key, move the clients to it, remove the first.
+  Two keys never share a secret.
+- **Revocation.** Remove the table (or set `expires`) and republish the
+  identity. `expires` binds without a republish: the reader refuses the key
+  at the first request after that instant. Removal takes effect on the first
+  request after the writer commits the new identity, because the reader reads
+  the serving head on every HTTP request: at most
+  `writer.commit.coalescing_timer` (60 s) after a running `writer serve` has
+  the new configuration, which means after it restarts. To force it, restart
+  `writer serve` or run `fyrr writer commit` with the new file. A key added to
+  the file is served once readers pick up the publication, within
+  `reader.version_check_interval` (30 s) or at once through
+  [`POST /admin/refresh`](http-users.md#http-boundary).
 
 ## Permission modes
 
@@ -82,6 +134,9 @@ plan for:
   completed read within `identity.validity_deadline`, or the whole namespace
   is refused. With the default `provider = "none"` no directory clock
   applies.
+- An API key is refused at the first request after its `expires` instant and,
+  once removed from the configuration, after the next identity publication
+  ([API keys](#api-keys)).
 - A retired source (`fyrr writer source retire`) is denied on every reader's
   next request, and restore and rollback never bring it back.
 
@@ -111,8 +166,8 @@ link. An inactive canonical user is denied everywhere. The keys are in
   including under secret-like keys in provider settings, are refused without
   echoing the value; `config show` redacts secret fields.
 - Error messages, logs, cursors, telemetry and status output never carry
-  document text, titles, identities, e-mail addresses, query text or secret
-  values. `crates/fyrr/tests/privacy.rs` plants markers in all of these and
+  document text, titles, identities, e-mail addresses, query text, API-key
+  secrets, names or hashes, or other secret values. `crates/fyrr/tests/privacy.rs` plants markers in all of these and
   asserts that the CLI paths it drives do not print or write them.
 - Directory snapshots, membership batches, SCIM state and stored provider
   credentials are encrypted with AES-256-GCM under `identity.encryption_key`.

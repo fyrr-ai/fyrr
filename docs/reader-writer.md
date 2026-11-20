@@ -54,9 +54,9 @@ Pin `concurrency = 2` to retain the previous request and queue limits.
 | --- | --- | --- |
 | `listen` | required | IP socket address (`IP:port`). The listener speaks plain HTTP; see [HTTP boundary](http-users.md#http-boundary). |
 | `public_url` | required | 1–2048 characters: the `https://…/mcp` URL clients use (the path must be `/mcp`; plain HTTP only on loopback); the `Host` header must match its authority on every route except `/readyz`. |
-| `operator_credential` | absent | `{ env = "VAR" }` for `POST /admin/refresh`; separate from OIDC access tokens. Absent, the route is not served (404); readers still pick up new versions through `version_check`. |
+| `operator_credential` | absent | `{ env = "VAR" }` for `POST /admin/refresh`; separate from OIDC access tokens and API keys. Absent, the route is not served (404); readers still pick up new versions through `version_check`. |
 | `authorization_cache_subjects` | `64` | 1–1024 subjects whose admission is cached (LRU, 128 MiB accounted bound, charged by an estimate of each entry's size; workers share a cached admission instead of copying it). |
-| `user_requests_per_minute` | `120` | At least 1, per [canonical user](architecture.md#terms); linked subjects share it. |
+| `user_requests_per_minute` | `120` | At least 1, per [canonical user](architecture.md#terms); linked subjects share it. An API key with `readers` has its own allowance, this value or its `requests_per_minute`. |
 | `group_requests_per_minute` | `120` | At least 1, per published group membership. |
 
 ## `[writer]`
