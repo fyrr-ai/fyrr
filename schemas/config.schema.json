@@ -947,6 +947,14 @@
           "minimum": 4096,
           "description": "Optional search response budget, in bytes of the serialized MCP tool result\nincluding its structured JSON and text copies, for MCP\nclients that refuse large tool results. Over budget, whole hits are dropped\nfrom the end of the rank order (each query keeps at least 4 while another\nstill has tail hits); only then do the lowest-ranked hits lose their excerpt\nor content. `truncated` reports both counts and the removed bytes count as\n`omitted_bytes`. Absent returns every selected hit.",
           "maximum": 16777216
+        },
+        "instructions": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Text sent to MCP clients as `instructions` in the `initialize` result.\nAbsent sends the built-in text; an empty string sends none.",
+          "maxLength": 4096
         }
       },
       "description": "Reader settings."

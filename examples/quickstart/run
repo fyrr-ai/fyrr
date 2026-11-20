@@ -113,7 +113,8 @@ open_mcp() {
   printf '%s\n' '{"jsonrpc":"2.0","id":0,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"quickstart","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}' >&"$TO_MCP"
   IFS= read -r -t 60 line <&"$FROM_MCP" || fail "server/discover: no response; server log: $(cat "$WORK/serve.log")"
   jq -e '.id == 0 and .error != null' >/dev/null <<<"$line" || fail "server/discover: expected a refusal, got $line"
-  request 1 '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"quickstart","version":"1"}}}' >/dev/null
+  request 1 '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"quickstart","version":"1"}}}' |
+    jq -e '.instructions | contains("call search first")' >/dev/null || fail "initialize: no instructions for the agent"
   printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}' >&"$TO_MCP"
   [[ "$(request 9 '{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{}}' | jq -c '[.tools[].name]')" == '["search","fetch","list_filters"]' ]] ||
     fail "tools/list after the discover fallback"

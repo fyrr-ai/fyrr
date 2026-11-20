@@ -150,6 +150,8 @@ Claude calls `search` and `fetch` for `notes/backup.md`. Its answer should quote
 The checked-in handbook keeps this example independent of reference-doc edits.
 `--scope user` registers fyrr for all your projects;
 other MCP clients use the same executable, arguments and environment.
+[Connect an agent](connect.md) covers Codex, HTTP readers and the optional
+Claude Code plugin.
 
 ## 4. Add Slack or another connector
 

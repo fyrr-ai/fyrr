@@ -9,6 +9,15 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The reader sends `instructions` in the MCP `initialize` result: what
+  fyrr searches and a request to search it before looking through files.
+  Clients that pass instructions on tell their agent when to search.
+  `reader.instructions` (absent by default) replaces that text; an empty
+  string sends none. See
+  [reader and writer settings](docs/reader-writer.md).
+- An optional Claude Code plugin (`plugins/fyrr`, marketplace `fyrr`)
+  adds a reminder of its own at the start of every session. See
+  [connect an agent](docs/connect.md).
 - `writer.threads` (absent by default) bounds the CPU threads of each writer
   process: its async runtime, Lance's compute runtime, the parallel-iterator
   pool used by vector index builds and the full-text build workers. See

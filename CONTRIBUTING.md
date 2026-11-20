@@ -59,6 +59,7 @@ annotations; PyArrow's untyped API remains covered by Arrow contract tests.
 | `connectors/` | Python package `fyrr-connectors`: provider API, test kit and the bundled providers. |
 | `examples/` | The quickstart (configuration, documents and `run`), an independently built provider wheel and a derived-image Dockerfile. |
 | `schemas/`, `fixtures/` | Generated JSON Schemas, golden contract documents and MCP goldens. |
+| `plugins/`, `.claude-plugin/` | The optional Claude Code plugin and its marketplace manifest. Raise `version` in `plugins/fyrr/.claude-plugin/plugin.json` with every change; clients cache a plugin by version. |
 | `docker/` | `Dockerfile` (targets `fyrr-reader` and `fyrr`), entry point, `compose.yaml`. |
 | `deny.toml` | License and advisory policy. |
 
