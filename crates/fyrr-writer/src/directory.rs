@@ -147,6 +147,11 @@ pub(crate) fn bindings(snapshot: &DirectorySnapshot) -> Vec<SubjectBinding> {
 
 /// Operator import is not a freshness proof. Pull/SCIM adapters provide that
 /// separately after successful application; this path never advances its clock.
+/// With `provider = "none"` the operator's imports are the directory and attest
+/// nothing, so an import also withdraws a timestamp left by an earlier provider:
+/// readers hold a published timestamp to `validity_deadline` whatever their own
+/// provider, and a namespace that can no longer pull would otherwise be refused
+/// for good once it passed.
 pub async fn publish(config: &Config, snapshot: &DirectorySnapshot) -> Result<serde_json::Value> {
     snapshot
         .validate()
@@ -155,7 +160,15 @@ pub async fn publish(config: &Config, snapshot: &DirectorySnapshot) -> Result<se
         return Err(WriterError::DirectorySnapshotInvalid);
     }
     crate::lease::LeaseGuard::with(config, |lease| async move {
-        publish_held(config, snapshot, &lease, None).await
+        let published = publish_held(config, snapshot, &lease, None).await?;
+        if config.identity.directory.provider == fyrr_core::config::DirectoryProvider::None {
+            let mut head = lease.head().await?;
+            if head.freshness.directory.take().is_some() {
+                head.updated_at = fyrr_core::clock::now();
+                lease.publish(head).await?;
+            }
+        }
+        Ok(published)
     })
     .await
 }

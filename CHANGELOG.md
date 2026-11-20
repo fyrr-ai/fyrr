@@ -84,6 +84,24 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Security
 
+- A reader no longer skips the published directory freshness check because
+  its own `identity.directory.provider` is `none` (the Lambda example omits
+  it). When the serving head carries a directory freshness timestamp, every
+  reader now refuses the namespace once that read is older than
+  `identity.validity_deadline`: before this, such a reader served OIDC
+  subjects, the stdio subject and any other directory-bound subject from an
+  expired directory snapshot. For an existing deployment this means: a reader
+  with `provider = "none"` that reads a namespace whose writer pulls a
+  directory now gets `authorization_unavailable` once the pulls have stopped
+  for longer than `validity_deadline`, until the directory is pulled again.
+  A head without a timestamp, such as a snapshot imported by hand with
+  `writer directory --snapshot`, is served as before by a reader with
+  `provider = "none"`. A deployment that moved from `keycloak`, `scim` or
+  `snapshot` to manual imports under `provider = "none"` is served again by
+  running one `writer directory --snapshot` import: such an import attests no
+  directory freshness, so it withdraws the timestamp the earlier provider
+  left. With a provider configured, an import still keeps the timestamp the
+  provider attested.
 - The README, quickstart and software factory guide no longer store
   `FYRR_IDENTITY_KEY` in Claude Code's settings: they add the reader
   without `-e` and start Claude Code from a shell with the key exported.

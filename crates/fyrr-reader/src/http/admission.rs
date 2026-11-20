@@ -283,6 +283,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_published_directory_clock_binds_a_reader_without_a_directory_provider() {
+        let mut test = Fixture::new().await;
+        assert_eq!(
+            test.config.identity.directory.provider,
+            fyrr_core::config::DirectoryProvider::None
+        );
+        // No timestamp: a snapshot imported by hand, served as before.
+        test.head.freshness.directory = None;
+        test.publish_head().await;
+        test.authorize().await.unwrap();
+        // A fresh attestation serves, a stale one refuses the namespace,
+        // whatever this reader's own provider setting says.
+        test.head.freshness.directory = Some(fyrr_core::clock::now());
+        test.publish_head().await;
+        test.authorize().await.unwrap();
+        test.head.freshness.directory = Some(fyrr_core::clock::now() - chrono::Duration::days(30));
+        test.publish_head().await;
+        assert_eq!(test.authorize().await, Err(AuthorizationUnavailable));
+    }
+
+    #[tokio::test]
     async fn invalid_identity_digest_never_reuses_cached_grants() {
         let mut test = Fixture::new().await;
         test.authorize().await.unwrap();

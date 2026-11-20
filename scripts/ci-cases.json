@@ -271,7 +271,7 @@
         "tier": "quick",
         "seconds": 0.1
       },
-      "full:fyrr-reader:lib:fyrr_reader/storage::tests::only_an_absent_directory_needs_no_freshness_proof": {
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::the_publication_decides_whether_the_directory_clock_applies": {
         "tier": "quick",
         "seconds": 0.0
       },
@@ -548,6 +548,10 @@
         "seconds": 0.001
       },
       "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::cached_identity_never_skips_token_or_directory_expiry": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::the_published_directory_clock_binds_a_reader_without_a_directory_provider": {
         "tier": "quick",
         "seconds": 0.001
       },
@@ -1547,6 +1551,10 @@
       "full:fyrr:test:dense_path/http_mcp::identity_http_deadline_cancellation_busy_inflight_refusal_and_active_drain_on_storage": {
         "tier": "full",
         "seconds": 156.747
+      },
+      "full:fyrr:test:dense_path/http_mcp::a_published_directory_clock_binds_a_reader_without_a_directory_provider_on_storage": {
+        "tier": "full",
+        "seconds": 100.0
       },
       "full:fyrr:test:dense_path/identity::identity_alias_collision_link_revoke_and_idempotence_on_storage": {
         "tier": "full",
