@@ -302,6 +302,10 @@ impl PreparedReader {
         self.scope.resolve(principal.key.clone());
         self.rebuild_admission().await
     }
+    /// Expiry of the bound HTTP subject, by the reader clock in whole seconds.
+    pub(crate) fn subject_expires(&self) -> Option<i64> {
+        self.scope.expires()
+    }
     pub(crate) fn expire_pin(&self) {
         self.mirror_pin.expire(
             (fyrr_core::clock::now() - self.manifest.committed_at)

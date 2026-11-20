@@ -308,7 +308,9 @@ async fn authenticate_mcp(
         Some(
             timeout_at(
                 deadline,
-                state.admission.authorize(&state.config, &mut subject),
+                state
+                    .admission
+                    .authorize(&state.config, &mut subject, deadline),
             )
             .await?
             .map_err(|code| {

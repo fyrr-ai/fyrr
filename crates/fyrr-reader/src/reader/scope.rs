@@ -9,10 +9,12 @@ enum Subject {
     Unbound,
     Binding {
         key: String,
+        expires: i64,
         expected: Option<GenerationPointer>,
     },
     Http {
         key: String,
+        expires: i64,
         principal: String,
         admitted: Option<GenerationPointer>,
     },
@@ -44,6 +46,14 @@ impl RequestScope {
             Subject::Stdio { .. } | Subject::Unbound => None,
         }
     }
+    /// The Unix second at which the bound subject stops being valid; an HTTP
+    /// subject is expired when `expires <= now`. Stdio never expires.
+    pub(super) fn expires(&self) -> Option<i64> {
+        match &self.subject {
+            Subject::Binding { expires, .. } | Subject::Http { expires, .. } => Some(*expires),
+            Subject::Stdio { .. } | Subject::Unbound => None,
+        }
+    }
     /// Preflight compares the caller's expectation during binding. A resolved
     /// subject compares only the identity of its completed admission.
     pub(super) fn identity_for_refresh(&self) -> Option<&GenerationPointer> {
@@ -57,16 +67,19 @@ impl RequestScope {
         self.refuse();
         self.subject = Subject::Binding {
             key: subject.key.clone(),
+            expires: subject.expires,
             expected: subject.identity.clone(),
         };
     }
     pub(super) fn resolve(&mut self, principal: String) {
-        let Subject::Binding { key, .. } = std::mem::replace(&mut self.subject, Subject::Unbound)
+        let Subject::Binding { key, expires, .. } =
+            std::mem::replace(&mut self.subject, Subject::Unbound)
         else {
             unreachable!("subject binding precedes principal resolution")
         };
         self.subject = Subject::Http {
             key,
+            expires,
             principal,
             admitted: None,
         };
@@ -74,8 +87,9 @@ impl RequestScope {
     pub(super) fn invalidate_principal(&mut self) {
         self.refuse();
         self.subject = match std::mem::replace(&mut self.subject, Subject::Unbound) {
-            Subject::Http { key, .. } => Subject::Binding {
+            Subject::Http { key, expires, .. } => Subject::Binding {
                 key,
+                expires,
                 expected: None,
             },
             other => other,
@@ -103,12 +117,19 @@ impl RequestScope {
             subject: match &self.subject {
                 Subject::Stdio { .. } => Subject::Stdio { admitted: None },
                 Subject::Unbound => Subject::Unbound,
-                Subject::Binding { key, .. } => Subject::Binding {
+                Subject::Binding { key, expires, .. } => Subject::Binding {
                     key: key.clone(),
+                    expires: *expires,
                     expected: None,
                 },
-                Subject::Http { key, principal, .. } => Subject::Http {
+                Subject::Http {
+                    key,
+                    expires,
+                    principal,
+                    ..
+                } => Subject::Http {
                     key: key.clone(),
+                    expires: *expires,
                     principal: principal.clone(),
                     admitted: None,
                 },

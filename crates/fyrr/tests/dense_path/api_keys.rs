@@ -844,31 +844,24 @@ impl Boundary {
         }
     }
 
-    /// Holds the `nth` head read from now on, until the gate is released.
-    fn hold_head_read(&self, nth: usize) -> RequestGate {
-        let seen = AtomicUsize::new(0);
-        let (gate, hook) = RequestGate::new(move |request, _, after| {
-            !after
-                && request.starts_with("GET ")
-                && request.contains("/head.json ")
-                && seen.fetch_add(1, Ordering::SeqCst) + 1 == nth
-        });
-        *self.held.lock().unwrap() = Some(hook);
-        gate
+    /// Holds the next response at the point where the reader hands it to the
+    /// transport, after it is fully built and its last expiry check is the only
+    /// one left, until the gate is released.
+    fn hold_reply(&self) -> RequestGate {
+        self.hold(|request| request.starts_with("REPLY ") && request.contains("/handoff "))
     }
 
-    /// Waits for the reader's own periodic head check (at least every 30 s) to
-    /// finish, so that the next one is far enough off for a request to be held
-    /// without it: the held read is then the request's own.
-    async fn clean_window(&self) {
-        let before = self.reads.load(Ordering::SeqCst);
-        for _ in 0..700 {
-            if self.reads.load(Ordering::SeqCst) > before {
-                return self.quiet().await;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        panic!("the reader's periodic head check never ran");
+    /// Holds the next request that reaches its reranker body authorization.
+    fn hold_rerank_body(&self) -> RequestGate {
+        self.hold(|request| {
+            request.starts_with("RERANK ") && request.contains("/body-authorization ")
+        })
+    }
+
+    fn hold(&self, matches: impl Fn(&str) -> bool + Send + Sync + 'static) -> RequestGate {
+        let (gate, hook) = RequestGate::new(move |request, _, after| !after && matches(request));
+        *self.held.lock().unwrap() = Some(hook);
+        gate
     }
 
     /// Waits until the reader has stopped reading on its own.
@@ -965,20 +958,19 @@ async fn api_key_expiry_applies_to_a_request_admitted_just_before_it_on_storage(
     );
     boundary.quiet().await;
 
-    // Held at the third head read of a request, which is after its admission:
-    // released unchanged, the request is served.
-    boundary.clean_window().await;
-    let gate = boundary.hold_head_read(3);
+    // Held where the finished response is handed to the transport: released
+    // unchanged, the request is served.
+    let gate = boundary.hold_reply();
     let held = call_task(&reader, &keys[0].secret, 2, "search", search.clone());
     gate.entered();
     gate.release();
     assert_eq!(roots(&held.await.unwrap()), hits);
     boundary.quiet().await;
 
-    // The same request, admitted before `expires`, is held while the clock passes
-    // it: nothing leaves, and the next request does not get past admission.
-    boundary.clean_window().await;
-    let gate = boundary.hold_head_read(3);
+    // The same request, admitted before `expires` and with its response built,
+    // is held while the clock passes it: nothing leaves, and the next request
+    // does not get past admission.
+    let gate = boundary.hold_reply();
     let held = call_task(&reader, &keys[0].secret, 3, "search", search.clone());
     gate.entered();
     fyrr_core::clock::advance(Duration::from_secs(1201)).unwrap();
@@ -1003,8 +995,7 @@ async fn api_key_expiry_applies_to_a_request_admitted_just_before_it_on_storage(
         .call(&keys[1].secret, 4, "fetch", fetch.clone())
         .await;
     assert_eq!(own["isError"], false, "{own}");
-    boundary.clean_window().await;
-    let gate = boundary.hold_head_read(3);
+    let gate = boundary.hold_reply();
     let held = call_task(&reader, &keys[1].secret, 5, "fetch", fetch.clone());
     gate.entered();
     fyrr_core::clock::advance(Duration::from_secs(300)).unwrap();
@@ -1021,6 +1012,148 @@ async fn api_key_expiry_applies_to_a_request_admitted_just_before_it_on_storage(
     );
     assert_eq!(refusal(&reader, &keys[1].secret).await.0, 401);
     drop(gate);
+    let mut reader = reader;
+    reader.stop().await;
+}
+
+/// A reranker endpoint that records every request it receives in full. The
+/// connection of the request numbered `parked` (counting from 1) is accepted
+/// and then left unread until `read` has a permit, as a slow connection setup.
+struct Reranker {
+    endpoint: String,
+    bodies: Arc<std::sync::Mutex<Vec<String>>>,
+    accepted: Arc<tokio::sync::Notify>,
+    read: Arc<tokio::sync::Semaphore>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Reranker {
+    async fn start(parked: usize) -> Self {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/rerank", socket.local_addr().unwrap());
+        let bodies: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let accepted = Arc::new(tokio::sync::Notify::new());
+        let read = Arc::new(tokio::sync::Semaphore::new(0));
+        let task = tokio::spawn({
+            let (bodies, accepted, read) = (bodies.clone(), accepted.clone(), read.clone());
+            async move {
+                for number in 1.. {
+                    let (mut connection, _) = socket.accept().await.unwrap();
+                    if number == parked {
+                        accepted.notify_one();
+                        read.acquire().await.unwrap().forget();
+                    }
+                    let mut received = Vec::new();
+                    // The request body is chunked: read to its terminating chunk,
+                    // or until the reader gives the connection up.
+                    let _ = tokio::time::timeout(Duration::from_secs(20), async {
+                        loop {
+                            let mut chunk = [0; 4096];
+                            let count = connection.read(&mut chunk).await.unwrap_or(0);
+                            if count == 0 {
+                                break;
+                            }
+                            received.extend_from_slice(&chunk[..count]);
+                            if received.ends_with(b"\r\n0\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    })
+                    .await;
+                    let text = String::from_utf8_lossy(&received).into_owned();
+                    let documents = text.matches("fixture document").count();
+                    bodies.lock().unwrap().push(text);
+                    let results: Vec<_> = (0..documents.max(1))
+                        .map(|index| json!({"index":index,"relevance_score":index as f64}))
+                        .collect();
+                    let body = json!({"data": results}).to_string();
+                    let _ = connection
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            )
+                            .as_bytes(),
+                        )
+                        .await;
+                }
+            }
+        });
+        Self {
+            endpoint,
+            bodies,
+            accepted,
+            read,
+            task,
+        }
+    }
+    fn texts(&self) -> usize {
+        self.bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|body| body.matches("fixture document").count())
+            .sum()
+    }
+}
+impl Drop for Reranker {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real HTTP MCP executable, local reranker and local storage; scripts/ci"]
+async fn api_key_expiry_while_the_reranker_connection_is_set_up_sends_no_text_on_storage() {
+    // Document text is sent to the reranker for the first request and, for the
+    // second, only its connection is set up: the reader never gets to the body.
+    let reranker = Reranker::start(2).await;
+    let keys = [Key {
+        name: "nm-rerank-q7x",
+        variable: "FYRR_TEST_API_KEY_RERANK",
+        secret: secret(41),
+        grant: expiring("usr:u1", 1200),
+    }];
+    let mut deployment = Deployment::new().await;
+    // Retrieval settings are publication policy, so both files carry them.
+    let rerank = format!(
+        "\n[namespace.rerank]\nendpoint='{}'\nmodel='fixture-rerank'\napi_key={{env='FYRR_TEST_SECRET'}}\ncandidates=10\nweight=1.0\ndeadline='300s'\nspend_limit_microusd=1000\nmax_call_cost_microusd=10\n",
+        reranker.endpoint
+    );
+    deployment.base_worker.push_str(&rerank);
+    deployment.base_commit.push_str(&rerank);
+    let published = deployment.publish(&keys);
+    assert!(published.status.success(), "{}", report(&published));
+    let boundary = Boundary::new(&deployment.worker, &deployment.root);
+    let reader = Reader::start_appended(&boundary.config, &deployment.root, &[], key_http).await;
+    let search = json!({"query":"fixture document","sources":["incremental"],"limit":5,"deadline_ms":fyrr_core::limits::mcp::MAX_DEADLINE_MS});
+    let served = reader
+        .call(&keys[0].secret, 1, "search", search.clone())
+        .await;
+    assert_eq!(served["isError"], false, "{served}");
+    assert!(reranker.texts() > 0, "the reranker received candidate text");
+    let before = reranker.texts();
+    boundary.quiet().await;
+
+    // Held at the reranker's body authorization with the connection accepted
+    // and unread, as the clock passes the key's expiry.
+    let gate = boundary.hold_rerank_body();
+    let held = call_task(&reader, &keys[0].secret, 2, "search", search.clone());
+    gate.entered();
+    tokio::time::timeout(Duration::from_secs(60), reranker.accepted.notified())
+        .await
+        .unwrap();
+    fyrr_core::clock::advance(Duration::from_secs(1201)).unwrap();
+    gate.release();
+    reranker.read.add_permits(1);
+    let refused = held.await.unwrap();
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert_eq!(
+        refused["structuredContent"]["code"],
+        "authorization_unavailable"
+    );
+    assert!(refused["structuredContent"]["hits"].is_null(), "{refused}");
+    assert_eq!(reranker.texts(), before, "no text after the key expired");
     let mut reader = reader;
     reader.stop().await;
 }
@@ -1303,6 +1436,66 @@ async fn a_reader_without_a_directory_provider_still_refuses_a_stale_published_d
             .await
             .status(),
         200
+    );
+    let mut reader = reader;
+    reader.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "real writer, HTTP MCP executable and local storage; scripts/ci"]
+async fn a_manual_directory_import_without_a_provider_withdraws_the_published_freshness_on_storage()
+{
+    let keys = [Key {
+        name: "nm-manual-q7x",
+        variable: "FYRR_TEST_API_KEY_MANUAL",
+        secret: secret(61),
+        grant: "user='http-1@example.test'",
+    }];
+    let deployment = Deployment::new().await;
+    let published = deployment.publish(&keys);
+    assert!(published.status.success(), "{}", report(&published));
+    // The deployment ran a provider: its head carries a directory timestamp.
+    let (head, _) = artifact(&deployment.commit).await;
+    assert!(head.freshness.directory.is_some());
+    let import = |config: &Path| {
+        let mut snapshot = deployment.snapshot.clone();
+        snapshot.built_at = fyrr_core::clock::now();
+        let path = deployment.root.join("manual-directory.json");
+        std::fs::write(&path, write_contract(&snapshot)).unwrap();
+        let imported = keyed(host_command(config), &keys)
+            .args(["writer", "directory", "--snapshot"])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(imported.status.success(), "{}", report(&imported));
+    };
+    // A provider is configured: the import is no proof and keeps what the
+    // provider attested.
+    import(&deployment.commit);
+    let (head, _) = artifact(&deployment.commit).await;
+    assert!(head.freshness.directory.is_some());
+    // The deployment moved to manual imports: its import attests nothing, and
+    // the old timestamp does not outlive it.
+    let manual = deployment.without_directory(&deployment.commit);
+    import(&manual);
+    let (head, _) = artifact(&manual).await;
+    assert_eq!(head.freshness.directory, None);
+    // A reader without a provider serves the namespace, however long ago the
+    // provider last pulled: the head no longer carries a directory clock.
+    let own = deployment.without_directory(&deployment.worker);
+    let boundary = Boundary::new(&own, &deployment.root);
+    let reader = Reader::start(
+        &boundary.config,
+        &deployment.root,
+        &deployment.issuer,
+        1000,
+        1000,
+    )
+    .await;
+    let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
+    assert_eq!(
+        roots(&reader.call(&keys[0].secret, 1, "search", search).await),
+        [deployment.doc(1)]
     );
     let mut reader = reader;
     reader.stop().await;

@@ -19,6 +19,18 @@
         "tier": "quick",
         "seconds": 1.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::a_refresh_outlives_its_first_caller_and_still_updates_the_cache": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::callers_share_one_refresh_and_wait_for_it": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::a_failed_refresh_does_not_suppress_the_next_one_beyond_the_interval": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::an_unbound_api_key_is_the_same_401_whatever_the_directory_or_storage_say": {
         "tier": "quick",
         "seconds": 1.0
@@ -1569,6 +1581,14 @@
         "seconds": 120.0
       },
       "full:fyrr:test:dense_path/api_keys::a_reader_without_a_directory_provider_still_refuses_a_stale_published_directory_on_storage": {
+        "tier": "full",
+        "seconds": 100.0
+      },
+      "full:fyrr:test:dense_path/api_keys::a_manual_directory_import_without_a_provider_withdraws_the_published_freshness_on_storage": {
+        "tier": "full",
+        "seconds": 100.0
+      },
+      "full:fyrr:test:dense_path/api_keys::api_key_expiry_while_the_reranker_connection_is_set_up_sends_no_text_on_storage": {
         "tier": "full",
         "seconds": 100.0
       },

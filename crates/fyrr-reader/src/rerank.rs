@@ -339,6 +339,7 @@ async fn rerank_inner(
             let admitted = reader.head.clone();
             let config_snapshot = reader.config.clone();
             let hidden_sources = reader.hidden_sources.clone();
+            let subject_expires = reader.subject_expires();
             let refused = refused_admission.clone();
             let refused_guard = refused.clone();
             let authorization = async move {
@@ -353,7 +354,9 @@ async fn rerank_inner(
                     crate::storage::read_contract(store.as_ref(), &root.join("head.json")).await?;
                 // A changed grant snapshot drops the entire candidate payload:
                 // no text from the old admission is sent, including revoked rows.
-                if current.namespace != config_snapshot.namespace.name
+                // So does a subject that expired while the connection was set up.
+                if subject_expires.is_some_and(|at| at <= fyrr_core::clock::now().timestamp())
+                    || current.namespace != config_snapshot.namespace.name
                     || current.policy != admitted.policy
                     || current.identity != admitted.identity
                     || PreparedReader::expired_sources(&config_snapshot, &current)?

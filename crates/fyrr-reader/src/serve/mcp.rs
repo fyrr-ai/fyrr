@@ -133,13 +133,26 @@ pub(super) async fn execute(
         }
         Err(code) => tool_error(code),
     };
+    // The last check: nothing built for a subject that expired while the
+    // response was sized and serialized leaves the reader.
+    #[cfg(feature = "test-store")]
+    let _ = crate::storage::test_store::boundary::request_boundary("REPLY", "handoff").await;
+    let expired = job
+        .subject
+        .as_ref()
+        .is_some_and(|s| s.expires <= fyrr_core::clock::now().timestamp());
+    let result = if expired {
+        tool_error(AuthorizationUnavailable)
+    } else {
+        result
+    };
     #[cfg(test)]
     reader.test_hooks.observe_admission(&reader, false);
     let sent = job.reply.send(result).is_ok();
     reader.execution_slot.take();
     (
         reader,
-        if successful && sent {
+        if successful && sent && !expired {
             dense.map(|completion| (completion, expires))
         } else {
             None
