@@ -37,9 +37,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   the `fyrr` executable or `python3` on `PATH`, and without one they stop
   with a message that says to install the SDK wheel of the release into a
   virtual environment and set `VIRTUAL_ENV` (the package index has
-  `fyrr-connectors` 0.1.0, built for the embedded interpreter, which this
-  fyrr cannot use; it needs the wheel of its own release, 0.1.1 or newer). A worker starts the host, so no Python runs in the process
-  that prints the message. An interpreter in the current directory is never
+  `fyrr-connectors` 0.1.0, and the 0.1.1 wheel of fyrr 0.1.1 was built for
+  the embedded interpreter like it; neither has the provider host, so this
+  fyrr cannot use them: it needs the wheel of its own release, 0.1.2 or
+  newer, and providers declare `fyrr-connectors>=0.1.2,<0.2`). A worker
+  starts the host, so no Python runs in the process that prints the message. An interpreter in the current directory is never
   run. See
   [downloadable binaries](docs/deployment.md#downloadable-binaries).
 - `fyrr-connectors` requires Python 3.13 or later instead of exactly
@@ -59,12 +61,18 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   prepared run work only while a batch is being produced, and a failed one
   raises `RuntimeError("host_callback_failed")`; an aborting provider reports
   `the provider failed`; the memory limit applies per process; cleanup after
-  an early stop has five seconds before the host is killed; `sys.argv` is
-  `['-c']` and `sys.executable` is the interpreter fyrr found; `.pth` files and
+  an early stop has five seconds in total before the host is killed, and none
+  when the conversation is out of step; `sys.argv` is
+  `['-c']` and `sys.executable` is the interpreter fyrr found; the automatic
+  `-c` entry on `sys.path` is removed, but a relative `PYTHONPATH` entry such
+  as `.` still resolves against the working directory; `.pth` files and
   `sitecustomize` run after the protocol socket is detached and inherited
-  descriptors are closed; a process forked by provider code does not hold the
-  socket; field-level Arrow metadata is refused, and an added nullable column
-  may not use a dictionary or view type.
+  descriptors are closed, and `multiprocessing` children started with `spawn`
+  or `forkserver` inherit `-S`, so they get the parent's `sys.path` but run
+  neither, and report the base prefix; a process forked by provider code,
+  including site code, does not hold the socket; the host needs `/proc`;
+  field-level Arrow metadata is refused, and an added nullable column may not
+  use a dictionary type, `string_view` or `binary_view`.
 - Content rows reach the writer as Arrow IPC streams instead of through the
   Arrow C Data Interface, which costs one copy of each batch. The writer
   inspects a stream before decoding it and refuses compression, dictionary
@@ -75,7 +83,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   starts and set in its `os.environ` before any provider code is imported,
   as before; their names are removed from the environment the host inherits,
   so they are never in its initial environment. A credential may not be named
-  `PATH`, `VIRTUAL_ENV` or anything starting with `PYTHON` or `LD_`.
+  `PATH`, `VIRTUAL_ENV` or anything starting with `PYTHON` or `LD_`, and
+  `fyrr config check` refuses such a name (and one over 256 bytes) in a
+  source's `settings` or `scope`, naming the key, instead of the host failing
+  to start.
 - The Python interpreter starts without site code, and a bootstrap built from
   built-in modules settles the descriptors first: the host holds only stdio on
   `/dev/null` and its protocol socket, which neither the provider nor a

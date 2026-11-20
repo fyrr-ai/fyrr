@@ -150,9 +150,11 @@ What the worker guarantees about what the host sends:
   makes any of them panic is a refused batch, with the same closed diagnostic
   as any other refused batch. The panic message goes to the worker's stderr,
   which is `/dev/null`.
-- Memory exhaustion is not caught: a worker or host that exhausts its memory
-  limit ends, and the supervisor reports the closed diagnostic for a worker
-  that failed, as it does for a provider that crashes.
+- Memory exhaustion is not prevented. A host that exhausts its memory limit
+  catches `MemoryError` or dies, and the worker reports `the provider failed`,
+  as it does for a provider that crashes. Only a worker that exhausts its own
+  limit ends, and the supervisor then reports the closed diagnostic for a
+  worker that failed.
 - A malformed, oversized or out-of-order frame, a host that exits early and
   a host that hangs all end in fixed diagnostic codes, never Python
   exception text, and none carries a value the host chose except a version
@@ -164,11 +166,18 @@ code, and a bootstrap that uses only built-in modules moves the protocol
 socket (its stdin) to a close-on-exec descriptor, points stdin at `/dev/null`
 and closes every other inherited descriptor, before `.pth` files,
 `sitecustomize` or any provider import run. A process that provider code
-forks closes the socket too. Stored credentials are sent after the host
-starts and set in its environment before any provider code is imported; their
-names are removed from the environment the host inherits, so they are not in
-the process's initial environment, and a credential may not be named `PATH`,
-`VIRTUAL_ENV` or anything starting with `PYTHON` or `LD_`.
+forks closes the socket too, site code included: the hook that closes it is
+registered before `site.main()`. Stored credentials are sent after the host
+starts and set in its environment before the SDK imports any provider code.
+That guarantee covers imports the SDK performs: start-up code (`.pth` files,
+`sitecustomize`) runs earlier, before the protocol begins and before the
+credentials are set, and it can see the socket only as a descriptor that no
+child inherits. The credentials' names are removed from the environment the
+host inherits, so they are not in the process's initial environment, and a
+credential may not be named `PATH`,
+`VIRTUAL_ENV` or anything starting with `PYTHON` or `LD_`, or be longer than
+256 bytes; `fyrr config check` refuses such a name where a source references
+a stored credential, naming the key.
 
 The [deployment guide](deployment.md#topology) covers reader hosts; the
 [reader settings](reader-writer.md#reader) specify mirror ownership and modes.

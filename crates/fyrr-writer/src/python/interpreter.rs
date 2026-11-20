@@ -12,9 +12,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// What to do when no usable interpreter or SDK is found. The package index has
-/// `fyrr-connectors` 0.1.0, built for the embedded interpreter of earlier
-/// fyrr versions; this fyrr needs the wheel of its own release (0.1.1 or
-/// newer), which ships with each release.
+/// `fyrr-connectors` 0.1.0, and the 0.1.1 wheel of fyrr 0.1.1 was built for the
+/// embedded interpreter too; neither works with this fyrr, which needs the wheel
+/// of its own release (0.1.2 or newer), shipped with each release.
 pub(super) const FIX: &str = "install the fyrr-connectors wheel from this fyrr release, with the \
 extras of the providers you need, into a Python 3.13+ virtual environment (for example `python3.13 \
 -m venv VENV && VENV/bin/pip install 'fyrr_connectors-<version>-py3-none-any.whl[<type>]'`), and \

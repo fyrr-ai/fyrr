@@ -16,7 +16,7 @@
 name = "fyrr-provider-markdown"
 version = "0.1.0"
 requires-python = ">=3.13"
-dependencies = ["fyrr-connectors>=0.1,<0.2"]     # the SDK series is the compatibility promise
+dependencies = ["fyrr-connectors>=0.1.2,<0.2"]   # the SDK series is the compatibility promise
 
 [project.entry-points."fyrr.connectors"]
 markdown-dir = "fyrr_provider_markdown:provider_info"   # the source `type`
@@ -226,15 +226,15 @@ whose minimum is in another series than the installed SDK, or newer than
 it, and refuses every provider when the installed `fyrr-connectors` is in
 another series than the one this build loads. `fyrr writer providers` names
 that series. Pin the dependency to one series
-(`fyrr-connectors>=0.1.1,<0.2`). Contract documents carry `major.minor` too:
+(`fyrr-connectors>=0.1.2,<0.2`). Contract documents carry `major.minor` too:
 a newer minor only adds optional fields.
 
-The package index has `fyrr-connectors` 0.1.0, which was built for the
-embedded interpreter of earlier fyrr versions and has no provider host. This
-fyrr needs the SDK wheel of its own release (0.1.1 or newer), installed from
-the release, or `[tool.uv.sources]` pointing at `connectors/` in a checkout,
-as [the example provider](../../examples/markdown-provider/pyproject.toml)
-does.
+The package index has `fyrr-connectors` 0.1.0, and fyrr 0.1.1 shipped a
+0.1.1 wheel; both were built for the embedded interpreter of earlier fyrr
+versions, have no provider host and do not work with this fyrr. This fyrr
+needs the SDK wheel of its own release (0.1.2 or newer), installed from the
+release, or `[tool.uv.sources]` pointing at `connectors/` in a checkout, as
+[the example provider](../../examples/markdown-provider/pyproject.toml) does.
 
 ## How a provider runs
 
@@ -255,10 +255,13 @@ what a provider author can observe:
   provider printed or raised.
 - **The memory limit applies per process.** `writer.worker_memory_max_bytes`
   bounds the worker and, separately, the host the provider runs in; a
-  provider that exceeds it fails with `the provider failed`.
-- **Credentials are in `os.environ` before your code is imported**, set by
-  the host from the stored credentials the source references. They are not
-  in the host's initial environment (`/proc/<pid>/environ`).
+  provider that exceeds it fails with `the provider failed` (the host catches
+  `MemoryError`, or dies, and the worker reports a provider failure).
+- **Credentials are in `os.environ` before the SDK imports your provider**,
+  set by the host from the stored credentials the source references. They are
+  not in the host's initial environment (`/proc/<pid>/environ`). Start-up code
+  (`.pth` files, `sitecustomize`) runs earlier and sees neither the
+  credentials nor an open conversation with fyrr.
 - **Descriptors.** Stdin, stdout and stderr are `/dev/null`, and nothing else
   that fyrr or its parent held open is available. Printing is allowed and is
   discarded. The protocol socket is not inherited by a process you start, and
@@ -267,20 +270,30 @@ what a provider author can observe:
   the interpreter without site code, closes what it inherited and detaches the
   socket, and only then runs what start-up normally would: `.pth` files,
   `sitecustomize` and `usercustomize`, with `PYTHONPATH` and the virtual
-  environment as usual. The current directory is not on `sys.path`. Such code
-  can observe `sys.argv == ['-c']` and a `sys.executable` that is the
-  interpreter fyrr found (`$VIRTUAL_ENV/bin/python`, a `python3` beside
-  `fyrr`, or `python3` on `PATH`).
+  environment as usual. The `-c` entry that adds the current directory to
+  `sys.path` is removed, but a relative `PYTHONPATH` entry such as `.` still
+  resolves against the working directory. Such code can observe
+  `sys.argv == ['-c']` and a `sys.executable` that is the interpreter fyrr
+  found (`$VIRTUAL_ENV/bin/python`, a `python3` beside `fyrr`, or `python3`
+  on `PATH`). The host needs `/proc`: it reads `/proc/self/fd` to find the
+  descriptors to close, and without it the host fails to start.
+- **`multiprocessing` children started with `spawn` or `forkserver` inherit
+  `-S`.** They get the parent's `sys.path`, but they do not run `.pth` hooks
+  or `sitecustomize`, and they report the base prefix, not the virtual
+  environment's.
 - **Rows carry only what the contract allows.** The host writes the batch's
   schema with the contract's two metadata entries and nothing else, and fyrr
   refuses a batch whose schema has any metadata on a field, at any level. A
-  nullable column you add must not use a dictionary or a view type
-  (`string_view`, `list_view` and so on); fyrr refuses those batches, as it
-  does compression, and a schema with more than a few dozen added fields.
-- **Cleanup has five seconds.** When fyrr stops a run before your generator is
-  exhausted (a refused batch, or any failure), it asks the host to close the
-  generator so that `finally` blocks run, and waits five seconds; then it
-  kills the host.
+  nullable column you add must not use a dictionary type, `string_view` or
+  `binary_view` (the list-view types are accepted); fyrr refuses those
+  batches, as it does compression, and a schema with more than a few dozen
+  added fields.
+- **Cleanup has five seconds in total.** When fyrr stops a run before your
+  generator is exhausted (a refused batch, or any failure), it asks the host
+  to close the generator so that `finally` blocks run. The request and the
+  whole reply share one five-second deadline; then it kills the host. When
+  the conversation with the host is out of step, fyrr skips the close request
+  and ends the host at once.
 - **A failed revision callback raises `RuntimeError("host_callback_failed")`**
   and nothing else about why; catching it and carrying on never lets the run
   count as a complete read.

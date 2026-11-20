@@ -2,8 +2,8 @@
 #   --target fyrr-reader  reader-only build: no writer, no Python
 #   --target fyrr         full build, the Python interpreter, the connector
 #                         SDK and the bundled providers (the binary itself
-#                         contains no Python and finds the interpreter's
-#                         environment through its PATH)
+#                         contains no Python and finds the interpreter next
+#                         to itself, in /usr/local/bin)
 # Build from the repository root; scripts/images builds, tests and measures
 # both. Base images are pinned by digest; both runtimes are Debian 13, like
 # the builder, so the binary's glibc matches.
