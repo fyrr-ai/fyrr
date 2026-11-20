@@ -450,8 +450,19 @@ fn schema_message(kind: &jsonschema::error::ValidationErrorKind) -> String {
             )
         }
         // The property name comes from the provider's own schema, which may
-        // carry anything: it is not shown.
-        Kind::Required { .. } => "a field the provider requires is missing".to_owned(),
+        // carry anything: it is shown only when it is a plain identifier.
+        Kind::Required { property } => match property.as_str() {
+            Some(name)
+                if name.len() <= 64
+                    && !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-')) =>
+            {
+                format!("missing field `{name}` required by the provider")
+            }
+            _ => "a field the provider requires is missing".to_owned(),
+        },
         other => format!(
             "does not match the provider's config schema ({})",
             other.keyword()
@@ -836,7 +847,7 @@ mod tests {
             "sources[0].settings.webhook_token: a secret field holds",
             "sources[0].settings.max_file_bytes: does not match the provider's config schema (type)",
             "sources[0].settings: unknown field(s) for this provider: extra",
-            "sources[0].scope: a field the provider requires is missing",
+            "sources[0].scope: missing field `root` required by the provider",
         ] {
             assert!(all.contains(wanted), "{wanted} missing from:\n{all}");
         }
