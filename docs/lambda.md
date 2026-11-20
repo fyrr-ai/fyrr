@@ -277,7 +277,8 @@ signing path. See [AWS Function URL authentication](https://docs.aws.amazon.com/
 - The trial successfully refreshed JWKS after idle reuse. Validate your
   issuer's key rotation and availability across idle periods.
 - Frozen environments cannot keep background version checks running.
-  Use `per-request`. Lambda provides no operator SIGHUP path. The reader's
+  Use `per-request`, which reads the serving head from storage when a
+  request arrives. Lambda provides no operator SIGHUP path. The reader's
   `/admin/refresh` needs a configured operator credential and an active
   invocation, including the adapter's authorization-header mapping.
 - Keep the writer as a normal scheduled job publishing to S3. The trial
