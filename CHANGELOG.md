@@ -45,8 +45,20 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   change, retired source or deleted namespace now reaches a running reader
   with its next version check, at the latest two intervals (60 s by
   default) after it was published, rather than with its next request.
-  `SIGHUP` and `POST /admin/refresh` start a check at once. In
-  `per-request` mode `metadata.stale_version` compares with that head too.
+  `SIGHUP` and `POST /admin/refresh` start a check at once.
+- **Breaking: `reader.version_check` and `reader.per_request_wait` are
+  removed** (configuration schema 6.0); a configuration that sets either is
+  refused. `reader.version_check_interval` is the one setting. The reader
+  always checks on that interval, and a reader that did not run for a
+  second or more, such as an environment frozen between requests, runs a
+  due check before it answers: requests wait up to 2 s for it. This
+  replaces the `per-request` mode, which read the serving head for every
+  request; such a reader now reads it at most once per interval and an
+  answer can lag a publication by up to one interval. The `off` mode has no
+  replacement. `identity.validity_deadline` must now cover the interval in
+  every configuration. `metadata.stale_version` is now set in every reader whenever
+  the answer comes from an older version than the head the reader last
+  read.
 - The reader's mirror reads data files in 4 KiB pages: a read of part of a
   data file fetches only the pages it lacks, instead of the whole file, and
   checks each kept page against its digest once per process before serving

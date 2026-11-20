@@ -29,8 +29,8 @@ in the [security model](security.md).
 
 `validity_deadline` must cover the longest permission/member interval or
 `identity.directory.sync_interval` (even with `provider = "none"`), plus
-`writer.commit.coalescing_timer`, a five-minute margin and, only in
-`interval` mode, `reader.version_check_interval`. `config check` prints
+`writer.commit.coalescing_timer`, a five-minute margin and
+`reader.version_check_interval`. `config check` prints
 the required value.
 
 ### `[identity.directory]`

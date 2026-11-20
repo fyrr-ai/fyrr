@@ -546,10 +546,11 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
         let result = reader.search_task(&token, 9200, 10000).await.unwrap();
         drop(unread);
         reader.stop().await;
-        let checked_config = root.join("http-per-request.toml");
-        let checked_text = std::fs::read_to_string(&config)
-            .unwrap()
-            .replace("[reader]\n", "[reader]\nversion_check='per-request'\n");
+        let checked_config = root.join("http-every-check.toml");
+        let checked_text = std::fs::read_to_string(&config).unwrap().replace(
+            "[reader]\n",
+            "# fyrr-test-version-check = every\n[reader]\n",
+        );
         std::fs::write(&checked_config, checked_text).unwrap();
         reader = Reader::start(&checked_config, &root, &issuer, 1000, 1000).await;
         while active_heads.load(Ordering::SeqCst) != 0 {
@@ -1085,7 +1086,7 @@ async fn identity_http_authentication_isolation_rate_limits_drain_and_refresh_on
         &worker,
         std::fs::read_to_string(&worker)
             .unwrap()
-            .replace("[reader]", "[reader]\nversion_check='off'"),
+            .replace("[reader]", "# fyrr-test-version-check = held\n[reader]"),
     )
     .unwrap();
     let namespace = fyrr_core::config::load(&worker)

@@ -337,7 +337,7 @@ fn values_in_the_config_file_never_leave_through_errors() {
         ),
         (
             config_with(&format!(
-                "[reader]\nversion_check = \"{}\"\n",
+                "[identity.directory]\nprovider = \"{}\"\n",
                 sentinels.mark("enum-value")
             )),
             true,

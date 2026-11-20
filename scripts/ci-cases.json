@@ -1309,6 +1309,10 @@
       "full:fyrr:test:dense_path/mirror_identity::running_reader_with_a_shared_head_check_follows_the_head_within_its_interval": {
         "tier": "full",
         "seconds": 15.0
+      },
+      "full:fyrr:test:dense_path/mirror_identity::reader_paused_past_its_version_check_answers_from_the_new_publication": {
+        "tier": "full",
+        "seconds": 15.0
       }
     },
     "backend": "local"

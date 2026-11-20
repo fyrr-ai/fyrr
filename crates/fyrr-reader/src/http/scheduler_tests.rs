@@ -8,7 +8,6 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
         .unwrap()
         .config;
     config.reader.concurrency = 1;
-    config.reader.version_check = fyrr_core::config::VersionCheck::Off;
     config.embedding.reader_live = false;
     let reader = crate::search::PreparedReader::open(&config).await.unwrap();
     let hooks = reader.test_hooks.clone();

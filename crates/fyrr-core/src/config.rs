@@ -31,7 +31,7 @@ use crate::units::{ByteSize, ConfigDuration};
 
 /// Configuration schema revision: adding a storage backend changes the URI
 /// contract beyond an optional field, so it starts a new major revision.
-pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(5, 1);
+pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(6, 0);
 
 /// Namespace IDs: lowercase letters, digits and `-`, at most 63 bytes.
 pub const NAMESPACE_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
@@ -643,14 +643,9 @@ pub struct ReaderConfig {
     /// Space left unused by generation preparation for requests and allocator overhead.
     #[serde(default = "default_reader_headroom")]
     pub memory_headroom_bytes: ByteSize,
-    /// Serving-head version check mode.
-    #[serde(default)]
-    pub version_check: VersionCheck,
+    /// How often the reader reads the serving head for a new publication.
     #[serde(default = "default_version_check_interval")]
     pub version_check_interval: ConfigDuration,
-    /// `per-request` mode: wait this long for a newer version, then serve flagged.
-    #[serde(default = "default_per_request_wait")]
-    pub per_request_wait: ConfigDuration,
     /// Upper bound on preparing a new generation (mirror sync, maps, prewarm);
     /// `writer.version_grace` must exceed it plus the maximum request deadline.
     #[serde(default = "default_max_preparation")]
@@ -700,16 +695,6 @@ pub enum RoutingStrategy {
     Exact,
     Rabitq,
     Auto,
-}
-
-/// Version check modes.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-pub enum VersionCheck {
-    #[default]
-    Interval,
-    Off,
-    PerRequest,
 }
 
 /// Writer settings: envelopes, commit, maintenance, retention.
@@ -1611,9 +1596,6 @@ fn default_directory_interval() -> ConfigDuration {
 }
 fn default_version_check_interval() -> ConfigDuration {
     ConfigDuration::from_secs(30)
-}
-fn default_per_request_wait() -> ConfigDuration {
-    ConfigDuration::from_secs(2)
 }
 fn default_max_preparation() -> ConfigDuration {
     ConfigDuration::from_mins(15)
