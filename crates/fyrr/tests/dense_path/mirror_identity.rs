@@ -100,12 +100,12 @@ async fn recreated_namespace_at_same_uri_never_serves_old_mirror_entries(backend
     std::fs::remove_dir_all(root).unwrap();
 }
 
-const KEPT: &str = "kept ledger entry of both incarnations";
+pub(super) const KEPT: &str = "kept ledger entry of both incarnations";
 const DOOMED: &str = "doomed ledger entry of the first incarnation only";
-const EXTRA: &str = "extra ledger entry that advances the first sequence";
+pub(super) const EXTRA: &str = "extra ledger entry that advances the first sequence";
 
 /// Replaces the source files and syncs them; `commit` publishes them.
-fn sync_texts(config: &Path, root: &FixtureRoot, texts: &[(&str, &str)]) {
+pub(super) fn sync_texts(config: &Path, root: &FixtureRoot, texts: &[(&str, &str)]) {
     let sources = root.join("sources");
     std::fs::remove_dir_all(&sources).unwrap();
     std::fs::create_dir_all(&sources).unwrap();
@@ -157,7 +157,7 @@ async fn export_and_delete(config: &Path, root: &FixtureRoot) {
 
 /// One search on the running reader: its publication and hits, or the
 /// refusal code.
-fn served(client: &mut super::tools::Mcp) -> Result<(String, String), String> {
+pub(super) fn served(client: &mut super::tools::Mcp) -> Result<(String, String), String> {
     let result = client.call("search", json!({"query":"ledger"}));
     if result["isError"] == true {
         return Err(result["structuredContent"]["code"]
