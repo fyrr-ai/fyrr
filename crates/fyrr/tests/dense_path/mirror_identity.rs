@@ -286,6 +286,66 @@ async fn running_reader_never_serves_a_replaced_namespace_incarnation(backend: B
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// The shipped behaviour: requests check the serving head the reader's last
+/// version check read. A running reader may answer from the publication it
+/// holds until its next check, then follows the head: to a new publication,
+/// and to a refusal once the namespace is gone.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn running_reader_with_a_shared_head_check_follows_the_head_within_its_interval() {
+    let (config, root) = setup_on(Backend::Local);
+    std::fs::write(
+        &config,
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .replace("# fyrr-test-head-check = every", "")
+            .replace("[reader]", "[reader]\nversion_check_interval = '1s'"),
+    )
+    .unwrap();
+    let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
+    root.embedding.insert_both("ledger", vector);
+    success(&config, &["writer", "namespace", "create"]);
+    sync_texts(&config, &root, &[("kept.txt", KEPT)]);
+    success(&config, &["writer", "commit"]);
+    let first = super::coordination::publication(&config).await.1;
+    let mut client = super::tools::Mcp::open(&config);
+    assert_eq!(served(&mut client).unwrap().0, first.publication_id);
+
+    sync_texts(&config, &root, &[("kept.txt", KEPT), ("extra.txt", EXTRA)]);
+    success(&config, &["writer", "commit"]);
+    let second = super::coordination::publication(&config).await.1;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        // Until the reader has switched, an answer is a refusal or comes
+        // whole from the publication it holds.
+        match served(&mut client) {
+            Ok((id, hits)) if id == second.publication_id => {
+                assert!(hits.contains(EXTRA), "{hits}");
+                break;
+            }
+            Ok((id, hits)) => {
+                assert_eq!(id, first.publication_id);
+                assert!(!hits.contains(EXTRA), "{hits}");
+            }
+            Err(_) => {}
+        }
+        assert!(std::time::Instant::now() < deadline, "never switched");
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+
+    export_and_delete(&config, &root).await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while served(&mut client) != Err("storage_unavailable".to_owned()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reader kept serving a deleted namespace"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    drop(client);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[tokio::test]
 #[ignore = "real HTTP MCP executable and local storage; scripts/ci"]
 async fn running_http_reader_never_serves_a_revoked_grant_of_a_replaced_namespace_on_local_storage()

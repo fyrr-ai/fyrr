@@ -843,6 +843,38 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::authorization_checks_share_one_head_read_per_interval": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::a_zero_interval_reads_the_head_for_every_check": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::a_fresh_head_read_is_what_checks_see_next": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::an_older_head_read_never_replaces_a_newer_one": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::a_failed_head_read_is_shared_and_not_kept": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::an_abandoned_shared_read_is_never_handed_to_a_later_check": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::checks_read_the_head_themselves_after_two_version_check_intervals": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::an_older_read_is_not_held_after_a_newer_read_failed": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::data_ranges_fetch_only_the_pages_they_lack": {
         "tier": "quick",
         "seconds": 0.05
@@ -1429,6 +1461,10 @@
       "full:fyrr:test:dense_path/durability_syncs::purged_fragments_are_durable_before_their_envelope_is_unlinked": {
         "tier": "full",
         "seconds": 10
+      },
+      "full:fyrr:test:dense_path/mirror_identity::running_reader_with_a_shared_head_check_follows_the_head_within_its_interval": {
+        "tier": "full",
+        "seconds": 15.0
       }
     },
     "backend": "local"

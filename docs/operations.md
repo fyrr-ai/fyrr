@@ -36,7 +36,7 @@ prepared in the background and activated between requests; a failed
 preparation keeps the old version and retries. A pinned version older than
 `writer.purge_window` stops serving. When the namespace at the reader's
 storage URI is deleted, a running reader refuses every request
-(`storage_unavailable`). When it is created again there, the reader refuses
+(`storage_unavailable`) from its next version check on. When it is created again there, the reader refuses
 with `authorization_unavailable` until it has prepared the new namespace's
 first publication, then switches to it without a restart, whatever
 `reader.version_check` says; it never serves the old namespace's rows.
@@ -92,7 +92,8 @@ fyrr writer source purge SOURCE_ID            # prints the plan
 fyrr writer source purge SOURCE_ID --confirm  # retires and deletes
 ```
 
-Retirement is final: every reader denies the source on its next request and
+Retirement is final: every reader denies the source from its next version
+check on (`reader.version_check_interval`) and
 the [committer](architecture.md#terms) rejects its envelopes. Purge also removes its rows, envelopes
 and cursors; each step is idempotent, so an interrupted purge is run again.
 

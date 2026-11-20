@@ -41,7 +41,8 @@ impl PreparedReader {
             query_embeddings,
             policy_cache,
             identity_cache,
-        ) = if let Some((session, mirror, cache, queries, policies, identities)) = shared {
+            head_cache,
+        ) = if let Some((session, mirror, cache, queries, policies, identities, heads)) = shared {
             (
                 session.upgrade(),
                 mirror,
@@ -49,6 +50,7 @@ impl PreparedReader {
                 queries,
                 policies,
                 identities,
+                heads,
             )
         } else {
             (
@@ -71,13 +73,14 @@ impl PreparedReader {
                 )?,
                 Arc::default(),
                 Arc::default(),
+                crate::storage::HeadCache::new(config),
             )
         };
         mirror.bind_dataset(&dataset_uri(config))?;
         let control_backend = store;
         let store = mirror.wrap("control", control_backend.clone());
-        let head: ServingHead =
-            read_contract(store.as_ref(), &root.clone().join("head.json")).await?;
+        // The generation's own head: requests of it never check an older one.
+        let head: ServingHead = head_cache.read_fresh(store.as_ref(), &root).await?;
         if head.namespace != config.namespace.name {
             return Err(AuthorizationUnavailable);
         }
@@ -122,6 +125,7 @@ impl PreparedReader {
             identity,
             policy_cache,
             identity_cache,
+            head_cache,
             scope: scope::RequestScope::new(config.reader.http.is_some()),
             admission_cache,
             admission_build_us: 0,
@@ -339,6 +343,7 @@ impl PreparedReader {
         let policy = self.policy.clone();
         let policy_cache = self.policy_cache.clone();
         let identity_cache = self.identity_cache.clone();
+        let head_cache = self.head_cache.clone();
         let identity = self.identity.clone();
         let scope = self.scope.without_admission();
         let admission_cache = self.admission_cache.clone();
@@ -388,6 +393,7 @@ impl PreparedReader {
                 hidden_sources: hidden_sources.clone(),
                 policy_cache: policy_cache.clone(),
                 identity_cache: identity_cache.clone(),
+                head_cache: head_cache.clone(),
                 policy: policy.clone(),
                 identity: identity.clone(),
                 scope: scope.clone(),
