@@ -95,7 +95,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   with `writer directory --snapshot`, is served as before by a reader with
   `provider = "none"`. A deployment whose directory writer stopped pulling
   but whose head still carries an old timestamp now gets
-  `authorization_unavailable` until the directory is pulled again.
+  `authorization_unavailable` until the directory is pulled again. A
+  deployment that moved from `keycloak`, `scim` or `snapshot` to manual
+  `writer directory --snapshot` imports under `provider = "none"` is served
+  again by running one import: such an import attests no directory freshness,
+  so it withdraws the timestamp the earlier provider left. With a provider
+  configured, an import still keeps the timestamp the provider attested.
 - The README, quickstart and software factory guide no longer store
   `FYRR_IDENTITY_KEY` in Claude Code's settings: they add the reader
   without `-e` and start Claude Code from a shell with the key exported.
