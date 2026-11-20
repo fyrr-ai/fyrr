@@ -1,0 +1,15 @@
+{
+  "name": "fyrr",
+  "description": "A session-start hook that reminds Claude Code to search fyrr first.",
+  "owner": {
+    "name": "fyrr",
+    "url": "https://fyrr.dev"
+  },
+  "plugins": [
+    {
+      "name": "fyrr",
+      "source": "./plugins/fyrr",
+      "description": "Reminds Claude Code at the start of every session to search fyrr, the company context, before it searches files or asks you. Add the fyrr MCP server separately."
+    }
+  ]
+}

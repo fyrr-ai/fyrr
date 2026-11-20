@@ -237,6 +237,25 @@ fn example_and_minimal_files_are_valid() {
     assert_eq!(errors(&partitioned), Vec::<String>::new());
     assert_eq!(partitioned.config.writer.fts_partition_memory_mb, Some(64));
     assert_eq!(partitioned.config.reader.fts_search_chunk, Some(1));
+    assert_eq!(minimal.config.reader.instructions, None);
+    assert_eq!(
+        minimal.config.reader.served_instructions(),
+        Some(fyrr_core::mcp::SERVER_INSTRUCTIONS)
+    );
+    for (setting, served) in [("\"Search first.\"", Some("Search first.")), ("\"\"", None)] {
+        let parsed = parse(&format!("{MINIMAL}\n[reader]\ninstructions = {setting}\n"))
+            .expect("instructions parse");
+        assert_eq!(errors(&parsed), Vec::<String>::new());
+        assert_eq!(parsed.config.reader.served_instructions(), served);
+    }
+    let longest = format!(
+        "{MINIMAL}\n[reader]\ninstructions = \"{}\"\n",
+        "é".repeat(4096)
+    );
+    assert_eq!(
+        errors(&parse(&longest).expect("parses")),
+        Vec::<String>::new()
+    );
     assert_eq!(
         minimal.config.reader.version_check_interval.to_string(),
         "30s"
@@ -341,6 +360,10 @@ fn cross_field_rules_are_enforced() {
     assert_error(
         "[writer]\nfts_partition_memory_mb = 1048577",
         "writer.fts_partition_memory_mb",
+    );
+    assert_error(
+        &format!("[reader]\ninstructions = \"{}\"", "x".repeat(4097)),
+        "reader.instructions",
     );
     assert_error("[reader]\nfts_search_chunk = 0", "reader.fts_search_chunk");
     assert_error(

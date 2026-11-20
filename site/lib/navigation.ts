@@ -46,6 +46,11 @@ export const navigation = [
         "software-factory.md",
         "Software factories",
         "A fleet with no one on deck. Every ship reads the same chart."
+      ],
+      [
+        "connect.md",
+        "Connect an agent",
+        "One line to come aboard. The chart room tells the crew where to look."
       ]
     ]
   ],

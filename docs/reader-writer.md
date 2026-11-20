@@ -26,6 +26,7 @@ and memory are under [advanced tuning](tuning.md#advanced-tuning).
 | `per_request_wait` | `2s` | `per-request` mode: wait this long for a newer version, then serve the old one flagged `stale_version`. |
 | `max_preparation` | `15m` | Upper bound on preparing a new generation. |
 | `max_response_bytes` | absent | 4096–16777216: budget for a serialized search result. Over it, whole hits are dropped from the end of the rank order (each query keeps at least four), then the lowest-ranked hits lose their excerpt or content; `truncated` and `omitted_bytes` report what was removed. |
+| `instructions` | absent (built-in text) | 0–4096 characters sent to MCP clients as `instructions` in the `initialize` result, on stdio and HTTP. Absent sends the [built-in text](mcp-tools.md#transport); a non-empty string replaces it; an empty string `""` sends no `instructions`. Not a secret. |
 | `http` | absent | Streamable HTTP MCP, see below. |
 
 The fixed default of eight supports eight simultaneous clients even on two-core
