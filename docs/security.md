@@ -102,25 +102,23 @@ team without an identity provider. What to know before you issue one:
   bind (unusable secret, missing or inactive user) is not in it at all.
 - **Same answer for every refusal.** An unknown, malformed, removed and
   expired key all get `401 unauthorized`. The reader looks the key's hash up
-  in its cached identity first: a hash the identity does not bind is refused
-  at once, without a storage read, and neither the directory's freshness nor
-  the state of storage changes that answer, so a caller with a random key
-  cannot learn whether the directory is stale or storage is down (`503`).
-  Only a key that is bound can be answered with `503`: that is the one
-  exception to "the same answer whatever the state of storage", because a key
-  that was bound in the reader's cached identity can receive `503` during a
-  storage outage while a key it never bound receives `401`. No key, name or
-  hash is written to logs, errors, telemetry or metrics.
-- **Garbage keys cost no storage reads.** A flood of unknown keys makes the
-  reader refresh its identity from the serving head at most once per second
-  (`API_KEY_REFRESH_INTERVAL`, one refresh at a time); every other unknown
-  key is refused from memory. The same bound is how soon a newly published
-  key becomes usable: the first request more than a second after the last
-  refresh looks at the new publication, so a key the writer published is
-  accepted within about one second of that publication reaching storage, and
-  a request in the meantime gets `401`. The refresh runs to its end even if
-  the request that started it gives up, and a request whose deadline passes
-  while it waits for the refresh gets `401`, as a malformed key does.
+  in the identity of the serving head it holds, the one its latest version
+  check read, as it does for every request, and it does so before it checks
+  the namespace or the directory's freshness. A hash the identity does not
+  bind is refused at once, and neither the directory's freshness nor the
+  state of storage changes that answer while the reader holds a head it
+  trusts, so a caller with a random key cannot learn whether the directory is
+  stale (`503`). Only a key that is bound can be answered with `503` for the
+  directory's freshness or its grants. One more `503` is the same for every
+  caller, bound or not: the held head is older than two version-check
+  intervals, the reader's own read of it fails, and no request can be
+  decided ([Freshness and revocation](#freshness-and-revocation)). No key,
+  name or hash is written to logs, errors, telemetry or metrics.
+- **Garbage keys cost no storage reads.** A request resolves its key
+  against the held head and the identity that head names, both in memory, so
+  a flood of unknown keys makes no storage request of its own. The one read
+  any request may start is the shared read of the head when the held one is
+  older than two intervals, the same for every caller.
 - **Use TLS.** The key is a bearer secret in every request. Terminate TLS in
   front of the reader as for OIDC ([HTTP boundary](http-users.md#3-start-the-writer-and-the-reader));
   never send a key over plain HTTP outside loopback. Prefer a header from a
@@ -139,27 +137,36 @@ team without an identity provider. What to know before you issue one:
   runs with the old file republishes the removed key at its next identity
   build, and the reader accepts it again. Removing the last key works like
   removing any other: the writer publishes an identity with no key bindings.
-  Once the new identity is published, the reader refuses the removed key at
-  its next request, because it reads the serving head on every request from a
-  key it has bound. A restarted reader with no `[[identity.api_keys]]` and no
-  `identity.oidc` refuses to start.
+  A restarted reader with no `[[identity.api_keys]]` and no `identity.oidc`
+  refuses to start.
+
+  A reader applies the published identity as it applies every other
+  revocation: with its next version check, at the latest two
+  `reader.version_check_interval`s (60 s by default) after the identity was
+  published. For an urgent revocation, remove the key on every host that
+  publishes identity, publish (`fyrr writer commit`, or restart `writer
+  serve`), then send `POST /admin/refresh` to each reader or `SIGHUP` to its
+  process: both start a version check at once, and the reader refuses the
+  key from its next request on. Without them the key keeps working until the
+  next check.
+- **Adding a key** takes the same time: a key published by the writer is
+  unknown to a running reader, and gets `401`, until its next version check
+  (or `SIGHUP`, or `POST /admin/refresh`), at the latest two intervals later.
 - **Expiry.** `expires` is an RFC 3339 timestamp with an offset, to the whole
-  second (a fraction is dropped). A key is expired from that second on: a
-  request is refused when the reader's clock, truncated to whole seconds, is
-  at or after the second named by `expires`, and so is a request admitted
-  before it that has not finished. The check runs again at two later points:
-  before the candidates' text is sent to an external reranker, and, once the
-  response is fully built, immediately before it is handed to the HTTP
-  transport. So no search or fetch response is handed over once `expires` has
-  passed by the reader's clock at that moment, and no reranker request body
-  is released after it. The guarantee is about that moment: bytes
-  already handed to the transport or sent to the reranker are out of the
-  reader's hands. Nothing is republished for expiry. A key added to the file
-  is served within about one second of the identity publication reaching
-  storage (the admission cache refresh bound, see above); the
-  `reader.version_check_interval` and
-  [`POST /admin/refresh`](http-users.md#http-boundary) concern content
-  versions and do not bring in an identity that changed alone.
+  second (a fraction is dropped). Unlike a removal, it takes effect at once
+  and needs no publication and no version check: the reader's own clock
+  decides. A key is expired from that second on: a request is refused when
+  the reader's clock, truncated to whole seconds, is at or after the second
+  named by `expires`, and so is a request admitted before it that has not
+  finished. The check runs again at two later points: before the candidates'
+  text is sent to an external reranker, and, once the response is fully
+  built, immediately before it is handed to the HTTP transport. So no search
+  or fetch response is handed over once `expires` has passed by the reader's
+  clock at that moment, and no reranker request body is released after it.
+  The guarantee is about that moment: bytes already handed to the transport
+  or sent to the reranker are out of the reader's hands. The published
+  binding carries the expiry, so a reader that has not yet seen an identity
+  that changed an `expires` applies the one it holds.
 
 ## Permission modes
 
@@ -198,12 +205,32 @@ plan for:
   served as before by a reader with `provider = "none"` (a snapshot imported
   by hand with `writer directory --snapshot` is not a freshness proof), and
   refused by a reader that has a directory provider configured.
-- An API key is refused from the second its `expires` names, even in a request
-  that was admitted before it, and, once removed from the configuration of
-  every writer that publishes identity, at its next request after the next
-  identity publication ([API keys](#api-keys)).
-- A retired source (`fyrr writer source retire`) is denied on every reader's
-  next request, and restore and rollback never bring it back.
+- A retired source (`fyrr writer source retire`) is denied by every reader
+  once it has read the serving head again, and restore and rollback never
+  bring it back.
+- A reader reads the serving head at every version check
+  (`reader.version_check_interval`, default and at most 30 s), `SIGHUP` and
+  `POST /admin/refresh`, and its requests check their grants against that
+  read. A published revocation, membership change, retired source or
+  deleted namespace therefore reaches a running reader with its next
+  version check, not with its next request, and at the latest two
+  intervals after it was published (60 s by default): while the reader
+  prepares a new version its checks pause, and a request then reads the
+  head itself once the held one is that old. `SIGHUP` and
+  `POST /admin/refresh` start a check at once.
+  The held head is trusted for two intervals. A request whose held head is
+  older (the version check did not run, or the host was suspended; the age
+  counts on the monotonic and the wall clock) reads the head itself, one read
+  shared by the requests that wait for it, and is refused with `503` if that
+  read fails: `storage_unavailable` over stdio, `authorization_unavailable`
+  over HTTP.
+- An API key follows the same rule. A key that is added, removed or rebound
+  by an identity publication takes effect on a running reader with its next
+  version check, at the latest two intervals after the identity is published
+  (60 s by default); `SIGHUP` and `POST /admin/refresh` apply it at once. A
+  key's `expires` is the exception: the reader's own clock refuses the key
+  from the second it names, even in a request that was admitted before it
+  ([API keys](#api-keys)).
 
 ### Source polling
 

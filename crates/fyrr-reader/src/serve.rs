@@ -99,6 +99,7 @@ struct PreparationContext {
     control_root: object_store::path::Path,
     policy_cache: crate::storage::ArtifactCache<fyrr_core::publication::PolicyArtifact>,
     identity_cache: crate::storage::ArtifactCache<fyrr_core::identity::IdentityArtifact>,
+    head_cache: crate::storage::HeadCache,
 }
 struct RequestTiming {
     arrived: Instant,

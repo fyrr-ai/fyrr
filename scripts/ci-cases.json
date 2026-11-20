@@ -15,19 +15,15 @@
         "tier": "quick",
         "seconds": 1.0
       },
-      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::an_unknown_api_key_costs_no_storage_read_beyond_one_refresh_per_interval": {
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::an_unknown_api_key_costs_no_storage_read_and_a_new_key_waits_for_the_version_check": {
         "tier": "quick",
         "seconds": 1.0
       },
-      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::a_refresh_outlives_its_first_caller_and_still_updates_the_cache": {
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::without_a_version_check_a_removed_key_is_refused_within_two_intervals": {
         "tier": "quick",
         "seconds": 1.0
       },
-      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::callers_share_one_refresh_and_wait_for_it": {
-        "tier": "quick",
-        "seconds": 1.0
-      },
-      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::a_failed_refresh_does_not_suppress_the_next_one_beyond_the_interval": {
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::a_bound_key_is_refused_with_503_when_the_held_head_is_too_old_and_unreadable": {
         "tier": "quick",
         "seconds": 1.0
       },
@@ -751,6 +747,38 @@
         "tier": "quick",
         "seconds": 0.5
       },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::authorization_checks_share_one_head_read_per_interval": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::a_zero_interval_reads_the_head_for_every_check": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::a_fresh_head_read_is_what_checks_see_next": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::an_older_head_read_never_replaces_a_newer_one": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::a_failed_head_read_is_shared_and_not_kept": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::an_abandoned_shared_read_is_never_handed_to_a_later_check": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::checks_read_the_head_themselves_after_two_version_check_intervals": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::an_older_read_is_not_held_after_a_newer_read_failed": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::data_ranges_fetch_only_the_pages_they_lack": {
         "tier": "quick",
         "seconds": 0.05
@@ -1333,6 +1361,10 @@
       "full:fyrr:test:dense_path/durability_syncs::purged_fragments_are_durable_before_their_envelope_is_unlinked": {
         "tier": "full",
         "seconds": 10
+      },
+      "full:fyrr:test:dense_path/mirror_identity::running_reader_with_a_shared_head_check_follows_the_head_within_its_interval": {
+        "tier": "full",
+        "seconds": 15.0
       }
     },
     "backend": "local"
@@ -1575,6 +1607,10 @@
       "full:fyrr:test:dense_path/api_keys::removing_the_last_api_key_publishes_no_binding_and_refuses_the_key_on_storage": {
         "tier": "full",
         "seconds": 90.0
+      },
+      "full:fyrr:test:dense_path/api_keys::a_removed_api_key_is_refused_within_two_version_check_intervals_without_a_refresh_on_storage": {
+        "tier": "full",
+        "seconds": 100.0
       },
       "full:fyrr:test:dense_path/api_keys::garbage_api_keys_cost_no_storage_reads_and_hide_a_stale_directory_on_storage": {
         "tier": "full",

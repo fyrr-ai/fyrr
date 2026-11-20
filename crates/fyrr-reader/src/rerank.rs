@@ -337,6 +337,7 @@ async fn rerank_inner(
             let store = reader.control_store.clone();
             let root = reader.control_root.clone();
             let admitted = reader.head.clone();
+            let heads = reader.head_cache.clone();
             let config_snapshot = reader.config.clone();
             let hidden_sources = reader.hidden_sources.clone();
             let subject_expires = reader.subject_expires();
@@ -350,8 +351,7 @@ async fn rerank_inner(
                 )
                 .await
                 .map_err(|_| StorageUnavailable)?;
-                let current: fyrr_core::publication::ServingHead =
-                    crate::storage::read_contract(store.as_ref(), &root.join("head.json")).await?;
+                let current = heads.read(&store, &root).await?;
                 // A changed grant snapshot drops the entire candidate payload:
                 // no text from the old admission is sent, including revoked rows.
                 // So does a subject that expired while the connection was set up.

@@ -34,6 +34,7 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
     let context = PreparationContext {
         policy_cache: template.policy_cache.clone(),
         identity_cache: template.identity_cache.clone(),
+        head_cache: template.head_cache.clone(),
         control_backend: template.control_backend.clone(),
         control_root: template.control_root.clone(),
         reranker: template.reranker.clone(),

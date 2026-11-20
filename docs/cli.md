@@ -67,7 +67,7 @@ The writer runs every provider in isolated `__worker` child processes. The
 | `writer verify` | Scans the pinned publication completely: logical keys, document state, revisions, finite nonzero vectors, index coverage. Reports `incompatible_index` when index kinds, coverage or retrieval policy do not match. A missing readers index remains `readers_index_missing`. Needs only namespace storage. |
 | `writer restore PUBLICATION` | Publishes a new fenced version from a retained publication, with the current policy, identity, permissions and tombstones. |
 | `writer rollback` | Restores the preceding retained publication. |
-| `writer source retire SOURCE` | Denies the source to every reader on its next request and rejects its further envelopes. Final; kept by restore. |
+| `writer source retire SOURCE` | Denies the source to every reader from its next version check on and rejects its further envelopes. Final; kept by restore. |
 | `writer source purge SOURCE [--confirm]` | Without `--confirm` prints the plan (rows, envelopes, cursors). With it retires the source and deletes its rows, state, envelopes and cursors; each step is idempotent, so an interrupted purge is run again. |
 | `writer directory --snapshot FILE` | Publishes a complete hashed directory snapshot under the namespace lease. Does not attest directory freshness. |
 | `writer credential --name NAME --from-env VARIABLE` | Stores the variable's value as an encrypted credential record under the namespace lease; `[writer.credentials]` maps a provider's environment reference to it. |

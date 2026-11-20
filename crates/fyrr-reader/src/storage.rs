@@ -23,6 +23,169 @@ mod diagnostics;
 /// One digest-verified immutable artifact shared by a serving generation.
 pub(crate) type ArtifactCache<T> = Arc<tokio::sync::Mutex<Option<(GenerationPointer, Arc<T>)>>>;
 
+/// The serving head as one reader last read it, shared by the authorization
+/// checks of all its requests.
+///
+/// Every request compares its grants with the head before it starts and
+/// before it answers. Read from storage each time, that is two requests per
+/// query whatever the mirror holds. The reader already reads the head every
+/// `reader.version_check_interval` to find new publications, and for a
+/// refresh, SIGHUP and the opening of a generation; requests check the head
+/// those reads returned. A published change of grants therefore reaches a
+/// reader with its next version check.
+///
+/// A check reads the head itself only when the held one is older than two
+/// intervals: the version check did not run, or the host was suspended (its
+/// age counts on the monotonic clock and on the wall clock). Such checks
+/// share one read, run on its own task, and its outcome: no lock is held
+/// across the request, and a failure is given to the checks that waited for
+/// it and then forgotten. The held head is always the one whose read started
+/// last, so a slower, older read never replaces a newer one, and a generation
+/// opened from a fresh read never meets an older head here.
+#[derive(Debug, Clone)]
+pub(crate) struct HeadCache {
+    max_age: std::time::Duration,
+    state: Arc<std::sync::Mutex<HeadState>>,
+}
+#[derive(Debug, Default)]
+struct HeadState {
+    held: Option<HeldHead>,
+    /// When the latest finished read started, whether it succeeded or not:
+    /// a read that started earlier is never held or handed out after it.
+    latest: Option<tokio::time::Instant>,
+    /// The shared read in flight and when it was started. Its task removes
+    /// it when it ends, so a finished read is never handed to a later check.
+    reading: Option<(tokio::time::Instant, SharedHeadRead)>,
+}
+#[derive(Debug, Clone)]
+struct HeldHead {
+    started: tokio::time::Instant,
+    started_at: chrono::DateTime<chrono::Utc>,
+    head: fyrr_core::publication::ServingHead,
+}
+/// A head read and the instant it started.
+type HeadRead = (
+    tokio::time::Instant,
+    Result<fyrr_core::publication::ServingHead, StorageError>,
+);
+type SharedHeadRead = futures::future::Shared<futures::future::BoxFuture<'static, HeadRead>>;
+impl HeadCache {
+    /// The scheduler checks for a new version at least every 30 s.
+    const CHECK_INTERVAL_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+
+    pub(crate) fn new(config: &Config) -> Self {
+        #[cfg(feature = "test-store")]
+        if test_store::head_check_every() {
+            return Self::with_interval(std::time::Duration::ZERO);
+        }
+        let interval = config.reader.version_check_interval.as_duration();
+        Self::with_interval(2 * interval.min(Self::CHECK_INTERVAL_MAX))
+    }
+    /// A zero age reads the head for every check; only test suites ask for it.
+    pub(crate) fn with_interval(max_age: std::time::Duration) -> Self {
+        Self {
+            max_age,
+            state: Arc::default(),
+        }
+    }
+    fn young(&self, held: &HeldHead) -> bool {
+        let wall = fyrr_core::clock::now().signed_duration_since(held.started_at);
+        held.started.elapsed() < self.max_age && wall.to_std().is_ok_and(|age| age < self.max_age)
+    }
+    /// The head for an authorization check: the held one while it is younger
+    /// than two intervals, otherwise one read shared with concurrent checks.
+    pub(crate) async fn read(
+        &self,
+        store: &Arc<dyn ObjectStore>,
+        root: &Path,
+    ) -> Result<fyrr_core::publication::ServingHead, StorageError> {
+        if self.max_age.is_zero() {
+            return read_contract(store.as_ref(), &root.clone().join("head.json")).await;
+        }
+        let reading = {
+            let mut state = crate::sync::lock(&self.state);
+            if let Some(held) = state.held.as_ref()
+                && self.young(held)
+            {
+                return Ok(held.head.clone());
+            }
+            match &state.reading {
+                Some((_, reading)) => reading.clone(),
+                None => {
+                    let started = tokio::time::Instant::now();
+                    let (cache, store, root) = (self.clone(), store.clone(), root.clone());
+                    // Its own task: no waiting check has to poll it, and a
+                    // cancelled check does not cancel the read of the others.
+                    let task = tokio::spawn(async move {
+                        let outcome = cache.fresh(store.as_ref(), &root).await;
+                        let mut state = crate::sync::lock(&cache.state);
+                        if state.reading.as_ref().is_some_and(|(at, _)| *at == started) {
+                            state.reading = None;
+                        }
+                        outcome
+                    });
+                    let reading =
+                        futures::FutureExt::shared(futures::FutureExt::boxed(async move {
+                            task.await
+                                .unwrap_or((started, Err(StorageError::StorageUnavailable)))
+                        }));
+                    state.reading = Some((started, reading.clone()));
+                    reading
+                }
+            }
+        };
+        let (read_started, outcome) = reading.clone().await;
+        let mut state = crate::sync::lock(&self.state);
+        // A task that panicked or was shut down did not remove its read.
+        if state
+            .reading
+            .as_ref()
+            .is_some_and(|(_, current)| current.ptr_eq(&reading))
+        {
+            state.reading = None;
+        }
+        // A read that started after this one has finished: its head is the
+        // newer one, and if it failed this outcome is not to be trusted.
+        match state.held.as_ref() {
+            Some(held) if held.started >= read_started && self.young(held) => Ok(held.head.clone()),
+            _ if state.latest.is_some_and(|latest| latest > read_started) => {
+                Err(StorageError::StorageUnavailable)
+            }
+            _ => outcome,
+        }
+    }
+    /// Reads the head from storage and holds it for the checks of requests.
+    /// A version check, a refresh, SIGHUP and the opening of a generation
+    /// read here, so requests never see an older head than they did. A
+    /// failed read drops a head whose read started earlier.
+    pub(crate) async fn read_fresh(
+        &self,
+        store: &dyn ObjectStore,
+        root: &Path,
+    ) -> Result<fyrr_core::publication::ServingHead, StorageError> {
+        self.fresh(store, root).await.1
+    }
+    /// `read_fresh` with the instant its read started.
+    async fn fresh(&self, store: &dyn ObjectStore, root: &Path) -> HeadRead {
+        let (started, started_at) = (tokio::time::Instant::now(), fyrr_core::clock::now());
+        let outcome: Result<fyrr_core::publication::ServingHead, _> =
+            read_contract(store, &root.clone().join("head.json")).await;
+        if self.max_age.is_zero() {
+            return (started, outcome);
+        }
+        let mut state = crate::sync::lock(&self.state);
+        if state.latest.is_none_or(|latest| latest <= started) {
+            state.latest = Some(started);
+            state.held = outcome.as_ref().ok().map(|head| HeldHead {
+                started,
+                started_at,
+                head: head.clone(),
+            });
+        }
+        (started, outcome)
+    }
+}
+
 #[cfg(all(feature = "test-store", not(debug_assertions)))]
 compile_error!("test-store must not be enabled in shipping builds");
 #[cfg(feature = "test-store")]

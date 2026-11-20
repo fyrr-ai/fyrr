@@ -374,6 +374,40 @@ async fn refusal(reader: &Reader, token: &str) -> (u16, String, Option<String>) 
     (status, response.text().await.unwrap(), challenge)
 }
 
+/// The suites ask a reader for a head read at every authorization check, so
+/// that a request right after a publication sees it. A reader as it ships does
+/// not: it checks the head its last version check read. This is `config` for
+/// that reader.
+fn shipped(config: &Path, root: &Path) -> PathBuf {
+    let text = std::fs::read_to_string(config).unwrap();
+    assert!(text.contains("# fyrr-test-head-check = every"));
+    let name = format!("shipped-{}", config.file_name().unwrap().to_string_lossy());
+    let path = root.join(name);
+    std::fs::write(&path, text.replace("# fyrr-test-head-check = every", "")).unwrap();
+    path
+}
+
+/// What an operator does after publishing: `POST /admin/refresh` makes the
+/// reader read the serving head and apply the identity in it. The route allows
+/// one refresh every five seconds.
+async fn refresh(reader: &Reader) {
+    for _ in 0..30 {
+        let response = reader
+            .client
+            .post(format!("{}/admin/refresh", reader.base))
+            .bearer_auth("owned-http-operator-canary")
+            .send()
+            .await
+            .unwrap();
+        match response.status().as_u16() {
+            200 => return,
+            429 => tokio::time::sleep(Duration::from_secs(1)).await,
+            status => panic!("refresh answered {status}"),
+        }
+    }
+    panic!("refresh was rate limited for 30 s");
+}
+
 #[tokio::test]
 #[ignore = "real HTTP MCP executable and local storage; scripts/ci"]
 async fn api_key_http_isolation_expiry_revocation_limits_and_oidc_coexistence_on_storage() {
@@ -436,7 +470,8 @@ async fn api_key_http_isolation_expiry_revocation_limits_and_oidc_coexistence_on
 
     // A deployment with API keys and no OIDC starts and serves. The reader has
     // none of the secrets in its environment.
-    let mut reader = Reader::start_appended(&worker, &root, &[], |address, base| {
+    let shipped_config = shipped(&worker, &root);
+    let mut reader = Reader::start_appended(&shipped_config, &root, &[], |address, base| {
         format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\noperator_credential={{env='FYRR_HTTP_OPERATOR'}}\nuser_requests_per_minute=1000\ngroup_requests_per_minute=1000\n")
     })
     .await;
@@ -593,7 +628,8 @@ async fn api_key_http_isolation_expiry_revocation_limits_and_oidc_coexistence_on
         200
     );
 
-    // Removing a key and republishing the identity refuses it on the next request.
+    // Removing a key and republishing the identity refuses it once the reader
+    // has read the new head: an operator refreshes the reader to make that now.
     assert_eq!(
         reader
             .rpc(&keys[1].secret, 40, "tools/list", json!({}))
@@ -612,6 +648,7 @@ async fn api_key_http_isolation_expiry_revocation_limits_and_oidc_coexistence_on
         .output()
         .unwrap();
     assert!(revoked.status.success(), "{}", report(&revoked));
+    refresh(&reader).await;
     assert_eq!(refusal(&reader, &keys[1].secret).await, wrong, "revoked");
     assert_eq!(
         reader
@@ -781,6 +818,16 @@ struct Boundary {
 }
 impl Boundary {
     fn new(config: &Path, root: &Path) -> Self {
+        Self::build(config, root, false)
+    }
+
+    /// A boundary in front of a reader as it ships: no head read at every
+    /// authorization check.
+    fn shipped(config: &Path, root: &Path) -> Self {
+        Self::build(config, root, true)
+    }
+
+    fn build(config: &Path, root: &Path, shipped: bool) -> Self {
         let loaded = fyrr_core::config::load(config).unwrap();
         let target = loaded
             .config
@@ -825,8 +872,11 @@ impl Boundary {
             Some(hook),
         );
         // No mirror: every search reads the store, so a request can be held there.
-        let text = std::fs::read_to_string(config)
-            .unwrap()
+        let mut text = std::fs::read_to_string(config).unwrap();
+        if shipped {
+            text = text.replace("# fyrr-test-head-check = every", "");
+        }
+        let text = text
             .replace(&target, &endpoint)
             .replace(
                 "[reader]",
@@ -1193,7 +1243,13 @@ async fn removing_the_last_api_key_publishes_no_binding_and_refuses_the_key_on_s
         format!("{}{tables}", deployment.base_worker),
     )
     .unwrap();
-    let reader = Reader::start_appended(&deployment.worker, &deployment.root, &[], key_http).await;
+    let reader = Reader::start_appended(
+        &shipped(&deployment.worker, &deployment.root),
+        &deployment.root,
+        &[],
+        key_http,
+    )
+    .await;
     let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
     assert_eq!(
         roots(
@@ -1231,7 +1287,8 @@ async fn removing_the_last_api_key_publishes_no_binding_and_refuses_the_key_on_s
         .output()
         .unwrap();
     assert!(status.status.success(), "{}", report(&status));
-    // The running reader refuses the key on its next request.
+    // The running reader refuses the key once an operator has refreshed it.
+    refresh(&reader).await;
     assert_eq!(refusal(&reader, &keys[0].secret).await.0, 401);
     // `config check` says what a restarted reader would do, and the reader does it.
     let check = worker_command(&deployment.commit)
@@ -1250,6 +1307,70 @@ async fn removing_the_last_api_key_publishes_no_binding_and_refuses_the_key_on_s
         .unwrap();
     assert_eq!(start.status.code(), Some(78), "{}", report(&start));
     let mut reader = reader;
+    reader.stop().await;
+}
+
+/// The rule without an operator: a reader that is not refreshed applies a
+/// published removal by itself, within two version-check intervals.
+#[tokio::test]
+#[ignore = "real writer, HTTP MCP executable and local storage; scripts/ci"]
+async fn a_removed_api_key_is_refused_within_two_version_check_intervals_without_a_refresh_on_storage()
+ {
+    let keys = [
+        Key {
+            name: "nm-stays-q7x",
+            variable: "FYRR_TEST_API_KEY_STAYS",
+            secret: secret(81),
+            grant: "readers=['usr:u1']",
+        },
+        Key {
+            name: "nm-goes-q7x",
+            variable: "FYRR_TEST_API_KEY_GOES",
+            secret: secret(82),
+            grant: "readers=['usr:u2']",
+        },
+    ];
+    let deployment = Deployment::new().await;
+    let published = deployment.publish(&keys);
+    assert!(published.status.success(), "{}", report(&published));
+    let config = shipped(&deployment.worker, &deployment.root);
+    std::fs::write(
+        &config,
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .replace("[reader]", "[reader]\nversion_check_interval='1s'"),
+    )
+    .unwrap();
+    let mut reader = Reader::start_appended(&config, &deployment.root, &[], key_http).await;
+    let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
+    for (key, doc) in [(&keys[0], 1), (&keys[1], 2)] {
+        assert_eq!(
+            roots(&reader.call(&key.secret, 1, "search", search.clone()).await),
+            [deployment.doc(doc)]
+        );
+    }
+    let published = deployment.publish(&keys[..1]);
+    assert!(published.status.success(), "{}", report(&published));
+    let removed = std::time::Instant::now();
+    // Two intervals are two seconds; the rest is the scheduler's and the
+    // machine's slack.
+    let wrong = refusal(&reader, &secret(999)).await;
+    while refusal(&reader, &keys[1].secret).await != wrong {
+        assert!(
+            removed.elapsed() < Duration::from_secs(20),
+            "the removed key was still served {:?} after its removal was published",
+            removed.elapsed()
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(
+        roots(
+            &reader
+                .call(&keys[0].secret, 2, "search", search.clone())
+                .await
+        ),
+        [deployment.doc(1)]
+    );
     reader.stop().await;
 }
 
@@ -1273,7 +1394,7 @@ async fn garbage_api_keys_cost_no_storage_reads_and_hide_a_stale_directory_on_st
     let deployment = Deployment::new().await;
     let published = deployment.publish(&keys[..1]);
     assert!(published.status.success(), "{}", report(&published));
-    let boundary = Boundary::new(&deployment.worker, &deployment.root);
+    let boundary = Boundary::shipped(&deployment.worker, &deployment.root);
     let reader = Reader::start_appended(&boundary.config, &deployment.root, &[], key_http).await;
     let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
     assert_eq!(
@@ -1286,8 +1407,9 @@ async fn garbage_api_keys_cost_no_storage_reads_and_hide_a_stale_directory_on_st
     );
     boundary.quiet().await;
 
-    // A flood of well-shaped keys nobody bound: each is the same 401, and the
-    // reader looks at storage once per refresh interval, not once per key.
+    // A flood of well-shaped keys nobody bound: each is the same 401 and none
+    // reads storage. The reader's own version check, once per 30 s at most, is
+    // the only read a quiet reader makes.
     let wrong = refusal(&reader, &secret(900)).await;
     assert_eq!(wrong.0, 401);
     boundary.quiet().await;
@@ -1296,16 +1418,18 @@ async fn garbage_api_keys_cost_no_storage_reads_and_hide_a_stale_directory_on_st
     for n in 0..60 {
         assert_eq!(refusal(&reader, &secret(1000 + n)).await, wrong);
     }
-    let seconds = started.elapsed().as_secs() as usize;
+    let checks = 1 + started.elapsed().as_secs() as usize / 30;
     let reads = boundary.reads.load(Ordering::SeqCst) - before;
-    // One refresh is a head read and, when it changed, the identity artifact.
     assert!(
-        reads <= 2 * (seconds + 1),
-        "{reads} storage reads for 60 unknown keys in {seconds}s"
+        reads <= 3 * checks,
+        "{reads} storage reads for 60 unknown keys in {:?}",
+        started.elapsed()
     );
-    // A key the identity binds is checked against the head on every request.
+    // A key the identity binds is checked against the held head, so it reads
+    // nothing either.
     boundary.quiet().await;
     let before = boundary.reads.load(Ordering::SeqCst);
+    let started = std::time::Instant::now();
     for id in 0..5 {
         assert_eq!(
             reader
@@ -1315,33 +1439,32 @@ async fn garbage_api_keys_cost_no_storage_reads_and_hide_a_stale_directory_on_st
             200
         );
     }
-    assert!(boundary.reads.load(Ordering::SeqCst) - before >= 5);
+    let checks = 1 + started.elapsed().as_secs() as usize / 30;
+    let reads = boundary.reads.load(Ordering::SeqCst) - before;
+    assert!(
+        reads <= 3 * checks,
+        "{reads} storage reads for 5 requests of a bound key"
+    );
 
-    // A key published while the reader runs is usable within about a second.
+    // A key published while the reader runs is unknown to it until its next
+    // version check; an operator makes that now.
     let published = deployment.publish(&keys);
     assert!(published.status.success(), "{}", report(&published));
-    let added = std::time::Instant::now();
-    loop {
-        let status = reader
+    refresh(&reader).await;
+    assert_eq!(
+        reader
             .rpc(&keys[1].secret, 200, "tools/list", json!({}))
             .await
-            .status();
-        if status == 200 {
-            break;
-        }
-        assert_eq!(status, 401);
-        assert!(
-            added.elapsed() < Duration::from_secs(5),
-            "the new key was not admitted within the refresh bound"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+            .status(),
+        200
+    );
 
     // The directory read the head attests expires: a bound key learns that
     // (503), a caller with a random key learns nothing (the same 401).
     let (head, _) = artifact(&deployment.commit).await;
     assert!(head.freshness.directory.is_some());
     boundary.stale.store(true, Ordering::SeqCst);
+    refresh(&reader).await;
     assert_eq!(refusal(&reader, &secret(2000)).await, wrong);
     assert_eq!(refusal(&reader, "fyrr_key_short").await, wrong);
     let learned = refusal(&reader, &keys[0].secret).await;
@@ -1351,6 +1474,7 @@ async fn garbage_api_keys_cost_no_storage_reads_and_hide_a_stale_directory_on_st
         "{learned:?}"
     );
     boundary.stale.store(false, Ordering::SeqCst);
+    refresh(&reader).await;
     assert_eq!(
         reader
             .rpc(&keys[0].secret, 300, "tools/list", json!({}))
@@ -1521,7 +1645,13 @@ async fn a_user_key_is_refused_once_a_directory_sync_deactivates_its_user_on_sto
     let mut deployment = Deployment::new().await;
     let published = deployment.publish(&keys);
     assert!(published.status.success(), "{}", report(&published));
-    let reader = Reader::start_appended(&deployment.worker, &deployment.root, &[], key_http).await;
+    let reader = Reader::start_appended(
+        &shipped(&deployment.worker, &deployment.root),
+        &deployment.root,
+        &[],
+        key_http,
+    )
+    .await;
     let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
     for (key, doc) in [(&keys[0], 1), (&keys[1], 2)] {
         assert_eq!(
@@ -1541,6 +1671,7 @@ async fn a_user_key_is_refused_once_a_directory_sync_deactivates_its_user_on_sto
         .output()
         .unwrap();
     assert!(synced.status.success(), "{}", report(&synced));
+    refresh(&reader).await;
     // The deactivated user's key is the same 401 as any unbound one; the other works.
     let wrong = refusal(&reader, &secret(999)).await;
     assert_eq!(refusal(&reader, &keys[0].secret).await, wrong);

@@ -48,6 +48,17 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- **Revocation latency.** A request no longer reads the serving head from
+  storage for its authorization checks. It checks its grants against the
+  head the reader's latest version check read
+  (`reader.version_check_interval`, 30 s), and reads the head itself only
+  when that read is older than two intervals. A warm query then makes no
+  storage request instead of two. A published revocation, membership
+  change, retired source or deleted namespace now reaches a running reader
+  with its next version check, at the latest two intervals (60 s by
+  default) after it was published, rather than with its next request.
+  `SIGHUP` and `POST /admin/refresh` start a check at once. In
+  `per-request` mode `metadata.stale_version` compares with that head too.
 - The reader's mirror reads data files in 4 KiB pages: a read of part of a
   data file fetches only the pages it lacks, instead of the whole file, and
   checks each kept page against its digest once per process before serving
