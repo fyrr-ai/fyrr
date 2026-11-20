@@ -142,12 +142,13 @@ class Connection:
         return message
 
     def abandon(self) -> None:
-        """For a process forked by provider code: it must not hold the
-        conversation's socket. The descriptor is detached from the socket
-        object first, so that the object cannot close a reused number later.
-        Takes no lock: it runs in a child that may have inherited a held one."""
+        """For a process forked by provider code: forget the descriptor. The
+        bootstrap's at-fork hook has already closed it, before any site code
+        could fork, so the object only lets go of the number here and never
+        closes it, which could by now be another file. Takes no lock: it runs
+        in a child that may have inherited a held one."""
         with contextlib.suppress(OSError, ValueError):
-            os.close(self._sock.detach())
+            self._sock.detach()
 
     def _exact(self, count: int) -> bytes:
         chunks = bytearray()
@@ -342,7 +343,8 @@ class Host:
 
 def main(argv: list[str], protocol_fd: int) -> int:
     """Serves the worker on `protocol_fd`, the connected socket that the
-    bootstrap moved off stdin; returns only on a refusal to start."""
+    bootstrap moved off stdin and closes in every forked child; returns only
+    on a refusal to start."""
     if len(argv) != 1:
         return 2
     try:

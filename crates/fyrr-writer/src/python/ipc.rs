@@ -67,8 +67,8 @@ static FIELDS_MAX: LazyLock<usize> = LazyLock::new(|| {
 pub(super) struct Bounds {
     /// The total bytes of the batch's buffers.
     pub(super) max_bytes: u64,
-    /// The rows of the batch, where the count is limited as rows arrive.
-    pub(super) max_rows: Option<u64>,
+    /// The most rows the batch may declare.
+    pub(super) max_rows: u64,
 }
 
 /// Why a stream was refused. None carries a value of the peer.
@@ -238,7 +238,7 @@ fn check_batch(
         return Err(Refusal::Compressed);
     }
     let rows = u64::try_from(batch.length()).map_err(|_| Refusal::Layout)?;
-    if bounds.max_rows.is_some_and(|max| rows > max) {
+    if rows > bounds.max_rows {
         return Err(Refusal::Rows);
     }
     if batch.variadicBufferCounts().is_some()
@@ -285,7 +285,7 @@ mod tests {
 
     const OPEN: Bounds = Bounds {
         max_bytes: 1 << 20,
-        max_rows: Some(100),
+        max_rows: 100,
     };
 
     /// A column of `rows` values that the contract's schema allows.
@@ -376,7 +376,7 @@ mod tests {
             decode(
                 stream(&contract(), 1),
                 Bounds {
-                    max_rows: None,
+                    max_rows: u64::MAX,
                     ..OPEN
                 }
             )
@@ -417,6 +417,39 @@ mod tests {
         // The contract allows a nullable addition, so the schema passes and the
         // dictionary batch before the rows is what is refused.
         assert_eq!(refused(stream(&schema, 1), OPEN), Refusal::Dictionary);
+    }
+
+    #[test]
+    fn only_the_variadic_view_types_are_refused_for_an_added_column() {
+        let with = |data_type: DataType| {
+            let schema = contract();
+            Schema::new_with_metadata(
+                schema
+                    .fields()
+                    .iter()
+                    .cloned()
+                    .chain([Arc::new(Field::new("extra", data_type, true))])
+                    .collect::<Vec<_>>(),
+                schema.metadata().clone(),
+            )
+        };
+        let item = Arc::new(Field::new("item", DataType::Utf8, true));
+        for data_type in [DataType::Utf8View, DataType::BinaryView] {
+            assert_eq!(
+                refused(stream(&with(data_type.clone()), 1), OPEN),
+                Refusal::Layout,
+                "{data_type:?}"
+            );
+        }
+        for data_type in [
+            DataType::ListView(item.clone()),
+            DataType::LargeListView(item),
+        ] {
+            assert!(
+                decode(stream(&with(data_type.clone()), 1), OPEN).is_ok(),
+                "{data_type:?}"
+            );
+        }
     }
 
     #[test]
@@ -685,7 +718,7 @@ mod tests {
     fn rows_and_buffer_bytes_over_the_limits_are_refused() {
         let frame = stream(&contract(), 1);
         let rows = Bounds {
-            max_rows: Some(0),
+            max_rows: 0,
             ..OPEN
         };
         assert_eq!(refused(frame.clone(), rows), Refusal::Rows);

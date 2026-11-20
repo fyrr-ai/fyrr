@@ -149,7 +149,7 @@ def start_run(peer: Peer, source: str, revisions: bool = False) -> None:
 
 def test_the_handshake_names_the_protocol_and_the_sdk(served: Peer) -> None:
     ready = served.message()
-    assert ready == {"t": "ready", "protocol": host.PROTOCOL_VERSION, "sdk_version": "0.1.1"}
+    assert ready == {"t": "ready", "protocol": host.PROTOCOL_VERSION, "sdk_version": "0.1.2"}
 
 
 def test_inventory_and_discover_answer_with_documents(served: Peer) -> None:
@@ -308,6 +308,8 @@ from fyrr_connectors import host
 ours, theirs = socket.socketpair()
 connection = host.Connection(theirs)
 fd = theirs.fileno()
+# The bootstrap closes the descriptor first; the connection only lets go of it.
+os.register_at_fork(after_in_child=lambda: os.close(fd))
 os.register_at_fork(after_in_child=connection.abandon)
 pid = os.fork()
 if pid == 0:

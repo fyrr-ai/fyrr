@@ -320,7 +320,7 @@ mod providers {
                 .to_owned()
         };
         assert!(
-            stdout.starts_with("fyrr-connectors SDK 0.1.1 (this fyrr build loads SDK series 0.1)")
+            stdout.starts_with("fyrr-connectors SDK 0.1.2 (this fyrr build loads SDK series 0.1)")
         );
         for bundled in [
             "github",
@@ -983,6 +983,26 @@ mod providers {
         )
         .unwrap();
         let marker = sandbox.output().join("pth.jsonl");
+        // Site code that forks: the child must not hold the protocol socket,
+        // although the host's own fork hook is installed after this runs.
+        let forked_marker = sandbox.output().join("pth-forked.jsonl");
+        std::fs::write(
+            site.join("forkprobe.py"),
+            format!(
+                "import json, os\n\
+                 pid = os.fork()\n\
+                 if pid == 0:\n\
+                 \x20   d = '/proc/self/fd/'\n\
+                 \x20   rows = [[int(n), os.readlink(d + n)] for n in os.listdir(d) \
+                 if os.path.lexists(d + n)]\n\
+                 \x20   open('{}', 'a').write(json.dumps(rows) + chr(10))\n\
+                 \x20   os._exit(0)\n\
+                 os.waitpid(pid, 0)\n",
+                forked_marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(site.join("forkprobe.pth"), "import forkprobe\n").unwrap();
         std::fs::write(
             site.join("probe.pth"),
             format!(
@@ -1025,6 +1045,19 @@ mod providers {
                 .collect();
             assert_eq!(sockets.len(), 1, "{held:?}");
             assert!(sockets[0].0 > 2 && sockets[0].2, "{held:?}");
+        }
+        let forked: Vec<Vec<(u64, String)>> = std::fs::read_to_string(&forked_marker)
+            .expect("the forking .pth file ran its child")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(!forked.is_empty());
+        for held in forked {
+            assert!(
+                held.iter()
+                    .all(|(_, target)| !target.starts_with("socket:")),
+                "a process forked by site code holds the protocol socket: {held:?}"
+            );
         }
     }
 

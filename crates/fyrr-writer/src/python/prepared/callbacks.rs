@@ -2,9 +2,14 @@
 use super::*;
 use crate::python::host::Revisions;
 
+/// The most roots one `lookup_revisions` may ask for.
+const MAX_ROOTS: usize = 256;
+
 /// Answers the provider's two callbacks from the namespace's published
-/// content and the pending envelopes. A storage failure fails the call and is
-/// kept, so the read cannot be attested complete afterwards.
+/// content and the pending envelopes. A storage failure, or a request the worker
+/// refuses (more than [`MAX_ROOTS`] roots), fails the call and is kept: the
+/// provider may catch the error and finish, and the read still cannot be
+/// attested complete afterwards.
 pub(super) struct RevisionCallbacks<'a> {
     config: &'a fyrr_core::config::Config,
     rt: &'a Arc<tokio::runtime::Runtime>,
@@ -33,6 +38,10 @@ impl<'a> RevisionCallbacks<'a> {
 
 impl Revisions for RevisionCallbacks<'_> {
     fn lookup(&mut self, roots: &[String]) -> Option<BTreeMap<String, String>> {
+        if roots.len() > MAX_ROOTS {
+            *crate::lock(self.failure) = Some(WriterError::HostCallbackFailed);
+            return None;
+        }
         match self.rt.block_on(lookup_revisions(
             self.config,
             self.dataset.as_deref(),

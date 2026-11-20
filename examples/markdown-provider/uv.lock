@@ -22,7 +22,7 @@ wheels = [
 
 [[package]]
 name = "fyrr-connectors"
-version = "0.1.1"
+version = "0.1.2"
 source = { directory = "../../connectors" }
 dependencies = [
     { name = "pyarrow" },

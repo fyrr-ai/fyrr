@@ -1352,6 +1352,35 @@ async fn incremental_caught_revision_failure_never_attests_on_storage() {
     }
 }
 
+/// A provider that asks for more roots than allowed, catches the refusal and
+/// finishes must not get its read attested complete.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_caught_refused_revision_request_never_attests_on_storage() {
+    for kind in [SyncKind::Permissions, SyncKind::Members] {
+        let (worker, commit, root) = fixture();
+        publish_initial(&worker, &commit, &root);
+        let staged = envelopes(&worker).await.len();
+        input(
+            &root,
+            json!({"epoch":3,"catch_revision_failure":"lookup_many"}),
+        );
+        let output = super::coordination::worker_command(&worker)
+            .args(["writer", "sync", "incremental", "--kind", kind.as_str()])
+            .output()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("revision-callback")).unwrap(),
+            "caught",
+            "{kind:?}"
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(!output.status.success(), "{kind:?}: {report}");
+        assert_eq!(report["kinds"][0]["error"], "host_callback_failed");
+        assert_eq!(envelopes(&worker).await.len(), staged, "{kind:?}");
+    }
+}
+
 #[tokio::test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
 async fn incremental_rejected_authorization_requires_complete_replacement_on_storage() {

@@ -331,6 +331,51 @@ fn secrets_in_the_file_are_refused_without_echo() {
     );
 }
 
+/// A stored credential reaches the provider host's environment, which refuses
+/// some names; `config check` must say so instead of the host failing to start.
+#[test]
+fn credential_names_the_provider_host_refuses_are_configuration_errors() {
+    let long = "L".repeat(257);
+    for name in [
+        "PATH",
+        "VIRTUAL_ENV",
+        "PYTHONPATH",
+        "PYTHON_X",
+        "LD_PRELOAD",
+        &long,
+    ] {
+        let extra = format!(
+            "[writer.credentials]\n{name} = \"stored\"\n[[sources]]\nid = \"j\"\ntype = \"jira\"\n[sources.intervals]\npermissions = \"30m\"\n[sources.settings]\ntoken = {{ env = \"{name}\" }}\n[sources.scope]\nlists = [{{ env = \"{name}\" }}]"
+        );
+        let errors = errors_with(&extra);
+        for path in ["sources[0].settings.token", "sources[0].scope.lists[0]"] {
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains(&format!("{path}:"))),
+                "{name}: expected an error at {path}, got {errors:#?}"
+            );
+        }
+        assert!(
+            errors.iter().all(|error| !error.contains("stored")),
+            "{errors:?}"
+        );
+    }
+    // Not delivered, so not refused: a reference the writer does not store
+    // is read from the process environment, and similar names are ordinary.
+    let ordinary = "[writer.credentials]\nPYTHON = \"s\"\nLDAP_TOKEN = \"s\"\nPATHS = \"s\"\n[[sources]]\nid = \"j\"\ntype = \"jira\"\n[sources.intervals]\npermissions = \"30m\"\n[sources.settings]\na = { env = \"LDAP_TOKEN\" }\nb = { env = \"PATHS\" }\nc = { env = \"PATH\" }";
+    // `PYTHON` itself starts with PYTHON and is refused once it is referenced.
+    let checked = |extra: &str| errors(&parse(&format!("{}\n{extra}", encrypted())).unwrap());
+    assert_eq!(checked(ordinary), Vec::<String>::new());
+    let refused = checked(&ordinary.replace("c = { env = \"PATH\" }", "c = { env = \"PYTHON\" }"));
+    assert!(
+        refused
+            .iter()
+            .any(|error| error.contains("sources[0].settings.c:")),
+        "{refused:#?}"
+    );
+}
+
 #[test]
 fn cross_field_rules_are_enforced() {
     assert_error("[writer]\nthreads = 0", "writer.threads");

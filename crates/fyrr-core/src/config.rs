@@ -916,6 +916,28 @@ pub fn valid_env_name(name: &str) -> bool {
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
 }
 
+/// The longest credential variable name the provider host takes.
+pub const HOST_ENV_NAME_MAX: usize = 256;
+
+/// Why the provider host refuses a stored credential under `name`, or `None`.
+/// `PATH`, `VIRTUAL_ENV`, `PYTHON*` and `LD_*` would change which interpreter,
+/// modules or libraries the host runs, and a longer name is over its limit.
+pub fn host_env_refusal(name: &str) -> Option<&'static str> {
+    if name.len() > HOST_ENV_NAME_MAX {
+        Some("a name delivered to the provider host is at most 256 bytes")
+    } else if matches!(name, "PATH" | "VIRTUAL_ENV")
+        || name.starts_with("PYTHON")
+        || name.starts_with("LD_")
+    {
+        Some(
+            "PATH, VIRTUAL_ENV and names starting with PYTHON or LD_ cannot be delivered to \
+             the provider host: they would change what it runs",
+        )
+    } else {
+        None
+    }
+}
+
 impl<'de> Deserialize<'de> for SecretRef {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct SecretVisitor;

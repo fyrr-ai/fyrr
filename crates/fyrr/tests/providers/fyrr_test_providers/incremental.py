@@ -122,6 +122,8 @@ class Incremental(Connector):
         try:
             if callback == "lookup":
                 self.context.lookup_revisions(["a"])
+            elif callback == "lookup_many":
+                self.context.lookup_revisions([f"r{n}" for n in range(257)])
             else:
                 while self.context.next_revisions():
                     pass

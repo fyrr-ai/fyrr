@@ -719,6 +719,10 @@
         "tier": "quick",
         "seconds": 0.5
       },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::the_close_deadline_covers_a_reply_that_trickles_in": {
+        "tier": "quick",
+        "seconds": 5.5
+      },
       "full:fyrr-writer:lib:fyrr_writer/python::wire::tests::a_length_over_the_bound_is_refused_before_any_payload_is_read": {
         "tier": "quick",
         "seconds": 0.0
@@ -815,6 +819,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::only_the_variadic_view_types_are_refused_for_an_added_column": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::exactly_one_schema_and_one_record_batch_are_required": {
         "tier": "quick",
         "seconds": 0.0
@@ -907,6 +915,10 @@
         "seconds": 0.001
       },
       "full:fyrr-core:test:config/config_show_redacts_inline_secrets": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-core:test:config/credential_names_the_provider_host_refuses_are_configuration_errors": {
         "tier": "quick",
         "seconds": 0.001
       },
@@ -1746,6 +1758,10 @@
       "full:fyrr:test:dense_path/incremental::incremental_caught_revision_failure_never_attests_on_storage": {
         "tier": "full",
         "seconds": 141.246
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_caught_refused_revision_request_never_attests_on_storage": {
+        "tier": "full",
+        "seconds": 30.0
       },
       "full:fyrr:test:dense_path/incremental::incremental_provider_receives_stored_revisions_through_the_host_on_storage": {
         "tier": "full",

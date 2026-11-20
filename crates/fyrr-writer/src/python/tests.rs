@@ -82,12 +82,17 @@ while True:
         if mode == "hang-on-close":
             log.write("pid %d\n" % os.getpid()); log.flush()
             time.sleep(3600)
+        if mode == "slow-close":
+            # The reply trickles in, a byte at a time, for longer than any deadline.
+            payload = json.dumps({"t": "closed"}).encode()
+            for byte in struct.pack(">cI", b"J", len(payload)) + payload:
+                sock.sendall(bytes([byte])); time.sleep(0.4)
         say({"t": "closed"})
     elif kind == "next":
         batches += 1
         if mode == "empty":
             say({"t": "done"})
-        elif mode in ("provider-error", "hang-on-close"):
+        elif mode in ("provider-error", "hang-on-close", "slow-close"):
             say({"t": "failed"})
         elif mode == "oversize":
             say({"t": "oversize"})
@@ -137,8 +142,6 @@ while True:
             reply = request()
             log.write(json.dumps(reply) + "\n"); log.flush()
             say({"t": "next_revisions"})
-            log.write(json.dumps(request()) + "\n"); log.flush()
-            say({"t": "lookup_revisions", "roots": ["r%d" % n for n in range(257)]})
             log.write(json.dumps(request()) + "\n"); log.flush()
             say({"t": "done"})
         elif mode == "unsolicited-lookup":
@@ -541,14 +544,12 @@ fn revision_requests_are_answered_while_a_batch_is_produced() {
             .is_none()
     );
     run.finish();
-    // The 257-root request is refused by the cap and never reaches the answers.
     assert_eq!(answers.0, ["lookup 2", "next"]);
     let requests = peer.requests();
     assert_eq!(
-        requests[2..5],
+        requests[2..4],
         [
             r#"{"t": "revisions", "map": {"a": "r1", "b": "r1"}}"#,
-            r#"{"t": "error"}"#,
             r#"{"t": "error"}"#,
         ]
     );
@@ -734,6 +735,25 @@ fn a_host_that_hangs_on_close_is_killed_and_leaves_no_process() {
     assert!(
         !std::path::Path::new(&format!("/proc/{pid}")).exists(),
         "the peer outlived its host"
+    );
+}
+
+#[test]
+fn the_close_deadline_covers_a_reply_that_trickles_in() {
+    // The reply needs about eight seconds, one byte per read; each read alone
+    // is far inside the five-second limit, the exchange as a whole is not.
+    let mut peer = Scripted::start("slow-close").unwrap();
+    let mut run = peer.host.run("{}", SyncKind::Content, None, false).unwrap();
+    let _ = run.next(bounds(MIB, Rows::Forbidden), None);
+    let started = std::time::Instant::now();
+    drop(run);
+    // The host is then declared broken and killed at once, not waited for.
+    drop(peer.host);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_secs(5)
+            && elapsed < std::time::Duration::from_millis(6500),
+        "{elapsed:?}"
     );
 }
 

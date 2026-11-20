@@ -6,7 +6,7 @@
 //! limits, so the supervisor's kill, timeout and orphan paths reach it. Its
 //! stdout and stderr are `/dev/null`. Its stdin is its end of the socket,
 //! which is the only descriptor it is handed. The interpreter starts without
-//! site code (`-S`), and [`bootstrap`] moves the socket to a descriptor that no
+//! site code (`-S`), and [`entry`] moves the socket to a descriptor that no
 //! child of a provider inherits, points stdin at `/dev/null` and closes every
 //! other inherited descriptor, all before `.pth` files, `sitecustomize` or any
 //! provider import can run. Passing the socket as stdin keeps it close-on-exec
@@ -64,7 +64,8 @@ pub(super) const MIN_PYTHON: (u32, u32) = (3, 13);
 ///    `/dev/null` and close every other inheritable descriptor above stderr,
 ///    found in `/proc/self/fd` with no numeric ceiling. Descriptors the
 ///    interpreter opened itself are not inheritable and stay, so objects that
-///    own them keep working;
+///    own them keep working. A hook closes the socket in every process forked
+///    from here on, so a fork by site code has already let go of it;
 /// 4. run what start-up would have run: `site.main()` (virtual environments,
 ///    the user site, `.pth` files, `sitecustomize`) and `PYTHONPATH` stay
 ///    as documented, but only now, with nothing inherited left to leak;
@@ -87,6 +88,12 @@ try:
     names = posix.listdir('/proc/self/fd')
 except OSError:
     sys.exit({EXIT_DETACH})
+def leave():
+    try:
+        posix.close(fd)
+    except OSError:
+        pass
+posix.register_at_fork(after_in_child=leave)
 for name in names:
     number = int(name)
     if number > 2 and number != fd:
@@ -115,19 +122,19 @@ sys.exit(host.main(sys.argv, fd))
 /// (JSON syntax, Arrow schema, message metadata and padding); the exact limits
 /// are checked on the declared and decoded batch and by the batch checker.
 const FRAME_SLACK: u64 = 1 << 20;
-/// A `close` runs the provider's cleanup; it gets this long.
+/// A `close` runs the provider's cleanup; the whole exchange, request and
+/// reply, gets this long.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// A host whose socket is closed exits by itself; it gets this long.
 const EXIT_GRACE: Duration = Duration::from_secs(2);
 /// Control messages and documents travel on the worker's result channel size.
 const CONTROL_MAX: u64 = RESULT_MAX_BYTES as u64;
-/// The most roots one `lookup_revisions` may ask for.
-pub(super) const MAX_ROOTS: usize = 256;
 /// What the host may set in the provider's environment: the host's own limits.
 /// A name is what a configuration may reference (see
-/// [`fyrr_core::config::valid_env_name`]) up to this length.
+/// [`fyrr_core::config::valid_env_name`]) up to
+/// [`fyrr_core::config::HOST_ENV_NAME_MAX`] bytes, and `config check` refuses
+/// the names the host refuses ([`fyrr_core::config::host_env_refusal`]).
 const ENV_MAX_VARIABLES: usize = 256;
-const ENV_MAX_NAME: usize = 256;
 const ENV_MAX_VALUE: usize = 1 << 20;
 /// Environment of the worker itself that the provider process never needs.
 const WORKER_ONLY_ENV: [&str; 3] = [
@@ -136,21 +143,16 @@ const WORKER_ONLY_ENV: [&str; 3] = [
     "FYRR_WRITER_EMBEDDING_CAP",
 ];
 
-/// The environment names a configuration may not set for the host: they would
-/// change which interpreter, libraries or modules it runs.
-fn refused_name(name: &str) -> bool {
-    matches!(name, "PATH" | "VIRTUAL_ENV") || name.starts_with("PYTHON") || name.starts_with("LD_")
-}
-
 /// Whether the host would take these credentials: the names a configuration
-/// may reference, up to [`ENV_MAX_NAME`], except [`refused_name`]; values
-/// within [`ENV_MAX_VALUE`] without a NUL. The host applies the same rules.
+/// may reference, within the host's name limit and without
+/// [`fyrr_core::config::host_env_refusal`]; values within [`ENV_MAX_VALUE`]
+/// without a NUL. The host applies the same rules, and configuration
+/// validation refuses what this would, so a start failure here is a defect.
 fn acceptable(credentials: &[(String, String)]) -> bool {
     credentials.len() <= ENV_MAX_VARIABLES
         && credentials.iter().all(|(name, value)| {
-            name.len() <= ENV_MAX_NAME
-                && fyrr_core::config::valid_env_name(name)
-                && !refused_name(name)
+            fyrr_core::config::valid_env_name(name)
+                && fyrr_core::config::host_env_refusal(name).is_none()
                 && value.len() <= ENV_MAX_VALUE
                 && !value.contains('\0')
         })
@@ -338,15 +340,27 @@ impl Host {
         }
         let python = interpreter::resolve().map_err(|_| StartError::PythonUnavailable)?;
         let names: Vec<&str> = credentials.iter().map(|(name, _)| name.as_str()).collect();
-        let mut host = Self::launch(python, &entry(MIN_PYTHON), &[], &names)?;
+        let mut host = Self::spawn(python, &entry(MIN_PYTHON), &[], &names)?;
         host.set_environment(credentials)?;
         Ok(host)
+    }
+
+    /// [`Host::spawn`] for tests, which script a peer and pass it
+    /// `environment`; a production host gets none beyond its credentials.
+    #[cfg(test)]
+    pub(super) fn launch<S: AsRef<std::ffi::OsStr>>(
+        python: std::path::PathBuf,
+        entry: &[S],
+        environment: &[(String, String)],
+        unset: &[&str],
+    ) -> Result<Self, StartError> {
+        Self::spawn(python, entry, environment, unset)
     }
 
     /// Starts `python` with the arguments `entry`, whose stdin is the socket
     /// and whose environment is this process's, without the worker's own
     /// variables and without `unset`, plus `environment`.
-    pub(super) fn launch<S: AsRef<std::ffi::OsStr>>(
+    fn spawn<S: AsRef<std::ffi::OsStr>>(
         python: std::path::PathBuf,
         entry: &[S],
         environment: &[(String, String)],
@@ -491,7 +505,27 @@ impl Host {
     }
 
     fn read(&mut self, bound: impl Fn(Kind) -> u64) -> Result<(Kind, Vec<u8>), Failure> {
-        read_frame(&mut self.stream, bound).map_err(|error| {
+        self.read_by(None, bound)
+    }
+
+    /// Like [`Host::read`], but the whole frame must arrive by `deadline`
+    /// when there is one: a peer that sends one byte at a time cannot extend it.
+    fn read_by(
+        &mut self,
+        deadline: Option<Instant>,
+        bound: impl Fn(Kind) -> u64,
+    ) -> Result<(Kind, Vec<u8>), Failure> {
+        let frame = match deadline {
+            None => read_frame(&mut self.stream, bound),
+            Some(deadline) => read_frame(
+                &mut Until {
+                    stream: &self.stream,
+                    deadline,
+                },
+                bound,
+            ),
+        };
+        frame.map_err(|error| {
             self.broken = true;
             error.into()
         })
@@ -499,7 +533,11 @@ impl Host {
 
     /// The next frame, which must be a control message.
     fn read_message(&mut self) -> Result<Message, Failure> {
-        let (kind, payload) = self.read(|kind| match kind {
+        self.read_message_by(None)
+    }
+
+    fn read_message_by(&mut self, deadline: Option<Instant>) -> Result<Message, Failure> {
+        let (kind, payload) = self.read_by(deadline, |kind| match kind {
             Kind::Control => CONTROL_MAX,
             _ => 0,
         })?;
@@ -515,15 +553,35 @@ impl Host {
     }
 
     /// Asks the host to close the running generator so that its cleanup runs.
+    /// One deadline covers the request and the whole reply.
     fn close(&mut self) {
         if self.broken {
             return;
         }
-        let _ = self.stream.set_read_timeout(Some(CLOSE_TIMEOUT));
+        let deadline = Instant::now() + CLOSE_TIMEOUT;
         let closed = self.send(&serde_json::json!({"t": "close"})).is_ok()
-            && matches!(self.read_message(), Ok(Message::Closed));
+            && matches!(self.read_message_by(Some(deadline)), Ok(Message::Closed));
         self.broken |= !closed;
         let _ = self.stream.set_read_timeout(None);
+    }
+}
+
+/// A reader of the host's socket that gives up at an absolute deadline, not
+/// after a quiet period: every read waits only for what time is left.
+struct Until<'a> {
+    stream: &'a UnixStream,
+    deadline: Instant,
+}
+
+impl std::io::Read for Until<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let left = self
+            .deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or(std::io::ErrorKind::TimedOut)?;
+        self.stream.set_read_timeout(Some(left))?;
+        std::io::Read::read(&mut self.stream, buffer)
     }
 }
 
@@ -591,7 +649,7 @@ impl Run<'_> {
                             host.broken = true;
                             return Err(Failure::Batch);
                         }
-                        Rows::AtMost(max) => Some(max),
+                        Rows::AtMost(max) => max,
                     };
                     let (kind, rows) = host.read(|kind| match kind {
                         Kind::Rows => frame_bound,
@@ -611,10 +669,8 @@ impl Run<'_> {
                         },
                     )
                     .map_err(|_| Failure::Batch)?;
-                    if crate::batch::rows_bytes(&rows).is_none_or(|bytes| bytes > bounds.max_bytes)
-                    {
-                        return Err(Failure::Batch);
-                    }
+                    // The checker measures the decoded buffers against
+                    // `max_bytes` (`batch.rs`); that is the one place that does.
                     return Ok(Some(Item::new(payload, Some(rows), host)?));
                 }
                 Kind::Control => {}
@@ -631,12 +687,7 @@ impl Run<'_> {
                     let Some(revisions) = revisions.as_deref_mut() else {
                         return Err(host.out_of_step());
                     };
-                    let reply = if roots.len() > MAX_ROOTS {
-                        None
-                    } else {
-                        revisions.lookup(&roots)
-                    };
-                    host.send(&reply.map_or_else(
+                    host.send(&revisions.lookup(&roots).map_or_else(
                         || serde_json::json!({"t": "error"}),
                         |map| serde_json::json!({"t": "revisions", "map": map}),
                     ))?;
