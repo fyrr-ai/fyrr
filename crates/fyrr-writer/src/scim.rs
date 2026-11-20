@@ -523,8 +523,13 @@ pub(crate) async fn mutate(
             )
             .await?;
             snapshot.state = Some(DirectoryStatePointer { object, digest });
-            crate::directory::publish_held(config, &snapshot, &lease, Some(snapshot.built_at))
-                .await?;
+            crate::directory::publish_held(
+                config,
+                &snapshot,
+                &lease,
+                crate::directory::DirectoryClock::Attest(snapshot.built_at),
+            )
+            .await?;
             let body = value
                 .as_ref()
                 .map_or(Value::Null, |v| response(v, request.users));

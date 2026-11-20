@@ -117,8 +117,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `snapshot` to manual imports under `provider = "none"` is served again by
   running one `writer directory --snapshot` import: such an import attests no
   directory freshness, so it withdraws the timestamp the earlier provider
-  left. With a provider configured, an import still keeps the timestamp the
-  provider attested.
+  left, in the same head write that publishes the import. The imported
+  snapshot must be built after the last provider pull (`built_at` not
+  older): otherwise the import is refused as stale
+  (`directory_snapshot_stale`) and the timestamp stays. With a provider
+  configured, an import still keeps the timestamp the provider attested.
 - The README, quickstart and software factory guide no longer store
   `FYRR_IDENTITY_KEY` in Claude Code's settings: they add the reader
   without `-e` and start Claude Code from a shell with the key exported.

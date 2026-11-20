@@ -1664,6 +1664,10 @@
         "tier": "full",
         "seconds": 48.179
       },
+      "full:fyrr:test:dense_path/identity::identity_import_withdraws_the_directory_clock_in_the_same_head_write_on_storage": {
+        "tier": "full",
+        "seconds": 40.0
+      },
       "full:fyrr:test:dense_path/identity::identity_large_grants_are_complete_and_over_limit_is_subject_local_on_storage": {
         "tier": "full",
         "seconds": 26.613
