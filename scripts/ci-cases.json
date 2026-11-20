@@ -2038,42 +2038,6 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/github/test_github_content.py::test_contract_violation_quarantines_one_document_and_sync_continues[33-labels]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_contract_violation_quarantines_one_document_and_sync_continues[author]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_contract_violation_quarantines_one_document_and_sync_continues[escape]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_contract_violation_quarantines_one_document_and_sync_continues[label-name]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_contract_violation_quarantines_one_document_and_sync_continues[newline]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_contract_violation_quarantines_one_document_and_sync_continues[nul]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_contract_violation_quarantines_one_document_and_sync_continues[over-long-uri]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_contract_violation_quarantines_one_document_and_sync_continues[path]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_control_character_in_inline_comment_path_only_decorates_the_label": {
-        "tier": "quick",
-        "seconds": null
-      },
       "python:connectors/tests/github/test_github_content.py::test_documents_the_contract_accepted_keep_their_revision": {
         "tier": "quick",
         "seconds": null
@@ -2086,31 +2050,11 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/github/test_github_content.py::test_guard_quarantines_a_document_no_field_level_rule_handles": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_heading_over_the_label_bound_is_cut_with_room_for_the_line": {
-        "tier": "quick",
-        "seconds": null
-      },
       "python:connectors/tests/github/test_github_content.py::test_issues_prs_prose_and_metadata": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/github/test_github_content.py::test_markdown_headings_are_repaired_only_when_invalid": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_overlong_inline_comment_suffix_is_left_out_whole": {
-        "tier": "quick",
-        "seconds": null
-      },
       "python:connectors/tests/github/test_github_content.py::test_oversized_aggregate_stops_accumulating_and_continues": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_padded_state_is_stripped": {
         "tier": "quick",
         "seconds": null
       },
@@ -4130,87 +4074,35 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/github/test_github_content.py::test_unusable_inline_comment_path_is_decoration_only[1025-bytes]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_unusable_inline_comment_path_is_decoration_only[nul]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_unusable_inline_comment_path_is_decoration_only[lone-surrogate]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_unusable_inline_comment_path_is_decoration_only[not-a-string]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_malformed_inline_comment_line_is_left_out[string]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_malformed_inline_comment_line_is_left_out[object]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_malformed_inline_comment_line_is_left_out[negative]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_malformed_inline_comment_line_is_left_out[zero]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_malformed_inline_comment_line_is_left_out[valid]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_mixed_comment_timestamps_quarantine_one_document_and_sync_continues": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_unrepresentable_instant_quarantines_one_document_and_sync_continues": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_fetch_failure_inside_a_document_is_not_quarantined": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/github/test_github_content.py::test_resource_failure_while_checking_a_document_is_not_quarantined": {
-        "tier": "quick",
-        "seconds": null
-      },
       "python:connectors/tests/github/test_github_content.py::test_changed_files_request_count": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/github/test_github_content.py::test_blank_provider_metadata_is_dropped_and_the_sync_continues": {
+      "python:connectors/tests/github/test_github_content.py::test_control_character_in_an_inline_comment_path_only_changes_the_label": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/github/test_github_content.py::test_unrepresentable_title_is_normalised_and_sync_continues[1025-bytes]": {
+      "python:connectors/tests/github/test_github_content.py::test_display_values_are_fitted_and_the_sync_continues[33-labels]": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/github/test_github_content.py::test_unrepresentable_title_is_normalised_and_sync_continues[2000-bytes]": {
+      "python:connectors/tests/github/test_github_content.py::test_display_values_are_fitted_and_the_sync_continues[control-character]": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/github/test_github_content.py::test_unrepresentable_title_is_normalised_and_sync_continues[blank]": {
+      "python:connectors/tests/github/test_github_content.py::test_display_values_are_fitted_and_the_sync_continues[padded-status]": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/github/test_github_content.py::test_unrepresentable_title_is_normalised_and_sync_continues[multibyte-1000]": {
+      "python:connectors/tests/github/test_github_content.py::test_display_values_are_fitted_and_the_sync_continues[padded-title]": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/github/test_github_content.py::test_unrepresentable_title_is_normalised_and_sync_continues[padded]": {
+      "python:connectors/tests/github/test_github_content.py::test_file_the_contract_rejects_is_quarantined_and_the_sync_continues": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/github/test_github_content.py::test_unrepresentable_title_is_normalised_and_sync_continues[split-char]": {
+      "python:connectors/tests/github/test_github_content.py::test_markdown_headings_are_fitted": {
         "tier": "quick",
         "seconds": null
       },

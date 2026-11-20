@@ -63,22 +63,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Fixed
 
-- The GitHub connector no longer stalls a content sync on one issue, pull
-  request or file that the connector contract rejects or whose fetched
-  values cannot be rendered (a title over 1,024 bytes, surrounding whitespace, a control
-  character, more than 32 labels, an over-long file URI, an unusable
-  timestamp). The batch used to fail before the cursor advanced, so
-  every later sync stopped on the same item. It now fits harmless values
-  (surrounding whitespace, a display title cut to 1,024 bytes, an unusable
-  inline comment path or line, which only decorate a label) and checks every
-  document before it joins a batch: one the contract still rejects is
-  quarantined and the sync continues. A title over 4,096 bytes quarantines
-  the conversation, and a control character quarantines it when it is in the
-  kept display title (the indexed text keeps the raw title). API and
-  transport failures, a response the connector refuses while reading (for
-  example a review without a usable submission time), and a batch that cannot hold even the quarantine
-  marker (`github_batch_limit`), still fail the pass; see [the GitHub connector](docs/connectors/github.md#documents).
-  No document that was already valid changes its revision.
+- A GitHub issue, PR or file the connector contract rejects no longer stalls
+  the content sync: display values are fitted (control characters to spaces,
+  cut to 1,024 bytes, at most 32 labels), anything still rejected is
+  quarantined, and the sync continues. Valid documents keep their revision.
 
 ## [0.1.1] - 2026-11-19
 

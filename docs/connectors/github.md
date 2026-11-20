@@ -79,33 +79,10 @@ listing.
 - Metadata comes from GitHub facts only: title, author, project, status and
   source timestamps; file authors and update times from the last commit at
   the pinned head. Unknown values stay null.
-- Values are fitted to the connector contract so that one bad item does not
-  stop the sync. Surrounding whitespace is dropped from the title, author,
-  label names, status and location labels; a blank title, author or status
-  stays null and a blank label is dropped. A title or file-path title
-  between 1,025 and 4,096 bytes is cut to 1,024 bytes on a character
-  boundary as the display title; the whole title stays in the indexed text.
-  A title over 4,096 bytes quarantines the conversation. Control characters
-  in a Markdown heading only decorate a section label, so they become
-  spaces, and a heading label that is too long is cut. An inline comment's
-  path and line only decorate its permalink label: control characters become
-  spaces, and a path or line that is unusable (over 1,024 bytes, containing
-  NUL, not a string, or a line that is not a positive integer) or that makes
-  the label too long is left out, keeping the comment and the pull request. A document the
-  contract already accepts is published exactly as before.
-- A document is quarantined, like any other invalid document, and the sync
-  continues when it holds a control character in the part of its title kept
-  as the display title (the indexed text keeps the raw title), in its author,
-  label name or file path, an author over 320 bytes, a label name over 256 bytes,
-  more than 32 labels (after blank ones are dropped), a source URI over
-  4,096 bytes (an exact-match key, never truncated), or anything else the
-  connector contract rejects, or when a fetched value cannot be rendered or
-  converted (a wrong type, an unusable timestamp): the connector checks every
-  document before it joins a batch. API and transport failures, a response
-  the connector refuses while reading (for example a review without a usable
-  submission time, `github_review_invalid`), and a batch that cannot hold even the
-  quarantine marker (for example fixed readers larger than the batch byte
-  limit, `github_batch_limit`), still fail the pass by design.
+- Display values (title, author, status, labels, section labels) are fitted to
+  the connector contract; the indexed text keeps the raw title. A document the
+  contract still rejects is quarantined and the sync continues; API failures
+  still fail the pass. Valid documents are published unchanged.
 - Not synced: submodules, symlinks, LFS targets, attachments,
   releases, discussions. Archived repositories stay readable.
 

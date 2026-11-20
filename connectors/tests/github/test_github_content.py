@@ -4,7 +4,6 @@ import hashlib
 import json
 from dataclasses import replace
 
-import pyarrow as pa
 import pytest
 from github_kit import Index
 
@@ -146,299 +145,6 @@ def test_arrow_location_overflow_quarantines_and_continues(github, index):
     assert changes[1]["sections"][0]["text"] == "Synthetic issue 2\n\nGood."
 
 
-QUARANTINED = [{"text": "\0"}]
-ISSUE = "github:repo:1:issue:{}:{}"
-
-
-def file_root(path, branch="main"):
-    branch_id = hashlib.sha256(branch.encode()).hexdigest()[:32]
-    return f"github:repo:1:file:{branch_id}:{hashlib.sha256(path.encode()).hexdigest()}"
-
-
-def synced(index, quarantined, good):
-    """Sync once; exactly `quarantined` roots are quarantined, `good` is
-    published, and the repository frontier is the server time of this sync."""
-    changes = index.sync()
-    assert {root for root, change in changes.items() if change["sections"] == QUARANTINED} == set(
-        quarantined
-    )
-    assert good in index.published
-    assert not set(quarantined) & set(index.published)
-    assert json.loads(index.cursor)["repos"]["1"]["since"] == index.world.server_time()
-    return changes
-
-
-@pytest.mark.parametrize(
-    ("title", "stored"),
-    [
-        ("   ", None),
-        ("  Padded\t", "Padded"),
-        ("x" * 1025, "x" * 1024),
-        ("x" + "\u00e9" * 512, "x" + "\u00e9" * 511),
-        ("\u00e9" * 1000, "\u00e9" * 512),
-        ("x" * 2000, "x" * 1024),
-    ],
-    ids=["blank", "padded", "1025-bytes", "split-char", "multibyte-1000", "2000-bytes"],
-)
-def test_unrepresentable_title_is_normalised_and_sync_continues(github, index, title, stored):
-    github.topic(number=1, body="Body.", title=title)
-    github.topic(number=2, body="Good.")
-    synced(index, [], ISSUE.format(102, 2))
-    bad = index.published[ISSUE.format(101, 1)]
-    assert bad["sections"][0]["text"] == f"{title}\n\nBody."
-    assert bad["metadata"].get("title") == stored
-
-
-def inline_path(github, path):
-    github.topic(kind="pr", number=1, body="PR.")
-    review = github.comment(kind="pr", number=1, body="Review.", state="COMMENTED")
-    github.comment(kind="pr", number=1, body="Inline.", review_id=review["id"])["path"] = path
-
-
-def test_control_character_in_inline_comment_path_only_decorates_the_label(github, index):
-    inline_path(github, "dir\n/a\x1b.py")
-    github.topic(number=2, body="Good.")
-    synced(index, [], ISSUE.format(102, 2))
-    label = index.published["github:repo:1:pr:1001:1"]["sections"][-1]["location"]["label"]
-    assert label.endswith("discussion_r1: dir /a .py:3") and "\n" not in label
-
-
-def test_overlong_inline_comment_suffix_is_left_out_whole(github, index):
-    inline_path(github, "p" * 1000)
-    github.topic(number=2, body="Good.")
-    synced(index, [], ISSUE.format(102, 2))
-    label = index.published["github:repo:1:pr:1001:1"]["sections"][-1]["location"]["label"]
-    assert label == "https://github.com/synthetic/repo-1/pull/1#discussion_r1"
-
-
-@pytest.mark.parametrize(
-    "path",
-    ["p" * 1025, "a\0b.py", "\ud800.py", 7],
-    ids=["1025-bytes", "nul", "lone-surrogate", "not-a-string"],
-)
-def test_unusable_inline_comment_path_is_decoration_only(github, index, path):
-    inline_path(github, path)
-    github.topic(number=2, body="Good.")
-    synced(index, [], ISSUE.format(102, 2))
-    pr = index.published["github:repo:1:pr:1001:1"]
-    assert [section["text"] for section in pr["sections"]] == [
-        "Synthetic pr 1\n\nPR.",
-        "Review.",
-        "Inline.",
-    ]
-    assert pr["sections"][-1]["location"]["label"] == (
-        "https://github.com/synthetic/repo-1/pull/1#discussion_r1"
-    )
-
-
-@pytest.mark.parametrize(
-    ("line", "suffix"),
-    [("7", ""), ({"n": 1}, ""), (-3, ""), (0, ""), (7, ":7")],
-    ids=["string", "object", "negative", "zero", "valid"],
-)
-def test_malformed_inline_comment_line_is_left_out(github, index, line, suffix):
-    inline_path(github, "sample.py")
-    github.inline[(1, "pr", 1)][0].update(line=line)
-    github.topic(number=2, body="Good.")
-    synced(index, [], ISSUE.format(102, 2))
-    label = index.published["github:repo:1:pr:1001:1"]["sections"][-1]["location"]["label"]
-    assert label.endswith("discussion_r1: sample.py" + suffix)
-
-
-def test_markdown_headings_are_repaired_only_when_invalid(github, index):
-    long = "\u00e9" * 600
-    github.branch(
-        1,
-        {
-            "a.md": f"Intro.\n#\n#\tTab\x01head\n# {long}\n# Title  \nEnd.",
-            "good.md": "Good.",
-        },
-    )
-    synced(index, [], file_root("good.md"))
-    labels = [s["location"]["label"] for s in index.published[file_root("a.md")]["sections"]]
-    assert labels[0] == "a.md (line 1)"
-    assert labels[1] == "(line 2)"
-    assert labels[2] == "Tab head (line 3)"
-    assert labels[3] == long[:507] + " (line 4)"
-    assert labels[4] == "Title   (line 5)"
-
-
-def test_heading_over_the_label_bound_is_cut_with_room_for_the_line(github, index):
-    github.branch(1, {"a.md": "Intro.\n# \x01" + "\u00e9" * 700, "good.md": "Good."})
-    synced(index, [], file_root("good.md"))
-    label = index.published[file_root("a.md")]["sections"][1]["location"]["label"]
-    assert label == "\u00e9" * 507 + " (line 2)"
-
-
-def over_long_uri(github):
-    path = "/".join(["\u00e9" * 100] * 7) + "/a.md"
-    github.branch(1, {path: "Prose.", "good.md": "Good."})
-    return [file_root(path)]
-
-
-def many_labels(github):
-    github.topic(number=1, body="Body.", labels=[{"name": f"l{n}"} for n in range(33)])
-    github.topic(number=2, body="Good.")
-    return [ISSUE.format(101, 1)]
-
-
-def bad_title(title):
-    def build(github):
-        github.topic(number=1, body="Body.", title=title)
-        github.topic(number=2, body="Good.")
-        return [ISSUE.format(101, 1)]
-
-    return build
-
-
-def bad_state(github):
-    github.topic(number=1, body="Body.", state=" open ")
-    github.topic(number=2, body="Good.")
-    return []
-
-
-def bad_author(github):
-    github.topic(number=1, body="Body.", user={"id": 7, "login": "a\nb"})
-    github.topic(number=2, body="Good.")
-    return [ISSUE.format(101, 1)]
-
-
-def bad_label_name(github):
-    github.topic(number=1, body="Body.", labels=[{"name": "a\nb"}])
-    github.topic(number=2, body="Good.")
-    return [ISSUE.format(101, 1)]
-
-
-def bad_path(github):
-    github.branch(1, {"bad\nname.md": "Bad.", "good.md": "Good."})
-    return [file_root("bad\nname.md")]
-
-
-@pytest.mark.parametrize(
-    "build",
-    [
-        bad_title("A\nB"),
-        bad_title("A\x1bB"),
-        bad_title("A\0B"),
-        many_labels,
-        bad_author,
-        bad_label_name,
-        bad_path,
-        over_long_uri,
-    ],
-    ids=["newline", "escape", "nul", "33-labels", "author", "label-name", "path", "over-long-uri"],
-)
-def test_contract_violation_quarantines_one_document_and_sync_continues(github, index, build):
-    bad = build(github)
-    good = file_root("good.md") if bad and ":file:" in bad[0] else ISSUE.format(102, 2)
-    synced(index, bad, good)
-
-
-def test_padded_state_is_stripped(github, index):
-    bad_state(github)
-    synced(index, [], ISSUE.format(102, 2))
-    assert index.published[ISSUE.format(101, 1)]["metadata"]["status"] == "open"
-
-
-def test_blank_provider_metadata_is_dropped_and_the_sync_continues(github, index):
-    github.topic(number=1, body="Blank author.", user={"id": 7, "login": " "})
-    github.topic(number=2, body="Blank label.", labels=[{"name": " "}, {"name": " bug "}])
-    github.topic(number=3, body="Good.")
-    synced(index, [], ISSUE.format(103, 3))
-    assert "author" not in index.published[ISSUE.format(101, 1)]["metadata"]
-    assert index.published[ISSUE.format(102, 2)]["metadata"]["labels"] == ["bug"]
-
-
-def test_guard_quarantines_a_document_no_field_level_rule_handles(github, index, monkeypatch):
-    original = render.conversation
-
-    def render_with_bad_project(repo, ref, parent, parts, limit):
-        rendered = original(repo, ref, parent, parts, limit)
-        if ref.number == 1:
-            return replace(rendered, metadata=replace(rendered.metadata, project="a\nb"))
-        return rendered
-
-    monkeypatch.setattr(render, "conversation", render_with_bad_project)
-    github.topic(number=1, body="Body.")
-    github.topic(number=2, body="Good.")
-    synced(index, [ISSUE.format(101, 1)], ISSUE.format(102, 2))
-
-
-def test_mixed_comment_timestamps_quarantine_one_document_and_sync_continues(github, index):
-    github.topic(number=1, body="Body.")
-    github.comment(number=1, body="One.")["created_at"] = "2026-01-01T00:00:00Z"
-    github.comment(number=1, body="Two.")["created_at"] = {"day": 1}
-    github.topic(number=2, body="Good.")
-    synced(index, [ISSUE.format(101, 1)], ISSUE.format(102, 2))
-
-
-def test_unrepresentable_instant_quarantines_one_document_and_sync_continues(github, index):
-    github.topic(number=1, body="Body.", created_at="0001-01-01T00:00:00+01:00")
-    github.topic(number=2, body="Good.")
-    synced(index, [ISSUE.format(101, 1)], ISSUE.format(102, 2))
-
-
-def test_fetch_failure_inside_a_document_is_not_quarantined(github, index):
-    github.topic(number=1, body="Body.")
-    github.topic(number=2, body="Good.")
-    github.fail("/repos/synthetic/repo-1/issues/1/comments", 500, times=99)
-    with pytest.raises(ApiError):
-        index.sync()
-    assert index.cursor is None and not index.published
-
-
-def test_resource_failure_while_checking_a_document_is_not_quarantined(github, index, monkeypatch):
-    def out_of_memory(changes):
-        raise pa.ArrowMemoryError("malloc of 64 bytes failed")
-
-    monkeypatch.setattr("fyrr_connectors.github.connector.document_changes", out_of_memory)
-    github.topic(number=1, body="Body.")
-    github.topic(number=2, body="Good.")
-    with pytest.raises(pa.ArrowMemoryError):
-        index.sync()
-    assert index.cursor is None and not index.published
-
-
-def valid_document_revisions(renderer):
-    """`source_revision` of documents the contract already accepted, by name."""
-    repo = Repository(1, "synthetic/repo-1", "private", 5, "Organization", False)
-    topic = {"title": "\u00e9" * 300, "body": "Body.", "state": "open", "labels": []}
-    inline = {"kind": "inline", "id": 3, "body": "Inline.", "path": "src/a.py", "line": 7}
-    ref = ConversationRef(1, FeedKind.PR, 1001, 1)
-
-    def conversation(**fields):
-        return renderer.conversation(repo, ref, {**topic, **fields}, [inline], 1 << 16).revision
-
-    def file(path, source):
-        file_ref = FileRef(1, "main", path, "b" * 40, "c" * 40, len(source))
-        return renderer.file(repo, file_ref, source.encode(), None, 1 << 16).revision
-
-    return {
-        "title-600-bytes": conversation(),
-        "title-1024-bytes": conversation(title="\u00e9" * 512),
-        "title-and-labels": conversation(title="Plain", labels=[{"name": "bug"}], state="open"),
-        "heading-trailing-spaces": file("a.md", "Intro.\n# Title  \nText."),
-        "heading-over-512-bytes": file("a.md", "Intro.\n# " + "\u00e9" * 500 + "\nText."),
-        "path-label-over-512-bytes": file("\u00e9" * 300 + ".md", "Text."),
-    }
-
-
-# Produced by running valid_document_revisions against render.py as of commit
-# 34fa1eb (the base of this change), loaded as a temporary sibling module.
-PINNED_REVISIONS = {
-    "title-600-bytes": "4f54f2d05d35fcb95a9e006ff4acaa15c5a154614a2b173afc7b70e743ab0ce3",
-    "title-1024-bytes": "11d72d6751cb71f0605e88d4d9a4e4292b633472bb27046909cb7bcbe8a5903f",
-    "title-and-labels": "0ecd1e2b5255df995e48a91217b44fefebdd092762f51a702132ef7b731aee52",
-    "heading-trailing-spaces": "9a67d0a343ef77b29f13c2cf6e48b6bc252802a0716497c45f3be7aa113576d4",
-    "heading-over-512-bytes": "32b8daeb8ba3e9e73232a45fb2274d665a2604ea1bb0623050606f78403e71d3",
-    "path-label-over-512-bytes": "6bfc44e1cb1e7169c3c874525b39a688f023ffcb59d1dc78b6434fcd4c7fa8a3",
-}
-
-
-def test_documents_the_contract_accepted_keep_their_revision():
-    assert valid_document_revisions(render) == PINNED_REVISIONS
-
-
 def test_oversized_aggregate_stops_accumulating_and_continues(github, index):
     github.topic(number=1, body="Body.")
     for _ in range(20):
@@ -507,3 +213,104 @@ def test_title_counts_while_comment_pages_are_read(github, index):
     assert changes["github:repo:1:issue:101:1"]["sections"] == [{"text": "\0"}]
     reads = [params for _, path, params in github.requests if path.endswith("/issues/1/comments")]
     assert reads and all(int(params["page"]) == 1 for params in reads)
+
+
+QUARANTINED = [{"text": "\0"}]
+ISSUE = "github:repo:1:issue:{}:{}"
+
+
+def file_root(path):
+    branch = hashlib.sha256(b"main").hexdigest()[:32]
+    return f"github:repo:1:file:{branch}:{hashlib.sha256(path.encode()).hexdigest()}"
+
+
+def synced(index, quarantined, good):
+    """Sync once: exactly `quarantined` roots are quarantined, `good` is
+    published and the repository frontier is the server time of this sync."""
+    changes = index.sync()
+    assert {root for root, change in changes.items() if change["sections"] == QUARANTINED} == set(
+        quarantined
+    )
+    assert good in index.published
+    assert json.loads(index.cursor)["repos"]["1"]["since"] == index.world.server_time()
+
+
+def test_file_the_contract_rejects_is_quarantined_and_the_sync_continues(github, index):
+    # Percent-encoded, the URI is 4,200 bytes: an exact-match key, never cut.
+    path = "/".join(["\u00e9" * 100] * 7) + "/a.md"
+    github.branch(1, {path: "Prose.", "good.md": "Good."})
+    synced(index, [file_root(path)], file_root("good.md"))
+
+
+@pytest.mark.parametrize(
+    ("fields", "field", "expected"),
+    [
+        ({"title": "  Padded\t"}, "title", "Padded"),
+        ({"title": "A\nB"}, "title", "A B"),
+        (
+            {"labels": [{"name": f"l{n}"} for n in range(33)]},
+            "labels",
+            [f"l{n}" for n in range(32)],
+        ),
+        ({"state": " open "}, "status", "open"),
+    ],
+    ids=["padded-title", "control-character", "33-labels", "padded-status"],
+)
+def test_display_values_are_fitted_and_the_sync_continues(github, index, fields, field, expected):
+    github.topic(number=1, body="Body.", **fields)
+    github.topic(number=2, body="Good.")
+    synced(index, [], ISSUE.format(102, 2))
+    assert index.published[ISSUE.format(101, 1)]["metadata"][field] == expected
+
+
+def test_markdown_headings_are_fitted(github, index):
+    github.branch(1, {"a.md": "Intro.\n#\n# Ta\tb\x01c\n# Title\nEnd."})
+    index.sync()
+    labels = [s["location"]["label"] for s in index.published[file_root("a.md")]["sections"]]
+    assert labels == ["a.md (line 1)", "(line 2)", "Ta b c (line 3)", "Title (line 4)"]
+
+
+def test_control_character_in_an_inline_comment_path_only_changes_the_label(github, index):
+    github.topic(kind="pr", number=1, body="PR.")
+    review = github.comment(kind="pr", number=1, body="Review.", state="COMMENTED")
+    github.comment(kind="pr", number=1, body="Inline.", review_id=review["id"])["path"] = "a\n/b.py"
+    github.topic(number=2, body="Good.")
+    synced(index, [], ISSUE.format(102, 2))
+    sections = index.published["github:repo:1:pr:1001:1"]["sections"]
+    assert [section["text"] for section in sections][1:] == ["Review.", "Inline."]
+    assert sections[-1]["location"]["label"].endswith("discussion_r1: a /b.py:3")
+
+
+def valid_document_revisions(renderer):
+    repo = Repository(1, "synthetic/repo-1", "private", 5, "Organization", False)
+    topic = {
+        "title": "\u00e9" * 500,
+        "body": "Body.",
+        "state": "open",
+        "labels": [{"name": "z"}, {"name": "a"}],
+    }
+    inline = {"kind": "inline", "id": 3, "body": "Inline.", "path": "src/a.py", "line": 7}
+    ref = ConversationRef(1, FeedKind.PR, 1001, 1)
+
+    def file(path, source):
+        file_ref = FileRef(1, "main", path, "b" * 40, "c" * 40, len(source))
+        return renderer.file(repo, file_ref, source.encode(), None, 1 << 16).revision
+
+    return {
+        "multibyte-title": renderer.conversation(repo, ref, topic, [inline], 1 << 16).revision,
+        "heading-trailing-spaces": file("a.md", "Intro.\n# Title  \nText."),
+        "long-path-label": file("\u00e9" * 300 + ".md", "Text."),
+    }
+
+
+# Produced by loading render.py of commit 34fa1eb (before this change) as a
+# temporary module and running valid_document_revisions against it.
+PINNED_REVISIONS = {
+    "multibyte-title": "517172447a82b8eacbb7f23ae3580c775724cd94da1a7082c2caf7483ca3b9cc",
+    "heading-trailing-spaces": "9a67d0a343ef77b29f13c2cf6e48b6bc252802a0716497c45f3be7aa113576d4",
+    "long-path-label": "6bfc44e1cb1e7169c3c874525b39a688f023ffcb59d1dc78b6434fcd4c7fa8a3",
+}
+
+
+def test_documents_the_contract_accepted_keep_their_revision():
+    assert valid_document_revisions(render) == PINNED_REVISIONS

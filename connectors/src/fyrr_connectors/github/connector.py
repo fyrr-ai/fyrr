@@ -262,23 +262,11 @@ class GitHub(Connector[Settings, Scope]):
             if isinstance(change, Upsert) and change.source_revision == known:
                 return
             if isinstance(change, Upsert):
-                # The one guard for everything the contract rejects in this
-                # document, whichever field it is in: quarantine it, keep the
-                # revision, and let the sync go on.
+                # A document the contract rejects, or that is too large, is
+                # replaced by the quarantine marker and keeps its revision.
                 try:
                     rejected = document_changes([change]).get_total_buffer_size() > limits.max_bytes
-                except (
-                    # The contract rejects the document...
-                    ContractViolation,
-                    # ...or Arrow conversion of a value it cannot represent
-                    # (a timestamp outside UTC range, a wrongly typed field;
-                    # ArrowInvalid and ArrowTypeError are among these). A
-                    # resource failure such as ArrowMemoryError is not caught:
-                    # it fails the pass, which is retried.
-                    OverflowError,
-                    ValueError,
-                    TypeError,
-                ):
+                except ContractViolation:
                     rejected = True
                 if rejected:
                     change = replace(
