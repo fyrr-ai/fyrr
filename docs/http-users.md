@@ -62,9 +62,17 @@ operator states in the configuration what it may read.
 3. **Commit the change.** The writer publishes only a keyed hash of the
    key. `fyrr writer serve` does it at its next commit (60 seconds by
    default) once it runs with the new configuration, which means after a
-   restart; otherwise run `fyrr writer commit`. Only the writer needs the
-   key in its environment, and the reader hosts do not. A reader accepts the
-   new key within about a second of the publication reaching storage.
+   restart; otherwise run `fyrr writer commit`. The reader hosts do not need
+   the key, but **every host that publishes identity does**: every
+   `fyrr writer serve`, every scheduled `fyrr writer commit`, and a separate
+   host that runs `fyrr writer sync --directory` or `fyrr writer directory`.
+   Each needs every key's variable in its environment. A host without one
+   publishes identity without that key's binding (`api_key_secret_unusable`),
+   so the key works only until that host publishes next, which looks like an
+   intermittent `401`. A reader accepts a new key within about a second of
+   the publication reaching storage. If keys are configured but none is
+   usable, the reader starts and reports ready while every key gets `401`;
+   `fyrr writer status` shows why.
 4. **Start the reader** behind a TLS-terminating proxy, as in
    [step 3](#3-start-the-writer-and-the-reader). A key travels in every
    request: never serve it over plain HTTP outside loopback.
@@ -97,10 +105,14 @@ operator states in the configuration what it may read.
 
 A key has two forms. `readers` gives it reader tokens of its own, exactly as
 `stdio_readers` does for the stdio subject, so it sees what those groups
-and users may read and nothing else. `user = "ada@example.com"` makes it act
-as that [canonical directory user](architecture.md#terms) instead, with
-their groups; it needs a directory ([Keycloak](#1-prepare-keycloak) or
-another provider) and is refused while that user is missing or inactive.
+and users may read and nothing else: exactly what the operator declared.
+`user = "ada@example.com"` makes it act as that
+[canonical directory user](architecture.md#terms) instead, with their
+groups; it needs a directory ([Keycloak](#1-prepare-keycloak) or another
+provider) and is refused while that user is missing or inactive. Because it
+acts as that user, it also gains whatever the sources grant them, now or
+later: their document permissions and their groups' are not limited to what
+the configuration says.
 
 To rotate, add a second key, move the client to it, then remove the first.
 To revoke, remove the table on **every host that publishes identity** (each
@@ -256,7 +268,7 @@ curl https://fyrr.example.com/mcp \
 | --- | --- |
 | `401 unauthorized` | The token failed a [token rule](#tokens): usually the audience (`fyrr:read` is not a default scope of the sign-in client, or its Audience mapper does not add `fyrr` to the access token), an expired token, or a token from another realm. Decode it and compare `iss`, `aud`, `scope` and `typ`. |
 | `503 authorization_unavailable` | The token is valid but its subject is not bound: the user is not yet in a published directory pull, is disabled, or has no verified e-mail in `verified_domains`. It also means the last directory pull is older than `identity.validity_deadline`, or the keys could not be fetched. Check `fyrr writer status`. |
-| `401 unauthorized` with an API key | The key is unknown to the published identity: not committed yet (run `fyrr writer commit`; a reader looks again at most once a second), removed, past its `expires`, malformed (`fyrr_key_` plus 43–128 characters of `[A-Za-z0-9_-]`, at least 10 of them distinct) or, for a `user` key, its user is missing or inactive (`fyrr writer status` warns `api_key_unbound`; `api_key_secret_unusable` means the writer's variable is unset or malformed, so the key was not published). Claude Code started without the variable sends the literal `${VAR}` text. The reader says nothing more, by design. |
+| `401 unauthorized` with an API key | The key is unknown to the published identity: not committed yet (run `fyrr writer commit`; a reader looks again at most once a second), removed, past its `expires`, malformed (`fyrr_key_` plus 43–128 characters of `[A-Za-z0-9_-]`, at least 10 of them distinct) or, for a `user` key, its user is missing or inactive (`fyrr writer status` warns `api_key_unbound`; `api_key_secret_unusable` means the variable is unset or malformed on a host that published identity, so that publication did not bind the key; every host that publishes identity needs it, or the key works intermittently). Claude Code started without the variable sends the literal `${VAR}` text. The reader says nothing more, by design. |
 | A user is missing although the e-mail looks right | Keycloak does not mark it verified. Users federated from LDAP need *Trust Email* on the LDAP provider, or a verified flag set by an administrator. |
 | `403 host_mismatch` | The proxy does not pass the public `Host`: set `proxy_set_header Host $host`. The reader logs `http refused code=host_mismatch`. |
 | `403 invalid_argument` | The request had an `Origin` header: browsers cannot call `/mcp` directly. |
@@ -305,9 +317,9 @@ starts with `fyrr_key_` is an [API key](#api-keys) and takes its own path
   only a bound key can get `503`.
 - A binding's `expires` is whole seconds. The key is expired from the second
   it names: a request is refused when the reader's clock, truncated to whole
-  seconds, is at or after it, and the check runs again before the response
-  leaves, so a request admitted just before `expires` returns nothing after
-  it.
+  seconds, is at or after it, and the check runs again once the response is
+  built, immediately before it is handed to the transport, so a request
+  admitted just before `expires` returns nothing after it.
 - A bound key then goes through the same admission as an OIDC subject:
   directory freshness, `identity.max_tokens_per_user` and the request
   allowances. A key with `readers` is no group member, so only its own

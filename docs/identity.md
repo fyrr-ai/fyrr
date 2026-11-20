@@ -47,14 +47,18 @@ what each key may read, as `stdio_user` and `stdio_readers` do for stdio.
 | `name` | required | Unique ID like a source ID (`[a-z0-9][a-z0-9_-]{0,62}`). It names the key in this file; the artifacts hold only its hash. |
 | `key` | required | `{ env = "VAR" }`: the secret, `fyrr_key_` followed by at least 43 and at most 128 characters from `[A-Za-z0-9_-]`, at least 10 of them distinct. The shape does not prove randomness; generating the secret does: `echo "fyrr_key_$(openssl rand -hex 32)"`. Every key needs its own variable and value. |
 | `readers` | `[]` | Reader tokens (`usr:<id>`, `grp:<id>`) the key acts with, as `stdio_readers`, including source-scoped tokens for `permissions = "sync"` sources. |
-| `user` | absent | 1–512 bytes. Instead of `readers`: act as this canonical directory user (their corporate e-mail), with their groups. Refused while the user is absent or inactive. |
+| `user` | absent | 1–512 bytes. Instead of `readers`: act as this canonical directory user (their corporate e-mail), with their groups, and so with whatever the sources grant that user; only a `readers` key has exactly the declared grants. Refused while the user is absent or inactive. |
 | `expires` | absent | An RFC 3339 timestamp with an offset, such as `2027-06-30T00:00:00Z`, to the whole second (a fraction is dropped). The key is expired from that second on: the reader refuses it, and any request admitted before it, whatever the writer has published. |
 | `requests_per_minute` | absent | At least 1. Replaces `reader.http.user_requests_per_minute` for this key; only with `readers`, because a `user` key shares that user's allowance. |
 
 Set exactly one of `readers` (not empty) and `user`.
 
 Only the **writer** reads the secret: it publishes a keyed hash, so the
-reader and the reader-only build need no key in their environment. `config
+reader and the reader-only build need no key in their environment. Every host
+that publishes identity needs every key's variable: each `writer serve`, each
+scheduled `writer commit`, and a separate `writer sync --directory` or
+`writer directory` host. A host without one publishes identity without that
+key's binding, so the key works only until that host publishes next. `config
 check` treats the variable like any other referenced secret: it reports it
 when it is unset, and `config check --no-env` (the way to check a reader
 host's file) skips that. With the variable set it also refuses a secret of
@@ -87,7 +91,11 @@ so removing the last key still publishes (zero key bindings) and revokes it.
 
 Only a completed directory read advances directory freshness. Ordinary commits
 and `writer directory --snapshot` imports do not. With `provider = "none"`,
-imported snapshots remain usable without a directory freshness timestamp.
+imported snapshots remain usable without a directory freshness timestamp, and
+an import under `provider = "none"` withdraws a timestamp that an earlier
+provider left, so a deployment that moves from `keycloak`, `scim` or
+`snapshot` to manual imports needs only one import to be served again. With
+a provider configured, an import keeps the timestamp the provider attested.
 Once a head carries a timestamp, readers enforce `validity_deadline` on it
 even if their own `provider` is `none`: the publication, not the reader's
 file, says whether a directory clock exists.

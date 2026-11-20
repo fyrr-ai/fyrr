@@ -59,15 +59,18 @@ An API key is for a caller that cannot sign in: an unattended agent, or a
 team without an identity provider. What to know before you issue one:
 
 - **What it is trusted for.** A key proves only that its holder knows the
-  secret. It reads what the operator declared for it in
-  `[[identity.api_keys]]`: `readers`, reader tokens like the stdio subject's
-  `stdio_readers`, or `user`, which acts as one canonical directory user.
-  Nothing a caller sends changes those grants, and a document outside them
-  looks like one that does not exist. A key that stands in for a user is as
-  powerful as that user.
-- **Grants are the operator's.** They come from the configuration file, not
-  from a directory or a source, so a source cannot widen them. Give each
-  agent role its own key with only the groups its work needs
+  secret. Nothing a caller sends changes what the key may read, and a
+  document outside it looks like one that does not exist. Only a `readers`
+  key has exactly the grants the operator declared in
+  `[[identity.api_keys]]`: reader tokens like the stdio subject's
+  `stdio_readers`. A `user` key acts as one canonical directory user, so it
+  also gains whatever the sources grant that user: the documents they may
+  read and the groups they belong to, as the writer derives them from the
+  sources, which can change without any edit of the configuration. A key
+  that stands in for a user is as powerful as that user.
+- **`readers` grants are the operator's.** They come from the configuration
+  file, not from a directory or a source, so a source cannot widen them.
+  Give each agent role its own key with only the groups its work needs
   ([software factories](software-factory.md#limit-what-an-injected-agent-can-reach)).
   A key with `readers` is checked against `identity.max_tokens_per_user`. It
   is no member of any group, so `group_requests_per_minute` does not apply to
@@ -103,8 +106,11 @@ team without an identity provider. What to know before you issue one:
   at once, without a storage read, and neither the directory's freshness nor
   the state of storage changes that answer, so a caller with a random key
   cannot learn whether the directory is stale or storage is down (`503`).
-  Only a key that is bound can be answered with `503`. No key, name or hash
-  is written to logs, errors, telemetry or metrics.
+  Only a key that is bound can be answered with `503`: that is the one
+  exception to "the same answer whatever the state of storage", because a key
+  that was bound in the reader's cached identity can receive `503` during a
+  storage outage while a key it never bound receives `401`. No key, name or
+  hash is written to logs, errors, telemetry or metrics.
 - **Garbage keys cost no storage reads.** A flood of unknown keys makes the
   reader refresh its identity from the serving head at most once per second
   (`API_KEY_REFRESH_INTERVAL`, one refresh at a time); every other unknown
@@ -112,7 +118,9 @@ team without an identity provider. What to know before you issue one:
   key becomes usable: the first request more than a second after the last
   refresh looks at the new publication, so a key the writer published is
   accepted within about one second of that publication reaching storage, and
-  a request in the meantime gets `401`.
+  a request in the meantime gets `401`. The refresh runs to its end even if
+  the request that started it gives up, and a request whose deadline passes
+  while it waits for the refresh gets `401`, as a malformed key does.
 - **Use TLS.** The key is a bearer secret in every request. Terminate TLS in
   front of the reader as for OIDC ([HTTP boundary](http-users.md#3-start-the-writer-and-the-reader));
   never send a key over plain HTTP outside loopback. Prefer a header from a
@@ -139,12 +147,19 @@ team without an identity provider. What to know before you issue one:
   second (a fraction is dropped). A key is expired from that second on: a
   request is refused when the reader's clock, truncated to whole seconds, is
   at or after the second named by `expires`, and so is a request admitted
-  before it that has not finished: the check runs again before a response
-  leaves, so no search or fetch returns content after `expires`. Nothing is
-  republished for it. A key added to the file is served once readers pick up
-  the publication, within `reader.version_check_interval` (30 s) or at once
-  through [`POST /admin/refresh`](http-users.md#http-boundary), and, for the
-  admission lookup, within one second (see above).
+  before it that has not finished. The check runs again at two later points:
+  before the candidates' text is sent to an external reranker, and, once the
+  response is fully built, immediately before it is handed to the HTTP
+  transport. So no search or fetch response is handed over once `expires` has
+  passed by the reader's clock at that moment, and no reranker request body
+  is released after it. The guarantee is about that moment: bytes
+  already handed to the transport or sent to the reranker are out of the
+  reader's hands. Nothing is republished for expiry. A key added to the file
+  is served within about one second of the identity publication reaching
+  storage (the admission cache refresh bound, see above); the
+  `reader.version_check_interval` and
+  [`POST /admin/refresh`](http-users.md#http-boundary) concern content
+  versions and do not bring in an identity that changed alone.
 
 ## Permission modes
 
