@@ -14,7 +14,7 @@ use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
 
 /// The identity artifact contract version written by this build.
-pub const IDENTITY_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(1, 1);
+pub const IDENTITY_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(1, 2);
 
 /// One identity artifact generation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -57,11 +57,17 @@ pub struct Principal {
     pub groups: Vec<u32>,
 }
 
-/// A hashed issuer-scoped OIDC subject mapped to a canonical principal.
+/// A hashed subject mapped to a principal: an issuer-scoped OIDC subject, or
+/// an API-key secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SubjectBinding {
     pub subject: String,
     pub principal: String,
+    /// From this instant on the binding admits nobody. Absent, it does not
+    /// expire. Readers older than contract 1.2 ignore it, but they never derive
+    /// the subject of an API key either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<DateTime<Utc>>,
 }
 
 /// One input snapshot of the build.
@@ -86,8 +92,12 @@ pub enum IdentityInputKind {
 }
 
 impl IdentityArtifact {
-    pub fn principal_for_subject(&self, subject: &str) -> Option<&Principal> {
+    /// The principal a subject is bound to at `now`; an expired binding admits nobody.
+    pub fn principal_for_subject(&self, subject: &str, now: DateTime<Utc>) -> Option<&Principal> {
         let binding = self.subjects.iter().find(|b| b.subject == subject)?;
+        if binding.expires.is_some_and(|expires| expires <= now) {
+            return None;
+        }
         self.principals.iter().find(|p| p.key == binding.principal)
     }
 }

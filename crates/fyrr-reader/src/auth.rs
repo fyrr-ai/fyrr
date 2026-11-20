@@ -1,6 +1,7 @@
-//! Operator-pinned RS256 trust. Authentication errors expose only bounded codes.
+//! Bearer authentication: operator-pinned RS256 trust for OIDC access tokens and
+//! hashed API keys. Authentication errors expose only bounded codes.
 use crate::error::*;
-use fyrr_core::config::{Config, OidcConfig};
+use fyrr_core::config::{API_KEY_PREFIX, Config, OidcConfig, is_api_key_secret};
 use jsonwebtoken::{
     Algorithm, DecodingKey, Validation, decode, decode_header,
     jwk::{AlgorithmParameters, JwkSet, KeyAlgorithm, KeyOperations, PublicKeyUse},
@@ -17,6 +18,10 @@ pub(crate) struct AuthenticatedSubject {
     pub key: String,
     pub expires: i64,
     pub identity: Option<fyrr_core::publication::GenerationPointer>,
+    /// The subject is the hash of an API-key secret. The secret proves nothing
+    /// until the published identity binds it, so admission looks it up even for
+    /// requests that skip it for OIDC subjects.
+    pub api_key: bool,
 }
 /// RFC 7519 §4.1.3: `aud` is one string or an array of strings.
 #[derive(Deserialize)]
@@ -47,17 +52,70 @@ struct Trust {
     fetched: Option<Instant>,
     attempted: Option<Instant>,
 }
+/// Verifies OIDC access tokens against the pinned key set.
 #[derive(Clone)]
-pub(crate) struct Authenticator {
+struct OidcVerifier {
     config: Config,
     oidc: OidcConfig,
     client: reqwest::Client,
     trust: Arc<Mutex<Trust>>,
     refresh: Arc<Mutex<()>>,
 }
+/// Both bearer kinds: an OIDC verifier when `identity.oidc` is configured, and
+/// the API-key path for every token that starts with `fyrr_key_`.
+#[derive(Clone)]
+pub(crate) struct Authenticator {
+    config: Config,
+    oidc: Option<OidcVerifier>,
+}
 impl Authenticator {
-    /// Readiness needs fresh pinned trust; uptime alone is insufficient.
+    pub(crate) fn new(config: &Config) -> Result<Self> {
+        Ok(Self {
+            config: config.clone(),
+            oidc: config
+                .identity
+                .oidc
+                .is_some()
+                .then(|| OidcVerifier::new(config))
+                .transpose()?,
+        })
+    }
+    /// Readiness needs fresh pinned trust when OIDC is configured; API keys
+    /// have none to fetch.
     pub(crate) async fn ready(&self) -> bool {
+        match &self.oidc {
+            Some(oidc) => oidc.ready().await,
+            None => true,
+        }
+    }
+    pub(crate) async fn authenticate(&self, token: &str) -> Result<AuthenticatedSubject> {
+        if token.starts_with(API_KEY_PREFIX) {
+            return self.api_key(token);
+        }
+        match &self.oidc {
+            Some(oidc) => oidc.authenticate(token).await,
+            None => Err(Unauthorized),
+        }
+    }
+    /// The shape is checked before anything is hashed. The subject says nothing
+    /// about whether the key exists: admission looks it up in the identity, so
+    /// an unknown, revoked and expired key fail the same way.
+    fn api_key(&self, token: &str) -> Result<AuthenticatedSubject> {
+        if !is_api_key_secret(token) {
+            return Err(Unauthorized);
+        }
+        Ok(AuthenticatedSubject {
+            key: crate::storage::api_key_subject(&self.config, token)?,
+            // The binding's own expiry is enforced at admission.
+            expires: i64::MAX,
+            identity: None,
+            api_key: true,
+        })
+    }
+}
+impl OidcVerifier {
+    /// Readiness needs fresh pinned trust; uptime alone is insufficient.
+    async fn ready(&self) -> bool {
         let trust = self.trust.lock().await;
         let fresh = trust
             .fetched
@@ -92,7 +150,7 @@ impl Authenticator {
         trust.fetched = Some(Instant::now());
         Ok(())
     }
-    pub(crate) fn new(config: &Config) -> Result<Self> {
+    fn new(config: &Config) -> Result<Self> {
         let oidc = config.identity.oidc.clone().ok_or(ConfigurationInvalid)?;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -112,7 +170,7 @@ impl Authenticator {
             })),
         })
     }
-    pub(crate) async fn authenticate(&self, token: &str) -> Result<AuthenticatedSubject> {
+    async fn authenticate(&self, token: &str) -> Result<AuthenticatedSubject> {
         if token.is_empty() || token.len() > 16 * 1024 {
             return Err(Unauthorized);
         }
@@ -213,6 +271,7 @@ impl Authenticator {
             key,
             expires: claims.exp,
             identity: None,
+            api_key: false,
         })
     }
     async fn fetch_keys(&self) -> Result<JwkSet> {
@@ -244,5 +303,46 @@ impl Authenticator {
             }
         }
         Ok(keys)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn authenticator() -> Authenticator {
+        let config = fyrr_core::config::parse(concat!(
+            "[namespace]\nname='acme'\n[storage]\nuri='s3://auth'\n",
+            "[embedding]\nendpoint='https://embed.invalid'\n",
+        ))
+        .unwrap()
+        .config;
+        Authenticator::new(&config).unwrap()
+    }
+
+    #[tokio::test]
+    async fn without_oidc_only_a_well_formed_key_gets_past_authentication() {
+        let auth = authenticator();
+        assert!(auth.ready().await, "API keys have no trust to fetch");
+        // Not an API key, so it is an OIDC token, and there is no OIDC.
+        for token in ["eyJhbGciOiJSUzI1NiJ9.e30.c2ln", "fyrr_token_x", ""] {
+            assert!(matches!(auth.authenticate(token).await, Err(Unauthorized)));
+        }
+        // An API-key bearer of the wrong shape is refused before anything is hashed:
+        // this configuration has no hashing key, which a hash would report differently.
+        let random = |n: usize| format!("{API_KEY_PREFIX}{}", "a".repeat(n));
+        for token in [
+            random(0),
+            random(42),
+            random(129),
+            format!("{}!", random(43)),
+            format!("{} ", random(43)),
+        ] {
+            assert!(matches!(auth.authenticate(&token).await, Err(Unauthorized)));
+        }
+        assert!(matches!(
+            auth.authenticate(&random(43)).await,
+            Err(AuthorizationUnavailable)
+        ));
     }
 }

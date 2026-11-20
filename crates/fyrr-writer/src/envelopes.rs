@@ -141,6 +141,7 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     };
     let identity: fyrr_core::identity::IdentityArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.identity).await?;
+    warnings.extend(crate::api_key::status_warnings(config, &identity)?);
     let directory = serde_json::json!({"provider":config.identity.directory.provider,"identity_generation":head.identity.generation,"principals":identity.principals.len(),"tokens":identity.tokens.len(),"sync_interval_ms":config.identity.directory.sync_interval.as_millis(),"age_ms":directory_age_ms,"warning":directory_warning,"encrypted_inputs":config.identity.encryption_key.is_some()});
     Ok(
         serde_json::json!({"directory":directory,"warnings":warnings,"retired_sources_configured":retired_configured,"content_sequence":head.content.map(|p|p.sequence),"envelopes":envelopes,"pending_envelopes":pending,"quarantine":quarantine,"freshness":head.freshness}),

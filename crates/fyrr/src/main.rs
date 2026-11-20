@@ -176,6 +176,7 @@ fn config_check(path: &Path, no_env: bool) -> ExitCode {
     let mut issues = loaded.validate();
     if !no_env {
         issues.extend(loaded.missing_secrets(&ProcessEnvironment));
+        issues.extend(loaded.api_key_secret_issues(&ProcessEnvironment));
     }
     // Sources against their installed connector providers.
     #[cfg(feature = "writer")]

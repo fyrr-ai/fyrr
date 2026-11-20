@@ -294,7 +294,7 @@ impl PreparedReader {
         }
         let principal = self
             .identity
-            .principal_for_subject(&subject.key)
+            .principal_for_subject(&subject.key, fyrr_core::clock::now())
             .ok_or(AuthorizationUnavailable)?;
         if principal.tokens.len() > self.config.identity.max_tokens_per_user as usize {
             return Err(AuthorizationUnavailable);

@@ -1,6 +1,6 @@
 //! Immutable membership/container inputs, referenced by the published identity generation.
 use crate::{Result, WriterError};
-use fyrr_core::config::Config;
+use fyrr_core::config::{Config, ProcessEnvironment};
 use fyrr_core::connector::{BatchBody, ConnectorBatch, PrincipalSnapshotPart};
 use fyrr_core::envelope::{EnvelopePayload, MembersPayload, PermissionsPayload, PreparedEnvelope};
 use fyrr_core::identity::{IdentityArtifact, IdentityInput, IdentityInputKind, Principal};
@@ -85,19 +85,18 @@ pub async fn build(
         // The stdio subject holds the configured process grants. A configured
         // directory's activity/collision decisions take precedence.
         if directory.is_none() || grants.contains_key(&key) {
-            let operator_tokens = grants.entry(key.clone()).or_default();
-            operator_tokens.extend(configured.tokens.iter().cloned());
-            for source in config
-                .sources
-                .iter()
-                .filter(|s| s.permissions == fyrr_core::config::PermissionsMode::Sync)
-            {
-                for token in &config.identity.stdio_readers {
-                    operator_tokens.insert(crate::apply::reader_token(config, &source.id, token)?);
-                }
-            }
+            grants
+                .entry(key)
+                .or_default()
+                .extend(operator_grants(config, &config.identity.stdio_readers)?);
         }
     }
+    configured.subjects.extend(crate::api_key::bindings(
+        config,
+        &ProcessEnvironment,
+        directory.as_ref(),
+        &mut grants,
+    )?);
     for input in &inputs {
         if input.kind == IdentityInputKind::Directory || input.id.starts_with("permissions:") {
             continue;
@@ -330,7 +329,28 @@ async fn read_directory(
     Ok(directory)
 }
 
-type UserTokens = BTreeMap<String, BTreeSet<String>>;
+pub(crate) type UserTokens = BTreeMap<String, BTreeSet<String>>;
+
+/// The reader tokens an operator-declared subject holds for `readers`: the
+/// stdio subject's `identity.stdio_readers` and an API key's `readers`. Each
+/// token counts as written, and again under every `permissions = "sync"`
+/// source, whose rows carry source-scoped tokens.
+pub(crate) fn operator_grants(config: &Config, readers: &[String]) -> Result<BTreeSet<String>> {
+    let mut tokens = readers
+        .iter()
+        .map(|token| hash_principal(config, "tok", token).map_err(WriterError::from))
+        .collect::<Result<BTreeSet<_>>>()?;
+    for source in config
+        .sources
+        .iter()
+        .filter(|s| s.permissions == fyrr_core::config::PermissionsMode::Sync)
+    {
+        for token in readers {
+            tokens.insert(crate::apply::reader_token(config, &source.id, token)?);
+        }
+    }
+    Ok(tokens)
+}
 
 async fn source_grants(
     config: &Config,

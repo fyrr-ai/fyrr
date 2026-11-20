@@ -52,6 +52,8 @@ struct HttpState {
     controls: Arc<Semaphore>,
     control_limits: Arc<Mutex<ControlLimits>>,
     limits: Arc<Mutex<BTreeMap<String, (Instant, u32)>>>,
+    /// Per-key request allowances, by the principal key of a `readers` API key.
+    key_limits: Arc<BTreeMap<String, u32>>,
     refresh: Arc<Mutex<Option<Instant>>>,
 }
 impl HttpState {
@@ -61,11 +63,9 @@ impl HttpState {
         };
         http
     }
-    fn oidc(&self) -> &fyrr_core::config::OidcConfig {
-        let Some(oidc) = &self.config.identity.oidc else {
-            unreachable!("HTTP state requires OIDC configuration");
-        };
-        oidc
+    /// Absent when only API keys authenticate callers.
+    fn oidc(&self) -> Option<&fyrr_core::config::OidcConfig> {
+        self.config.identity.oidc.as_ref()
     }
 }
 
@@ -284,7 +284,6 @@ async fn authenticate_mcp(
         }
         _ => None,
     };
-    let public = &state.public;
     let fingerprint: [u8; 32] = Sha256::digest(token.as_deref().unwrap_or("").as_bytes()).into();
     if cancellation.is_some() {
         let mut limits = timeout_at(deadline, state.control_limits.lock()).await?;
@@ -301,29 +300,24 @@ async fn authenticate_mcp(
     .await?;
     let mut subject = match authenticated {
         Ok(s) => s,
-        Err(code) => {
-            let mut response = error(
-                if code == Unauthorized {
-                    StatusCode::UNAUTHORIZED
-                } else {
-                    StatusCode::SERVICE_UNAVAILABLE
-                },
-                code,
-            );
-            let metadata = format!(
-                "Bearer resource_metadata=\"{}://{}/.well-known/oauth-protected-resource\", \
-                    scope=\"{}\"",
-                public.scheme(),
-                expected,
-                state.oidc().scope
-            );
-            if let Ok(value) = metadata.parse() {
-                response
-                    .headers_mut()
-                    .insert(header::WWW_AUTHENTICATE, value);
-            }
-            return Err(response);
-        }
+        Err(code) => return Err(authentication_failure(state, code, expected)),
+    };
+    // An API-key secret authenticates nobody until the identity binds it, so its
+    // lookup comes before every other use of the subject, cancellations included.
+    let admitted = if subject.api_key || cancellation.is_none() {
+        Some(
+            timeout_at(deadline, state.admission.authorize(&state.config, &subject))
+                .await?
+                .map_err(|code| {
+                    if code == Unauthorized {
+                        authentication_failure(state, code, expected)
+                    } else {
+                        error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable)
+                    }
+                })?,
+        )
+    } else {
+        None
     };
     // Authenticated control traffic has its own concurrency bound and never
     // spends a user's or group's request allowance. IDs remain subject-scoped.
@@ -337,14 +331,18 @@ async fn authenticate_mcp(
         }
         return Err(StatusCode::ACCEPTED.into_response());
     }
-    let (principal, groups, identity) =
-        timeout_at(deadline, state.admission.authorize(&state.config, &subject))
-            .await?
-            .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable))?;
+    let Some((principal, groups, identity)) = admitted else {
+        unreachable!("only a cancellation by an OIDC subject skips admission, and it returned");
+    };
     subject.identity = Some(identity);
     let mut limits = timeout_at(deadline, state.limits.lock()).await?;
     limits.retain(|_, (t, _)| t.elapsed() < RATE_WINDOW);
-    let mut keys = vec![(format!("user:{principal}"), h.user_requests_per_minute)];
+    let allowance = state
+        .key_limits
+        .get(&principal)
+        .copied()
+        .unwrap_or(h.user_requests_per_minute);
+    let mut keys = vec![(format!("user:{principal}"), allowance)];
     keys.extend(
         groups
             .into_iter()
@@ -371,6 +369,36 @@ async fn authenticate_mcp(
     }
     drop(limits);
     Ok(subject)
+}
+
+/// 401 for an unauthenticated caller and 503 when authentication cannot be
+/// decided. The challenge points at the OIDC resource metadata only when an
+/// authorization server exists.
+fn authentication_failure(state: &HttpState, code: ReaderError, expected: &str) -> Response {
+    let mut response = error(
+        if code == Unauthorized {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        code,
+    );
+    let challenge = match state.oidc() {
+        Some(oidc) => format!(
+            "Bearer resource_metadata=\"{}://{}/.well-known/oauth-protected-resource\", \
+                scope=\"{}\"",
+            state.public.scheme(),
+            expected,
+            oidc.scope
+        ),
+        None => "Bearer".to_owned(),
+    };
+    if let Ok(value) = challenge.parse() {
+        response
+            .headers_mut()
+            .insert(header::WWW_AUTHENTICATE, value);
+    }
+    response
 }
 
 struct AccountedBody {
@@ -419,7 +447,9 @@ impl hyper::body::Body for AccountedBody {
 
 async fn metadata(State(state): State<HttpState>) -> axum::Json<serde_json::Value> {
     let h = state.http();
-    let oidc = state.oidc();
+    let Some(oidc) = state.oidc() else {
+        unreachable!("the metadata routes are registered only with an OIDC configuration");
+    };
     axum::Json(json!({"resource":h.public_url,
             "authorization_servers":[oidc.issuer],
             "scopes_supported":[oidc.scope],
@@ -508,6 +538,15 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
         reader.control_root.clone(),
         reader.identity_cache.clone(),
     ));
+    // A reader finds a key's allowance by the principal its name derives; a key
+    // its configuration lacks gets the user allowance.
+    let key_limits = config
+        .identity
+        .api_keys
+        .iter()
+        .filter_map(|key| key.requests_per_minute.map(|limit| (&key.name, limit)))
+        .map(|(name, limit)| Ok((crate::storage::api_key_principal(&config, name)?, limit)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let service = crate::serve::start(reader).await?;
     let state = HttpState {
         admission,
@@ -523,6 +562,7 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
             attempts: (Instant::now(), 0),
         })),
         limits: Arc::new(Mutex::new(BTreeMap::new())),
+        key_limits: Arc::new(key_limits),
         refresh: Arc::new(Mutex::new(None)),
     };
 
@@ -538,9 +578,14 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     );
     let mut router = Router::new()
         .route_service("/mcp", mcp)
-        .route("/.well-known/oauth-protected-resource", get(metadata))
-        .route("/.well-known/oauth-protected-resource/mcp", get(metadata))
         .route("/readyz", get(readiness));
+    // Without an authorization server there is no metadata to advertise: the
+    // routes are absent (404), which clients read as "no OAuth here".
+    if config.identity.oidc.is_some() {
+        router = router
+            .route("/.well-known/oauth-protected-resource", get(metadata))
+            .route("/.well-known/oauth-protected-resource/mcp", get(metadata));
+    }
     if h.operator_credential.is_some() {
         router = router.route("/admin/refresh", post(refresh));
     }

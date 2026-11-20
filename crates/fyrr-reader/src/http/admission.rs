@@ -74,9 +74,17 @@ impl Admission {
             return Err(AuthorizationUnavailable);
         }
         let identity = self.identity(config, &head.identity).await?;
-        let principal = identity
-            .principal_for_subject(&subject.key)
-            .ok_or(AuthorizationUnavailable)?;
+        // A secret nobody bound, a revoked one and an expired one are the same
+        // unauthenticated caller; only an unbound OIDC subject is an
+        // authorization problem on the operator's side.
+        let principal =
+            identity
+                .principal_for_subject(&subject.key, now)
+                .ok_or(if subject.api_key {
+                    Unauthorized
+                } else {
+                    AuthorizationUnavailable
+                })?;
         if principal.tokens.is_empty()
             || principal.tokens.len() > config.identity.max_tokens_per_user as usize
         {
@@ -142,6 +150,7 @@ mod tests {
             identity.subjects = vec![fyrr_core::identity::SubjectBinding {
                 subject: key.clone(),
                 principal: identity.principals[0].key.clone(),
+                expires: None,
             }];
             identity.principals[0].groups = vec![1];
             let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
@@ -168,6 +177,7 @@ mod tests {
                     key,
                     identity: None,
                     expires: fyrr_core::clock::now().timestamp() + 600,
+                    api_key: false,
                 },
             };
             test.publish_identity().await;
@@ -251,6 +261,43 @@ mod tests {
         test.identity.generation += 1;
         test.publish_identity().await;
         assert_eq!(test.authorize().await, Err(AuthorizationUnavailable));
+    }
+
+    #[tokio::test]
+    async fn an_api_key_is_unauthenticated_unless_its_binding_exists_and_has_not_expired() {
+        let mut test = Fixture::new().await;
+        test.subject.api_key = true;
+        test.authorize().await.unwrap();
+        // An unknown and a removed secret are the same caller; an unbound OIDC
+        // subject stays an authorization problem.
+        let unknown = format!("key:{}", "8".repeat(64));
+        let mut other = test.subject.clone();
+        other.key = unknown;
+        assert_eq!(
+            test.admission.authorize(&test.config, &other).await,
+            Err(Unauthorized)
+        );
+        other.api_key = false;
+        assert_eq!(
+            test.admission.authorize(&test.config, &other).await,
+            Err(AuthorizationUnavailable)
+        );
+        test.identity.subjects.clear();
+        test.identity.generation += 1;
+        test.publish_identity().await;
+        assert_eq!(test.authorize().await, Err(Unauthorized));
+        // The expiry is read from the published binding on every request.
+        let soon = fyrr_core::clock::now() + chrono::Duration::milliseconds(700);
+        test.identity.subjects = vec![fyrr_core::identity::SubjectBinding {
+            subject: test.subject.key.clone(),
+            principal: test.identity.principals[0].key.clone(),
+            expires: Some(soon),
+        }];
+        test.identity.generation += 1;
+        test.publish_identity().await;
+        test.authorize().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        assert_eq!(test.authorize().await, Err(Unauthorized));
     }
 
     #[tokio::test]

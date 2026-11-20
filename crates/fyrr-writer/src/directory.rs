@@ -138,9 +138,11 @@ pub(crate) fn bindings(snapshot: &DirectorySnapshot) -> Vec<SubjectBinding> {
                 return None;
             }
             let principal = keys.into_iter().next()?;
-            users
-                .contains(&principal)
-                .then_some(SubjectBinding { subject, principal })
+            users.contains(&principal).then_some(SubjectBinding {
+                subject,
+                principal,
+                expires: None,
+            })
         })
         .collect()
 }
@@ -334,7 +336,8 @@ mod tests {
             bindings(&snapshot),
             vec![SubjectBinding {
                 subject: "unique-subject".into(),
-                principal: "active".into()
+                principal: "active".into(),
+                expires: None,
             }]
         );
         snapshot.users[0].active = false;

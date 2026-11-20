@@ -759,6 +759,11 @@ fn every_schema_constraint_is_enforced() {
         "embedding.roles.document.prefix maxLength",
         "embedding.roles.query.input_type minLength",
         "reader.http.public_url maxLength",
+        "identity.api_keys[0].name pattern",
+        "identity.api_keys[0].key.env pattern",
+        "identity.api_keys[0].user minLength",
+        "identity.api_keys[0].user maxLength",
+        "identity.api_keys[0].requests_per_minute minimum",
     ] {
         assert!(
             rendered.iter().any(|found| found == expected),
@@ -766,7 +771,16 @@ fn every_schema_constraint_is_enforced() {
         );
     }
 
-    let base: toml::Table = toml::from_str(&common::read(EXAMPLE)).expect("example TOML");
+    let mut base: toml::Table = toml::from_str(&common::read(EXAMPLE)).expect("example TOML");
+    // The example declares no API key, whose constraints the walk must reach too.
+    let key: toml::Table = toml::from_str(
+        "name = \"agents\"\nkey = { env = \"FYRR_API_KEY_AGENTS\" }\nreaders = [\"grp:engineering\"]\n",
+    )
+    .expect("key TOML");
+    base["identity"]
+        .as_table_mut()
+        .expect("identity table")
+        .insert("api_keys".into(), toml::Value::Array(vec![key.into()]));
     const BAD: &str = "!bad value!";
     for (path, keyword, bound) in &constraints {
         let at = render(path);
@@ -1430,4 +1444,219 @@ fn chat_sources_default_corporate_domains_to_verified_domains() {
             .settings
             .contains_key("corporate_domains")
     );
+}
+
+const HTTP: &str =
+    "\n[reader.http]\nlisten='127.0.0.1:8080'\npublic_url='https://reader.example/mcp'\n";
+
+fn api_key(random: &str) -> String {
+    format!("fyrr_key_{random}")
+}
+
+fn key_table(name: &str, variable: &str, grant: &str) -> String {
+    format!("\n[[identity.api_keys]]\nname='{name}'\nkey={{env='{variable}'}}\n{grant}\n")
+}
+
+#[test]
+fn api_keys_declare_grants_by_readers_or_user() {
+    let valid = format!(
+        "{}{}",
+        key_table(
+            "bugfix-agents",
+            "KEY_A",
+            "readers=['grp:engineering','usr:ada']\nrequests_per_minute=600\nexpires=2027-06-30T00:00:00Z"
+        ),
+        key_table(
+            "ada",
+            "KEY_B",
+            "user='Ada@Example.com'\nexpires='2027-06-30T01:00:00+01:00'"
+        ),
+    );
+    let loaded = parse(&format!("{MINIMAL}{valid}")).unwrap();
+    assert!(errors(&loaded).is_empty(), "{:?}", errors(&loaded));
+    let keys = &loaded.config.identity.api_keys;
+    assert_eq!(keys.len(), 2);
+    assert_eq!(keys[0].requests_per_minute, Some(600));
+    assert_eq!(keys[0].expires, keys[1].expires);
+    assert_eq!(
+        keys[0].expires.unwrap().to_rfc3339(),
+        "2027-06-30T00:00:00+00:00"
+    );
+    // `config show` redacts what the key acts as, like the stdio subject.
+    let shown = loaded.effective_values(&env(&[]));
+    for value in &shown {
+        if value.path.ends_with(".readers") || value.path.ends_with(".user") {
+            assert_eq!(value.value, "<redacted: identity>", "{}", value.path);
+        }
+    }
+    assert!(
+        shown
+            .iter()
+            .any(|v| v.path == "identity.api_keys[0].key" && v.value == "env:KEY_A (unset)")
+    );
+
+    for (grant, path) in [
+        ("", "identity.api_keys[0].readers"),
+        ("readers=[]", "identity.api_keys[0].readers"),
+        (
+            "readers=['grp:a']\nuser='ada@example.com'",
+            "identity.api_keys[0].readers",
+        ),
+        ("readers=['ada']", "identity.api_keys[0].readers"),
+        ("readers=['grp:']", "identity.api_keys[0].readers"),
+        ("user=' '", "identity.api_keys[0].user"),
+        (
+            "user='ada@example.com'\nrequests_per_minute=5",
+            "identity.api_keys[0].requests_per_minute",
+        ),
+        (
+            "readers=['grp:a']\nrequests_per_minute=0",
+            "identity.api_keys[0].requests_per_minute",
+        ),
+    ] {
+        assert_error(&key_table("agents", "KEY_A", grant), path);
+    }
+    // The name and the environment variable are unique.
+    assert_error(
+        &format!(
+            "{}{}",
+            key_table("agents", "KEY_A", "readers=['grp:a']"),
+            key_table("agents", "KEY_B", "readers=['grp:a']")
+        ),
+        "identity.api_keys[1].name",
+    );
+    assert_error(
+        &format!(
+            "{}{}",
+            key_table("one", "KEY_A", "readers=['grp:a']"),
+            key_table("two", "KEY_A", "readers=['grp:a']")
+        ),
+        "identity.api_keys[1].key",
+    );
+    for name in ["Agents", "-agents", "has space", ""] {
+        assert_error(
+            &key_table(name, "KEY_A", "readers=['grp:a']"),
+            "identity.api_keys[0].name",
+        );
+    }
+    let many: String = (0..=256)
+        .map(|i| {
+            key_table(
+                &format!("key-{i}"),
+                &format!("KEY_{i}"),
+                "readers=['grp:a']",
+            )
+        })
+        .collect();
+    assert_error(&many, "identity.api_keys");
+    // A secret in the file is refused without echoing it.
+    let issue = parse(&format!(
+        "{MINIMAL}\n[[identity.api_keys]]\nname='a'\nkey='{SENTINEL}'\nreaders=['grp:a']\n"
+    ))
+    .unwrap_err();
+    assert!(!issue.to_string().contains(SENTINEL), "{issue}");
+    // Unknown fields and an expiry without an offset are refused.
+    assert!(
+        parse(&format!(
+            "{MINIMAL}{}",
+            key_table("a", "KEY_A", "readers=['grp:a']\nscopes=['x']")
+        ))
+        .is_err()
+    );
+    for expires in ["2027-06-30", "2027-06-30T00:00:00", "'tomorrow'", "7"] {
+        let result = parse(&format!(
+            "{MINIMAL}{}",
+            key_table(
+                "a",
+                "KEY_A",
+                &format!("readers=['grp:a']\nexpires={expires}")
+            )
+        ));
+        assert!(result.is_err(), "{expires}");
+    }
+    // A key that has already expired only warns.
+    let past = parse(&format!(
+        "{MINIMAL}{}",
+        key_table(
+            "a",
+            "KEY_A",
+            "readers=['grp:a']\nexpires=2020-01-01T00:00:00Z"
+        )
+    ))
+    .unwrap();
+    assert!(errors(&past).is_empty());
+    assert!(
+        past.validate()
+            .iter()
+            .any(|i| i.severity == Severity::Warning && i.path == "identity.api_keys[0].expires")
+    );
+}
+
+#[test]
+fn api_key_secrets_need_the_shape_and_no_duplicates() {
+    let text = format!(
+        "{MINIMAL}{}{}{}",
+        key_table("one", "KEY_A", "readers=['grp:a']"),
+        key_table("two", "KEY_B", "readers=['grp:a']"),
+        key_table("three", "KEY_C", "readers=['grp:a']"),
+    );
+    let loaded = parse(&text).unwrap();
+    let good = api_key(&"a".repeat(43));
+    let other = api_key(&format!("{}-_", "b".repeat(41)));
+    let messages = |pairs: &[(&str, &str)]| -> Vec<String> {
+        loaded
+            .api_key_secret_issues(&env(pairs))
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    };
+    assert!(messages(&[("KEY_A", &good), ("KEY_B", &other)]).is_empty());
+    // An unset variable is `missing_secrets`' to report, and only there.
+    assert!(messages(&[]).is_empty());
+    let unset: Vec<_> = loaded
+        .missing_secrets(&env(&[("KEY_A", &good)]))
+        .iter()
+        .map(|issue| issue.path.clone())
+        .filter(|path| path.contains("api_keys"))
+        .collect();
+    assert_eq!(
+        unset,
+        ["identity.api_keys[1].key", "identity.api_keys[2].key"]
+    );
+    for bad in [
+        "short".to_owned(),
+        api_key(&"a".repeat(42)),
+        api_key(&"a".repeat(129)),
+        api_key(&format!("{}!", "a".repeat(43))),
+        api_key(&format!("{}é", "a".repeat(43))),
+        format!("fyrr_token_{}", "a".repeat(43)),
+        format!(" {good}"),
+        format!("{good}\n"),
+    ] {
+        let found = messages(&[("KEY_A", &bad)]);
+        assert_eq!(found.len(), 1, "{bad:?}: {found:?}");
+        assert!(found[0].contains("identity.api_keys[0].key"));
+        assert!(!found[0].contains(&bad), "the value is never echoed");
+    }
+    let found = messages(&[("KEY_A", &good), ("KEY_B", &other), ("KEY_C", &good)]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("identity.api_keys[2].key") && found[0].contains("api_keys[0]"));
+    assert!(!found[0].contains(&good));
+    assert!(fyrr_core::config::is_api_key_secret(&api_key(
+        &"Z".repeat(128)
+    )));
+}
+
+#[test]
+fn http_needs_oidc_or_api_keys_and_tells_which() {
+    let key = key_table("agents", "KEY_A", "readers=['grp:a']");
+    let oidc = "\n[identity.oidc]\nissuer='https://issuer.example'\naudience='fyrr'\njwks_url='https://keys.example/jwks'\n";
+    assert_error(HTTP, "identity.oidc");
+    for identity in [key.clone(), oidc.to_owned(), format!("{key}{oidc}")] {
+        let loaded = parse(&format!("{MINIMAL}{identity}{HTTP}")).unwrap();
+        assert!(errors(&loaded).is_empty(), "{:?}", errors(&loaded));
+    }
+    // Keys alone leave OIDC unconfigured, and the file stays valid.
+    let loaded = parse(&format!("{MINIMAL}{key}{HTTP}")).unwrap();
+    assert!(loaded.config.identity.oidc.is_none());
 }

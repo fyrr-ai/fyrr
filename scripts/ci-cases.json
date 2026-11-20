@@ -3,6 +3,14 @@
     "title": "unit tests",
     "kind": "rust",
     "cases": {
+      "full:fyrr-reader:lib:fyrr_reader/auth::tests::without_oidc_only_a_well_formed_key_gets_past_authentication": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::an_api_key_is_unauthenticated_unless_its_binding_exists_and_has_not_expired": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
       "full:fyrr:test:dense_path/coordination::recovery_lease_ttl_ignores_toml_formatting_and_preserves_source_settings": {
         "tier": "quick",
         "seconds": 0.021
@@ -782,6 +790,14 @@
         "tier": "quick",
         "seconds": 0.002
       },
+      "full:fyrr-core:test:config/api_key_secrets_need_the_shape_and_no_duplicates": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
+      "full:fyrr-core:test:config/api_keys_declare_grants_by_readers_or_user": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
       "full:fyrr-core:test:config/composition_is_bounded_defaulted_and_bound_into_policy_identity": {
         "tier": "quick",
         "seconds": 0.001
@@ -813,6 +829,10 @@
       "full:fyrr-core:test:config/example_matches_the_generated_json_schema": {
         "tier": "quick",
         "seconds": 0.005
+      },
+      "full:fyrr-core:test:config/http_needs_oidc_or_api_keys_and_tells_which": {
+        "tier": "quick",
+        "seconds": 0.01
       },
       "full:fyrr-core:test:config/live_embeddings_require_explicit_bounded_spending_and_private_cache": {
         "tier": "quick",
@@ -943,6 +963,10 @@
       "full:fyrr-core:test:contracts/semantic_violations_are_refused_without_echoing_values": {
         "tier": "quick",
         "seconds": 0.006
+      },
+      "full:fyrr-core:test:contracts/subject_binding_expiry_is_optional_round_trips_and_refuses_at_the_instant": {
+        "tier": "quick",
+        "seconds": 0.01
       },
       "full:fyrr-core:test:contracts/unknown_arrow_field_names_are_not_diagnostics": {
         "tier": "quick",
@@ -1444,6 +1468,14 @@
     "kind": "rust",
     "backend": "local",
     "cases": {
+      "full:fyrr:test:dense_path/api_keys::api_key_http_isolation_expiry_revocation_limits_and_oidc_coexistence_on_storage": {
+        "tier": "full",
+        "seconds": 150.0
+      },
+      "full:fyrr:test:dense_path/api_keys::api_key_identity_tokens_users_collisions_and_removal_on_storage": {
+        "tier": "full",
+        "seconds": 40.0
+      },
       "full:fyrr:test:dense_path/directory_ops::identity_directory_scim_crud_patch_replay_collision_and_revocation_on_storage": {
         "tier": "full",
         "seconds": 47.941
@@ -1737,6 +1769,10 @@
     "title": "privacy sentinel (full build)",
     "kind": "rust",
     "cases": {
+      "full:fyrr:test:privacy/api_key_secrets_users_and_grants_stay_out_of_every_output": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
       "full:fyrr:test:privacy/dense_reader_and_namespace_paths_keep_identity_and_query_values_private": {
         "tier": "quick",
         "seconds": 0.366
@@ -4228,6 +4264,10 @@
     "title": "privacy sentinel (reader-only build)",
     "kind": "rust",
     "cases": {
+      "reader:fyrr:test:privacy/api_key_secrets_users_and_grants_stay_out_of_every_output": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
       "reader:fyrr:test:privacy/dense_reader_and_namespace_paths_keep_identity_and_query_values_private": {
         "tier": "quick",
         "seconds": 0.504

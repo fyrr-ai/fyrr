@@ -130,7 +130,7 @@ impl Drop for Issuer {
 pub(super) struct Reader {
     child: std::process::Child,
     pub(super) base: String,
-    client: Client,
+    pub(super) client: Client,
     stderr: PathBuf,
 }
 impl Reader {
@@ -150,7 +150,7 @@ impl Reader {
             response.json::<Value>().await.unwrap()["result"].clone()
         })
     }
-    async fn start(
+    pub(super) async fn start(
         config: &Path,
         root: &Path,
         issuer: &Issuer,
@@ -180,22 +180,40 @@ impl Reader {
         keycloak: bool,
         operator: bool,
     ) -> Self {
+        let operator = if operator {
+            "operator_credential={env='FYRR_HTTP_OPERATOR'}\n"
+        } else {
+            ""
+        };
+        Self::start_appended(config, root, &[], |address, base| {
+            format!("\n[identity.oidc]\nissuer='{}'\naudience='fyrr-http-test'\njwks_url='{}/jwks'\njwks_validity='1s'\njwks_refresh_interval='100ms'\nkeycloak={keycloak}\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n{operator}authorization_cache_subjects={capacity}\nuser_requests_per_minute={user_limit}\ngroup_requests_per_minute={group_limit}\n",issuer.url,issuer.url)
+        })
+        .await
+    }
+    /// Starts `reader serve` on `config` with the text `appended` builds for
+    /// the reserved listen address and public base URL.
+    pub(super) async fn start_appended(
+        config: &Path,
+        root: &Path,
+        env: &[(&str, &str)],
+        appended: impl FnOnce(&std::net::SocketAddr, &str) -> String,
+    ) -> Self {
         let reserve = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = reserve.local_addr().unwrap();
         drop(reserve);
         let base = format!("http://{address}");
         let config_http = root.join(format!("http-{address}.toml"));
         let config_text = std::fs::read_to_string(config).unwrap();
-        let operator = if operator {
-            "operator_credential={env='FYRR_HTTP_OPERATOR'}\n"
-        } else {
-            ""
-        };
-        std::fs::write(&config_http,format!("{config_text}\n[identity.oidc]\nissuer='{}'\naudience='fyrr-http-test'\njwks_url='{}/jwks'\njwks_validity='1s'\njwks_refresh_interval='100ms'\nkeycloak={keycloak}\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n{operator}authorization_cache_subjects={capacity}\nuser_requests_per_minute={user_limit}\ngroup_requests_per_minute={group_limit}\n",issuer.url,issuer.url)).unwrap();
+        std::fs::write(
+            &config_http,
+            format!("{config_text}{}", appended(&address, &base)),
+        )
+        .unwrap();
         let stderr = root.join(format!("http-{address}.stderr"));
         let child = host_command(&config_http)
             .args(["reader", "serve"])
             .env("FYRR_HTTP_OPERATOR", "owned-http-operator-canary")
+            .envs(env.iter().copied())
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(&stderr).unwrap())
             .spawn()
@@ -255,7 +273,13 @@ impl Reader {
         }
         panic!("HTTP reader startup");
     }
-    async fn rpc(&self, token: &str, id: u64, method: &str, params: Value) -> reqwest::Response {
+    pub(super) async fn rpc(
+        &self,
+        token: &str,
+        id: u64,
+        method: &str,
+        params: Value,
+    ) -> reqwest::Response {
         self.client
             .post(format!("{}/mcp", self.base))
             .bearer_auth(token)
@@ -995,7 +1019,7 @@ impl Drop for Reader {
         }
     }
 }
-async fn fixture(issuer: &Issuer) -> (PathBuf, PathBuf, FixtureRoot, DirectorySnapshot) {
+pub(super) async fn fixture(issuer: &Issuer) -> (PathBuf, PathBuf, FixtureRoot, DirectorySnapshot) {
     fixture_for_issuer(&issuer.url, Backend::selected()).await
 }
 pub(super) async fn fixture_for_issuer(

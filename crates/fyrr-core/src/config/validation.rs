@@ -8,6 +8,7 @@ impl LoadedConfig {
         let mut error = |path: &str, message: String| issues.push(Issue::error(path, message));
         rerank(config, &mut error);
         identity_keys(config, &mut error);
+        api_key::validate(config, &mut error);
         identity_urls_and_http(config, &mut error);
         patterns(config, &mut error);
         dense_weight(config, &mut error);
@@ -26,6 +27,7 @@ impl LoadedConfig {
         writer_credentials(config, &mut error);
         let longest_identity_interval = sources(config, &mut error);
         identity_deadline(config, &mut error, longest_identity_interval);
+        api_key::warnings(config, &mut issues);
         for (index, source) in config.sources.iter().enumerate() {
             if source.permissions == PermissionsMode::Fixed {
                 issues.push(Issue::warning(
@@ -158,8 +160,11 @@ fn identity_urls_and_http(config: &Config, error: &mut impl FnMut(&str, String))
                 "requires a secure /mcp URL".into(),
             );
         }
-        if config.identity.oidc.is_none() {
-            error("identity.oidc", "required for HTTP MCP".into());
+        if config.identity.oidc.is_none() && config.identity.api_keys.is_empty() {
+            error(
+                "identity.oidc",
+                "HTTP MCP requires identity.oidc or identity.api_keys".into(),
+            );
         }
         if http.listen.parse::<std::net::SocketAddr>().is_err()
             || http.public_url.is_empty()

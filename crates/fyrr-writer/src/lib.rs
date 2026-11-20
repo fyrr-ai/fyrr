@@ -24,6 +24,7 @@
     )
 )]
 
+mod api_key;
 mod error;
 mod io;
 #[cfg(test)]

@@ -16,6 +16,7 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
         key: std::env::var("FYRR_TEST_SCHEDULER_SUBJECT").unwrap(),
         identity: Some(reader.head.identity.clone()),
         expires: fyrr_core::clock::now().timestamp() + 600,
+        api_key: false,
     };
     let admission = Arc::new(admission::Admission::new(
         reader.control_store.clone(),
@@ -47,6 +48,7 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
             attempts: (Instant::now(), 0),
         })),
         limits: Arc::new(Mutex::new(BTreeMap::new())),
+        key_limits: Arc::default(),
         refresh: Arc::new(Mutex::new(None)),
     };
     let router = Router::new()

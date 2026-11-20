@@ -715,6 +715,14 @@
             }
           ],
           "description": "OIDC login for HTTP MCP."
+        },
+        "api_keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApiKeyConfig"
+          },
+          "description": "Static bearer keys for HTTP MCP with operator-declared grants\n(`[[identity.api_keys]]`). Only the writer reads their secrets.",
+          "maxItems": 256
         }
       },
       "description": "Identity mapping and the identity artifact."
@@ -836,6 +844,60 @@
         "audience"
       ],
       "description": "OIDC resource-server settings for HTTP MCP."
+    },
+    "ApiKeyConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique ID of the key, as source IDs are. It names the key in this file\nonly; it is never logged, and the published artifacts hold its hash.",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"
+        },
+        "key": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The bearer secret, `{ env = \"VAR\" }`: `fyrr_key_` followed by at least\n43 characters from `[A-Za-z0-9_-]`. Only the writer reads the variable."
+        },
+        "readers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Reader tokens (`usr:<id>`, `grp:<id>`) the key acts with, as\n`identity.stdio_readers` states them for the stdio subject."
+        },
+        "user": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Instead of `readers`: act as this canonical directory user (their\ncorporate e-mail). The key is refused while that user is absent or inactive.",
+          "minLength": 1,
+          "maxLength": 512,
+          "x-maxUtf8Bytes": 512
+        },
+        "expires": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "description": "The reader refuses the key from this instant on, an RFC 3339 timestamp\nwith an offset (`2027-06-30T00:00:00Z`). Absent, the key does not expire."
+        },
+        "requests_per_minute": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 1,
+          "description": "Replaces `reader.http.user_requests_per_minute` for this key. Only with\n`readers`: a `user` key shares that user's allowance."
+        }
+      },
+      "required": [
+        "name",
+        "key"
+      ],
+      "description": "One API key. Exactly one of `readers` and `user` is set."
     },
     "ReaderConfig": {
       "type": "object",
@@ -1374,5 +1436,5 @@
       "description": "When each of a source's syncs is due."
     }
   },
-  "x-fyrr-schema-version": "5.1"
+  "x-fyrr-schema-version": "5.2"
 }

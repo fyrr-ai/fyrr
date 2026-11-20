@@ -11,9 +11,14 @@
 //! output or `config show` line contains a secret value, and errors never
 //! quote values from the file.
 
+mod api_key;
 mod storage;
 mod validation;
 
+pub use api_key::{
+    API_KEY_MAX_RANDOM, API_KEY_MIN_RANDOM, API_KEY_PREFIX, API_KEYS_MAX, ApiKeyConfig,
+    is_api_key_secret,
+};
 pub use storage::StorageBackend;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,7 +36,7 @@ use crate::units::{ByteSize, ConfigDuration};
 
 /// Configuration schema revision: adding a storage backend changes the URI
 /// contract beyond an optional field, so it starts a new major revision.
-pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(5, 1);
+pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(5, 2);
 
 /// Namespace IDs: lowercase letters, digits and `-`, at most 63 bytes.
 pub const NAMESPACE_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
@@ -492,6 +497,11 @@ pub struct IdentityConfig {
     /// OIDC login for HTTP MCP.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oidc: Option<OidcConfig>,
+    /// Static bearer keys for HTTP MCP with operator-declared grants
+    /// (`[[identity.api_keys]]`). Only the writer reads their secrets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = API_KEYS_MAX))]
+    pub api_keys: Vec<ApiKeyConfig>,
 }
 
 /// Where canonical users and groups come from.
@@ -1366,6 +1376,8 @@ impl LoadedConfig {
         for value in &mut values {
             if value.path == "identity.stdio_user"
                 || value.path.starts_with("identity.stdio_readers")
+                || (value.path.starts_with("identity.api_keys[")
+                    && (value.path.ends_with(".readers") || value.path.ends_with(".user")))
             {
                 value.value = "<redacted: identity>".into();
             }

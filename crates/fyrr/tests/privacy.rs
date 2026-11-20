@@ -165,6 +165,49 @@ fn http_reader_configuration_and_startup_keep_identity_and_credentials_private()
     }
 }
 
+/// An API key's secret, user and readers never reach an output, in a valid
+/// configuration, a refused one and a started reader (both builds).
+#[test]
+fn api_key_secrets_users_and_grants_stay_out_of_every_output() {
+    let mut sentinels = Sentinels::new();
+    let sandbox = Sandbox::new("privacy-api-keys");
+    let secret = format!("fyrr_key_{}", sentinels.mark("api-key-secret"));
+    let wrong = format!("fyrr_key_{}", sentinels.mark("api-key-malformed"));
+    let user = sentinels.mark("api-key-user");
+    let group = sentinels.mark("api-key-group");
+    let config = sandbox.input("api-keys.toml", &format!("[namespace]\nname='privacy-keys'\n[storage]\nuri='s3://privacy-keys'\nendpoint='http://127.0.0.1:9'\nallow_http=true\n[embedding]\nendpoint='http://127.0.0.1:9/v1'\n[identity]\nhashing_key={{env='KEYS_SENTINEL_HASH'}}\n[[identity.api_keys]]\nname='one'\nkey={{env='KEYS_SENTINEL_ONE'}}\nreaders=['grp:{group}']\n[[identity.api_keys]]\nname='two'\nkey={{env='KEYS_SENTINEL_TWO'}}\nuser='{user}'\n[[identity.api_keys]]\nname='three'\nkey={{env='KEYS_SENTINEL_THREE'}}\nreaders=['grp:{group}']\n[reader.http]\nlisten='127.0.0.1:0'\npublic_url='http://127.0.0.1:9/mcp'\n"));
+    let config = config.to_str().expect("config path");
+    let environment = [
+        ("KEYS_SENTINEL_HASH", "test-only-key"),
+        ("KEYS_SENTINEL_ONE", secret.as_str()),
+        // The same secret twice and a malformed one: refused without echo.
+        ("KEYS_SENTINEL_TWO", secret.as_str()),
+        ("KEYS_SENTINEL_THREE", wrong.as_str()),
+        ("AWS_EC2_METADATA_DISABLED", "true"),
+    ];
+    for args in [
+        vec!["config", "check"],
+        vec!["config", "check", "--no-env"],
+        vec!["config", "show"],
+        vec!["reader", "serve"],
+        vec!["reader", "check"],
+    ] {
+        let mut command = vec!["--config", config];
+        command.extend(args);
+        let output = sandbox.run(&command, &environment);
+        assert_clean(&sentinels, &output, &sandbox, "API key diagnostics");
+        if command.contains(&"check")
+            && !command.contains(&"--no-env")
+            && command.contains(&"config")
+        {
+            assert!(
+                !output.status.success(),
+                "the shared and malformed secrets are refused"
+            );
+        }
+    }
+}
+
 #[test]
 fn directory_snapshot_errors_never_echo_private_input() {
     let mut sentinels = Sentinels::new();

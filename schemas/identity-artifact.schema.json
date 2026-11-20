@@ -164,15 +164,23 @@
         },
         "principal": {
           "type": "string"
+        },
+        "expires": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "description": "From this instant on the binding admits nobody. Absent, it does not\nexpire. Readers older than contract 1.2 ignore it, but they never derive\nthe subject of an API key either."
         }
       },
       "required": [
         "subject",
         "principal"
       ],
-      "description": "A hashed issuer-scoped OIDC subject mapped to a canonical principal."
+      "description": "A hashed subject mapped to a principal: an issuer-scoped OIDC subject, or\nan API-key secret."
     }
   },
   "x-fyrr-contract": "identity-artifact",
-  "x-fyrr-schema-version": "1.1"
+  "x-fyrr-schema-version": "1.2"
 }

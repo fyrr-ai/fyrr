@@ -127,6 +127,7 @@ fn cache_subjects(
             key: hash_principal(config, "key", &format!("cache-subject-{i}")).unwrap(),
             identity: Some(identity.clone()),
             expires: fyrr_core::clock::now().timestamp() + 3600,
+            api_key: false,
         })
         .collect()
 }

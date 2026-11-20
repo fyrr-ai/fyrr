@@ -673,6 +673,47 @@ fn identity_groups_and_subject_bindings_fail_closed() {
 }
 
 #[test]
+fn subject_binding_expiry_is_optional_round_trips_and_refuses_at_the_instant() {
+    use chrono::{DateTime, Utc};
+    let mut value = common::read_json("fixtures/contracts/identity-artifact/artifact.json");
+    let key = value["principals"][0]["key"].clone();
+    let subject = |c: &str| json!(format!("key:{}", c.repeat(64)));
+    value["subjects"] = json!([
+        {"subject": subject("a"), "principal": key},
+        {"subject": subject("b"), "principal": key, "expires": "2027-06-30T00:00:00Z"},
+    ]);
+    let artifact = parse::<IdentityArtifact>(&value).unwrap();
+    // A binding without `expires` is written without it: older artifacts stay as they were.
+    let written: serde_json::Value = serde_json::from_slice(&write_contract(&artifact)).unwrap();
+    assert!(written["subjects"][0].get("expires").is_none());
+    assert_eq!(written["subjects"][1]["expires"], "2027-06-30T00:00:00Z");
+    let at = |text: &str| text.parse::<DateTime<Utc>>().unwrap();
+    let subject_of = |index: usize| artifact.subjects[index].subject.as_str();
+    for now in ["2026-01-01T00:00:00Z", "2027-06-29T23:59:59Z"] {
+        assert!(
+            artifact
+                .principal_for_subject(subject_of(1), at(now))
+                .is_some()
+        );
+    }
+    for now in ["2027-06-30T00:00:00Z", "2030-01-01T00:00:00Z"] {
+        assert!(
+            artifact
+                .principal_for_subject(subject_of(1), at(now))
+                .is_none(),
+            "an expired binding admits nobody at {now}"
+        );
+        assert!(
+            artifact
+                .principal_for_subject(subject_of(0), at(now))
+                .is_some()
+        );
+    }
+    value["subjects"][1]["expires"] = json!("tomorrow");
+    assert!(parse::<IdentityArtifact>(&value).is_err());
+}
+
+#[test]
 fn source_email_without_evidence_is_unverified_and_written_without_it() {
     use fyrr_core::connector::{EmailVerification, SourceUser};
     let unverified = json!({"id":"source-user", "email":"user@example.test", "active":true});

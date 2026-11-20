@@ -369,15 +369,41 @@ fn namespace_mac(
 }
 
 pub fn hash_principal(config: &Config, prefix: &str, value: &str) -> Result<String, StorageError> {
+    hash_in_domain(config, prefix, prefix, value)
+}
+
+/// `<prefix>:<hex>` of the HMAC of `value` in its own MAC domain. `namespace_mac`
+/// frames every part with its length, so two different domains never yield the
+/// same MAC input, whatever the values: a hash in one domain cannot equal one in
+/// another except by an HMAC-SHA256 collision.
+fn hash_in_domain(
+    config: &Config,
+    prefix: &str,
+    domain: &str,
+    value: &str,
+) -> Result<String, StorageError> {
     use hmac::Mac;
     Ok(format!(
         "{prefix}:{}",
         hex::encode(
-            namespace_mac(config, prefix, value)?
+            namespace_mac(config, domain, value)?
                 .finalize()
                 .into_bytes()
         )
     ))
+}
+
+/// The subject key of an API-key secret, as a `key:` hash. Its MAC domain is
+/// not the one of `hash_principal(config, "key", …)` (directory users, the
+/// stdio subject, OIDC subjects), so no value of those can produce it.
+pub fn api_key_subject(config: &Config, secret: &str) -> Result<String, StorageError> {
+    hash_in_domain(config, "key", "api-key-secret", secret)
+}
+
+/// The principal key of an API key that acts with `readers`: the hash of its
+/// name in a domain of its own, apart from every user and from the secret domain.
+pub fn api_key_principal(config: &Config, name: &str) -> Result<String, StorageError> {
+    hash_in_domain(config, "key", "api-key-name", name)
 }
 
 pub(crate) fn verify_hash(
