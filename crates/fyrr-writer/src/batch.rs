@@ -149,12 +149,9 @@ impl BatchChecker {
                 if rows.num_rows() as u64 > self.limits.max_rows {
                     return Err("a content batch exceeds writer.envelope_max_rows".into());
                 }
-                // Includes nullable extensions, nested buffers and backing storage
-                // of slices, before any row or text is copied into Rust objects.
-                let bytes = rows.columns().iter().try_fold(0usize, |total, column| {
-                    total.checked_add(column.to_data().get_buffer_memory_size())
-                });
-                if bytes.is_none_or(|bytes| bytes as u64 > self.limits.max_bytes) {
+                // Includes nullable extensions and nested buffers, before any
+                // row or text is copied into Rust objects.
+                if rows_bytes(rows).is_none_or(|bytes| bytes > self.limits.max_bytes) {
                     return Err(
                         "a content batch exceeds writer.envelope_max_bytes (Arrow buffers)".into(),
                     );
@@ -247,6 +244,29 @@ impl BatchChecker {
         self.stats.text_bytes += batch_bytes;
         Ok(())
     }
+}
+
+/// The bytes held by the buffers of `rows` (data, offsets and validity, nested
+/// ones included); `None` when the sum overflows.
+pub(crate) fn rows_bytes(rows: &RecordBatch) -> Option<u64> {
+    fn data_bytes(data: &arrow_data::ArrayData) -> Option<u64> {
+        let own = data
+            .buffers()
+            .iter()
+            .map(|buffer| buffer.len() as u64)
+            .chain(data.nulls().map(|nulls| nulls.buffer().len() as u64));
+        let mut total = 0u64;
+        for bytes in own {
+            total = total.checked_add(bytes)?;
+        }
+        for child in data.child_data() {
+            total = total.checked_add(data_bytes(child)?)?;
+        }
+        Some(total)
+    }
+    rows.columns().iter().try_fold(0u64, |total, column| {
+        total.checked_add(data_bytes(&column.to_data())?)
+    })
 }
 
 /// Reads document-change rows after checking their schema (contract name,

@@ -191,8 +191,13 @@ pub async fn resolve(config: &Config, reference: &SecretRef) -> Result<String> {
             .map_err(|_| WriterError::CredentialUnavailable)
     }
 }
-/// Invoked only inside the already isolated Python worker, before any provider runs.
-pub fn install_worker_credentials(config: &Config, source: &str) -> Result<()> {
+/// Resolved credential values, as (environment variable, value).
+pub type Credentials = Vec<(String, String)>;
+
+/// The stored credentials that `source` references, for its provider process's
+/// environment. Invoked only inside the already isolated worker, before any
+/// provider runs.
+pub fn worker_credentials(config: &Config, source: &str) -> Result<Credentials> {
     fn references(value: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
         match value {
             serde_json::Value::Object(map) => {
@@ -215,7 +220,7 @@ pub fn install_worker_credentials(config: &Config, source: &str) -> Result<()> {
         }
     }
     if config.writer.credentials.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let source = config
         .sources
@@ -244,20 +249,5 @@ pub fn install_worker_credentials(config: &Config, source: &str) -> Result<()> {
             runtime.block_on(resolve(config, &SecretRef { env: env.clone() }))?,
         ));
     }
-    crate::python::with_runtime(|py, _| {
-        use pyo3::prelude::*;
-        let os = py
-            .import("os")
-            .map_err(|_| WriterError::CredentialUnavailable.to_owned())?;
-        let environment = os
-            .getattr("environ")
-            .map_err(|_| WriterError::CredentialUnavailable.to_owned())?;
-        for (name, value) in &values {
-            environment
-                .set_item(name, value)
-                .map_err(|_| WriterError::CredentialUnavailable.to_owned())?;
-        }
-        Ok(())
-    })
-    .map_err(|_| WriterError::CredentialUnavailable)
+    Ok(values)
 }

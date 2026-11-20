@@ -9,7 +9,7 @@ updates:
       cargo:
         patterns: ["*"]
     # Lance 14.0.3 exposes Arrow 58, DataFusion 54 and object_store 0.14
-    # types. Upgrade these together; Arrow PyArrow 58 also requires PyO3 0.28.
+    # types. Upgrade these together.
     ignore:
       - dependency-name: "arrow-*"
         update-types: ["version-update:semver-major"]
@@ -23,10 +23,6 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: object_store
         versions: [">=0.15"]
-      - dependency-name: pyo3
-        versions: [">=0.29"]
-      - dependency-name: "pyo3-*"
-        versions: [">=0.29"]
   - package-ecosystem: uv
     directories: [/connectors, /examples/markdown-provider]
     schedule:

@@ -107,7 +107,7 @@ pub enum WriterCommand {
     /// List installed connector providers and check SDK compatibility; exits
     /// 1 when any installed provider is refused.
     Providers,
-    /// Internal: the worker process that runs the embedded Python.
+    /// Internal: the worker process that runs one source's Python provider host.
     #[command(name = "__worker", hide = true, subcommand)]
     Worker(WorkerJob),
 }
@@ -266,12 +266,21 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
                 action: NamespaceAction::Delete { export },
             } => runtime_command(crate::commit::delete(config, export.as_deref())),
             WriterCommand::Maintain => runtime_command(crate::maintenance::maintain(config)),
-            WriterCommand::Serve { jobs, timeout } => runtime_command(crate::serve::run(
-                loaded,
-                path,
-                usize::from(*jobs),
-                timeout.as_duration(),
-            )),
+            WriterCommand::Serve { jobs, timeout } => {
+                // Source jobs need the providers' Python: say so once, up front.
+                if !config.sources.is_empty()
+                    && let Err(error) = python::preflight()
+                {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(exit::FAILURE);
+                }
+                runtime_command(crate::serve::run(
+                    loaded,
+                    path,
+                    usize::from(*jobs),
+                    timeout.as_duration(),
+                ))
+            }
             WriterCommand::Status => runtime_command(crate::envelopes::status(config)),
             WriterCommand::Restore { publication } => {
                 runtime_command(crate::maintenance::restore(config, Some(publication)))
@@ -359,11 +368,9 @@ fn worker(job: &WorkerJob, config: &Path) -> ExitCode {
     }
     match job {
         WorkerJob::Discover | WorkerJob::Metadata { .. } => {
-            let result = python::with_runtime(|py, runtime| match job {
-                WorkerJob::Discover => python::inventory(py, runtime),
-                WorkerJob::Metadata { provider } => {
-                    python::discover_provider(py, runtime, provider)
-                }
+            let result = python::with_host(&Vec::new(), |host| match job {
+                WorkerJob::Discover => python::inventory(host),
+                WorkerJob::Metadata { provider } => python::discover_provider(host, provider),
                 WorkerJob::Sync { .. } => unreachable!(),
             });
             match result {
@@ -378,13 +385,13 @@ fn worker(job: &WorkerJob, config: &Path) -> ExitCode {
             full,
             due,
         } => with_config(config, |loaded| {
-            if crate::secrets::install_worker_credentials(&loaded.config, source).is_err() {
+            let Ok(credentials) = crate::secrets::worker_credentials(&loaded.config, source) else {
                 return ExitCode::from(exit::FAILURE);
-            }
+            };
             if *prepare {
-                crate::python::prepared_sync(loaded, source, kinds, *full, *due)
+                crate::python::prepared_sync(loaded, source, kinds, *full, *due, &credentials)
             } else {
-                sync::worker_sync(loaded, source, kinds)
+                sync::worker_sync(loaded, source, kinds, &credentials)
             }
         }),
     }

@@ -415,22 +415,6 @@
         "tier": "quick",
         "seconds": 0.0
       },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::prepared_generator_closes_retained_iterators_and_preserves_errors": {
-        "tier": "quick",
-        "seconds": 0.009
-      },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::prepared_generator_success_does_not_call_close": {
-        "tier": "quick",
-        "seconds": 0.001
-      },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::provider_driver_preserves_row_and_error_policies": {
-        "tier": "quick",
-        "seconds": 0.004
-      },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::run_kind_closes_retained_iterators_and_preserves_errors": {
-        "tier": "quick",
-        "seconds": 0.001
-      },
       "full:fyrr-writer:lib:fyrr_writer/sync::report_tests::every_closed_code_survives_reports_with_other_kind_statistics": {
         "tier": "quick",
         "seconds": 0.008
@@ -714,6 +698,58 @@
       "full:fyrr-writer:lib:fyrr_writer/commit::group::fts_partition_tests::absent_target_keeps_one_partition_and_a_set_target_keeps_several_through_merges": {
         "tier": "quick",
         "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::the_handshake_refuses_another_protocol_and_names_the_sdk": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_run_closes_its_generator_unless_the_read_succeeds": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::frames_over_their_bound_and_unusable_rows_are_batch_failures": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::revision_requests_are_answered_while_a_batch_is_produced": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::the_row_and_error_policies_map_each_failure_to_its_own_diagnostic": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_dry_run_maps_failures_to_worker_diagnostics_and_runs_empty_providers": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_host_that_hangs_on_close_is_killed_and_leaves_no_process": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::wire::tests::a_length_over_the_bound_is_refused_before_any_payload_is_read": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::wire::tests::an_unknown_kind_and_a_truncated_payload_are_refused": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::wire::tests::frames_round_trip_and_keep_their_kind": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::interpreter::tests::a_relative_location_is_never_run": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::interpreter::tests::the_messages_name_the_fix": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::interpreter::tests::the_three_places_are_tried_in_order": {
+        "tier": "quick",
+        "seconds": 0.0
       }
     },
     "children": {
@@ -1072,6 +1108,10 @@
         "tier": "quick",
         "seconds": 0.097
       },
+      "full:fyrr:test:cli/providers::commands_without_python_name_the_fix_and_the_others_run": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
       "full:fyrr:test:cli/providers::config_check_validates_sources_against_their_providers": {
         "tier": "quick",
         "seconds": 13.624
@@ -1079,6 +1119,10 @@
       "full:fyrr:test:cli/providers::dry_run_validates_each_source_in_its_own_worker": {
         "tier": "quick",
         "seconds": 9.558
+      },
+      "full:fyrr:test:cli/providers::failing_providers_end_in_closed_diagnostics_and_leave_no_process": {
+        "tier": "quick",
+        "seconds": 15.0
       },
       "full:fyrr:test:cli/providers::fixed_connections_make_no_permission_or_member_reads": {
         "tier": "quick",
@@ -4153,6 +4197,50 @@
       "python:connectors/tests/test_provider_runtime.py::test_local_files_normalizes_controls_without_changing_raw_revision_identity": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "python:connectors/tests/test_host.py::test_a_batch_over_the_byte_limit_is_refused_before_it_is_serialized": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_a_callback_error_raises_in_the_provider_without_a_value": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_close_runs_the_generators_cleanup": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_content_rows_cross_as_an_arrow_ipc_stream": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_inventory_and_discover_answer_with_documents": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_provider_failures_cross_as_a_closed_code": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_revision_callbacks_round_trip_while_a_batch_is_produced": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_the_handshake_names_the_protocol_and_the_sdk": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_the_host_process_serves_over_an_inherited_descriptor_and_exits_on_eof": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_the_host_refuses_a_missing_or_invalid_descriptor_argument": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_without_revisions_the_provider_has_no_callbacks": {
+        "tier": "quick",
+        "seconds": null
       }
     }
   },

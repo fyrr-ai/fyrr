@@ -564,7 +564,6 @@ mod providers {
             stdout.contains("source exit (provider sentinel-failing 1.0.0): FAILED"),
             "{stdout}"
         );
-        assert!(stdout.contains("the worker failed"), "{stdout}");
         assert_clean(&sentinels, &output, &sandbox, "failing providers");
     }
 

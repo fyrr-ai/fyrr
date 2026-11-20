@@ -222,7 +222,7 @@ class InvalidConnector(Connector):
 
 
 class FailingSettings(ConfigModel):
-    mode: Literal["raise", "abort", "exit", "hang", "print"] = setting(
+    mode: Literal["raise", "abort", "exit", "hang", "print", "memory", "die"] = setting(
         description="How the provider fails."
     )
 
@@ -237,6 +237,10 @@ class FailingConnector(Connector):
         data = _fixture(self)
         marker = data["documents"][0]["text"]
         mode = self.context.settings.mode
+        pid_dir = os.environ.get("FYRR_TEST_PID_DIR")
+        if pid_dir:
+            # Lets a test prove that no provider process outlives the command.
+            Path(pid_dir, f"{mode}.pid").write_text(str(os.getpid()))
         if mode == "raise":
             raise ValueError(f"cannot parse document {marker}")
         if mode == "abort":
@@ -245,6 +249,17 @@ class FailingConnector(Connector):
             raise SystemExit(f"giving up on {marker}")
         if mode == "hang":
             time.sleep(3600)
+        if mode == "memory":
+            # Far above any worker memory limit the tests configure.
+            try:
+                hoard = [bytearray(1 << 30) for _ in range(64)]
+            except MemoryError:
+                if pid_dir:
+                    Path(pid_dir, "memory.limited").write_text("1")
+                raise
+            raise ValueError(len(hoard))
+        if mode == "die":
+            os._exit(7)
         print("provider stdout line")
         yield ContentBatch(changes=document_changes([]), cursor="printed")
 

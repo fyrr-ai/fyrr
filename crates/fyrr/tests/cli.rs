@@ -450,7 +450,7 @@ mod providers {
             "  members      batches=1 users=1 groups=1",
             "  reconcile    batches=1 root_ids=1 complete=true",
             "source abort (provider sentinel-failing 1.0.0): FAILED",
-            "  error: the worker failed",
+            "  error: the provider failed",
             "source hang (provider sentinel-failing 1.0.0): FAILED",
             "  error: the worker timed out and its process group was killed",
             "source print (provider sentinel-failing 1.0.0): ok",
@@ -501,6 +501,177 @@ mod providers {
         let report: serde_json::Value = serde_json::from_str(&stdout).expect("worker error report");
         assert_eq!(report["error"], "storage_unavailable");
         assert_eq!(report["paid_calls"], 0);
+    }
+
+    /// Whether a process still runs; a zombie that nobody has reaped yet does not.
+    fn running(pid: &str) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(')')
+                    .map(|(_, rest)| rest.trim_start().starts_with(['Z', 'X']))
+            })
+            .is_some_and(|dead| !dead)
+    }
+
+    /// A provider that hangs, exhausts its memory, closes the connection to
+    /// the worker by dying, aborts, exits or raises ends in a closed diagnostic
+    /// and leaves no process behind, whichever process the failure was in.
+    #[test]
+    fn failing_providers_end_in_closed_diagnostics_and_leave_no_process() {
+        let mut sentinels = Sentinels::new();
+        let sandbox = Sandbox::new("cli-isolation");
+        let fixture = sandbox.input("docs.json", &provider_fixture(&mut sentinels));
+        let pids = sandbox.output().join("pids");
+        std::fs::create_dir_all(&pids).unwrap();
+        let modes = [
+            (
+                "hang",
+                "the worker timed out and its process group was killed",
+            ),
+            ("memory", "the provider failed"),
+            ("die", "the provider failed"),
+            ("abort", "the provider failed"),
+            ("exit", "the provider failed"),
+            ("raise", "the provider failed"),
+        ];
+        let mut config = String::new();
+        for (mode, _) in modes {
+            config.push_str(&source(
+                mode,
+                "sentinel-failing",
+                &fixture,
+                &format!("mode = \"{mode}\""),
+            ));
+        }
+        let path = sandbox.input("fyrr.toml", &config_with(&config));
+        let started = std::time::Instant::now();
+        let output = common::fyrr()
+            .env("FYRR_TEST_PID_DIR", &pids)
+            .args(["--config", &config_arg(&path)])
+            .args([
+                "writer",
+                "sync",
+                "--dry-run",
+                "--timeout",
+                "10s",
+                "--jobs",
+                "6",
+            ])
+            .output()
+            .unwrap();
+        let (stdout, stderr) = text(&output);
+        assert_eq!(output.status.code(), Some(1), "{stdout}{stderr}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(60));
+        for (mode, error) in modes {
+            let section = stdout
+                .split("source ")
+                .find(|section| section.starts_with(&format!("{mode} (")))
+                .unwrap_or_else(|| panic!("{mode} missing:\n{stdout}"));
+            assert!(
+                section.contains("FAILED") && section.contains(&format!("error: {error}")),
+                "{mode}:\n{section}"
+            );
+            let pid = std::fs::read_to_string(pids.join(format!("{mode}.pid")))
+                .unwrap_or_else(|_| panic!("{mode}: the provider never ran"));
+            assert!(
+                !running(&pid),
+                "{mode}: provider process {pid} outlived the command"
+            );
+        }
+        assert!(
+            pids.join("memory.limited").exists(),
+            "the memory limit did not reach the provider process"
+        );
+        // Nothing the providers raised or printed reaches the output.
+        for private in [
+            "cannot parse document",
+            "giving up on",
+            "provider stdout line",
+        ] {
+            assert!(
+                !stdout.contains(private) && !stderr.contains(private),
+                "{private}"
+            );
+        }
+    }
+
+    /// Without a Python the commands that run providers stop with one message
+    /// that names the fix; every other command works; an interpreter in the
+    /// current directory (a relative `PATH` entry) is never run.
+    #[test]
+    fn commands_without_python_name_the_fix_and_the_others_run() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut sentinels = Sentinels::new();
+        let sandbox = Sandbox::new("cli-no-python");
+        let fixture = sandbox.input("docs.json", &provider_fixture(&mut sentinels));
+        let with_source = sandbox.input(
+            "with-source.toml",
+            &config_with(&source("docs", "sentinel-docs", &fixture, "")),
+        );
+        let without = sandbox.input("without.toml", &config_with(""));
+        let cwd = sandbox.output().join("cwd");
+        let planted = cwd.join("python3");
+        let marker = cwd.join("planted-python-ran");
+        std::fs::write(
+            &planted,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let run = |config: &Path, args: &[&str], path: &str| {
+            let mut command = common::fyrr();
+            command
+                .env_remove("VIRTUAL_ENV")
+                .env("PATH", path)
+                .current_dir(&cwd)
+                .arg("--config")
+                .arg(config)
+                .args(args);
+            command.output().unwrap()
+        };
+        for path in ["/nonexistent", ".", ":"] {
+            for args in [
+                &["config", "check", "--no-env"][..],
+                &["config", "schema"],
+                &["writer", "providers"],
+                &["writer", "sync", "--dry-run"],
+            ] {
+                let output = run(&with_source, args, path);
+                let (stdout, stderr) = text(&output);
+                assert_eq!(output.status.code(), Some(1), "{args:?} {stdout}{stderr}");
+                assert!(
+                    stderr.contains("pip install fyrr-connectors[<type>]")
+                        && stderr.contains("VIRTUAL_ENV"),
+                    "{args:?}: {stderr}"
+                );
+            }
+            // Without sources nothing needs Python.
+            let output = run(&without, &["config", "check", "--no-env"], path);
+            assert!(output.status.success(), "{}", text(&output).1);
+            let output = run(&without, &["writer", "sync", "--dry-run"], path);
+            assert!(output.status.success(), "{}", text(&output).1);
+        }
+        let output = run(&without, &["--version"], "/nonexistent");
+        assert!(text(&output).0.contains("fyrr"), "{:?}", text(&output));
+        assert!(
+            !marker.exists(),
+            "an interpreter from the current directory ran"
+        );
+        // A set but unusable VIRTUAL_ENV is named, and is not replaced by another Python.
+        let mut command = common::fyrr();
+        command
+            .env("VIRTUAL_ENV", sandbox.output().join("no-such-env"))
+            .arg("--config")
+            .arg(&with_source)
+            .args(["writer", "providers"]);
+        let output = command.output().unwrap();
+        let (_, stderr) = text(&output);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.contains("no-such-env") && stderr.contains("VIRTUAL_ENV"),
+            "{stderr}"
+        );
     }
 
     #[test]
