@@ -39,7 +39,9 @@ pub(crate) type ArtifactCache<T> = Arc<tokio::sync::Mutex<Option<(GenerationPoin
 /// age counts on the monotonic clock and on the wall clock). Such checks
 /// share one read, run on its own task, and its outcome: no lock is held
 /// across the request, and a failure is given to the checks that waited for
-/// it and then forgotten. The held head is always the one whose read started
+/// it and then forgotten. A read that is itself older than two intervals when
+/// it ends, because storage answered late, fails the checks that waited for it
+/// the same way: its head is as old as the read is. The held head is always the one whose read started
 /// last, so a slower, older read never replaces a newer one, and a generation
 /// opened from a fresh read never meets an older head here.
 #[derive(Debug, Clone)]
@@ -150,6 +152,12 @@ impl HeadCache {
             Some(held) if held.started >= read_started && self.young(held) => Ok(held.head.clone()),
             _ if state.latest.is_some_and(|latest| latest > read_started) => {
                 Err(StorageError::StorageUnavailable)
+            }
+            // A read that outlasted the age limit answers with a head older
+            // than a check may use, whatever its own age on arrival: its age
+            // counts from when it started. The next check reads again.
+            Some(held) if held.started == read_started && !self.young(held) => {
+                Err(StorageError::AuthorizationUnavailable)
             }
             _ => outcome,
         }

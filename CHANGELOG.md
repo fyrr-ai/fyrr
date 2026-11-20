@@ -151,6 +151,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Fixed
 
+- **A late head read is not used for authorization.** When a check waited for
+  a shared head read that storage answered after more than two version-check
+  intervals, the check was served with the head as it was when the read
+  began, so a revocation published meanwhile could be missed for longer than
+  the documented two intervals. Such a read now fails the checks that waited
+  for it with `authorization_unavailable`, and the next check reads again.
+  Its age counts from when it started.
 - Prepared sync timeout errors name the elapsed worker limit and `--timeout`,
   including deadline exhaustion during cleanup. Deployment guidance covers
   larger initial loads, durable envelopes, source leases and vector-cache reuse.
