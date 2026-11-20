@@ -869,6 +869,69 @@ async fn rejected_authorization(kind: SyncKind) {
     assert_eq!(denied["structuredContent"]["documents"], json!([]));
 }
 
+/// A non-content batch is a header with no rows and may be as large as the
+/// configured envelope: one members part (at most 256 users and groups) whose
+/// groups list a thousand members each is a header of over 2 MiB, which both
+/// the dry run and a prepared run, in real workers with the real Python host,
+/// accept.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_large_members_snapshot_passes_dry_run_and_a_prepared_run_on_storage() {
+    let (worker, commit, root) = fixture();
+    initial(&root);
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    publish(&commit);
+    let users: Vec<Value> = (0..50)
+        .map(|n| {
+            json!({
+                "id": format!("user-{n:06}"),
+                "email": format!("person.number.{n:06}@example.test"),
+                "active": true,
+            })
+        })
+        .collect();
+    let groups: Vec<Value> = (0..150)
+        .map(|group| {
+            let members: Vec<String> = (0..1000)
+                .map(|member| format!("usr:user-{:06}", group * 1000 + member))
+                .collect();
+            json!({"id": format!("group-{group:03}"), "members": members})
+        })
+        .collect();
+    let part = json!({"users": users, "groups": groups, "last": true});
+    assert!(
+        part.to_string().len() > 2 << 20,
+        "the header must exceed 2 MiB"
+    );
+    input(&root, json!({"epoch": 3, "members": [part]}));
+
+    let dry = super::coordination::worker_command(&worker)
+        .args([
+            "writer",
+            "sync",
+            "--dry-run",
+            "incremental",
+            "--kind",
+            "members",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&dry.stdout);
+    assert!(
+        dry.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&dry.stderr)
+    );
+    assert!(stdout.contains("users=50 groups=150"), "{stdout}");
+
+    worker_sync(&worker, &["incremental", "--kind", "members"]);
+    let pending = envelopes(&worker).await;
+    assert!(pending.iter().any(|(_, e)| matches!(
+        &e.payload,
+        EnvelopePayload::Members(p) if p.complete_read
+    )));
+}
+
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn incremental_members_alone_never_attest_permissions_on_storage() {

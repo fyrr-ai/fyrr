@@ -1,39 +1,53 @@
 //! The client of the Python provider host: one child process per use, started
 //! by a worker from the interpreter that [`super::interpreter`] finds, talking
-//! over a socket it inherits (`fyrr_connectors.host`).
+//! over a socket (`fyrr_connectors.host`).
 //!
 //! The child stays in the worker's process group and keeps its resource
 //! limits, so the supervisor's kill, timeout and orphan paths reach it. Its
-//! stdin, stdout and stderr are `/dev/null`: the protocol never uses them.
+//! stdout and stderr are `/dev/null`. Its stdin is its end of the socket,
+//! which is the only descriptor it is handed: the host moves it to a
+//! descriptor that no child of a provider inherits, points stdin at
+//! `/dev/null` and closes everything else. Passing the socket as stdin keeps
+//! it close-on-exec in every other process, so no concurrent spawn can leak it.
+//!
 //! Whatever the peer sends is untrusted: every frame is bounded before it is
-//! allocated, every message belongs to a closed set, and a failure is one of
-//! three closed outcomes ([`Failure`]) that carry no peer-supplied value.
+//! allocated, Arrow streams are inspected before they are decoded
+//! ([`super::ipc`]), every message belongs to a closed set, and a failure is
+//! one of three closed outcomes ([`Failure`]) or, at start, one closed
+//! [`StartError`]; none carries a peer-supplied value but a version string
+//! that has the shape of a version.
 
 use super::interpreter;
+use super::ipc;
 use super::wire::{Kind, PROTOCOL_VERSION, WireError, read_frame, write_frame};
 use crate::worker::RESULT_MAX_BYTES;
 use arrow_array::RecordBatch;
-use arrow_buffer::Buffer;
-use arrow_ipc::reader::StreamDecoder;
 use fyrr_core::connector::SyncKind;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::net::Shutdown;
-use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 // Exception names and frames can contain supplied values.
 pub(super) const PYTHON_FAILURE: &str = "Python failure";
-const START_FAILED: &str = "the Python provider host could not start (Python failure)";
-const EXITED_AT_START: &str = "the Python provider host exited at startup (Python failure); \
-make sure fyrr-connectors, with pyarrow, is installed in the environment VIRTUAL_ENV names \
-(or in the python3 on PATH)";
 
-/// Rows and headers may exceed the configured batch bytes by their framing
-/// (Arrow schema and padding, JSON syntax); the exact limits are then checked
-/// on the decoded batch and by the batch checker.
+/// The interpreter could not import the SDK's runtime (a missing SDK or
+/// pyarrow), or the host module (an SDK older than the host protocol). These
+/// exit codes tell the two apart before the protocol starts.
+const EXIT_NO_SDK: i32 = 90;
+const EXIT_NO_HOST: i32 = 91;
+/// Starts the host the way `-m fyrr_connectors.host` would, with an exit code
+/// for each import that can fail.
+pub(super) const BOOTSTRAP: &str = "import sys\n\
+try:\n import fyrr_connectors.runtime\nexcept ImportError:\n sys.exit(90)\n\
+try:\n import fyrr_connectors.host as host\nexcept ImportError:\n sys.exit(91)\n\
+sys.exit(host.main(sys.argv))\n";
+
+/// Frames of a batch may exceed the configured envelope by their framing
+/// (JSON syntax, Arrow schema, message metadata and padding); the exact limits
+/// are checked on the declared and decoded batch and by the batch checker.
 const FRAME_SLACK: u64 = 1 << 20;
 /// A `close` runs the provider's cleanup; it gets this long.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -43,6 +57,10 @@ const EXIT_GRACE: Duration = Duration::from_secs(2);
 const CONTROL_MAX: u64 = RESULT_MAX_BYTES as u64;
 /// The most roots one `lookup_revisions` may ask for.
 pub(super) const MAX_ROOTS: usize = 256;
+/// What the host may set in the provider's environment: the host's own limits.
+const ENV_MAX_VARIABLES: usize = 256;
+const ENV_MAX_NAME: usize = 128;
+const ENV_MAX_VALUE: usize = 1 << 20;
 /// Environment of the worker itself that the provider process never needs.
 const WORKER_ONLY_ENV: [&str; 3] = [
     "FYRR_WORKER_RESULT",
@@ -70,10 +88,92 @@ impl From<WireError> for Failure {
     }
 }
 
+/// Why a host could not be started: a closed code that crosses from a worker
+/// to the process that prints it. Each has one actionable message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StartError {
+    /// No interpreter was found, or it could not be run.
+    PythonUnavailable,
+    /// The interpreter cannot import the connector SDK (or its pyarrow).
+    SdkUnavailable,
+    /// The SDK and this fyrr do not speak the same host protocol: it has no
+    /// host module (older) or another protocol version. Carries the SDK's
+    /// version, in the shape of a version, when it said one.
+    ProtocolMismatch { sdk_version: Option<String> },
+    /// Anything else: nothing about the peer is reported.
+    Failed,
+}
+
+impl StartError {
+    /// The closed code that names this error.
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            Self::PythonUnavailable => "python_unavailable",
+            Self::SdkUnavailable => "sdk_unavailable",
+            Self::ProtocolMismatch { .. } => "protocol_mismatch",
+            Self::Failed => "python_failure",
+        }
+    }
+
+    /// The error a code and an optional version name; unknown codes are
+    /// [`StartError::Failed`], and a version is shown only if it looks like one.
+    pub(crate) fn parse(code: &str, sdk_version: Option<&str>) -> Self {
+        match code {
+            "python_unavailable" => Self::PythonUnavailable,
+            "sdk_unavailable" => Self::SdkUnavailable,
+            "protocol_mismatch" => Self::ProtocolMismatch {
+                sdk_version: sdk_version.map(crate::providers::version_text),
+            },
+            _ => Self::Failed,
+        }
+    }
+
+    /// The version a mismatch names, for the code's wire form.
+    pub(crate) fn sdk_version(&self) -> Option<&str> {
+        match self {
+            Self::ProtocolMismatch { sdk_version } => sdk_version.as_deref(),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for StartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let fix = interpreter::FIX;
+        match self {
+            // Paths only: the same lookup that found nothing, now with its reason.
+            Self::PythonUnavailable => match interpreter::resolve() {
+                Err(error) => f.write_str(&error),
+                Ok(python) => write!(f, "{} cannot be run; {fix}", python.display()),
+            },
+            Self::SdkUnavailable => match interpreter::resolve() {
+                Ok(python) => write!(
+                    f,
+                    "the connector SDK (fyrr_connectors, with pyarrow) cannot be imported by {}; {fix}",
+                    python.display()
+                ),
+                Err(_) => write!(f, "the connector SDK cannot be imported; {fix}"),
+            },
+            Self::ProtocolMismatch { sdk_version } => write!(
+                f,
+                "the installed fyrr-connectors{} does not match this fyrr (provider-host \
+                 protocol {PROTOCOL_VERSION}); {fix}",
+                sdk_version
+                    .as_ref()
+                    .map_or_else(String::new, |version| format!(" {version}"))
+            ),
+            Self::Failed => {
+                f.write_str("the Python provider host failed to start (Python failure)")
+            }
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case", deny_unknown_fields)]
 enum Message {
     Ready { protocol: u64, sdk_version: String },
+    EnvironmentSet,
     Started,
     Done,
     Failed,
@@ -91,12 +191,23 @@ pub(super) trait Revisions {
     fn next(&mut self) -> Option<Vec<(String, String)>>;
 }
 
-/// The bounds one batch must stay within.
+/// What a run's batches may carry.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct RowLimits {
+pub(super) struct Bounds {
+    /// The bytes of a batch: its header, and its Arrow buffers.
     pub(super) max_bytes: u64,
-    /// Set when the row count is enforced as the rows arrive.
-    pub(super) max_rows: Option<u64>,
+    pub(super) rows: Rows,
+}
+
+/// Whether, and how many, Arrow rows a batch may carry.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Rows {
+    /// None: a batch has only its header.
+    Forbidden,
+    /// Any count within the bytes; the caller bounds it as it uses the rows.
+    Any,
+    /// At most this many rows.
+    AtMost(u64),
 }
 
 /// One batch of a run: the contract header and, for content, its rows.
@@ -116,41 +227,41 @@ pub(crate) struct Host {
 }
 
 impl Host {
-    /// Starts a host with `credentials` added to its environment, and waits
-    /// for its handshake.
-    pub(super) fn start(credentials: &[(String, String)]) -> Result<Self, String> {
-        Self::launch(
-            interpreter::resolve()?,
-            &["-P", "-m", "fyrr_connectors.host"],
-            credentials,
-        )
+    /// Starts a host and waits for its handshake. `credentials` reach the
+    /// provider's environment only after the host is running, in a message
+    /// that is bounded and never echoed, so they are not in the process's
+    /// initial environment.
+    pub(super) fn start(credentials: &[(String, String)]) -> Result<Self, StartError> {
+        let python = interpreter::resolve().map_err(|_| StartError::PythonUnavailable)?;
+        let mut host = Self::launch(python, &["-P", "-c", BOOTSTRAP], &[])?;
+        host.set_environment(credentials)?;
+        Ok(host)
     }
 
-    /// Starts `python` with `entry` and the socket's descriptor number.
+    /// Starts `python` with `entry`, whose stdin is the socket and whose
+    /// environment is this process's, without the worker's own variables, plus
+    /// `environment`.
     pub(super) fn launch(
         python: std::path::PathBuf,
         entry: &[&str],
-        credentials: &[(String, String)],
-    ) -> Result<Self, String> {
-        let (stream, theirs) = UnixStream::pair().map_err(|_| START_FAILED.to_owned())?;
-        // The only descriptor the child inherits (std's sockets close on exec).
-        rustix::io::fcntl_setfd(&theirs, rustix::io::FdFlags::empty())
-            .map_err(|_| START_FAILED.to_owned())?;
+        environment: &[(String, String)],
+    ) -> Result<Self, StartError> {
+        let (stream, theirs) = UnixStream::pair().map_err(|_| StartError::Failed)?;
         let mut command = Command::new(python);
         command
             .args(entry)
-            .arg(theirs.as_raw_fd().to_string())
-            .stdin(Stdio::null())
+            .stdin(Stdio::from(std::os::fd::OwnedFd::from(theirs)))
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         for name in WORKER_ONLY_ENV {
             command.env_remove(name);
         }
-        for (name, value) in credentials {
+        for (name, value) in environment {
             command.env(name, value);
         }
-        let child = command.spawn().map_err(|_| START_FAILED.to_owned())?;
-        drop(theirs);
+        let child = command.spawn().map_err(|_| StartError::PythonUnavailable)?;
+        // `command` held the socket's other end; it is closed with it.
+        drop(command);
         let mut host = Self {
             child,
             stream,
@@ -160,22 +271,74 @@ impl Host {
         Ok(host)
     }
 
-    fn handshake(&mut self) -> Result<(), String> {
+    /// The process id of the host, for tests that look at it from outside.
+    #[cfg(test)]
+    pub(super) fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    fn handshake(&mut self) -> Result<(), StartError> {
         match self.read_message() {
             Ok(Message::Ready {
                 protocol: PROTOCOL_VERSION,
                 ..
             }) => Ok(()),
-            Ok(Message::Ready {
-                protocol,
-                sdk_version,
-            }) => Err(format!(
-                "the installed fyrr-connectors {} speaks provider-host protocol {protocol}; this \
-                 fyrr speaks {PROTOCOL_VERSION}: install the fyrr-connectors that matches this fyrr",
-                displayable(&sdk_version)
-            )),
-            Err(Failure::Provider) => Err(EXITED_AT_START.to_owned()),
-            Ok(_) | Err(_) => Err(PYTHON_FAILURE.to_owned()),
+            Ok(Message::Ready { sdk_version, .. }) => Err(StartError::ProtocolMismatch {
+                sdk_version: Some(crate::providers::version_text(&sdk_version)),
+            }),
+            // The host is gone before it spoke: its exit status says why.
+            Err(Failure::Provider) => Err(self.exit_at_start()),
+            Ok(_) | Err(_) => Err(StartError::Failed),
+        }
+    }
+
+    /// The reason a host exited before its handshake, from its exit status.
+    fn exit_at_start(&mut self) -> StartError {
+        let deadline = Instant::now() + EXIT_GRACE;
+        let status = loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => break status.code(),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                _ => break None,
+            }
+        };
+        self.broken = true;
+        match status {
+            Some(EXIT_NO_SDK) => StartError::SdkUnavailable,
+            Some(EXIT_NO_HOST) => StartError::ProtocolMismatch { sdk_version: None },
+            _ => StartError::Failed,
+        }
+    }
+
+    /// Sets the provider's credentials in the host's `os.environ`, before any
+    /// provider code can run. Names and values the host would refuse are
+    /// refused here, without saying which.
+    pub(super) fn set_environment(
+        &mut self,
+        credentials: &[(String, String)],
+    ) -> Result<(), StartError> {
+        if credentials.is_empty() {
+            return Ok(());
+        }
+        let valid = credentials.len() <= ENV_MAX_VARIABLES
+            && credentials.iter().all(|(name, value)| {
+                name.len() <= ENV_MAX_NAME
+                    && name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                    && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    && value.len() <= ENV_MAX_VALUE
+                    && !value.contains('\0')
+            });
+        if !valid {
+            return Err(StartError::Failed);
+        }
+        let variables: BTreeMap<_, _> = credentials.iter().cloned().collect();
+        self.send(&serde_json::json!({"t": "environment", "variables": variables}))
+            .map_err(|_| StartError::Failed)?;
+        match self.read_message() {
+            Ok(Message::EnvironmentSet) => Ok(()),
+            _ => Err(StartError::Failed),
         }
     }
 
@@ -301,50 +464,57 @@ pub(super) struct Run<'h> {
 }
 
 impl Run<'_> {
-    /// The next batch, `None` when the provider is done. `limits` is `None`
-    /// where the run takes no rows. While the provider runs it may call
-    /// back; `revisions` answers it.
+    /// The next batch, `None` when the provider is done. While the provider
+    /// runs it may call back; `revisions` answers it.
     pub(super) fn next(
         &mut self,
-        limits: Option<RowLimits>,
+        bounds: Bounds,
         mut revisions: Option<&mut dyn Revisions>,
     ) -> Result<Option<Item>, Failure> {
         let host = &mut *self.host;
         host.send(&serde_json::json!({"t": "next"}))?;
-        let batch_bound = limits.map_or(0, |limits| limits.max_bytes.saturating_add(FRAME_SLACK));
+        // The configured envelope bounds every batch frame, whether or not the
+        // batch has rows: a members snapshot is as large as it may be.
+        let frame_bound = bounds.max_bytes.saturating_add(FRAME_SLACK);
         loop {
             let (kind, payload) = host.read(|kind| match kind {
                 Kind::Control => CONTROL_MAX,
-                Kind::Header | Kind::Batch => batch_bound.max(FRAME_SLACK),
+                Kind::Header | Kind::Batch => frame_bound,
                 Kind::Document | Kind::Rows => 0,
             })?;
             match kind {
                 Kind::Header => return Ok(Some(Item::new(payload, None, host)?)),
                 Kind::Batch => {
-                    let Some(limits) = limits else {
-                        // Rows where none are allowed; their frame stays unread.
-                        host.broken = true;
-                        return Err(Failure::Batch);
+                    let max_rows = match bounds.rows {
+                        Rows::Forbidden => {
+                            // Rows where none are allowed; their frame stays
+                            // unread, so the conversation is out of step.
+                            host.broken = true;
+                            return Err(Failure::Batch);
+                        }
+                        Rows::Any => None,
+                        Rows::AtMost(max) => Some(max),
                     };
                     let (kind, rows) = host.read(|kind| match kind {
-                        Kind::Rows => batch_bound,
+                        Kind::Rows => frame_bound,
                         Kind::Control => CONTROL_MAX,
                         _ => 0,
                     })?;
                     if kind != Kind::Rows {
                         return Err(host.out_of_step());
                     }
-                    let rows = decode_rows(rows).ok_or_else(|| {
-                        host.broken = true;
-                        Failure::Batch
-                    })?;
-                    let over_rows = limits
-                        .max_rows
-                        .is_some_and(|max| rows.num_rows() as u64 > max);
-                    let too_big = crate::batch::rows_bytes(&rows)
-                        .is_none_or(|bytes| bytes > limits.max_bytes);
-                    if over_rows || too_big {
-                        host.broken = true;
+                    // Both frames are read: whatever is wrong with the rows,
+                    // the host is in step and is asked to close its generator.
+                    let rows = ipc::decode(
+                        rows,
+                        ipc::Bounds {
+                            max_bytes: bounds.max_bytes,
+                            max_rows,
+                        },
+                    )
+                    .map_err(|_| Failure::Batch)?;
+                    if crate::batch::rows_bytes(&rows).is_none_or(|bytes| bytes > bounds.max_bytes)
+                    {
                         return Err(Failure::Batch);
                     }
                     return Ok(Some(Item::new(payload, Some(rows), host)?));
@@ -382,7 +552,10 @@ impl Run<'_> {
                         |items| serde_json::json!({"t": "revisions", "items": items}),
                     ))?;
                 }
-                Message::Ready { .. } | Message::Started | Message::Closed => {
+                Message::Ready { .. }
+                | Message::EnvironmentSet
+                | Message::Started
+                | Message::Closed => {
                     return Err(host.out_of_step());
                 }
             }
@@ -410,36 +583,5 @@ impl Item {
             Ok(header) => Ok(Self { header, rows }),
             Err(_) => Err(host.out_of_step()),
         }
-    }
-}
-
-/// Exactly one record batch of an Arrow IPC stream, validated by the decoder.
-/// The batch's buffers are slices of the frame, not copies.
-fn decode_rows(stream: Vec<u8>) -> Option<RecordBatch> {
-    let mut buffer = Buffer::from_vec(stream);
-    let mut decoder = StreamDecoder::new();
-    let mut batch = None;
-    while !buffer.is_empty() {
-        if let Some(rows) = decoder.decode(&mut buffer).ok()?
-            && batch.replace(rows).is_some()
-        {
-            return None;
-        }
-    }
-    decoder.finish().ok()?;
-    batch
-}
-
-/// A version string of the peer that is safe to print.
-fn displayable(version: &str) -> &str {
-    if !version.is_empty()
-        && version.len() <= 40
-        && version
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b".+-".contains(&byte))
-    {
-        version
-    } else {
-        "<invalid>"
     }
 }

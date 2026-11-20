@@ -641,10 +641,11 @@ mod providers {
                 let (stdout, stderr) = text(&output);
                 assert_eq!(output.status.code(), Some(1), "{args:?} {stdout}{stderr}");
                 assert!(
-                    stderr.contains("pip install fyrr-connectors[<type>]")
-                        && stderr.contains("VIRTUAL_ENV"),
+                    stderr.contains("fyrr-connectors wheel") && stderr.contains("VIRTUAL_ENV"),
                     "{args:?}: {stderr}"
                 );
+                // The SDK is not on a package index: no command installs it from one.
+                assert!(!stderr.contains("pip install fyrr-connectors"), "{stderr}");
             }
             // Without sources nothing needs Python.
             let output = run(&without, &["config", "check", "--no-env"], path);
@@ -672,6 +673,250 @@ mod providers {
             stderr.contains("no-such-env") && stderr.contains("VIRTUAL_ENV"),
             "{stderr}"
         );
+    }
+
+    /// A `bin/python` for a fake virtual environment: `body` is a shell script.
+    fn fake_python(sandbox: &Sandbox, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let venv = sandbox.output().join(name);
+        std::fs::create_dir_all(venv.join("bin")).unwrap();
+        let python = venv.join("bin/python");
+        std::fs::write(&python, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+        venv
+    }
+
+    /// A `fyrr` with `VIRTUAL_ENV` set to `venv`.
+    fn fyrr_in(venv: &Path, config: &Path, args: &[&str]) -> (Output, String) {
+        let mut command = common::fyrr();
+        command
+            .env("VIRTUAL_ENV", venv)
+            .arg("--config")
+            .arg(config)
+            .args(args);
+        let output = command.output().unwrap();
+        let (_, stderr) = text(&output);
+        (output, stderr)
+    }
+
+    /// The first Python runs in a supervised discovery worker, never in the
+    /// process that prints: the interpreter's parent is a `__worker`, under
+    /// the worker's memory limit and in its process group; and a host that
+    /// cannot start comes back to the CLI as one closed, specific message.
+    #[test]
+    fn python_runs_only_under_a_worker_and_a_host_that_cannot_start_is_named() {
+        let sandbox = Sandbox::new("cli-host-start");
+        let with_source = {
+            let mut sentinels = Sentinels::new();
+            let fixture = sandbox.input("docs.json", &provider_fixture(&mut sentinels));
+            sandbox.input(
+                "with-source.toml",
+                &config_with(&source("docs", "sentinel-docs", &fixture, "")),
+            )
+        };
+        let real = common::repo().join("connectors/.venv/bin/python");
+        let marker = sandbox.output().join("started-by");
+        let probe = fake_python(
+            &sandbox,
+            "probe",
+            &format!(
+                "tr '\\0' ' ' < /proc/$PPID/cmdline > '{m}'\necho >> '{m}'\nps -o pgid= -p $PPID >> '{m}'\nps -o pgid= -p $$ >> '{m}'\nulimit -d >> '{m}'\nexit 1",
+                m = marker.display()
+            ),
+        );
+        let (output, stderr) = fyrr_in(&probe, &with_source, &["writer", "providers"]);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("failed to start"), "{stderr}");
+        let seen = std::fs::read_to_string(&marker).unwrap();
+        let mut lines = seen.lines();
+        let parent = lines.next().unwrap();
+        assert!(
+            parent.contains("writer __worker discover"),
+            "the interpreter was started by: {parent}"
+        );
+        let (worker_group, host_group) =
+            (lines.next().unwrap().trim(), lines.next().unwrap().trim());
+        assert_eq!(worker_group, host_group, "same process group as its worker");
+        assert_eq!(
+            lines.next().unwrap(),
+            "2097152",
+            "the worker's memory limit"
+        );
+        // An SDK older than the host protocol (it has `runtime`, not `host`),
+        // and an environment without the SDK or its pyarrow.
+        for (name, files, expected) in [
+            (
+                "old-sdk",
+                &[("runtime.py", "")][..],
+                "does not match this fyrr",
+            ),
+            (
+                "no-sdk",
+                &[("runtime.py", "import no_such_module_anywhere")][..],
+                "cannot be imported",
+            ),
+        ] {
+            let shim = sandbox.output().join(format!("{name}-site"));
+            std::fs::create_dir_all(shim.join("fyrr_connectors")).unwrap();
+            std::fs::write(shim.join("fyrr_connectors/__init__.py"), "").unwrap();
+            for (file, source) in files {
+                std::fs::write(shim.join("fyrr_connectors").join(file), source).unwrap();
+            }
+            let venv = fake_python(
+                &sandbox,
+                name,
+                &format!(
+                    "PYTHONPATH='{}' exec '{}' \"$@\"",
+                    shim.display(),
+                    real.display()
+                ),
+            );
+            for args in [
+                &["writer", "providers"][..],
+                &["config", "check", "--no-env"],
+                &["writer", "sync", "--dry-run"],
+            ] {
+                let (output, stderr) = fyrr_in(&venv, &with_source, args);
+                assert_eq!(output.status.code(), Some(1), "{name} {args:?}: {stderr}");
+                assert!(stderr.contains(expected), "{name} {args:?}: {stderr}");
+                assert!(
+                    stderr.contains("fyrr-connectors wheel") && stderr.contains("VIRTUAL_ENV"),
+                    "{name} {args:?}: {stderr}"
+                );
+                assert!(!stderr.contains("pip install fyrr-connectors"), "{stderr}");
+                assert!(!stderr.contains("the worker failed"), "{stderr}");
+            }
+        }
+    }
+
+    /// A dry run keeps one memory-limited Python process alive at a time per
+    /// worker: the discovery host ends before the first kind starts its own.
+    #[test]
+    fn a_dry_run_keeps_one_host_alive_at_a_time() {
+        let mut sentinels = Sentinels::new();
+        let sandbox = Sandbox::new("cli-one-host");
+        let fixture = sandbox.input("docs.json", &provider_fixture(&mut sentinels));
+        let config = sandbox.input(
+            "fyrr.toml",
+            &config_with(&format!(
+                "\n[[sources]]\nid = \"docs\"\ntype = \"sentinel-docs\"\n[sources.intervals]\npermissions = \"30m\"\nmembers = \"30m\"\n[sources.scope]\nfixture = \"{}\"\n",
+                fixture.display()
+            )),
+        );
+        let log = sandbox.output().join("hosts.log");
+        let real = common::repo().join("connectors/.venv/bin/python");
+        let venv = fake_python(
+            &sandbox,
+            "logged",
+            &format!(
+                "echo start >> '{log}'\n'{real}' \"$@\"\nstatus=$?\necho end >> '{log}'\nexit $status",
+                log = log.display(),
+                real = real.display()
+            ),
+        );
+        let (output, stderr) = fyrr_in(&venv, &config, &["writer", "sync", "--dry-run"]);
+        let stdout = text(&output).0;
+        assert!(output.status.success(), "{stdout}{stderr}");
+        let lines: Vec<_> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        // Discovery hosts, the source's discovery and its four kinds: each one
+        // ends before the next starts.
+        assert!(lines.len() >= 2 * 5, "{lines:?}");
+        for pair in lines.chunks(2) {
+            assert_eq!(pair, ["start", "end"], "{lines:?}");
+        }
+    }
+
+    /// What the provider host holds: stdio on /dev/null and its one socket,
+    /// which is close-on-exec, so neither the provider nor a process it starts
+    /// holds a descriptor of the worker's parent or the protocol socket.
+    #[test]
+    fn a_provider_and_its_children_hold_no_descriptor_but_stdio_and_the_host_socket() {
+        let mut sentinels = Sentinels::new();
+        let sandbox = Sandbox::new("cli-descriptors");
+        let report = sandbox.output().join("descriptors.json");
+        let mut fixture: serde_json::Value =
+            serde_json::from_str(&provider_fixture(&mut sentinels)).unwrap();
+        fixture["fd_report"] = serde_json::json!(report);
+        let fixture = sandbox.input("docs.json", &fixture.to_string());
+        let config = sandbox.input(
+            "fyrr.toml",
+            &config_with(&source(
+                "review",
+                "sentinel-review",
+                &fixture,
+                "mode = \"fds\"",
+            )),
+        );
+        // The invoker leaves a descriptor open (9), as a shell or a service manager may.
+        let base = common::fyrr();
+        let mut command = std::process::Command::new("sh");
+        for (name, value) in base.get_envs() {
+            match value {
+                Some(value) => command.env(name, value),
+                None => command.env_remove(name),
+            };
+        }
+        let output = command
+            .args(["-c", "exec 9</dev/null; exec \"$0\" \"$@\""])
+            .arg(common::binary())
+            .arg("--config")
+            .arg(&config)
+            .args(["writer", "sync", "--dry-run"])
+            .output()
+            .unwrap();
+        let (stdout, stderr) = text(&output);
+        assert!(output.status.success(), "{stdout}{stderr}");
+        let report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
+        let held: Vec<(u64, String, bool)> = report["provider"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                (
+                    entry["fd"].as_u64().unwrap(),
+                    entry["target"].as_str().unwrap().to_owned(),
+                    entry["cloexec"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        let numbers: std::collections::BTreeSet<u64> = held.iter().map(|(fd, ..)| *fd).collect();
+        let sockets: Vec<_> = held
+            .iter()
+            .filter(|(_, target, _)| target.starts_with("socket:"))
+            .collect();
+        assert_eq!(sockets.len(), 1, "{held:?}");
+        assert!(sockets[0].2, "the socket must be close-on-exec: {held:?}");
+        assert_eq!(
+            numbers,
+            [0, 1, 2, sockets[0].0].into_iter().collect(),
+            "descriptor 9 or another leaked in: {held:?}"
+        );
+        for (fd, target, _) in &held {
+            if *fd < 3 {
+                assert_eq!(target, "/dev/null", "{held:?}");
+            }
+        }
+        // A child the provider starts with close_fds=False holds no socket.
+        for entry in report["child"].as_array().unwrap() {
+            assert!(
+                !entry[1].as_str().unwrap().starts_with("socket:"),
+                "the child inherited the protocol socket: {report}"
+            );
+        }
+        // The worker's own variables never reach the host.
+        for variable in report["initial_environment"].as_array().unwrap() {
+            let variable = variable.as_str().unwrap();
+            assert!(
+                !variable.starts_with("FYRR_WORKER_")
+                    && !variable.starts_with("FYRR_WRITER_EMBEDDING_CAP"),
+                "{variable}"
+            );
+        }
     }
 
     #[test]

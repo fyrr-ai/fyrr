@@ -5,13 +5,15 @@
 //!
 //! [`interpreter`] finds the Python to run: `$VIRTUAL_ENV/bin/python`, a
 //! `python3` next to the `fyrr` executable, then `python3` on `PATH`. The
-//! SDK and the providers come from that interpreter's environment.
+//! SDK and the providers come from that interpreter's environment. Only
+//! workers run it: the process that prints the diagnostics never does.
 //!
-//! The worker and the host talk over an inherited socket ([`wire`] frames,
-//! [`host`] client). Content rows cross as Arrow IPC streams, which the
-//! worker bounds before it allocates and validates when it decodes them;
-//! everything printed is value-free: provider failures are closed
-//! diagnostics.
+//! The worker and the host talk over a socket ([`wire`] frames, [`host`]
+//! client). Content rows cross as Arrow IPC streams, which the worker bounds
+//! before it allocates, inspects before it decodes ([`ipc`]) and validates
+//! when it decodes them; everything printed is value-free: provider failures
+//! are closed diagnostics, and a host that cannot start is one closed
+//! [`StartError`].
 
 use crate::{Result, WriterError};
 use fyrr_core::connector::SyncKind;
@@ -22,14 +24,20 @@ use crate::sync::{ReportDefaults, default_report};
 use crate::worker::Diagnostic;
 use host::Host;
 
-pub(crate) use interpreter::preflight;
+pub(crate) use host::StartError;
 
-/// Starts a provider host and runs `body` with it.
+/// Starts a provider host and runs `body` with it; the host ends with it.
 pub(crate) fn with_host<R>(
     credentials: &Credentials,
     body: impl FnOnce(&mut Host) -> Result<R, String>,
 ) -> Result<R, String> {
-    body(&mut Host::start(credentials)?)
+    body(&mut Host::start(credentials).map_err(|error| error.to_string())?)
+}
+
+/// Starts a provider host for a discovery worker, which reports why it could
+/// not as a closed code.
+pub(crate) fn start_host() -> Result<Host, StartError> {
+    Host::start(&[])
 }
 
 /// Runs one sync kind of one source in a host of its own and checks every
@@ -41,22 +49,13 @@ pub(crate) fn run_kind(
     checker: &mut BatchChecker,
 ) -> Result<(), Diagnostic> {
     let mut host = Host::start(credentials).map_err(|_| Diagnostic::ProviderFailure)?;
-    run_kind_in(&mut host, source_json, kind, checker)
-}
-
-fn run_kind_in(
-    host: &mut Host,
-    source_json: &str,
-    kind: SyncKind,
-    checker: &mut BatchChecker,
-) -> Result<(), Diagnostic> {
     let request = driver::Request {
         source_json,
         kind,
         cursor: None,
     };
     let run = driver::drive_provider(
-        host,
+        &mut host,
         &request,
         None,
         checker,
@@ -66,6 +65,26 @@ fn run_kind_in(
     )?;
     run.finish();
     Ok(())
+}
+
+/// The result a discovery worker sends when its host cannot start: the closed
+/// code, and the SDK's version when a mismatch has one.
+pub(crate) fn host_error_result(error: &StartError) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "host_error": error.code(),
+        "sdk_version": error.sdk_version(),
+    }))
+    .unwrap_or_default()
+}
+
+/// The start error a discovery worker's result reports, if it reports one.
+pub(crate) fn host_error_from_result(result: &[u8]) -> Option<StartError> {
+    let value: serde_json::Value = serde_json::from_slice(result).ok()?;
+    let code = value.get("host_error")?.as_str()?;
+    Some(StartError::parse(
+        code,
+        value.get("sdk_version").and_then(serde_json::Value::as_str),
+    ))
 }
 
 /// Enumerates entry points without importing or executing providers.
@@ -81,6 +100,7 @@ pub(crate) fn discover_provider(host: &mut Host, name: &str) -> Result<String, S
 mod driver;
 mod host;
 mod interpreter;
+mod ipc;
 mod prepared;
 mod wire;
 use prepared::prepared_kind;

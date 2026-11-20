@@ -267,9 +267,11 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
             } => runtime_command(crate::commit::delete(config, export.as_deref())),
             WriterCommand::Maintain => runtime_command(crate::maintenance::maintain(config)),
             WriterCommand::Serve { jobs, timeout } => {
-                // Source jobs need the providers' Python: say so once, up front.
+                // Source jobs need the providers' Python: say so once, up
+                // front, from a discovery worker (this process runs none).
                 if !config.sources.is_empty()
-                    && let Err(error) = python::preflight()
+                    && let Err(error) =
+                        sync::discover(config.writer.worker_memory_max_bytes.as_u64())
                 {
                     eprintln!("error: {error}");
                     return ExitCode::from(exit::FAILURE);
@@ -368,11 +370,20 @@ fn worker(job: &WorkerJob, config: &Path) -> ExitCode {
     }
     match job {
         WorkerJob::Discover | WorkerJob::Metadata { .. } => {
-            let result = python::with_host(&Vec::new(), |host| match job {
-                WorkerJob::Discover => python::inventory(host),
-                WorkerJob::Metadata { provider } => python::discover_provider(host, provider),
-                WorkerJob::Sync { .. } => unreachable!(),
-            });
+            // The host is started here, under the worker's limits; a host that
+            // cannot start is reported as a closed code, which the process
+            // that prints turns into one message.
+            let mut host = match python::start_host() {
+                Ok(host) => host,
+                Err(error) => {
+                    let _ = crate::worker::send(&python::host_error_result(&error));
+                    return ExitCode::from(exit::FAILURE);
+                }
+            };
+            let result = match job {
+                WorkerJob::Metadata { provider } => python::discover_provider(&mut host, provider),
+                _ => python::inventory(&mut host),
+            };
             match result {
                 Ok(json) if crate::worker::send(json.as_bytes()).is_ok() => ExitCode::SUCCESS,
                 _ => ExitCode::from(exit::FAILURE),

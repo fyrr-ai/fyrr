@@ -1,4 +1,5 @@
-//! Finds the Python interpreter that hosts the connector providers.
+//! Finds the Python interpreter that hosts the connector providers. It only
+//! looks at paths: nothing here runs Python.
 //!
 //! In this order: `$VIRTUAL_ENV/bin/python`; a `python3` next to the `fyrr`
 //! executable (a `fyrr` installed into a Python environment uses that
@@ -9,15 +10,13 @@
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
-const FIX: &str = "install the connector SDK and the providers you need with \
-`pip install fyrr-connectors[<type>]` into a Python 3.13+ environment, and set VIRTUAL_ENV to \
-it (or put that environment's python3 on PATH)";
-
-/// How long the import probe may take before it is abandoned.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+/// What to do when no usable interpreter or SDK is found. The SDK is not on
+/// a package index: its wheel ships with each fyrr release.
+pub(super) const FIX: &str = "install the fyrr-connectors wheel from this fyrr release, with the \
+extras of the providers you need, into a Python 3.13+ virtual environment (for example `python3.13 \
+-m venv VENV && VENV/bin/pip install 'fyrr_connectors-<version>-py3-none-any.whl[<type>]'`), and \
+set VIRTUAL_ENV to VENV (or put its python3 on PATH)";
 
 fn executable(path: &Path) -> bool {
     path.metadata()
@@ -63,39 +62,6 @@ pub(super) fn resolve() -> Result<PathBuf, String> {
         executable_dir.as_deref(),
         std::env::var_os("PATH"),
     )
-}
-
-/// The interpreter, once it is known to import the connector SDK.
-pub(crate) fn preflight() -> Result<PathBuf, String> {
-    let python = resolve()?;
-    let missing = || {
-        format!(
-            "the connector SDK (fyrr_connectors, with pyarrow) cannot be imported by {}; {FIX}",
-            python.display()
-        )
-    };
-    let mut probe = Command::new(&python)
-        .args(["-P", "-c", "import fyrr_connectors.runtime"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| missing())?;
-    let deadline = Instant::now() + PROBE_TIMEOUT;
-    loop {
-        match probe.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(python),
-            Ok(Some(_)) | Err(_) => return Err(missing()),
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            Ok(None) => {
-                let _ = probe.kill();
-                let _ = probe.wait();
-                return Err(missing());
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -162,18 +128,15 @@ mod tests {
     #[test]
     fn the_messages_name_the_fix() {
         let none = select(None, None, None).unwrap_err();
-        assert!(
-            none.contains("pip install fyrr-connectors[<type>]"),
-            "{none}"
-        );
+        assert!(none.contains("fyrr-connectors wheel"), "{none}");
         assert!(none.contains("VIRTUAL_ENV"), "{none}");
+        // The SDK is not on a package index: no message installs it from one.
+        assert!(!none.contains("pip install fyrr-connectors"), "{none}");
+        assert!(!none.contains("pip install 'fyrr-connectors"), "{none}");
         let empty = scratch("empty");
         std::fs::create_dir_all(&empty).unwrap();
         let broken = select(Some(empty.clone().into_os_string()), None, None).unwrap_err();
-        assert!(
-            broken.contains("pip install fyrr-connectors[<type>]"),
-            "{broken}"
-        );
+        assert!(broken.contains("fyrr-connectors wheel"), "{broken}");
         std::fs::remove_dir_all(empty).unwrap();
     }
 }

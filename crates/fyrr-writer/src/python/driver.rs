@@ -1,5 +1,5 @@
 //! One provider boundary with explicit row and diagnostic policies.
-use super::host::{Failure, Host, Revisions, RowLimits, Run};
+use super::host::{Bounds, Failure, Host, Revisions, Rows, Run};
 use crate::batch::{BatchChecker, KindStats};
 use crate::worker::Diagnostic;
 use crate::{Result, WriterError};
@@ -80,14 +80,19 @@ pub(super) fn drive_provider<'h, E: Copy>(
             revisions.is_some(),
         )
         .map_err(|failure| errors.of(failure))?;
-    // The frame and the decoded batch are bounded before the rows are used.
-    let limits = (!matches!(policy, RowPolicy::Forbidden)).then(|| RowLimits {
+    // Every frame and the declared and decoded rows are bounded before they
+    // are used, whatever the row policy: a header is as large as the envelope.
+    let bounds = Bounds {
         max_bytes: checker.limits.max_bytes,
-        max_rows: matches!(policy, RowPolicy::Optional).then_some(checker.limits.max_rows),
-    });
+        rows: match policy {
+            RowPolicy::Forbidden => Rows::Forbidden,
+            RowPolicy::Optional => Rows::AtMost(checker.limits.max_rows),
+            RowPolicy::Required => Rows::Any,
+        },
+    };
     while let Some(item) = run
         .next(
-            limits,
+            bounds,
             revisions.as_deref_mut().map(|r| r as &mut dyn Revisions),
         )
         .map_err(|failure| errors.of(failure))?

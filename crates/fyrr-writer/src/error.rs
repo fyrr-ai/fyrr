@@ -148,7 +148,6 @@ writer_errors! {
     RestoreAuthorizationChanged => ("restore_authorization_changed", false),
     RestoreCommitFailed => ("restore_commit_failed", false),
     RestoreHorizonExpired => ("restore_horizon_expired", false),
-    RevisionPageInvalid => ("revision_page_invalid", false),
     TransactionInvalid => ("transaction_invalid", false),
     VerificationFailed => ("verification_failed", false),
     VersionCleanupFailed => ("version_cleanup_failed", false),

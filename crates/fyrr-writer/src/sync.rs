@@ -90,11 +90,17 @@ impl SourceReport {
 
 /// Discovers the installed providers in a worker process.
 pub fn discover(memory: u64) -> Result<Discovery, String> {
-    // The workers cannot print: the message that names the fix comes from here.
-    python::preflight()?;
     let outcome = Running::spawn_with_memory(&Job::Discover, worker::DISCOVERY_TIMEOUT, memory)
         .and_then(Running::wait)
         .map_err(|_| "cannot start the Python worker")?;
+    // A host that could not start is reported by its worker as a closed code;
+    // this process, which runs no Python, prints the one message that names the fix.
+    if let Some(error) = outcome
+        .result_line()
+        .and_then(python::host_error_from_result)
+    {
+        return Err(error.to_string());
+    }
     if let Some(failure) = outcome.failure() {
         return Err(failure.to_string());
     }
@@ -276,7 +282,7 @@ fn checked_discovery(config: &fyrr_core::config::Config) -> Result<Discovery, Ex
     // No sources, no providers, no Python.
     if config.sources.is_empty() {
         return Ok(Discovery {
-            sdk_version: "-".to_owned(),
+            sdk_version: providers::NO_VALUE.to_owned(),
             providers: Vec::new(),
         });
     }
@@ -315,7 +321,10 @@ fn plan<'a>(source: &'a SourceConfig, discovery: &Discovery, requested: &[SyncKi
     Plan {
         source,
         provider: provider.display_name().to_owned(),
-        version: provider.version.clone().unwrap_or_default(),
+        version: provider
+            .version
+            .clone()
+            .unwrap_or_else(|| providers::NO_VALUE.to_owned()),
         kinds,
         skipped,
     }
@@ -488,7 +497,9 @@ fn sync_source(
         };
     };
     let limits = Limits::for_source(config, source);
-    let outcome = python::with_host(credentials, |host| {
+    // The discovery host ends with this call, before any kind starts its own:
+    // at most one Python process per worker runs at a time.
+    let checked = python::with_host(credentials, |host| {
         let discovery = providers::parse_discovery(
             python::discover_provider(host, &source.provider)?.as_bytes(),
         )?;
@@ -496,27 +507,28 @@ fn sync_source(
         if issues.iter().any(|issue| issue.severity == Severity::Error) {
             return Err("the source does not match its provider; run `fyrr config check`".into());
         }
-        let source_json = source_json(source, limits);
-        Ok(kinds
-            .iter()
-            .map(|&kind| {
-                let mut checker = BatchChecker::new(&source.id, kind, limits, None);
-                let error = python::run_kind(credentials, &source_json, kind, &mut checker).err();
-                KindReport {
-                    kind,
-                    stats: checker.stats,
-                    error,
-                }
-            })
-            .collect())
+        Ok(())
     });
-    match outcome {
-        Ok(kinds) => SourceReport { kinds, error: None },
-        Err(_) => SourceReport {
+    if checked.is_err() {
+        return SourceReport {
             kinds: Vec::new(),
             error: Some(Diagnostic::InvalidSource),
-        },
+        };
     }
+    let source_json = source_json(source, limits);
+    let kinds = kinds
+        .iter()
+        .map(|&kind| {
+            let mut checker = BatchChecker::new(&source.id, kind, limits, None);
+            let error = python::run_kind(credentials, &source_json, kind, &mut checker).err();
+            KindReport {
+                kind,
+                stats: checker.stats,
+                error,
+            }
+        })
+        .collect();
+    SourceReport { kinds, error: None }
 }
 
 /// Real preparation shares the existing source-isolated worker supervisor.

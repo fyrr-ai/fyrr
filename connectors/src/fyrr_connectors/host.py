@@ -1,10 +1,13 @@
 """The provider host: the process in which fyrr runs connector providers.
 
-fyrr's worker starts `python -m fyrr_connectors.host <fd>` and talks to it
-over the inherited, connected socket whose descriptor number is `<fd>`. The
-host serves the operations of `fyrr_connectors.runtime` on that socket and
-nothing else. It never reads the protocol from stdin or writes it to stdout:
-providers may print, and the worker discards the host's stdout and stderr.
+fyrr's worker starts `python -m fyrr_connectors.host` with the connected
+socket of the conversation as stdin and `/dev/null` as stdout and stderr. The
+host's first act is to move the socket to a descriptor that no child process
+inherits, to point stdin at `/dev/null` and to close every other descriptor,
+so that provider code and the processes it starts hold neither the socket nor
+anything else the worker's parent left open. The host serves the operations of
+`fyrr_connectors.runtime` on that socket and nothing else: providers may
+print, and nothing they print is read.
 
 The conversation is synchronous, one request at a time, in length-prefixed
 frames: a kind byte, a big-endian `u32` payload length and the payload.
@@ -21,6 +24,13 @@ kind      payload
 
 The host sends ``ready`` first; the worker then sends one request at a time:
 
+``environment``
+    Optional, and only as the first request: ``{"t": "environment",
+    "variables": {NAME: value, ...}}`` sets the provider's credentials in
+    `os.environ` before any provider code is imported, so they are never in the
+    process's initial environment (`/proc/<pid>/environ`). The host validates
+    the names and values, answers ``environment_set`` and never echoes them; an
+    invalid message ends the conversation.
 ``inventory`` / ``discover``
     One ``R`` frame, or ``failed``.
 ``run``
@@ -42,6 +52,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import socket
 import struct
 import sys
@@ -50,6 +61,7 @@ from collections.abc import Callable, Generator
 from typing import Any
 
 from . import runtime
+from .arrow import CONTRACT_KEY, VERSION_KEY
 
 #: Bumped when the frame layout or the messages change incompatibly.
 PROTOCOL_VERSION = 1
@@ -60,6 +72,10 @@ _FRAME = struct.Struct(">cI")
 #: guards the host against a corrupt length before it allocates.
 _MAX_INBOUND = 64 << 20
 _SMALL = 1 << 16
+#: Credentials the worker may set in the environment: how many, how long.
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
+_MAX_ENV_VARIABLES = 256
+_MAX_ENV_VALUE = 1 << 20
 
 
 class ProtocolError(Exception):
@@ -153,11 +169,20 @@ class _Callbacks:
 def _rows_frame(rows: Any, max_bytes: int) -> memoryview | None:
     """The rows as an Arrow IPC stream, or None when they exceed `max_bytes`.
     The check comes first: a slice retains its whole backing buffer, which the
-    IPC stream would not carry."""
+    IPC stream would not carry. The stream's schema carries only the two
+    contract metadata entries: any other schema metadata would be bytes the
+    byte budget does not count, and fyrr refuses it."""
     if rows.get_total_buffer_size() > max_bytes:
         return None
     import pyarrow as pa
 
+    metadata = rows.schema.metadata or {}
+    contract = {
+        key: metadata[key.encode()]
+        for key in (CONTRACT_KEY, VERSION_KEY)
+        if key.encode() in metadata
+    }
+    rows = rows.replace_schema_metadata(contract)
     sink = pa.BufferOutputStream()
     with pa.ipc.new_stream(sink, rows.schema) as writer:
         writer.write_batch(rows)
@@ -172,6 +197,7 @@ class Host:
         self._run: Generator[tuple[str, Any]] | None = None
         self._callbacks: _Callbacks | None = None
         self._max_bytes = 0
+        self._requests = 0
 
     def serve(self) -> None:
         connection = self._connection
@@ -183,6 +209,7 @@ class Host:
             }
         )
         handlers: dict[str, Callable[[dict[str, Any]], None]] = {
+            "environment": self._environment,
             "inventory": lambda _: self._document(runtime.inventory),
             "discover": lambda request: self._document(lambda: runtime.discover(request["name"])),
             "run": self._start,
@@ -201,7 +228,26 @@ class Host:
                 handler(request)
             except ProtocolError:
                 break
+            self._requests += 1
         self._close(reply=False)
+
+    def _environment(self, request: dict[str, Any]) -> None:
+        """Sets the provider's credentials before any provider code runs."""
+        variables = request.get("variables")
+        if self._requests or not isinstance(variables, dict):
+            raise ProtocolError
+        if len(variables) > _MAX_ENV_VARIABLES:
+            raise ProtocolError
+        for name, value in variables.items():
+            if not (
+                _ENV_NAME.fullmatch(name)
+                and isinstance(value, str)
+                and "\0" not in value
+                and len(value.encode()) <= _MAX_ENV_VALUE
+            ):
+                raise ProtocolError
+        os.environ.update(variables)
+        self._connection.send_json({"t": "environment_set"})
 
     def _document(self, produce: Callable[[], str]) -> None:
         try:
@@ -270,12 +316,36 @@ class Host:
             self._connection.send_json({"t": "closed"})
 
 
-def main(argv: list[str]) -> int:
-    if len(argv) != 2 or not argv[1].isdigit():
-        return 2
+def _detach_protocol_socket() -> socket.socket | None:
+    """The protocol socket (stdin), moved to a descriptor no child inherits.
+    Afterwards stdin is `/dev/null` and no other descriptor above stderr is
+    open, whatever the worker's parent left open."""
     try:
-        sock = socket.socket(fileno=int(argv[1]))
+        sock = socket.socket(fileno=os.dup(0))
     except OSError:
+        return None
+    sock.set_inheritable(False)
+    null = os.open(os.devnull, os.O_RDWR)
+    os.dup2(null, 0)
+    if null != 0:
+        os.close(null)
+    keep = {0, 1, 2, sock.fileno()}
+    try:
+        open_descriptors = [int(name) for name in os.listdir("/proc/self/fd")]
+    except OSError:
+        open_descriptors = list(range(3, 1024))
+    for descriptor in open_descriptors:
+        if descriptor not in keep:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+    return sock
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 1:
+        return 2
+    sock = _detach_protocol_socket()
+    if sock is None:
         return 2
     with contextlib.suppress(ProtocolError):
         Host(Connection(sock)).serve()

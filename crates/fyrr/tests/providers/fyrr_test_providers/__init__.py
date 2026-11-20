@@ -322,6 +322,57 @@ def raising_metadata_info() -> dict:
     raise RuntimeError(os.environ.get("FYRR_TEST_METADATA_MARKER", "marker"))
 
 
+def _worker_result_name() -> str:
+    """The name of the worker's result channel. The worker keeps it in its own
+    environment, which its provider host does not inherit; a hostile provider
+    reads it from its parent, as this does, and speaks on the channel."""
+    environ = Path(f"/proc/{os.getppid()}/environ").read_bytes().split(b"\0")
+    entry = next(e for e in environ if e.startswith(b"FYRR_WORKER_RESULT="))
+    return entry.split(b"=", 1)[1].decode()
+
+
+def _descriptors() -> list[dict]:
+    """The open descriptors of this process: number, target, close-on-exec."""
+    found = []
+    for name in sorted(os.listdir("/proc/self/fd"), key=int):
+        try:
+            target = os.readlink(f"/proc/self/fd/{name}")
+            info = Path(f"/proc/self/fdinfo/{name}").read_text()
+        except OSError:
+            continue  # the descriptor of the listing itself
+        flags = int(
+            next(line for line in info.splitlines() if line.startswith("flags:")).split()[1], 8
+        )
+        found.append({"fd": int(name), "target": target, "cloexec": bool(flags & os.O_CLOEXEC)})
+    return found
+
+
+def _report_descriptors(path: str) -> None:
+    """What this provider and a child it starts (without closing descriptors,
+    as a careless provider would) hold, for the test to read."""
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, os; d = '/proc/self/fd/'; print(json.dumps([[int(n), os.readlink(d + n)] "
+            "for n in os.listdir(d) if os.path.lexists(d + n)]))",
+        ],
+        close_fds=False,
+        capture_output=True,
+        check=True,
+    )
+    environment = Path("/proc/self/environ").read_bytes().decode(errors="replace")
+    Path(path).write_text(
+        json.dumps(
+            {
+                "provider": _descriptors(),
+                "child": json.loads(child.stdout),
+                "initial_environment": environment.split("\0"),
+            }
+        )
+    )
+
+
 class ReviewSettings(ConfigModel):
     mode: str = setting(description="Review reproduction.")
 
@@ -348,6 +399,8 @@ class ReviewConnector(Connector):
                 + b"\n",
             )
             os._exit(17)
+        if mode == "fds":
+            _report_descriptors(data["fd_report"])
         if mode.startswith("child-"):
             child = subprocess.Popen(
                 ["/bin/sleep", "60"], start_new_session=data.get("detached", False)
@@ -359,7 +412,7 @@ class ReviewConnector(Connector):
                 raise ValueError(marker)
             if mode == "child-parent-error":
                 channel = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                channel.connect("\0" + os.environ["FYRR_WORKER_RESULT"])
+                channel.connect("\0" + _worker_result_name())
                 channel.sendall(b"x" * ((1 << 20) + 1))
                 time.sleep(60)
             if mode == "child-timeout":
@@ -396,7 +449,7 @@ class ReviewConnector(Connector):
                     "error": None,
                 }
             channel = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            channel.connect("\0" + os.environ["FYRR_WORKER_RESULT"])
+            channel.connect("\0" + _worker_result_name())
             channel.sendall(json.dumps(payload).encode())
             os._exit(0)
         if mode == "allocate":

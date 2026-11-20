@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
@@ -96,6 +97,21 @@ class AskingBadly(Connector):
         except RuntimeError as error:
             SEEN["error"] = str(error)
         yield ContentBatch(changes=document_changes([]), cursor="1")
+
+
+class Reading(Connector):
+    def content(self, cursor):
+        SEEN["credential"] = os.environ.get("FYRR_TEST_CREDENTIAL")
+        yield ContentBatch(changes=document_changes([]), cursor="1")
+
+
+class Noisy(Connector):
+    """Rows whose schema carries metadata of the provider's own."""
+
+    def content(self, cursor):
+        rows = document_changes([])
+        noisy = rows.replace_schema_metadata({**(rows.schema.metadata or {}), b"note": b"x" * 4096})
+        yield ContentBatch(changes=noisy, cursor="1")
 
 
 class Plain(Connector):
@@ -257,29 +273,59 @@ def test_without_revisions_the_provider_has_no_callbacks(
     assert SEEN == {"no_callbacks": True}
 
 
-def test_the_host_process_serves_over_an_inherited_descriptor_and_exits_on_eof() -> None:
+def spawn_host(extra_fds: tuple[int, ...] = ()) -> tuple[subprocess.Popen[bytes], Peer]:
+    """The real host process, with the socket as stdin the way fyrr's worker starts it."""
     ours, theirs = socket.socketpair()
-    stdio = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
     child = subprocess.Popen(
-        [sys.executable, "-P", "-m", "fyrr_connectors.host", str(theirs.fileno())],
-        pass_fds=[theirs.fileno()],
-        **stdio,
+        [sys.executable, "-P", "-m", "fyrr_connectors.host"],
+        stdin=theirs,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        pass_fds=extra_fds,
     )
     theirs.close()
-    peer = Peer(ours)
+    return child, Peer(ours)
+
+
+def test_the_host_process_serves_over_its_stdin_socket_and_exits_on_eof() -> None:
+    child, peer = spawn_host()
     assert peer.message()["protocol"] == host.PROTOCOL_VERSION
     peer.send({"t": "inventory"})
     assert peer.frame()[0] == b"R"
-    ours.close()
+    peer.sock.close()
     assert child.wait(timeout=30) == 0
 
 
-def test_the_host_refuses_a_missing_or_invalid_descriptor_argument() -> None:
-    for argument in ([], ["x"], ["1", "2"]):
+def test_the_host_holds_only_stdio_and_a_socket_no_child_can_inherit() -> None:
+    leaked = os.open(os.devnull, os.O_RDONLY)
+    os.set_inheritable(leaked, True)
+    try:
+        child, peer = spawn_host(extra_fds=(leaked,))
+        peer.message()
+        listing = {
+            int(name): os.readlink(f"/proc/{child.pid}/fd/{name}")
+            for name in os.listdir(f"/proc/{child.pid}/fd")
+        }
+        assert leaked not in listing or leaked < 3
+        assert {0, 1, 2} <= set(listing)
+        sockets = [fd for fd, target in listing.items() if target.startswith("socket:")]
+        assert len(sockets) == 1 and sockets[0] > 2, listing
+        # stdin is /dev/null now, and the socket is close-on-exec (O_CLOEXEC).
+        assert listing[0] == os.devnull
+        info = Path(f"/proc/{child.pid}/fdinfo/{sockets[0]}").read_text()
+        flags = int(
+            next(row for row in info.splitlines() if row.startswith("flags:")).split()[1], 8
+        )
+        assert flags & os.O_CLOEXEC
+        assert set(listing) == {0, 1, 2, sockets[0]}, listing
+        peer.sock.close()
+        assert child.wait(timeout=30) == 0
+    finally:
+        os.close(leaked)
+
+
+def test_the_host_refuses_arguments_and_a_stdin_that_is_no_socket() -> None:
+    for argument in (["1"], ["x", "2"]):
         result = subprocess.run(
             [sys.executable, "-P", "-m", "fyrr_connectors.host", *argument],
             stdin=subprocess.DEVNULL,
@@ -289,3 +335,106 @@ def test_the_host_refuses_a_missing_or_invalid_descriptor_argument() -> None:
         )
         assert result.returncode == 2, argument
         assert result.stdout == b""
+    result = subprocess.run(
+        [sys.executable, "-P", "-m", "fyrr_connectors.host"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert result.stdout == b""
+
+
+def test_credentials_set_the_environment_before_any_provider_code_and_are_not_echoed(
+    served: Peer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    SEEN.clear()
+    # The host sets it in this process's environment; this restores it.
+    monkeypatch.setenv("FYRR_TEST_CREDENTIAL", "placeholder")
+    source = use(monkeypatch, Reading)
+    served.message()
+    served.send({"t": "environment", "variables": {"FYRR_TEST_CREDENTIAL": "SECRET-VALUE"}})
+    kind, payload = served.frame()
+    assert (kind, json.loads(payload)) == (b"J", {"t": "environment_set"})
+    assert b"SECRET" not in payload
+    start_run(served, source)
+    served.send({"t": "next"})
+    assert served.frame()[0] == b"B"
+    assert SEEN == {"credential": "SECRET-VALUE"}
+
+
+def test_the_real_host_keeps_credentials_out_of_its_initial_environment() -> None:
+    child, peer = spawn_host()
+    peer.message()
+    peer.send({"t": "environment", "variables": {"FYRR_TEST_CREDENTIAL": "SECRET-VALUE"}})
+    assert peer.message() == {"t": "environment_set"}
+    environ = Path(f"/proc/{child.pid}/environ").read_bytes()
+    assert b"SECRET-VALUE" not in environ and b"FYRR_TEST_CREDENTIAL" not in environ
+    peer.sock.close()
+    assert child.wait(timeout=30) == 0
+
+
+def serve_in_thread() -> tuple[Peer, threading.Thread]:
+    ours, theirs = socket.socketpair()
+    thread = threading.Thread(target=host.Host(host.Connection(theirs)).serve, daemon=True)
+    thread.start()
+    return Peer(ours), thread
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"t": "environment", "variables": {"1BAD": "v"}},
+        {"t": "environment", "variables": {"A=B": "v"}},
+        {"t": "environment", "variables": {"NAME": "has\u0000nul"}},
+        {"t": "environment", "variables": {"NAME": 5}},
+        {"t": "environment", "variables": {f"N{n}": "v" for n in range(300)}},
+        {"t": "environment", "variables": ["not", "a", "map"]},
+        {"t": "environment"},
+    ],
+)
+def test_an_invalid_environment_message_ends_the_conversation(message: dict[str, Any]) -> None:
+    peer, thread = serve_in_thread()
+    peer.message()
+    peer.send(message)
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert not {"1BAD", "A=B", "NAME", "N0", "N299"} & set(os.environ)
+
+
+def test_the_environment_may_only_be_set_before_any_other_request() -> None:
+    peer, thread = serve_in_thread()
+    peer.message()
+    peer.send({"t": "inventory"})
+    assert peer.frame()[0] == b"R"
+    peer.send({"t": "environment", "variables": {"FYRR_TEST_LATE": "v"}})
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert "FYRR_TEST_LATE" not in os.environ
+
+
+def test_rows_leave_with_only_the_contract_metadata(
+    served: Peer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = use(monkeypatch, Noisy)
+    served.message()
+    start_run(served, source)
+    served.send({"t": "next"})
+    assert served.frame()[0] == b"B"
+    kind, stream = served.frame()
+    assert kind == b"A"
+    schema = pa.ipc.open_stream(stream).schema
+    assert set(schema.metadata) == {b"fyrr.contract", b"fyrr.schema_version"}
+    # A batch the provider built without the contract's entries leaves without them.
+    assert b"note" not in stream
+
+
+def test_a_batch_over_the_byte_limit_is_refused_even_with_metadata(
+    served: Peer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = json.loads(use(monkeypatch, Noisy))
+    source["limits"] = dict(LIMITS, max_bytes=8)
+    served.message()
+    start_run(served, json.dumps(source))
+    served.send({"t": "next"})
+    assert served.message() == {"t": "oversize"}
