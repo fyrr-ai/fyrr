@@ -69,13 +69,20 @@ pub struct PartitionMap {
 }
 
 impl PartitionMap {
-    fn allowed_partitions(&self) -> usize {
-        self.admitted.iter().filter(|rows| **rows > 0).count()
+    pub(crate) fn admitted_rows(&self) -> u64 {
+        self.admitted.iter().map(|rows| u64::from(*rows)).sum()
+    }
+
+    /// Indexed rows of the partitions that hold an admitted row, estimated
+    /// from the average partition size.
+    pub(crate) fn rows_in_allowed_partitions(&self) -> u128 {
+        let allowed = self.admitted.iter().filter(|rows| **rows > 0).count() as u128;
+        u128::from(self.indexed_rows) * allowed / (self.admitted.len().max(1) as u128)
     }
 
     /// Admitted rows a query should inspect: as many as `nprobes` partitions
     /// of average size hold, which is what an unrestricted query inspects.
-    fn probe_target(&self, nprobes: usize) -> u64 {
+    pub(crate) fn probe_target(&self, nprobes: usize) -> u64 {
         let partitions = self.admitted.len().max(1) as u128;
         u64::try_from(u128::from(self.indexed_rows) * nprobes as u128 / partitions)
             .unwrap_or(u64::MAX)

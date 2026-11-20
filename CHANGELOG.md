@@ -40,10 +40,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `nprobes` partitions of average size hold. Recall of such callers no longer
   drops with their share of the rows; see
   [tuning](docs/tuning.md#callers-who-read-few-rows).
-- A search with a request filter searches the vector index when the filter
-  selects many rows, and keeps the exact scan of the selected rows otherwise;
-  see [tuning](docs/tuning.md#dense-search-under-a-request-filter). A large
-  filtered selection therefore returns approximate dense candidates, as an
+- A search with a request filter searches the vector index when that reads
+  fewer bytes than the exact scan of the selected rows, and then probes
+  partitions until they are expected to hold enough selected rows; see
+  [tuning](docs/tuning.md#dense-search-under-a-request-filter). A filtered
+  selection on the index returns approximate dense candidates, as an
   unfiltered search does.
 - A search with a request filter (sources, authors, time range, labels)
   selects its rows from the scalar indexes of both the filter and the
