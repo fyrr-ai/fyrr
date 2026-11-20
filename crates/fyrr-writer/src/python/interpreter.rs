@@ -11,8 +11,10 @@ use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-/// What to do when no usable interpreter or SDK is found. The SDK is not on
-/// a package index: its wheel ships with each fyrr release.
+/// What to do when no usable interpreter or SDK is found. The package index has
+/// `fyrr-connectors` 0.1.0, built for the embedded interpreter of earlier
+/// fyrr versions; this fyrr needs the wheel of its own release (0.1.1 or
+/// newer), which ships with each release.
 pub(super) const FIX: &str = "install the fyrr-connectors wheel from this fyrr release, with the \
 extras of the providers you need, into a Python 3.13+ virtual environment (for example `python3.13 \
 -m venv VENV && VENV/bin/pip install 'fyrr_connectors-<version>-py3-none-any.whl[<type>]'`), and \
@@ -130,7 +132,8 @@ mod tests {
         let none = select(None, None, None).unwrap_err();
         assert!(none.contains("fyrr-connectors wheel"), "{none}");
         assert!(none.contains("VIRTUAL_ENV"), "{none}");
-        // The SDK is not on a package index: no message installs it from one.
+        // The index's `fyrr-connectors` is for the embedded interpreter: no
+        // message installs the SDK from there.
         assert!(!none.contains("pip install fyrr-connectors"), "{none}");
         assert!(!none.contains("pip install 'fyrr-connectors"), "{none}");
         let empty = scratch("empty");

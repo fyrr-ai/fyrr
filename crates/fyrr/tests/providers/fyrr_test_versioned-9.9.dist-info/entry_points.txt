@@ -1,0 +1,2 @@
+[fyrr.connectors]
+sentinel-versioned = fyrr_test_providers:versioned_info

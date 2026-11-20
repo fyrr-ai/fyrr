@@ -316,6 +316,25 @@ def bad_metadata_info() -> dict:
     return info
 
 
+def bad_required_info() -> dict:
+    """A provider whose config schema names a required property with a marker,
+    which fyrr must not print when the source leaves it out."""
+    marker = os.environ.get("FYRR_TEST_METADATA_MARKER", "marker")
+    info = provider_info(
+        name="sentinel-bad-required", connector=DocsConnector, min_sdk_version="0.1.0"
+    )
+    info["config_schema"]["scope"]["required"] = ["fixture", f"{marker}\nsecond-line"]
+    return info
+
+
+def versioned_info() -> dict:
+    """Registered by a distribution whose version is not a version (its
+    METADATA says `9.9 SENTINEL-VERSION`)."""
+    return provider_info(
+        name="sentinel-versioned", connector=DocsConnector, min_sdk_version="0.1.0"
+    )
+
+
 def raising_metadata_info() -> dict:
     if os.environ.get("FYRR_TEST_METADATA_ABORT"):
         os.abort()
@@ -347,9 +366,22 @@ def _descriptors() -> list[dict]:
     return found
 
 
+def _forked_descriptors(path: str) -> list[dict]:
+    """What a process this provider forks (`os.fork`, which no close-on-exec
+    flag covers) holds."""
+    pid = os.fork()
+    if pid == 0:
+        try:
+            Path(path + ".fork").write_text(json.dumps(_descriptors()))
+        finally:
+            os._exit(0)
+    os.waitpid(pid, 0)
+    return json.loads(Path(path + ".fork").read_text())
+
+
 def _report_descriptors(path: str) -> None:
-    """What this provider and a child it starts (without closing descriptors,
-    as a careless provider would) hold, for the test to read."""
+    """What this provider, a child it starts (without closing descriptors, as a
+    careless provider would) and a process it forks hold, for the test to read."""
     child = subprocess.run(
         [
             sys.executable,
@@ -366,6 +398,7 @@ def _report_descriptors(path: str) -> None:
         json.dumps(
             {
                 "provider": _descriptors(),
+                "forked": _forked_descriptors(path),
                 "child": json.loads(child.stdout),
                 "initial_environment": environment.split("\0"),
             }

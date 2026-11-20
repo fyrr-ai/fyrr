@@ -301,6 +301,7 @@ fn reader_only_config_check_says_providers_are_not_checked() {
 mod providers {
     use super::*;
     use common::{Sandbox, Sentinels, config_with, provider_fixture, source};
+    use std::ffi::OsStr;
 
     #[test]
     fn providers_lists_bundled_and_installed_providers_and_refuses_bad_ones() {
@@ -383,7 +384,7 @@ mod providers {
             (
                 "\n[[sources]]\nid = \"x\"\ntype = \"sentinel-docs\"\npermissions = \"fixed\"\nreaders = [\"grp:x\"]\n".to_owned(),
                 "sources[0].scope",
-                "missing field `fixture` required by the provider",
+                "a field the provider requires is missing",
             ),
             (
                 "\n[[sources]]\nid = \"x\"\ntype = \"local-files\"\npermissions = \"sync\"\n[sources.intervals]\npermissions = \"30m\"\n".to_owned(),
@@ -644,7 +645,8 @@ mod providers {
                     stderr.contains("fyrr-connectors wheel") && stderr.contains("VIRTUAL_ENV"),
                     "{args:?}: {stderr}"
                 );
-                // The SDK is not on a package index: no command installs it from one.
+                // The index's `fyrr-connectors` is for the embedded interpreter: no
+                // command installs the SDK from there.
                 assert!(!stderr.contains("pip install fyrr-connectors"), "{stderr}");
             }
             // Without sources nothing needs Python.
@@ -830,9 +832,28 @@ mod providers {
         }
     }
 
+    /// `fyrr` run by an invoker that leaves a descriptor (9) open, as a shell
+    /// or a service manager may; `command` is the base command to run.
+    fn run_with_descriptor_9(base: &std::process::Command, args: &[&OsStr]) -> Output {
+        let mut command = std::process::Command::new("sh");
+        for (name, value) in base.get_envs() {
+            match value {
+                Some(value) => command.env(name, value),
+                None => command.env_remove(name),
+            };
+        }
+        command
+            .args(["-c", "exec 9</dev/null; exec \"$0\" \"$@\""])
+            .arg(common::binary())
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
     /// What the provider host holds: stdio on /dev/null and its one socket,
     /// which is close-on-exec, so neither the provider nor a process it starts
-    /// holds a descriptor of the worker's parent or the protocol socket.
+    /// holds a descriptor of the worker's parent or the protocol socket, and a
+    /// process it forks does not hold the socket either.
     #[test]
     fn a_provider_and_its_children_hold_no_descriptor_but_stdio_and_the_host_socket() {
         let mut sentinels = Sentinels::new();
@@ -851,23 +872,16 @@ mod providers {
                 "mode = \"fds\"",
             )),
         );
-        // The invoker leaves a descriptor open (9), as a shell or a service manager may.
-        let base = common::fyrr();
-        let mut command = std::process::Command::new("sh");
-        for (name, value) in base.get_envs() {
-            match value {
-                Some(value) => command.env(name, value),
-                None => command.env_remove(name),
-            };
-        }
-        let output = command
-            .args(["-c", "exec 9</dev/null; exec \"$0\" \"$@\""])
-            .arg(common::binary())
-            .arg("--config")
-            .arg(&config)
-            .args(["writer", "sync", "--dry-run"])
-            .output()
-            .unwrap();
+        let output = run_with_descriptor_9(
+            &common::fyrr(),
+            &[
+                OsStr::new("--config"),
+                config.as_os_str(),
+                OsStr::new("writer"),
+                OsStr::new("sync"),
+                OsStr::new("--dry-run"),
+            ],
+        );
         let (stdout, stderr) = text(&output);
         assert!(output.status.success(), "{stdout}{stderr}");
         let report: serde_json::Value =
@@ -901,6 +915,23 @@ mod providers {
                 assert_eq!(target, "/dev/null", "{held:?}");
             }
         }
+        // A process the provider forks has closed the socket: only stdio is left.
+        let forked: Vec<(u64, &str)> = report["forked"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                (
+                    entry["fd"].as_u64().unwrap(),
+                    entry["target"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            forked.iter().map(|(fd, _)| *fd).collect::<Vec<_>>(),
+            [0, 1, 2],
+            "the forked process holds a descriptor beyond stdio: {forked:?}"
+        );
         // A child the provider starts with close_fds=False holds no socket.
         for entry in report["child"].as_array().unwrap() {
             assert!(
@@ -916,6 +947,84 @@ mod providers {
                     && !variable.starts_with("FYRR_WRITER_EMBEDDING_CAP"),
                 "{variable}"
             );
+        }
+    }
+
+    /// Site code runs only after the descriptors are settled: a `.pth` file in
+    /// the environment finds stdin on /dev/null, the protocol socket moved to a
+    /// descriptor no child inherits, and nothing the invoker left open. The
+    /// environment is a venv whose site-packages holds the probe, and a `.pth`
+    /// that adds the connectors venv's site-packages (editable install included).
+    #[test]
+    fn a_pth_file_runs_after_the_socket_is_detached_and_inherited_descriptors_are_closed() {
+        let sandbox = Sandbox::new("cli-pth");
+        let real = common::repo().join("connectors/.venv");
+        let python_dir = std::fs::read_dir(real.join("lib"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .find(|name| name.to_string_lossy().starts_with("python3"))
+            .expect("the connectors venv has a lib/python3.x");
+        let venv = sandbox.output().join("pth-venv");
+        let site = venv.join("lib").join(&python_dir).join("site-packages");
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::create_dir_all(venv.join("bin")).unwrap();
+        std::os::unix::fs::symlink(real.join("bin/python"), venv.join("bin/python")).unwrap();
+        std::fs::copy(real.join("pyvenv.cfg"), venv.join("pyvenv.cfg")).unwrap();
+        std::fs::write(
+            site.join("a-sdk.pth"),
+            format!(
+                "import site; site.addsitedir('{}')\n",
+                real.join("lib")
+                    .join(&python_dir)
+                    .join("site-packages")
+                    .display()
+            ),
+        )
+        .unwrap();
+        let marker = sandbox.output().join("pth.jsonl");
+        std::fs::write(
+            site.join("probe.pth"),
+            format!(
+                "import json, os; d = '/proc/self/fd/'; rows = [[int(n), os.readlink(d + n), \
+                 bool(int(open('/proc/self/fdinfo/' + n).read().split('flags:')[1].split()[0], \
+                 8) & os.O_CLOEXEC)] for n in os.listdir(d) if os.path.lexists(d + n)]; \
+                 open('{}', 'a').write(json.dumps(rows) + chr(10))\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let mut base = common::fyrr();
+        base.env("VIRTUAL_ENV", &venv);
+        let output = run_with_descriptor_9(&base, &[OsStr::new("writer"), OsStr::new("providers")]);
+        let (stdout, stderr) = text(&output);
+        assert!(stdout.contains("local-files"), "{stdout}{stderr}");
+        let runs: Vec<Vec<(u64, String, bool)>> = std::fs::read_to_string(&marker)
+            .expect("the .pth file ran")
+            .lines()
+            .map(|line| serde_json::from_str::<Vec<(u64, String, bool)>>(line).unwrap())
+            .collect();
+        assert!(!runs.is_empty());
+        for held in runs {
+            let stdin = held.iter().find(|(fd, ..)| *fd == 0).unwrap();
+            assert_eq!(stdin.1, "/dev/null", "stdin is still the socket: {held:?}");
+            for (fd, target, cloexec) in &held {
+                assert_ne!(
+                    *fd, 9,
+                    "the invoker's descriptor reached site code: {held:?}"
+                );
+                assert!(
+                    *fd < 3 || *cloexec,
+                    "site code holds an inheritable descriptor ({fd} {target}): {held:?}"
+                );
+            }
+            // The protocol socket is there, and only as a descriptor no child inherits.
+            let sockets: Vec<_> = held
+                .iter()
+                .filter(|(_, target, _)| target.starts_with("socket:"))
+                .collect();
+            assert_eq!(sockets.len(), 1, "{held:?}");
+            assert!(sockets[0].0 > 2 && sockets[0].2, "{held:?}");
         }
     }
 

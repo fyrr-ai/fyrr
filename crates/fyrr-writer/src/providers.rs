@@ -26,8 +26,14 @@ use serde_json::{Map, Value};
 /// Distribution names shown in listings.
 static DISPLAYABLE: LazyLock<regex::Regex> =
     LazyLock::new(|| compiled(r"^[A-Za-z0-9][A-Za-z0-9._+!-]{0,99}$"));
-/// A version of a Python distribution: PEP 440's alphabet, bounded.
-static VERSION: LazyLock<regex::Regex> = LazyLock::new(|| compiled(r"^[0-9A-Za-z.+!-]{1,64}$"));
+/// A version of a Python distribution that fyrr will show: a release of one to
+/// four dot-separated integers, then at most three of the PEP 440 pre, post and
+/// dev suffixes (`a`, `b`, `rc`, `post`, `dev`, each with digits). Integers
+/// are at most six digits long, so a version is at most 57 characters. Epochs
+/// and local segments are not shown.
+static VERSION: LazyLock<regex::Regex> = LazyLock::new(|| {
+    compiled(r"^[0-9]{1,6}(\.[0-9]{1,6}){0,3}(\.?(a|b|rc|post|dev)[0-9]{1,6}){0,3}$")
+});
 
 /// Shown where a name or version is absent.
 pub(crate) const NO_VALUE: &str = "-";
@@ -35,8 +41,9 @@ pub(crate) const NO_VALUE: &str = "-";
 pub(crate) const INVALID_VALUE: &str = "<invalid>";
 
 /// A version string the Python side supplied, as the text fyrr may show:
-/// the string itself when it has the shape of a version, else
-/// [`INVALID_VALUE`]. Every version of the peer enters through here.
+/// the string itself when it is made of verified numeric parts and a closed
+/// set of suffixes (see [`VERSION`]), else [`INVALID_VALUE`]. Every version of
+/// the peer enters through here.
 pub(crate) fn version_text(version: &str) -> String {
     if VERSION.is_match(version) {
         version.to_owned()
@@ -442,10 +449,9 @@ fn schema_message(kind: &jsonschema::error::ValidationErrorKind) -> String {
                 unexpected.join(", ")
             )
         }
-        Kind::Required { property } => format!(
-            "missing field `{}` required by the provider",
-            property.as_str().unwrap_or("?")
-        ),
+        // The property name comes from the provider's own schema, which may
+        // carry anything: it is not shown.
+        Kind::Required { .. } => "a field the provider requires is missing".to_owned(),
         other => format!(
             "does not match the provider's config schema ({})",
             other.keyword()
@@ -676,8 +682,17 @@ mod tests {
     }
 
     #[test]
-    fn versions_the_python_side_reports_are_shown_only_in_the_shape_of_a_version() {
-        for good in ["0.1.2", "1.0.0rc1", "2!1.0+local.7", "1.0.post1.dev2", "9"] {
+    fn versions_the_python_side_reports_are_shown_only_when_built_from_verified_parts() {
+        for good in [
+            "0.1.2",
+            "1.0.0rc1",
+            "1.0.post1.dev2",
+            "1.2.3.4",
+            "1.0a2",
+            "2024.11",
+            "9",
+            "123456.0",
+        ] {
             assert_eq!(version_text(good), good);
         }
         for bad in [
@@ -685,6 +700,18 @@ mod tests {
             "0.1 2",
             "0.1.2\nSENTINEL",
             "<script>",
+            "SENTINEL",
+            "1.0.SENTINEL",
+            "1.0rcSENTINEL",
+            "1.0final",
+            "1.0.dev",
+            "v1.0",
+            "1.2.3.4.5",
+            "1234567",
+            "1..2",
+            "2!1.0",
+            "1.0+local.7",
+            "1.0.post1.post2.post3.post4",
             "1_0",
             "é1",
             &"1".repeat(65),
@@ -809,7 +836,7 @@ mod tests {
             "sources[0].settings.webhook_token: a secret field holds",
             "sources[0].settings.max_file_bytes: does not match the provider's config schema (type)",
             "sources[0].settings: unknown field(s) for this provider: extra",
-            "sources[0].scope: missing field `root` required by the provider",
+            "sources[0].scope: a field the provider requires is missing",
         ] {
             assert!(all.contains(wanted), "{wanted} missing from:\n{all}");
         }

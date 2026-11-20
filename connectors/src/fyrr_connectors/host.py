@@ -1,13 +1,16 @@
 """The provider host: the process in which fyrr runs connector providers.
 
-fyrr's worker starts `python -m fyrr_connectors.host` with the connected
-socket of the conversation as stdin and `/dev/null` as stdout and stderr. The
-host's first act is to move the socket to a descriptor that no child process
-inherits, to point stdin at `/dev/null` and to close every other descriptor,
-so that provider code and the processes it starts hold neither the socket nor
-anything else the worker's parent left open. The host serves the operations of
-`fyrr_connectors.runtime` on that socket and nothing else: providers may
-print, and nothing they print is read.
+fyrr's worker starts the interpreter (`python -S -c ...`) with the connected
+socket of the conversation as stdin and `/dev/null` as stdout and stderr. Its
+bootstrap, which uses only built-in modules, first moves the socket to a
+descriptor that no child process inherits, points stdin at `/dev/null` and
+closes every other inherited descriptor; only then does it run what
+start-up would have (`site.main()`: `.pth` files, `sitecustomize`) and import
+this module, whose `main` takes that descriptor. So neither site code nor
+provider code, nor the processes they start, hold the socket or anything else
+the worker's parent left open; a process that provider code forks closes the
+socket too. The host serves the operations of `fyrr_connectors.runtime` on that
+socket and nothing else: providers may print, and nothing they print is read.
 
 The conversation is synchronous, one request at a time, in length-prefixed
 frames: a kind byte, a big-endian `u32` payload length and the payload.
@@ -27,10 +30,14 @@ The host sends ``ready`` first; the worker then sends one request at a time:
 ``environment``
     Optional, and only as the first request: ``{"t": "environment",
     "variables": {NAME: value, ...}}`` sets the provider's credentials in
-    `os.environ` before any provider code is imported, so they are never in the
-    process's initial environment (`/proc/<pid>/environ`). The host validates
-    the names and values, answers ``environment_set`` and never echoes them; an
-    invalid message ends the conversation.
+    `os.environ` before any provider code is imported; the worker has removed
+    their names from the environment it starts the host with, so they are never
+    in the process's initial environment (`/proc/<pid>/environ`). The names are
+    what a configuration may reference (`[A-Z_][A-Z0-9_]*`, at most 256
+    characters) except ``PATH``, ``VIRTUAL_ENV`` and anything starting with
+    ``PYTHON`` or ``LD_``. The host validates the names and values, answers
+    ``environment_set`` and never echoes them; an invalid message ends the
+    conversation.
 ``inventory`` / ``discover``
     One ``R`` frame, or ``failed``.
 ``run``
@@ -55,7 +62,6 @@ import os
 import re
 import socket
 import struct
-import sys
 import threading
 from collections.abc import Callable, Generator
 from typing import Any
@@ -73,9 +79,19 @@ _FRAME = struct.Struct(">cI")
 _MAX_INBOUND = 64 << 20
 _SMALL = 1 << 16
 #: Credentials the worker may set in the environment: how many, how long.
-_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
+_ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,255}")
 _MAX_ENV_VARIABLES = 256
 _MAX_ENV_VALUE = 1 << 20
+
+
+def _may_set(name: str) -> bool:
+    """Whether a credential may use this environment name: not one that changes
+    which interpreter, libraries or modules the host runs."""
+    return (
+        _ENV_NAME.fullmatch(name) is not None
+        and name not in ("PATH", "VIRTUAL_ENV")
+        and not name.startswith(("PYTHON", "LD_"))
+    )
 
 
 class ProtocolError(Exception):
@@ -124,6 +140,14 @@ class Connection:
         if not isinstance(message, dict) or not isinstance(message.get("t"), str):
             raise ProtocolError
         return message
+
+    def abandon(self) -> None:
+        """For a process forked by provider code: it must not hold the
+        conversation's socket. The descriptor is detached from the socket
+        object first, so that the object cannot close a reused number later.
+        Takes no lock: it runs in a child that may have inherited a held one."""
+        with contextlib.suppress(OSError, ValueError):
+            os.close(self._sock.detach())
 
     def _exact(self, count: int) -> bytes:
         chunks = bytearray()
@@ -240,7 +264,7 @@ class Host:
             raise ProtocolError
         for name, value in variables.items():
             if not (
-                _ENV_NAME.fullmatch(name)
+                _may_set(name)
                 and isinstance(value, str)
                 and "\0" not in value
                 and len(value.encode()) <= _MAX_ENV_VALUE
@@ -316,43 +340,19 @@ class Host:
             self._connection.send_json({"t": "closed"})
 
 
-def _detach_protocol_socket() -> socket.socket | None:
-    """The protocol socket (stdin), moved to a descriptor no child inherits.
-    Afterwards stdin is `/dev/null` and no other descriptor above stderr is
-    open, whatever the worker's parent left open."""
-    try:
-        sock = socket.socket(fileno=os.dup(0))
-    except OSError:
-        return None
-    sock.set_inheritable(False)
-    null = os.open(os.devnull, os.O_RDWR)
-    os.dup2(null, 0)
-    if null != 0:
-        os.close(null)
-    keep = {0, 1, 2, sock.fileno()}
-    try:
-        open_descriptors = [int(name) for name in os.listdir("/proc/self/fd")]
-    except OSError:
-        open_descriptors = list(range(3, 1024))
-    for descriptor in open_descriptors:
-        if descriptor not in keep:
-            with contextlib.suppress(OSError):
-                os.close(descriptor)
-    return sock
-
-
-def main(argv: list[str]) -> int:
+def main(argv: list[str], protocol_fd: int) -> int:
+    """Serves the worker on `protocol_fd`, the connected socket that the
+    bootstrap moved off stdin; returns only on a refusal to start."""
     if len(argv) != 1:
         return 2
-    sock = _detach_protocol_socket()
-    if sock is None:
+    try:
+        sock = socket.socket(fileno=protocol_fd)
+    except (OSError, ValueError):
         return 2
+    connection = Connection(sock)
+    os.register_at_fork(after_in_child=connection.abandon)
     with contextlib.suppress(ProtocolError):
-        Host(Connection(sock)).serve()
+        Host(connection).serve()
     # Providers may leave non-daemon threads behind; the worker has the
     # last word, so leave without waiting for them.
     os._exit(0)
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv))

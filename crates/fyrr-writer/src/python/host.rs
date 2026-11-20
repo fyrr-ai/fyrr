@@ -5,10 +5,12 @@
 //! The child stays in the worker's process group and keeps its resource
 //! limits, so the supervisor's kill, timeout and orphan paths reach it. Its
 //! stdout and stderr are `/dev/null`. Its stdin is its end of the socket,
-//! which is the only descriptor it is handed: the host moves it to a
-//! descriptor that no child of a provider inherits, points stdin at
-//! `/dev/null` and closes everything else. Passing the socket as stdin keeps
-//! it close-on-exec in every other process, so no concurrent spawn can leak it.
+//! which is the only descriptor it is handed. The interpreter starts without
+//! site code (`-S`), and [`bootstrap`] moves the socket to a descriptor that no
+//! child of a provider inherits, points stdin at `/dev/null` and closes every
+//! other inherited descriptor, all before `.pth` files, `sitecustomize` or any
+//! provider import can run. Passing the socket as stdin keeps it close-on-exec
+//! in every other process, so no concurrent spawn can leak it.
 //!
 //! Whatever the peer sends is untrusted: every frame is bounded before it is
 //! allocated, Arrow streams are inspected before they are decoded
@@ -33,17 +35,81 @@ use std::time::{Duration, Instant};
 // Exception names and frames can contain supplied values.
 pub(super) const PYTHON_FAILURE: &str = "Python failure";
 
-/// The interpreter could not import the SDK's runtime (a missing SDK or
-/// pyarrow), or the host module (an SDK older than the host protocol). These
-/// exit codes tell the two apart before the protocol starts.
+/// Exit codes of the bootstrap that tell the reasons for a failed start apart
+/// before the protocol begins.
+///
+/// The interpreter cannot import the SDK's runtime (a missing SDK or pyarrow):
 const EXIT_NO_SDK: i32 = 90;
+/// The host module cannot be imported (an SDK older than the host protocol):
 const EXIT_NO_HOST: i32 = 91;
-/// Starts the host the way `-m fyrr_connectors.host` would, with an exit code
-/// for each import that can fail.
-pub(super) const BOOTSTRAP: &str = "import sys\n\
-try:\n import fyrr_connectors.runtime\nexcept ImportError:\n sys.exit(90)\n\
-try:\n import fyrr_connectors.host as host\nexcept ImportError:\n sys.exit(91)\n\
-sys.exit(host.main(sys.argv))\n";
+/// The interpreter is older than [`MIN_PYTHON`]:
+const EXIT_OLD_PYTHON: i32 = 92;
+/// The descriptors could not be set up:
+const EXIT_DETACH: i32 = 93;
+/// The oldest interpreter that can run the SDK, as (major, minor).
+pub(super) const MIN_PYTHON: (u32, u32) = (3, 13);
+
+/// The arguments that start the host: no site code (`-S`), then a bootstrap
+/// that runs in this order, using only built-in modules until the last step:
+///
+/// 1. keep the current directory (the empty `sys.path` entry, which `-c`
+///    adds) off `sys.path`, as `-P` would, without needing a version that has
+///    `-P`;
+/// 2. exit with [`EXIT_OLD_PYTHON`] when the interpreter is older than
+///    `minimum`, before any other import, so that an old interpreter says why
+///    instead of failing on an option or a module it lacks. `posix`, the
+///    module behind `os`, is built into the interpreter on Linux, so nothing
+///    from the path or the environment is imported before the next step;
+/// 3. move the socket (stdin) to a non-inheritable descriptor, point stdin at
+///    `/dev/null` and close every other inheritable descriptor above stderr,
+///    found in `/proc/self/fd` with no numeric ceiling. Descriptors the
+///    interpreter opened itself are not inheritable and stay, so objects that
+///    own them keep working;
+/// 4. run what start-up would have run: `site.main()` (virtual environments,
+///    the user site, `.pth` files, `sitecustomize`) and `PYTHONPATH` stay
+///    as documented, but only now, with nothing inherited left to leak;
+/// 5. import the SDK and the host, with an exit code for each import that
+///    can fail, and serve.
+pub(super) fn entry(minimum: (u32, u32)) -> [String; 3] {
+    let (major, minor) = minimum;
+    let source = format!(
+        r#"import sys
+sys.path[:] = [entry for entry in sys.path if entry != '']
+if sys.version_info < ({major}, {minor}):
+    sys.exit({EXIT_OLD_PYTHON})
+import posix
+try:
+    fd = posix.dup(0)
+    null = posix.open('/dev/null', posix.O_RDWR)
+    posix.dup2(null, 0)
+    if null != 0:
+        posix.close(null)
+    names = posix.listdir('/proc/self/fd')
+except OSError:
+    sys.exit({EXIT_DETACH})
+for name in names:
+    number = int(name)
+    if number > 2 and number != fd:
+        try:
+            if posix.get_inheritable(number):
+                posix.close(number)
+        except OSError:
+            pass
+import site
+site.main()
+try:
+    import fyrr_connectors.runtime
+except ImportError:
+    sys.exit({EXIT_NO_SDK})
+try:
+    import fyrr_connectors.host as host
+except ImportError:
+    sys.exit({EXIT_NO_HOST})
+sys.exit(host.main(sys.argv, fd))
+"#
+    );
+    ["-S".to_owned(), "-c".to_owned(), source]
+}
 
 /// Frames of a batch may exceed the configured envelope by their framing
 /// (JSON syntax, Arrow schema, message metadata and padding); the exact limits
@@ -58,8 +124,10 @@ const CONTROL_MAX: u64 = RESULT_MAX_BYTES as u64;
 /// The most roots one `lookup_revisions` may ask for.
 pub(super) const MAX_ROOTS: usize = 256;
 /// What the host may set in the provider's environment: the host's own limits.
+/// A name is what a configuration may reference (see
+/// [`fyrr_core::config::valid_env_name`]) up to this length.
 const ENV_MAX_VARIABLES: usize = 256;
-const ENV_MAX_NAME: usize = 128;
+const ENV_MAX_NAME: usize = 256;
 const ENV_MAX_VALUE: usize = 1 << 20;
 /// Environment of the worker itself that the provider process never needs.
 const WORKER_ONLY_ENV: [&str; 3] = [
@@ -67,6 +135,26 @@ const WORKER_ONLY_ENV: [&str; 3] = [
     "FYRR_WORKER_MEMORY",
     "FYRR_WRITER_EMBEDDING_CAP",
 ];
+
+/// The environment names a configuration may not set for the host: they would
+/// change which interpreter, libraries or modules it runs.
+fn refused_name(name: &str) -> bool {
+    matches!(name, "PATH" | "VIRTUAL_ENV") || name.starts_with("PYTHON") || name.starts_with("LD_")
+}
+
+/// Whether the host would take these credentials: the names a configuration
+/// may reference, up to [`ENV_MAX_NAME`], except [`refused_name`]; values
+/// within [`ENV_MAX_VALUE`] without a NUL. The host applies the same rules.
+fn acceptable(credentials: &[(String, String)]) -> bool {
+    credentials.len() <= ENV_MAX_VARIABLES
+        && credentials.iter().all(|(name, value)| {
+            name.len() <= ENV_MAX_NAME
+                && fyrr_core::config::valid_env_name(name)
+                && !refused_name(name)
+                && value.len() <= ENV_MAX_VALUE
+                && !value.contains('\0')
+        })
+}
 
 /// How a provider run failed, as the closed class the caller maps to its own
 /// diagnostic: the provider (or its process) failed, a message was malformed
@@ -92,7 +180,8 @@ impl From<WireError> for Failure {
 /// to the process that prints it. Each has one actionable message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StartError {
-    /// No interpreter was found, or it could not be run.
+    /// No interpreter was found, or it could not be run, or it is older than
+    /// [`MIN_PYTHON`].
     PythonUnavailable,
     /// The interpreter cannot import the connector SDK (or its pyarrow).
     SdkUnavailable,
@@ -137,15 +226,27 @@ impl StartError {
     }
 }
 
+/// The message for an interpreter that could not be used: the lookup's own
+/// reason when it found none, else that the one found cannot be run or is too old.
+pub(super) fn unavailable(resolved: Result<std::path::PathBuf, String>) -> String {
+    match resolved {
+        Err(error) => error,
+        Ok(python) => format!(
+            "{} cannot be run, or is too old: the connector SDK needs Python {}.{} or newer; {}",
+            python.display(),
+            MIN_PYTHON.0,
+            MIN_PYTHON.1,
+            interpreter::FIX
+        ),
+    }
+}
+
 impl std::fmt::Display for StartError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let fix = interpreter::FIX;
         match self {
             // Paths only: the same lookup that found nothing, now with its reason.
-            Self::PythonUnavailable => match interpreter::resolve() {
-                Err(error) => f.write_str(&error),
-                Ok(python) => write!(f, "{} cannot be run; {fix}", python.display()),
-            },
+            Self::PythonUnavailable => f.write_str(&unavailable(interpreter::resolve())),
             Self::SdkUnavailable => match interpreter::resolve() {
                 Ok(python) => write!(
                     f,
@@ -204,8 +305,6 @@ pub(super) struct Bounds {
 pub(super) enum Rows {
     /// None: a batch has only its header.
     Forbidden,
-    /// Any count within the bytes; the caller bounds it as it uses the rows.
-    Any,
     /// At most this many rows.
     AtMost(u64),
 }
@@ -229,22 +328,29 @@ pub(crate) struct Host {
 impl Host {
     /// Starts a host and waits for its handshake. `credentials` reach the
     /// provider's environment only after the host is running, in a message
-    /// that is bounded and never echoed, so they are not in the process's
-    /// initial environment.
+    /// that is bounded and never echoed. Their names are removed from the
+    /// environment the host inherits, so neither a value this process also
+    /// exports under such a name nor the credential is in the host's initial
+    /// environment (`/proc/<pid>/environ`).
     pub(super) fn start(credentials: &[(String, String)]) -> Result<Self, StartError> {
+        if !acceptable(credentials) {
+            return Err(StartError::Failed);
+        }
         let python = interpreter::resolve().map_err(|_| StartError::PythonUnavailable)?;
-        let mut host = Self::launch(python, &["-P", "-c", BOOTSTRAP], &[])?;
+        let names: Vec<&str> = credentials.iter().map(|(name, _)| name.as_str()).collect();
+        let mut host = Self::launch(python, &entry(MIN_PYTHON), &[], &names)?;
         host.set_environment(credentials)?;
         Ok(host)
     }
 
-    /// Starts `python` with `entry`, whose stdin is the socket and whose
-    /// environment is this process's, without the worker's own variables, plus
-    /// `environment`.
-    pub(super) fn launch(
+    /// Starts `python` with the arguments `entry`, whose stdin is the socket
+    /// and whose environment is this process's, without the worker's own
+    /// variables and without `unset`, plus `environment`.
+    pub(super) fn launch<S: AsRef<std::ffi::OsStr>>(
         python: std::path::PathBuf,
-        entry: &[&str],
+        entry: &[S],
         environment: &[(String, String)],
+        unset: &[&str],
     ) -> Result<Self, StartError> {
         let (stream, theirs) = UnixStream::pair().map_err(|_| StartError::Failed)?;
         let mut command = Command::new(python);
@@ -253,7 +359,7 @@ impl Host {
             .stdin(Stdio::from(std::os::fd::OwnedFd::from(theirs)))
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        for name in WORKER_ONLY_ENV {
+        for name in WORKER_ONLY_ENV.iter().chain(unset) {
             command.env_remove(name);
         }
         for (name, value) in environment {
@@ -308,6 +414,7 @@ impl Host {
         match status {
             Some(EXIT_NO_SDK) => StartError::SdkUnavailable,
             Some(EXIT_NO_HOST) => StartError::ProtocolMismatch { sdk_version: None },
+            Some(EXIT_OLD_PYTHON) => StartError::PythonUnavailable,
             _ => StartError::Failed,
         }
     }
@@ -322,15 +429,7 @@ impl Host {
         if credentials.is_empty() {
             return Ok(());
         }
-        let valid = credentials.len() <= ENV_MAX_VARIABLES
-            && credentials.iter().all(|(name, value)| {
-                name.len() <= ENV_MAX_NAME
-                    && name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-                    && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-                    && value.len() <= ENV_MAX_VALUE
-                    && !value.contains('\0')
-            });
-        if !valid {
+        if !acceptable(credentials) {
             return Err(StartError::Failed);
         }
         let variables: BTreeMap<_, _> = credentials.iter().cloned().collect();
@@ -492,7 +591,6 @@ impl Run<'_> {
                             host.broken = true;
                             return Err(Failure::Batch);
                         }
-                        Rows::Any => None,
                         Rows::AtMost(max) => Some(max),
                     };
                     let (kind, rows) = host.read(|kind| match kind {

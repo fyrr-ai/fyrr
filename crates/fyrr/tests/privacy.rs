@@ -629,6 +629,9 @@ mod providers {
         }
     }
 
+    /// The version the `sentinel-versioned` distribution reports instead of one.
+    const VERSION_SENTINEL: &str = "SENTINEL-VERSION";
+
     /// Invalid or raising provider metadata with markers in it.
     #[test]
     fn provider_listing_never_prints_metadata_values() {
@@ -641,6 +644,11 @@ mod providers {
         assert_eq!(output.status.code(), Some(1), "{stdout}");
         assert!(stdout.contains("sentinel-bad-metadata"), "{stdout}");
         assert!(stdout.contains("its metadata callable failed"), "{stdout}");
+        // A distribution whose version is not a version is listed as invalid,
+        // and what it said is printed nowhere.
+        assert!(stdout.contains("sentinel-versioned"), "{stdout}");
+        assert!(stdout.contains("<invalid>"), "{stdout}");
+        assert!(!stdout.contains(VERSION_SENTINEL), "{stdout}");
         assert_clean(&sentinels, &output, &sandbox, "providers");
         for args in [
             vec!["writer", "__worker", "discover"],
@@ -669,6 +677,22 @@ mod providers {
             &sandbox,
             "config check with refused provider",
         );
+        let (stdout, stderr) = common::text(&output);
+        assert!(!format!("{stdout}{stderr}").contains(VERSION_SENTINEL));
+
+        // A required property the provider's own schema names, which the
+        // source leaves out: the diagnostic says that one is missing, not which.
+        let fixture = sandbox.input("docs.json", &provider_fixture(&mut sentinels));
+        let config = config_with(&source("required", "sentinel-bad-required", &fixture, ""));
+        let path = sandbox.input("required.toml", &config);
+        let output = sandbox.configured(&path, ["config", "check", "--no-env"], &env);
+        let (stdout, stderr) = common::text(&output);
+        assert_eq!(output.status.code(), Some(78), "{stdout}{stderr}");
+        assert!(
+            stderr.contains("a field the provider requires is missing"),
+            "{stderr}"
+        );
+        assert_clean(&sentinels, &output, &sandbox, "config check, required name");
     }
 
     /// A provider field marked secret (under a key fyrr's own heuristic does
@@ -746,6 +770,19 @@ mod providers {
             "{mode}: {:?}",
             common::text(&output)
         );
+        // A report forged on the result channel reached the supervisor, which
+        // read it instead of the worker's own: the worker's own report, were
+        // it the one read, would say the provider failed (the forging provider
+        // ends its host without finishing). The validator refused the forgery
+        // and reports the worker's failure, which is its own diagnostic.
+        if mode.starts_with("result-") {
+            let (stdout, _) = common::text(&output);
+            assert!(
+                stdout.contains("error: the worker failed"),
+                "{mode}: {stdout}"
+            );
+            assert!(!stdout.contains("the provider failed"), "{mode}: {stdout}");
+        }
     }
 
     #[test]

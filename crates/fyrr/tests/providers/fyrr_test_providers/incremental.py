@@ -43,6 +43,8 @@ class Incremental(Connector):
 
     def content(self, cursor: str | None) -> Iterator[ContentBatch]:
         data = self.data()
+        if "record_revisions" in data:
+            self.record_revisions(data)
         if data.get("capture_cursors"):
             Path(self.context.scope.fixture).with_name("content-cursor.json").write_text(
                 json.dumps(cursor)
@@ -100,6 +102,16 @@ class Incremental(Connector):
                         )
                     )
             yield ContentBatch(changes=document_changes(changes), cursor=f"{data['epoch']}-{index}")
+
+    def record_revisions(self, data: dict) -> None:
+        """Asks the worker for the stored revisions, both ways a provider can,
+        and records the answers beside the fixture for the test to read."""
+        seen: dict = {"lookup": self.context.lookup_revisions(data["record_revisions"]), "next": []}
+        while page := self.context.next_revisions():
+            seen["next"].extend(page)
+        Path(self.context.scope.fixture).with_name("revisions-seen.json").write_text(
+            json.dumps(seen)
+        )
 
     def catch_revision_failure(self, data: dict) -> None:
         callback = data.get("catch_revision_failure")

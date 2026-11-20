@@ -84,10 +84,11 @@ pub(super) fn drive_provider<'h, E: Copy>(
     // are used, whatever the row policy: a header is as large as the envelope.
     let bounds = Bounds {
         max_bytes: checker.limits.max_bytes,
+        // Content rows are bounded as they are inspected, before they are
+        // decoded; the checker enforces the same limit on what it is given.
         rows: match policy {
             RowPolicy::Forbidden => Rows::Forbidden,
-            RowPolicy::Optional => Rows::AtMost(checker.limits.max_rows),
-            RowPolicy::Required => Rows::Any,
+            RowPolicy::Optional | RowPolicy::Required => Rows::AtMost(checker.limits.max_rows),
         },
     };
     while let Some(item) = run

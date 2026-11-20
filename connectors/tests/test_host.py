@@ -273,21 +273,25 @@ def test_without_revisions_the_provider_has_no_callbacks(
     assert SEEN == {"no_callbacks": True}
 
 
-def spawn_host(extra_fds: tuple[int, ...] = ()) -> tuple[subprocess.Popen[bytes], Peer]:
-    """The real host process, with the socket as stdin the way fyrr's worker starts it."""
+LAUNCHER = "import sys; from fyrr_connectors import host; sys.exit(host.main(sys.argv, 0))"
+
+
+def spawn_host(*arguments: str) -> tuple[subprocess.Popen[bytes], Peer]:
+    """The real host process with the socket as stdin. fyrr's worker adds a
+    bootstrap that moves the socket off stdin first; its descriptor handling is
+    tested through the real worker, where the bootstrap is."""
     ours, theirs = socket.socketpair()
     child = subprocess.Popen(
-        [sys.executable, "-P", "-m", "fyrr_connectors.host"],
+        [sys.executable, "-c", LAUNCHER, *arguments],
         stdin=theirs,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        pass_fds=extra_fds,
     )
     theirs.close()
     return child, Peer(ours)
 
 
-def test_the_host_process_serves_over_its_stdin_socket_and_exits_on_eof() -> None:
+def test_the_host_process_serves_over_its_socket_and_exits_on_eof() -> None:
     child, peer = spawn_host()
     assert peer.message()["protocol"] == host.PROTOCOL_VERSION
     peer.send({"t": "inventory"})
@@ -296,47 +300,38 @@ def test_the_host_process_serves_over_its_stdin_socket_and_exits_on_eof() -> Non
     assert child.wait(timeout=30) == 0
 
 
-def test_the_host_holds_only_stdio_and_a_socket_no_child_can_inherit() -> None:
-    leaked = os.open(os.devnull, os.O_RDONLY)
-    os.set_inheritable(leaked, True)
+def test_a_process_that_provider_code_forks_does_not_hold_the_socket() -> None:
+    script = """
+import os, socket
+from fyrr_connectors import host
+
+ours, theirs = socket.socketpair()
+connection = host.Connection(theirs)
+fd = theirs.fileno()
+os.register_at_fork(after_in_child=connection.abandon)
+pid = os.fork()
+if pid == 0:
     try:
-        child, peer = spawn_host(extra_fds=(leaked,))
-        peer.message()
-        listing = {
-            int(name): os.readlink(f"/proc/{child.pid}/fd/{name}")
-            for name in os.listdir(f"/proc/{child.pid}/fd")
-        }
-        assert leaked not in listing or leaked < 3
-        assert {0, 1, 2} <= set(listing)
-        sockets = [fd for fd, target in listing.items() if target.startswith("socket:")]
-        assert len(sockets) == 1 and sockets[0] > 2, listing
-        # stdin is /dev/null now, and the socket is close-on-exec (O_CLOEXEC).
-        assert listing[0] == os.devnull
-        info = Path(f"/proc/{child.pid}/fdinfo/{sockets[0]}").read_text()
-        flags = int(
-            next(row for row in info.splitlines() if row.startswith("flags:")).split()[1], 8
-        )
-        assert flags & os.O_CLOEXEC
-        assert set(listing) == {0, 1, 2, sockets[0]}, listing
+        os.fstat(fd)
+    except OSError:
+        os._exit(0)
+    os._exit(1)
+_, status = os.waitpid(pid, 0)
+assert os.waitstatus_to_exitcode(status) == 0, "the child held the socket"
+os.fstat(fd)  # the parent still does
+theirs.sendall(b"x")
+assert ours.recv(1) == b"x"
+"""
+    subprocess.run([sys.executable, "-c", script], check=True, timeout=30)
+
+
+def test_the_host_refuses_arguments_and_a_descriptor_that_is_no_socket() -> None:
+    for arguments in (["1"], ["x", "2"]):
+        child, peer = spawn_host(*arguments)
+        assert child.wait(timeout=30) == 2, arguments
         peer.sock.close()
-        assert child.wait(timeout=30) == 0
-    finally:
-        os.close(leaked)
-
-
-def test_the_host_refuses_arguments_and_a_stdin_that_is_no_socket() -> None:
-    for argument in (["1"], ["x", "2"]):
-        result = subprocess.run(
-            [sys.executable, "-P", "-m", "fyrr_connectors.host", *argument],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            check=False,
-            env=dict(os.environ),
-        )
-        assert result.returncode == 2, argument
-        assert result.stdout == b""
     result = subprocess.run(
-        [sys.executable, "-P", "-m", "fyrr_connectors.host"],
+        [sys.executable, "-c", LAUNCHER],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         check=False,
@@ -386,20 +381,45 @@ def serve_in_thread() -> tuple[Peer, threading.Thread]:
     [
         {"t": "environment", "variables": {"1BAD": "v"}},
         {"t": "environment", "variables": {"A=B": "v"}},
+        {"t": "environment", "variables": {"lower": "v"}},
+        {"t": "environment", "variables": {"N" * 257: "v"}},
         {"t": "environment", "variables": {"NAME": "has\u0000nul"}},
         {"t": "environment", "variables": {"NAME": 5}},
         {"t": "environment", "variables": {f"N{n}": "v" for n in range(300)}},
         {"t": "environment", "variables": ["not", "a", "map"]},
         {"t": "environment"},
+        # Names that change which interpreter, libraries or modules the host runs.
+        {"t": "environment", "variables": {"PATH": "/nowhere"}},
+        {"t": "environment", "variables": {"VIRTUAL_ENV": "/nowhere"}},
+        {"t": "environment", "variables": {"PYTHONPATH": "/nowhere"}},
+        {"t": "environment", "variables": {"PYTHONHOME": "/nowhere"}},
+        {"t": "environment", "variables": {"LD_PRELOAD": "/nowhere"}},
+        {"t": "environment", "variables": {"LD_LIBRARY_PATH": "/nowhere"}},
+        {"t": "environment", "variables": {"NAME": "v", "PYTHONSTARTUP": "/nowhere"}},
     ],
 )
 def test_an_invalid_environment_message_ends_the_conversation(message: dict[str, Any]) -> None:
+    before = dict(os.environ)
     peer, thread = serve_in_thread()
     peer.message()
     peer.send(message)
     thread.join(timeout=5)
     assert not thread.is_alive()
-    assert not {"1BAD", "A=B", "NAME", "N0", "N299"} & set(os.environ)
+    assert dict(os.environ) == before
+
+
+def test_a_name_of_the_full_configured_length_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    name = "N" * 256
+    monkeypatch.setenv(name, "placeholder")
+    peer, thread = serve_in_thread()
+    peer.message()
+    peer.send({"t": "environment", "variables": {name: "SECRET-VALUE"}})
+    assert peer.message() == {"t": "environment_set"}
+    assert os.environ[name] == "SECRET-VALUE"
+    peer.sock.close()
+    thread.join(timeout=5)
 
 
 def test_the_environment_may_only_be_set_before_any_other_request() -> None:

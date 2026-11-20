@@ -4,7 +4,7 @@
 //! real host is covered by its own tests and by the CLI tests.
 
 use super::driver::{ErrMap, Request, RowPolicy, drive_provider};
-use super::host::{BOOTSTRAP, Bounds, Failure, Host, Revisions, Rows, StartError};
+use super::host::{Bounds, Failure, Host, MIN_PYTHON, Revisions, Rows, StartError, entry};
 use super::*;
 use crate::worker::Diagnostic;
 use std::collections::BTreeMap;
@@ -25,6 +25,7 @@ fn python() -> PathBuf {
 /// A peer that plays `FAKE_MODE` and logs what it was asked to `FAKE_LOG`.
 const PEER: &str = r#"
 import json, os, socket, struct, sys, time
+import pyarrow as pa
 sock = socket.socket(fileno=os.dup(0))
 mode = os.environ["FAKE_MODE"]
 log = open(os.environ["FAKE_LOG"], "a")
@@ -43,8 +44,14 @@ def say(message):
 def request():
     kind, length = struct.unpack(">cI", exact(5))
     return json.loads(exact(length))
+def contract_rows():
+    from fyrr_connectors import document_changes
+    batch = document_changes([])
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, batch.schema) as writer:
+        writer.write_batch(batch)
+    return sink.getvalue().to_pybytes()
 def ipc(rows):
-    import pyarrow as pa
     batch = pa.RecordBatch.from_pylist([{"a": "x" * 100} for _ in range(rows)])
     sink = pa.BufferOutputStream()
     with pa.ipc.new_stream(sink, batch.schema) as writer:
@@ -93,9 +100,13 @@ while True:
         elif mode == "bad-rows":
             send(b"B", b"not-json"); send(b"A", b"garbage")
         elif mode == "two-batches":
-            batches_sent = batches
-            if batches_sent <= 2:
-                send(b"H", [b"first", b"second"][batches_sent - 1])
+            if batches <= 2:
+                header = {
+                    "schema_version": "1.0", "source_id": "fixture", "kind": "content",
+                    "cursor": {"start": None if batches == 1 else "c1", "end": "c%d" % batches},
+                    "body": {"type": "document_changes", "changes": []},
+                }
+                send(b"B", json.dumps(header).encode()); send(b"A", contract_rows())
             else:
                 say({"t": "done"})
         elif mode == "many-rows":
@@ -105,7 +116,6 @@ while True:
         elif mode == "header-over":
             send(b"H", b"x" * ((4 << 20) + (1 << 20) + 1))
         elif mode == "compressed":
-            import pyarrow as pa
             batch = pa.RecordBatch.from_pylist([{"a": "x" * 100} for _ in range(5)])
             sink = pa.BufferOutputStream()
             options = pa.ipc.IpcWriteOptions(compression="lz4")
@@ -153,7 +163,7 @@ impl Scripted {
             ("FAKE_MODE".to_owned(), mode.to_owned()),
             ("FAKE_LOG".to_owned(), log.display().to_string()),
         ];
-        let host = Host::launch(python(), &["-P", "-c", PEER], &environment)?;
+        let host = Host::launch(python(), &["-P", "-c", PEER], &environment, &[])?;
         Ok(Self { host, log })
     }
 
@@ -240,8 +250,9 @@ fn launch_with_sdk(name: &str, files: &[(&str, &str)]) -> Result<Host, StartErro
     }
     let result = Host::launch(
         python(),
-        &["-P", "-c", BOOTSTRAP],
+        &entry(MIN_PYTHON),
         &[("PYTHONPATH".to_owned(), dir.display().to_string())],
+        &[],
     );
     std::fs::remove_dir_all(dir).unwrap();
     result
@@ -294,11 +305,21 @@ fn credentials_are_sent_after_the_host_is_running_and_never_echoed() {
         ]
     );
     // What the host would refuse is refused before it is sent, and not named.
+    let too_long = "N".repeat(257);
     for (name, value) in [
         ("", "SECRET-VALUE"),
         ("1BAD", "SECRET-VALUE"),
         ("A=B", "SECRET-VALUE"),
+        ("lower", "SECRET-VALUE"),
+        (too_long.as_str(), "SECRET-VALUE"),
         ("NAME", "SECRET-VALUE\0nul"),
+        // Names that change which interpreter, libraries or modules run.
+        ("PATH", "SECRET-VALUE"),
+        ("VIRTUAL_ENV", "SECRET-VALUE"),
+        ("PYTHONPATH", "SECRET-VALUE"),
+        ("PYTHONHOME", "SECRET-VALUE"),
+        ("LD_PRELOAD", "SECRET-VALUE"),
+        ("LD_LIBRARY_PATH", "SECRET-VALUE"),
     ] {
         let mut peer = Scripted::start("empty").unwrap();
         let error = peer
@@ -308,12 +329,63 @@ fn credentials_are_sent_after_the_host_is_running_and_never_echoed() {
         assert_eq!(error, StartError::Failed);
         assert!(!error.to_string().contains("SECRET"), "{value:?}");
         assert!(peer.requests().is_empty());
+        // And a host is not even started for them.
+        assert_eq!(
+            Host::start(&[(name.to_owned(), value.to_owned())]).err(),
+            Some(StartError::Failed)
+        );
     }
 }
 
 #[test]
+fn a_name_of_any_configured_length_is_sent_to_the_host() {
+    let names = ["N".repeat(129), "N".repeat(256)];
+    let mut peer = Scripted::start("empty").unwrap();
+    let credentials: Vec<_> = names
+        .iter()
+        .map(|name| (name.clone(), "SECRET-VALUE".to_owned()))
+        .collect();
+    peer.host.set_environment(&credentials).unwrap();
+    let requests = peer.requests();
+    let sent = requests.last().unwrap();
+    for name in &names {
+        assert!(sent.contains(&format!("\"{name}\"")), "{}", name.len());
+    }
+}
+
+#[test]
+fn a_name_that_will_be_sent_is_not_inherited_by_the_host() {
+    // HOME is in this process's environment, so a host would inherit it, as it
+    // would the old value of a credential whose name is also exported here.
+    assert!(std::env::var_os("HOME").is_some());
+    let inherited = |unset: &[&str]| {
+        let host = Host::launch(python(), &entry(MIN_PYTHON), &[], unset).unwrap();
+        let environ = std::fs::read(format!("/proc/{}/environ", host.pid())).unwrap();
+        environ
+            .split(|b| *b == 0)
+            .any(|row| row.starts_with(b"HOME="))
+    };
+    assert!(inherited(&[]));
+    assert!(!inherited(&["HOME"]));
+}
+
+#[test]
+fn an_interpreter_older_than_the_minimum_ends_at_the_version_check_and_says_so() {
+    let error = Host::launch(python(), &entry((99, 0)), &[], &[])
+        .err()
+        .unwrap();
+    assert_eq!(error, StartError::PythonUnavailable);
+    assert_eq!(error.code(), "python_unavailable");
+    let message = super::host::unavailable(Ok(PathBuf::from("/venv/bin/python")));
+    assert!(
+        message.contains("/venv/bin/python") && message.contains("needs Python 3.13 or newer"),
+        "{message}"
+    );
+}
+
+#[test]
 fn credentials_are_not_in_the_real_hosts_initial_environment() {
-    let mut host = Host::launch(python(), &["-P", "-c", BOOTSTRAP], &[]).unwrap();
+    let mut host = Host::launch(python(), &entry(MIN_PYTHON), &[], &[]).unwrap();
     host.set_environment(&[("FYRR_TEST_CREDENTIAL".to_owned(), "SECRET-VALUE".to_owned())])
         .unwrap();
     let environ = std::fs::read(format!("/proc/{}/environ", host.pid())).unwrap();
@@ -328,13 +400,18 @@ fn credentials_are_not_in_the_real_hosts_initial_environment() {
 
 #[test]
 fn a_run_closes_its_generator_unless_the_read_succeeds_or_the_peer_is_out_of_step() {
-    let any = bounds(MIB, Rows::Any);
+    let any = bounds(MIB, Rows::AtMost(100));
     for (mode, bounds, failure, closed) in [
         ("provider-error", any, Failure::Provider, true),
         ("oversize", any, Failure::Batch, true),
         // The whole frame was read and then refused for its size or its rows:
         // the host is in step and is asked to close its generator.
-        ("many-rows", bounds(200, Rows::Any), Failure::Batch, true),
+        (
+            "many-rows",
+            bounds(200, Rows::AtMost(100)),
+            Failure::Batch,
+            true,
+        ),
         (
             "many-rows",
             bounds(MIB, Rows::AtMost(2)),
@@ -379,7 +456,7 @@ fn a_run_closes_its_generator_unless_the_read_succeeds_or_the_peer_is_out_of_ste
 #[test]
 fn a_batch_header_may_be_as_large_as_the_envelope_whether_or_not_rows_are_allowed() {
     // A members snapshot is a header and no rows: 2 MiB under a 4 MiB envelope.
-    for rows in [Rows::Forbidden, Rows::Any, Rows::AtMost(10)] {
+    for rows in [Rows::Forbidden, Rows::AtMost(10)] {
         let mut peer = Scripted::start("header-2mib").unwrap();
         let mut run = peer.host.run("{}", SyncKind::Members, None, false).unwrap();
         let item = run.next(bounds(4 * MIB, rows), None).unwrap().unwrap();
@@ -399,19 +476,35 @@ fn a_batch_header_may_be_as_large_as_the_envelope_whether_or_not_rows_are_allowe
 fn frames_over_their_bound_and_unusable_rows_are_batch_failures() {
     for (mode, bounds, failure) in [
         // A length of four gigabytes is refused without reading or allocating it.
-        ("huge-frame", bounds(MIB, Rows::Any), Failure::Batch),
-        ("bad-rows", bounds(MIB, Rows::Any), Failure::Batch),
+        ("huge-frame", bounds(MIB, Rows::AtMost(100)), Failure::Batch),
+        ("bad-rows", bounds(MIB, Rows::AtMost(100)), Failure::Batch),
         // Rows are not allowed here: the batch is refused, not decoded.
         ("bad-rows", bounds(MIB, Rows::Forbidden), Failure::Batch),
         // Five rows of 100 bytes exceed 200 bytes, and exceed two rows.
-        ("many-rows", bounds(200, Rows::Any), Failure::Batch),
+        ("many-rows", bounds(200, Rows::AtMost(100)), Failure::Batch),
         ("many-rows", bounds(MIB, Rows::AtMost(2)), Failure::Batch),
         // A compressed stream is refused before the decoder can inflate it.
-        ("compressed", bounds(MIB, Rows::Any), Failure::Batch),
-        ("non-utf8-header", bounds(MIB, Rows::Any), Failure::Tuple),
-        ("rows-then-nothing", bounds(MIB, Rows::Any), Failure::Tuple),
-        ("stray-start", bounds(MIB, Rows::Any), Failure::Tuple),
-        ("unsolicited-lookup", bounds(MIB, Rows::Any), Failure::Tuple),
+        ("compressed", bounds(MIB, Rows::AtMost(100)), Failure::Batch),
+        (
+            "non-utf8-header",
+            bounds(MIB, Rows::AtMost(100)),
+            Failure::Tuple,
+        ),
+        (
+            "rows-then-nothing",
+            bounds(MIB, Rows::AtMost(100)),
+            Failure::Tuple,
+        ),
+        (
+            "stray-start",
+            bounds(MIB, Rows::AtMost(100)),
+            Failure::Tuple,
+        ),
+        (
+            "unsolicited-lookup",
+            bounds(MIB, Rows::AtMost(100)),
+            Failure::Tuple,
+        ),
     ] {
         let mut peer = Scripted::start(mode).unwrap();
         let mut run = peer.host.run("{}", SyncKind::Content, None, false).unwrap();
@@ -463,22 +556,38 @@ fn revision_requests_are_answered_while_a_batch_is_produced() {
 
 #[test]
 fn two_batches_of_one_run_arrive_in_order_over_one_conversation() {
+    // Two valid content batches with rows, a cursor chain and a third request
+    // that ends the run: both pass the checker, in order, and nothing is lost.
     let mut peer = Scripted::start("two-batches").unwrap();
-    let mut run = peer.host.run("{}", SyncKind::Members, None, false).unwrap();
-    for expected in ["first", "second"] {
-        let item = run
-            .next(bounds(MIB, Rows::Forbidden), None)
-            .unwrap()
-            .unwrap();
-        assert_eq!(item.header, expected);
-        assert!(item.rows.is_none());
-    }
-    assert!(
-        run.next(bounds(MIB, Rows::Forbidden), None)
-            .unwrap()
-            .is_none()
-    );
+    let mut checker = checker(SyncKind::Content, 10);
+    let mut delivered = Vec::new();
+    let request = Request {
+        source_json: "{}",
+        kind: SyncKind::Content,
+        cursor: None,
+    };
+    let run = drive_provider(
+        &mut peer.host,
+        &request,
+        None,
+        &mut checker,
+        RowPolicy::Required,
+        ErrMap::CONTENT,
+        |header, rows, _| {
+            let header: serde_json::Value = serde_json::from_str(header).unwrap();
+            delivered.push((
+                header["cursor"]["end"].as_str().unwrap().to_owned(),
+                rows.map(arrow_array::RecordBatch::num_rows),
+            ));
+            Ok(())
+        },
+    )
+    .unwrap_or_else(|error| panic!("{error:?}"));
     run.finish();
+    assert_eq!(
+        delivered,
+        [("c1".to_owned(), Some(0)), ("c2".to_owned(), Some(0))]
+    );
     assert_eq!(peer.requests(), ["run", "next", "next", "next"]);
 }
 

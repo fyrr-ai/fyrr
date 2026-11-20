@@ -4,11 +4,19 @@
 //! inflated to the size its producer states, before any of fyrr's limits can
 //! run. So the messages are read here first, as plain length-prefixed
 //! flatbuffers, and the stream is decoded only when it is exactly what the
-//! contract allows: one schema message that passes the contract check and
-//! carries no metadata beyond the contract's two entries, then one record batch
-//! without compression whose declared rows and buffers are within the limits.
-//! Nothing the stream declares is allocated or trusted until then, and every
-//! refusal is a value-free [`Refusal`].
+//! contract allows: one schema message whose fields and metadata are bounded
+//! before it is converted and that then passes the contract check, then one
+//! record batch without compression whose declared rows and buffers are within
+//! the limits. Nothing the stream declares is allocated or trusted until then,
+//! and every refusal is a value-free [`Refusal`].
+//!
+//! The decoder does not validate every length a buffer's node declares against
+//! the buffer (a validity bitmap shorter than its array can panic it), and fyrr
+//! does not re-implement Arrow's layout rules to find those. The whole path
+//! over the peer's bytes (inspection, schema conversion and decoding) runs
+//! under one `catch_unwind`: a panic is a refused batch. The workspace builds
+//! with the default `panic = "unwind"`, and a worker's stderr, where the panic
+//! hook writes, is `/dev/null`.
 
 use arrow_array::RecordBatch;
 use arrow_buffer::Buffer;
@@ -16,8 +24,9 @@ use arrow_ipc::convert::fb_to_schema;
 use arrow_ipc::reader::StreamDecoder;
 use arrow_ipc::{Endianness, MessageHeader, root_as_message};
 use arrow_schema::{DataType, Field};
-use fyrr_core::connector::check_document_changes_schema;
+use fyrr_core::connector::{check_document_changes_schema, document_changes_arrow_schema};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::LazyLock;
 
 /// The marker that starts every message of the current IPC format.
 const CONTINUATION: u32 = 0xFFFF_FFFF;
@@ -27,6 +36,31 @@ const METADATA_MAX: usize = 256 << 10;
 /// Column nodes and buffers of one batch; the contract has a few dozen.
 const NODES_MAX: usize = 4096;
 const BUFFERS_MAX: usize = 16384;
+/// Fields, at every nesting level, that a schema may carry beyond the contract's
+/// own: the nullable columns a provider may add, and their children.
+const ADDED_FIELDS_MAX: usize = 64;
+/// The schema metadata the contract demands: its name and its version.
+const SCHEMA_METADATA_ENTRIES: usize = 2;
+
+/// The most fields a schema may declare before it is converted.
+static FIELDS_MAX: LazyLock<usize> = LazyLock::new(|| {
+    fn count(field: &Field) -> usize {
+        1 + match field.data_type() {
+            DataType::Struct(children) => children.iter().map(|child| count(child)).sum(),
+            DataType::List(child)
+            | DataType::LargeList(child)
+            | DataType::FixedSizeList(child, _)
+            | DataType::Map(child, _) => count(child),
+            _ => 0,
+        }
+    }
+    let contract: usize = document_changes_arrow_schema()
+        .fields()
+        .iter()
+        .map(|field| count(field))
+        .sum();
+    contract + ADDED_FIELDS_MAX
+});
 
 /// What a batch may declare.
 #[derive(Debug, Clone, Copy)]
@@ -46,7 +80,7 @@ pub(super) enum Refusal {
     Messages,
     /// A schema that is not the contract's.
     Schema,
-    /// Schema or field metadata beyond the contract's two entries.
+    /// Schema metadata beyond the contract's two entries, or any field metadata.
     Metadata,
     /// A compressed batch; fyrr's limits would not see its real size.
     Compressed,
@@ -58,13 +92,18 @@ pub(super) enum Refusal {
     Bytes,
     /// A batch whose buffers or nodes are implausible or point outside it.
     Layout,
-    /// The decoder refused what inspection accepted.
+    /// The decoder refused, or panicked on, what inspection accepted.
     Decode,
 }
 
 /// Exactly one record batch of an Arrow IPC stream: inspected, then decoded.
 /// The batch's buffers are slices of the frame, not copies.
 pub(super) fn decode(frame: Vec<u8>, bounds: Bounds) -> Result<RecordBatch, Refusal> {
+    catch_unwind(AssertUnwindSafe(|| inspect_and_decode(frame, bounds)))
+        .unwrap_or(Err(Refusal::Decode))
+}
+
+fn inspect_and_decode(frame: Vec<u8>, bounds: Bounds) -> Result<RecordBatch, Refusal> {
     inspect(&frame, bounds)?;
     let mut buffer = Buffer::from_vec(frame);
     let mut decoder = StreamDecoder::new();
@@ -144,32 +183,50 @@ fn check_schema(header: arrow_ipc::Schema<'_>) -> Result<(), Refusal> {
     if header.endianness() != Endianness::Little {
         return Err(Refusal::Schema);
     }
-    // Arrow's conversion panics on a type it cannot represent; the flatbuffer
-    // is verified, but its content is the peer's.
-    let schema =
-        catch_unwind(AssertUnwindSafe(|| fb_to_schema(header))).map_err(|_| Refusal::Schema)?;
-    check_document_changes_schema(&schema).map_err(|_| Refusal::Schema)?;
-    // The check demands the contract's two entries; any more is bytes that no
-    // buffer limit counts.
-    if schema.metadata().len() != 2 || schema.fields().iter().any(|field| has_metadata(field)) {
-        return Err(Refusal::Metadata);
-    }
-    Ok(())
+    bound_schema(header)?;
+    let schema = fb_to_schema(header);
+    check_document_changes_schema(&schema)
+        .map(drop)
+        .map_err(|_| Refusal::Schema)
 }
 
-/// Whether the field or any field nested in it carries metadata.
-fn has_metadata(field: &Field) -> bool {
-    if !field.metadata().is_empty() {
-        return true;
+/// Walks the schema's flatbuffer without converting it. Offsets in a
+/// flatbuffer may be shared, so a small message can describe a far larger tree
+/// than its length; the walk therefore counts the fields it is told about, at
+/// every nesting level, against the contract's own plus a fixed allowance, and
+/// stops before it follows more than that. It also refuses what the conversion
+/// would turn into bytes that no buffer limit counts: schema metadata beyond
+/// the contract's entries (counted on the vector as sent, not as a map) and
+/// metadata on any field at any level.
+fn bound_schema(header: arrow_ipc::Schema<'_>) -> Result<(), Refusal> {
+    if header
+        .custom_metadata()
+        .is_some_and(|entries| entries.len() > SCHEMA_METADATA_ENTRIES)
+    {
+        return Err(Refusal::Metadata);
     }
-    match field.data_type() {
-        DataType::Struct(children) => children.iter().any(|child| has_metadata(child)),
-        DataType::List(child)
-        | DataType::LargeList(child)
-        | DataType::FixedSizeList(child, _)
-        | DataType::Map(child, _) => has_metadata(child),
-        _ => false,
+    let top = header.fields();
+    let mut declared = top.map_or(0, |fields| fields.len());
+    if declared > *FIELDS_MAX {
+        return Err(Refusal::Schema);
     }
+    let mut pending: Vec<_> = top.into_iter().flatten().collect();
+    while let Some(field) = pending.pop() {
+        if field
+            .custom_metadata()
+            .is_some_and(|entries| !entries.is_empty())
+        {
+            return Err(Refusal::Metadata);
+        }
+        if let Some(children) = field.children() {
+            declared = declared.saturating_add(children.len());
+            if declared > *FIELDS_MAX {
+                return Err(Refusal::Schema);
+            }
+            pending.extend(children);
+        }
+    }
+    Ok(())
 }
 
 fn check_batch(
@@ -475,6 +532,152 @@ mod tests {
         assert_eq!(
             refused(stream(&marked("title"), 1), OPEN),
             Refusal::Metadata
+        );
+        // Metadata deep inside an added column, where no recursion over the
+        // converted types is needed because the walk is over the flatbuffer.
+        let deep = Field::new(
+            "extra",
+            DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::Struct(
+                    vec![
+                        Field::new("leaf", DataType::Utf8, true)
+                            .with_metadata(HashMap::from([("k".to_owned(), "v".to_owned())])),
+                    ]
+                    .into(),
+                ),
+                true,
+            ))),
+            true,
+        );
+        assert_eq!(
+            refused(stream(&with_added(vec![deep]), 1), OPEN),
+            Refusal::Metadata
+        );
+    }
+
+    /// The contract's schema with nullable columns added.
+    fn with_added(added: Vec<Field>) -> Schema {
+        Schema::new_with_metadata(
+            contract()
+                .fields()
+                .iter()
+                .cloned()
+                .chain(added.into_iter().map(Arc::new))
+                .collect::<Vec<_>>(),
+            contract().metadata().clone(),
+        )
+    }
+
+    #[test]
+    fn a_schema_with_more_fields_than_the_contract_and_its_allowance_is_refused_unconverted() {
+        let added = |count: usize| {
+            with_added(
+                (0..count)
+                    .map(|n| Field::new(format!("extra{n}"), DataType::Utf8, true))
+                    .collect(),
+            )
+        };
+        assert!(decode(stream(&added(ADDED_FIELDS_MAX), 1), OPEN).is_ok());
+        // The contract check alone accepts any number of nullable additions.
+        assert!(check_document_changes_schema(&added(ADDED_FIELDS_MAX + 1)).is_ok());
+        assert_eq!(
+            refused(stream(&added(ADDED_FIELDS_MAX + 1), 1), OPEN),
+            Refusal::Schema
+        );
+        // Nesting counts too: one added column with a child per allowance.
+        let wide = Field::new(
+            "wide",
+            DataType::Struct(
+                (0..=ADDED_FIELDS_MAX)
+                    .map(|n| Field::new(format!("c{n}"), DataType::Utf8, true))
+                    .collect(),
+            ),
+            true,
+        );
+        assert_eq!(
+            refused(stream(&with_added(vec![wide]), 1), OPEN),
+            Refusal::Schema
+        );
+    }
+
+    /// The byte ranges of the lengths of the batch message's buffers.
+    fn buffer_lengths(frame: &[u8]) -> Vec<std::ops::Range<usize>> {
+        let message = messages(frame)[1].clone();
+        let size = i32::from_le_bytes(
+            frame[message.start + 4..message.start + 8]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let metadata = message.start + 8..message.start + 8 + size;
+        let buffers = root_as_message(&frame[metadata.clone()])
+            .unwrap()
+            .header_as_record_batch()
+            .unwrap()
+            .buffers()
+            .unwrap();
+        // The vector of (offset, length) structs is contiguous in the message.
+        let pattern: Vec<u8> = buffers
+            .iter()
+            .flat_map(|buffer| {
+                buffer
+                    .offset()
+                    .to_le_bytes()
+                    .into_iter()
+                    .chain(buffer.length().to_le_bytes())
+            })
+            .collect();
+        let start = frame[metadata.clone()]
+            .windows(pattern.len())
+            .position(|window| window == pattern)
+            .expect("the buffer vector is in the message")
+            + metadata.start;
+        (0..buffers.len())
+            .map(|index| start + 16 * index + 8..start + 16 * index + 16)
+            .collect()
+    }
+
+    #[test]
+    fn a_batch_that_makes_the_decoder_panic_is_a_refused_batch() {
+        // A validity bitmap that is shorter than its array: the buffers are
+        // within the batch, so inspection accepts them, and the decoder's
+        // bitmap constructor panics. Every shortened buffer must end in a value, and
+        // at least one must be that panic, caught.
+        let frame = stream(&contract(), 1);
+        let mut outcomes = Vec::new();
+        for lengths in buffer_lengths(&frame) {
+            let mut bad = frame.clone();
+            bad[lengths].copy_from_slice(&0i64.to_le_bytes());
+            outcomes.push(decode(bad, OPEN).map(|_| ()));
+        }
+        assert!(
+            outcomes.contains(&Err(Refusal::Decode)),
+            "no shortened buffer reached the decoder's panic: {outcomes:?}"
+        );
+    }
+
+    #[test]
+    fn a_schema_that_makes_the_conversion_panic_is_a_refused_batch() {
+        // Arrow's conversion panics on a type it cannot represent, such as an
+        // integer of 7 bits. Each window that holds the added column's 32-bit
+        // width is rewritten in turn.
+        let schema = with_added(vec![Field::new("added", DataType::Int32, true)]);
+        let frame = stream(&schema, 1);
+        let size = i32::from_le_bytes(frame[4..8].try_into().unwrap()) as usize;
+        let mut outcomes = Vec::new();
+        for at in (8..8 + size - 3).filter(|at| frame[*at..*at + 4] == 32i32.to_le_bytes()) {
+            let mut bad = frame.clone();
+            bad[at..at + 4].copy_from_slice(&7i32.to_le_bytes());
+            outcomes.push(decode(bad, OPEN).map(|_| ()));
+        }
+        assert!(!outcomes.is_empty());
+        assert!(
+            outcomes.iter().all(|outcome| outcome.is_err()),
+            "{outcomes:?}"
+        );
+        assert!(
+            outcomes.contains(&Err(Refusal::Decode)),
+            "the 7-bit integer did not reach the conversion: {outcomes:?}"
         );
     }
 

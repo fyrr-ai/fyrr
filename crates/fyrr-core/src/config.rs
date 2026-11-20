@@ -907,7 +907,8 @@ const SECRET_IN_FILE: &str =
 /// Environment variable names a secret reference may use.
 const ENV_NAME: &str = "[A-Z_][A-Z0-9_]*";
 
-fn valid_env_name(name: &str) -> bool {
+/// Whether `name` is an environment variable name a secret reference may use.
+pub fn valid_env_name(name: &str) -> bool {
     !name.is_empty()
         && !name.as_bytes()[0].is_ascii_digit()
         && name

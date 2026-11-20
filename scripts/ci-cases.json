@@ -743,7 +743,7 @@
         "tier": "quick",
         "seconds": 0.0
       },
-      "full:fyrr-writer:lib:fyrr_writer/providers::tests::versions_the_python_side_reports_are_shown_only_in_the_shape_of_a_version": {
+      "full:fyrr-writer:lib:fyrr_writer/providers::tests::versions_the_python_side_reports_are_shown_only_when_built_from_verified_parts": {
         "tier": "quick",
         "seconds": 0.0
       },
@@ -771,6 +771,18 @@
         "tier": "quick",
         "seconds": 0.5
       },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_name_of_any_configured_length_is_sent_to_the_host": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_name_that_will_be_sent_is_not_inherited_by_the_host": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::an_interpreter_older_than_the_minimum_ends_at_the_version_check_and_says_so": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
       "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::two_batches_of_one_run_arrive_in_order_over_one_conversation": {
         "tier": "quick",
         "seconds": 0.5
@@ -778,6 +790,18 @@
       "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::a_compressed_batch_is_refused_before_anything_is_inflated": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::a_schema_with_more_fields_than_the_contract_and_its_allowance_is_refused_unconverted": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::a_batch_that_makes_the_decoder_panic_is_a_refused_batch": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::a_schema_that_makes_the_conversion_panic_is_a_refused_batch": {
+        "tier": "quick",
+        "seconds": 0.1
       },
       "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::a_schema_that_is_not_the_contracts_is_refused": {
         "tier": "quick",
@@ -1221,6 +1245,10 @@
         "seconds": 10.0
       },
       "full:fyrr:test:cli/providers::a_provider_and_its_children_hold_no_descriptor_but_stdio_and_the_host_socket": {
+        "tier": "quick",
+        "seconds": 5.0
+      },
+      "full:fyrr:test:cli/providers::a_pth_file_runs_after_the_socket_is_detached_and_inherited_descriptors_are_closed": {
         "tier": "quick",
         "seconds": 5.0
       }
@@ -1718,6 +1746,10 @@
       "full:fyrr:test:dense_path/incremental::incremental_caught_revision_failure_never_attests_on_storage": {
         "tier": "full",
         "seconds": 141.246
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_provider_receives_stored_revisions_through_the_host_on_storage": {
+        "tier": "full",
+        "seconds": 60.0
       },
       "full:fyrr:test:dense_path/incremental::incremental_content_only_provider_empty_readers_narrow_to_nobody_on_storage": {
         "tier": "full",
@@ -4310,18 +4342,6 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/test_host.py::test_the_host_process_serves_over_its_stdin_socket_and_exits_on_eof": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/test_host.py::test_the_host_holds_only_stdio_and_a_socket_no_child_can_inherit": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/test_host.py::test_the_host_refuses_arguments_and_a_stdin_that_is_no_socket": {
-        "tier": "quick",
-        "seconds": null
-      },
       "python:connectors/tests/test_host.py::test_credentials_set_the_environment_before_any_provider_code_and_are_not_echoed": {
         "tier": "quick",
         "seconds": null
@@ -4367,6 +4387,58 @@
         "seconds": null
       },
       "python:connectors/tests/test_host.py::test_a_batch_over_the_byte_limit_is_refused_even_with_metadata": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_a_name_of_the_full_configured_length_is_accepted": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_a_process_that_provider_code_forks_does_not_hold_the_socket": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_the_host_process_serves_over_its_socket_and_exits_on_eof": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_the_host_refuses_arguments_and_a_descriptor_that_is_no_socket": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message7]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message8]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message9]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message10]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message11]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message12]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message13]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message14]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message15]": {
         "tier": "quick",
         "seconds": null
       }

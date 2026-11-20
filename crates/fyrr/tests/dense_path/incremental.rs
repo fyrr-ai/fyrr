@@ -1199,6 +1199,39 @@ async fn incremental_delta_expired_source_isolated_on_storage() {
     }
 }
 
+/// A prepared content run's provider asks the worker for stored revisions, in a
+/// real worker with the real Python host, through both callbacks, and gets
+/// answers: the second sync sees the revisions the first stored and published.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_provider_receives_stored_revisions_through_the_host_on_storage() {
+    let (worker, commit, root) = fixture();
+    let seen = || -> Value {
+        serde_json::from_str(&std::fs::read_to_string(root.join("revisions-seen.json")).unwrap())
+            .unwrap()
+    };
+    let asked = json!(["a", "b", "missing"]);
+    input(
+        &root,
+        json!({"epoch":1,"record_revisions":asked,"content":[[
+            doc("a","r1","fixture document 0"),doc("b","r1","fixture document 1")
+        ]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    assert_eq!(seen(), json!({"lookup": {}, "next": []}));
+    publish(&commit);
+    input(
+        &root,
+        json!({"epoch":2,"record_revisions":asked,"content":[[doc("a","r2","fixture document 2")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    let second = seen();
+    assert_eq!(second["lookup"], json!({"a": "r1", "b": "r1"}));
+    let mut pages = second["next"].as_array().unwrap().clone();
+    pages.sort_by_key(ToString::to_string);
+    assert_eq!(pages, [json!(["a", "r1"]), json!(["b", "r1"])]);
+}
+
 /// Catching a failed host revision callback cannot attest an incomplete read.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
