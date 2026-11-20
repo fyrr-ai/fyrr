@@ -30,7 +30,8 @@ The host sends ``ready`` first; the worker then sends one request at a time:
 ``environment``
     Optional, and only as the first request: ``{"t": "environment",
     "variables": {NAME: value, ...}}`` sets the provider's credentials in
-    `os.environ` before any provider code is imported; the worker has removed
+    `os.environ` before the SDK imports any provider code (site code that
+    imports a provider runs earlier, without them); the worker has removed
     their names from the environment it starts the host with, so they are never
     in the process's initial environment (`/proc/<pid>/environ`). The names are
     what a configuration may reference (`[A-Z_][A-Z0-9_]*`, at most 256

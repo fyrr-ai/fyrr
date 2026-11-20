@@ -65,7 +65,9 @@ pub(super) const MIN_PYTHON: (u32, u32) = (3, 13);
 ///    found in `/proc/self/fd` with no numeric ceiling. Descriptors the
 ///    interpreter opened itself are not inheritable and stay, so objects that
 ///    own them keep working. A hook closes the socket in every process forked
-///    from here on, so a fork by site code has already let go of it;
+///    from here on, so a fork by site code has already let go of it; the
+///    child then forgets the number, so its own forks never close whatever
+///    reuses it;
 /// 4. run what start-up would have run: `site.main()` (virtual environments,
 ///    the user site, `.pth` files, `sitecustomize`) and `PYTHONPATH` stay
 ///    as documented, but only now, with nothing inherited left to leak;
@@ -89,10 +91,14 @@ try:
 except OSError:
     sys.exit({EXIT_DETACH})
 def leave():
+    global fd
+    if fd < 0:
+        return
     try:
         posix.close(fd)
     except OSError:
         pass
+    fd = -1
 posix.register_at_fork(after_in_child=leave)
 for name in names:
     number = int(name)
@@ -559,9 +565,13 @@ impl Host {
             return;
         }
         let deadline = Instant::now() + CLOSE_TIMEOUT;
+        // The request is one small frame, but a full send buffer must not
+        // outlast the deadline either.
+        let _ = self.stream.set_write_timeout(Some(CLOSE_TIMEOUT));
         let closed = self.send(&serde_json::json!({"t": "close"})).is_ok()
             && matches!(self.read_message_by(Some(deadline)), Ok(Message::Closed));
         self.broken |= !closed;
+        let _ = self.stream.set_write_timeout(None);
         let _ = self.stream.set_read_timeout(None);
     }
 }

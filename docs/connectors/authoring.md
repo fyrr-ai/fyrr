@@ -279,8 +279,8 @@ what a provider author can observe:
   descriptors to close, and without it the host fails to start.
 - **`multiprocessing` children started with `spawn` or `forkserver` inherit
   `-S`.** They get the parent's `sys.path`, but they do not run `.pth` hooks
-  or `sitecustomize`, and they report the base prefix, not the virtual
-  environment's.
+  or `sitecustomize`. On Python 3.13 they also report the base prefix, not
+  the virtual environment's; Python 3.14 keeps the virtual environment's.
 - **Rows carry only what the contract allows.** The host writes the batch's
   schema with the contract's two metadata entries and nothing else, and fyrr
   refuses a batch whose schema has any metadata on a field, at any level. A

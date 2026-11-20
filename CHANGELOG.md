@@ -78,7 +78,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `sitecustomize` run after the protocol socket is detached and inherited
   descriptors are closed, and `multiprocessing` children started with `spawn`
   or `forkserver` inherit `-S`, so they get the parent's `sys.path` but run
-  neither, and report the base prefix; a process forked by provider code,
+  neither, and on Python 3.13 report the base prefix; a process forked by provider code,
   including site code, does not hold the socket; the host needs `/proc`;
   field-level Arrow metadata is refused, and an added nullable column may not
   use a dictionary type, `string_view` or `binary_view`.
@@ -89,8 +89,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   contract's two entries; non-content batches may be as large as
   `writer.envelope_max_bytes`, as before.
 - Stored writer credentials a provider needs are sent to the host after it
-  starts and set in its `os.environ` before any provider code is imported,
-  as before; their names are removed from the environment the host inherits,
+  starts and set in its `os.environ` before the SDK imports any provider
+  code, as before (a `.pth` file or `sitecustomize` that imports a provider
+  runs earlier, without them); their names are removed from the environment the host inherits,
   so they are never in its initial environment. A credential may not be named
   `PATH`, `VIRTUAL_ENV` or anything starting with `PYTHON` or `LD_`, and
   `fyrr config check` refuses such a name (and one over 256 bytes) in a
