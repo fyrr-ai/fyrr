@@ -169,14 +169,15 @@ fn setup_at_on(root: PathBuf, backend: Backend) -> (PathBuf, FixtureRoot) {
                     "uri = \"s3://{bucket}/dense-{run_id}\"\nendpoint = \"{endpoint}\"\n\
                      allow_http = true\n\
                      access_key_id = {{ env = \"FYRR_TEST_S3_ACCESS_KEY_ID\" }}\n\
-                     secret_access_key = {{ env = \"FYRR_TEST_S3_SECRET_ACCESS_KEY\" }}"
+                     secret_access_key = {{ env = \"FYRR_TEST_S3_SECRET_ACCESS_KEY\" }}\n\
+                     # fyrr-test-head-check = every"
                 ),
                 "FYRR_TEST_SECRET",
             )
         }
         Backend::Local => (
             format!(
-                "uri = \"file://{}\"\n# fyrr-test-store = local-storage",
+                "uri = \"file://{}\"\n# fyrr-test-store = local-storage\n# fyrr-test-head-check = every",
                 root.with_file_name(format!("storage-{run_id}")).display()
             ),
             "FYRR_TEST_SECRET",

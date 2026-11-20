@@ -388,6 +388,7 @@ type SharedReaderResources = (
     Arc<embedding::QueryEmbeddings>,
     crate::storage::ArtifactCache<PolicyArtifact>,
     crate::storage::ArtifactCache<IdentityArtifact>,
+    crate::storage::HeadCache,
 );
 
 /// The SQL predicate and mask belong to one completed request-filter scan.
@@ -410,6 +411,7 @@ pub struct PreparedReader {
     pub(crate) dataset: Arc<Dataset>,
     pub manifest: ContentManifest,
     pub(crate) head: ServingHead,
+    pub(crate) head_cache: crate::storage::HeadCache,
     policy: Arc<PolicyArtifact>,
     pub(crate) policy_cache: crate::storage::ArtifactCache<PolicyArtifact>,
     identity: Arc<IdentityArtifact>,

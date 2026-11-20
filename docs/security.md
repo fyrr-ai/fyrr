@@ -82,8 +82,19 @@ plan for:
   completed read within `identity.validity_deadline`, or the whole namespace
   is refused. With the default `provider = "none"` no directory clock
   applies.
-- A retired source (`fyrr writer source retire`) is denied on every reader's
-  next request, and restore and rollback never bring it back.
+- A retired source (`fyrr writer source retire`) is denied by every reader
+  once it has read the serving head again, and restore and rollback never
+  bring it back.
+- A reader reads the serving head at every version check
+  (`reader.version_check_interval`, default and at most 30 s), `SIGHUP` and
+  `POST /admin/refresh`, and its requests check their grants against that
+  read. A published revocation, membership change, retired source or
+  deleted namespace therefore reaches a running reader with its next
+  version check, not with its next request, and at the latest two
+  intervals after it was published (60 s by default): while the reader
+  prepares a new version its checks pause, and a request then reads the
+  head itself once the held one is that old. `SIGHUP` and
+  `POST /admin/refresh` start a check at once.
 
 ### Source polling
 

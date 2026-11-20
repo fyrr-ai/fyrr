@@ -61,12 +61,16 @@ on a single host a [local directory](configuration.md#local-storage):
 3. **Serve.** Each reader request pins one publication. Readers notice new
    publications in the background (`reader.version_check_interval`, 30 s,
    or `SIGHUP`) and switch between requests; in-flight requests keep their
-   pin. A reader whose pin predates a published revocation stops serving
-   until it has prepared the newer publication. Each namespace creation
+   pin. Each request checks its grants against the serving head before it
+   starts and before it answers, as the latest version check read it, so a
+   published change of grants reaches a reader with its next version
+   check, at the latest two intervals after it was published. A
+   reader whose pin predates a published revocation it has seen stops
+   serving until it has prepared the newer publication. Each namespace creation
    writes a new random incarnation into the serving head and every
    publication; a reader whose pin belongs to a namespace that was deleted
-   and created again at the same storage URI stops serving at once and
-   prepares the new namespace's publication.
+   and created again at the same storage URI stops serving when it next
+   reads the head and prepares the new namespace's publication.
 
 Published versions are retained for `writer.purge_window` and can be
 restored; see [operations](operations.md#restore-and-rollback).
@@ -121,8 +125,12 @@ hashed reader tokens it holds.
 
 Every `search`, `fetch` and `list_filters` call passes three gates:
 
-1. **Admission.** The reader reads the live serving head, policy and
-   identity. A malformed head, a head from another namespace, or missing or
+1. **Admission.** The reader checks the serving head, policy and
+   identity. It checks the head its last version check read
+   (`reader.version_check_interval`, 30 s), not a read of its own, so a
+   warm request makes no storage request; a request reads the head itself
+   only if that read is older than two intervals, which bounds how late
+   a published change of grants takes effect. A malformed head, a head from another namespace, or missing or
    malformed policy or identity refuses with `authorization_unavailable`.
    An unreadable head or expired pin gives `storage_unavailable` on stdio.
    Admission also refuses a subject
@@ -137,10 +145,10 @@ Every `search`, `fetch` and `list_filters` call passes three gates:
    a filter on the row's hashed readers, so a row the caller may not read is
    never scored, counted or returned. For `permissions = "fixed"` sources
    the filter checks the readers in the current policy, not the stored rows.
-3. **Final check.** Before a result or error is returned, the reader reads
-   the serving head again. If the policy, identity or hidden sources changed
-   during the request, the request is refused rather than answered under the
-   old grant.
+3. **Final check.** Before a result or error is returned, the reader checks
+   the serving head again, as its latest version check read it. If the policy,
+   identity or hidden sources it shows changed during the request, the
+   request is refused rather than answered under the old grant.
 
 Unknown and denied documents look the same to `fetch`: an empty result.
 Source revocations require a successful sync that reads the changed rights
