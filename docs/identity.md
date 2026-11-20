@@ -52,8 +52,12 @@ and `writer directory --snapshot` imports do not. With `provider = "none"`,
 imported snapshots remain usable without a directory freshness timestamp, and
 an import under `provider = "none"` withdraws a timestamp that an earlier
 provider left, so a deployment that moves from `keycloak`, `scim` or
-`snapshot` to manual imports needs only one import to be served again. With
-a provider configured, an import keeps the timestamp the provider attested.
+`snapshot` to manual imports needs only one import to be served again. The
+import publishes its identity and the withdrawal in one head write. The
+imported snapshot must be built after the last provider pull (its `built_at`
+not older than that pull's): an older one is refused as stale
+(`directory_snapshot_stale`) and the timestamp stays. With a provider
+configured, an import keeps the timestamp the provider attested.
 Once a head carries a timestamp, readers enforce `validity_deadline` on it
 even if their own `provider` is `none`: the publication, not the reader's
 file, says whether a directory clock exists.

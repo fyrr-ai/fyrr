@@ -362,7 +362,13 @@ pub async fn pull(config: &Config, due: bool, timeout: std::time::Duration) -> R
             {
                 snapshot.links = prior.links;
             }
-            crate::directory::publish_held(config, &snapshot, &lease, Some(snapshot.built_at)).await
+            crate::directory::publish_held(
+                config,
+                &snapshot,
+                &lease,
+                crate::directory::DirectoryClock::Attest(snapshot.built_at),
+            )
+            .await
         }
         .await
     })
