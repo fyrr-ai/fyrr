@@ -50,6 +50,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   selects its rows from the scalar indexes of both the filter and the
   subject's grants. It no longer reads the filter columns of every row the
   subject may read. Results and authorization are unchanged.
+- A query-less `search` (listing by `updated_at`) and `list_filters` select
+  their rows through the scalar indexes too, instead of passing the
+  subject's rows to Lance as a row mask. Results and authorization are
+  unchanged.
 
 ## [0.1.1] - 2026-11-19
 
