@@ -60,6 +60,14 @@ listen = "127.0.0.1:8081"
 public_url = "FUNCTION_URL"
 ```
 
+This file sets no `[identity.directory]`, and that does not turn the
+directory clock off: when the external writer's publication carries a
+directory freshness timestamp (it pulls or receives a directory), the reader
+refuses the namespace once that read is older than
+`identity.validity_deadline`, so keep the writer's directory sync running.
+A publication without a timestamp, such as a snapshot imported by hand, is
+served without a directory clock.
+
 ## Container and secret bootstrap
 
 Save this as `Dockerfile`. The matching full image supplies Python's standard

@@ -13,11 +13,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   secrets with operator-declared grants, either reader tokens (`readers`, as
   `stdio_readers`) or a canonical directory user (`user`), with an optional
   `expires` and `requests_per_minute`. They let unattended agents and small
-  teams use `[reader.http]` without an identity provider: `[reader.http]` now
-  needs `identity.oidc`, `identity.api_keys` or both. The writer publishes
-  only a keyed hash of each secret; the identity artifact moves to 1.2 (an
-  optional `expires` on subject bindings, enforced by the reader on every
-  request) and the configuration schema to 5.2. See
+  teams use `[reader.http]` without an identity provider: `reader serve`
+  with `[reader.http]` now needs `identity.oidc`, at least one API key or
+  both to start (the writer does not, so removing the last key still
+  revokes it). The writer publishes only a keyed hash of each secret; the
+  identity artifact moves to 1.2 (an optional `expires` on subject
+  bindings, enforced by the reader before a response leaves) and the
+  configuration schema stays 5.1. See
   [HTTP login and users](docs/http-users.md#api-keys).
 - The reader sends `instructions` in the MCP `initialize` result: what
   fyrr searches and a request to search it before looking through files.
@@ -76,6 +78,17 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Security
 
+- A reader no longer skips the published directory freshness check because
+  its own `identity.directory.provider` is `none` (the Lambda example omits
+  it). When the serving head carries a directory freshness timestamp, every
+  reader now refuses the namespace once that read is older than
+  `identity.validity_deadline`: before this, such a reader served OIDC
+  subjects and any other directory-bound subject from an expired directory
+  snapshot. A head without a timestamp, such as a snapshot imported by hand
+  with `writer directory --snapshot`, is served as before by a reader with
+  `provider = "none"`. A deployment whose directory writer stopped pulling
+  but whose head still carries an old timestamp now gets
+  `authorization_unavailable` until the directory is pulled again.
 - The README, quickstart and software factory guide no longer store
   `FYRR_IDENTITY_KEY` in Claude Code's settings: they add the reader
   without `-e` and start Claude Code from a shell with the key exported.

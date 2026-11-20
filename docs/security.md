@@ -69,21 +69,50 @@ team without an identity provider. What to know before you issue one:
   from a directory or a source, so a source cannot widen them. Give each
   agent role its own key with only the groups its work needs
   ([software factories](software-factory.md#limit-what-an-injected-agent-can-reach)).
-  A key with `readers` is checked against `identity.max_tokens_per_user` and
-  the request allowances like any subject.
-- **The secret is high-entropy, and only a keyed hash is published.** A key is
-  `fyrr_key_` and at least 43 characters, which is at least 256 bits when
-  generated as documented. The writer stores the HMAC of it under
-  `identity.hashing_key`, in a domain of its own, so the identity artifact
-  holds nothing that can be turned back into the secret. Whoever reads the
-  artifact and holds the hashing key can still test a guess, which is why a
-  low-entropy secret is refused by shape and the documented generation is
-  random. The configuration and the writer's environment hold the key; the
-  reader needs neither.
+  A key with `readers` is checked against `identity.max_tokens_per_user`. It
+  is no member of any group, so `group_requests_per_minute` does not apply to
+  it: it has an allowance of its own, `requests_per_minute` or else
+  `reader.http.user_requests_per_minute`. A `user` key shares that user's
+  allowance and their groups' allowances.
+- **The secret must be random, and only a keyed hash is published.** A key is
+  `fyrr_key_` and 43–128 characters, which is at least 256 bits when
+  generated with the documented command (`openssl rand -hex 32` or better).
+  The shape does not prove randomness: `config check` and the writer refuse a
+  secret with fewer than 10 distinct characters after the prefix, which turns
+  away `aaaa…`-style placeholders and nothing cleverer, and a hex secret has
+  up to 16. The generation command is what makes the key unguessable. The
+  writer stores the HMAC of the secret under `identity.hashing_key`, in a
+  domain of its own, so the identity artifact holds nothing that can be turned
+  back into the secret. Whoever reads the artifact and holds the hashing key
+  can still test a guess, which is why the secret has to be random. The
+  configuration and the writer's environment hold the key; the reader needs
+  neither.
+- **What the identity artifact reveals.** The artifact does not label a
+  binding as an API key, but someone who can read the bucket sees how many
+  subjects are bound (keys and OIDC subjects together); the `expires` of
+  each binding that has one, which only keys have; and which principal each
+  subject is bound to. A `user` key appears as one more subject on a
+  directory user's principal, so it shows which directory principals have a
+  key. A `readers` key has a principal of its own, and its reader tokens,
+  as hashes, are its grants. Every value is a keyed hash: the artifact holds
+  no secret, no key name and no e-mail address, and a key the writer does not
+  bind (unusable secret, missing or inactive user) is not in it at all.
 - **Same answer for every refusal.** An unknown, malformed, removed and
-  expired key all get `401 unauthorized`. The reader hashes first and looks
-  the hash up second, and no key, name or hash is written to logs, errors,
-  telemetry or metrics.
+  expired key all get `401 unauthorized`. The reader looks the key's hash up
+  in its cached identity first: a hash the identity does not bind is refused
+  at once, without a storage read, and neither the directory's freshness nor
+  the state of storage changes that answer, so a caller with a random key
+  cannot learn whether the directory is stale or storage is down (`503`).
+  Only a key that is bound can be answered with `503`. No key, name or hash
+  is written to logs, errors, telemetry or metrics.
+- **Garbage keys cost no storage reads.** A flood of unknown keys makes the
+  reader refresh its identity from the serving head at most once per second
+  (`API_KEY_REFRESH_INTERVAL`, one refresh at a time); every other unknown
+  key is refused from memory. The same bound is how soon a newly published
+  key becomes usable: the first request more than a second after the last
+  refresh looks at the new publication, so a key the writer published is
+  accepted within about one second of that publication reaching storage, and
+  a request in the meantime gets `401`.
 - **Use TLS.** The key is a bearer secret in every request. Terminate TLS in
   front of the reader as for OIDC ([HTTP boundary](http-users.md#3-start-the-writer-and-the-reader));
   never send a key over plain HTTP outside loopback. Prefer a header from a
@@ -91,17 +120,31 @@ team without an identity provider. What to know before you issue one:
   history.
 - **Rotation.** Add a second key, move the clients to it, remove the first.
   Two keys never share a secret.
-- **Revocation.** Remove the table (or set `expires`) and republish the
-  identity. `expires` binds without a republish: the reader refuses the key
-  at the first request after that instant. Removal takes effect on the first
-  request after the writer commits the new identity, because the reader reads
-  the serving head on every HTTP request: at most
-  `writer.commit.coalescing_timer` (60 s) after a running `writer serve` has
-  the new configuration, which means after it restarts. To force it, restart
-  `writer serve` or run `fyrr writer commit` with the new file. A key added to
-  the file is served once readers pick up the publication, within
-  `reader.version_check_interval` (30 s) or at once through
-  [`POST /admin/refresh`](http-users.md#http-boundary).
+- **Revocation.** Remove the `[[identity.api_keys]]` table (or set
+  `expires`) and republish the identity. The writer builds the identity from
+  its own configuration, so the change must reach **every host that publishes
+  identity**: every `fyrr writer serve` and every scheduled `fyrr writer
+  commit` (or `sync`, or directory sync). Edit the file there, then restart
+  `writer serve` and rerun the scheduled commands; the 60 s
+  `writer.commit.coalescing_timer` is not a bound, because a running
+  `writer serve` keeps the configuration it started with. A writer that still
+  runs with the old file republishes the removed key at its next identity
+  build, and the reader accepts it again. Removing the last key works like
+  removing any other: the writer publishes an identity with no key bindings.
+  Once the new identity is published, the reader refuses the removed key at
+  its next request, because it reads the serving head on every request from a
+  key it has bound. A restarted reader with no `[[identity.api_keys]]` and no
+  `identity.oidc` refuses to start.
+- **Expiry.** `expires` is an RFC 3339 timestamp with an offset, to the whole
+  second (a fraction is dropped). A key is expired from that second on: a
+  request is refused when the reader's clock, truncated to whole seconds, is
+  at or after the second named by `expires`, and so is a request admitted
+  before it that has not finished: the check runs again before a response
+  leaves, so no search or fetch returns content after `expires`. Nothing is
+  republished for it. A key added to the file is served once readers pick up
+  the publication, within `reader.version_check_interval` (30 s) or at once
+  through [`POST /admin/refresh`](http-users.md#http-boundary), and, for the
+  admission lookup, within one second (see above).
 
 ## Permission modes
 
@@ -130,13 +173,20 @@ plan for:
   complete. A failed or partial read keeps the last published rights until
   `identity.validity_deadline`; after that the source alone is hidden from
   every reader (`metadata.hidden_sources`).
-- A configured directory provider (`snapshot`, `keycloak` or `scim`) needs a
-  completed read within `identity.validity_deadline`, or the whole namespace
-  is refused. With the default `provider = "none"` no directory clock
-  applies.
-- An API key is refused at the first request after its `expires` instant and,
-  once removed from the configuration, after the next identity publication
-  ([API keys](#api-keys)).
+- A published directory read has a clock. When the serving head carries a
+  directory freshness timestamp (a completed `keycloak` or `snapshot` pull,
+  or a SCIM attestation), every reader refuses the whole namespace once that
+  read is older than `identity.validity_deadline`, whatever its own
+  `identity.directory.provider` says: the publication attests the directory,
+  so a reader's local setting cannot waive the clock for OIDC subjects, `user`
+  keys or any other directory-bound subject. A head with no timestamp is
+  served as before by a reader with `provider = "none"` (a snapshot imported
+  by hand with `writer directory --snapshot` is not a freshness proof), and
+  refused by a reader that has a directory provider configured.
+- An API key is refused from the second its `expires` names, even in a request
+  that was admitted before it, and, once removed from the configuration of
+  every writer that publishes identity, at its next request after the next
+  identity publication ([API keys](#api-keys)).
 - A retired source (`fyrr writer source retire`) is denied on every reader's
   next request, and restore and rollback never bring it back.
 
@@ -165,9 +215,12 @@ link. An inactive canonical user is denied everywhere. The keys are in
 - Configuration holds `{ env = "VAR" }` references only. Inline secrets,
   including under secret-like keys in provider settings, are refused without
   echoing the value; `config show` redacts secret fields.
-- Error messages, logs, cursors, telemetry and status output never carry
-  document text, titles, identities, e-mail addresses, query text, API-key
-  secrets, names or hashes, or other secret values. `crates/fyrr/tests/privacy.rs` plants markers in all of these and
+- Error messages, logs, telemetry and status output never carry document
+  text, titles, identities, e-mail addresses, query text, API-key secrets,
+  names or hashes, or other secret values. A fetch cursor is signed but not
+  encrypted: it carries the requester's principal as a keyed hash (for a
+  `readers` API key, the hash of its name), never an e-mail address, a key's
+  name or its secret, and the cursor is refused for any other principal. `crates/fyrr/tests/privacy.rs` plants markers in all of these and
   asserts that the CLI paths it drives do not print or write them.
 - Directory snapshots, membership batches, SCIM state and stored provider
   credentials are encrypted with AES-256-GCM under `identity.encryption_key`.

@@ -23,7 +23,7 @@ in the [security model](security.md).
 | `stdio_readers` | `[]` | Reader tokens (`usr:<id>`, `grp:<id>`) of the stdio subject. |
 | `hashing_key` | required | Namespace HMAC key, `{ env = "VAR" }`; the same value on every writer and reader. Only hashed reader tokens and [principal](architecture.md#terms) keys enter the published artifacts and rows. |
 | `encryption_key` | absent | 32 random bytes as 64 hexadecimal characters, `{ env = "VAR" }`; a separate secret from `hashing_key`. Encrypts persisted identity inputs (directory snapshots, membership, SCIM state, stored credentials). `config check` requires it with a `permissions = "sync"` source, a `snapshot` or `keycloak` directory, or writer administration. |
-| `validity_deadline` | `1h` | How long the last successful permission and member read of a `permissions = "sync"` source, and the last directory read, stay valid. After it the source is hidden (`metadata.hidden_sources`); an expired directory read refuses the whole namespace. No directory clock applies when `provider = "none"`. |
+| `validity_deadline` | `1h` | How long the last successful permission and member read of a `permissions = "sync"` source, and the last directory read, stay valid. After it the source is hidden (`metadata.hidden_sources`); an expired directory read refuses the whole namespace. The clock follows the publication: a serving head that carries a directory freshness timestamp (a completed pull or SCIM attestation) is held to the deadline by every reader, whatever its own `provider`. A head with none, such as a snapshot imported by hand, is served without a directory clock by a reader with `provider = "none"`. |
 | `max_tokens_per_user` | `5000` | At least 1. A subject with more reader tokens gets `authorization_unavailable`; other subjects are unaffected. |
 | `oidc` | absent | OIDC settings for HTTP MCP, see below. |
 | `api_keys` | `[]` | At most 256 `[[identity.api_keys]]` tables: static bearer keys for HTTP MCP, see below. |
@@ -45,10 +45,10 @@ what each key may read, as `stdio_user` and `stdio_readers` do for stdio.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `name` | required | Unique ID like a source ID (`[a-z0-9][a-z0-9_-]{0,62}`). It names the key in this file; the artifacts hold only its hash. |
-| `key` | required | `{ env = "VAR" }`: the secret, `fyrr_key_` followed by at least 43 and at most 128 characters from `[A-Za-z0-9_-]`. Make one with `echo "fyrr_key_$(openssl rand -hex 32)"`. Every key needs its own variable and value. |
+| `key` | required | `{ env = "VAR" }`: the secret, `fyrr_key_` followed by at least 43 and at most 128 characters from `[A-Za-z0-9_-]`, at least 10 of them distinct. The shape does not prove randomness; generating the secret does: `echo "fyrr_key_$(openssl rand -hex 32)"`. Every key needs its own variable and value. |
 | `readers` | `[]` | Reader tokens (`usr:<id>`, `grp:<id>`) the key acts with, as `stdio_readers`, including source-scoped tokens for `permissions = "sync"` sources. |
 | `user` | absent | 1–512 bytes. Instead of `readers`: act as this canonical directory user (their corporate e-mail), with their groups. Refused while the user is absent or inactive. |
-| `expires` | absent | An RFC 3339 timestamp with an offset, such as `2027-06-30T00:00:00Z`. From then on the reader refuses the key, whatever the writer has published. |
+| `expires` | absent | An RFC 3339 timestamp with an offset, such as `2027-06-30T00:00:00Z`, to the whole second (a fraction is dropped). The key is expired from that second on: the reader refuses it, and any request admitted before it, whatever the writer has published. |
 | `requests_per_minute` | absent | At least 1. Replaces `reader.http.user_requests_per_minute` for this key; only with `readers`, because a `user` key shares that user's allowance. |
 
 Set exactly one of `readers` (not empty) and `user`.
@@ -62,8 +62,14 @@ the wrong shape and two keys with the same secret. `writer status` lists
 `api_key_unbound` when a configured key is not admitted by the published
 identity (for example its user is inactive), `api_key_expired` when its
 `expires` has passed and `api_key_secret_unusable` when its variable is unset
-or malformed. A secret that is missing, malformed or shared stops the writer's
-commit instead.
+or malformed: the writer then skips that key's binding (it fails closed) and
+every other key and user is published as usual. Two keys that share a secret
+stop the writer's commit instead.
+
+`reader.http` needs `[identity.oidc]` or at least one API key only where the
+HTTP reader starts: `reader serve` refuses to start without either, and
+`config check` warns about it. The writer accepts the same file with no key,
+so removing the last key still publishes (zero key bindings) and revokes it.
 
 ### `[identity.directory]`
 
@@ -82,6 +88,9 @@ commit instead.
 Only a completed directory read advances directory freshness. Ordinary commits
 and `writer directory --snapshot` imports do not. With `provider = "none"`,
 imported snapshots remain usable without a directory freshness timestamp.
+Once a head carries a timestamp, readers enforce `validity_deadline` on it
+even if their own `provider` is `none`: the publication, not the reader's
+file, says whether a directory clock exists.
 
 Keycloak directory snapshots are bounded to 100,000 users, 100,000 groups
 and 1,000,000 combined user/group membership edges. Each user needs two
