@@ -41,6 +41,10 @@ pub struct MirrorStore {
     /// Apparent sizes of the `.blob` and `.partial` files seen by `make_room`.
     sizes: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
     dataset_cache_key: Arc<std::sync::Mutex<Option<(String, String)>>>,
+    /// Object sizes stated by the pinned manifests, by blob name.
+    manifest_sizes: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
+    /// Pages of `data/` files verified in this process, by blob path.
+    verified_pages: Arc<std::sync::Mutex<BTreeMap<PathBuf, range::VerifiedPages>>>,
     /// The content publication that version manifest entries are bound to.
     publication: Option<String>,
 }
@@ -416,6 +420,8 @@ impl MirrorStore {
             verified: Arc::default(),
             sizes: Arc::default(),
             dataset_cache_key: Arc::default(),
+            manifest_sizes: Arc::default(),
+            verified_pages: Arc::default(),
             publication: None,
         })
     }
@@ -564,6 +570,12 @@ impl MirrorStore {
         holder.lock()?;
         serde_json::to_writer(&mut holder, &blobs)?;
         holder.sync_all()?;
+        crate::sync::lock(&self.manifest_sizes).extend(
+            blobs
+                .iter()
+                .cloned()
+                .zip(files.iter().map(|f| f.size_bytes)),
+        );
         Ok(Arc::new(MirrorLease {
             mirror: self.clone(),
             holder: std::sync::Mutex::new(Some(Arc::new(holder))),
@@ -585,10 +597,21 @@ impl MirrorStore {
         if preserve_last_cache && allowed.is_empty() {
             return Ok(());
         }
+        crate::sync::lock(&self.manifest_sizes).retain(|name, _| allowed.contains(name));
+        crate::sync::lock(&self.verified_pages).retain(|blob, _| {
+            blob.file_name()
+                .is_some_and(|name| allowed.contains(name.to_string_lossy().as_ref()))
+        });
         let mut expired = std::collections::BTreeSet::new();
+        let mut expired_pages = std::collections::BTreeSet::new();
         for entry in std::fs::read_dir(&self.directory)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
+            if (Self::cache_name(&name, ".sparse") || Self::cache_name(&name, ".map"))
+                && !allowed.contains(&format!("{}.blob", &name[..64]))
+            {
+                expired_pages.insert(entry.path().with_extension("blob"));
+            }
             // A per-object lock protects active downloads outside the global lock.
             if Self::cache_name(&name, ".partial") {
                 Self::remove_idle_partial(&entry.path())?;
@@ -610,6 +633,9 @@ impl MirrorStore {
             Self::remove_partial(&file.with_extension("checksum"))?;
             crate::sync::lock(&self.verified).remove(&file);
             Verifications::forget(&file);
+        }
+        for blob in expired_pages {
+            self.remove_pages(&blob)?;
         }
         Ok(())
     }
@@ -883,7 +909,7 @@ impl MirrorStore {
         let (prefix, root) = crate::sync::lock(&self.dataset_cache_key)
             .clone()
             .ok_or(StorageUnavailable)?;
-        let store = self.wrap(&prefix, store);
+        let store = self.wrapped(&prefix, store);
         let mut pending = files.iter().enumerate();
         let mut running = futures::stream::FuturesUnordered::new();
         // Ordered by (capacity failure, manifest index); the smallest wins.
@@ -909,7 +935,7 @@ impl MirrorStore {
     }
     async fn prewarm_file(
         &self,
-        store: &Arc<dyn ObjectStore>,
+        store: &MirrorStore,
         prefix: &str,
         root: &str,
         index: usize,
@@ -919,22 +945,13 @@ impl MirrorStore {
     }
     async fn fill_file(
         &self,
-        store: &Arc<dyn ObjectStore>,
+        store: &MirrorStore,
         prefix: &str,
         root: &str,
         file: &fyrr_core::envelope::FileRef,
     ) -> Result<(), ReaderError> {
         let path = Path::from(format!("{root}/{}", file.path));
-        let result = store
-            .get_opts(
-                &path,
-                GetOptions {
-                    head: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(|_| StorageUnavailable)?;
+        let result = store.fill(&path).await.map_err(|_| StorageUnavailable)?;
         if result.meta.size != file.size_bytes {
             return Err(StorageUnavailable);
         }
@@ -973,6 +990,7 @@ impl MirrorStore {
 }
 
 mod backend;
+mod range;
 
 #[cfg(test)]
 #[path = "mirror/tests.rs"]

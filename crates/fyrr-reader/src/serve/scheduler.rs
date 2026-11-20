@@ -12,6 +12,11 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
     #[cfg(test)]
     let observed_samples = sample_events.clone();
     let http = reader.config.reader.http.is_some();
+    let instructions = reader
+        .config
+        .reader
+        .served_instructions()
+        .map(str::to_owned);
     let cap = reader.config.reader.concurrency;
     let worker_count = crate::generation::PreparationReservation::worker_count(&reader.config);
     let native_slots = Arc::new(tokio::sync::Semaphore::new(cap));
@@ -119,6 +124,7 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
         #[cfg(test)]
         native_slots: observed_native_slots,
         http,
+        instructions,
         sender,
         cancellations: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         slots: Arc::new(tokio::sync::Semaphore::new(cap * 2)),

@@ -9,6 +9,15 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The reader sends `instructions` in the MCP `initialize` result: what
+  fyrr searches and a request to search it before looking through files.
+  Clients that pass instructions on tell their agent when to search.
+  `reader.instructions` (absent by default) replaces that text; an empty
+  string sends none. See
+  [reader and writer settings](docs/reader-writer.md).
+- An optional Claude Code plugin (`plugins/fyrr`, marketplace `fyrr`)
+  adds a reminder of its own at the start of every session. See
+  [connect an agent](docs/connect.md).
 - `writer.threads` (absent by default) bounds the CPU threads of each writer
   process: its async runtime, Lance's compute runtime, the parallel-iterator
   pool used by vector index builds and the full-text build workers. See
@@ -102,6 +111,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   the name of a field that a provider's own schema requires.
 - `writer sync --dry-run` with no configured sources no longer starts a
   worker.
+- The reader's mirror reads data files in 4 KiB pages: a read of part of a
+  data file fetches only the pages it lacks, instead of the whole file, and
+  checks each kept page against its digest once per process before serving
+  it. The size of a pinned data file is taken from the content manifest
+  rather than by downloading the file. Opening a 100,000-row namespace on an empty mirror transferred 44 MB
+  instead of 313 MB. Index files are still copied whole, and warming still
+  fills every file completely.
 - The reader shares one immutable admission per subject between its
   authorization cache and its workers instead of copying it, and the cache
   charges an entry by an estimate of its size rather than 32 bytes per
@@ -143,6 +159,17 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   now have `python3` on `PATH` (the `fyrr` image does) or set `VIRTUAL_ENV`.
   A `PYTHONHOME` you set yourself is no longer touched by `fyrr` but still
   applies to that interpreter.
+
+### Security
+
+- The README, quickstart and software factory guide no longer store
+  `FYRR_IDENTITY_KEY` in Claude Code's settings: they add the reader
+  without `-e` and start Claude Code from a shell with the key exported.
+  If you added fyrr with `-e FYRR_IDENTITY_KEY=...`, remove it and add it
+  again as the updated docs show: after the README or quickstart, run
+  `claude mcp remove fyrr --scope user`; after the software factory guide,
+  run `claude mcp remove fyrr --scope local` in each project where you
+  added it.
 
 ## [0.1.1] - 2026-11-19
 

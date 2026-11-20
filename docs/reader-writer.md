@@ -20,12 +20,13 @@ and memory are under [advanced tuning](tuning.md#advanced-tuning).
 | `concurrency` | `8` | 1–16 requests executing at once; the waiting queue has the same bound, then `busy`. |
 | `filter_count_max_rows` | `1000000` | 1–10,000,000 authorized rows one `list_filters` call may inspect; over it, `busy`. |
 | `mirror_path` | absent (`$XDG_CACHE_HOME/fyrr/<namespace>`, else `~/.cache/fyrr/<namespace>`) | Private local directory of immutable read-through files (mode 0700, files 0600, owned by the process, not a symlink), created on first use. The default does not depend on the working directory; a relative `mirror_path` resolves against it. Without the setting and without an absolute `XDG_CACHE_HOME` or `HOME`, the reader refuses to start (`storage_configuration_invalid`). |
-| `mirror_max_bytes` | `8589934592` | Disk limit of the mirror in bytes (8 GiB). An integer; unit suffixes are refused. |
+| `mirror_max_bytes` | `8589934592` | Disk limit of the mirror in bytes (8 GiB). An integer; unit suffixes are refused. A data file read in pages counts at its full length plus a page map of about 1/256 of it from its first page; an object that does not fit is read from storage without being kept. |
 | `version_check` | `interval` | `interval`, `off` or `per-request`. |
 | `version_check_interval` | `30s` | Background scheduler caps the effective interval at 30 s. |
 | `per_request_wait` | `2s` | `per-request` mode: wait this long for a newer version, then serve the old one flagged `stale_version`. |
 | `max_preparation` | `15m` | Upper bound on preparing a new generation. |
 | `max_response_bytes` | absent | 4096–16777216: budget for a serialized search result. Over it, whole hits are dropped from the end of the rank order (each query keeps at least four), then the lowest-ranked hits lose their excerpt or content; `truncated` and `omitted_bytes` report what was removed. |
+| `instructions` | absent (built-in text) | 0–4096 characters sent to MCP clients as `instructions` in the `initialize` result, on stdio and HTTP. Absent sends the [built-in text](mcp-tools.md#transport); a non-empty string replaces it; an empty string `""` sends no `instructions`. Not a secret. |
 | `http` | absent | Streamable HTTP MCP, see below. |
 
 The fixed default of eight supports eight simultaneous clients even on two-core

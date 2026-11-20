@@ -154,6 +154,7 @@ pub(crate) struct McpService {
     #[cfg(test)]
     native_slots: Arc<tokio::sync::Semaphore>,
     http: bool,
+    instructions: Option<String>,
     sender: mpsc::Sender<Job>,
     cancellations: CancellationRegistry,
     slots: Arc<tokio::sync::Semaphore>,

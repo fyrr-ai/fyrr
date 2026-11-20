@@ -1200,7 +1200,7 @@ fn lock_exclusive(file: &File) -> std::io::Result<()> {
 
 /// A tag no other write has: 128 bits from the operating system's generator.
 /// A failure to obtain them fails the write.
-fn new_tag() -> std::io::Result<u128> {
+pub(crate) fn new_tag() -> std::io::Result<u128> {
     let mut bytes = [0u8; 16];
     let mut filled = 0;
     while filled < bytes.len() {

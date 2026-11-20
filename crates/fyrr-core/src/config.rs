@@ -71,6 +71,7 @@ const FILTER_COUNT_MAX_ROWS: u64 = 10_000_000;
 const NPROBES_MAX: u64 = 65536;
 const FTS_SEARCH_CHUNK_MAX: u64 = 1024;
 const FTS_PARTITION_MEMORY_MB_MAX: u64 = 1_048_576;
+const INSTRUCTIONS_MAX_CHARS: u64 = 4096;
 const RESPONSE_BYTES_MIN: u64 = 4096;
 const RESPONSE_BYTES_MAX: u64 = 16 * 1024 * 1024;
 
@@ -664,6 +665,23 @@ pub struct ReaderConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = RESPONSE_BYTES_MIN, max = RESPONSE_BYTES_MAX))]
     pub max_response_bytes: Option<usize>,
+    /// Text sent to MCP clients as `instructions` in the `initialize` result.
+    /// Absent sends the built-in text; an empty string sends none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = INSTRUCTIONS_MAX_CHARS))]
+    pub instructions: Option<String>,
+}
+
+impl ReaderConfig {
+    /// The `instructions` the reader serves: the configured text, the built-in
+    /// text when absent, nothing when empty.
+    pub fn served_instructions(&self) -> Option<&str> {
+        match self.instructions.as_deref() {
+            None => Some(crate::mcp::SERVER_INSTRUCTIONS),
+            Some("") => None,
+            Some(text) => Some(text),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -842,6 +842,62 @@
       "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::the_contract_stream_is_accepted_and_decoded_to_its_rows": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::data_ranges_fetch_only_the_pages_they_lack": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_damaged_or_unrecorded_page_is_fetched_again": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_changed_object_fails_closed_and_drops_its_pages": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::prewarm_replaces_pages_with_the_complete_file": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::pages_obey_the_byte_budget_and_the_pins": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::unpinned_pages_are_evicted_to_make_room": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::heads_and_ranges_of_paged_files_share_a_stable_tag": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::heads_of_other_files_are_not_answered_from_the_manifest": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_paged_file_larger_than_the_budget_evicts_nothing": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::prewarm_after_pages_needs_no_room_for_both": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::pages_of_a_new_map_generation_are_verified_again": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_size_change_drops_the_kept_pages": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_damaged_complete_file_is_downloaded_again": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_partial_left_by_a_failed_download_does_not_stop_pages": {
+        "tier": "quick",
+        "seconds": 0.05
       }
     },
     "children": {

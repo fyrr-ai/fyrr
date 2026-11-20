@@ -570,6 +570,7 @@ pub fn coverage(
 #[path = "storage/local.rs"]
 mod local;
 pub(crate) use local::e_tag as local_file_e_tag;
+pub(crate) use local::new_tag as random_tag;
 
 #[cfg(test)]
 #[path = "storage/tests.rs"]

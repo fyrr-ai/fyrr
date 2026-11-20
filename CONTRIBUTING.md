@@ -62,6 +62,7 @@ annotations; PyArrow's untyped API remains covered by Arrow contract tests.
 | `connectors/` | Python package `fyrr-connectors`: provider API, test kit and the bundled providers. |
 | `examples/` | The quickstart (configuration, documents and `run`), an independently built provider wheel and a derived-image Dockerfile. |
 | `schemas/`, `fixtures/` | Generated JSON Schemas, golden contract documents and MCP goldens. |
+| `plugins/`, `.claude-plugin/` | The optional Claude Code plugin and its marketplace manifest. Raise `version` in `plugins/fyrr/.claude-plugin/plugin.json` with every change; clients cache a plugin by version. |
 | `docker/` | `Dockerfile` (targets `fyrr-reader` and `fyrr`), entry point, `compose.yaml`. |
 | `deny.toml` | License and advisory policy. |
 
@@ -163,9 +164,12 @@ not create.
 - **Contracts.** `schemas/`, the SDK's schema copies and `fixtures/mcp/` are
   generated from the Rust types. Regenerate them with
   `FYRR_UPDATE_GOLDEN=1 cargo test --locked -p fyrr-core --test generated`
-  and review the diff. An additive change (a new optional field) bumps the
-  minor version; anything else bumps the major, and published data is then
-  republished, not migrated. The SDK's `versions.py` must match the
+  and review the diff. Compare each changed contract with its last released
+  version. If all changes are additive (for example, new optional fields),
+  use the next minor version; otherwise use the next major version, and
+  published data is then republished, not migrated. A released 5.0 that
+  became 5.1 for an additive change stays 5.1 for further additive changes
+  and becomes 6.0 after a breaking one. The SDK's `versions.py` must match the
   contracts it ships. The configuration schema has its own
   `x-fyrr-schema-version`, currently `5.1` (S3 and local storage).
 - **Dependencies.** A new dependency needs a license and advisory verdict in

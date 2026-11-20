@@ -1,0 +1,18 @@
+{
+  "name": "fyrr",
+  "version": "0.1.0",
+  "description": "Reminds Claude Code at the start of every session to search fyrr, the company context, before it searches files or asks you. Add the fyrr MCP server separately.",
+  "author": {
+    "name": "fyrr",
+    "url": "https://fyrr.dev"
+  },
+  "homepage": "https://fyrr.dev/docs/connect",
+  "repository": "https://github.com/fyrr-ai/fyrr",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "search",
+    "context",
+    "retrieval"
+  ]
+}

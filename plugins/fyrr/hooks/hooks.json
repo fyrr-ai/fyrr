@@ -1,0 +1,15 @@
+{
+  "description": "Tells the agent at session start that fyrr holds the company context.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$FYRR_PLUGIN_HOOK\" = off ] || cat \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.txt\""
+          }
+        ]
+      }
+    ]
+  }
+}

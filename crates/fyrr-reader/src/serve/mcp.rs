@@ -182,6 +182,7 @@ impl ServerHandler for McpService {
         info.protocol_version = ProtocolVersion::V_2025_11_25;
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info.server_info = Implementation::new("fyrr", env!("CARGO_PKG_VERSION"));
+        info.instructions.clone_from(&self.instructions);
         info
     }
     async fn on_cancelled(
