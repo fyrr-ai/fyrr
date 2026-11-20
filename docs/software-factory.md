@@ -63,7 +63,9 @@ Three parts of the contract matter for unattended agents:
 When a sandbox must not hold bucket credentials, run one HTTP reader for the
 fleet instead and give each agent role its own API key. A key needs no
 identity provider: you declare what it may read, hand the secret to the
-agents of that role, and revoke it by removing it. See
+agents of that role, and revoke it by removing it: a running reader
+refuses the key with its next version check, within two intervals (60 s by
+default), or at once after `POST /admin/refresh`. See
 [API keys](http-users.md#api-keys).
 
 ## Limit what an injected agent can reach

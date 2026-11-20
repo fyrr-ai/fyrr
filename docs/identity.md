@@ -70,10 +70,20 @@ or malformed: the writer then skips that key's binding (it fails closed) and
 every other key and user is published as usual. Two keys that share a secret
 stop the writer's commit instead.
 
+A key added, removed or rebound by a published identity takes effect on a
+running reader with its next version check
+([`reader.version_check_interval`](reader-writer.md)), at the latest two
+intervals (60 s by default) after the identity is published; `SIGHUP` and
+`POST /admin/refresh` apply it at once. An `expires` needs no publication:
+the reader's clock refuses the key from that second. For an urgent
+revocation, remove the key on every host that publishes identity, publish
+it, then refresh each reader; see
+[API keys](security.md#api-keys).
+
 `reader.http` needs `[identity.oidc]` or at least one API key only where the
 HTTP reader starts: `reader serve` refuses to start without either, and
 `config check` warns about it. The writer accepts the same file with no key,
-so removing the last key still publishes (zero key bindings) and revokes it.
+so removing the last key still publishes (zero key bindings) and revokes it, on a running reader as for any other key.
 
 ### `[identity.directory]`
 

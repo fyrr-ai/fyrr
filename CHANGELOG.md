@@ -19,7 +19,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   revokes it). The writer publishes only a keyed hash of each secret; the
   identity artifact moves to 1.2 (an optional `expires` on subject
   bindings, enforced by the reader before a response leaves) and the
-  configuration schema stays 5.1. See
+  configuration schema stays 5.1. A key added, removed or rebound takes
+  effect on a running reader like any other revocation: with its next
+  version check, at the latest two intervals (60 s by default) after the
+  identity is published; `SIGHUP` and `POST /admin/refresh` apply it at once.
+  An `expires` is checked against the reader's clock and takes effect at
+  once. See
   [HTTP login and users](docs/http-users.md#api-keys).
 - The reader sends `instructions` in the MCP `initialize` result: what
   fyrr searches and a request to search it before looking through files.

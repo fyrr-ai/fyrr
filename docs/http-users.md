@@ -69,8 +69,11 @@ operator states in the configuration what it may read.
    Each needs every key's variable in its environment. A host without one
    publishes identity without that key's binding (`api_key_secret_unusable`),
    so the key works only until that host publishes next, which looks like an
-   intermittent `401`. A reader accepts a new key within about a second of
-   the publication reaching storage. If keys are configured but none is
+   intermittent `401`. A running reader accepts a new key with its next
+   version check, at the latest two `reader.version_check_interval`s (60 s
+   by default) after the identity is published, and a request in the
+   meantime gets `401`; `SIGHUP` and `POST /admin/refresh` start the check at
+   once. If keys are configured but none is
    usable, the reader starts and reports ready while every key gets `401`;
    `fyrr writer status` shows why.
 4. **Start the reader** behind a TLS-terminating proxy, as in
@@ -117,9 +120,14 @@ the configuration says.
 To rotate, add a second key, move the client to it, then remove the first.
 To revoke, remove the table on **every host that publishes identity** (each
 `writer serve` and each scheduled `writer commit`) and restart or rerun
-them: a writer that still runs with the old file republishes the key. The
-reader refuses the key at its next request after the new identity is
-published; see [API keys in the security model](security.md#api-keys).
+them: a writer that still runs with the old file republishes the key. A
+running reader refuses the removed key with its next version check, at the
+latest two intervals (60 s by default) after the identity is published. For
+an urgent revocation, publish (`fyrr writer commit`, or restart `writer
+serve`) and then send `POST /admin/refresh` to each reader or `SIGHUP` to its
+process: the key is refused from the next request on. An `expires` needs
+none of this: the reader's clock refuses the key from that second. See
+[API keys in the security model](security.md#api-keys).
 Removing the last key is fine: the writer then publishes no key bindings,
 and a reader restarted without any key or `identity.oidc` refuses to start.
 A refused key always gets the same `401 unauthorized`, whether it is unknown,
@@ -268,7 +276,7 @@ curl https://fyrr.example.com/mcp \
 | --- | --- |
 | `401 unauthorized` | The token failed a [token rule](#tokens): usually the audience (`fyrr:read` is not a default scope of the sign-in client, or its Audience mapper does not add `fyrr` to the access token), an expired token, or a token from another realm. Decode it and compare `iss`, `aud`, `scope` and `typ`. |
 | `503 authorization_unavailable` | The token is valid but its subject is not bound: the user is not yet in a published directory pull, is disabled, or has no verified e-mail in `verified_domains`. It also means the last directory pull is older than `identity.validity_deadline`, or the keys could not be fetched. Check `fyrr writer status`. |
-| `401 unauthorized` with an API key | The key is unknown to the published identity: not committed yet (run `fyrr writer commit`; a reader looks again at most once a second), removed, past its `expires`, malformed (`fyrr_key_` plus 43–128 characters of `[A-Za-z0-9_-]`, at least 10 of them distinct) or, for a `user` key, its user is missing or inactive (`fyrr writer status` warns `api_key_unbound`; `api_key_secret_unusable` means the variable is unset or malformed on a host that published identity, so that publication did not bind the key; every host that publishes identity needs it, or the key works intermittently). Claude Code started without the variable sends the literal `${VAR}` text. The reader says nothing more, by design. |
+| `401 unauthorized` with an API key | The key is unknown to the published identity: not committed yet (run `fyrr writer commit`; a running reader applies a new identity with its next version check, within two intervals, or at once after `POST /admin/refresh`), removed, past its `expires`, malformed (`fyrr_key_` plus 43–128 characters of `[A-Za-z0-9_-]`, at least 10 of them distinct) or, for a `user` key, its user is missing or inactive (`fyrr writer status` warns `api_key_unbound`; `api_key_secret_unusable` means the variable is unset or malformed on a host that published identity, so that publication did not bind the key; every host that publishes identity needs it, or the key works intermittently). Claude Code started without the variable sends the literal `${VAR}` text. The reader says nothing more, by design. |
 | A user is missing although the e-mail looks right | Keycloak does not mark it verified. Users federated from LDAP need *Trust Email* on the LDAP provider, or a verified flag set by an administrator. |
 | `403 host_mismatch` | The proxy does not pass the public `Host`: set `proxy_set_header Host $host`. The reader logs `http refused code=host_mismatch`. |
 | `403 invalid_argument` | The request had an `Origin` header: browsers cannot call `/mcp` directly. |
@@ -307,14 +315,15 @@ starts with `fyrr_key_` is an [API key](#api-keys) and takes its own path
 - The bearer is `fyrr_key_` followed by 43–128 characters from
   `[A-Za-z0-9_-]`, at least 10 of them distinct; anything else that starts
   with `fyrr_key_` is refused before it is hashed.
-- Its keyed hash must be bound in the identity the reader has cached, or in
-  one it fetches: a hash the cache does not bind is refused with `401` and no
-  storage read, and the cache is refreshed from the serving head at most once
-  per second. A key the cache binds is checked against the current serving
-  head on every request, and its binding must not have expired. Otherwise the
-  request gets `401 unauthorized`, the same for an unknown, malformed,
-  removed and expired key, and whatever the directory's or storage's state:
-  only a bound key can get `503`.
+- Its keyed hash must be bound in the identity of the serving head the
+  reader holds (the one its latest version check read, as for OIDC subjects),
+  and its binding must not have expired. Otherwise the request gets `401
+  unauthorized`, the same for an unknown, malformed, removed and expired key,
+  with no storage read: the lookup comes before the namespace and directory
+  checks, so only a bound key can get `503` for them. A key added, removed or
+  rebound takes effect with the reader's next version check, at the latest two
+  intervals after the identity is published; if the held head is older than
+  that and the reader cannot read it, every request gets the same `503`.
 - A binding's `expires` is whole seconds. The key is expired from the second
   it names: a request is refused when the reader's clock, truncated to whole
   seconds, is at or after it, and the check runs again once the response is
