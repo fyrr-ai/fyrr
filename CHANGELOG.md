@@ -47,6 +47,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   default) after it was published, rather than with its next request.
   `SIGHUP` and `POST /admin/refresh` start a check at once. In
   `per-request` mode `metadata.stale_version` compares with that head too.
+- The reader's mirror reads data files in 4 KiB pages: a read of part of a
+  data file fetches only the pages it lacks, instead of the whole file, and
+  checks each kept page against its digest once per process before serving
+  it. The size of a pinned data file is taken from the content manifest
+  rather than by downloading the file. Opening a 100,000-row namespace on an empty mirror transferred 44 MB
+  instead of 313 MB. Index files are still copied whole, and warming still
+  fills every file completely.
 - The reader shares one immutable admission per subject between its
   authorization cache and its workers instead of copying it, and the cache
   charges an entry by an estimate of its size rather than 32 bytes per
