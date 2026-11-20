@@ -118,7 +118,7 @@ try:
     import fyrr_connectors.host as host
 except ImportError:
     sys.exit({EXIT_NO_HOST})
-sys.exit(host.main(sys.argv, fd))
+sys.exit(host.main(fd))
 "#
     );
     ["-S".to_owned(), "-c".to_owned(), source]
@@ -128,10 +128,10 @@ sys.exit(host.main(sys.argv, fd))
 /// (JSON syntax, Arrow schema, message metadata and padding); the exact limits
 /// are checked on the declared and decoded batch and by the batch checker.
 const FRAME_SLACK: u64 = 1 << 20;
-/// A `close` runs the provider's cleanup; the whole exchange, request and
-/// reply, gets this long.
-const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
-/// A host whose socket is closed exits by itself; it gets this long.
+/// A host that hears end-of-file closes the provider's generator, so its
+/// cleanup runs, and exits; it gets this long, then it is killed.
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+/// A host that fails to start is waited for this long, for its exit status.
 const EXIT_GRACE: Duration = Duration::from_secs(2);
 /// Control messages and documents travel on the worker's result channel size.
 const CONTROL_MAX: u64 = RESULT_MAX_BYTES as u64;
@@ -149,11 +149,11 @@ const WORKER_ONLY_ENV: [&str; 3] = [
     "FYRR_WRITER_EMBEDDING_CAP",
 ];
 
-/// Whether the host would take these credentials: the names a configuration
-/// may reference, within the host's name limit and without
-/// [`fyrr_core::config::host_env_refusal`]; values within [`ENV_MAX_VALUE`]
-/// without a NUL. The host applies the same rules, and configuration
-/// validation refuses what this would, so a start failure here is a defect.
+/// Whether the host would take these credentials: names within the rules of
+/// `fyrr-core`, which `config check` applies to the references of a
+/// configuration; values within [`ENV_MAX_VALUE`] without a NUL, which only
+/// the worker can know once it has read the stored secret. The host checks
+/// the message again before it applies any of it.
 fn acceptable(credentials: &[(String, String)]) -> bool {
     credentials.len() <= ENV_MAX_VARIABLES
         && credentials.iter().all(|(name, value)| {
@@ -287,7 +287,6 @@ enum Message {
     Done,
     Failed,
     Oversize,
-    Closed,
     LookupRevisions { roots: Vec<String> },
     NextRevisions,
 }
@@ -420,16 +419,7 @@ impl Host {
 
     /// The reason a host exited before its handshake, from its exit status.
     fn exit_at_start(&mut self) -> StartError {
-        let deadline = Instant::now() + EXIT_GRACE;
-        let status = loop {
-            match self.child.try_wait() {
-                Ok(Some(status)) => break status.code(),
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                _ => break None,
-            }
-        };
+        let status = self.wait(EXIT_GRACE).and_then(|status| status.code());
         self.broken = true;
         match status {
             Some(EXIT_NO_SDK) => StartError::SdkUnavailable,
@@ -440,17 +430,10 @@ impl Host {
     }
 
     /// Sets the provider's credentials in the host's `os.environ`, before any
-    /// provider code can run. Names and values the host would refuse are
-    /// refused here, without saying which.
-    pub(super) fn set_environment(
-        &mut self,
-        credentials: &[(String, String)],
-    ) -> Result<(), StartError> {
+    /// provider code can run; [`acceptable`] has already checked them.
+    fn set_environment(&mut self, credentials: &[(String, String)]) -> Result<(), StartError> {
         if credentials.is_empty() {
             return Ok(());
-        }
-        if !acceptable(credentials) {
-            return Err(StartError::Failed);
         }
         let variables: BTreeMap<_, _> = credentials.iter().cloned().collect();
         self.send(&serde_json::json!({"t": "environment", "variables": variables}))
@@ -493,10 +476,7 @@ impl Host {
             "revisions": revisions,
         }))?;
         match self.read_message()? {
-            Message::Started => Ok(Run {
-                host: self,
-                finished: false,
-            }),
+            Message::Started => Ok(Run { host: self }),
             Message::Failed => Err(Failure::Provider),
             _ => Err(self.out_of_step()),
         }
@@ -511,27 +491,7 @@ impl Host {
     }
 
     fn read(&mut self, bound: impl Fn(Kind) -> u64) -> Result<(Kind, Vec<u8>), Failure> {
-        self.read_by(None, bound)
-    }
-
-    /// Like [`Host::read`], but the whole frame must arrive by `deadline`
-    /// when there is one: a peer that sends one byte at a time cannot extend it.
-    fn read_by(
-        &mut self,
-        deadline: Option<Instant>,
-        bound: impl Fn(Kind) -> u64,
-    ) -> Result<(Kind, Vec<u8>), Failure> {
-        let frame = match deadline {
-            None => read_frame(&mut self.stream, bound),
-            Some(deadline) => read_frame(
-                &mut Until {
-                    stream: &self.stream,
-                    deadline,
-                },
-                bound,
-            ),
-        };
-        frame.map_err(|error| {
+        read_frame(&mut self.stream, bound).map_err(|error| {
             self.broken = true;
             error.into()
         })
@@ -539,11 +499,7 @@ impl Host {
 
     /// The next frame, which must be a control message.
     fn read_message(&mut self) -> Result<Message, Failure> {
-        self.read_message_by(None)
-    }
-
-    fn read_message_by(&mut self, deadline: Option<Instant>) -> Result<Message, Failure> {
-        let (kind, payload) = self.read_by(deadline, |kind| match kind {
+        let (kind, payload) = self.read(|kind| match kind {
             Kind::Control => CONTROL_MAX,
             _ => 0,
         })?;
@@ -558,76 +514,46 @@ impl Host {
         Failure::Tuple
     }
 
-    /// Asks the host to close the running generator so that its cleanup runs.
-    /// One deadline covers the request and the whole reply.
-    fn close(&mut self) {
-        if self.broken {
-            return;
-        }
-        let deadline = Instant::now() + CLOSE_TIMEOUT;
-        // The request is one small frame, but a full send buffer must not
-        // outlast the deadline either.
-        let _ = self.stream.set_write_timeout(Some(CLOSE_TIMEOUT));
-        let closed = self.send(&serde_json::json!({"t": "close"})).is_ok()
-            && matches!(self.read_message_by(Some(deadline)), Ok(Message::Closed));
-        self.broken |= !closed;
-        let _ = self.stream.set_write_timeout(None);
-        let _ = self.stream.set_read_timeout(None);
-    }
-}
-
-/// A reader of the host's socket that gives up at an absolute deadline, not
-/// after a quiet period: every read waits only for what time is left.
-struct Until<'a> {
-    stream: &'a UnixStream,
-    deadline: Instant,
-}
-
-impl std::io::Read for Until<'_> {
-    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        let left = self
-            .deadline
-            .checked_duration_since(Instant::now())
-            .filter(|left| !left.is_zero())
-            .ok_or(std::io::ErrorKind::TimedOut)?;
-        self.stream.set_read_timeout(Some(left))?;
-        std::io::Read::read(&mut self.stream, buffer)
-    }
-}
-
-impl Drop for Host {
-    fn drop(&mut self) {
-        // Closing the socket ends a healthy host; anything else is killed.
-        // The supervisor's process-group kill covers a worker that dies first.
-        let _ = self.stream.shutdown(Shutdown::Both);
-        let deadline = Instant::now()
-            + if self.broken {
-                Duration::ZERO
-            } else {
-                EXIT_GRACE
-            };
+    /// Waits until `grace` has passed for the host to exit: its status, or
+    /// `None` when it is still running.
+    fn wait(&mut self, grace: Duration) -> Option<std::process::ExitStatus> {
+        let deadline = Instant::now() + grace;
         loop {
             match self.child.try_wait() {
-                Ok(Some(_)) => return,
+                Ok(Some(status)) => return Some(status),
                 Ok(None) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(2));
                 }
-                _ => {
-                    let _ = self.child.kill();
-                    let _ = self.child.wait();
-                    return;
-                }
+                _ => return None,
             }
         }
     }
 }
 
-/// An open provider run. Dropping it closes the provider's generator unless
-/// [`Run::finish`] says the read succeeded, so its cleanup always runs.
+impl Drop for Host {
+    fn drop(&mut self) {
+        // End-of-file ends a healthy host after it ran the provider's cleanup,
+        // which gets one deadline; a broken conversation or a host still
+        // running at the deadline is killed. The supervisor's process-group
+        // kill covers a worker that dies first.
+        let _ = self.stream.shutdown(Shutdown::Write);
+        let grace = if self.broken {
+            Duration::ZERO
+        } else {
+            CLEANUP_TIMEOUT
+        };
+        if self.wait(grace).is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+/// An open provider run. The provider's generator is closed when the host
+/// ends, so its cleanup always runs.
 #[derive(Debug)]
 pub(super) struct Run<'h> {
     host: &'h mut Host,
-    finished: bool,
 }
 
 impl Run<'_> {
@@ -669,8 +595,6 @@ impl Run<'_> {
                     if kind != Kind::Rows {
                         return Err(host.out_of_step());
                     }
-                    // Both frames are read: whatever is wrong with the rows,
-                    // the host is in step and is asked to close its generator.
                     let rows = ipc::decode(
                         rows,
                         ipc::Bounds {
@@ -711,27 +635,10 @@ impl Run<'_> {
                         |items| serde_json::json!({"t": "revisions", "items": items}),
                     ))?;
                 }
-                Message::Ready { .. }
-                | Message::EnvironmentSet
-                | Message::Started
-                | Message::Closed => {
+                Message::Ready { .. } | Message::EnvironmentSet | Message::Started => {
                     return Err(host.out_of_step());
                 }
             }
-        }
-    }
-
-    /// The read succeeded: the generator ran to its end.
-    pub(super) fn finish(mut self) {
-        self.finished = true;
-    }
-}
-
-impl Drop for Run<'_> {
-    fn drop(&mut self) {
-        if !self.finished {
-            // Cleanup failure must never replace the original diagnostic.
-            self.host.close();
         }
     }
 }

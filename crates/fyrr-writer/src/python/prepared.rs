@@ -204,7 +204,7 @@ impl Preparation<'_> {
                 kind: self.kind,
                 cursor: cursor.as_deref(),
             };
-            let run = drive_provider(
+            drive_provider(
                 &mut host,
                 &request,
                 Some(&mut callbacks),
@@ -291,7 +291,6 @@ impl Preparation<'_> {
                     true,
                 ))?;
             }
-            run.finish();
             Ok(checker.stats)
         })();
         if let Some(code) = *callback_failure

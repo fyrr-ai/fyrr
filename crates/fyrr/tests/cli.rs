@@ -384,7 +384,7 @@ mod providers {
             (
                 "\n[[sources]]\nid = \"x\"\ntype = \"sentinel-docs\"\npermissions = \"fixed\"\nreaders = [\"grp:x\"]\n".to_owned(),
                 "sources[0].scope",
-                "a field the provider requires is missing",
+                "missing field `fixture` required by the provider",
             ),
             (
                 "\n[[sources]]\nid = \"x\"\ntype = \"local-files\"\npermissions = \"sync\"\n[sources.intervals]\npermissions = \"30m\"\n".to_owned(),
@@ -832,9 +832,14 @@ mod providers {
         }
     }
 
-    /// `fyrr` run by an invoker that leaves a descriptor (9) open, as a shell
-    /// or a service manager may; `command` is the base command to run.
-    fn run_with_descriptor_9(base: &std::process::Command, args: &[&OsStr]) -> Output {
+    /// `fyrr` run by an invoker that leaves a descriptor (9) open on `planted`,
+    /// as a shell or a service manager may. The number can be reused by the
+    /// host's own descriptors, so tests look for the file, not the number.
+    fn run_with_planted_descriptor(
+        base: &std::process::Command,
+        planted: &Path,
+        args: &[&OsStr],
+    ) -> Output {
         let mut command = std::process::Command::new("sh");
         for (name, value) in base.get_envs() {
             match value {
@@ -843,8 +848,9 @@ mod providers {
             };
         }
         command
-            .args(["-c", "exec 9</dev/null; exec \"$0\" \"$@\""])
+            .args(["-c", "exec 9<\"$1\"; shift; exec \"$0\" \"$@\""])
             .arg(common::binary())
+            .arg(planted)
             .args(args)
             .output()
             .unwrap()
@@ -872,8 +878,10 @@ mod providers {
                 "mode = \"fds\"",
             )),
         );
-        let output = run_with_descriptor_9(
+        let planted = sandbox.input("planted", "planted");
+        let output = run_with_planted_descriptor(
             &common::fyrr(),
+            &planted,
             &[
                 OsStr::new("--config"),
                 config.as_os_str(),
@@ -908,8 +916,31 @@ mod providers {
         assert_eq!(
             numbers,
             [0, 1, 2, sockets[0].0].into_iter().collect(),
-            "descriptor 9 or another leaked in: {held:?}"
+            "a descriptor the invoker left open leaked in: {held:?}"
         );
+        let planted = planted.canonicalize().unwrap().display().to_string();
+        let leaked = |rows: &[Vec<serde_json::Value>]| {
+            rows.iter()
+                .any(|row| row[1].as_str() == Some(planted.as_str()))
+        };
+        for table in ["provider", "forked", "child"] {
+            let rows: Vec<Vec<serde_json::Value>> = report[table]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| {
+                    if entry.is_array() {
+                        entry.as_array().unwrap().clone()
+                    } else {
+                        vec![entry["fd"].clone(), entry["target"].clone()]
+                    }
+                })
+                .collect();
+            assert!(
+                !leaked(&rows),
+                "the planted file reached the {table}: {report}"
+            );
+        }
         for (fd, target, _) in &held {
             if *fd < 3 {
                 assert_eq!(target, "/dev/null", "{held:?}");
@@ -1009,7 +1040,13 @@ mod providers {
         .unwrap();
         let mut base = common::fyrr();
         base.env("VIRTUAL_ENV", &venv);
-        let output = run_with_descriptor_9(&base, &[OsStr::new("writer"), OsStr::new("providers")]);
+        let planted = sandbox.input("planted", "planted");
+        let output = run_with_planted_descriptor(
+            &base,
+            &planted,
+            &[OsStr::new("writer"), OsStr::new("providers")],
+        );
+        let planted = planted.canonicalize().unwrap().display().to_string();
         let (stdout, stderr) = text(&output);
         assert!(stdout.contains("local-files"), "{stdout}{stderr}");
         let runs: Vec<Vec<(u64, String, bool)>> = std::fs::read_to_string(&marker)
@@ -1023,7 +1060,7 @@ mod providers {
             assert_eq!(stdin.1, "/dev/null", "stdin is still the socket: {held:?}");
             for (fd, target, cloexec) in &held {
                 assert_ne!(
-                    *fd, 9,
+                    *target, planted,
                     "the invoker's descriptor reached site code: {held:?}"
                 );
                 assert!(

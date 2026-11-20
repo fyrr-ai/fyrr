@@ -137,58 +137,57 @@ link. An inactive canonical user is denied everywhere. The keys are in
 ## Worker isolation
 
 No Python runs in the `fyrr` executable. Provider code runs in a Python
-host process that a `fyrr writer __worker` child process starts, one worker
-per source (provider discovery uses its own worker). The host stays in the
-worker's process group, so the worker's timeout kills it and every
-descendant, and the supervisor reaps what is left. Each of the two processes
-has the memory limit (`writer.worker_memory_max_bytes`, applied per process,
-so provider memory is bounded as before), no core dumps and no inherited
-stdin, stdout or stderr. The worker and the host talk over a private socket.
+host process that a `fyrr writer __worker` child process starts, one host per
+sync kind of a source (provider discovery uses its own worker). The host stays
+in the worker's process group, so the worker's timeout kills it and every
+descendant. Each of the two processes has the memory limit
+(`writer.worker_memory_max_bytes`, applied per process), no core dumps and no
+inherited stdin, stdout or stderr. They talk over a private socket. Provider
+code is trusted (above): the checks below keep a faulty provider from taking
+the worker down or being mistaken for a valid batch, and are not a sandbox.
 
-What the worker guarantees about what the host sends:
+What the worker checks about what the host sends:
 
-- Every frame's length is bounded before anything is allocated for it, and
-  an Arrow stream's message lengths, row count and buffer bytes are bounded
-  before it is decoded.
-- The stream is inspected before it is decoded: one schema message and one
-  uncompressed record batch. Compression and dictionary batches are refused.
-  The schema's fields (at every nesting level) are counted against the
-  contract's own plus a small allowance before it is converted; it carries
-  no metadata beyond the contract's two entries and no field metadata; it
-  must be the contract's schema, with only nullable additions.
-- The decoder is not given a validator of Arrow's layout rules. Inspection,
-  conversion and decoding run under one panic guard instead: a stream that
-  makes any of them panic is a refused batch, with the same closed diagnostic
-  as any other refused batch. The panic message goes to the worker's stderr,
+- Every frame's length is bounded before anything is allocated for it.
+- An Arrow stream is inspected before it is decoded: one schema message that
+  is the contract's (only nullable additions) and one uncompressed record
+  batch, no dictionary batches, with the declared row count and buffer ranges
+  within the limits. The schema carries no metadata beyond the contract's two
+  entries and no field metadata. Its fields, at every nesting level, are
+  counted against the contract's own plus a small allowance of added fields
+  before it is converted, because a flatbuffer can share offsets, so a small
+  message can describe a far larger tree.
+- Inspection, schema conversion and decoding run under one panic guard: a
+  stream that makes any of them panic is a refused batch, with the same closed
+  diagnostic as any other. The panic message goes to the worker's stderr,
   which is `/dev/null`.
-- Memory exhaustion is not prevented. A host that exhausts its memory limit
-  catches `MemoryError` or dies, and the worker reports `the provider failed`,
-  as it does for a provider that crashes. Only a worker that exhausts its own
-  limit ends, and the supervisor then reports the closed diagnostic for a
-  worker that failed.
 - A malformed, oversized or out-of-order frame, a host that exits early and
   a host that hangs all end in fixed diagnostic codes, never Python
   exception text, and none carries a value the host chose except a version
-  built from numbers and a few fixed suffixes. Results return over a
-  size-capped socket. A crash or hang fails only that source.
+  built from numbers and a few fixed suffixes. A crash, hang or exhausted
+  memory limit of the host (`the provider failed`) fails only that source.
+
+When a host's conversation ends, the worker shuts its side of the socket
+down. The host then closes the provider's generator, so its `finally` blocks
+run, and exits; it is killed five seconds after the shutdown, or at once when
+the conversation was out of step.
 
 What the host guarantees about itself: the interpreter starts without site
 code, and a bootstrap that uses only built-in modules moves the protocol
 socket (its stdin) to a close-on-exec descriptor, points stdin at `/dev/null`
 and closes every other inherited descriptor, before `.pth` files,
 `sitecustomize` or any provider import run. A process that provider code
-forks closes the socket too, site code included: the hook that closes it is
-registered before `site.main()`. Stored credentials are sent after the host
-starts and set in its environment before the SDK imports any provider code.
-That guarantee covers imports the SDK performs: start-up code (`.pth` files,
-`sitecustomize`) runs earlier, before the protocol begins and before the
-credentials are set, and it can see the socket only as a descriptor that no
-child inherits. The credentials' names are removed from the environment the
-host inherits, so they are not in the process's initial environment, and a
-credential may not be named `PATH`,
-`VIRTUAL_ENV` or anything starting with `PYTHON` or `LD_`, or be longer than
-256 bytes; `fyrr config check` refuses such a name where a source references
-a stored credential, naming the key.
+forks closes the socket too, site code included. Start-up code can see the
+socket as an open descriptor that no child inherits.
+
+Stored credentials a source references are sent to the host after it starts
+and set in its environment before the SDK imports any provider code; their
+names are removed from the environment the host inherits, so they are not in
+its initial environment. `fyrr-core` owns the name rule (`config check`
+refuses a referenced stored credential named `PATH`, `VIRTUAL_ENV`,
+`PYTHON*` or `LD_*`, or over 256 bytes, naming the key); the worker checks the
+names and the values, which only it can know, once before it starts the host,
+and the host checks the message again before it sets any of it.
 
 The [deployment guide](deployment.md#topology) covers reader hosts; the
 [reader settings](reader-writer.md#reader) specify mirror ownership and modes.

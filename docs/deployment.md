@@ -142,7 +142,9 @@ The commands that run connectors (`writer sync`, `writer providers`,
 `writer serve` jobs, and the provider checks of `config check` and
 `config schema`) start a Python provider host from the first of these that
 exists: `$VIRTUAL_ENV/bin/python`; a `python3` next to the `fyrr`
-executable; `python3` on `PATH`. If none is found, or it cannot import
+executable; `python3` on `PATH`. A `VIRTUAL_ENV` that is set but has no executable
+`bin/python` stops the search with an error; it does not fall back to the
+other two. If none is found, or it cannot import
 `fyrr_connectors` (or finds an SDK that does not match this `fyrr`), they
 stop with one message that says to install the wheel of this release into a
 virtual environment and set `VIRTUAL_ENV`. The message comes from a worker

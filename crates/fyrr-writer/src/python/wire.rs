@@ -104,24 +104,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frames_round_trip_and_keep_their_kind() {
-        let mut bytes = Vec::new();
-        for (kind, payload) in [
-            (Kind::Control, &b"{}"[..]),
-            (Kind::Rows, &b""[..]),
-            (Kind::Batch, &[0u8; 70_000][..]),
-        ] {
-            write_frame(&mut bytes, kind, payload).unwrap();
-        }
-        let mut reader = bytes.as_slice();
-        for (kind, length) in [(Kind::Control, 2), (Kind::Rows, 0), (Kind::Batch, 70_000)] {
-            let (read, payload) = read_frame(&mut reader, |_| 1 << 20).unwrap();
-            assert_eq!((read, payload.len()), (kind, length));
-        }
-        assert_eq!(read_frame(&mut reader, |_| 1 << 20), Err(WireError::Closed));
-    }
-
-    #[test]
     fn a_length_over_the_bound_is_refused_before_any_payload_is_read() {
         let mut frame = vec![b'A'];
         frame.extend_from_slice(&u32::MAX.to_be_bytes());

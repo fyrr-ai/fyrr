@@ -54,7 +54,7 @@ pub(crate) fn run_kind(
         kind,
         cursor: None,
     };
-    let run = driver::drive_provider(
+    driver::drive_provider(
         &mut host,
         &request,
         None,
@@ -62,9 +62,7 @@ pub(crate) fn run_kind(
         driver::RowPolicy::Optional,
         driver::ErrMap::DRY_RUN,
         |_, _, _| Ok(()),
-    )?;
-    run.finish();
-    Ok(())
+    )
 }
 
 /// The result a discovery worker sends when its host cannot start: the closed

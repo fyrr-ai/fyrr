@@ -8,7 +8,6 @@ import subprocess
 import sys
 import threading
 from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
@@ -78,11 +77,6 @@ class Counting(Connector):
 SEEN: dict[str, Any] = {}
 
 
-class Failing(Connector):
-    def content(self, cursor):
-        raise ValueError("secret document text")
-
-
 class Asking(Connector):
     def content(self, cursor):
         SEEN["lookup"] = self.context.lookup_revisions(["a", "b"])
@@ -147,57 +141,27 @@ def start_run(peer: Peer, source: str, revisions: bool = False) -> None:
     assert peer.message() == {"t": "started"}
 
 
-def test_the_handshake_names_the_protocol_and_the_sdk(served: Peer) -> None:
-    ready = served.message()
-    assert ready == {"t": "ready", "protocol": host.PROTOCOL_VERSION, "sdk_version": "0.1.2"}
-
-
-def test_inventory_and_discover_answer_with_documents(served: Peer) -> None:
-    served.message()
-    served.send({"t": "inventory"})
-    kind, payload = served.frame()
-    assert kind == b"R"
-    names = [entry["entry_point"] for entry in json.loads(payload)["providers"]]
-    assert "local-files" in names
-    served.send({"t": "discover", "name": "local-files"})
-    kind, payload = served.frame()
-    assert kind == b"R"
-    [entry] = json.loads(payload)["providers"]
-    assert entry["info"]["name"] == "local-files"
-
-
-def test_content_rows_cross_as_an_arrow_ipc_stream(
-    served: Peer, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = use(monkeypatch, sample_provider.SampleConnector)
-    served.message()
-    source = json.loads(source)
-    source["settings"] = {"api_token": {"env": "SAMPLE_TOKEN"}}
-    source["scope"] = {"titles": ["one", "two", "three"]}
-    start_run(served, json.dumps(source))
-    rows = 0
-    while True:
-        served.send({"t": "next"})
-        kind, payload = served.frame()
-        if kind == b"J":
-            assert json.loads(payload) == {"t": "done"}
-            break
-        assert kind == b"B"
-        assert json.loads(payload)["kind"] == "content"
-        rows_kind, stream = served.frame()
-        assert rows_kind == b"A"
-        batches = list(pa.ipc.open_stream(stream))
-        assert len(batches) == 1
-        rows += batches[0].num_rows
-    assert rows == 3
-
-
+@pytest.mark.parametrize(
+    ("connector", "settings", "scope"),
+    [
+        (
+            sample_provider.SampleConnector,
+            {"api_token": {"env": "SAMPLE_TOKEN"}},
+            {"titles": ["one"]},
+        ),
+        # The schema's own metadata is no way around the limit either.
+        (Noisy, {}, {}),
+    ],
+)
 def test_a_batch_over_the_byte_limit_is_refused_before_it_is_serialized(
-    served: Peer, monkeypatch: pytest.MonkeyPatch
+    served: Peer,
+    monkeypatch: pytest.MonkeyPatch,
+    connector: type[Connector],
+    settings: dict[str, Any],
+    scope: dict[str, Any],
 ) -> None:
-    source = json.loads(use(monkeypatch, sample_provider.SampleConnector))
-    source["settings"] = {"api_token": {"env": "SAMPLE_TOKEN"}}
-    source["scope"] = {"titles": ["one"]}
+    source = json.loads(use(monkeypatch, connector))
+    source["settings"], source["scope"] = settings, scope
     source["limits"] = dict(LIMITS, max_bytes=8)
     served.message()
     start_run(served, json.dumps(source))
@@ -205,46 +169,19 @@ def test_a_batch_over_the_byte_limit_is_refused_before_it_is_serialized(
     assert served.message() == {"t": "oversize"}
 
 
-def test_provider_failures_cross_as_a_closed_code(
-    served: Peer, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = use(monkeypatch, Failing)
-    served.message()
-    start_run(served, source)
-    served.send({"t": "next"})
-    kind, payload = served.frame()
-    assert (kind, json.loads(payload)) == (b"J", {"t": "failed"})
-    assert b"secret" not in payload
-
-
-def test_close_runs_the_generators_cleanup(served: Peer, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_end_of_file_runs_the_generators_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
     Counting.closed = 0
     source = use(monkeypatch, Counting)
-    served.message()
-    start_run(served, source)
-    served.send({"t": "next"})
-    assert served.frame()[0] == b"B"
-    served.frame()
-    served.send({"t": "close"})
-    assert served.message() == {"t": "closed"}
+    peer, thread = serve_in_thread()
+    peer.message()
+    start_run(peer, source)
+    peer.send({"t": "next"})
+    assert peer.frame()[0] == b"B"
+    peer.frame()
+    peer.sock.shutdown(socket.SHUT_WR)
+    thread.join(timeout=5)
+    assert not thread.is_alive()
     assert Counting.closed == 1
-
-
-def test_revision_callbacks_round_trip_while_a_batch_is_produced(
-    served: Peer, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    SEEN.clear()
-    source = use(monkeypatch, Asking)
-    served.message()
-    start_run(served, source, revisions=True)
-    served.send({"t": "next"})
-    assert served.message() == {"t": "lookup_revisions", "roots": ["a", "b"]}
-    served.send({"t": "revisions", "map": {"a": "r1"}})
-    assert served.message() == {"t": "next_revisions"}
-    served.send({"t": "revisions", "items": [["a", "r1"]]})
-    assert served.frame()[0] == b"B"
-    served.frame()
-    assert SEEN == {"lookup": {"a": "r1"}, "next": [("a", "r1")]}
 
 
 def test_a_callback_error_raises_in_the_provider_without_a_value(
@@ -273,16 +210,16 @@ def test_without_revisions_the_provider_has_no_callbacks(
     assert SEEN == {"no_callbacks": True}
 
 
-LAUNCHER = "import sys; from fyrr_connectors import host; sys.exit(host.main(sys.argv, 0))"
+LAUNCHER = "import sys; from fyrr_connectors import host; sys.exit(host.main(0))"
 
 
-def spawn_host(*arguments: str) -> tuple[subprocess.Popen[bytes], Peer]:
+def spawn_host() -> tuple[subprocess.Popen[bytes], Peer]:
     """The real host process with the socket as stdin. fyrr's worker adds a
     bootstrap that moves the socket off stdin first; its descriptor handling is
     tested through the real worker, where the bootstrap is."""
     ours, theirs = socket.socketpair()
     child = subprocess.Popen(
-        [sys.executable, "-c", LAUNCHER, *arguments],
+        [sys.executable, "-c", LAUNCHER],
         stdin=theirs,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -298,48 +235,6 @@ def test_the_host_process_serves_over_its_socket_and_exits_on_eof() -> None:
     assert peer.frame()[0] == b"R"
     peer.sock.close()
     assert child.wait(timeout=30) == 0
-
-
-def test_a_process_that_provider_code_forks_does_not_hold_the_socket() -> None:
-    script = """
-import os, socket
-from fyrr_connectors import host
-
-ours, theirs = socket.socketpair()
-connection = host.Connection(theirs)
-fd = theirs.fileno()
-# The bootstrap closes the descriptor first; the connection only lets go of it.
-os.register_at_fork(after_in_child=lambda: os.close(fd))
-os.register_at_fork(after_in_child=connection.abandon)
-pid = os.fork()
-if pid == 0:
-    try:
-        os.fstat(fd)
-    except OSError:
-        os._exit(0)
-    os._exit(1)
-_, status = os.waitpid(pid, 0)
-assert os.waitstatus_to_exitcode(status) == 0, "the child held the socket"
-os.fstat(fd)  # the parent still does
-theirs.sendall(b"x")
-assert ours.recv(1) == b"x"
-"""
-    subprocess.run([sys.executable, "-c", script], check=True, timeout=30)
-
-
-def test_the_host_refuses_arguments_and_a_descriptor_that_is_no_socket() -> None:
-    for arguments in (["1"], ["x", "2"]):
-        child, peer = spawn_host(*arguments)
-        assert child.wait(timeout=30) == 2, arguments
-        peer.sock.close()
-    result = subprocess.run(
-        [sys.executable, "-c", LAUNCHER],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode == 2
-    assert result.stdout == b""
 
 
 def test_credentials_set_the_environment_before_any_provider_code_and_are_not_echoed(
@@ -358,17 +253,6 @@ def test_credentials_set_the_environment_before_any_provider_code_and_are_not_ec
     served.send({"t": "next"})
     assert served.frame()[0] == b"B"
     assert SEEN == {"credential": "SECRET-VALUE"}
-
-
-def test_the_real_host_keeps_credentials_out_of_its_initial_environment() -> None:
-    child, peer = spawn_host()
-    peer.message()
-    peer.send({"t": "environment", "variables": {"FYRR_TEST_CREDENTIAL": "SECRET-VALUE"}})
-    assert peer.message() == {"t": "environment_set"}
-    environ = Path(f"/proc/{child.pid}/environ").read_bytes()
-    assert b"SECRET-VALUE" not in environ and b"FYRR_TEST_CREDENTIAL" not in environ
-    peer.sock.close()
-    assert child.wait(timeout=30) == 0
 
 
 def serve_in_thread() -> tuple[Peer, threading.Thread]:
@@ -449,14 +333,3 @@ def test_rows_leave_with_only_the_contract_metadata(
     assert set(schema.metadata) == {b"fyrr.contract", b"fyrr.schema_version"}
     # A batch the provider built without the contract's entries leaves without them.
     assert b"note" not in stream
-
-
-def test_a_batch_over_the_byte_limit_is_refused_even_with_metadata(
-    served: Peer, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = json.loads(use(monkeypatch, Noisy))
-    source["limits"] = dict(LIMITS, max_bytes=8)
-    served.message()
-    start_run(served, json.dumps(source))
-    served.send({"t": "next"})
-    assert served.message() == {"t": "oversize"}

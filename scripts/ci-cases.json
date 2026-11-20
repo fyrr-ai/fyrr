@@ -703,10 +703,6 @@
         "tier": "quick",
         "seconds": 0.5
       },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::revision_requests_are_answered_while_a_batch_is_produced": {
-        "tier": "quick",
-        "seconds": 0.5
-      },
       "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::the_row_and_error_policies_map_each_failure_to_its_own_diagnostic": {
         "tier": "quick",
         "seconds": 0.5
@@ -715,13 +711,9 @@
         "tier": "quick",
         "seconds": 0.5
       },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_host_that_hangs_on_close_is_killed_and_leaves_no_process": {
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_host_that_hangs_in_cleanup_is_killed_and_leaves_no_process": {
         "tier": "quick",
         "seconds": 0.5
-      },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::the_close_deadline_covers_a_reply_that_trickles_in": {
-        "tier": "quick",
-        "seconds": 5.5
       },
       "full:fyrr-writer:lib:fyrr_writer/python::wire::tests::a_length_over_the_bound_is_refused_before_any_payload_is_read": {
         "tier": "quick",
@@ -731,15 +723,7 @@
         "tier": "quick",
         "seconds": 0.0
       },
-      "full:fyrr-writer:lib:fyrr_writer/python::wire::tests::frames_round_trip_and_keep_their_kind": {
-        "tier": "quick",
-        "seconds": 0.0
-      },
       "full:fyrr-writer:lib:fyrr_writer/python::interpreter::tests::a_relative_location_is_never_run": {
-        "tier": "quick",
-        "seconds": 0.0
-      },
-      "full:fyrr-writer:lib:fyrr_writer/python::interpreter::tests::the_messages_name_the_fix": {
         "tier": "quick",
         "seconds": 0.0
       },
@@ -751,23 +735,7 @@
         "tier": "quick",
         "seconds": 0.0
       },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_batch_header_may_be_as_large_as_the_envelope_whether_or_not_rows_are_allowed": {
-        "tier": "quick",
-        "seconds": 0.5
-      },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_run_closes_its_generator_unless_the_read_succeeds_or_the_peer_is_out_of_step": {
-        "tier": "quick",
-        "seconds": 1.0
-      },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::an_sdk_without_the_host_module_asks_for_the_matching_wheel": {
-        "tier": "quick",
-        "seconds": 0.5
-      },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::credentials_are_not_in_the_real_hosts_initial_environment": {
-        "tier": "quick",
-        "seconds": 0.5
-      },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::credentials_are_sent_after_the_host_is_running_and_never_echoed": {
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_batch_header_over_the_envelope_and_its_slack_is_refused_unread": {
         "tier": "quick",
         "seconds": 0.5
       },
@@ -775,19 +743,11 @@
         "tier": "quick",
         "seconds": 0.5
       },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_name_of_any_configured_length_is_sent_to_the_host": {
-        "tier": "quick",
-        "seconds": 0.5
-      },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_name_that_will_be_sent_is_not_inherited_by_the_host": {
-        "tier": "quick",
-        "seconds": 0.5
-      },
       "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::an_interpreter_older_than_the_minimum_ends_at_the_version_check_and_says_so": {
         "tier": "quick",
         "seconds": 0.5
       },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::two_batches_of_one_run_arrive_in_order_over_one_conversation": {
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::credentials_reach_the_provider_only_through_the_socket_and_bad_ones_start_no_host": {
         "tier": "quick",
         "seconds": 0.5
       },
@@ -4414,33 +4374,17 @@
         "tier": "quick",
         "seconds": 0.0
       },
-      "python:connectors/tests/test_host.py::test_the_handshake_names_the_protocol_and_the_sdk": {
+      "python:connectors/tests/test_host.py::test_end_of_file_runs_the_generators_cleanup": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/test_host.py::test_inventory_and_discover_answer_with_documents": {
+      "python:connectors/tests/test_host.py::test_a_batch_over_the_byte_limit_is_refused_before_it_is_serialized[SampleConnector-settings0-scope0]": {
         "tier": "quick",
-        "seconds": null
+        "seconds": 0.5
       },
-      "python:connectors/tests/test_host.py::test_content_rows_cross_as_an_arrow_ipc_stream": {
+      "python:connectors/tests/test_host.py::test_a_batch_over_the_byte_limit_is_refused_before_it_is_serialized[Noisy-settings1-scope1]": {
         "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/test_host.py::test_a_batch_over_the_byte_limit_is_refused_before_it_is_serialized": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/test_host.py::test_provider_failures_cross_as_a_closed_code": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/test_host.py::test_close_runs_the_generators_cleanup": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/test_host.py::test_revision_callbacks_round_trip_while_a_batch_is_produced": {
-        "tier": "quick",
-        "seconds": null
+        "seconds": 0.5
       },
       "python:connectors/tests/test_host.py::test_a_callback_error_raises_in_the_provider_without_a_value": {
         "tier": "quick",
@@ -4451,10 +4395,6 @@
         "seconds": null
       },
       "python:connectors/tests/test_host.py::test_credentials_set_the_environment_before_any_provider_code_and_are_not_echoed": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/test_host.py::test_the_real_host_keeps_credentials_out_of_its_initial_environment": {
         "tier": "quick",
         "seconds": null
       },
@@ -4494,23 +4434,11 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/test_host.py::test_a_batch_over_the_byte_limit_is_refused_even_with_metadata": {
-        "tier": "quick",
-        "seconds": null
-      },
       "python:connectors/tests/test_host.py::test_a_name_of_the_full_configured_length_is_accepted": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/test_host.py::test_a_process_that_provider_code_forks_does_not_hold_the_socket": {
-        "tier": "quick",
-        "seconds": null
-      },
       "python:connectors/tests/test_host.py::test_the_host_process_serves_over_its_socket_and_exits_on_eof": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/test_host.py::test_the_host_refuses_arguments_and_a_descriptor_that_is_no_socket": {
         "tier": "quick",
         "seconds": null
       },

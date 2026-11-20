@@ -1,5 +1,5 @@
 //! One provider boundary with explicit row and diagnostic policies.
-use super::host::{Bounds, Failure, Host, Revisions, Rows, Run};
+use super::host::{Bounds, Failure, Host, Revisions, Rows};
 use crate::batch::{BatchChecker, KindStats};
 use crate::worker::Diagnostic;
 use crate::{Result, WriterError};
@@ -60,18 +60,15 @@ pub(super) struct Request<'a> {
 }
 
 /// Runs the request in `host` and passes every checked batch to `on_batch`.
-/// Returns the open run: the caller marks it finished only after it has
-/// validated the run's completion, otherwise dropping it closes the
-/// provider's generator.
-pub(super) fn drive_provider<'h, E: Copy>(
-    host: &'h mut Host,
+pub(super) fn drive_provider<E: Copy>(
+    host: &mut Host,
     request: &Request<'_>,
     mut revisions: Option<&mut dyn Revisions>,
     checker: &mut BatchChecker,
     policy: RowPolicy,
     errors: ErrMap<E>,
     mut on_batch: impl FnMut(&str, Option<&RecordBatch>, &mut KindStats) -> Result<(), E>,
-) -> Result<Run<'h>, E> {
+) -> Result<(), E> {
     let mut run = host
         .run(
             request.source_json,
@@ -111,6 +108,5 @@ pub(super) fn drive_provider<'h, E: Copy>(
         .map_err(errors.validation)?;
         on_batch(&item.header, rows.as_ref(), &mut checker.stats)?;
     }
-    // The caller still has to validate completion before marking it successful.
-    Ok(run)
+    Ok(())
 }

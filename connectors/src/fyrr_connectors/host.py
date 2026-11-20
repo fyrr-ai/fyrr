@@ -47,12 +47,11 @@ The host sends ``ready`` first; the worker then sends one request at a time:
     While a ``next`` runs, the provider may call back: the host sends
     ``lookup_revisions`` or ``next_revisions`` and blocks for the worker's
     ``revisions`` or ``error`` reply.
-``close``
-    Closes the running generator (so its cleanup runs); replies ``closed``.
 
 Replies and failures are closed codes: no exception text and no
 provider-supplied value ever crosses the socket, only contract data. When the
-worker closes the socket the host closes the generator and exits.
+worker ends the conversation (it shuts its side of the socket down) the host
+closes the generator, so its cleanup runs, and exits.
 """
 
 from __future__ import annotations
@@ -240,7 +239,6 @@ class Host:
             "discover": lambda request: self._document(lambda: runtime.discover(request["name"])),
             "run": self._start,
             "next": lambda _: self._next(),
-            "close": lambda _: self._close(),
         }
         while True:
             try:
@@ -255,7 +253,7 @@ class Host:
             except ProtocolError:
                 break
             self._requests += 1
-        self._close(reply=False)
+        self._close()
 
     def _environment(self, request: dict[str, Any]) -> None:
         """Sets the provider's credentials before any provider code runs."""
@@ -284,7 +282,7 @@ class Host:
         self._connection.send(DOCUMENT, document)
 
     def _start(self, request: dict[str, Any]) -> None:
-        self._close(reply=False)
+        self._close()
         try:
             source = json.loads(request["source"])
             self._max_bytes = int(source["limits"]["max_bytes"])
@@ -332,22 +330,18 @@ class Host:
             connection.send(BATCH, header.encode())
             connection.send(ROWS, frame)
 
-    def _close(self, reply: bool = True) -> None:
+    def _close(self) -> None:
         run, self._run = self._run, None
         if run is not None:
             # Cleanup failure never replaces the worker's diagnostic.
             with contextlib.suppress(BaseException):
                 run.close()
-        if reply:
-            self._connection.send_json({"t": "closed"})
 
 
-def main(argv: list[str], protocol_fd: int) -> int:
+def main(protocol_fd: int) -> int:
     """Serves the worker on `protocol_fd`, the connected socket that the
     bootstrap moved off stdin and closes in every forked child; returns only
     on a refusal to start."""
-    if len(argv) != 1:
-        return 2
     try:
         sock = socket.socket(fileno=protocol_fd)
     except (OSError, ValueError):

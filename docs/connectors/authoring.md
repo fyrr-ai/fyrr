@@ -245,55 +245,36 @@ what a provider author can observe:
   permissions, members, reconcile) runs in a new Python process, and
   discovery runs in another. Module-level state, caches and open connections
   do not carry from one kind to the next; keep what must last in the cursor.
+  The memory limit `writer.worker_memory_max_bytes` applies to that process
+  separately from the worker.
+- **A provider that aborts reports "the provider failed".** `os.abort()`,
+  `os._exit()`, a crash and running out of memory end the host process, not
+  fyrr's worker, and nothing the provider printed or raised is reported.
 - **Revision callbacks work only while a batch is being produced.**
   `lookup_revisions` and `next_revisions` answer while the generator runs
   towards its next `yield`; called from another thread that outlives that
-  step, or after the generator has finished, they raise a `RuntimeError`.
-- **A provider that aborts reports "the provider failed".** `os.abort()`,
-  `os._exit()` and a crash end the host process, not fyrr's worker: the source
-  fails with the closed `the provider failed` diagnostic, with nothing the
-  provider printed or raised.
-- **The memory limit applies per process.** `writer.worker_memory_max_bytes`
-  bounds the worker and, separately, the host the provider runs in; a
-  provider that exceeds it fails with `the provider failed` (the host catches
-  `MemoryError`, or dies, and the worker reports a provider failure).
+  step, or after the generator has finished, they raise
+  `RuntimeError("host_callback_failed")`. Catching it and carrying on never
+  lets the run count as a complete read.
 - **Credentials are in `os.environ` before the SDK imports your provider**,
-  set by the host from the stored credentials the source references. They are
-  not in the host's initial environment (`/proc/<pid>/environ`). Start-up code
+  set by the host from the stored credentials the source references, and
+  never in its initial environment (`/proc/<pid>/environ`). Start-up code
   (`.pth` files, `sitecustomize`) runs earlier and sees neither the
-  credentials nor an open conversation with fyrr.
-- **Descriptors.** Stdin, stdout and stderr are `/dev/null`, and nothing else
-  that fyrr or its parent held open is available. Printing is allowed and is
-  discarded. The protocol socket is not inherited by a process you start, and
-  a process you fork with `os.fork` closes it.
-- **Start-up code runs after the descriptors are settled.** The host starts
-  the interpreter without site code, closes what it inherited and detaches the
-  socket, and only then runs what start-up normally would: `.pth` files,
-  `sitecustomize` and `usercustomize`, with `PYTHONPATH` and the virtual
-  environment as usual. The `-c` entry that adds the current directory to
-  `sys.path` is removed, but a relative `PYTHONPATH` entry such as `.` still
-  resolves against the working directory. Such code can observe
-  `sys.argv == ['-c']` and a `sys.executable` that is the interpreter fyrr
-  found (`$VIRTUAL_ENV/bin/python`, a `python3` beside `fyrr`, or `python3`
-  on `PATH`). The host needs `/proc`: it reads `/proc/self/fd` to find the
-  descriptors to close, and without it the host fails to start.
+  credentials nor a conversation with fyrr, though it can see the protocol
+  socket as an open descriptor, which no process it starts inherits.
+- **Cleanup has five seconds.** When fyrr stops a run before your generator is
+  exhausted (a refused batch, or any failure), it ends the host's conversation
+  and the host closes the generator, so `finally` blocks run. Five seconds
+  after that fyrr kills the host; when the conversation is out of step it
+  kills it at once.
+- **The host needs `/proc`.** It reads `/proc/self/fd` to close the
+  descriptors it inherited, and without it the host fails to start.
 - **`multiprocessing` children started with `spawn` or `forkserver` inherit
   `-S`.** They get the parent's `sys.path`, but they do not run `.pth` hooks
   or `sitecustomize`. On Python 3.13 they also report the base prefix, not
   the virtual environment's; Python 3.14 keeps the virtual environment's.
-- **Rows carry only what the contract allows.** The host writes the batch's
-  schema with the contract's two metadata entries and nothing else, and fyrr
-  refuses a batch whose schema has any metadata on a field, at any level. A
-  nullable column you add must not use a dictionary type, `string_view` or
-  `binary_view` (the list-view types are accepted); fyrr refuses those
-  batches, as it does compression, and a schema with more than a few dozen
-  added fields.
-- **Cleanup has five seconds in total.** When fyrr stops a run before your
-  generator is exhausted (a refused batch, or any failure), it asks the host
-  to close the generator so that `finally` blocks run. The request and the
-  whole reply share one five-second deadline; then it kills the host. When
-  the conversation with the host is out of step, fyrr skips the close request
-  and ends the host at once.
-- **A failed revision callback raises `RuntimeError("host_callback_failed")`**
-  and nothing else about why; catching it and carrying on never lets the run
-  count as a complete read.
+- **Rows carry only what the contract allows.** The batch's schema carries
+  the contract's two metadata entries and nothing else, and fyrr refuses a
+  batch whose schema has metadata on any field. A nullable column you add must
+  not use a dictionary type, `string_view` or `binary_view` (the list-view
+  types are accepted); fyrr also refuses compression.

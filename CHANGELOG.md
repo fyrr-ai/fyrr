@@ -36,82 +36,20 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
-- The `fyrr` binary no longer links Python, so it starts on a machine
-  without Python or `libpython`: `fyrr --version`, `fyrr reader serve` and
-  every command that runs no connector work as downloaded. Connectors are
-  the separately installed Python package `fyrr-connectors`; the commands
-  that run providers (`writer sync`, `writer providers`, `writer serve` and
-  the provider checks of `config check` and `config schema`) start it in a
-  Python host process, from `$VIRTUAL_ENV/bin/python`, a `python3` next to
-  the `fyrr` executable or `python3` on `PATH`, and without one they stop
-  with a message that says to install the SDK wheel of the release into a
-  virtual environment and set `VIRTUAL_ENV` (the package index has
-  `fyrr-connectors` 0.1.0, and the 0.1.1 wheel of fyrr 0.1.1 was built for
-  the embedded interpreter like it; neither has the provider host, so this
-  fyrr cannot use them: it needs the wheel of its own release, 0.1.2 or
-  newer, and providers declare `fyrr-connectors>=0.1.2,<0.2`). A worker
-  starts the host, so no Python runs in the process that prints the message. An interpreter in the current directory is never
-  run. See
-  [downloadable binaries](docs/deployment.md#downloadable-binaries).
-- `fyrr-connectors` requires Python 3.13 or later instead of exactly
-  Python 3.13; the interpreter no longer has to match the one `fyrr` was
-  built with. The SDK's tests and type checks pass on 3.13 and 3.14. The
-  SDK gains `fyrr_connectors.host`, the provider host. Providers
-  (`Connector`, `ContentBatch`, entry points) are unchanged.
-- A provider that aborts or exits its process now fails its source with
-  `the provider failed` instead of `the worker failed`, because it no longer
-  takes the worker down with it. `writer.worker_memory_max_bytes` limits the
-  worker and the provider host separately, so provider memory is bounded as
-  before and a worker with its host may use up to twice it.
-- What a provider author can observe changes with the process boundary (see
-  [writing a provider](docs/connectors/authoring.md#how-a-provider-runs)):
-  each sync kind runs in a fresh Python process, so module-level state no
-  longer carries from one kind to the next; the revision callbacks of a
-  prepared run work only while a batch is being produced, and a failed one
-  raises `RuntimeError("host_callback_failed")`; an aborting provider reports
-  `the provider failed`; the memory limit applies per process; cleanup after
-  an early stop has five seconds in total before the host is killed, and none
-  when the conversation is out of step; `sys.argv` is
-  `['-c']` and `sys.executable` is the interpreter fyrr found; the automatic
-  `-c` entry on `sys.path` is removed, but a relative `PYTHONPATH` entry such
-  as `.` still resolves against the working directory; `.pth` files and
-  `sitecustomize` run after the protocol socket is detached and inherited
-  descriptors are closed, and `multiprocessing` children started with `spawn`
-  or `forkserver` inherit `-S`, so they get the parent's `sys.path` but run
-  neither, and on Python 3.13 report the base prefix; a process forked by provider code,
-  including site code, does not hold the socket; the host needs `/proc`;
-  field-level Arrow metadata is refused, and an added nullable column may not
-  use a dictionary type, `string_view` or `binary_view`.
-- Content rows reach the writer as Arrow IPC streams instead of through the
-  Arrow C Data Interface, which costs one copy of each batch. The writer
-  inspects a stream before decoding it and refuses compression, dictionary
-  batches, more than one schema or batch, and schema metadata beyond the
-  contract's two entries; non-content batches may be as large as
-  `writer.envelope_max_bytes`, as before.
-- Stored writer credentials a provider needs are sent to the host after it
-  starts and set in its `os.environ` before the SDK imports any provider
-  code, as before (a `.pth` file or `sitecustomize` that imports a provider
-  runs earlier, without them); their names are removed from the environment the host inherits,
-  so they are never in its initial environment. A credential may not be named
-  `PATH`, `VIRTUAL_ENV` or anything starting with `PYTHON` or `LD_`, and
-  `fyrr config check` refuses such a name (and one over 256 bytes) in a
-  source's `settings` or `scope`, naming the key, instead of the host failing
-  to start.
-- The Python interpreter starts without site code, and a bootstrap built from
-  built-in modules settles the descriptors first: the host holds only stdio on
-  `/dev/null` and its protocol socket, which neither the provider nor a
-  process it starts inherits, before `.pth` files, `sitecustomize` or a
-  provider import run. An interpreter older than Python 3.13 now says so
-  instead of failing to start.
-- A stream that makes Arrow's decoder panic is a refused batch, and a schema
-  that declares more fields than the contract's plus a small allowance is
-  refused before it is converted.
-- Version strings that the Python side reports (the SDK's and each
-  provider's) are shown only when they are built from numbers and a few fixed
-  suffixes (`a`, `b`, `rc`, `post`, `dev`). `fyrr config check` no longer prints
-  the name of a field that a provider's own schema requires.
-- `writer sync --dry-run` with no configured sources no longer starts a
-  worker.
+- To use connectors, install this release's `fyrr-connectors`
+  wheel with your provider extras in a Python 3.13+ virtual environment. Set
+  `VIRTUAL_ENV` to its absolute path and run `fyrr writer providers` to verify
+  the installation. The full image includes the SDK and bundled providers.
+  Commands that run no connector need no Python. Each sync kind runs in a
+  fresh Python process; the worker memory limit applies to that process
+  separately. What breaks for existing users:
+  - The embedded interpreter is gone: the binary links no Python
+    (`PYO3_PYTHON`, `libpython`).
+  - SDK 0.1.2 or newer is needed; 0.1.0 and 0.1.1 do not work.
+  - A provider that aborts fails its source with `the provider failed`.
+  - `PATH`, `VIRTUAL_ENV` and names starting with `PYTHON` or `LD_` are
+    reserved credential names; `fyrr config check` refuses them.
+  See [how a provider runs](docs/connectors/authoring.md#how-a-provider-runs).
 - **Revocation latency.** A request no longer reads the serving head from
   storage for its authorization checks. It checks its grants against the
   head the reader's latest version check read
@@ -157,20 +95,6 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   their rows through the scalar indexes too, instead of passing the
   subject's rows to Lance as a row mask. Results and authorization are
   unchanged.
-
-### Removed
-
-- The embedded Python interpreter (PyO3), and everything that served it:
-  `PYO3_PYTHON`, the matching `libpython3.13` and `LD_LIBRARY_PATH`
-  requirement, `PYTHONHOME` derived from `VIRTUAL_ENV`, and the exact-3.13
-  pin of `fyrr-connectors`. **Breaking for anyone who ran the full binary
-  against the embedded interpreter:** providers now run in the Python that
-  `VIRTUAL_ENV` names (or the `python3` next to `fyrr` or on `PATH`), so an
-  installation that put only the library on the loader path and never set
-  `VIRTUAL_ENV`, and relied on the interpreter's own `site-packages`, must
-  now have `python3` on `PATH` (the `fyrr` image does) or set `VIRTUAL_ENV`.
-  A `PYTHONHOME` you set yourself is no longer touched by `fyrr` but still
-  applies to that interpreter.
 
 ### Security
 

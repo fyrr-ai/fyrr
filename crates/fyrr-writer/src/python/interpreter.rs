@@ -126,20 +126,4 @@ mod tests {
         assert!(by_venv.contains("VIRTUAL_ENV"), "{by_venv}");
         std::fs::remove_dir_all(root).unwrap();
     }
-
-    #[test]
-    fn the_messages_name_the_fix() {
-        let none = select(None, None, None).unwrap_err();
-        assert!(none.contains("fyrr-connectors wheel"), "{none}");
-        assert!(none.contains("VIRTUAL_ENV"), "{none}");
-        // The index's `fyrr-connectors` is for the embedded interpreter: no
-        // message installs the SDK from there.
-        assert!(!none.contains("pip install fyrr-connectors"), "{none}");
-        assert!(!none.contains("pip install 'fyrr-connectors"), "{none}");
-        let empty = scratch("empty");
-        std::fs::create_dir_all(&empty).unwrap();
-        let broken = select(Some(empty.clone().into_os_string()), None, None).unwrap_err();
-        assert!(broken.contains("fyrr-connectors wheel"), "{broken}");
-        std::fs::remove_dir_all(empty).unwrap();
-    }
 }

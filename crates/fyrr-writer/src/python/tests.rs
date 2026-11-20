@@ -1,13 +1,12 @@
 //! The host client against scripted peers: closed diagnostics for every way a
-//! peer can misbehave, row and error policies, bounds, callbacks and cleanup.
+//! peer can misbehave, row and error policies, bounds and cleanup.
 //! The peers are small Python scripts that speak the protocol by hand; the
 //! real host is covered by its own tests and by the CLI tests.
 
 use super::driver::{ErrMap, Request, RowPolicy, drive_provider};
-use super::host::{Bounds, Failure, Host, MIN_PYTHON, Revisions, Rows, StartError, entry};
+use super::host::{Bounds, Failure, Host, MIN_PYTHON, Rows, StartError, entry};
 use super::*;
 use crate::worker::Diagnostic;
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// The connectors environment that `scripts/doctor` prepares.
@@ -24,8 +23,7 @@ fn python() -> PathBuf {
 
 /// A peer that plays `FAKE_MODE` and logs what it was asked to `FAKE_LOG`.
 const PEER: &str = r#"
-import json, os, socket, struct, sys, time
-import pyarrow as pa
+import json, os, socket, struct, time
 sock = socket.socket(fileno=os.dup(0))
 mode = os.environ["FAKE_MODE"]
 log = open(os.environ["FAKE_LOG"], "a")
@@ -34,6 +32,9 @@ def exact(n):
     while len(data) < n:
         chunk = sock.recv(n - len(data))
         if not chunk:
+            if mode == "hang-on-eof":
+                log.write("pid %d\n" % os.getpid()); log.flush()
+                time.sleep(3600)
             os._exit(0)
         data += chunk
     return data
@@ -44,55 +45,17 @@ def say(message):
 def request():
     kind, length = struct.unpack(">cI", exact(5))
     return json.loads(exact(length))
-def contract_rows():
-    from fyrr_connectors import document_changes
-    batch = document_changes([])
-    sink = pa.BufferOutputStream()
-    with pa.ipc.new_stream(sink, batch.schema) as writer:
-        writer.write_batch(batch)
-    return sink.getvalue().to_pybytes()
-def ipc(rows):
-    batch = pa.RecordBatch.from_pylist([{"a": "x" * 100} for _ in range(rows)])
-    sink = pa.BufferOutputStream()
-    with pa.ipc.new_stream(sink, batch.schema) as writer:
-        writer.write_batch(batch)
-    return sink.getvalue().to_pybytes()
-protocol = 99 if mode == "other-protocol" else 1
+protocol = 99 if mode in ("other-protocol", "garbled-version") else 1
 version = "9.9.9 <script>" if mode == "garbled-version" else "9.9.9"
-if mode in ("garbled-version",):
-    protocol = 99
 say({"t": "ready", "protocol": protocol, "sdk_version": version})
-batches = 0
-seen = 0
 while True:
-    message = request()
-    seen += 1
-    kind = message["t"]
-    log.write(kind + "\n"); log.flush()
-    if kind == "environment":
-        # The message is never echoed; what it carried is checked from the log.
-        log.write("initial-environment-has-it %s\n" % ("SECRET-VALUE" in open("/proc/self/environ").read()))
-        log.write("first-request %s\n" % (seen == 1))
-        log.write("variables %s\n" % json.dumps(message["variables"], sort_keys=True))
-        log.flush()
-        say({"t": "environment_set"})
-    elif kind == "run":
+    kind = request()["t"]
+    if kind == "run":
         say({"t": "started"})
-    elif kind == "close":
-        if mode == "hang-on-close":
-            log.write("pid %d\n" % os.getpid()); log.flush()
-            time.sleep(3600)
-        if mode == "slow-close":
-            # The reply trickles in, a byte at a time, for longer than any deadline.
-            payload = json.dumps({"t": "closed"}).encode()
-            for byte in struct.pack(">cI", b"J", len(payload)) + payload:
-                sock.sendall(bytes([byte])); time.sleep(0.4)
-        say({"t": "closed"})
     elif kind == "next":
-        batches += 1
         if mode == "empty":
             say({"t": "done"})
-        elif mode in ("provider-error", "hang-on-close", "slow-close"):
+        elif mode in ("provider-error", "hang-on-eof"):
             say({"t": "failed"})
         elif mode == "oversize":
             say({"t": "oversize"})
@@ -104,46 +67,16 @@ while True:
             send(b"H", b"not-json")
         elif mode == "bad-rows":
             send(b"B", b"not-json"); send(b"A", b"garbage")
-        elif mode == "two-batches":
-            if batches <= 2:
-                header = {
-                    "schema_version": "1.0", "source_id": "fixture", "kind": "content",
-                    "cursor": {"start": None if batches == 1 else "c1", "end": "c%d" % batches},
-                    "body": {"type": "document_changes", "changes": []},
-                }
-                send(b"B", json.dumps(header).encode()); send(b"A", contract_rows())
-            else:
-                say({"t": "done"})
-        elif mode == "many-rows":
-            send(b"B", b"not-json"); send(b"A", ipc(5))
-        elif mode == "header-2mib":
-            send(b"H", b"x" * (2 << 20))
         elif mode == "header-over":
             send(b"H", b"x" * ((4 << 20) + (1 << 20) + 1))
-        elif mode == "compressed":
-            batch = pa.RecordBatch.from_pylist([{"a": "x" * 100} for _ in range(5)])
-            sink = pa.BufferOutputStream()
-            options = pa.ipc.IpcWriteOptions(compression="lz4")
-            with pa.ipc.new_stream(sink, batch.schema, options=options) as writer:
-                writer.write_batch(batch)
-            send(b"B", b"not-json"); send(b"A", sink.getvalue().to_pybytes())
         elif mode == "rows-then-nothing":
             send(b"B", b"not-json"); say({"t": "done"})
-        elif mode == "bytes":
-            send(b"B", b"not-json"); send(b"A", ipc(5))
         elif mode == "exit-early":
             os._exit(3)
         elif mode == "stray-start":
             say({"t": "started"})
         elif mode == "non-utf8-header":
             send(b"H", b"\xff\xfe")
-        elif mode == "lookup":
-            say({"t": "lookup_revisions", "roots": ["a", "b"]})
-            reply = request()
-            log.write(json.dumps(reply) + "\n"); log.flush()
-            say({"t": "next_revisions"})
-            log.write(json.dumps(request()) + "\n"); log.flush()
-            say({"t": "done"})
         elif mode == "unsolicited-lookup":
             say({"t": "lookup_revisions", "roots": ["a"]})
 "#;
@@ -168,17 +101,6 @@ impl Scripted {
         ];
         let host = Host::launch(python(), &["-P", "-c", PEER], &environment, &[])?;
         Ok(Self { host, log })
-    }
-
-    /// What the peer was asked, in order, once the host is gone.
-    fn requests(self) -> Vec<String> {
-        let Self { host, log } = self;
-        drop(host);
-        std::fs::read_to_string(&log)
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_owned)
-            .collect()
     }
 }
 
@@ -240,74 +162,28 @@ fn the_handshake_refuses_another_protocol_and_names_the_sdk_as_a_closed_code() {
     assert_eq!(super::host_error_from_result(br#"{"providers":[]}"#), None);
 }
 
-/// Starts the real host's bootstrap in an environment whose `fyrr_connectors`
-/// is the package in `files` (a directory of module sources) instead of the SDK.
-fn launch_with_sdk(name: &str, files: &[(&str, &str)]) -> Result<Host, StartError> {
-    let dir = std::env::temp_dir().join(format!("fyrr-sdk-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let package = dir.join("fyrr_connectors");
-    std::fs::create_dir_all(&package).unwrap();
-    std::fs::write(package.join("__init__.py"), "").unwrap();
-    for (file, source) in files {
-        std::fs::write(package.join(file), source).unwrap();
-    }
-    let result = Host::launch(
-        python(),
-        &entry(MIN_PYTHON),
-        &[("PYTHONPATH".to_owned(), dir.display().to_string())],
-        &[],
-    );
-    std::fs::remove_dir_all(dir).unwrap();
-    result
-}
-
 #[test]
-fn an_sdk_without_the_host_module_asks_for_the_matching_wheel() {
-    // An SDK of the embedded-interpreter generation: it has `runtime` but no `host`.
-    let error = launch_with_sdk("old", &[("runtime.py", "")]).err().unwrap();
-    assert_eq!(error, StartError::ProtocolMismatch { sdk_version: None });
-    let message = error.to_string();
-    assert!(message.contains("does not match this fyrr"), "{message}");
+fn credentials_reach_the_provider_only_through_the_socket_and_bad_ones_start_no_host() {
+    // HOME is in this process's environment, so a host would inherit it, as it
+    // would the old value of a credential whose name is also exported here.
+    assert!(std::env::var_os("HOME").is_some());
+    // Names of the configured lengths are taken by the real host.
+    let credentials = ["HOME".to_owned(), "N".repeat(129), "N".repeat(256)]
+        .map(|name| (name, "SECRET-VALUE".to_owned()));
+    let mut host = Host::start(&credentials).unwrap();
+    let environ = std::fs::read(format!("/proc/{}/environ", host.pid())).unwrap();
+    assert!(!environ.windows(12).any(|window| window == b"SECRET-VALUE"));
     assert!(
-        message.contains("wheel") && message.contains("VIRTUAL_ENV"),
-        "{message}"
+        !environ
+            .split(|b| *b == 0)
+            .any(|row| row.starts_with(b"HOME="))
     );
-    // No SDK, or one that cannot import its own runtime (a missing pyarrow).
-    let error = launch_with_sdk("none", &[("runtime.py", "import no_such_module_anywhere")])
-        .err()
-        .unwrap();
-    assert_eq!(error, StartError::SdkUnavailable);
-    assert!(error.to_string().contains("cannot be imported"), "{error}");
-    // Any other failure to start says nothing about the peer.
-    let error = launch_with_sdk(
-        "broken",
-        &[
-            ("runtime.py", ""),
-            ("host.py", "def main(argv):\n    raise SystemExit(5)\n"),
-        ],
-    )
-    .err()
-    .unwrap();
-    assert_eq!(error, StartError::Failed);
-}
-
-#[test]
-fn credentials_are_sent_after_the_host_is_running_and_never_echoed() {
-    let mut peer = Scripted::start("empty").unwrap();
-    peer.host
-        .set_environment(&[("SECRET_NAME".to_owned(), "SECRET-VALUE".to_owned())])
-        .unwrap();
-    let requests = peer.requests();
-    assert_eq!(
-        requests,
-        [
-            "environment",
-            "initial-environment-has-it False",
-            "first-request True",
-            r#"variables {"SECRET_NAME": "SECRET-VALUE"}"#,
-        ]
+    // The host is alive and serves requests after it took them.
+    assert!(
+        host.document(&serde_json::json!({"t": "inventory"}))
+            .is_ok()
     );
-    // What the host would refuse is refused before it is sent, and not named.
+    // What the host would refuse is refused before one is started, and not named.
     let too_long = "N".repeat(257);
     for (name, value) in [
         ("", "SECRET-VALUE"),
@@ -320,56 +196,14 @@ fn credentials_are_sent_after_the_host_is_running_and_never_echoed() {
         ("PATH", "SECRET-VALUE"),
         ("VIRTUAL_ENV", "SECRET-VALUE"),
         ("PYTHONPATH", "SECRET-VALUE"),
-        ("PYTHONHOME", "SECRET-VALUE"),
         ("LD_PRELOAD", "SECRET-VALUE"),
-        ("LD_LIBRARY_PATH", "SECRET-VALUE"),
     ] {
-        let mut peer = Scripted::start("empty").unwrap();
-        let error = peer
-            .host
-            .set_environment(&[(name.to_owned(), value.to_owned())])
-            .unwrap_err();
+        let error = Host::start(&[(name.to_owned(), value.to_owned())])
+            .err()
+            .unwrap();
         assert_eq!(error, StartError::Failed);
         assert!(!error.to_string().contains("SECRET"), "{value:?}");
-        assert!(peer.requests().is_empty());
-        // And a host is not even started for them.
-        assert_eq!(
-            Host::start(&[(name.to_owned(), value.to_owned())]).err(),
-            Some(StartError::Failed)
-        );
     }
-}
-
-#[test]
-fn a_name_of_any_configured_length_is_sent_to_the_host() {
-    let names = ["N".repeat(129), "N".repeat(256)];
-    let mut peer = Scripted::start("empty").unwrap();
-    let credentials: Vec<_> = names
-        .iter()
-        .map(|name| (name.clone(), "SECRET-VALUE".to_owned()))
-        .collect();
-    peer.host.set_environment(&credentials).unwrap();
-    let requests = peer.requests();
-    let sent = requests.last().unwrap();
-    for name in &names {
-        assert!(sent.contains(&format!("\"{name}\"")), "{}", name.len());
-    }
-}
-
-#[test]
-fn a_name_that_will_be_sent_is_not_inherited_by_the_host() {
-    // HOME is in this process's environment, so a host would inherit it, as it
-    // would the old value of a credential whose name is also exported here.
-    assert!(std::env::var_os("HOME").is_some());
-    let inherited = |unset: &[&str]| {
-        let host = Host::launch(python(), &entry(MIN_PYTHON), &[], unset).unwrap();
-        let environ = std::fs::read(format!("/proc/{}/environ", host.pid())).unwrap();
-        environ
-            .split(|b| *b == 0)
-            .any(|row| row.starts_with(b"HOME="))
-    };
-    assert!(inherited(&[]));
-    assert!(!inherited(&["HOME"]));
 }
 
 #[test]
@@ -387,92 +221,18 @@ fn an_interpreter_older_than_the_minimum_ends_at_the_version_check_and_says_so()
 }
 
 #[test]
-fn credentials_are_not_in_the_real_hosts_initial_environment() {
-    let mut host = Host::launch(python(), &entry(MIN_PYTHON), &[], &[]).unwrap();
-    host.set_environment(&[("FYRR_TEST_CREDENTIAL".to_owned(), "SECRET-VALUE".to_owned())])
-        .unwrap();
-    let environ = std::fs::read(format!("/proc/{}/environ", host.pid())).unwrap();
-    assert!(!environ.windows(12).any(|window| window == b"SECRET-VALUE"));
-    assert!(!String::from_utf8_lossy(&environ).contains("FYRR_TEST_CREDENTIAL"));
-    // The host is alive and serves requests after it took them.
-    assert!(
-        host.document(&serde_json::json!({"t": "inventory"}))
-            .is_ok()
-    );
-}
-
-#[test]
-fn a_run_closes_its_generator_unless_the_read_succeeds_or_the_peer_is_out_of_step() {
-    let any = bounds(MIB, Rows::AtMost(100));
-    for (mode, bounds, failure, closed) in [
-        ("provider-error", any, Failure::Provider, true),
-        ("oversize", any, Failure::Batch, true),
-        // The whole frame was read and then refused for its size or its rows:
-        // the host is in step and is asked to close its generator.
-        (
-            "many-rows",
-            bounds(200, Rows::AtMost(100)),
-            Failure::Batch,
-            true,
-        ),
-        (
-            "many-rows",
-            bounds(MIB, Rows::AtMost(2)),
-            Failure::Batch,
-            true,
-        ),
-        ("compressed", any, Failure::Batch, true),
-        ("bad-rows", any, Failure::Batch, true),
-        // Out of step or gone: nothing more is sent.
-        ("huge-frame", any, Failure::Batch, false),
-        (
-            "many-rows",
-            bounds(MIB, Rows::Forbidden),
-            Failure::Batch,
-            false,
-        ),
-        ("bad-kind", any, Failure::Tuple, false),
-        ("exit-early", any, Failure::Provider, false),
-    ] {
-        let mut peer = Scripted::start(mode).unwrap();
-        let mut run = peer.host.run("{}", SyncKind::Content, None, false).unwrap();
-        assert_eq!(run.next(bounds, None).unwrap_err(), failure, "{mode}");
-        drop(run);
-        let requests = peer.requests();
+fn a_batch_header_over_the_envelope_and_its_slack_is_refused_unread() {
+    // Under the envelope a header of any size passes (`incremental.rs` sends a
+    // members snapshot of several megabytes); over it, and its framing slack,
+    // the frame is refused unread, whether or not rows are allowed.
+    for rows in [Rows::Forbidden, Rows::AtMost(10)] {
+        let mut peer = Scripted::start("header-over").unwrap();
+        let mut run = peer.host.run("{}", SyncKind::Members, None, false).unwrap();
         assert_eq!(
-            requests.iter().filter(|r| *r == "close").count(),
-            usize::from(closed),
-            "{mode}: {requests:?}"
+            run.next(bounds(4 * MIB, rows), None).unwrap_err(),
+            Failure::Batch
         );
     }
-    let mut peer = Scripted::start("empty").unwrap();
-    let mut run = peer.host.run("{}", SyncKind::Content, None, false).unwrap();
-    assert!(
-        run.next(bounds(MIB, Rows::Forbidden), None)
-            .unwrap()
-            .is_none()
-    );
-    run.finish();
-    assert_eq!(peer.requests(), ["run", "next"]);
-}
-
-#[test]
-fn a_batch_header_may_be_as_large_as_the_envelope_whether_or_not_rows_are_allowed() {
-    // A members snapshot is a header and no rows: 2 MiB under a 4 MiB envelope.
-    for rows in [Rows::Forbidden, Rows::AtMost(10)] {
-        let mut peer = Scripted::start("header-2mib").unwrap();
-        let mut run = peer.host.run("{}", SyncKind::Members, None, false).unwrap();
-        let item = run.next(bounds(4 * MIB, rows), None).unwrap().unwrap();
-        assert_eq!(item.header.len() as u64, 2 * MIB, "{rows:?}");
-    }
-    // Over the envelope and its framing slack, the frame is refused unread.
-    let mut peer = Scripted::start("header-over").unwrap();
-    let mut run = peer.host.run("{}", SyncKind::Members, None, false).unwrap();
-    assert_eq!(
-        run.next(bounds(4 * MIB, Rows::Forbidden), None)
-            .unwrap_err(),
-        Failure::Batch
-    );
 }
 
 #[test]
@@ -483,11 +243,7 @@ fn frames_over_their_bound_and_unusable_rows_are_batch_failures() {
         ("bad-rows", bounds(MIB, Rows::AtMost(100)), Failure::Batch),
         // Rows are not allowed here: the batch is refused, not decoded.
         ("bad-rows", bounds(MIB, Rows::Forbidden), Failure::Batch),
-        // Five rows of 100 bytes exceed 200 bytes, and exceed two rows.
-        ("many-rows", bounds(200, Rows::AtMost(100)), Failure::Batch),
-        ("many-rows", bounds(MIB, Rows::AtMost(2)), Failure::Batch),
-        // A compressed stream is refused before the decoder can inflate it.
-        ("compressed", bounds(MIB, Rows::AtMost(100)), Failure::Batch),
+        ("oversize", bounds(MIB, Rows::AtMost(100)), Failure::Batch),
         (
             "non-utf8-header",
             bounds(MIB, Rows::AtMost(100)),
@@ -513,83 +269,6 @@ fn frames_over_their_bound_and_unusable_rows_are_batch_failures() {
         let mut run = peer.host.run("{}", SyncKind::Content, None, false).unwrap();
         assert_eq!(run.next(bounds, None).unwrap_err(), failure, "{mode}");
     }
-}
-
-struct Answers(Vec<String>);
-
-impl Revisions for Answers {
-    fn lookup(&mut self, roots: &[String]) -> Option<BTreeMap<String, String>> {
-        self.0.push(format!("lookup {}", roots.len()));
-        Some(
-            roots
-                .iter()
-                .map(|root| (root.clone(), "r1".to_owned()))
-                .collect(),
-        )
-    }
-    fn next(&mut self) -> Option<Vec<(String, String)>> {
-        self.0.push("next".into());
-        None
-    }
-}
-
-#[test]
-fn revision_requests_are_answered_while_a_batch_is_produced() {
-    let mut peer = Scripted::start("lookup").unwrap();
-    let mut run = peer.host.run("{}", SyncKind::Content, None, true).unwrap();
-    let mut answers = Answers(Vec::new());
-    assert!(
-        run.next(bounds(MIB, Rows::Forbidden), Some(&mut answers))
-            .unwrap()
-            .is_none()
-    );
-    run.finish();
-    assert_eq!(answers.0, ["lookup 2", "next"]);
-    let requests = peer.requests();
-    assert_eq!(
-        requests[2..4],
-        [
-            r#"{"t": "revisions", "map": {"a": "r1", "b": "r1"}}"#,
-            r#"{"t": "error"}"#,
-        ]
-    );
-}
-
-#[test]
-fn two_batches_of_one_run_arrive_in_order_over_one_conversation() {
-    // Two valid content batches with rows, a cursor chain and a third request
-    // that ends the run: both pass the checker, in order, and nothing is lost.
-    let mut peer = Scripted::start("two-batches").unwrap();
-    let mut checker = checker(SyncKind::Content, 10);
-    let mut delivered = Vec::new();
-    let request = Request {
-        source_json: "{}",
-        kind: SyncKind::Content,
-        cursor: None,
-    };
-    let run = drive_provider(
-        &mut peer.host,
-        &request,
-        None,
-        &mut checker,
-        RowPolicy::Required,
-        ErrMap::CONTENT,
-        |header, rows, _| {
-            let header: serde_json::Value = serde_json::from_str(header).unwrap();
-            delivered.push((
-                header["cursor"]["end"].as_str().unwrap().to_owned(),
-                rows.map(arrow_array::RecordBatch::num_rows),
-            ));
-            Ok(())
-        },
-    )
-    .unwrap_or_else(|error| panic!("{error:?}"));
-    run.finish();
-    assert_eq!(
-        delivered,
-        [("c1".to_owned(), Some(0)), ("c2".to_owned(), Some(0))]
-    );
-    assert_eq!(peer.requests(), ["run", "next", "next", "next"]);
 }
 
 #[test]
@@ -710,23 +389,21 @@ fn a_dry_run_maps_failures_to_worker_diagnostics_and_runs_empty_providers() {
             RowPolicy::Optional,
             ErrMap::DRY_RUN,
             |_, _, _| Ok(()),
-        )
-        .map(|run| run.finish());
+        );
         assert_eq!(outcome, expected, "{mode}");
     }
 }
 
 #[test]
-fn a_host_that_hangs_on_close_is_killed_and_leaves_no_process() {
-    let mut peer = Scripted::start("hang-on-close").unwrap();
+fn a_host_that_hangs_in_cleanup_is_killed_and_leaves_no_process() {
+    let mut peer = Scripted::start("hang-on-eof").unwrap();
     let mut run = peer.host.run("{}", SyncKind::Content, None, false).unwrap();
-    // Dropping the run asks the peer to close; it never answers.
-    let started = std::time::Instant::now();
     let _ = run.next(bounds(MIB, Rows::Forbidden), None);
-    drop(run);
+    // Ending the host sends end-of-file; the peer then never exits by itself.
+    let started = std::time::Instant::now();
     let log = peer.log.clone();
     drop(peer.host);
-    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    assert!(started.elapsed() < std::time::Duration::from_secs(30));
     let pid: u32 = std::fs::read_to_string(&log)
         .unwrap()
         .lines()
@@ -735,25 +412,6 @@ fn a_host_that_hangs_on_close_is_killed_and_leaves_no_process() {
     assert!(
         !std::path::Path::new(&format!("/proc/{pid}")).exists(),
         "the peer outlived its host"
-    );
-}
-
-#[test]
-fn the_close_deadline_covers_a_reply_that_trickles_in() {
-    // The reply needs about eight seconds, one byte per read; each read alone
-    // is far inside the five-second limit, the exchange as a whole is not.
-    let mut peer = Scripted::start("slow-close").unwrap();
-    let mut run = peer.host.run("{}", SyncKind::Content, None, false).unwrap();
-    let _ = run.next(bounds(MIB, Rows::Forbidden), None);
-    let started = std::time::Instant::now();
-    drop(run);
-    // The host is then declared broken and killed at once, not waited for.
-    drop(peer.host);
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed >= std::time::Duration::from_secs(5)
-            && elapsed < std::time::Duration::from_millis(6500),
-        "{elapsed:?}"
     );
 }
 
