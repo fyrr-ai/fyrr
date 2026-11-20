@@ -105,7 +105,6 @@ struct RequestTiming {
     arrived: Instant,
     deadline: Instant,
     cancelled: CancellationToken,
-    version_wait_until: Instant,
     authorization_build_us: u64,
 }
 /// Reserve stdio capacity at decoded arrival, before SDK task scheduling can reorder it.
@@ -296,7 +295,6 @@ pub(crate) async fn cache_test_enqueue(
                 arrived: now,
                 deadline: now + Duration::from_secs(300),
                 cancelled: CancellationToken::new(),
-                version_wait_until: now,
                 authorization_build_us: 0,
             },
         })

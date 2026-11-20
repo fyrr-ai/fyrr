@@ -16,6 +16,14 @@ impl Mcp {
     pub(super) fn open(config: &Path) -> Self {
         Self::open_with_env(config, &[])
     }
+    /// Sends the reader process a signal by name, such as `STOP` or `CONT`.
+    pub(super) fn signal(&self, name: &str) {
+        let status = Command::new("kill")
+            .args([format!("-{name}"), self.child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success(), "kill -{name}");
+    }
     pub(super) fn open_logged(config: &Path, log: &Path) -> Self {
         Self::open_options(config, &[], Some(log))
     }

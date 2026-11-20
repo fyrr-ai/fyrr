@@ -367,7 +367,8 @@ pub struct ResponseMetadata {
     #[serde(default)]
     #[schemars(length(max = 64))]
     pub hidden_sources: Vec<String>,
-    /// The per-request version check served an older version.
+    /// The answer comes from an older version than the serving head the
+    /// reader last read.
     pub stale_version: bool,
     /// UTF-8 bytes omitted by clipping or the payload budget.
     pub omitted_bytes: u64,
