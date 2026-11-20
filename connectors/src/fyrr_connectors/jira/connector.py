@@ -210,7 +210,7 @@ class Jira(Connector[Settings, Scope]):
                 source_revision=revision,
                 metadata=meta,
                 sections=sections,
-                attributes=render.key_attributes(issue),
+                attributes=("jira.key=" + issue["key"],),
                 readers=self.context.readers if self.context.permissions == "fixed" else (),
             )
             encoded = document_changes([change])

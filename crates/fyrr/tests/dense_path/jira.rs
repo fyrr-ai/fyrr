@@ -11,12 +11,10 @@ fn fixture(fake: &Fake, mode: &str) -> (PathBuf, PathBuf, FixtureRoot) {
     // The summary section opens with the issue key (`P1-<id>`); the fake
     // embedder knows only registered texts.
     for row in 0..5 {
-        let vector: Vec<f32> = (0..1024)
-            .map(|d| (((row + 1) * (d + 7)) as f32).sin())
-            .collect();
+        let text = format!("fixture document {row}");
         for id in 101..=104 {
             root.embedding
-                .insert_both(&format!("P1-{id} fixture document {row}"), vector.clone());
+                .insert_both(&format!("P1-{id} {text}"), root.embedding.vector(&text));
         }
     }
     let text = std::fs::read_to_string(&worker).unwrap();

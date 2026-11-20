@@ -73,7 +73,8 @@ key changes, project renames and moves keep their identity.
 - The issue key is the document attribute `jira.key`, exactly as Jira
   returns it. `search` with `attributes: [{"key": "jira.key", "values":
   ["PROJ-123"]}]` returns that issue if the caller may read it, also without
-  a `query` (listed by `updated_at`; set `order` to `updated_at`). A moved
+  a `query` (then `order` must be `updated_at`). Add `sources` when two Jira
+  sites are indexed: keys are unique per site only. A moved
   issue keeps its document and gets its new key when it is next read.
 - Rich text (Atlassian Document Format) is rendered to plain text; mentions
   keep readable labels. Media and smart-link cards are dropped; attachments

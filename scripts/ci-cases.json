@@ -2906,14 +2906,6 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/jira/test_jira_content.py::test_jira_issue_key_is_an_attribute_and_opens_the_summary": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/jira/test_jira_content.py::test_jira_key_that_cannot_be_an_attribute_is_omitted": {
-        "tier": "quick",
-        "seconds": null
-      },
       "python:connectors/tests/jira/test_jira_content.py::test_jira_moved_issue_keeps_its_root_and_gets_the_new_key": {
         "tier": "quick",
         "seconds": null

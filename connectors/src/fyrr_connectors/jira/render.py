@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 
 from ..arrow import Location, Metadata, Section
-from ..validate import MAX_LABELS, ContractViolation, check_attributes
+from ..validate import MAX_LABELS
 from .adf import ADFError, text
 from .comments import visibility_signature
 from .feeds import IssueBinding
@@ -117,16 +117,6 @@ def document(identity, project, issue, comments, context, targets=(), dynamic=Fa
     ]
     digest = hashlib.sha256(json.dumps(canonical, sort_keys=True, default=str).encode()).hexdigest()
     return binding.revision(digest), meta, sections
-
-
-def key_attributes(issue):
-    """The issue key as a `jira.key` attribute; none if it cannot be one."""
-    attribute = "jira.key=" + issue["key"]
-    try:
-        check_attributes([attribute])
-    except ContractViolation:
-        return ()
-    return (attribute,)
 
 
 def number_level(fields):

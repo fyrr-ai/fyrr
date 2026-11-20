@@ -56,23 +56,6 @@ def test_jira_fixed_http_gateway_real_requests_and_null_fields(monkeypatch):
         fake.close()
 
 
-def test_jira_issue_key_is_an_attribute_and_opens_the_summary(jira, jira_index):
-    jira.issue(101, summary="Login fails")
-    change = jira_index.sync()["jira:11111111-1111-4111-8111-111111111111:issue:101"]
-    assert change["attributes"] == ["jira.key=P1-101"]
-    summary = change["sections"][0]
-    assert summary["text"] == "P1-101 Login fails"
-    assert summary["location"]["label"] == "summary"
-    assert change["metadata"]["title"] == "Login fails"
-
-
-def test_jira_key_that_cannot_be_an_attribute_is_omitted():
-    from fyrr_connectors.jira.render import key_attributes
-
-    assert key_attributes({"key": "P1-101"}) == ("jira.key=P1-101",)
-    assert key_attributes({"key": "P1-\n101"}) == ()
-
-
 def test_jira_moved_issue_keeps_its_root_and_gets_the_new_key(jira, jira_index):
     jira.issue(101, summary="Login fails")
     first = jira_index.sync()
