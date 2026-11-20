@@ -16,8 +16,9 @@ names (or the `python3` next to `fyrr` or on `PATH`; see
 discovers providers through the `fyrr.connectors` entry point group. Each
 isolated worker process starts its own host and runs the providers in it.
 The bundled providers ship in the `fyrr-connectors` package (a wheel that
-each release publishes; the SDK is not on a package index) and in the `fyrr`
-image; each cloud provider needs its optional extra (`google-drive`,
+each release publishes; the package index has only `fyrr-connectors` 0.1.0,
+built for the embedded interpreter, which this fyrr does not run, so install
+the wheel of this release) and in the `fyrr` image; each cloud provider needs its optional extra (`google-drive`,
 `notion`, `github`, `slack`, `jira`), which the image installs. Without the
 package, the commands that need providers stop with a message that says to
 install the release's wheel, with the extras you need, into a virtual

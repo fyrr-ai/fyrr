@@ -122,12 +122,13 @@ A GLIBC version alone does not guarantee compatibility: the interpreter and
 all required libraries must also be available.
 
 To sync from a source, install the connector SDK into a Python virtual
-environment and let `fyrr` find it. The SDK is not published on a package
-index: each release ships its wheel (`fyrr_connectors-<version>-py3-none-any.whl`)
-next to the binaries, and the wheel of the release that matches your `fyrr`
-is the one to install (the host refuses an SDK that speaks another
-provider-host protocol). Install it with the extras of the provider types you
-use:
+environment and let `fyrr` find it. The package index has
+`fyrr-connectors` 0.1.0, built for the embedded interpreter of earlier fyrr
+versions and without the provider host; this fyrr needs the SDK wheel of its
+own release (0.1.1 or newer), which ships next to the binaries
+(`fyrr_connectors-<version>-py3-none-any.whl`). Install that wheel, not the
+package from the index (the host refuses an SDK that speaks another
+provider-host protocol), with the extras of the provider types you use:
 
 ```sh
 python3.13 -m venv /opt/fyrr-connectors

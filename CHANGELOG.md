@@ -35,9 +35,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   the provider checks of `config check` and `config schema`) start it in a
   Python host process, from `$VIRTUAL_ENV/bin/python`, a `python3` next to
   the `fyrr` executable or `python3` on `PATH`, and without one they stop
-  with a message that says to install the SDK wheel of the release (the
-  SDK is not on a package index) into a virtual environment and set
-  `VIRTUAL_ENV`. A worker starts the host, so no Python runs in the process
+  with a message that says to install the SDK wheel of the release into a
+  virtual environment and set `VIRTUAL_ENV` (the package index has
+  `fyrr-connectors` 0.1.0, built for the embedded interpreter, which this
+  fyrr cannot use; it needs the wheel of its own release, 0.1.1 or newer). A worker starts the host, so no Python runs in the process
   that prints the message. An interpreter in the current directory is never
   run. See
   [downloadable binaries](docs/deployment.md#downloadable-binaries).
@@ -55,9 +56,15 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   [writing a provider](docs/connectors/authoring.md#how-a-provider-runs)):
   each sync kind runs in a fresh Python process, so module-level state no
   longer carries from one kind to the next; the revision callbacks of a
-  prepared run work only while a batch is being produced; an aborting
-  provider reports `the provider failed`; the memory limit applies per
-  process.
+  prepared run work only while a batch is being produced, and a failed one
+  raises `RuntimeError("host_callback_failed")`; an aborting provider reports
+  `the provider failed`; the memory limit applies per process; cleanup after
+  an early stop has five seconds before the host is killed; `sys.argv` is
+  `['-c']` and `sys.executable` is the interpreter fyrr found; `.pth` files and
+  `sitecustomize` run after the protocol socket is detached and inherited
+  descriptors are closed; a process forked by provider code does not hold the
+  socket; field-level Arrow metadata is refused, and an added nullable column
+  may not use a dictionary or view type.
 - Content rows reach the writer as Arrow IPC streams instead of through the
   Arrow C Data Interface, which costs one copy of each batch. The writer
   inspects a stream before decoding it and refuses compression, dictionary
@@ -66,11 +73,22 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `writer.envelope_max_bytes`, as before.
 - Stored writer credentials a provider needs are sent to the host after it
   starts and set in its `os.environ` before any provider code is imported,
-  as before; they are never in the host's initial environment.
-- A provider host holds only stdio on `/dev/null` and its protocol socket,
-  which neither the provider nor a process it starts inherits.
+  as before; their names are removed from the environment the host inherits,
+  so they are never in its initial environment. A credential may not be named
+  `PATH`, `VIRTUAL_ENV` or anything starting with `PYTHON` or `LD_`.
+- The Python interpreter starts without site code, and a bootstrap built from
+  built-in modules settles the descriptors first: the host holds only stdio on
+  `/dev/null` and its protocol socket, which neither the provider nor a
+  process it starts inherits, before `.pth` files, `sitecustomize` or a
+  provider import run. An interpreter older than Python 3.13 now says so
+  instead of failing to start.
+- A stream that makes Arrow's decoder panic is a refused batch, and a schema
+  that declares more fields than the contract's plus a small allowance is
+  refused before it is converted.
 - Version strings that the Python side reports (the SDK's and each
-  provider's) are shown only when they have the shape of a version.
+  provider's) are shown only when they are built from numbers and a few fixed
+  suffixes (`a`, `b`, `rc`, `post`, `dev`). `fyrr config check` no longer prints
+  the name of a field that a provider's own schema requires.
 - `writer sync --dry-run` with no configured sources no longer starts a
   worker.
 - The reader shares one immutable admission per subject between its

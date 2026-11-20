@@ -132,20 +132,43 @@ worker's process group, so the worker's timeout kills it and every
 descendant, and the supervisor reaps what is left. Each of the two processes
 has the memory limit (`writer.worker_memory_max_bytes`, applied per process,
 so provider memory is bounded as before), no core dumps and no inherited
-stdin, stdout or stderr. The worker and the host talk over a private socket;
-every frame is size-bounded before it is read, and an Arrow stream is
-inspected before any of it is decoded (one schema that is the contract's, with
-no metadata beyond the contract's two entries, and one uncompressed record
-batch whose declared rows and buffer bytes are within the limits; compression
-and dictionary batches are refused) and validated when decoded. The host
-receives the protocol socket as stdin, moves it to a close-on-exec descriptor
-and closes every other, so neither the provider nor a process it starts holds
-it. Stored credentials are sent after the host starts and set in its
-environment before any provider code is imported, so they are not in the
-process's initial environment. A malformed, oversized or out-of-order frame, a host that exits
-early and a host that hangs all end in fixed diagnostic codes, never Python
-exception text. Results return over a size-capped socket. A crash or hang
-fails only that source.
+stdin, stdout or stderr. The worker and the host talk over a private socket.
+
+What the worker guarantees about what the host sends:
+
+- Every frame's length is bounded before anything is allocated for it, and
+  an Arrow stream's message lengths, row count and buffer bytes are bounded
+  before it is decoded.
+- The stream is inspected before it is decoded: one schema message and one
+  uncompressed record batch. Compression and dictionary batches are refused.
+  The schema's fields (at every nesting level) are counted against the
+  contract's own plus a small allowance before it is converted; it carries
+  no metadata beyond the contract's two entries and no field metadata; it
+  must be the contract's schema, with only nullable additions.
+- The decoder is not given a validator of Arrow's layout rules. Inspection,
+  conversion and decoding run under one panic guard instead: a stream that
+  makes any of them panic is a refused batch, with the same closed diagnostic
+  as any other refused batch. The panic message goes to the worker's stderr,
+  which is `/dev/null`.
+- Memory exhaustion is not caught: a worker or host that exhausts its memory
+  limit ends, and the supervisor reports the closed diagnostic for a worker
+  that failed, as it does for a provider that crashes.
+- A malformed, oversized or out-of-order frame, a host that exits early and
+  a host that hangs all end in fixed diagnostic codes, never Python
+  exception text, and none carries a value the host chose except a version
+  built from numbers and a few fixed suffixes. Results return over a
+  size-capped socket. A crash or hang fails only that source.
+
+What the host guarantees about itself: the interpreter starts without site
+code, and a bootstrap that uses only built-in modules moves the protocol
+socket (its stdin) to a close-on-exec descriptor, points stdin at `/dev/null`
+and closes every other inherited descriptor, before `.pth` files,
+`sitecustomize` or any provider import run. A process that provider code
+forks closes the socket too. Stored credentials are sent after the host
+starts and set in its environment before any provider code is imported; their
+names are removed from the environment the host inherits, so they are not in
+the process's initial environment, and a credential may not be named `PATH`,
+`VIRTUAL_ENV` or anything starting with `PYTHON` or `LD_`.
 
 The [deployment guide](deployment.md#topology) covers reader hosts; the
 [reader settings](reader-writer.md#reader) specify mirror ownership and modes.
