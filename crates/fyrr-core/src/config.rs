@@ -956,6 +956,31 @@ pub fn host_env_refusal(name: &str) -> Option<&'static str> {
     }
 }
 
+/// The environment references (`{ env = "NAME" }`) in a provider's `settings`
+/// or `scope`, as (path, name): the one walk that `config check` and the writer
+/// worker, which delivers the stored credentials, both use.
+pub fn env_references(path: &str, value: &Value, found: &mut Vec<(String, String)>) {
+    match value {
+        Value::Object(map) => {
+            if map.len() == 1
+                && let Some(name) = map.get("env").and_then(Value::as_str)
+            {
+                found.push((path.to_owned(), name.to_owned()));
+            } else {
+                for (key, child) in map {
+                    env_references(&format!("{path}.{key}"), child, found);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                env_references(&format!("{path}[{index}]"), child, found);
+            }
+        }
+        _ => {}
+    }
+}
+
 impl<'de> Deserialize<'de> for SecretRef {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct SecretVisitor;

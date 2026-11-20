@@ -744,30 +744,6 @@ fn writer_credentials(config: &Config, error: &mut impl FnMut(&str, String)) {
     }
 }
 
-/// The environment references (`{ env = "NAME" }`) in a provider table, with
-/// the path of each, found the way the worker finds the credentials to deliver.
-fn env_references(path: &str, value: &Value, found: &mut Vec<(String, String)>) {
-    match value {
-        Value::Object(map) => {
-            if map.len() == 1
-                && let Some(name) = map.get("env").and_then(Value::as_str)
-            {
-                found.push((path.to_owned(), name.to_owned()));
-            } else {
-                for (key, child) in map {
-                    env_references(&format!("{path}.{key}"), child, found);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for (index, child) in items.iter().enumerate() {
-                env_references(&format!("{path}[{index}]"), child, found);
-            }
-        }
-        _ => {}
-    }
-}
-
 fn sources(config: &Config, error: &mut impl FnMut(&str, String)) -> (ConfigDuration, String) {
     let writer = &config.writer;
     let mut ids = BTreeSet::new();
