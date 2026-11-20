@@ -550,32 +550,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_published_directory_clock_binds_a_reader_without_a_directory_provider() {
+    async fn a_bound_api_key_is_held_to_the_published_directory_clock() {
         let mut test = Fixture::new().await;
-        assert_eq!(
-            test.config.identity.directory.provider,
-            fyrr_core::config::DirectoryProvider::None
-        );
-        for api_key in [false, true] {
-            test.subject.api_key = api_key;
-            // No timestamp: a snapshot imported by hand, served as before.
-            test.head.freshness.directory = None;
-            test.publish_head().await;
-            test.authorize().await.unwrap();
-            // A fresh attestation serves, a stale one refuses the namespace,
-            // whatever this reader's own provider setting says.
-            test.head.freshness.directory = Some(fyrr_core::clock::now());
-            test.publish_head().await;
-            test.authorize().await.unwrap();
-            test.head.freshness.directory =
-                Some(fyrr_core::clock::now() - chrono::Duration::days(30));
-            test.publish_head().await;
-            assert_eq!(
-                test.authorize().await,
-                Err(AuthorizationUnavailable),
-                "{api_key}"
-            );
-        }
+        test.subject.api_key = true;
+        // No timestamp: a snapshot imported by hand, served as before.
+        test.head.freshness.directory = None;
+        test.publish_head().await;
+        test.authorize().await.unwrap();
+        // A fresh attestation serves, a stale one refuses the namespace.
+        test.head.freshness.directory = Some(fyrr_core::clock::now());
+        test.publish_head().await;
+        test.authorize().await.unwrap();
+        test.head.freshness.directory = Some(fyrr_core::clock::now() - chrono::Duration::days(30));
+        test.publish_head().await;
+        assert_eq!(test.authorize().await, Err(AuthorizationUnavailable));
     }
 
     #[tokio::test]
@@ -592,6 +580,27 @@ mod tests {
         test.head.freshness.directory = Some(fyrr_core::clock::now());
         test.publish_head().await;
         test.authorize().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_published_directory_clock_binds_a_reader_without_a_directory_provider() {
+        let mut test = Fixture::new().await;
+        assert_eq!(
+            test.config.identity.directory.provider,
+            fyrr_core::config::DirectoryProvider::None
+        );
+        // No timestamp: a snapshot imported by hand, served as before.
+        test.head.freshness.directory = None;
+        test.publish_head().await;
+        test.authorize().await.unwrap();
+        // A fresh attestation serves, a stale one refuses the namespace,
+        // whatever this reader's own provider setting says.
+        test.head.freshness.directory = Some(fyrr_core::clock::now());
+        test.publish_head().await;
+        test.authorize().await.unwrap();
+        test.head.freshness.directory = Some(fyrr_core::clock::now() - chrono::Duration::days(30));
+        test.publish_head().await;
+        assert_eq!(test.authorize().await, Err(AuthorizationUnavailable));
     }
 
     #[tokio::test]

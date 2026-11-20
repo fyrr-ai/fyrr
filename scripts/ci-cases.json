@@ -31,7 +31,7 @@
         "tier": "quick",
         "seconds": 1.0
       },
-      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::the_published_directory_clock_binds_a_reader_without_a_directory_provider": {
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::a_bound_api_key_is_held_to_the_published_directory_clock": {
         "tier": "quick",
         "seconds": 1.0
       },
@@ -580,6 +580,10 @@
         "seconds": 0.001
       },
       "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::cached_identity_never_skips_token_or_directory_expiry": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::the_published_directory_clock_binds_a_reader_without_a_directory_provider": {
         "tier": "quick",
         "seconds": 0.001
       },
@@ -1620,10 +1624,6 @@
         "tier": "full",
         "seconds": 100.0
       },
-      "full:fyrr:test:dense_path/api_keys::a_manual_directory_import_without_a_provider_withdraws_the_published_freshness_on_storage": {
-        "tier": "full",
-        "seconds": 100.0
-      },
       "full:fyrr:test:dense_path/api_keys::api_key_expiry_while_the_reranker_connection_is_set_up_sends_no_text_on_storage": {
         "tier": "full",
         "seconds": 100.0
@@ -1647,6 +1647,10 @@
       "full:fyrr:test:dense_path/http_mcp::identity_http_deadline_cancellation_busy_inflight_refusal_and_active_drain_on_storage": {
         "tier": "full",
         "seconds": 156.747
+      },
+      "full:fyrr:test:dense_path/http_mcp::a_published_directory_clock_binds_a_reader_without_a_directory_provider_on_storage": {
+        "tier": "full",
+        "seconds": 100.0
       },
       "full:fyrr:test:dense_path/identity::identity_alias_collision_link_revoke_and_idempotence_on_storage": {
         "tier": "full",

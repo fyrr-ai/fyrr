@@ -1567,66 +1567,6 @@ async fn a_reader_without_a_directory_provider_still_refuses_a_stale_published_d
 
 #[tokio::test]
 #[ignore = "real writer, HTTP MCP executable and local storage; scripts/ci"]
-async fn a_manual_directory_import_without_a_provider_withdraws_the_published_freshness_on_storage()
-{
-    let keys = [Key {
-        name: "nm-manual-q7x",
-        variable: "FYRR_TEST_API_KEY_MANUAL",
-        secret: secret(61),
-        grant: "user='http-1@example.test'",
-    }];
-    let deployment = Deployment::new().await;
-    let published = deployment.publish(&keys);
-    assert!(published.status.success(), "{}", report(&published));
-    // The deployment ran a provider: its head carries a directory timestamp.
-    let (head, _) = artifact(&deployment.commit).await;
-    assert!(head.freshness.directory.is_some());
-    let import = |config: &Path| {
-        let mut snapshot = deployment.snapshot.clone();
-        snapshot.built_at = fyrr_core::clock::now();
-        let path = deployment.root.join("manual-directory.json");
-        std::fs::write(&path, write_contract(&snapshot)).unwrap();
-        let imported = keyed(host_command(config), &keys)
-            .args(["writer", "directory", "--snapshot"])
-            .arg(path)
-            .output()
-            .unwrap();
-        assert!(imported.status.success(), "{}", report(&imported));
-    };
-    // A provider is configured: the import is no proof and keeps what the
-    // provider attested.
-    import(&deployment.commit);
-    let (head, _) = artifact(&deployment.commit).await;
-    assert!(head.freshness.directory.is_some());
-    // The deployment moved to manual imports: its import attests nothing, and
-    // the old timestamp does not outlive it.
-    let manual = deployment.without_directory(&deployment.commit);
-    import(&manual);
-    let (head, _) = artifact(&manual).await;
-    assert_eq!(head.freshness.directory, None);
-    // A reader without a provider serves the namespace, however long ago the
-    // provider last pulled: the head no longer carries a directory clock.
-    let own = deployment.without_directory(&deployment.worker);
-    let boundary = Boundary::new(&own, &deployment.root);
-    let reader = Reader::start(
-        &boundary.config,
-        &deployment.root,
-        &deployment.issuer,
-        1000,
-        1000,
-    )
-    .await;
-    let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
-    assert_eq!(
-        roots(&reader.call(&keys[0].secret, 1, "search", search).await),
-        [deployment.doc(1)]
-    );
-    let mut reader = reader;
-    reader.stop().await;
-}
-
-#[tokio::test]
-#[ignore = "real writer, HTTP MCP executable and local storage; scripts/ci"]
 async fn a_user_key_is_refused_once_a_directory_sync_deactivates_its_user_on_storage() {
     let keys = [
         Key {
