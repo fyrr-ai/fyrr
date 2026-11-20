@@ -2,8 +2,9 @@
 //! against the synthetic Notion of `connectors/tests/notion/fake_notion.py`
 //! served over HTTP.
 //!
-//! Page texts are `fixture document N`, inputs registered with the fixture's embedding service
-//! embeddings; the source's `document_max_bytes` is 64 bytes.
+//! Page texts are `fixture document N`. A standalone page is indexed as its
+//! title above that text, which the fixture's embedding service knows by the
+//! vector of the text itself. The source's `document_max_bytes` is 64 bytes.
 use super::coordination::{committer_host, worker_command, worker_sync};
 use super::incremental::{publish, source_roots};
 use super::*;
@@ -21,8 +22,15 @@ impl Fake {
         Self { server, token }
     }
 
-    /// A page with one paragraph; its ID.
-    fn page(&self, name: &str, parent: &str, text: &str) -> String {
+    /// A page with one paragraph, indexed as its name above `text`; its ID.
+    fn page(&self, root: &FixtureRoot, name: &str, parent: &str, text: &str) -> String {
+        root.embedding
+            .insert_both(&format!("{name}\n\n{text}"), root.embedding.vector(text));
+        self.unindexed_page(name, parent, text)
+    }
+
+    /// A page the worker never embeds: its text is over the source's limit.
+    fn unindexed_page(&self, name: &str, parent: &str, text: &str) -> String {
         let blocks = json!([{"kind": "paragraph", "text": text}]);
         self.server
             .call(
@@ -111,15 +119,50 @@ fn sorted(mut ids: Vec<String>) -> Vec<String> {
     ids
 }
 
+/// A word only in a standalone page's title finds the page by full-text
+/// search alone: the query has no vector, so the dense lane is degraded.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn notion_title_only_word_is_found_by_lexical_search_on_storage() {
+    let fake = Fake::start();
+    let (worker, commit, root) = fixture(&fake);
+    let blocks = json!([{"kind": "paragraph", "text": "fixture document 9"}]);
+    let page = fake.server.call(
+        "page",
+        json!({"name": "quokka", "parent": "root", "title": "Rename the quokka marshaller",
+               "blocks": blocks}),
+    );
+    root.embedding.insert_both(
+        "Rename the quokka marshaller\n\nfixture document 9",
+        root.embedding.vector("fixture document 9"),
+    );
+    synced(&worker, &fake, &["--kind", "content"]);
+    publish(&commit);
+    let result = super::tools::Mcp::open(&worker).call(
+        "search",
+        json!({"sources": ["notion"], "query": "quokka", "limit": 10, "output": "metadata"}),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    let body = &result["structuredContent"];
+    assert_eq!(body["metadata"]["degraded"], json!(["dense"]));
+    let roots: Vec<_> = body["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["root_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(roots, [page.as_str().unwrap()]);
+}
+
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn notion_content_changes_quarantine_and_reconcile_on_storage() {
     let fake = Fake::start();
-    let (worker, commit, _root) = fixture(&fake);
-    let early = fake.page("early", "root", "fixture document 0");
-    let plan = fake.page("plan", "root", "fixture document 1");
-    let notes = fake.page("notes", "plan", "fixture document 2");
-    let late = fake.page("late", "root", "fixture document 3");
+    let (worker, commit, root) = fixture(&fake);
+    let early = fake.page(&root, "early", "root", "fixture document 0");
+    let plan = fake.page(&root, "plan", "root", "fixture document 1");
+    let notes = fake.page(&root, "notes", "plan", "fixture document 2");
+    let late = fake.page(&root, "late", "root", "fixture document 3");
 
     // The first sync fails at the last page, with `notes` read but not yet
     // handed over. What was acknowledged stays, and the next run continues
@@ -162,7 +205,7 @@ async fn notion_content_changes_quarantine_and_reconcile_on_storage() {
     );
 
     // Edit, a database row, trash; an oversized page is quarantined and the sync goes on.
-    fake.page("plan", "root", "fixture document 4");
+    fake.page(&root, "plan", "root", "fixture document 4");
     fake.server
         .call("database", json!({"name": "tasks", "parent": "root"}));
     let task = fake
@@ -174,7 +217,7 @@ async fn notion_content_changes_quarantine_and_reconcile_on_storage() {
         .as_str()
         .unwrap()
         .to_owned();
-    fake.page("huge", "root", &"fixture document 6 ".repeat(8));
+    fake.unindexed_page("huge", "root", &"fixture document 6 ".repeat(8));
     fake.server.call("trash", json!({"name": "early"}));
     let report = synced(&worker, &fake, &["--kind", "content"]);
     assert_eq!(report["stats"]["quarantined"], 1);

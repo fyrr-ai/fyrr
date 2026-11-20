@@ -173,6 +173,8 @@ class Text:
         self.invalid = False
         self._sections: list[Section] = []
         self._label: str | None = None
+        #: The page's title until it has opened the first section.
+        self._title: str | None = None
         #: Each line with how it joins the one before: 0 after a blank line,
         #: 1 directly after another list or table line, 2 directly (nested).
         self._lines: list[tuple[int, str]] = []
@@ -204,9 +206,27 @@ class Text:
             pieces.append(("\n" if joined else "\n\n") * bool(index) + text)
         body = "".join(pieces)
         if body.strip():
-            location = Location(kind=kind, label=self._label, index=len(self._sections))
-            self._sections.append(Section(text=body, location=location))
+            body = self._opening(body)
+            if self._left < 0:
+                self.oversized = True
+                self._sections.clear()
+            else:
+                location = Location(kind=kind, label=self._label, index=len(self._sections))
+                self._sections.append(Section(text=body, location=location))
         self._lines.clear()
+
+    def _opening(self, body: str) -> str:
+        """The first section's text with the title as its opening line, unless
+        that line already is the title. The title counts toward the limit."""
+        title, self._title = self._title, None
+        if not title or body.partition("\n")[0].strip().lstrip("#").strip() == title:
+            return body
+        self._left -= len(title.encode()) + 2
+        return f"{title}\n\n{body}"
+
+    def title(self, title: str | None) -> None:
+        """A standalone page's title, searchable as the first line of its first section."""
+        self._title = title
 
     def properties(self, properties: object) -> None:
         """A database row's properties, as the first section."""
@@ -239,7 +259,7 @@ class Text:
     def sections(self) -> list[Section]:
         if self.invalid:
             raise InvalidText
+        self._close()
         if self.oversized:
             raise Oversized
-        self._close()
         return list(self._sections)

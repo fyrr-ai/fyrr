@@ -13,7 +13,7 @@
         {
           "op": "upsert",
           "root_id": "doc-plan",
-          "source_revision": "7846ec8ff7a1f49e6c4a233fee1262ed",
+          "source_revision": "6f63ec09325452d33d6a48f91e3fe39e",
           "revision_order": 1,
           "readers": [
             "grp:staff"
@@ -35,7 +35,7 @@
           "attributes": [],
           "sections": [
             {
-              "text": "Draft.",
+              "text": "Plan 2026\n\nDraft.",
               "location": {
                 "kind": "heading",
                 "index": 0
@@ -62,7 +62,7 @@
         {
           "op": "upsert",
           "root_id": "sheet-budget",
-          "source_revision": "acc6fc0f1ac0b4486447696cf84bd3f3",
+          "source_revision": "a97bdc7aebee3f48c40251edecc71528",
           "revision_order": 1,
           "readers": [
             "grp:staff"
@@ -84,6 +84,12 @@
           "attributes": [],
           "sections": [
             {
+              "text": "Budget",
+              "location": {
+                "kind": "title"
+              }
+            },
+            {
               "text": "item | eur\nrent | 1200\ntea | 7.5",
               "location": {
                 "kind": "sheet",
@@ -104,7 +110,7 @@
         {
           "op": "upsert",
           "root_id": "deck-roadmap",
-          "source_revision": "d32b8ca0880e8901aebe92619b75510a",
+          "source_revision": "77c36da559026dd7dae55fe52d22462f",
           "revision_order": 1,
           "readers": [
             "grp:staff"
@@ -126,6 +132,12 @@
           },
           "attributes": [],
           "sections": [
+            {
+              "text": "Roadmap",
+              "location": {
+                "kind": "title"
+              }
+            },
             {
               "text": "Roadmap\n2026",
               "location": {

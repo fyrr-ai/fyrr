@@ -43,6 +43,12 @@ Authors use `created_by.name` when present, otherwise null.
   the dashed page ID; `source_type` is `notion-page` or `notion-row`;
   `project` is the root page's title; `connector_map` holds the page, root
   and database IDs.
+- A standalone page's title is the first line of its first section, above
+  its blocks, so a word that occurs only in a title is searchable and the
+  title is part of the first chunk's embedding. A page whose first line
+  already is the title is not repeated, and the title counts toward
+  `document_max_bytes`. A database row needs none: its `properties` section
+  starts with the title property.
 - Blocks render in document order with one section per heading. Rich text
   keeps light Markdown marks for lists, to-dos, quotes, code, equations and
   table rows; bookmarks and embeds give their URL; media and file blocks

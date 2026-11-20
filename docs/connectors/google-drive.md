@@ -56,6 +56,11 @@ source that already synced needs `fyrr writer sync --full`.
   header row; Slides as one section per slide (speaker notes are not
   exported). Embedded images are dropped. Other file types and shortcuts
   are ignored; a document without text is not published.
+- The file name is searchable. In a Doc it is the first line of the first
+  section, above the text, unless that line already is the name; in a Sheet
+  or a Slides deck it is a section of its own (location kind `title`) before
+  the first sheet or slide, so their text is untouched. The name counts
+  toward `document_max_bytes`.
 - Changes come from the Drive changes feed, one feed per user and per
   shared drive; the start token is taken before the first full listing so
   nothing is lost. A sharing-only change does not re-export the file.

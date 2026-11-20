@@ -51,7 +51,7 @@ from .feeds import (
 from .permissions import PERMISSION_FIELDS, principals, readers, revision
 
 #: Bumped when the exported text of an unchanged file would differ.
-EXPORT_FORMAT = "1"
+EXPORT_FORMAT = "2"
 EXPORT_WORKERS = 8
 #: The worker's revision lookup takes at most this many documents.
 LOOKUP_ROWS = 256
@@ -176,7 +176,7 @@ class GoogleDrive(Connector[Settings, Scope]):
         export_type, parse, _, _ = FORMATS[file["mimeType"]]
         try:
             data = self._client.export(feed.subject, file["id"], export_type)
-            return parse(data, self.context.limits.document_max_bytes)
+            return parse(data, self.context.limits.document_max_bytes, clean(file.get("name", "")))
         except Unexportable:
             return QUARANTINE
         except ApiError as error:

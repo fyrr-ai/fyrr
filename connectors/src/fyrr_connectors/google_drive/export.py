@@ -4,6 +4,11 @@ Pure parsers over `files.export` bytes: Docs as Markdown split at headings,
 Sheets as xlsx with every sheet in row groups that repeat the header row,
 Slides as pptx with one section per slide. A document that cannot be parsed
 or exceeds `limit` text bytes raises `Unexportable` and is quarantined.
+
+The file name is searchable text, counted toward `limit`. A Doc's name opens
+its first section; a sheet's or a deck's own text is a table or slide
+content, so its name is a section of its own before the first one. A file
+without text has no sections, whatever its name.
 """
 
 from __future__ import annotations
@@ -70,7 +75,7 @@ class _Budget:
         return text
 
 
-def document(data: bytes, limit: int) -> list[Section]:
+def document(data: bytes, limit: int, title: str | None = None) -> list[Section]:
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -82,8 +87,12 @@ def document(data: bytes, limit: int) -> list[Section]:
     fenced = False
 
     def close() -> None:
+        nonlocal title
         body = "\n".join(lines).strip()
         if body:
+            if title and body.partition("\n")[0].strip().lstrip("#").strip() != title:
+                body = f"{title}\n\n{body}"
+            title = None
             location = Location(kind="heading", label=label, index=len(sections))
             sections.append(Section(text=budget.take(body), location=location))
         lines.clear()
@@ -150,7 +159,14 @@ def _groups(rows: Iterator[tuple[int, str]]) -> Iterator[tuple[int, str]]:
     yield start, "\n".join(group)
 
 
-def spreadsheet(data: bytes, limit: int) -> list[Section]:
+def _named(title: str | None, budget: _Budget, sections: list[Section]) -> None:
+    """The file name as the first section, when there is text to name."""
+    if title and sections:
+        location = Location(kind="title")
+        sections.insert(0, Section(text=budget.take(title), location=location))
+
+
+def spreadsheet(data: bytes, limit: int, title: str | None = None) -> list[Section]:
     _archive(data).close()
     budget, cells_left = _Budget(limit), _Budget(WORKBOOK_MAX_CELLS)
     sections: list[Section] = []
@@ -161,6 +177,7 @@ def spreadsheet(data: bytes, limit: int) -> list[Section]:
                 location = Location(kind="sheet", label=clean(sheet.title), index=start)
                 sections.append(Section(text=budget.take(text), location=location))
         workbook.close()
+        _named(title, budget, sections)
     except Unexportable:
         raise
     except Exception:
@@ -168,7 +185,7 @@ def spreadsheet(data: bytes, limit: int) -> list[Section]:
     return sections
 
 
-def presentation(data: bytes, limit: int) -> list[Section]:
+def presentation(data: bytes, limit: int, title: str | None = None) -> list[Section]:
     budget = _Budget(limit)
     sections: list[Section] = []
     try:
@@ -187,6 +204,7 @@ def presentation(data: bytes, limit: int) -> list[Section]:
                 if text:
                     location = Location(kind="slide", index=number)
                     sections.append(Section(text=budget.take(text), location=location))
+        _named(title, budget, sections)
     except Unexportable:
         raise
     except (KeyError, ElementTree.ParseError, zipfile.BadZipFile):
@@ -195,7 +213,7 @@ def presentation(data: bytes, limit: int) -> list[Section]:
 
 
 #: Google-native MIME type -> (export MIME type, parser, source type, URL part).
-FORMATS: dict[str, tuple[str, Callable[[bytes, int], list[Section]], str, str]] = {
+FORMATS: dict[str, tuple[str, Callable[[bytes, int, str | None], list[Section]], str, str]] = {
     MIME_TYPES["gdoc"]: ("text/markdown", document, "google-doc", "document"),
     MIME_TYPES["gsheet"]: (
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

@@ -93,6 +93,21 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   their rows through the scalar indexes too, instead of passing the
   subject's rows to Lance as a row mask. Results and authorization are
   unchanged.
+- The Notion and Google Drive connectors index titles. A standalone Notion
+  page's title and a Google Doc's file name are the first line of the first
+  section; a Sheet's or Slides deck's file name is a section of its own
+  before the first one. A word that occurs only in a title is found by
+  full-text search. The title counts toward `document_max_bytes`: a page or
+  file that was just under the limit is quarantined when it is read again
+  and keeps its last good revision until the limit is raised.
+- This changes the revision of every Notion page and Drive file, but only
+  those edited since the last sync (Notion: down to one hour before its
+  watermark; Drive: reported by the changes feed) are read again. The rest
+  keep their old text until edited. `fyrr writer sync notion --kind content
+  --full` and `fyrr writer sync drive --kind content --full`, each followed
+  by a commit, republish all of them in one pass. See
+  [Notion documents](docs/connectors/notion.md#documents) and
+  [Google Drive documents](docs/connectors/google-drive.md#documents).
 
 ### Security
 
