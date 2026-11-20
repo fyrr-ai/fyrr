@@ -51,11 +51,14 @@ Three parts of the contract matter for unattended agents:
    (`reader.mirror_path`).
 
    ```sh
-   claude mcp add fyrr -e FYRR_IDENTITY_KEY="$FYRR_IDENTITY_KEY" -- fyrr --config /etc/fyrr/fyrr.toml reader serve
+   claude mcp add fyrr -- fyrr --config /etc/fyrr/fyrr.toml reader serve
    ```
 
-   Any MCP client works the same way over stdio. [Connect an agent](connect.md) has the commands for Claude Code and
-   Codex.
+   Start Claude Code with `FYRR_IDENTITY_KEY` exported; it passes its
+   environment to the reader, so the key is not stored in its settings.
+   Another stdio MCP client works the same way once it is configured to
+   pass the variable to the reader. [Connect an agent](connect.md) has the
+   commands for Claude Code and Codex.
 
 When a sandbox must not hold bucket credentials, run one HTTP reader for the
 fleet instead. Each request then carries an OIDC access token; see

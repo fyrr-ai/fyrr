@@ -118,10 +118,11 @@ After setup in the quickstart:
 fyrr writer namespace create
 fyrr writer sync
 fyrr writer commit
-claude mcp add fyrr --scope user -e FYRR_IDENTITY_KEY="$FYRR_IDENTITY_KEY" -- "$PWD/target/debug/fyrr" --config "$FYRR_CONFIG" reader serve
+claude mcp add fyrr --scope user -- "$PWD/target/debug/fyrr" --config "$FYRR_CONFIG" reader serve
 ```
 
-Ask Claude:
+Start Claude Code from the same shell, so that the reader gets
+`FYRR_IDENTITY_KEY`, and ask:
 
 > Use fyrr search and fetch to answer: How do I restore a backup? Quote the handbook.
 

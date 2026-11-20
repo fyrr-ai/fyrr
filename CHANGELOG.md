@@ -64,6 +64,17 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   subject's rows to Lance as a row mask. Results and authorization are
   unchanged.
 
+### Security
+
+- The README, quickstart and software factory guide no longer store
+  `FYRR_IDENTITY_KEY` in Claude Code's settings: they add the reader
+  without `-e` and start Claude Code from a shell with the key exported.
+  If you added fyrr with `-e FYRR_IDENTITY_KEY=...`, remove it and add it
+  again as the updated docs show: after the README or quickstart, run
+  `claude mcp remove fyrr --scope user`; after the software factory guide,
+  run `claude mcp remove fyrr --scope local` in each project where you
+  added it.
+
 ## [0.1.1] - 2026-11-19
 
 ### Added
