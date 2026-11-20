@@ -54,18 +54,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   their rows through the scalar indexes too, instead of passing the
   subject's rows to Lance as a row mask. Results and authorization are
   unchanged.
-- The GitHub connector indexes the title of an issue or pull request as the
-  first line of its first section, so a word that occurs only in a title is
-  found by full-text search and the title shapes that section's embedding.
-  This changes the revision of every conversation that has a body. Such a
-  conversation is republished, and its first section embedded again, when
-  GitHub reports it updated or when the refresh rotation (12-hour target)
-  reaches it, so title-only words become searchable gradually;
-  `fyrr writer sync github --kind content --full` followed by a commit
-  republishes all of them in one pass. The title counts toward
-  `document_max_bytes`: a conversation that was just under the limit is
-  quarantined when it is read again and keeps its last good revision until
-  the limit is raised. See
+- The GitHub connector indexes an issue or PR title as the first line of its
+  first section, so title-only words are searchable. Conversations with a body
+  get a new revision and are re-embedded as they refresh; run
+  `fyrr writer sync github --kind content --full` to do it at once. The title
+  counts toward `document_max_bytes`. See
   [GitHub documents](docs/connectors/github.md#documents).
 
 ## [0.1.1] - 2026-11-19
