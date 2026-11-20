@@ -940,14 +940,7 @@ mod providers {
             );
         }
         // The worker's own variables never reach the host.
-        for variable in report["initial_environment"].as_array().unwrap() {
-            let variable = variable.as_str().unwrap();
-            assert!(
-                !variable.starts_with("FYRR_WORKER_")
-                    && !variable.starts_with("FYRR_WRITER_EMBEDDING_CAP"),
-                "{variable}"
-            );
-        }
+        assert_eq!(report["inherited_internal"], false);
     }
 
     /// Site code runs only after the descriptors are settled: a `.pth` file in

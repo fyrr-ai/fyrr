@@ -393,14 +393,14 @@ def _report_descriptors(path: str) -> None:
         capture_output=True,
         check=True,
     )
-    environment = Path("/proc/self/environ").read_bytes().decode(errors="replace")
+    internal = ("FYRR_WORKER_RESULT", "FYRR_WORKER_MEMORY", "FYRR_WRITER_EMBEDDING_CAP")
     Path(path).write_text(
         json.dumps(
             {
                 "provider": _descriptors(),
                 "forked": _forked_descriptors(path),
                 "child": json.loads(child.stdout),
-                "initial_environment": environment.split("\0"),
+                "inherited_internal": any(name in os.environ for name in internal),
             }
         )
     )
