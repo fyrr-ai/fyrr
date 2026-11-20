@@ -27,6 +27,34 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- The `fyrr` binary no longer links Python, so it starts on a machine
+  without Python or `libpython`: `fyrr --version`, `fyrr reader serve` and
+  every command that runs no connector work as downloaded. Connectors are
+  the separately installed Python package `fyrr-connectors`; the commands
+  that run providers (`writer sync`, `writer providers`, `writer serve` and
+  the provider checks of `config check` and `config schema`) start it in a
+  Python host process, from `$VIRTUAL_ENV/bin/python`, a `python3` next to
+  the `fyrr` executable or `python3` on `PATH`, and without one they stop
+  with a message that says to `pip install fyrr-connectors[<type>]` or set
+  `VIRTUAL_ENV`. An interpreter in the current directory is never run. See
+  [downloadable binaries](docs/deployment.md#downloadable-binaries).
+- `fyrr-connectors` requires Python 3.13 or later instead of exactly
+  Python 3.13; the interpreter no longer has to match the one `fyrr` was
+  built with. The SDK's tests and type checks pass on 3.13 and 3.14. The
+  SDK gains `fyrr_connectors.host`, the provider host. Providers
+  (`Connector`, `ContentBatch`, entry points) are unchanged.
+- A provider that aborts or exits its process now fails its source with
+  `the provider failed` instead of `the worker failed`, because it no longer
+  takes the worker down with it. `writer.worker_memory_max_bytes` limits the
+  worker and the provider host separately, so provider memory is bounded as
+  before.
+- Content rows reach the writer as Arrow IPC streams instead of through the
+  Arrow C Data Interface, which costs one copy of each batch.
+- Stored writer credentials a provider needs are passed in the provider
+  process's environment at start instead of being set in its `os.environ`
+  afterwards.
+- `writer sync --dry-run` with no configured sources no longer starts a
+  worker.
 - The reader shares one immutable admission per subject between its
   authorization cache and its workers instead of copying it, and the cache
   charges an entry by an estimate of its size rather than 32 bytes per
@@ -54,6 +82,20 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   their rows through the scalar indexes too, instead of passing the
   subject's rows to Lance as a row mask. Results and authorization are
   unchanged.
+
+### Removed
+
+- The embedded Python interpreter (PyO3), and everything that served it:
+  `PYO3_PYTHON`, the matching `libpython3.13` and `LD_LIBRARY_PATH`
+  requirement, `PYTHONHOME` derived from `VIRTUAL_ENV`, and the exact-3.13
+  pin of `fyrr-connectors`. **Breaking for anyone who ran the full binary
+  against the embedded interpreter:** providers now run in the Python that
+  `VIRTUAL_ENV` names (or the `python3` next to `fyrr` or on `PATH`), so an
+  installation that put only the library on the loader path and never set
+  `VIRTUAL_ENV`, and relied on the interpreter's own `site-packages`, must
+  now have `python3` on `PATH` (the `fyrr` image does) or set `VIRTUAL_ENV`.
+  A `PYTHONHOME` you set yourself is no longer touched by `fyrr` but still
+  applies to that interpreter.
 
 ## [0.1.1] - 2026-11-19
 

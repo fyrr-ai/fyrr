@@ -82,8 +82,11 @@ The connector receives a `SourceContext`: `source_id`, `permissions`
 `scope`, `limits` (`max_rows`, `max_bytes`, `document_max_bytes`, optional
 row thresholds and retention) and two optional callbacks:
 `lookup_revisions(root_ids)` returns the published or pending revision of
-each root and `next_revisions()` pages every published and pending `(root_id, revision)`, so a resumed sync can
-skip what fyrr already has.
+each root (at most 256 per call) and `next_revisions()` pages every published and pending `(root_id, revision)`, so a resumed sync can
+skip what fyrr already has. They answer from the process that runs your
+connector, so call them while your `content` iterator is producing a batch
+(from any thread), not between batches; a failed call raises
+`RuntimeError`.
 
 ## Sync kinds
 
@@ -187,7 +190,8 @@ when a pass completed; a changed scope must restart from `None`.
 `writer.commit.group_max_rows` and 256. Use the supplied limit for every
 content batch, even when the configured envelope limit is larger.
 
-Workers run with a time limit, a memory limit and no stdout or stderr. Raise
+Providers run in a Python host process with a time limit, a memory limit
+and no stdin, stdout or stderr. Raise
 an exception for any failure; fyrr reports a fixed diagnostic code and
 never the exception text. Bound everything you read from the network
 (response sizes, page counts, traversal depth) and honor the service's

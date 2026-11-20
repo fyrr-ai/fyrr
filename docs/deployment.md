@@ -107,27 +107,44 @@ and a writer that runs on its own.
 
 ## Downloadable binaries
 
-Bare release binaries are dynamically linked Linux executables for x86-64
-(`linux-x86_64`) and 64-bit ARM (`linux-aarch64`); Linux is the only
-supported platform. Each platform's `manifest-<platform>.txt` has `binary_runtime`
-sections that list the maximum required
-GLIBC symbol version, ELF interpreter and shared libraries. Local assembly
-inherits the build host's ABI; official releases use Ubuntu 24.04
-release jobs. The manifest records the actual build provenance and runtime
-requirements. A GLIBC version alone does not guarantee compatibility:
-the interpreter and all required libraries must also be available.
+Download `fyrr` (and `fyrr-reader`) for your platform and run it: the
+binaries are dynamically linked Linux executables for x86-64
+(`linux-x86_64`) and 64-bit ARM (`linux-aarch64`), and need nothing but the
+system C library. Neither contains a connector or a Python interpreter, so
+`fyrr --version`, `fyrr reader serve`, `fyrr config check` for a
+configuration without sources and every other command that does not run a
+connector work on a machine with no Python at all. Linux is the only
+supported platform. Each platform's `manifest-<platform>.txt` has
+`binary_runtime` sections that list the maximum required GLIBC symbol
+version, ELF interpreter and shared libraries; official releases use
+Ubuntu 24.04 release jobs and local assembly inherits the build host's ABI.
+A GLIBC version alone does not guarantee compatibility: the interpreter and
+all required libraries must also be available.
 
-The full binary additionally needs the matching CPython shared library
-listed in `needed` (3.13 in the standard build) and the matching connector
-SDK wheel with its provider extras. Install these in a
-Python environment, expose its library directory through the system loader
-or `LD_LIBRARY_PATH`, and set `VIRTUAL_ENV` when using that environment's
-providers. Release binaries embed no RPATH or RUNPATH. The `fyrr` image
-includes this runtime and the bundled providers.
+To sync from a source, install the connector package into a Python
+environment and let `fyrr` find it:
 
-The release job executes the exported binaries in the pinned runtime
-images before uploading artifacts; it also checks SDK provider
-discovery. Reader-only binaries require no Python.
+```sh
+python3 -m venv /opt/fyrr-connectors
+/opt/fyrr-connectors/bin/pip install 'fyrr-connectors[jira]'   # the types you use
+export VIRTUAL_ENV=/opt/fyrr-connectors
+fyrr writer providers
+```
+
+The commands that run connectors (`writer sync`, `writer providers`,
+`writer serve` jobs, and the provider checks of `config check` and
+`config schema`) start a Python provider host from the first of these that
+exists: `$VIRTUAL_ENV/bin/python`; a `python3` next to the `fyrr`
+executable; `python3` on `PATH`. If none is found, or it cannot import
+`fyrr_connectors`, they stop with one message that says to run
+`pip install fyrr-connectors[<type>]` or set `VIRTUAL_ENV`. An interpreter
+is never run from the current directory. The connector SDK is tested on
+Python 3.13 and later (see [the connectors guide](connectors/README.md#python-versions));
+nothing else about the interpreter has to match the `fyrr` binary.
+
+`scripts/release` fails if the full binary's `needed` libraries include
+libpython, and runs it with an empty environment. The `fyrr` image includes
+the interpreter, the SDK and the bundled providers.
 
 ## Images
 

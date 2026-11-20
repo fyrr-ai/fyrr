@@ -125,12 +125,19 @@ link. An inactive canonical user is denied everywhere. The keys are in
 
 ## Worker isolation
 
-All Python runs in `fyrr writer __worker` child processes, one per source
-(provider discovery uses its own worker), with a timeout that also kills descendants, a memory limit
-(`writer.worker_memory_max_bytes`), no core dumps and provider stdout and
-stderr discarded. Results return over a size-capped socket with fixed
-diagnostic codes, never Python exception text. A crash or hang fails only
-that source.
+No Python runs in the `fyrr` executable. Provider code runs in a Python
+host process that a `fyrr writer __worker` child process starts, one worker
+per source (provider discovery uses its own worker). The host stays in the
+worker's process group, so the worker's timeout kills it and every
+descendant, and the supervisor reaps what is left. Each of the two processes
+has the memory limit (`writer.worker_memory_max_bytes`, applied per process,
+so provider memory is bounded as before), no core dumps and no inherited
+stdin, stdout or stderr. The worker and the host talk over a private socket;
+every frame is size-bounded before it is read, Arrow rows are validated when
+decoded, and a malformed, oversized or out-of-order frame, a host that exits
+early and a host that hangs all end in fixed diagnostic codes, never Python
+exception text. Results return over a size-capped socket. A crash or hang
+fails only that source.
 
 The [deployment guide](deployment.md#topology) covers reader hosts; the
 [reader settings](reader-writer.md#reader) specify mirror ownership and modes.

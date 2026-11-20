@@ -125,11 +125,10 @@ install -m 0755 "$BINARIES/fyrr" "$DIR/fyrr-$VERSION-$PLATFORM"
 install -m 0755 "$BINARIES/fyrr-reader" "$DIR/fyrr-reader-$VERSION-$PLATFORM"
 full_runtime="$(binary_runtime "$DIR/fyrr-$VERSION-$PLATFORM")" || die "cannot inspect full binary runtime"
 reader_runtime="$(binary_runtime "$DIR/fyrr-reader-$VERSION-$PLATFORM")" || die "cannot inspect reader binary runtime"
-build_python="${PYO3_PYTHON:-$ROOT/connectors/.venv/bin/python}"
-python_lib="$("$build_python" -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR") or "")')" || die "cannot locate the build interpreter library"
-[[ -n "$python_lib" ]] || die "the selected build interpreter has no library directory"
-LD_LIBRARY_PATH="$python_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-  "$DIR/fyrr-$VERSION-$PLATFORM" --version | grep -q 'full build' || die "the full binary does not report the full build"
+# The full binary embeds no Python: it must not need libpython, and it runs
+# without any interpreter on the host.
+if grep -qi 'libpython' <<<"$full_runtime"; then die "the full binary needs libpython"; fi
+env -i "$DIR/fyrr-$VERSION-$PLATFORM" --version | grep -q 'full build' || die "the full binary does not report the full build"
 "$DIR/fyrr-reader-$VERSION-$PLATFORM" --version | grep -q 'reader-only build' || die "the reader binary does not report the reader-only build"
 
 # --- the connector SDK wheel ------------------------------------------------

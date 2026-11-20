@@ -37,12 +37,15 @@ cargo build --locked -p fyrr --no-default-features             # reader-only bui
 Both builds write `target/debug/fyrr`, so the second replaces the first; use
 `--target-dir` to keep both. Use rustup's Cargo (`~/.cargo/bin` first on
 `PATH`) and this checkout's own `target/`. `.cargo/config.toml` points
-`PROTOC` at the pinned protoc and `PYO3_PYTHON` at the connectors venv.
+`PROTOC` at the pinned protoc. The build links no Python.
 
 To run the bundled providers from a development build, point the writer at
 the venv: `VIRTUAL_ENV=$PWD/connectors/.venv target/debug/fyrr writer
-providers`. The Python SDK has its own tests:
-`cd connectors && uv sync --locked --all-extras && uv run pytest`.
+providers` (the full tests set it themselves). The Python SDK has its own
+tests: `cd connectors && uv sync --locked --all-extras && uv run pytest`. It
+supports Python 3.13 and later; to try another interpreter without touching
+`connectors/.venv`, give `uv` its own environment, for example
+`UV_PROJECT_ENVIRONMENT=/tmp/venv314 uv run --python 3.14 --all-extras pytest`.
 
 `cd connectors && uv run --locked --all-extras mypy` checks the SDK, bundled
 providers and example provider. Bodies are checked with partial signature
@@ -54,7 +57,7 @@ annotations; PyArrow's untyped API remains covered by Arrow contract tests.
 | --- | --- |
 | `crates/fyrr-core` | Contracts, configuration, MCP tool schemas. No S3 or Lance. |
 | `crates/fyrr-reader` | Pinned Lance reads, authorization, hybrid search, read-through mirror, MCP over stdio and HTTP. |
-| `crates/fyrr-writer` | Full build only: provider discovery, Python workers, batch validation, committer, maintenance, directory and SCIM. |
+| `crates/fyrr-writer` | Full build only: provider discovery, workers and their Python provider host, batch validation, committer, maintenance, directory and SCIM. |
 | `crates/fyrr` | The `fyrr` binary; feature `writer` (default) is the full build. |
 | `connectors/` | Python package `fyrr-connectors`: provider API, test kit and the bundled providers. |
 | `examples/` | The quickstart (configuration, documents and `run`), an independently built provider wheel and a derived-image Dockerfile. |
@@ -130,7 +133,7 @@ anything that moves image size also need `scripts/ci --images`.
 | `scripts/ci-cases check\|inventory\|run ROW` | Test-case ownership; runs one CI row exactly as CI does. |
 | `scripts/s3-fixture start\|env\|status\|stop` | A loopback RustFS container for this checkout; `env` prints the `FYRR_TEST_S3_*` variables. |
 | `scripts/keycloak-fixture start\|env\|status\|stop` | A loopback Keycloak for the identity rows. |
-| `scripts/check-reader-only` | Proves the reader-only build links no writer, Python or PyO3. |
+| `scripts/check-reader-only` | Proves the reader-only build contains no writer or provider code, and that neither build links Python. |
 | `scripts/images` | Builds, tests and measures both images. It compiles the binaries in the pinned builder stage, or packages existing ones with `--binaries DIR`. |
 | `scripts/release` | Assembles versioned local release artifacts with SHA-256 sums; it publishes nothing itself (see [Releasing](#releasing)). |
 
@@ -173,8 +176,14 @@ not create.
   document text, identities and queries, runs every CLI path and asserts that
   none appears in output or written files. A new CLI path, log or artifact
   joins that test.
-- **Reader-only build.** All Python runs in `fyrr writer __worker`
-  processes; the reader-only build links no Python.
+- **Python.** No crate links Python. Providers run in a Python host process
+  (`python -m fyrr_connectors.host`) that a `fyrr writer __worker` process
+  starts in its own process group and talks to over an inherited socket; the
+  frames are bounded before they are read and every failure is a closed
+  diagnostic. A change to the protocol bumps `PROTOCOL_VERSION` on both sides
+  (`host.py` and `python/wire.rs`).
+- **Reader-only build.** It contains no writer and no provider code;
+  `scripts/check-reader-only` proves it.
 
 ## Code and commits
 
