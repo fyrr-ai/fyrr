@@ -139,7 +139,7 @@ def test_arrow_location_overflow_quarantines_and_continues(github, index):
     changes = [change for batch in batches for change in rows_to_json(batch.changes)]
     assert len(changes) == 2
     assert changes[0]["sections"] == [{"text": "\0"}]
-    assert changes[1]["sections"][0]["text"] == "Good."
+    assert changes[1]["sections"][0]["text"] == "Synthetic issue 2\n\nGood."
 
 
 def test_oversized_aggregate_stops_accumulating_and_continues(github, index):
@@ -150,7 +150,9 @@ def test_oversized_aggregate_stops_accumulating_and_continues(github, index):
     index.limits = replace(index.limits, document_max_bytes=64)
     changes = index.sync()
     assert changes["github:repo:1:issue:101:1"]["sections"] == [{"text": "\0"}]
-    assert changes["github:repo:1:issue:102:2"]["sections"][0]["text"] == "Good."
+    assert (
+        changes["github:repo:1:issue:102:2"]["sections"][0]["text"] == "Synthetic issue 2\n\nGood."
+    )
     reads = [params for _, path, params in github.requests if path.endswith("/issues/1/comments")]
     assert reads and all(int(params["page"]) == 1 for params in reads)
 
@@ -168,3 +170,43 @@ def test_changed_files_request_count(github, index):
     assert blobs == commits == 10
     assert verification == 5
     assert len(github.requests) == 33
+
+
+def test_title_opens_the_first_section_so_it_is_searchable(github, index):
+    github.topic(kind="pr", number=2, title="Quokka marshaller", body="PR body.")
+    github.topic(number=3, title="Title only", body="")
+    github.topic(number=4, title="Null body", body=None)
+    changes = index.sync()
+    pr = changes["github:repo:1:pr:1002:2"]["sections"]
+    assert pr[0]["text"] == "Quokka marshaller\n\nPR body."
+    assert pr[0]["location"]["label"] == "Quokka marshaller"
+    for root, title in (
+        ("github:repo:1:issue:103:3", "Title only"),
+        ("github:repo:1:issue:104:4", "Null body"),
+    ):
+        assert [section["text"] for section in changes[root]["sections"]] == [title]
+
+
+def test_title_counts_toward_the_document_limit(github, index):
+    index.limits = replace(index.limits, document_max_bytes=64)
+    github.topic(number=1, title="t" * 31, body="b" * 31)
+    github.topic(number=2, title="t" * 30, body="b" * 40)
+    changes = index.sync()
+    # 31 + 2 + 31 bytes is exactly the limit and is kept.
+    assert (
+        changes["github:repo:1:issue:101:1"]["sections"][0]["text"] == "t" * 31 + "\n\n" + "b" * 31
+    )
+    assert changes["github:repo:1:issue:102:2"]["sections"] == [{"text": "\0"}]
+
+
+def test_title_counts_while_comment_pages_are_read(github, index):
+    # Body and comments alone stay under the limit; with the title the first
+    # comment page already exceeds it, so the second page is never requested.
+    index.limits = replace(index.limits, document_max_bytes=64)
+    github.topic(number=1, title="t" * 30, body="b" * 5)
+    for _ in range(3):
+        github.comment(number=1, body="c" * 15)
+    changes = index.sync()
+    assert changes["github:repo:1:issue:101:1"]["sections"] == [{"text": "\0"}]
+    reads = [params for _, path, params in github.requests if path.endswith("/issues/1/comments")]
+    assert reads and all(int(params["page"]) == 1 for params in reads)

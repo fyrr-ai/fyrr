@@ -52,6 +52,13 @@ def finish(metadata: Metadata, sections: list[Section], facts: object, limit: in
     return Rendered(metadata, sections, revision)
 
 
+def opening(parent: dict[str, Any], limit: int) -> str:
+    """The first section's text: the title on its own line above the body."""
+    title = text(parent.get("title"), min(limit, 4096))
+    body = text(parent.get("body"), limit)
+    return text(f"{title}\n\n{body}" if title and body else title or body, limit)
+
+
 def conversation(
     repo: Repository,
     ref: ConversationRef,
@@ -63,7 +70,7 @@ def conversation(
     title = text(parent.get("title"), min(limit, 4096))
     sections = [
         Section(
-            text=text(parent.get("body") or title, limit),
+            text=opening(parent, limit),
             location=Location(kind="heading", label=title[:512], index=0),
         )
     ]
