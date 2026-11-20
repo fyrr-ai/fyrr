@@ -9,6 +9,19 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The Jira connector records each issue's key as the document attribute
+  `jira.key` and starts the summary section with it (`PROJ-123 Summary`).
+  `search` with `attributes: [{"key": "jira.key", "values": ["PROJ-123"]}]`
+  returns that issue, also without a `query`. This changes the revision of
+  every Jira issue document. A connector re-reads an issue when it was
+  updated since the last content sync, and re-reads all issues in the
+  first content sync that starts at least 12 hours after its last full
+  rescan; a rotation over published issues also reaches every issue within
+  12 hours. Upgraded installations therefore republish all issues within 12
+  hours of syncing on a schedule, and each issue is searchable by key after
+  the commit that follows its sync. To republish everything at once, run
+  `fyrr writer sync <source> --kind content --full`, then
+  `fyrr writer commit`. See [Jira](docs/connectors/jira.md#documents).
 - The reader sends `instructions` in the MCP `initialize` result: what
   fyrr searches and a request to search it before looking through files.
   Clients that pass instructions on tell their agent when to search.

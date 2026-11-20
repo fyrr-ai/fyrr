@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 
 from ..arrow import Location, Metadata, Section
-from ..validate import MAX_LABELS
+from ..validate import MAX_LABELS, ContractViolation, check_attributes
 from .adf import ADFError, text
 from .comments import visibility_signature
 from .feeds import IssueBinding
@@ -29,7 +29,9 @@ def document(identity, project, issue, comments, context, targets=(), dynamic=Fa
     fields = issue["fields"]
     uri = identity.site + "/browse/" + issue["key"]
     sections = []
-    field_values = {key: fields.get(key) for key in ("summary", "description")}
+    # The key opens the summary so excerpts and key queries carry it.
+    summary = f"{issue['key']} {text(fields.get('summary'))}"
+    field_values = {"summary": summary, "description": fields.get("description")}
     for key in ("status", "issuetype", "priority", "reporter", "assignee"):
         value = fields.get(key)
         if isinstance(value, dict):
@@ -115,6 +117,16 @@ def document(identity, project, issue, comments, context, targets=(), dynamic=Fa
     ]
     digest = hashlib.sha256(json.dumps(canonical, sort_keys=True, default=str).encode()).hexdigest()
     return binding.revision(digest), meta, sections
+
+
+def key_attributes(issue):
+    """The issue key as a `jira.key` attribute; none if it cannot be one."""
+    attribute = "jira.key=" + issue["key"]
+    try:
+        check_attributes([attribute])
+    except ContractViolation:
+        return ()
+    return (attribute,)
 
 
 def number_level(fields):

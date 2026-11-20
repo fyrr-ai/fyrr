@@ -66,8 +66,15 @@ key changes, project renames and moves keep their identity.
 
 - One document per issue: summary, description and the selected standard
   fields (status, type, priority, labels, reporter, assignee) as
-  located sections, then **one section per comment** with that comment's
+  located sections (the summary section starts with the issue key, as
+  `PROJ-123 Summary text`, so excerpts show it and a plain query for the key
+  can match its tokens), then **one section per comment** with that comment's
   own audience. Long text is split into units of at most 16 KiB.
+- The issue key is the document attribute `jira.key`, exactly as Jira
+  returns it. `search` with `attributes: [{"key": "jira.key", "values":
+  ["PROJ-123"]}]` returns that issue if the caller may read it, also without
+  a `query` (listed by `updated_at`; set `order` to `updated_at`). A moved
+  issue keeps its document and gets its new key when it is next read.
 - Rich text (Atlassian Document Format) is rendered to plain text; mentions
   keep readable labels. Media and smart-link cards are dropped; attachments
   and linked issues are not followed.
