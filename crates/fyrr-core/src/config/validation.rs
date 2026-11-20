@@ -160,12 +160,6 @@ fn identity_urls_and_http(config: &Config, error: &mut impl FnMut(&str, String))
                 "requires a secure /mcp URL".into(),
             );
         }
-        if config.identity.oidc.is_none() && config.identity.api_keys.is_empty() {
-            error(
-                "identity.oidc",
-                "HTTP MCP requires identity.oidc or identity.api_keys".into(),
-            );
-        }
         if http.listen.parse::<std::net::SocketAddr>().is_err()
             || http.public_url.is_empty()
             || http.public_url.len() as u64 > URL_MAX_BYTES

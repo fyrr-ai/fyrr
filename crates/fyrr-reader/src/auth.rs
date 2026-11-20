@@ -106,7 +106,8 @@ impl Authenticator {
         }
         Ok(AuthenticatedSubject {
             key: crate::storage::api_key_subject(&self.config, token)?,
-            // The binding's own expiry is enforced at admission.
+            // Admission replaces this with the binding's own expiry, so that
+            // every later expiry check of the request sees it.
             expires: i64::MAX,
             identity: None,
             api_key: true,
@@ -330,13 +331,21 @@ mod tests {
         }
         // An API-key bearer of the wrong shape is refused before anything is hashed:
         // this configuration has no hashing key, which a hash would report differently.
-        let random = |n: usize| format!("{API_KEY_PREFIX}{}", "a".repeat(n));
+        let random = |n: usize| {
+            format!(
+                "{API_KEY_PREFIX}{}",
+                "aB3_Zk9Qm7".repeat(13)[..n].to_owned()
+            )
+        };
         for token in [
             random(0),
             random(42),
             random(129),
             format!("{}!", random(43)),
             format!("{} ", random(43)),
+            // 43 characters with fewer than ten distinct ones
+            format!("{API_KEY_PREFIX}{}", "a".repeat(43)),
+            format!("{API_KEY_PREFIX}{}", "ab".repeat(30)),
         ] {
             assert!(matches!(auth.authenticate(&token).await, Err(Unauthorized)));
         }

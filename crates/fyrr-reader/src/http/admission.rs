@@ -4,11 +4,21 @@ use fyrr_core::identity::IdentityArtifact;
 use fyrr_core::publication::{GenerationPointer, ServingHead};
 use object_store::{ObjectStore, path::Path};
 
+/// A key unknown to the cached identity makes the reader look at the serving
+/// head again at most this often, one lookup at a time; every other unknown key
+/// in the interval is refused from memory. It is also how long a newly
+/// published key can wait before it is usable.
+pub(super) const API_KEY_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 #[derive(Debug)]
 pub(super) struct Admission {
     store: Arc<dyn ObjectStore>,
     root: Path,
     cached_identity: crate::storage::ArtifactCache<IdentityArtifact>,
+    /// When the identity was last looked up for an unknown API key; held across
+    /// the lookup, so only one runs at a time.
+    key_refresh: tokio::sync::Mutex<Option<std::time::Instant>>,
+    key_refresh_interval: std::time::Duration,
 }
 impl Admission {
     pub(super) fn new(
@@ -20,6 +30,8 @@ impl Admission {
             store,
             root,
             cached_identity,
+            key_refresh: tokio::sync::Mutex::new(None),
+            key_refresh_interval: API_KEY_REFRESH_INTERVAL,
         }
     }
     pub(super) async fn head(&self) -> Result<ServingHead, ReaderError> {
@@ -53,38 +65,115 @@ impl Admission {
         *cached = Some((pointer.clone(), identity.clone()));
         Ok(identity)
     }
+    /// Whether the cached identity binds `subject` and the binding admits it at `now`.
+    async fn cached_binding(&self, subject: &str, now: chrono::DateTime<chrono::Utc>) -> bool {
+        self.cached_identity
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|(_, identity)| identity.binding_for_subject(subject, now).is_some())
+    }
+
+    /// Looks at the serving head and loads a newer identity into the cache, if
+    /// the interval since the last such lookup has passed and none is running.
+    /// A failed lookup counts as one: unknown keys are refused either way.
+    async fn refresh_for_unknown_key(&self, config: &Config) {
+        let Ok(mut last) = self.key_refresh.try_lock() else {
+            return;
+        };
+        if last.is_some_and(|at| at.elapsed() < self.key_refresh_interval) {
+            return;
+        }
+        *last = Some(std::time::Instant::now());
+        if let Ok(head) = self.head().await {
+            let _ = self.identity(config, &head.identity).await;
+        }
+    }
+
+    /// Admission of an API key. The binding lookup comes before every other
+    /// decision, so an unbound key is the same `Unauthorized` whatever the
+    /// directory's or storage's state, and costs no storage read beyond the
+    /// bounded refresh. Only a key the identity binds can be told
+    /// `AuthorizationUnavailable`.
+    async fn authorize_api_key(
+        &self,
+        config: &Config,
+        subject: &mut crate::auth::AuthenticatedSubject,
+    ) -> Result<Admitted, ReaderError> {
+        if !self
+            .cached_binding(&subject.key, fyrr_core::clock::now())
+            .await
+        {
+            self.refresh_for_unknown_key(config).await;
+            if !self
+                .cached_binding(&subject.key, fyrr_core::clock::now())
+                .await
+            {
+                return Err(Unauthorized);
+            }
+        }
+        // A bound key is checked against the serving head on every request, so
+        // a removal is seen at once. The binding lookup precedes the namespace
+        // and directory checks: they cannot tell an unbound key anything.
+        let head = self.head().await?;
+        let identity = self.identity(config, &head.identity).await?;
+        let now = fyrr_core::clock::now();
+        let (binding, principal) = identity
+            .binding_for_subject(&subject.key, now)
+            .ok_or(Unauthorized)?;
+        Self::live(config, subject, &head, now)?;
+        // From here on every expiry check of the request, up to the one before
+        // a response leaves, sees the binding's own expiry (whole seconds).
+        subject.expires = binding.expires.map_or(i64::MAX, |at| at.timestamp());
+        Self::grants(config, &identity, principal, &head)
+    }
+
     pub(super) async fn authorize(
         &self,
         config: &Config,
-        subject: &crate::auth::AuthenticatedSubject,
-    ) -> Result<
-        (
-            String,
-            Vec<String>,
-            fyrr_core::publication::GenerationPointer,
-        ),
-        ReaderError,
-    > {
+        subject: &mut crate::auth::AuthenticatedSubject,
+    ) -> Result<Admitted, ReaderError> {
+        if subject.api_key {
+            return self.authorize_api_key(config, subject).await;
+        }
         let head = self.head().await?;
         let now = fyrr_core::clock::now();
+        Self::live(config, subject, &head, now)?;
+        let identity = self.identity(config, &head.identity).await?;
+        let (binding, principal) = identity
+            .binding_for_subject(&subject.key, now)
+            .ok_or(AuthorizationUnavailable)?;
+        // A binding with an expiry shortens the token's own, whatever the subject.
+        if let Some(at) = binding.expires {
+            subject.expires = subject.expires.min(at.timestamp());
+        }
+        Self::grants(config, &identity, principal, &head)
+    }
+
+    /// The serving head's namespace, the subject's own expiry and the
+    /// directory's freshness: what must hold for any subject at `now`.
+    fn live(
+        config: &Config,
+        subject: &crate::auth::AuthenticatedSubject,
+        head: &ServingHead,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), ReaderError> {
         if head.namespace != config.namespace.name
             || subject.expires <= now.timestamp()
             || !crate::storage::directory_fresh(config, head.freshness.directory, now)
         {
             return Err(AuthorizationUnavailable);
         }
-        let identity = self.identity(config, &head.identity).await?;
-        // A secret nobody bound, a revoked one and an expired one are the same
-        // unauthenticated caller; only an unbound OIDC subject is an
-        // authorization problem on the operator's side.
-        let principal =
-            identity
-                .principal_for_subject(&subject.key, now)
-                .ok_or(if subject.api_key {
-                    Unauthorized
-                } else {
-                    AuthorizationUnavailable
-                })?;
+        Ok(())
+    }
+
+    /// The principal's key and its groups' tokens, if its grants are within bounds.
+    fn grants(
+        config: &Config,
+        identity: &IdentityArtifact,
+        principal: &fyrr_core::identity::Principal,
+        head: &ServingHead,
+    ) -> Result<Admitted, ReaderError> {
         if principal.tokens.is_empty()
             || principal.tokens.len() > config.identity.max_tokens_per_user as usize
         {
@@ -101,9 +190,12 @@ impl Admission {
                     .ok_or(AuthorizationUnavailable)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok((principal.key.clone(), groups, head.identity))
+        Ok((principal.key.clone(), groups, head.identity.clone()))
     }
 }
+
+/// The principal's key, its groups' tokens and the identity generation that bound it.
+pub(super) type Admitted = (String, Vec<String>, GenerationPointer);
 
 #[cfg(test)]
 mod tests {
@@ -165,6 +257,9 @@ mod tests {
                 Path::from("namespace"),
                 Arc::default(),
             );
+            let mut admission = admission;
+            // Most tests publish a key and use it at once.
+            admission.key_refresh_interval = std::time::Duration::ZERO;
             let mut test = Self {
                 config,
                 head,
@@ -208,8 +303,10 @@ mod tests {
                 .unwrap();
             self.publish_head().await;
         }
-        async fn authorize(&self) -> Result<(String, Vec<String>, GenerationPointer), ReaderError> {
-            self.admission.authorize(&self.config, &self.subject).await
+        async fn authorize(&self) -> Result<Admitted, ReaderError> {
+            self.admission
+                .authorize(&self.config, &mut self.subject.clone())
+                .await
         }
     }
     impl Drop for Fixture {
@@ -274,12 +371,12 @@ mod tests {
         let mut other = test.subject.clone();
         other.key = unknown;
         assert_eq!(
-            test.admission.authorize(&test.config, &other).await,
+            test.admission.authorize(&test.config, &mut other).await,
             Err(Unauthorized)
         );
         other.api_key = false;
         assert_eq!(
-            test.admission.authorize(&test.config, &other).await,
+            test.admission.authorize(&test.config, &mut other).await,
             Err(AuthorizationUnavailable)
         );
         test.identity.subjects.clear();
@@ -298,6 +395,162 @@ mod tests {
         test.authorize().await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
         assert_eq!(test.authorize().await, Err(Unauthorized));
+    }
+
+    fn binding(
+        test: &Fixture,
+        expires: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<fyrr_core::identity::SubjectBinding> {
+        vec![fyrr_core::identity::SubjectBinding {
+            subject: test.subject.key.clone(),
+            principal: test.identity.principals[0].key.clone(),
+            expires,
+        }]
+    }
+
+    #[tokio::test]
+    async fn admission_carries_the_bindings_expiry_into_the_subject() {
+        use chrono::SubsecRound;
+        let mut test = Fixture::new().await;
+        test.subject.api_key = true;
+        let at = (fyrr_core::clock::now() + chrono::Duration::seconds(300)).trunc_subsecs(0);
+        test.identity.subjects = binding(&test, Some(at));
+        test.identity.generation += 1;
+        test.publish_identity().await;
+        let mut subject = test.subject.clone();
+        assert_eq!(subject.expires, test.subject.expires);
+        test.admission
+            .authorize(&test.config, &mut subject)
+            .await
+            .unwrap();
+        // Every later expiry check of the request now sees the key's own expiry.
+        assert_eq!(subject.expires, at.timestamp());
+        // A key without an expiry never expires; a token's own expiry is not replaced.
+        test.identity.subjects = binding(&test, None);
+        test.identity.generation += 1;
+        test.publish_identity().await;
+        let mut subject = test.subject.clone();
+        test.admission
+            .authorize(&test.config, &mut subject)
+            .await
+            .unwrap();
+        assert_eq!(subject.expires, i64::MAX);
+        let mut oidc = test.subject.clone();
+        oidc.api_key = false;
+        let own = oidc.expires;
+        test.admission
+            .authorize(&test.config, &mut oidc)
+            .await
+            .unwrap();
+        assert_eq!(oidc.expires, own);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_api_key_costs_no_storage_read_beyond_one_refresh_per_interval() {
+        let mut test = Fixture::new().await;
+        test.admission.key_refresh_interval = std::time::Duration::from_millis(400);
+        let mut unknown = test.subject.clone();
+        unknown.api_key = true;
+        unknown.key = format!("key:{}", "7".repeat(64));
+        let started = std::time::Instant::now();
+        let before = test.mirror.totals().requests;
+        for _ in 0..50 {
+            assert_eq!(
+                test.admission.authorize(&test.config, &mut unknown).await,
+                Err(Unauthorized)
+            );
+        }
+        let refreshes = 1 + started.elapsed().as_millis() / 400;
+        let reads = test.mirror.totals().requests - before;
+        // One refresh is the head and, the first time, the identity artifact.
+        assert!(
+            u128::from(reads) <= 2 * refreshes,
+            "{reads} storage requests for 50 unknown keys in {:?}",
+            started.elapsed()
+        );
+        // A key published now is unknown until the interval has passed ...
+        test.subject.api_key = true;
+        test.subject.key = format!("key:{}", "5".repeat(64));
+        test.identity.subjects = binding(&test, None);
+        test.identity.generation += 1;
+        test.publish_identity().await;
+        let before = test.mirror.totals().requests;
+        let waiting = test.authorize().await;
+        if started.elapsed() < std::time::Duration::from_millis(350) {
+            assert_eq!(waiting, Err(Unauthorized));
+            assert_eq!(
+                test.mirror.totals().requests,
+                before,
+                "no read inside the interval"
+            );
+        }
+        // ... and then the next request looks again and admits it.
+        tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+        test.authorize().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unbound_api_key_is_the_same_401_whatever_the_directory_or_storage_say() {
+        let mut test = Fixture::new().await;
+        test.config.identity.directory.provider = fyrr_core::config::DirectoryProvider::Snapshot;
+        test.head.freshness.directory = Some(fyrr_core::clock::now());
+        test.publish_head().await;
+        test.subject.api_key = true;
+        test.authorize().await.unwrap();
+        // The directory read expires: a bound key learns it (503) ...
+        test.head.freshness.directory = Some(fyrr_core::clock::now() - chrono::Duration::days(30));
+        test.publish_head().await;
+        assert_eq!(test.authorize().await, Err(AuthorizationUnavailable));
+        // ... an unbound one, with the same stale directory, learns nothing.
+        let mut unknown = test.subject.clone();
+        unknown.key = format!("key:{}", "6".repeat(64));
+        assert_eq!(
+            test.admission.authorize(&test.config, &mut unknown).await,
+            Err(Unauthorized)
+        );
+        // Neither does a removed key whose removal the head already shows.
+        test.identity.subjects.clear();
+        test.identity.generation += 1;
+        test.publish_identity().await;
+        assert_eq!(test.authorize().await, Err(Unauthorized));
+        // Nor a key when storage is down: the head cannot be read at all.
+        test.remote
+            .delete(&Path::from("namespace/head.json"))
+            .await
+            .unwrap();
+        assert_eq!(
+            test.admission.authorize(&test.config, &mut unknown).await,
+            Err(Unauthorized)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_published_directory_clock_binds_a_reader_without_a_directory_provider() {
+        let mut test = Fixture::new().await;
+        assert_eq!(
+            test.config.identity.directory.provider,
+            fyrr_core::config::DirectoryProvider::None
+        );
+        for api_key in [false, true] {
+            test.subject.api_key = api_key;
+            // No timestamp: a snapshot imported by hand, served as before.
+            test.head.freshness.directory = None;
+            test.publish_head().await;
+            test.authorize().await.unwrap();
+            // A fresh attestation serves, a stale one refuses the namespace,
+            // whatever this reader's own provider setting says.
+            test.head.freshness.directory = Some(fyrr_core::clock::now());
+            test.publish_head().await;
+            test.authorize().await.unwrap();
+            test.head.freshness.directory =
+                Some(fyrr_core::clock::now() - chrono::Duration::days(30));
+            test.publish_head().await;
+            assert_eq!(
+                test.authorize().await,
+                Err(AuthorizationUnavailable),
+                "{api_key}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -134,6 +134,10 @@ pub(super) struct Reader {
     stderr: PathBuf,
 }
 impl Reader {
+    /// Everything the reader process has written to stderr so far.
+    pub(super) fn stderr_text(&self) -> String {
+        String::from_utf8_lossy(&std::fs::read(&self.stderr).unwrap_or_default()).into_owned()
+    }
     fn search_task(&self, token: &str, id: u64, deadline: u32) -> tokio::task::JoinHandle<Value> {
         let client = self.client.clone();
         let url = format!("{}/mcp", self.base);

@@ -1601,8 +1601,9 @@ fn api_key_secrets_need_the_shape_and_no_duplicates() {
         key_table("three", "KEY_C", "readers=['grp:a']"),
     );
     let loaded = parse(&text).unwrap();
-    let good = api_key(&"a".repeat(43));
-    let other = api_key(&format!("{}-_", "b".repeat(41)));
+    const RANDOM: &str = "Ab3_Kq9Zx7Lm2Wp5Rt8Yv1Ud4Cf6Hs0NeJg-BoTz4Qx";
+    let good = api_key(RANDOM);
+    let other = api_key("Zk9Qm3Xw7Vb1Nc5Hd2Fg8Jt4Ls6Pr0Ay-_eUoIcR2aE");
     let messages = |pairs: &[(&str, &str)]| -> Vec<String> {
         loaded
             .api_key_secret_issues(&env(pairs))
@@ -1625,13 +1626,18 @@ fn api_key_secrets_need_the_shape_and_no_duplicates() {
     );
     for bad in [
         "short".to_owned(),
-        api_key(&"a".repeat(42)),
-        api_key(&"a".repeat(129)),
-        api_key(&format!("{}!", "a".repeat(43))),
-        api_key(&format!("{}é", "a".repeat(43))),
-        format!("fyrr_token_{}", "a".repeat(43)),
+        api_key(&RANDOM[1..]),
+        api_key(&RANDOM.repeat(3)),
+        api_key(&format!("{RANDOM}!")),
+        api_key(&format!("{RANDOM}é")),
+        format!("fyrr_token_{RANDOM}"),
         format!(" {good}"),
         format!("{good}\n"),
+        // The shape alone is not randomness, but placeholders are turned away:
+        // fewer than ten distinct characters after the prefix.
+        api_key(&"a".repeat(43)),
+        api_key(&"ab".repeat(30)),
+        api_key("0123456789"[..9].repeat(6).as_str()),
     ] {
         let found = messages(&[("KEY_A", &bad)]);
         assert_eq!(found.len(), 1, "{bad:?}: {found:?}");
@@ -1642,21 +1648,117 @@ fn api_key_secrets_need_the_shape_and_no_duplicates() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].contains("identity.api_keys[2].key") && found[0].contains("api_keys[0]"));
     assert!(!found[0].contains(&good));
+    // A secret with exactly ten distinct characters passes; a hex one has more.
     assert!(fyrr_core::config::is_api_key_secret(&api_key(
-        &"Z".repeat(128)
+        &"0123456789".repeat(5)
     )));
+    assert!(fyrr_core::config::is_api_key_secret(&format!(
+        "fyrr_key_{}",
+        "0f1e2d3c4b5a69788796a5b4c3d2e1f0".repeat(2)
+    )));
+    // A malformed secret takes no part in the duplicate check: the second key
+    // repeats the first, the third is the one reported only once.
+    let mut text = text.clone();
+    text.push_str(&key_table("four", "KEY_D", "readers=['grp:a']"));
+    let loaded = parse(&text).unwrap();
+    let found: Vec<String> = loaded
+        .api_key_secret_issues(&env(&[
+            ("KEY_A", "fyrr_key_short"),
+            ("KEY_B", "fyrr_key_short"),
+            ("KEY_C", &good),
+            ("KEY_D", &good),
+        ]))
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(found.len(), 3, "{found:?}");
+    assert!(found[2].contains("identity.api_keys[3].key") && found[2].contains("api_keys[2]"));
+    assert!(
+        !found
+            .iter()
+            .any(|f| f.contains("api_keys[1].key") && f.contains("same secret")),
+        "{found:?}"
+    );
 }
 
 #[test]
-fn http_needs_oidc_or_api_keys_and_tells_which() {
+fn http_without_a_login_method_stays_valid_for_the_writer_and_the_check_warns() {
     let key = key_table("agents", "KEY_A", "readers=['grp:a']");
     let oidc = "\n[identity.oidc]\nissuer='https://issuer.example'\naudience='fyrr'\njwks_url='https://keys.example/jwks'\n";
-    assert_error(HTTP, "identity.oidc");
+    // Removing the last key must not make the file invalid: the writer
+    // publishes identity from it and has to publish zero key bindings.
+    let none = parse(&format!("{MINIMAL}{HTTP}")).unwrap();
+    assert!(errors(&none).is_empty(), "{:?}", errors(&none));
+    assert!(none.config.http_authentication_missing());
     for identity in [key.clone(), oidc.to_owned(), format!("{key}{oidc}")] {
         let loaded = parse(&format!("{MINIMAL}{identity}{HTTP}")).unwrap();
         assert!(errors(&loaded).is_empty(), "{:?}", errors(&loaded));
+        assert!(!loaded.config.http_authentication_missing());
     }
+    // Without `reader.http` nothing needs a login method.
+    assert!(!parse(MINIMAL).unwrap().config.http_authentication_missing());
     // Keys alone leave OIDC unconfigured, and the file stays valid.
     let loaded = parse(&format!("{MINIMAL}{key}{HTTP}")).unwrap();
     assert!(loaded.config.identity.oidc.is_none());
+}
+
+#[test]
+fn api_key_secrets_report_unset_variables_even_when_a_credential_shares_the_name() {
+    let text = format!(
+        "{MINIMAL}\n[writer.credentials]\nSHARED='record-1'\n{}",
+        key_table("agents", "SHARED", "readers=['grp:a']")
+    );
+    // The writer hands credentials to providers, so a credential name hides an
+    // unset variable for those; an identity secret is read from the process.
+    let loaded = parse(&text).unwrap();
+    let unset: Vec<_> = loaded
+        .missing_secrets(&env(&[]))
+        .iter()
+        .map(|issue| issue.path.clone())
+        .collect();
+    assert!(
+        unset.contains(&"identity.api_keys[0].key".to_owned()),
+        "{unset:?}"
+    );
+}
+
+#[test]
+fn api_key_expiry_is_whole_seconds_and_a_user_key_without_a_directory_warns() {
+    let text = format!(
+        "{MINIMAL}{}{}",
+        key_table(
+            "frac",
+            "KEY_A",
+            "readers=['grp:a']\nexpires=2999-01-01T00:00:00.987Z"
+        ),
+        key_table("bo", "KEY_B", "user='bo@example.test'"),
+    );
+    let loaded = parse(&text).unwrap();
+    let keys = &loaded.config.identity.api_keys;
+    // The fraction is dropped: the key is refused from the start of that second.
+    assert_eq!(
+        keys[0].expires.unwrap().to_rfc3339(),
+        "2999-01-01T00:00:00+00:00"
+    );
+    let warned: Vec<_> = loaded
+        .validate()
+        .into_iter()
+        .filter(|i| i.severity == Severity::Warning)
+        .map(|i| i.path)
+        .collect();
+    assert_eq!(warned, ["identity.api_keys[1].user"]);
+    assert!(errors(&loaded).is_empty());
+    // With a directory configured there is nothing to warn about.
+    let with_directory = format!(
+        "{text}\n[identity.directory]\nprovider='snapshot'\nsnapshot_file='/tmp/directory.json'\n"
+    );
+    let loaded = parse(&with_directory).unwrap();
+    assert!(
+        loaded
+            .validate()
+            .iter()
+            .all(|i| i.severity != Severity::Warning),
+        "{:?}",
+        loaded.validate()
+    );
 }

@@ -16,8 +16,8 @@ mod storage;
 mod validation;
 
 pub use api_key::{
-    API_KEY_MAX_RANDOM, API_KEY_MIN_RANDOM, API_KEY_PREFIX, API_KEYS_MAX, ApiKeyConfig,
-    is_api_key_secret,
+    API_KEY_MAX_RANDOM, API_KEY_MIN_DISTINCT, API_KEY_MIN_RANDOM, API_KEY_PREFIX, API_KEYS_MAX,
+    ApiKeyConfig, is_api_key_secret,
 };
 pub use storage::StorageBackend;
 
@@ -36,7 +36,7 @@ use crate::units::{ByteSize, ConfigDuration};
 
 /// Configuration schema revision: adding a storage backend changes the URI
 /// contract beyond an optional field, so it starts a new major revision.
-pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(5, 2);
+pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(5, 1);
 
 /// Namespace IDs: lowercase letters, digits and `-`, at most 63 bytes.
 pub const NAMESPACE_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
@@ -1344,8 +1344,12 @@ impl LoadedConfig {
         collect_secret_refs("", &toml::Value::Table(self.effective_table()), &mut found);
         let mut issues = Vec::new();
         for (path, secret) in found {
+            // Writer credentials are handed to the providers by the writer; the
+            // identity secrets are read by the writer itself, so they stay unset
+            // reports even when a credential carries the same variable name.
             if self.config.writer.credentials.contains_key(&secret.env)
                 && path != "identity.encryption_key"
+                && !path.starts_with("identity.api_keys[")
             {
                 continue;
             }

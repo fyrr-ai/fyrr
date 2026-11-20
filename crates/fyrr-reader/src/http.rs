@@ -306,15 +306,18 @@ async fn authenticate_mcp(
     // lookup comes before every other use of the subject, cancellations included.
     let admitted = if subject.api_key || cancellation.is_none() {
         Some(
-            timeout_at(deadline, state.admission.authorize(&state.config, &subject))
-                .await?
-                .map_err(|code| {
-                    if code == Unauthorized {
-                        authentication_failure(state, code, expected)
-                    } else {
-                        error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable)
-                    }
-                })?,
+            timeout_at(
+                deadline,
+                state.admission.authorize(&state.config, &mut subject),
+            )
+            .await?
+            .map_err(|code| {
+                if code == Unauthorized {
+                    authentication_failure(state, code, expected)
+                } else {
+                    error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable)
+                }
+            })?,
         )
     } else {
         None

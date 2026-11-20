@@ -11,6 +11,22 @@
         "tier": "quick",
         "seconds": 1.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::admission_carries_the_bindings_expiry_into_the_subject": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::an_unknown_api_key_costs_no_storage_read_beyond_one_refresh_per_interval": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::an_unbound_api_key_is_the_same_401_whatever_the_directory_or_storage_say": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::the_published_directory_clock_binds_a_reader_without_a_directory_provider": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
       "full:fyrr:test:dense_path/coordination::recovery_lease_ttl_ignores_toml_formatting_and_preserves_source_settings": {
         "tier": "quick",
         "seconds": 0.021
@@ -279,7 +295,7 @@
         "tier": "quick",
         "seconds": 0.1
       },
-      "full:fyrr-reader:lib:fyrr_reader/storage::tests::only_an_absent_directory_needs_no_freshness_proof": {
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::the_publication_decides_whether_the_directory_clock_applies": {
         "tier": "quick",
         "seconds": 0.0
       },
@@ -798,6 +814,14 @@
         "tier": "quick",
         "seconds": 0.01
       },
+      "full:fyrr-core:test:config/api_key_secrets_report_unset_variables_even_when_a_credential_shares_the_name": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
+      "full:fyrr-core:test:config/api_key_expiry_is_whole_seconds_and_a_user_key_without_a_directory_warns": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
       "full:fyrr-core:test:config/composition_is_bounded_defaulted_and_bound_into_policy_identity": {
         "tier": "quick",
         "seconds": 0.001
@@ -830,7 +854,7 @@
         "tier": "quick",
         "seconds": 0.005
       },
-      "full:fyrr-core:test:config/http_needs_oidc_or_api_keys_and_tells_which": {
+      "full:fyrr-core:test:config/http_without_a_login_method_stays_valid_for_the_writer_and_the_check_warns": {
         "tier": "quick",
         "seconds": 0.01
       },
@@ -1475,6 +1499,30 @@
       "full:fyrr:test:dense_path/api_keys::api_key_identity_tokens_users_collisions_and_removal_on_storage": {
         "tier": "full",
         "seconds": 40.0
+      },
+      "full:fyrr:test:dense_path/api_keys::api_key_expiry_applies_to_a_request_admitted_just_before_it_on_storage": {
+        "tier": "full",
+        "seconds": 120.0
+      },
+      "full:fyrr:test:dense_path/api_keys::removing_the_last_api_key_publishes_no_binding_and_refuses_the_key_on_storage": {
+        "tier": "full",
+        "seconds": 90.0
+      },
+      "full:fyrr:test:dense_path/api_keys::garbage_api_keys_cost_no_storage_reads_and_hide_a_stale_directory_on_storage": {
+        "tier": "full",
+        "seconds": 120.0
+      },
+      "full:fyrr:test:dense_path/api_keys::a_reader_without_a_directory_provider_still_refuses_a_stale_published_directory_on_storage": {
+        "tier": "full",
+        "seconds": 100.0
+      },
+      "full:fyrr:test:dense_path/api_keys::a_user_key_is_refused_once_a_directory_sync_deactivates_its_user_on_storage": {
+        "tier": "full",
+        "seconds": 90.0
+      },
+      "full:fyrr:test:dense_path/api_keys::an_unusable_key_secret_skips_only_its_key_and_a_fetch_cursor_stays_with_its_key_on_storage": {
+        "tier": "full",
+        "seconds": 120.0
       },
       "full:fyrr:test:dense_path/directory_ops::identity_directory_scim_crud_patch_replay_collision_and_revocation_on_storage": {
         "tier": "full",

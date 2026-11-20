@@ -2,17 +2,31 @@
 //! writer publishes, and what the HTTP reader admits with it, with and
 //! without OIDC.
 use super::coordination::{host_command, worker_command};
+use super::corrections::{BoundaryHook, ProxyGuard, RequestGate, ResponseTransform};
 use super::http_mcp::{Issuer, Reader, fixture};
 use super::identity::{snapshot, user};
 use super::*;
 use fyrr_core::directory::DirectorySnapshot;
 use fyrr_reader::storage::{api_key_principal, api_key_subject};
 use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-/// A well-formed secret that is distinct per `n`.
+/// A realistically shaped secret that is distinct per `n`: `fyrr_key_` and 64
+/// hexadecimal characters, as `openssl rand -hex 32` makes them.
 fn secret(n: usize) -> String {
-    format!("fyrr_key_{:A<43}", format!("test{n}"))
+    let mut state = (n as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let mut hex = String::new();
+    while hex.len() < 64 {
+        state ^= state >> 29;
+        state = state.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        state ^= state >> 32;
+        hex.push_str(&format!("{state:016x}"));
+    }
+    let secret = format!("fyrr_key_{}", &hex[..64]);
+    assert!(fyrr_core::config::is_api_key_secret(&secret), "{secret}");
+    secret
 }
 
 struct Key {
@@ -188,29 +202,116 @@ async fn api_key_identity_tokens_users_collisions_and_removal_on_storage() {
             assert!(!String::from_utf8_lossy(&status.stdout).contains(text.as_str()));
         }
     }
+    // Nor does `writer status` print a binding's subject or principal hash, or a key's name.
+    let printed = report(&status);
+    for binding in &identity.subjects {
+        for hash in [&binding.subject, &binding.principal] {
+            assert!(
+                !printed.contains(hash.as_str()),
+                "a hash in `writer status`"
+            );
+            assert!(!printed.contains(&hash[hash.find(':').unwrap() + 1..]));
+        }
+    }
+    for key in &keys {
+        assert!(
+            !printed.contains(&format!("'{}'", key.name))
+                && !printed.contains(&format!("\"{}\"", key.name))
+        );
+    }
 
-    // A secret that is shared, malformed or missing fails the commit; nothing is published.
+    // A secret shared by two keys fails the commit and publishes nothing.
     let generation = artifact(&config).await.0.identity.generation;
-    let broken = |label: &str, change: &dyn Fn(&mut Command)| {
+    let leaks = |text: &str| {
+        for key in &keys {
+            assert!(!text.contains(&key.secret), "a secret is echoed");
+        }
+    };
+    let mut shared = writer(&config, &keys);
+    shared.env("FYRR_TEST_API_KEY_GONE", secret(1));
+    let output = shared.args(["writer", "commit"]).output().unwrap();
+    assert!(!output.status.success(), "shared: {}", report(&output));
+    leaks(&report(&output));
+    assert_eq!(artifact(&config).await.0.identity.generation, generation);
+    // A missing or malformed secret fails closed for its own key only: the
+    // commit still publishes every other key, and `writer status` says why.
+    let unusable = |label: &str, change: &dyn Fn(&mut Command)| {
         let mut command = writer(&config, &keys);
         change(&mut command);
         let output = command.args(["writer", "commit"]).output().unwrap();
-        assert!(!output.status.success(), "{label}: {}", report(&output));
-        let text = report(&output);
-        for key in &keys {
-            assert!(!text.contains(&key.secret), "{label} echoes a secret");
-        }
+        assert!(output.status.success(), "{label}: {}", report(&output));
+        leaks(&report(&output));
+        let mut status = writer(&config, &keys);
+        change(&mut status);
+        let status = status.args(["writer", "status"]).output().unwrap();
+        assert!(status.status.success(), "{label}: {}", report(&status));
+        leaks(&report(&status));
+        let warnings: Vec<String> =
+            serde_json::from_slice::<Value>(&status.stdout).unwrap()["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|w| w.as_str().unwrap().to_owned())
+                .collect();
+        assert!(
+            warnings.contains(&"api_key_secret_unusable".to_owned()),
+            "{label}: {warnings:?}"
+        );
     };
-    broken("shared", &|c| {
-        c.env("FYRR_TEST_API_KEY_GONE", secret(1));
-    });
-    broken("malformed", &|c| {
-        c.env("FYRR_TEST_API_KEY_GONE", "fyrr_key_too-short");
-    });
-    broken("missing", &|c| {
-        c.env_remove("FYRR_TEST_API_KEY_GONE");
-    });
-    assert_eq!(artifact(&config).await.0.identity.generation, generation);
+    for (label, change) in [
+        (
+            "malformed",
+            &(|c: &mut Command| {
+                c.env("FYRR_TEST_API_KEY_TWIN", "fyrr_key_too-short");
+            }) as &dyn Fn(&mut Command),
+        ),
+        ("low entropy", &|c: &mut Command| {
+            c.env(
+                "FYRR_TEST_API_KEY_TWIN",
+                format!("fyrr_key_{}", "a".repeat(64)),
+            );
+        }),
+        ("missing", &|c: &mut Command| {
+            c.env_remove("FYRR_TEST_API_KEY_TWIN");
+        }),
+    ] {
+        unusable(label, change);
+        let (_, skipped) = artifact(&config).await;
+        assert!(
+            skipped
+                .subjects
+                .iter()
+                .all(|b| b.subject != subject(&keys[0])),
+            "{label}: the unusable key is not bound"
+        );
+        assert!(
+            skipped
+                .subjects
+                .iter()
+                .any(|b| b.subject == subject(&keys[1]))
+                && skipped
+                    .subjects
+                    .iter()
+                    .any(|b| b.subject == subject(&keys[2])),
+            "{label}: the other keys stay bound"
+        );
+        // With the secret back, the next commit binds the key again.
+        let restored = writer(&config, &keys)
+            .args(["writer", "commit"])
+            .output()
+            .unwrap();
+        assert!(restored.status.success(), "{}", report(&restored));
+        assert!(
+            artifact(&config)
+                .await
+                .1
+                .subjects
+                .iter()
+                .any(|b| b.subject == subject(&keys[0])),
+            "{label}: the key is bound again"
+        );
+    }
+    let generation = artifact(&config).await.0.identity.generation;
     // `config check` reports the same mistakes by path, without the values.
     let check = |extra: &[(&str, String)]| {
         // `config check` also asks the providers, which needs the worker's Python.
@@ -285,37 +386,37 @@ async fn api_key_http_isolation_expiry_revocation_limits_and_oidc_coexistence_on
         .namespace
         .name;
     // The fixture's documents are readable by usr:u0..usr:u3 respectively.
-    let expiry = fyrr_core::clock::now() + chrono::Duration::seconds(75);
+    let expiry = fyrr_core::clock::now() + chrono::Duration::seconds(120);
     let expiry_text = expiry.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let expiring_grant: &'static str =
         Box::leak(format!("readers=['usr:u0']\nexpires={expiry_text}").into_boxed_str());
     let keys = [
         Key {
-            name: "reader-one",
+            name: "nm-one-q7x",
             variable: "FYRR_TEST_API_KEY_ONE",
             secret: secret(11),
             grant: "readers=['usr:u1']",
         },
         Key {
-            name: "reader-two",
+            name: "nm-two-q7x",
             variable: "FYRR_TEST_API_KEY_TWO",
             secret: secret(12),
             grant: "readers=['usr:u2']",
         },
         Key {
-            name: "limited",
+            name: "nm-limited-q7x",
             variable: "FYRR_TEST_API_KEY_LIMITED",
             secret: secret(13),
             grant: "readers=['usr:u3']\nrequests_per_minute=3",
         },
         Key {
-            name: "short-lived",
+            name: "nm-short-q7x",
             variable: "FYRR_TEST_API_KEY_SHORT",
             secret: secret(14),
             grant: expiring_grant,
         },
         Key {
-            name: "http-user",
+            name: "nm-user-q7x",
             variable: "FYRR_TEST_API_KEY_USER",
             secret: secret(15),
             grant: "user='http-1@example.test'",
@@ -332,7 +433,6 @@ async fn api_key_http_isolation_expiry_revocation_limits_and_oidc_coexistence_on
         .output()
         .unwrap();
     assert!(published.status.success(), "{}", report(&published));
-    let published_at = std::time::Instant::now();
 
     // A deployment with API keys and no OIDC starts and serves. The reader has
     // none of the secrets in its environment.
@@ -482,11 +582,9 @@ async fn api_key_http_isolation_expiry_revocation_limits_and_oidc_coexistence_on
         200
     );
 
-    // Expiry is enforced by the reader at request time, with nothing republished.
-    assert!(
-        published_at.elapsed() < Duration::from_secs(60),
-        "the fixture was too slow for the expiry window"
-    );
+    // Before its expiry the short-lived key is served; the expiry itself is
+    // checked at the end, because moving the test clock also moves the OIDC
+    // tokens' validity window out of the issuer's reach.
     assert_eq!(
         reader
             .rpc(&keys[3].secret, 30, "tools/list", json!({}))
@@ -494,11 +592,6 @@ async fn api_key_http_isolation_expiry_revocation_limits_and_oidc_coexistence_on
             .status(),
         200
     );
-    let wait = (expiry - fyrr_core::clock::now())
-        .to_std()
-        .unwrap_or_default();
-    tokio::time::sleep(wait + Duration::from_secs(2)).await;
-    assert_eq!(refusal(&reader, &keys[3].secret).await, wrong, "expired");
 
     // Removing a key and republishing the identity refuses it on the next request.
     assert_eq!(
@@ -510,7 +603,7 @@ async fn api_key_http_isolation_expiry_revocation_limits_and_oidc_coexistence_on
     );
     let remaining: String = keys
         .iter()
-        .filter(|k| k.name != "reader-two")
+        .filter(|k| k.name != "nm-two-q7x")
         .map(Key::table)
         .collect();
     std::fs::write(&commit, format!("{base_commit}{remaining}")).unwrap();
@@ -527,6 +620,25 @@ async fn api_key_http_isolation_expiry_revocation_limits_and_oidc_coexistence_on
             .status(),
         200
     );
+    // Nothing the reader wrote to stderr holds a secret, a key's name, or the
+    // hash of either: those are the subject and the principal of its requests.
+    let log = reader.stderr_text();
+    let cfg = fyrr_core::config::load(&worker).unwrap().config;
+    for key in &keys {
+        let subject = api_key_subject(&cfg, &key.secret).unwrap();
+        let principal = api_key_principal(&cfg, key.name).unwrap();
+        for text in [
+            key.secret.as_str(),
+            &key.secret["fyrr_key_".len()..],
+            key.name,
+            &subject,
+            &subject["key:".len()..],
+            &principal,
+            &principal["key:".len()..],
+        ] {
+            assert!(!log.contains(text), "the reader's log holds {text}");
+        }
+    }
     reader.stop().await;
 
     // With OIDC as well, an access token is still accepted next to a key, and
@@ -556,5 +668,878 @@ async fn api_key_http_isolation_expiry_revocation_limits_and_oidc_coexistence_on
         .await
         .unwrap();
     assert_eq!(metadata.status(), 200);
+    // Expiry is enforced by the reader at request time, with nothing
+    // republished. The test clock moves every process of this fixture at once.
+    fyrr_core::clock::advance(Duration::from_secs(121)).unwrap();
+    let expired = refusal(&both, &keys[3].secret).await;
+    assert_eq!((expired.0, &expired.1), (wrong.0, &wrong.1), "expired");
+    // The other keys carry no expiry.
+    assert_eq!(
+        both.rpc(&keys[0].secret, 52, "tools/list", json!({}))
+            .await
+            .status(),
+        200
+    );
     both.stop().await;
+}
+
+/// The reader's HTTP table for a deployment without OIDC.
+fn key_http(address: &std::net::SocketAddr, base: &str) -> String {
+    format!(
+        "\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\noperator_credential={{env='FYRR_HTTP_OPERATOR'}}\nuser_requests_per_minute=1000\ngroup_requests_per_minute=1000\n"
+    )
+}
+
+/// `grant` text that expires `seconds` from the test clock's now.
+fn expiring(readers: &str, seconds: i64) -> &'static str {
+    let at = fyrr_core::clock::now() + chrono::Duration::seconds(seconds);
+    let at = at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    Box::leak(format!("readers=['{readers}']\nexpires={at}").into_boxed_str())
+}
+
+/// A published fixture: documents readable by `usr:u0`..`usr:u3`, a snapshot
+/// directory that has completed a pull (so the head carries a freshness
+/// timestamp), and an OIDC issuer for the subjects `subject-0`..`subject-3`.
+struct Deployment {
+    issuer: Issuer,
+    _issuer_root: FixtureRoot,
+    worker: PathBuf,
+    commit: PathBuf,
+    root: FixtureRoot,
+    namespace: String,
+    snapshot: DirectorySnapshot,
+    base_worker: String,
+    base_commit: String,
+}
+impl Deployment {
+    async fn new() -> Self {
+        let (_, issuer_root) = setup();
+        let issuer = Issuer::new(&issuer_root).await;
+        let (worker, commit, root, snapshot) = fixture(&issuer).await;
+        let namespace = fyrr_core::config::load(&worker)
+            .unwrap()
+            .config
+            .namespace
+            .name;
+        Self {
+            _issuer_root: issuer_root,
+            base_worker: std::fs::read_to_string(&worker).unwrap(),
+            base_commit: std::fs::read_to_string(&commit).unwrap(),
+            issuer,
+            worker,
+            commit,
+            root,
+            namespace,
+            snapshot,
+        }
+    }
+
+    /// Declares exactly `keys` in both configurations and commits the identity.
+    fn publish(&self, keys: &[Key]) -> Output {
+        let tables: String = keys.iter().map(Key::table).collect();
+        for (file, base) in [
+            (&self.worker, &self.base_worker),
+            (&self.commit, &self.base_commit),
+        ] {
+            std::fs::write(file, format!("{base}{tables}")).unwrap();
+        }
+        writer(&self.commit, keys)
+            .args(["writer", "commit"])
+            .output()
+            .unwrap()
+    }
+
+    fn doc(&self, i: usize) -> String {
+        format!("{}-http-{i}", self.namespace)
+    }
+
+    /// The reader's file with no `[identity.directory]`: the Lambda shape.
+    fn without_directory(&self, path: &Path) -> PathBuf {
+        let text = std::fs::read_to_string(path).unwrap();
+        let start = text
+            .find("\n[identity.directory]\nprovider='snapshot'")
+            .expect("the fixture's directory table");
+        let end = start
+            + text[start..]
+                .find("sync_interval='5m'\n")
+                .expect("the table's last key")
+            + "sync_interval='5m'\n".len();
+        let stripped = self.root.join("reader-without-directory.toml");
+        std::fs::write(&stripped, format!("{}{}", &text[..start], &text[end..])).unwrap();
+        stripped
+    }
+}
+
+/// A storage boundary between a reader and its store: it counts reads, can
+/// make the published directory read look two hours old, and can hold one read.
+struct Boundary {
+    config: PathBuf,
+    reads: Arc<AtomicUsize>,
+    stale: Arc<AtomicBool>,
+    held: Arc<std::sync::Mutex<Option<BoundaryHook>>>,
+    _proxy: ProxyGuard,
+}
+impl Boundary {
+    fn new(config: &Path, root: &Path) -> Self {
+        let loaded = fyrr_core::config::load(config).unwrap();
+        let target = loaded
+            .config
+            .storage
+            .endpoint
+            .clone()
+            .unwrap_or_else(|| "local-storage".into());
+        let reads = Arc::new(AtomicUsize::new(0));
+        let stale = Arc::new(AtomicBool::new(false));
+        let held: Arc<std::sync::Mutex<Option<BoundaryHook>>> = Arc::default();
+        let hook: BoundaryHook = {
+            let (reads, held) = (reads.clone(), held.clone());
+            Arc::new(move |request: &str, body: &[u8], after: bool| {
+                if !after && (request.starts_with("GET ") || request.starts_with("HEAD ")) {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                }
+                let gate = held.lock().unwrap().clone();
+                gate.is_some_and(|gate| gate(request, body, after))
+            })
+        };
+        let transform: ResponseTransform = {
+            let stale = stale.clone();
+            Arc::new(move |request, response| {
+                if stale.load(Ordering::SeqCst)
+                    && request.starts_with("GET ")
+                    && request.contains("/head.json ")
+                {
+                    super::corrections::rewrite_ok_body(response, |body| {
+                        let mut head: ServingHead = serde_json::from_slice(body).unwrap();
+                        head.freshness.directory =
+                            Some(fyrr_core::clock::now() - chrono::Duration::hours(2));
+                        *body = serde_json::to_vec(&head).unwrap();
+                        true
+                    });
+                }
+            })
+        };
+        let (endpoint, proxy) = super::corrections::proxy_transform(
+            target.clone(),
+            Arc::new(AtomicBool::new(false)),
+            transform,
+            Some(hook),
+        );
+        // No mirror: every search reads the store, so a request can be held there.
+        let text = std::fs::read_to_string(config)
+            .unwrap()
+            .replace(&target, &endpoint)
+            .replace(
+                "[reader]",
+                "[reader]\nconcurrency=1\nversion_check_interval='10m'",
+            )
+            .replace("mirror_max_bytes = 16777216", "mirror_max_bytes = 0");
+        let observed = root.join("boundary.toml");
+        std::fs::write(&observed, text).unwrap();
+        Self {
+            config: observed,
+            reads,
+            stale,
+            held,
+            _proxy: proxy,
+        }
+    }
+
+    /// Holds the `nth` head read from now on, until the gate is released.
+    fn hold_head_read(&self, nth: usize) -> RequestGate {
+        let seen = AtomicUsize::new(0);
+        let (gate, hook) = RequestGate::new(move |request, _, after| {
+            !after
+                && request.starts_with("GET ")
+                && request.contains("/head.json ")
+                && seen.fetch_add(1, Ordering::SeqCst) + 1 == nth
+        });
+        *self.held.lock().unwrap() = Some(hook);
+        gate
+    }
+
+    /// Waits for the reader's own periodic head check (at least every 30 s) to
+    /// finish, so that the next one is far enough off for a request to be held
+    /// without it: the held read is then the request's own.
+    async fn clean_window(&self) {
+        let before = self.reads.load(Ordering::SeqCst);
+        for _ in 0..700 {
+            if self.reads.load(Ordering::SeqCst) > before {
+                return self.quiet().await;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("the reader's periodic head check never ran");
+    }
+
+    /// Waits until the reader has stopped reading on its own.
+    async fn quiet(&self) {
+        let mut last = self.reads.load(Ordering::SeqCst);
+        let mut still = 0;
+        for _ in 0..600 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let now = self.reads.load(Ordering::SeqCst);
+            still = if now == last { still + 1 } else { 0 };
+            last = now;
+            if still >= 8 {
+                return;
+            }
+        }
+        panic!("the reader never stopped reading");
+    }
+}
+
+/// One tool call on its own task, so a test can act while the reader holds it.
+fn call_task(
+    reader: &Reader,
+    token: &str,
+    id: u64,
+    name: &str,
+    args: Value,
+) -> tokio::task::JoinHandle<Value> {
+    let client = reader.client.clone();
+    let url = format!("{}/mcp", reader.base);
+    let (token, name) = (token.to_owned(), name.to_owned());
+    tokio::spawn(async move {
+        let response = client
+            .post(url)
+            .bearer_auth(token)
+            .timeout(Duration::from_secs(60))
+            .header("Accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", "2025-11-25")
+            .json(&json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":args}}))
+            .send()
+            .await
+            .unwrap();
+        if response.status() != 200 {
+            let status = response.status().as_u16();
+            return json!({"isError":true,"http_status":status,"body":response.text().await.unwrap()});
+        }
+        response.json::<Value>().await.unwrap()["result"].clone()
+    })
+}
+
+fn roots(result: &Value) -> Vec<String> {
+    assert_eq!(result["isError"], false, "{result}");
+    result["structuredContent"]["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+// A gate blocks its thread while a request is held, so the task that sends the
+// request needs a thread of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real HTTP MCP executable and local storage; scripts/ci"]
+async fn api_key_expiry_applies_to_a_request_admitted_just_before_it_on_storage() {
+    let keys = [
+        Key {
+            name: "nm-search-q7x",
+            variable: "FYRR_TEST_API_KEY_SEARCH",
+            secret: secret(21),
+            grant: expiring("usr:u1", 1200),
+        },
+        Key {
+            name: "nm-fetch-q7x",
+            variable: "FYRR_TEST_API_KEY_FETCH",
+            secret: secret(22),
+            grant: expiring("usr:u1", 1500),
+        },
+    ];
+    let deployment = Deployment::new().await;
+    let published = deployment.publish(&keys);
+    assert!(published.status.success(), "{}", report(&published));
+    let boundary = Boundary::new(&deployment.worker, &deployment.root);
+    let reader = Reader::start_appended(&boundary.config, &deployment.root, &[], key_http).await;
+    let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
+    let fetch = json!({"source_id":"incremental","root_id":deployment.doc(1)});
+    let hits = [deployment.doc(1)];
+    assert_eq!(
+        roots(
+            &reader
+                .call(&keys[0].secret, 1, "search", search.clone())
+                .await
+        ),
+        hits
+    );
+    boundary.quiet().await;
+
+    // Held at the third head read of a request, which is after its admission:
+    // released unchanged, the request is served.
+    boundary.clean_window().await;
+    let gate = boundary.hold_head_read(3);
+    let held = call_task(&reader, &keys[0].secret, 2, "search", search.clone());
+    gate.entered();
+    gate.release();
+    assert_eq!(roots(&held.await.unwrap()), hits);
+    boundary.quiet().await;
+
+    // The same request, admitted before `expires`, is held while the clock passes
+    // it: nothing leaves, and the next request does not get past admission.
+    boundary.clean_window().await;
+    let gate = boundary.hold_head_read(3);
+    let held = call_task(&reader, &keys[0].secret, 3, "search", search.clone());
+    gate.entered();
+    fyrr_core::clock::advance(Duration::from_secs(1201)).unwrap();
+    gate.release();
+    let refused = held.await;
+    let refused = refused.unwrap();
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert_eq!(
+        refused["structuredContent"]["code"],
+        "authorization_unavailable"
+    );
+    assert!(refused["structuredContent"]["hits"].is_null(), "{refused}");
+    assert_eq!(
+        refusal(&reader, &keys[0].secret).await.0,
+        401,
+        "expired before admission"
+    );
+    boundary.quiet().await;
+
+    // The same for a fetch with the second key, which is still valid.
+    let own = reader
+        .call(&keys[1].secret, 4, "fetch", fetch.clone())
+        .await;
+    assert_eq!(own["isError"], false, "{own}");
+    boundary.clean_window().await;
+    let gate = boundary.hold_head_read(3);
+    let held = call_task(&reader, &keys[1].secret, 5, "fetch", fetch.clone());
+    gate.entered();
+    fyrr_core::clock::advance(Duration::from_secs(300)).unwrap();
+    gate.release();
+    let refused = held.await.unwrap();
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert_eq!(
+        refused["structuredContent"]["code"],
+        "authorization_unavailable"
+    );
+    assert!(
+        refused["structuredContent"]["documents"].is_null(),
+        "{refused}"
+    );
+    assert_eq!(refusal(&reader, &keys[1].secret).await.0, 401);
+    drop(gate);
+    let mut reader = reader;
+    reader.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "real writer, HTTP MCP executable and local storage; scripts/ci"]
+async fn removing_the_last_api_key_publishes_no_binding_and_refuses_the_key_on_storage() {
+    let keys = [Key {
+        name: "nm-last-q7x",
+        variable: "FYRR_TEST_API_KEY_LAST",
+        secret: secret(31),
+        grant: "readers=['usr:u1']",
+    }];
+    let deployment = Deployment::new().await;
+    let shared = |keys: &[&Key]| {
+        // One file for the writer and the reader: API keys and no OIDC.
+        let tables: String = keys.iter().map(|key| key.table()).collect();
+        std::fs::write(
+            &deployment.commit,
+            format!(
+                "{}{tables}\n[reader.http]\nlisten='127.0.0.1:1'\npublic_url='http://127.0.0.1:1/mcp'\n",
+                deployment.base_commit
+            ),
+        )
+        .unwrap();
+    };
+    shared(&[&keys[0]]);
+    let committed = writer(&deployment.commit, &keys)
+        .args(["writer", "commit"])
+        .output()
+        .unwrap();
+    assert!(committed.status.success(), "{}", report(&committed));
+    // The reader runs on the old file: it keeps the key declared.
+    let tables: String = keys.iter().map(Key::table).collect();
+    std::fs::write(
+        &deployment.worker,
+        format!("{}{tables}", deployment.base_worker),
+    )
+    .unwrap();
+    let reader = Reader::start_appended(&deployment.worker, &deployment.root, &[], key_http).await;
+    let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
+    assert_eq!(
+        roots(
+            &reader
+                .call(&keys[0].secret, 1, "search", search.clone())
+                .await
+        ),
+        [deployment.doc(1)]
+    );
+
+    // The key is removed from the shared file, which then has no way to
+    // authenticate an HTTP reader. The writer does not need one: it commits.
+    shared(&[]);
+    let (cfg, before) = {
+        let (_, before) = artifact(&deployment.commit).await;
+        (
+            fyrr_core::config::load(&deployment.commit).unwrap().config,
+            before,
+        )
+    };
+    let bound = api_key_subject(&cfg, &keys[0].secret).unwrap();
+    assert!(before.subjects.iter().any(|b| b.subject == bound));
+    let revoked = writer(&deployment.commit, &[])
+        .args(["writer", "commit"])
+        .output()
+        .unwrap();
+    assert!(revoked.status.success(), "{}", report(&revoked));
+    let (_, after) = artifact(&deployment.commit).await;
+    assert!(
+        after.subjects.iter().all(|b| b.subject != bound),
+        "the last key is no longer bound"
+    );
+    let status = writer(&deployment.commit, &[])
+        .args(["writer", "status"])
+        .output()
+        .unwrap();
+    assert!(status.status.success(), "{}", report(&status));
+    // The running reader refuses the key on its next request.
+    assert_eq!(refusal(&reader, &keys[0].secret).await.0, 401);
+    // `config check` says what a restarted reader would do, and the reader does it.
+    let check = worker_command(&deployment.commit)
+        .args(["config", "check", "--no-env"])
+        .output()
+        .unwrap();
+    assert!(check.status.success(), "{}", report(&check));
+    assert!(
+        String::from_utf8_lossy(&check.stderr).contains("reader.http"),
+        "{}",
+        report(&check)
+    );
+    let start = host_command(&deployment.commit)
+        .args(["reader", "serve"])
+        .output()
+        .unwrap();
+    assert_eq!(start.status.code(), Some(78), "{}", report(&start));
+    let mut reader = reader;
+    reader.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "real HTTP MCP executable and local storage; scripts/ci"]
+async fn garbage_api_keys_cost_no_storage_reads_and_hide_a_stale_directory_on_storage() {
+    let keys = [
+        Key {
+            name: "nm-first-q7x",
+            variable: "FYRR_TEST_API_KEY_FIRST",
+            secret: secret(41),
+            grant: "readers=['usr:u1']",
+        },
+        Key {
+            name: "nm-second-q7x",
+            variable: "FYRR_TEST_API_KEY_SECOND",
+            secret: secret(42),
+            grant: "readers=['usr:u2']",
+        },
+    ];
+    let deployment = Deployment::new().await;
+    let published = deployment.publish(&keys[..1]);
+    assert!(published.status.success(), "{}", report(&published));
+    let boundary = Boundary::new(&deployment.worker, &deployment.root);
+    let reader = Reader::start_appended(&boundary.config, &deployment.root, &[], key_http).await;
+    let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
+    assert_eq!(
+        roots(
+            &reader
+                .call(&keys[0].secret, 1, "search", search.clone())
+                .await
+        ),
+        [deployment.doc(1)]
+    );
+    boundary.quiet().await;
+
+    // A flood of well-shaped keys nobody bound: each is the same 401, and the
+    // reader looks at storage once per refresh interval, not once per key.
+    let wrong = refusal(&reader, &secret(900)).await;
+    assert_eq!(wrong.0, 401);
+    boundary.quiet().await;
+    let before = boundary.reads.load(Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    for n in 0..60 {
+        assert_eq!(refusal(&reader, &secret(1000 + n)).await, wrong);
+    }
+    let seconds = started.elapsed().as_secs() as usize;
+    let reads = boundary.reads.load(Ordering::SeqCst) - before;
+    // One refresh is a head read and, when it changed, the identity artifact.
+    assert!(
+        reads <= 2 * (seconds + 1),
+        "{reads} storage reads for 60 unknown keys in {seconds}s"
+    );
+    // A key the identity binds is checked against the head on every request.
+    boundary.quiet().await;
+    let before = boundary.reads.load(Ordering::SeqCst);
+    for id in 0..5 {
+        assert_eq!(
+            reader
+                .rpc(&keys[0].secret, 100 + id, "tools/list", json!({}))
+                .await
+                .status(),
+            200
+        );
+    }
+    assert!(boundary.reads.load(Ordering::SeqCst) - before >= 5);
+
+    // A key published while the reader runs is usable within about a second.
+    let published = deployment.publish(&keys);
+    assert!(published.status.success(), "{}", report(&published));
+    let added = std::time::Instant::now();
+    loop {
+        let status = reader
+            .rpc(&keys[1].secret, 200, "tools/list", json!({}))
+            .await
+            .status();
+        if status == 200 {
+            break;
+        }
+        assert_eq!(status, 401);
+        assert!(
+            added.elapsed() < Duration::from_secs(5),
+            "the new key was not admitted within the refresh bound"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // The directory read the head attests expires: a bound key learns that
+    // (503), a caller with a random key learns nothing (the same 401).
+    let (head, _) = artifact(&deployment.commit).await;
+    assert!(head.freshness.directory.is_some());
+    boundary.stale.store(true, Ordering::SeqCst);
+    assert_eq!(refusal(&reader, &secret(2000)).await, wrong);
+    assert_eq!(refusal(&reader, "fyrr_key_short").await, wrong);
+    let learned = refusal(&reader, &keys[0].secret).await;
+    assert_eq!(learned.0, 503, "{learned:?}");
+    assert!(
+        learned.1.contains("authorization_unavailable"),
+        "{learned:?}"
+    );
+    boundary.stale.store(false, Ordering::SeqCst);
+    assert_eq!(
+        reader
+            .rpc(&keys[0].secret, 300, "tools/list", json!({}))
+            .await
+            .status(),
+        200
+    );
+    let mut reader = reader;
+    reader.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "real HTTP MCP executable and local storage; scripts/ci"]
+async fn a_reader_without_a_directory_provider_still_refuses_a_stale_published_directory_on_storage()
+ {
+    let keys = [
+        Key {
+            name: "nm-user-q7x",
+            variable: "FYRR_TEST_API_KEY_USER_STALE",
+            secret: secret(51),
+            grant: "user='http-1@example.test'",
+        },
+        Key {
+            name: "nm-readers-q7x",
+            variable: "FYRR_TEST_API_KEY_READERS_STALE",
+            secret: secret(52),
+            grant: "readers=['usr:u2']",
+        },
+    ];
+    let deployment = Deployment::new().await;
+    let published = deployment.publish(&keys);
+    assert!(published.status.success(), "{}", report(&published));
+    // The publication attests a directory read ...
+    let (head, _) = artifact(&deployment.commit).await;
+    assert!(head.freshness.directory.is_some());
+    // ... and this reader's own file names no directory provider.
+    let own = deployment.without_directory(&deployment.worker);
+    let boundary = Boundary::new(&own, &deployment.root);
+    assert!(
+        !std::fs::read_to_string(&boundary.config)
+            .unwrap()
+            .contains("provider='snapshot'")
+    );
+    let reader = Reader::start(
+        &boundary.config,
+        &deployment.root,
+        &deployment.issuer,
+        1000,
+        1000,
+    )
+    .await;
+    let oidc = deployment.issuer.token("subject-1", json!({}), json!({}));
+    let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
+    for (label, token) in [("user key", &keys[0].secret), ("OIDC", &oidc)] {
+        assert_eq!(
+            roots(&reader.call(token, 1, "search", search.clone()).await),
+            [deployment.doc(1)],
+            "{label}"
+        );
+    }
+    boundary.stale.store(true, Ordering::SeqCst);
+    for (label, token) in [("user key", &keys[0].secret), ("OIDC", &oidc)] {
+        let response = reader.rpc(token, 2, "tools/list", json!({})).await;
+        assert_eq!(
+            response.status(),
+            503,
+            "{label} was served from an expired directory"
+        );
+        assert!(
+            response
+                .text()
+                .await
+                .unwrap()
+                .contains("authorization_unavailable")
+        );
+    }
+    // A `readers` key is no directory subject, but the namespace is refused as a whole.
+    assert_eq!(refusal(&reader, &keys[1].secret).await.0, 503);
+    boundary.stale.store(false, Ordering::SeqCst);
+    assert_eq!(
+        reader
+            .rpc(&keys[0].secret, 3, "tools/list", json!({}))
+            .await
+            .status(),
+        200
+    );
+    let mut reader = reader;
+    reader.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "real writer, HTTP MCP executable and local storage; scripts/ci"]
+async fn a_user_key_is_refused_once_a_directory_sync_deactivates_its_user_on_storage() {
+    let keys = [
+        Key {
+            name: "nm-ada-q7x",
+            variable: "FYRR_TEST_API_KEY_ADA",
+            secret: secret(61),
+            grant: "user='http-1@example.test'",
+        },
+        Key {
+            name: "nm-other-q7x",
+            variable: "FYRR_TEST_API_KEY_OTHER",
+            secret: secret(62),
+            grant: "user='http-2@example.test'",
+        },
+    ];
+    let mut deployment = Deployment::new().await;
+    let published = deployment.publish(&keys);
+    assert!(published.status.success(), "{}", report(&published));
+    let reader = Reader::start_appended(&deployment.worker, &deployment.root, &[], key_http).await;
+    let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
+    for (key, doc) in [(&keys[0], 1), (&keys[1], 2)] {
+        assert_eq!(
+            roots(&reader.call(&key.secret, 1, "search", search.clone()).await),
+            [deployment.doc(doc)]
+        );
+    }
+    deployment.snapshot.users[1].active = false;
+    deployment.snapshot.built_at = fyrr_core::clock::now();
+    std::fs::write(
+        deployment.root.join("http-directory.json"),
+        write_contract(&deployment.snapshot),
+    )
+    .unwrap();
+    let synced = writer(&deployment.commit, &keys)
+        .args(["writer", "sync", "--directory"])
+        .output()
+        .unwrap();
+    assert!(synced.status.success(), "{}", report(&synced));
+    // The deactivated user's key is the same 401 as any unbound one; the other works.
+    let wrong = refusal(&reader, &secret(999)).await;
+    assert_eq!(refusal(&reader, &keys[0].secret).await, wrong);
+    assert_eq!(
+        roots(
+            &reader
+                .call(&keys[1].secret, 2, "search", search.clone())
+                .await
+        ),
+        [deployment.doc(2)]
+    );
+    let mut reader = reader;
+    reader.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "real writer, HTTP MCP executable and local storage; scripts/ci"]
+async fn an_unusable_key_secret_skips_only_its_key_and_a_fetch_cursor_stays_with_its_key_on_storage()
+ {
+    let keys = [
+        Key {
+            name: "nm-good-q7x",
+            variable: "FYRR_TEST_API_KEY_GOOD",
+            secret: secret(71),
+            grant: "readers=['usr:u1']",
+        },
+        Key {
+            name: "nm-bad-q7x",
+            variable: "FYRR_TEST_API_KEY_BAD",
+            secret: "fyrr_key_too-short".into(),
+            grant: "readers=['usr:u2']",
+        },
+        Key {
+            name: "nm-unset-q7x",
+            variable: "FYRR_TEST_API_KEY_UNSET",
+            secret: secret(73),
+            grant: "readers=['usr:u3']",
+        },
+        Key {
+            name: "nm-twin-q7x",
+            variable: "FYRR_TEST_API_KEY_TWIN2",
+            secret: secret(74),
+            grant: "readers=['usr:u1']",
+        },
+    ];
+    let mut deployment = Deployment::new().await;
+    // A document larger than one fetch page (64 KiB), readable by usr:u1. The
+    // fixture caps documents at 64 bytes and knows no vector for new text.
+    deployment.base_worker = deployment
+        .base_worker
+        .replace("document_max_bytes='64B'", "document_max_bytes='1MiB'");
+    deployment.base_commit = deployment
+        .base_commit
+        .replace("document_max_bytes='64B'", "document_max_bytes='1MiB'");
+    std::fs::write(&deployment.worker, &deployment.base_worker).unwrap();
+    std::fs::write(&deployment.commit, &deployment.base_commit).unwrap();
+    let big = format!("{}-big", deployment.namespace);
+    let texts: Vec<String> = (0..6)
+        .map(|n| {
+            let text = format!("{n} {}", "page ".repeat(2400));
+            let vector: Vec<f32> = (0..1024)
+                .map(|d| (((n + 900) * (d + 7)) as f32).sin())
+                .collect();
+            deployment.root.embedding.insert_both(&text, vector);
+            text
+        })
+        .collect();
+    super::incremental::input(
+        &deployment.root,
+        json!({"epoch":2,"content":[[{"id":big,"revision":"r1","texts":texts,"readers":["usr:u1"],"section_readers":vec![vec!["usr:u1"]; 6]}]],"permissions":[[{"id":big,"revision":"p1","readers":["usr:u1"]}]]}),
+    );
+    super::coordination::worker_sync(
+        &deployment.worker,
+        &["incremental", "--kind", "content", "--kind", "permissions"],
+    );
+    // The writer has every secret but the unset one's, and one is malformed.
+    let tables: String = keys.iter().map(Key::table).collect();
+    for (file, base) in [
+        (&deployment.worker, &deployment.base_worker),
+        (&deployment.commit, &deployment.base_commit),
+    ] {
+        std::fs::write(file, format!("{base}{tables}")).unwrap();
+    }
+    let present = [&keys[0], &keys[1], &keys[3]];
+    let mut commit = host_command(&deployment.commit);
+    for key in present {
+        commit.env(key.variable, &key.secret);
+    }
+    let committed = commit.args(["writer", "commit"]).output().unwrap();
+    assert!(committed.status.success(), "{}", report(&committed));
+    let mut status = host_command(&deployment.commit);
+    for key in present {
+        status.env(key.variable, &key.secret);
+    }
+    let status = status.args(["writer", "status"]).output().unwrap();
+    assert!(status.status.success(), "{}", report(&status));
+    assert!(
+        serde_json::from_slice::<Value>(&status.stdout).unwrap()["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w == "api_key_secret_unusable"),
+        "{}",
+        report(&status)
+    );
+    // `config check` reports the missing variable and the malformed secret by path.
+    let mut check = worker_command(&deployment.commit);
+    for key in present {
+        check.env(key.variable, &key.secret);
+    }
+    let check = check.args(["config", "check"]).output().unwrap();
+    assert_eq!(check.status.code(), Some(78), "{}", report(&check));
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(
+        stderr.contains("identity.api_keys[1].key") && stderr.contains("identity.api_keys[2].key")
+    );
+    assert!(!report(&check).contains("fyrr_key_too-short"));
+
+    // The reader serves the good keys and an OIDC subject; the bad ones get the 401.
+    let mut reader = Reader::start(
+        &deployment.worker,
+        &deployment.root,
+        &deployment.issuer,
+        1000,
+        1000,
+    )
+    .await;
+    let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
+    let good = roots(
+        &reader
+            .call(&keys[0].secret, 1, "search", search.clone())
+            .await,
+    );
+    assert!(good.contains(&deployment.doc(1)) && !good.contains(&deployment.doc(2)));
+    let oidc = deployment.issuer.token("subject-2", json!({}), json!({}));
+    assert_eq!(
+        roots(&reader.call(&oidc, 2, "search", search.clone()).await),
+        [deployment.doc(2)]
+    );
+    let wrong = refusal(&reader, &secret(999)).await;
+    for key in [&keys[1], &keys[2]] {
+        assert_eq!(refusal(&reader, &key.secret).await, wrong, "{}", key.name);
+    }
+
+    // A fetch cursor is bound to the principal it was issued to: another key
+    // with the same grants cannot continue it, and nobody can once its key is removed.
+    let first = reader
+        .call(
+            &keys[0].secret,
+            3,
+            "fetch",
+            json!({"source_id":"incremental","root_id":big}),
+        )
+        .await;
+    let cursor = first["structuredContent"]["next_cursor"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a second page: {first}"))
+        .to_owned();
+    let next = reader
+        .call(&keys[0].secret, 4, "fetch", json!({"cursor":cursor}))
+        .await;
+    assert_eq!(next["isError"], false, "{next}");
+    let other = reader
+        .call(&keys[3].secret, 5, "fetch", json!({"cursor":cursor}))
+        .await;
+    assert_eq!(other["isError"], true, "{other}");
+    assert_eq!(other["structuredContent"]["code"], "stale_cursor");
+    let remaining: Vec<&Key> = vec![&keys[1], &keys[3]];
+    let tables: String = remaining.iter().map(|key| key.table()).collect();
+    std::fs::write(
+        &deployment.commit,
+        format!("{}{tables}", deployment.base_commit),
+    )
+    .unwrap();
+    let mut revoke = host_command(&deployment.commit);
+    for key in present {
+        revoke.env(key.variable, &key.secret);
+    }
+    let revoked = revoke.args(["writer", "commit"]).output().unwrap();
+    assert!(revoked.status.success(), "{}", report(&revoked));
+    let response = reader
+        .rpc(
+            &keys[0].secret,
+            6,
+            "tools/call",
+            json!({"name":"fetch","arguments":{"cursor":cursor}}),
+        )
+        .await;
+    assert_eq!(
+        response.status(),
+        401,
+        "a removed key's cursor is no credential"
+    );
+    reader.stop().await;
 }

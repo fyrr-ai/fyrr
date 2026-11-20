@@ -1,6 +1,6 @@
 use super::*;
 #[test]
-fn only_an_absent_directory_needs_no_freshness_proof() {
+fn the_publication_decides_whether_the_directory_clock_applies() {
     use fyrr_core::config::DirectoryProvider;
     let mut config = fyrr_core::config::parse(concat!(
         "[namespace]\nname='freshness'\n",
@@ -30,9 +30,13 @@ fn only_an_absent_directory_needs_no_freshness_proof() {
                 true,
             ),
         ] {
+            // Without a freshness timestamp only a reader without a directory
+            // provider serves (a snapshot imported by hand). A timestamp is
+            // the writer's attestation, and it binds every reader: the
+            // reader's own provider setting cannot waive it.
             assert_eq!(
                 directory_fresh(&config, freshness, now),
-                valid || provider == DirectoryProvider::None,
+                valid || (freshness.is_none() && provider == DirectoryProvider::None),
                 "{provider:?}: {freshness:?}"
             );
         }

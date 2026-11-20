@@ -4,7 +4,7 @@
 //! the stdio subject's. The file holds an environment reference, never the
 //! secret; the writer publishes only a keyed hash of it.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SubsecRound, Utc};
 
 use super::*;
 
@@ -16,19 +16,27 @@ pub const API_KEY_PREFIX: &str = "fyrr_key_";
 pub const API_KEY_MIN_RANDOM: usize = 43;
 /// Most characters after the prefix, so a bearer is bounded before it is hashed.
 pub const API_KEY_MAX_RANDOM: usize = 128;
+/// Fewest distinct characters after the prefix. A sanity floor, not proof of
+/// randomness: it turns away `aaaa…` and `abcabc…`-style placeholders (a hex
+/// secret has up to 16 distinct characters, a base64url one up to 64).
+pub const API_KEY_MIN_DISTINCT: usize = 10;
 /// At most this many keys per namespace.
 pub const API_KEYS_MAX: usize = 256;
 /// Longest `user` value, in bytes.
 const API_KEY_USER_MAX_BYTES: usize = 512;
 
-/// Whether `text` is a well-formed API-key secret. The reader and the writer
-/// check this before they hash a value.
+/// Whether `text` is a well-formed API-key secret: the prefix, 43–128
+/// characters from `[A-Za-z0-9_-]` and at least [`API_KEY_MIN_DISTINCT`]
+/// distinct ones. The shape does not prove the secret is random; generating
+/// it from a random source does. The reader and the writer check this before
+/// they hash a value.
 pub fn is_api_key_secret(text: &str) -> bool {
     text.strip_prefix(API_KEY_PREFIX).is_some_and(|random| {
         (API_KEY_MIN_RANDOM..=API_KEY_MAX_RANDOM).contains(&random.len())
             && random
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            && random.bytes().collect::<BTreeSet<_>>().len() >= API_KEY_MIN_DISTINCT
     })
 }
 
@@ -41,7 +49,8 @@ pub struct ApiKeyConfig {
     #[schemars(regex(pattern = SOURCE_ID_PATTERN))]
     pub name: String,
     /// The bearer secret, `{ env = "VAR" }`: `fyrr_key_` followed by at least
-    /// 43 characters from `[A-Za-z0-9_-]`. Only the writer reads the variable.
+    /// 43 characters from `[A-Za-z0-9_-]`, at least 10 of them distinct. Only
+    /// the writer reads the variable.
     pub key: SecretRef,
     /// Reader tokens (`usr:<id>`, `grp:<id>`) the key acts with, as
     /// `identity.stdio_readers` states them for the stdio subject.
@@ -53,7 +62,9 @@ pub struct ApiKeyConfig {
     #[schemars(length(min = 1, max = API_KEY_USER_MAX_BYTES), extend("x-maxUtf8Bytes" = API_KEY_USER_MAX_BYTES))]
     pub user: Option<String>,
     /// The reader refuses the key from this instant on, an RFC 3339 timestamp
-    /// with an offset (`2027-06-30T00:00:00Z`). Absent, the key does not expire.
+    /// with an offset (`2027-06-30T00:00:00Z`), to the whole second: a fraction
+    /// is dropped, so the key is refused from the start of that second. Absent,
+    /// the key does not expire.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -78,7 +89,7 @@ fn expiry<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<DateTime<
         }
         fn visit_str<E: de::Error>(self, text: &str) -> Result<Self::Value, E> {
             DateTime::parse_from_rfc3339(text)
-                .map(|at| Some(at.with_timezone(&Utc)))
+                .map(|at| Some(at.with_timezone(&Utc).trunc_subsecs(0)))
                 .map_err(|_| E::custom(MESSAGE))
         }
         fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
@@ -93,7 +104,8 @@ fn expiry<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<DateTime<
 impl LoadedConfig {
     /// Checks of the secrets' values, which need the environment. A variable
     /// that is unset is reported by [`LoadedConfig::missing_secrets`], not
-    /// here. Messages carry paths only, never a value.
+    /// here. Messages carry paths only, never a value. A malformed secret is
+    /// no secret to compare, so it takes no part in the duplicate check.
     pub fn api_key_secret_issues(&self, env: &dyn Environment) -> Vec<Issue> {
         let mut issues = Vec::new();
         let mut seen: Vec<(usize, Secret)> = Vec::new();
@@ -106,10 +118,12 @@ impl LoadedConfig {
                 issues.push(Issue::error(
                     path,
                     format!(
-                        "must be {API_KEY_PREFIX} followed by {API_KEY_MIN_RANDOM}–{API_KEY_MAX_RANDOM} characters from [A-Za-z0-9_-]"
+                        "must be {API_KEY_PREFIX} followed by {API_KEY_MIN_RANDOM}–{API_KEY_MAX_RANDOM} characters from [A-Za-z0-9_-], at least {API_KEY_MIN_DISTINCT} of them distinct; generate it with `openssl rand -hex 32`"
                     ),
                 ));
-            } else if let Some((other, _)) = seen.iter().find(|(_, other)| *other == secret) {
+                continue;
+            }
+            if let Some((other, _)) = seen.iter().find(|(_, other)| *other == secret) {
                 issues.push(Issue::error(
                     path,
                     format!("holds the same secret as identity.api_keys[{other}].key"),
@@ -182,7 +196,8 @@ pub(super) fn validate(config: &Config, error: &mut impl FnMut(&str, String)) {
     }
 }
 
-/// An expired key is a valid way to retire one, so it only warns.
+/// An expired key is a valid way to retire one, so it only warns. So does a
+/// `user` key without a directory: a snapshot imported by hand is valid.
 pub(super) fn warnings(config: &Config, issues: &mut Vec<Issue>) {
     let now = crate::clock::now();
     for (index, key) in config.identity.api_keys.iter().enumerate() {
@@ -192,5 +207,23 @@ pub(super) fn warnings(config: &Config, issues: &mut Vec<Issue>) {
                 "already passed: the reader refuses this key",
             ));
         }
+        if key.user.is_some() && config.identity.directory.provider == DirectoryProvider::None {
+            issues.push(Issue::warning(
+                format!("identity.api_keys[{index}].user"),
+                "needs a directory to name this user: set identity.directory.provider, or import a snapshot with `writer directory --snapshot`; until then the key binds nobody",
+            ));
+        }
+    }
+}
+
+impl Config {
+    /// `reader.http` is configured and nothing can authenticate its callers:
+    /// neither `identity.oidc` nor an API key. The HTTP reader refuses to
+    /// start then; the writer, which publishes identity for the same file, has
+    /// no such need, so removing the last key stays a valid configuration.
+    pub fn http_authentication_missing(&self) -> bool {
+        self.reader.http.is_some()
+            && self.identity.oidc.is_none()
+            && self.identity.api_keys.is_empty()
     }
 }

@@ -856,7 +856,7 @@
         },
         "key": {
           "$ref": "#/$defs/SecretRef",
-          "description": "The bearer secret, `{ env = \"VAR\" }`: `fyrr_key_` followed by at least\n43 characters from `[A-Za-z0-9_-]`. Only the writer reads the variable."
+          "description": "The bearer secret, `{ env = \"VAR\" }`: `fyrr_key_` followed by at least\n43 characters from `[A-Za-z0-9_-]`, at least 10 of them distinct. Only\nthe writer reads the variable."
         },
         "readers": {
           "type": "array",
@@ -881,7 +881,7 @@
             "null"
           ],
           "format": "date-time",
-          "description": "The reader refuses the key from this instant on, an RFC 3339 timestamp\nwith an offset (`2027-06-30T00:00:00Z`). Absent, the key does not expire."
+          "description": "The reader refuses the key from this instant on, an RFC 3339 timestamp\nwith an offset (`2027-06-30T00:00:00Z`), to the whole second: a fraction\nis dropped, so the key is refused from the start of that second. Absent,\nthe key does not expire."
         },
         "requests_per_minute": {
           "type": [
@@ -1436,5 +1436,5 @@
       "description": "When each of a source's syncs is due."
     }
   },
-  "x-fyrr-schema-version": "5.2"
+  "x-fyrr-schema-version": "5.1"
 }

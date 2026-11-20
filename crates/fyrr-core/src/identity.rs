@@ -94,11 +94,27 @@ pub enum IdentityInputKind {
 impl IdentityArtifact {
     /// The principal a subject is bound to at `now`; an expired binding admits nobody.
     pub fn principal_for_subject(&self, subject: &str, now: DateTime<Utc>) -> Option<&Principal> {
+        self.binding_for_subject(subject, now)
+            .map(|(_, principal)| principal)
+    }
+
+    /// The binding of a subject that admits it at `now`, with its principal. A
+    /// binding is expired from the instant its `expires` names on
+    /// (`expires <= now`); writers publish whole seconds.
+    pub fn binding_for_subject(
+        &self,
+        subject: &str,
+        now: DateTime<Utc>,
+    ) -> Option<(&SubjectBinding, &Principal)> {
         let binding = self.subjects.iter().find(|b| b.subject == subject)?;
         if binding.expires.is_some_and(|expires| expires <= now) {
             return None;
         }
-        self.principals.iter().find(|p| p.key == binding.principal)
+        let principal = self
+            .principals
+            .iter()
+            .find(|p| p.key == binding.principal)?;
+        Some((binding, principal))
     }
 }
 

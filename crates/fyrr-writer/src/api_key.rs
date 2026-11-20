@@ -13,7 +13,8 @@ use fyrr_reader::storage::{api_key_principal, api_key_subject, hash_principal};
 use std::collections::BTreeSet;
 
 /// The hash of a configured key's secret, or `None` when the variable is unset
-/// or holds something that is no API-key secret.
+/// or holds something that is no API-key secret. A malformed secret is never
+/// added to a collision set: it has no hash to collide.
 fn subject(
     config: &Config,
     env: &dyn Environment,
@@ -31,9 +32,11 @@ fn subject(
 /// Bindings for every configured key, and the grants of the `readers` keys.
 ///
 /// A key whose user is absent or inactive gets no binding: the reader refuses
-/// it, and `writer status` says so. A secret that is missing, malformed or
-/// shared is a deployment error and fails the build, because publishing the
-/// other keys without it would hide the mistake.
+/// it, and `writer status` says so. So does a key whose secret is missing or
+/// malformed (`api_key_secret_unusable` in `writer status`): the key fails
+/// closed, and one bad variable does not stop the identity of every other key
+/// and user. Two keys that share a secret are a configuration error and fail
+/// the build, because either could then act as the other.
 pub(crate) fn bindings(
     config: &Config,
     env: &dyn Environment,
@@ -41,17 +44,11 @@ pub(crate) fn bindings(
     grants: &mut UserTokens,
 ) -> Result<Vec<SubjectBinding>> {
     let mut subjects = BTreeSet::new();
-    let mut names = BTreeSet::new();
     let mut bound = Vec::new();
     for key in &config.identity.api_keys {
-        let secret = key
-            .key
-            .resolve(env)
-            .map_err(|_| WriterError::CredentialUnavailable)?;
-        if !is_api_key_secret(secret.expose()) || !names.insert(key.name.as_str()) {
-            return Err(WriterError::ConfigurationInvalid);
-        }
-        let subject = api_key_subject(config, secret.expose())?;
+        let Some(subject) = subject(config, env, key)? else {
+            continue;
+        };
         if !subjects.insert(subject.clone()) {
             return Err(WriterError::ConfigurationInvalid);
         }
