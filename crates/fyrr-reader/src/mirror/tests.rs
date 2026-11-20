@@ -835,3 +835,429 @@ mod latency {
         std::fs::remove_dir_all(directory).unwrap();
     }
 }
+
+/// A mirror bound to `dataset.lance` with one pinned `data/` object of `size`
+/// bytes, and the store a reader of that mirror sees.
+struct PagedFixture {
+    directory: PathBuf,
+    mirror: Arc<MirrorStore>,
+    source: Arc<object_store::memory::InMemory>,
+    store: Arc<dyn ObjectStore>,
+    files: Vec<fyrr_core::envelope::FileRef>,
+    lease: Option<Arc<MirrorLease>>,
+    path: Path,
+    blob: PathBuf,
+}
+const PAGED_SIZE: usize = 100_000;
+impl PagedFixture {
+    async fn new(name: &str, max_bytes: u64) -> Self {
+        let directory = temporary_directory(name);
+        let mirror = bound_mirror(&directory, max_bytes);
+        let source = Arc::new(object_store::memory::InMemory::new());
+        let path = Path::from("dataset.lance/data/f.lance");
+        source.put(&path, Self::bytes(0).into()).await.unwrap();
+        let files = vec![fyrr_core::envelope::FileRef {
+            path: "data/f.lance".into(),
+            size_bytes: PAGED_SIZE as u64,
+        }];
+        let lease = Some(mirror.pin(&files).await.unwrap());
+        let store = mirror.wrap("s3$bucket", source.clone());
+        let blob = directory.join(mirror.blob_name("s3$bucket", path.as_ref()).unwrap());
+        Self {
+            directory,
+            mirror,
+            source,
+            store,
+            files,
+            lease,
+            path,
+            blob,
+        }
+    }
+    /// The object's content; `seed` changes every byte.
+    fn bytes(seed: usize) -> Vec<u8> {
+        (0..PAGED_SIZE)
+            .map(|i| u8::try_from((i * 7 + seed) % 251).unwrap())
+            .collect()
+    }
+    async fn read(&self, range: std::ops::Range<u64>) -> object_store::Result<Vec<u8>> {
+        Ok(self.store.get_range(&self.path, range).await?.to_vec())
+    }
+    fn exists(&self, extension: &str) -> bool {
+        self.blob.with_extension(extension).exists()
+    }
+}
+impl Drop for PagedFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+#[tokio::test]
+async fn data_ranges_fetch_only_the_pages_they_lack() {
+    let f = PagedFixture::new("pages", 1 << 20).await;
+    let expected = PagedFixture::bytes(0);
+    let head = f.store.head(&f.path).await.unwrap();
+    assert_eq!(head.size, PAGED_SIZE as u64);
+    assert_eq!(
+        f.mirror.totals().requests,
+        0,
+        "a pinned head needs no request"
+    );
+    assert_eq!(
+        f.read(10_000..10_100).await.unwrap(),
+        expected[10_000..10_100]
+    );
+    assert_eq!(
+        (f.mirror.totals().requests, f.mirror.totals().bytes),
+        (1, 4096),
+        "one page"
+    );
+    assert_eq!(
+        f.read(10_000..10_100).await.unwrap(),
+        expected[10_000..10_100]
+    );
+    assert_eq!(
+        f.mirror.totals().requests,
+        1,
+        "a held page is not fetched again"
+    );
+    assert_eq!(
+        f.read(10_000..20_000).await.unwrap(),
+        expected[10_000..20_000]
+    );
+    assert_eq!(
+        (f.mirror.totals().requests, f.mirror.totals().bytes),
+        (2, 3 * 4096),
+        "only the two missing pages"
+    );
+    assert_eq!(f.read(90_000..100_000).await.unwrap(), expected[90_000..]);
+    assert_eq!(
+        f.mirror.totals().bytes,
+        3 * 4096 + (100_000 - 21 * 4096),
+        "the last page is short"
+    );
+    // Missing pages a few pages apart are fetched by one request.
+    assert_eq!(f.read(0..1).await.unwrap(), expected[..1]);
+    let before = f.mirror.totals();
+    let mut ranges = f
+        .store
+        .get_ranges(&f.path, &[30_000..30_010, 50_000..50_010])
+        .await
+        .unwrap()
+        .into_iter();
+    assert_eq!(ranges.next().unwrap(), expected[30_000..30_010]);
+    assert_eq!(ranges.next().unwrap(), expected[50_000..50_010]);
+    assert_eq!(f.mirror.totals().requests - before.requests, 1);
+    assert!(f.exists("sparse") && f.exists("map") && !f.exists("blob"));
+    assert_eq!(
+        std::fs::metadata(f.blob.with_extension("map"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+}
+
+#[tokio::test]
+async fn a_damaged_or_unrecorded_page_is_fetched_again() {
+    let f = PagedFixture::new("pages-damaged", 1 << 20).await;
+    let expected = PagedFixture::bytes(0);
+    assert_eq!(f.read(0..20_000).await.unwrap(), expected[..20_000]);
+    let requests = f.mirror.totals().requests;
+    {
+        let sparse = std::fs::OpenOptions::new()
+            .write(true)
+            .open(f.blob.with_extension("sparse"))
+            .unwrap();
+        std::os::unix::fs::FileExt::write_all_at(&sparse, &[0xff; 10], 4096).unwrap();
+        let map = std::fs::OpenOptions::new()
+            .write(true)
+            .open(f.blob.with_extension("map"))
+            .unwrap();
+        // The entry of page 3 is lost, as after a crash between page and entry.
+        std::os::unix::fs::FileExt::write_all_at(&map, &[0; 16], 128 + 3 * 16).unwrap();
+    }
+    // A restarted process verifies each page before serving it.
+    let restarted = MirrorStore::new(f.directory.clone(), 1 << 20).unwrap();
+    restarted.bind_dataset("s3://bucket/dataset.lance").unwrap();
+    let restarted = Arc::new(restarted);
+    let _lease = restarted.pin(&f.files).await.unwrap();
+    let store = restarted.wrap("s3$bucket", f.source.clone());
+    assert_eq!(
+        store.get_range(&f.path, 0..20_000).await.unwrap().to_vec(),
+        expected[..20_000]
+    );
+    assert_eq!(
+        (restarted.totals().requests, restarted.totals().bytes),
+        (1, 3 * 4096),
+        "pages 1 to 3 are fetched again in one request"
+    );
+    assert_eq!(f.mirror.totals().requests, requests);
+}
+
+#[tokio::test]
+async fn a_changed_object_fails_closed_and_drops_its_pages() {
+    let f = PagedFixture::new("pages-changed", 1 << 20).await;
+    f.read(0..100).await.unwrap();
+    f.source
+        .put(&f.path, PagedFixture::bytes(1).into())
+        .await
+        .unwrap();
+    assert!(f.read(50_000..50_100).await.is_err());
+    assert!(!f.exists("sparse") && !f.exists("map"));
+    // A size that differs from the manifest fails too.
+    f.source.put(&f.path, vec![0; 10].into()).await.unwrap();
+    assert!(f.read(0..5).await.is_err());
+}
+
+#[tokio::test]
+async fn prewarm_replaces_pages_with_the_complete_file() {
+    let f = PagedFixture::new("pages-prewarm", 1 << 20).await;
+    let expected = PagedFixture::bytes(0);
+    f.read(0..100).await.unwrap();
+    f.mirror.prewarm(f.source.clone(), &f.files).await.unwrap();
+    assert!(f.exists("blob") && !f.exists("sparse") && !f.exists("map"));
+    let requests = f.mirror.totals().requests;
+    assert_eq!(
+        f.read(60_000..70_000).await.unwrap(),
+        expected[60_000..70_000]
+    );
+    assert_eq!(f.mirror.totals().requests, requests);
+}
+
+#[tokio::test]
+async fn pages_obey_the_byte_budget_and_the_pins() {
+    // The object does not fit: ranges are served and nothing is kept.
+    let small = PagedFixture::new("pages-budget", 50_000).await;
+    let expected = PagedFixture::bytes(0);
+    assert_eq!(small.read(0..10).await.unwrap(), expected[..10]);
+    assert_eq!(small.read(0..10).await.unwrap(), expected[..10]);
+    assert_eq!(small.mirror.totals().requests, 2);
+    assert!(!small.exists("sparse") && !small.exists("map"));
+
+    let mut f = PagedFixture::new("pages-pins", 1 << 20).await;
+    f.read(0..10).await.unwrap();
+    f.mirror.evict_unpinned().await.unwrap();
+    assert!(f.exists("sparse") && f.exists("map"), "pinned pages stay");
+    drop(f.lease.take());
+    f.mirror.evict_unpinned().await.unwrap();
+    assert!(!f.exists("sparse") && !f.exists("map"), "unpinned pages go");
+}
+
+#[tokio::test]
+async fn unpinned_pages_are_evicted_to_make_room() {
+    let mut f = PagedFixture::new("pages-evict", 150_000).await;
+    f.read(0..10).await.unwrap();
+    drop(f.lease.take());
+    // Another object needs the room the unpinned pages hold.
+    let other = Path::from("dataset.lance/data/g.lance");
+    f.source.put(&other, vec![1; 100_000].into()).await.unwrap();
+    assert_eq!(
+        f.store
+            .get(&other)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap()
+            .len(),
+        100_000
+    );
+    assert!(!f.exists("sparse") && !f.exists("map"));
+}
+
+#[tokio::test]
+async fn pages_of_a_new_map_generation_are_verified_again() {
+    let f = PagedFixture::new("pages-generation", 1 << 20).await;
+    let expected = PagedFixture::bytes(0);
+    f.read(0..40_000).await.unwrap();
+    // The stem as another process would leave it after removing and creating
+    // it again on the same inodes: a new generation, no pages held.
+    {
+        let map = std::fs::OpenOptions::new()
+            .write(true)
+            .open(f.blob.with_extension("map"))
+            .unwrap();
+        std::os::unix::fs::FileExt::write_all_at(&map, &[0x5a; 16], 16).unwrap();
+        std::os::unix::fs::FileExt::write_all_at(&map, &[0; 10 * 16], 128).unwrap();
+        let sparse = std::fs::OpenOptions::new()
+            .write(true)
+            .open(f.blob.with_extension("sparse"))
+            .unwrap();
+        sparse.set_len(0).unwrap();
+        sparse.set_len(PAGED_SIZE as u64).unwrap();
+    }
+    let requests = f.mirror.totals().requests;
+    assert_eq!(f.read(0..40_000).await.unwrap(), expected[..40_000]);
+    assert_eq!(
+        f.mirror.totals().requests,
+        requests + 1,
+        "pages verified under the old generation are not trusted"
+    );
+}
+
+#[tokio::test]
+async fn a_size_change_drops_the_kept_pages() {
+    let f = PagedFixture::new("pages-size", 1 << 20).await;
+    f.read(0..100).await.unwrap();
+    assert!(f.exists("sparse"));
+    // A longer object: the range is still served, with another size.
+    f.source
+        .put(&f.path, vec![0; 2 * PAGED_SIZE].into())
+        .await
+        .unwrap();
+    assert!(f.read(50_000..50_100).await.is_err());
+    assert!(!f.exists("sparse") && !f.exists("map"));
+}
+
+#[tokio::test]
+async fn a_damaged_complete_file_is_downloaded_again() {
+    let f = PagedFixture::new("pages-damaged-blob", 1 << 20).await;
+    f.mirror.prewarm(f.source.clone(), &f.files).await.unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&f.blob)
+        .unwrap()
+        .write_all(b"rot")
+        .unwrap();
+    // A new process verifies the complete file before trusting it.
+    let restarted = Arc::new({
+        let restarted = MirrorStore::new(f.directory.clone(), 1 << 20).unwrap();
+        restarted.bind_dataset("s3://bucket/dataset.lance").unwrap();
+        restarted
+    });
+    let _lease = restarted.pin(&f.files).await.unwrap();
+    let store = restarted.wrap("s3$bucket", f.source.clone());
+    let expected = PagedFixture::bytes(0);
+    assert_eq!(
+        store.get_range(&f.path, 0..10).await.unwrap().to_vec(),
+        expected[..10]
+    );
+    assert_eq!(
+        store
+            .get_range(&f.path, 5_000..5_010)
+            .await
+            .unwrap()
+            .to_vec(),
+        expected[5_000..5_010]
+    );
+    assert_eq!(
+        restarted.totals().requests,
+        1,
+        "one whole download heals it"
+    );
+    assert!(!f.exists("sparse"));
+}
+
+#[tokio::test]
+async fn heads_and_ranges_of_paged_files_share_a_stable_tag() {
+    let f = PagedFixture::new("pages-tag", 1 << 20).await;
+    let head = f.store.head(&f.path).await.unwrap();
+    let read = f
+        .store
+        .get_opts(
+            &f.path,
+            GetOptions {
+                range: Some((0..10).into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(head.e_tag.is_some());
+    assert_eq!(read.meta.e_tag, head.e_tag);
+    // Suffix and offset ranges resolve against the manifest size.
+    let expected = PagedFixture::bytes(0);
+    let suffix = f
+        .store
+        .get_opts(
+            &f.path,
+            GetOptions {
+                range: Some(GetRange::Suffix(10)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(suffix.range, 99_990..100_000);
+    assert_eq!(suffix.bytes().await.unwrap(), expected[99_990..]);
+    let offset = f
+        .store
+        .get_opts(
+            &f.path,
+            GetOptions {
+                range: Some(GetRange::Offset(99_000)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(offset.bytes().await.unwrap(), expected[99_000..]);
+}
+
+#[tokio::test]
+async fn heads_of_other_files_are_not_answered_from_the_manifest() {
+    let directory = temporary_directory("pages-index-head");
+    let mirror = bound_mirror(&directory, 1 << 20);
+    let source = Arc::new(object_store::memory::InMemory::new());
+    let path = Path::from("dataset.lance/_indices/i/part.idx");
+    source.put(&path, vec![7; 100].into()).await.unwrap();
+    let _lease = mirror
+        .pin(&[fyrr_core::envelope::FileRef {
+            path: "_indices/i/part.idx".into(),
+            size_bytes: 100,
+        }])
+        .await
+        .unwrap();
+    let store = mirror.wrap("s3$bucket", source);
+    assert_eq!(store.head(&path).await.unwrap().size, 100);
+    assert_eq!(mirror.totals().requests, 1, "the head reads the object");
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn a_paged_file_larger_than_the_budget_evicts_nothing() {
+    let f = PagedFixture::new("pages-oversized", 60_000).await;
+    // An unpinned file the oversized reads must leave in place.
+    let other = Path::from("dataset.lance/data/g.lance");
+    f.source.put(&other, vec![1; 1_000].into()).await.unwrap();
+    f.store.get(&other).await.unwrap();
+    let kept = f
+        .directory
+        .join(f.mirror.blob_name("s3$bucket", other.as_ref()).unwrap());
+    assert!(kept.exists());
+    let expected = PagedFixture::bytes(0);
+    for _ in 0..2 {
+        assert_eq!(f.read(0..10).await.unwrap(), expected[..10]);
+    }
+    assert!(kept.exists());
+    assert!(!f.exists("sparse"));
+    assert_eq!(f.mirror.totals().requests, 3);
+}
+
+#[tokio::test]
+async fn prewarm_after_pages_needs_no_room_for_both() {
+    // Room for the complete file, not for the file and its pages.
+    let f = PagedFixture::new("pages-room", 150_000).await;
+    f.read(0..100_000).await.unwrap();
+    assert!(f.exists("sparse"));
+    f.mirror.prewarm(f.source.clone(), &f.files).await.unwrap();
+    assert!(f.exists("blob") && !f.exists("sparse") && !f.exists("map"));
+}
+
+#[tokio::test]
+async fn a_partial_left_by_a_failed_download_does_not_stop_pages() {
+    let f = PagedFixture::new("pages-stale-partial", 1 << 20).await;
+    std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(f.blob.with_extension("partial"))
+        .unwrap()
+        .write_all(b"interrupted")
+        .unwrap();
+    f.read(0..10).await.unwrap();
+    assert!(f.exists("sparse") && !f.exists("partial"));
+}

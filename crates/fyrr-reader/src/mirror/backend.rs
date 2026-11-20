@@ -8,10 +8,7 @@ impl Display for MirrorStore {
 
 impl WrappingObjectStore for MirrorStore {
     fn wrap(&self, store_prefix: &str, original: Arc<dyn ObjectStore>) -> Arc<dyn ObjectStore> {
-        let mut store = self.clone();
-        store.target = Some(original);
-        store.prefix = store_prefix.into();
-        Arc::new(store)
+        Arc::new(self.wrapped(store_prefix, original))
     }
     fn wrap_paginated(
         &self,
@@ -25,44 +22,7 @@ impl WrappingObjectStore for MirrorStore {
 #[async_trait::async_trait]
 impl ObjectStore for MirrorStore {
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
-        // Test-only gate on a real native data-file read, including mirror hits.
-        #[cfg(test)]
-        if !options.head && location.as_ref().contains("/data/") {
-            self.sample_read.wait_once().await;
-        }
-        let counters = self.counters.read().expect("counter scope lock").clone();
-        if !self.immutable(location)
-            || options.if_match.is_some()
-            || options.if_none_match.is_some()
-            || options.if_modified_since.is_some()
-            || options.if_unmodified_since.is_some()
-            || options.version.is_some()
-        {
-            return self.pass_through(location, options, &counters).await;
-        }
-        let Some(name) = self.blob_name(&self.prefix, location.as_ref()) else {
-            return self.pass_through(location, options, &counters).await;
-        };
-        let file = self.directory.join(name);
-        if crate::sync::lock(&self.oversized).contains(&file) {
-            return self.pass_through(location, options, &counters).await;
-        }
-        if let Some((opened, metadata)) = self
-            .open_verified_blob(&file)
-            .await
-            .map_err(|_| Self::failure())?
-        {
-            let result = Self::blob_result(location, file, options, opened, metadata)?;
-            self.record(&counters, Io::Hit, 1);
-            return Ok(result);
-        }
-        let object = self
-            .download_lock(&file)
-            .await
-            .map_err(|_| Self::failure())?;
-        let result = self.populate(location, options, &counters, file).await;
-        object.finish().await.map_err(|_| Self::failure())?;
-        result
+        self.get_immutable(location, options, true).await
     }
     async fn put_opts(&self, _: &Path, _: PutPayload, _: PutOptions) -> Result<PutResult> {
         Err(Self::readonly())
@@ -99,6 +59,96 @@ impl ObjectStore for MirrorStore {
 }
 
 impl MirrorStore {
+    /// This mirror reading through `original` under the Lance `store_prefix`.
+    pub(super) fn wrapped(&self, store_prefix: &str, original: Arc<dyn ObjectStore>) -> Self {
+        let mut store = self.clone();
+        store.target = Some(original);
+        store.prefix = store_prefix.into();
+        store
+    }
+    /// Fills the complete file of `location`: a verified copy answers at once,
+    /// otherwise the whole object is downloaded. An object that cannot be kept
+    /// is answered by a head rather than a download nobody reads.
+    pub(super) async fn fill(&self, location: &Path) -> Result<GetResult> {
+        let options = GetOptions {
+            head: true,
+            ..Default::default()
+        };
+        self.get_immutable(location, options, false).await
+    }
+    /// A read through the mirror. With `paged`, a head of a pinned `data/`
+    /// file is answered from the manifest and a ranged read of one is served
+    /// in pages; without it, a miss downloads the complete file.
+    async fn get_immutable(
+        &self,
+        location: &Path,
+        options: GetOptions,
+        paged: bool,
+    ) -> Result<GetResult> {
+        // Test-only gate on a real native data-file read, including mirror hits.
+        #[cfg(test)]
+        if !options.head && location.as_ref().contains("/data/") {
+            self.sample_read.wait_once().await;
+        }
+        let counters = self.counters.read().expect("counter scope lock").clone();
+        if !self.immutable(location)
+            || options.if_match.is_some()
+            || options.if_none_match.is_some()
+            || options.if_modified_since.is_some()
+            || options.if_unmodified_since.is_some()
+            || options.version.is_some()
+        {
+            return self.pass_through(location, options, &counters).await;
+        }
+        let Some(name) = self.blob_name(&self.prefix, location.as_ref()) else {
+            return self.pass_through(location, options, &counters).await;
+        };
+        let file = self.directory.join(name);
+        if crate::sync::lock(&self.oversized).contains(&file) {
+            return self.pass_through(location, options, &counters).await;
+        }
+        let size = self
+            .manifest_size(&file)
+            .filter(|_| paged && self.ranged_class(location));
+        if let Some(size) = size
+            && options.head
+        {
+            return Ok(Self::head_result(location, &file, size));
+        }
+        if let Some((opened, metadata)) = self
+            .open_verified_blob(&file)
+            .await
+            .map_err(|_| Self::failure())?
+        {
+            let result = Self::blob_result(location, file, options, opened, metadata)?;
+            self.record(&counters, Io::Hit, 1);
+            return Ok(result);
+        }
+        // A complete file that failed verification is downloaded again whole.
+        let unverified = file.symlink_metadata().is_ok();
+        if let (Some(size), Some(range), false) = (size, &options.range, unverified) {
+            if !self.pages_fit(size) {
+                if size > self.max_bytes {
+                    Self::remember_oversized(&self.oversized, file);
+                }
+                return self.pass_through(location, options, &counters).await;
+            }
+            let range = range.as_range(size).map_err(|source| Error::Generic {
+                store: "fyrr immutable mirror",
+                source: Box::new(source),
+            })?;
+            return self
+                .read_pages(location, range, size, &file, &counters)
+                .await;
+        }
+        let object = self
+            .download_lock(&file)
+            .await
+            .map_err(|_| Self::failure())?;
+        let result = self.populate(location, options, &counters, file).await;
+        object.finish().await.map_err(|_| Self::failure())?;
+        result
+    }
     // The caller retains a per-object flock through every population outcome.
     async fn populate(
         &self,
@@ -124,20 +174,16 @@ impl MirrorStore {
         let download = self.target().get(location).await?;
         let metadata = download.meta.clone();
         if metadata.size > self.max_bytes {
-            {
-                let mut oversized = crate::sync::lock(&self.oversized);
-                // Bound derived metadata independently of the file and memory caches.
-                if oversized.len() >= 4096 {
-                    oversized.clear();
-                }
-                oversized.insert(file.clone());
-            }
+            Self::remember_oversized(&self.oversized, file);
             return self.pass_through(location, options, counters).await;
         }
         let _lock = self.lock.lock().await;
         let _host = self.host_lock().await.map_err(|_| Self::failure())?;
         let temporary = file.with_extension("partial");
         Self::remove_partial(&temporary).map_err(|_| Self::failure())?;
+        // The complete file supersedes any pages of the same object; their
+        // room is released before the complete file reserves its own.
+        self.remove_pages(&file).map_err(|_| Self::failure())?;
         if !self.make_room(metadata.size)? {
             drop(_host);
             drop(_lock);
@@ -188,6 +234,8 @@ impl MirrorStore {
         #[cfg(test)]
         tests::pause("proof");
         std::fs::rename(temporary, &file).map_err(|_| Self::failure())?;
+        // Pages a concurrent read kept meanwhile are superseded too.
+        self.remove_pages(&file).map_err(|_| Self::failure())?;
         #[cfg(test)]
         tests::pause("published");
         crate::sync::lock(&self.verified).insert(
@@ -202,6 +250,25 @@ impl MirrorStore {
         Self::blob_result(location, file, options, opened, metadata)
     }
 
+    fn remember_oversized(
+        oversized: &std::sync::Mutex<std::collections::BTreeSet<PathBuf>>,
+        file: PathBuf,
+    ) {
+        let mut oversized = crate::sync::lock(oversized);
+        // Bound derived metadata independently of the file and memory caches.
+        if oversized.len() >= 4096 {
+            oversized.clear();
+        }
+        oversized.insert(file);
+    }
+    /// Complete files and page files, counted against the byte budget at their
+    /// apparent length.
+    fn counted(name: &str) -> bool {
+        [".blob", ".sparse", ".map"]
+            .iter()
+            .any(|suffix| Self::cache_name(name, suffix))
+    }
+
     // The caller holds global locks; active partial lengths reserve incoming bytes.
     //
     // Every change to the counted bytes (a partial's reservation, its rename, an
@@ -211,7 +278,7 @@ impl MirrorStore {
     // reserved at its final length, so a file already seen under the same name
     // and inode keeps its size. Only the evicting path below scans the directory
     // and the leases.
-    fn make_room(&self, incoming: u64) -> Result<bool> {
+    pub(super) fn make_room(&self, incoming: u64) -> Result<bool> {
         if self.used_bytes()?.saturating_add(incoming) <= self.max_bytes {
             return Ok(true);
         }
@@ -231,7 +298,7 @@ impl MirrorStore {
             let entry = entry.map_err(|_| Self::failure())?;
             let name = entry.file_name().to_string_lossy().into_owned();
             let partial = Self::cache_name(&name, ".partial");
-            if !partial && !Self::cache_name(&name, ".blob") {
+            if !partial && !Self::counted(&name) {
                 continue;
             }
             let inode = std::os::unix::fs::DirEntryExt::ino(&entry);
@@ -302,7 +369,7 @@ impl MirrorStore {
                 }
                 continue;
             }
-            if !Self::cache_name(&name, ".blob") {
+            if !Self::counted(&name) {
                 continue;
             }
             let meta = entry
@@ -313,6 +380,10 @@ impl MirrorStore {
                 return Err(Self::failure());
             }
             used += meta.len();
+            // A map is evicted with its sparse file, or alone if it has none.
+            if Self::cache_name(&name, ".map") && entry.path().with_extension("sparse").exists() {
+                continue;
+            }
             entries.push((
                 meta.modified().map_err(|_| Self::failure())?,
                 entry.path(),
@@ -324,10 +395,21 @@ impl MirrorStore {
             if used + incoming <= self.max_bytes {
                 break;
             }
-            let pinned = path
+            let blob = path.with_extension("blob");
+            let pinned = blob
                 .file_name()
                 .is_some_and(|name| pinned_files.contains(&name.to_string_lossy().to_string()));
             if pinned {
+                continue;
+            }
+            if path.extension().is_some_and(|e| e != "blob") {
+                let held: u64 = ["sparse", "map"]
+                    .iter()
+                    .filter_map(|e| blob.with_extension(e).symlink_metadata().ok())
+                    .map(|meta| meta.len())
+                    .sum();
+                self.remove_pages(&blob).map_err(|_| Self::failure())?;
+                used = used.saturating_sub(held);
                 continue;
             }
             Self::remove_partial(&path.with_extension("checksum")).map_err(|_| Self::failure())?;
