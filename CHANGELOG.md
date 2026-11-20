@@ -59,6 +59,17 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   every configuration. `metadata.stale_version` is now set in every reader whenever
   the answer comes from an older version than the head the reader last
   read.
+- The reader's mirror downloads a data file of up to 2 MiB whole on its
+  first read instead of in pages. Opening a reader reads the footer, the
+  column metadata and the first page of every data file, two or three
+  dependent requests each, and warming then downloaded the file anyway.
+  Opening a 100,000-row namespace on an empty mirror made 412 storage
+  requests instead of 1,044 and took 0.93 s instead of 1.32 s with 25 ms
+  per request, and its first search made 7 requests instead of 726. Open
+  transfers the small files at once (313 MB instead of 44 MB there), which
+  warming would have downloaded moments later; over a slow link the first
+  answer can therefore take longer. A small file that does not fit the
+  mirror is still read in pages.
 - The reader no longer asks storage for a version manifest its publication
   does not list. Lance looks for a version under its other manifest name
   each time it opens the dataset, once per worker of every generation; the

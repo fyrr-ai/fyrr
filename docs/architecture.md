@@ -107,8 +107,10 @@ Maintenance and confirmed
 source purge reap abandoned multipart uploads (`name#digits`), protecting
 files younger than ten minutes and namespaces with live source leases;
 purge plans count them as `namespace_staging_files`. Reader mirrors copy immutable files and preserve
-in-flight pins across purge, bounded by `reader.mirror_max_bytes`. A read of
-part of a data file fetches only the 4 KiB pages it lacks and keeps them with
+in-flight pins across purge, bounded by `reader.mirror_max_bytes`. A data
+file of up to 2 MiB is copied whole on its first read when the mirror has
+room for it. A read of part of a
+larger data file fetches only the 4 KiB pages it lacks and keeps them with
 a digest of each page, checked once per process before the page is served.
 A response whose size differs from the content manifest, or whose ETag
 differs from the first, fails that read and drops the kept pages. Index,

@@ -31,6 +31,8 @@ pub struct MirrorStore {
     room_probes: Arc<RoomProbes>,
     directory: PathBuf,
     max_bytes: u64,
+    /// A data file up to this size is downloaded whole on its first read.
+    whole_bytes: u64,
     oversized: Arc<std::sync::Mutex<std::collections::BTreeSet<PathBuf>>>,
     target: Option<Arc<dyn ObjectStore>>,
     prefix: String,
@@ -429,6 +431,7 @@ impl MirrorStore {
             room_probes: Arc::default(),
             directory,
             max_bytes,
+            whole_bytes: range::WHOLE_FILE_BYTES,
             oversized: Arc::default(),
             target: None,
             prefix: String::new(),

@@ -751,6 +751,14 @@
         "tier": "quick",
         "seconds": 0.05
       },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_small_data_file_that_cannot_be_kept_whole_is_not_downloaded_whole": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_small_data_file_is_downloaded_whole_on_its_first_read": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::data_ranges_fetch_only_the_pages_they_lack": {
         "tier": "quick",
         "seconds": 0.05
