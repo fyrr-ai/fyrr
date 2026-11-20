@@ -268,10 +268,10 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
             WriterCommand::Maintain => runtime_command(crate::maintenance::maintain(config)),
             WriterCommand::Serve { jobs, timeout } => {
                 // Source jobs need the providers' Python: say so once, up
-                // front, from a discovery worker (this process runs none).
+                // front, from an inventory worker (this process runs none).
                 if !config.sources.is_empty()
                     && let Err(error) =
-                        sync::discover(config.writer.worker_memory_max_bytes.as_u64())
+                        sync::inventory(config.writer.worker_memory_max_bytes.as_u64())
                 {
                     eprintln!("error: {error}");
                     return ExitCode::from(exit::FAILURE);

@@ -88,8 +88,9 @@ impl SourceReport {
     }
 }
 
-/// Discovers the installed providers in a worker process.
-pub fn discover(memory: u64) -> Result<Discovery, String> {
+/// Lists the installed providers' entry points in a worker process, which
+/// starts a Python host and so verifies the installation.
+pub fn inventory(memory: u64) -> Result<serde_json::Value, String> {
     let outcome = Running::spawn_with_memory(&Job::Discover, worker::DISCOVERY_TIMEOUT, memory)
         .and_then(Running::wait)
         .map_err(|_| "cannot start the Python worker")?;
@@ -104,9 +105,13 @@ pub fn discover(memory: u64) -> Result<Discovery, String> {
     if let Some(failure) = outcome.failure() {
         return Err(failure.to_string());
     }
-    let mut inventory: serde_json::Value =
-        serde_json::from_slice(outcome.result_line().unwrap_or_default())
-            .map_err(|_| "the provider inventory is unreadable")?;
+    serde_json::from_slice(outcome.result_line().unwrap_or_default())
+        .map_err(|_| "the provider inventory is unreadable".to_owned())
+}
+
+/// Discovers the installed providers in worker processes.
+pub fn discover(memory: u64) -> Result<Discovery, String> {
+    let mut inventory = inventory(memory)?;
     let entries = inventory
         .get_mut("providers")
         .and_then(serde_json::Value::as_array_mut)
