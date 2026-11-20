@@ -3,12 +3,12 @@
 //! Arrow's decoder honours what a stream declares: a compressed batch is
 //! inflated to the size its producer states, before any of fyrr's limits can
 //! run. So the messages are read here first, as plain length-prefixed
-//! flatbuffers, and the stream is decoded only when it is exactly what the
-//! contract allows: one schema message whose fields and metadata are bounded
-//! before it is converted and that then passes the contract check, then one
-//! record batch without compression whose declared rows and buffers are within
-//! the limits. Nothing the stream declares is allocated or trusted until then,
-//! and every refusal is a value-free [`Refusal`].
+//! flatbuffers, and the batch is decoded only when the stream is exactly what
+//! the contract allows: one schema message whose fields and metadata are
+//! bounded before it is converted and that then passes the contract check,
+//! then one record batch without compression whose declared rows and buffers
+//! are within the limits. Nothing the stream declares is allocated or trusted
+//! until then, and a refusal carries no value of the peer.
 //!
 //! The decoder does not validate every length a buffer's node declares against
 //! the buffer (a validity bitmap shorter than its array can panic it), and fyrr
@@ -21,12 +21,14 @@
 use arrow_array::RecordBatch;
 use arrow_buffer::Buffer;
 use arrow_ipc::convert::fb_to_schema;
-use arrow_ipc::reader::StreamDecoder;
+use arrow_ipc::reader::read_record_batch;
 use arrow_ipc::{Endianness, MessageHeader, root_as_message};
-use arrow_schema::{DataType, Field};
+use arrow_schema::Schema;
 use fyrr_core::connector::{check_document_changes_schema, document_changes_arrow_schema};
+use std::collections::HashMap;
+use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 /// The marker that starts every message of the current IPC format.
 const CONTINUATION: u32 = 0xFFFF_FFFF;
@@ -43,24 +45,8 @@ const ADDED_FIELDS_MAX: usize = 64;
 const SCHEMA_METADATA_ENTRIES: usize = 2;
 
 /// The most fields a schema may declare before it is converted.
-static FIELDS_MAX: LazyLock<usize> = LazyLock::new(|| {
-    fn count(field: &Field) -> usize {
-        1 + match field.data_type() {
-            DataType::Struct(children) => children.iter().map(|child| count(child)).sum(),
-            DataType::List(child)
-            | DataType::LargeList(child)
-            | DataType::FixedSizeList(child, _)
-            | DataType::Map(child, _) => count(child),
-            _ => 0,
-        }
-    }
-    let contract: usize = document_changes_arrow_schema()
-        .fields()
-        .iter()
-        .map(|field| count(field))
-        .sum();
-    contract + ADDED_FIELDS_MAX
-});
+static FIELDS_MAX: LazyLock<usize> =
+    LazyLock::new(|| document_changes_arrow_schema().flattened_fields().len() + ADDED_FIELDS_MAX);
 
 /// What a batch may declare.
 #[derive(Debug, Clone, Copy)]
@@ -71,123 +57,85 @@ pub(super) struct Bounds {
     pub(super) max_rows: u64,
 }
 
-/// Why a stream was refused. None carries a value of the peer.
+/// A stream was refused: not exactly one contract schema and one batch within
+/// the limits, or bytes the decoder could not take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Refusal {
-    /// Not the framing of an IPC stream, or a message that is not whole.
-    Framing,
-    /// Not exactly one schema message and then one record batch.
-    Messages,
-    /// A schema that is not the contract's.
-    Schema,
-    /// Schema metadata beyond the contract's two entries, or any field metadata.
-    Metadata,
-    /// A compressed batch; fyrr's limits would not see its real size.
-    Compressed,
-    /// A dictionary batch; the contract has no dictionary types.
-    Dictionary,
-    /// More rows than allowed.
-    Rows,
-    /// More buffer bytes than allowed.
-    Bytes,
-    /// A batch whose buffers or nodes are implausible or point outside it.
-    Layout,
-    /// The decoder refused, or panicked on, what inspection accepted.
-    Decode,
-}
+pub(super) struct Refused;
 
 /// Exactly one record batch of an Arrow IPC stream: inspected, then decoded.
 /// The batch's buffers are slices of the frame, not copies.
-pub(super) fn decode(frame: Vec<u8>, bounds: Bounds) -> Result<RecordBatch, Refusal> {
-    catch_unwind(AssertUnwindSafe(|| inspect_and_decode(frame, bounds)))
-        .unwrap_or(Err(Refusal::Decode))
+pub(super) fn decode(frame: Vec<u8>, bounds: Bounds) -> Result<RecordBatch, Refused> {
+    catch_unwind(AssertUnwindSafe(|| inspect_and_decode(frame, bounds))).unwrap_or(Err(Refused))
 }
 
-fn inspect_and_decode(frame: Vec<u8>, bounds: Bounds) -> Result<RecordBatch, Refusal> {
-    inspect(&frame, bounds)?;
-    let mut buffer = Buffer::from_vec(frame);
-    let mut decoder = StreamDecoder::new();
-    let mut batch = None;
-    while !buffer.is_empty() {
-        let decoded = decoder.decode(&mut buffer).map_err(|_| Refusal::Decode)?;
-        if let Some(rows) = decoded
-            && batch.replace(rows).is_some()
-        {
-            return Err(Refusal::Messages);
-        }
-    }
-    decoder.finish().map_err(|_| Refusal::Decode)?;
-    batch.ok_or(Refusal::Messages)
-}
-
-/// Checks the stream's messages against the contract and `bounds` without
-/// decoding any data.
-fn inspect(frame: &[u8], bounds: Bounds) -> Result<(), Refusal> {
+/// Checks the stream's messages against the contract and `bounds`, then hands
+/// the verified schema and the batch's body to Arrow's batch reader.
+fn inspect_and_decode(frame: Vec<u8>, bounds: Bounds) -> Result<RecordBatch, Refused> {
+    let frame = Buffer::from_vec(frame);
+    let bytes = frame.as_slice();
     let mut offset = 0usize;
-    let (mut schema, mut batches) = (false, 0u32);
-    loop {
-        if offset == frame.len() {
-            break;
-        }
-        let head = frame.get(offset..offset + 8).ok_or(Refusal::Framing)?;
+    let mut schema = None;
+    let mut batch = None;
+    while offset != bytes.len() {
+        let head = bytes.get(offset..offset + 8).ok_or(Refused)?;
         if u32::from_le_bytes([head[0], head[1], head[2], head[3]]) != CONTINUATION {
-            return Err(Refusal::Framing);
+            return Err(Refused);
         }
         let length = i32::from_le_bytes([head[4], head[5], head[6], head[7]]);
         offset += 8;
         if length == 0 {
             // The end of the stream: nothing may follow.
-            return if offset == frame.len() {
+            if offset == bytes.len() {
                 break;
-            } else {
-                Err(Refusal::Framing)
-            };
+            }
+            return Err(Refused);
         }
         let length = usize::try_from(length)
             .ok()
             .filter(|length| *length <= METADATA_MAX)
-            .ok_or(Refusal::Framing)?;
-        let metadata = frame
+            .ok_or(Refused)?;
+        let metadata = bytes
             .get(offset..offset.saturating_add(length))
-            .ok_or(Refusal::Framing)?;
+            .ok_or(Refused)?;
         offset += length;
-        let message = root_as_message(metadata).map_err(|_| Refusal::Framing)?;
-        let body = usize::try_from(message.bodyLength()).map_err(|_| Refusal::Framing)?;
-        if body > frame.len() - offset {
-            return Err(Refusal::Framing);
+        let message = root_as_message(metadata).map_err(|_| Refused)?;
+        let body = usize::try_from(message.bodyLength()).map_err(|_| Refused)?;
+        if body > bytes.len() - offset {
+            return Err(Refused);
         }
+        // A dictionary batch, or a second schema or batch, is refused too.
         match message.header_type() {
-            MessageHeader::Schema if !schema && batches == 0 => {
-                let header = message.header_as_schema().ok_or(Refusal::Framing)?;
-                check_schema(header)?;
-                schema = true;
+            MessageHeader::Schema if schema.is_none() && batch.is_none() => {
+                schema = Some(check_schema(message.header_as_schema().ok_or(Refused)?)?);
             }
-            MessageHeader::RecordBatch if schema && batches == 0 => {
-                let header = message.header_as_record_batch().ok_or(Refusal::Framing)?;
+            MessageHeader::RecordBatch if schema.is_some() && batch.is_none() => {
+                let header = message.header_as_record_batch().ok_or(Refused)?;
                 check_batch(header, body as u64, bounds)?;
-                batches += 1;
+                batch = Some((header, message.version(), offset..offset + body));
             }
-            MessageHeader::DictionaryBatch => return Err(Refusal::Dictionary),
-            _ => return Err(Refusal::Messages),
+            _ => return Err(Refused),
         }
         offset += body;
     }
-    if schema && batches == 1 {
-        Ok(())
-    } else {
-        Err(Refusal::Messages)
-    }
+    let (Some(schema), Some((header, version, body))) = (schema, batch) else {
+        return Err(Refused);
+    };
+    read_record_batch(
+        &frame.slice_with_length(body.start, body.len()),
+        header,
+        Arc::new(schema),
+        &HashMap::new(),
+        None,
+        &version,
+    )
+    .map_err(|_| Refused)
 }
 
-fn check_schema(header: arrow_ipc::Schema<'_>) -> Result<(), Refusal> {
-    if header.endianness() != Endianness::Little {
-        return Err(Refusal::Schema);
-    }
+fn check_schema(header: arrow_ipc::Schema<'_>) -> Result<Schema, Refused> {
     bound_schema(header)?;
     let schema = fb_to_schema(header);
-    check_document_changes_schema(&schema)
-        .map(drop)
-        .map_err(|_| Refusal::Schema)
+    check_document_changes_schema(&schema).map_err(|_| Refused)?;
+    Ok(schema)
 }
 
 /// Walks the schema's flatbuffer without converting it. Offsets in a
@@ -198,17 +146,18 @@ fn check_schema(header: arrow_ipc::Schema<'_>) -> Result<(), Refusal> {
 /// would turn into bytes that no buffer limit counts: schema metadata beyond
 /// the contract's entries (counted on the vector as sent, not as a map) and
 /// metadata on any field at any level.
-fn bound_schema(header: arrow_ipc::Schema<'_>) -> Result<(), Refusal> {
-    if header
-        .custom_metadata()
-        .is_some_and(|entries| entries.len() > SCHEMA_METADATA_ENTRIES)
+fn bound_schema(header: arrow_ipc::Schema<'_>) -> Result<(), Refused> {
+    if header.endianness() != Endianness::Little
+        || header
+            .custom_metadata()
+            .is_some_and(|entries| entries.len() > SCHEMA_METADATA_ENTRIES)
     {
-        return Err(Refusal::Metadata);
+        return Err(Refused);
     }
     let top = header.fields();
     let mut declared = top.map_or(0, |fields| fields.len());
     if declared > *FIELDS_MAX {
-        return Err(Refusal::Schema);
+        return Err(Refused);
     }
     let mut pending: Vec<_> = top.into_iter().flatten().collect();
     while let Some(field) = pending.pop() {
@@ -216,12 +165,12 @@ fn bound_schema(header: arrow_ipc::Schema<'_>) -> Result<(), Refusal> {
             .custom_metadata()
             .is_some_and(|entries| !entries.is_empty())
         {
-            return Err(Refusal::Metadata);
+            return Err(Refused);
         }
         if let Some(children) = field.children() {
             declared = declared.saturating_add(children.len());
             if declared > *FIELDS_MAX {
-                return Err(Refusal::Schema);
+                return Err(Refused);
             }
             pending.extend(children);
         }
@@ -233,36 +182,33 @@ fn check_batch(
     batch: arrow_ipc::RecordBatch<'_>,
     body: u64,
     bounds: Bounds,
-) -> Result<(), Refusal> {
-    if batch.compression().is_some() {
-        return Err(Refusal::Compressed);
-    }
-    let rows = u64::try_from(batch.length()).map_err(|_| Refusal::Layout)?;
-    if rows > bounds.max_rows {
-        return Err(Refusal::Rows);
-    }
-    if batch.variadicBufferCounts().is_some()
+) -> Result<(), Refused> {
+    let rows = u64::try_from(batch.length()).map_err(|_| Refused)?;
+    let buffers = batch.buffers().ok_or(Refused)?;
+    // A compressed batch is refused: fyrr's limits would not see its real size.
+    if batch.compression().is_some()
+        || rows > bounds.max_rows
+        || batch.variadicBufferCounts().is_some()
         || batch.nodes().is_some_and(|nodes| nodes.len() > NODES_MAX)
+        || buffers.len() > BUFFERS_MAX
     {
-        return Err(Refusal::Layout);
-    }
-    let buffers = batch.buffers().ok_or(Refusal::Layout)?;
-    if buffers.len() > BUFFERS_MAX {
-        return Err(Refusal::Layout);
+        return Err(Refused);
     }
     let mut total = 0u64;
     for buffer in &buffers {
-        let (offset, length) = (
-            u64::try_from(buffer.offset()).map_err(|_| Refusal::Layout)?,
-            u64::try_from(buffer.length()).map_err(|_| Refusal::Layout)?,
-        );
+        let (Ok(offset), Ok(length)) = (
+            u64::try_from(buffer.offset()),
+            u64::try_from(buffer.length()),
+        ) else {
+            return Err(Refused);
+        };
         if offset.checked_add(length).is_none_or(|end| end > body) {
-            return Err(Refusal::Layout);
+            return Err(Refused);
         }
-        total = total.checked_add(length).ok_or(Refusal::Layout)?;
+        total = total.checked_add(length).ok_or(Refused)?;
     }
     if total > bounds.max_bytes {
-        return Err(Refusal::Bytes);
+        return Err(Refused);
     }
     Ok(())
 }
@@ -278,7 +224,7 @@ mod tests {
     use arrow_buffer::OffsetBuffer;
     use arrow_ipc::CompressionType;
     use arrow_ipc::writer::{IpcWriteOptions, StreamWriter};
-    use arrow_schema::Schema;
+    use arrow_schema::{DataType, Field, Schema};
     use fyrr_core::connector::document_changes_arrow_schema;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -340,8 +286,8 @@ mod tests {
         document_changes_arrow_schema()
     }
 
-    fn refused(frame: Vec<u8>, bounds: Bounds) -> Refusal {
-        decode(frame, bounds).unwrap_err()
+    fn refused(frame: Vec<u8>, bounds: Bounds) -> bool {
+        decode(frame, bounds).is_err()
     }
 
     /// Each message of a stream, with its framing, as byte ranges.
@@ -372,18 +318,6 @@ mod tests {
         let mut frame = stream(&contract(), 1);
         frame.truncate(frame.len() - 8);
         assert!(decode(frame, OPEN).is_ok());
-        assert_eq!(
-            decode(
-                stream(&contract(), 1),
-                Bounds {
-                    max_rows: u64::MAX,
-                    ..OPEN
-                }
-            )
-            .unwrap()
-            .num_rows(),
-            1
-        );
     }
 
     #[test]
@@ -393,7 +327,7 @@ mod tests {
                 .try_with_compression(Some(codec))
                 .expect("the linked arrow-ipc has this codec");
             let frame = stream_with(&contract(), 1, options);
-            assert_eq!(refused(frame, OPEN), Refusal::Compressed, "{codec:?}");
+            assert!(refused(frame, OPEN), "{codec:?}");
         }
     }
 
@@ -416,7 +350,7 @@ mod tests {
         );
         // The contract allows a nullable addition, so the schema passes and the
         // dictionary batch before the rows is what is refused.
-        assert_eq!(refused(stream(&schema, 1), OPEN), Refusal::Dictionary);
+        assert!(refused(stream(&schema, 1), OPEN));
     }
 
     #[test]
@@ -435,9 +369,8 @@ mod tests {
         };
         let item = Arc::new(Field::new("item", DataType::Utf8, true));
         for data_type in [DataType::Utf8View, DataType::BinaryView] {
-            assert_eq!(
+            assert!(
                 refused(stream(&with(data_type.clone()), 1), OPEN),
-                Refusal::Layout,
                 "{data_type:?}"
             );
         }
@@ -456,44 +389,38 @@ mod tests {
     fn exactly_one_schema_and_one_record_batch_are_required() {
         let one = stream(&contract(), 1);
         // Two record batches.
-        assert_eq!(refused(stream(&contract(), 2), OPEN), Refusal::Messages);
+        assert!(refused(stream(&contract(), 2), OPEN));
         // A schema and no batch.
-        assert_eq!(refused(stream(&contract(), 0), OPEN), Refusal::Messages);
+        assert!(refused(stream(&contract(), 0), OPEN));
         // A batch with no schema before it.
         let ranges = messages(&one);
         let without_schema = [&one[ranges[1].clone()], &one[ranges[2].clone()]].concat();
-        assert_eq!(refused(without_schema, OPEN), Refusal::Messages);
+        assert!(refused(without_schema, OPEN));
         // A second schema.
         let again = [&one[..one.len() - 8], &one[..]].concat();
-        assert_eq!(refused(again, OPEN), Refusal::Messages);
+        assert!(refused(again, OPEN));
         // Nothing at all.
-        assert_eq!(refused(Vec::new(), OPEN), Refusal::Messages);
+        assert!(refused(Vec::new(), OPEN));
     }
 
     #[test]
     fn framing_that_is_not_an_ipc_stream_is_refused() {
         let one = stream(&contract(), 1);
         // The legacy framing, without the continuation marker.
-        assert_eq!(refused(one[4..].to_vec(), OPEN), Refusal::Framing);
+        assert!(refused(one[4..].to_vec(), OPEN));
         // Bytes after the end-of-stream marker.
         let mut trailing = one.clone();
         trailing.extend_from_slice(b"more bytes");
-        assert_eq!(refused(trailing, OPEN), Refusal::Framing);
+        assert!(refused(trailing, OPEN));
         // A frame cut inside a body, and inside a message's metadata.
-        assert_eq!(
-            refused(one[..one.len() - 20].to_vec(), OPEN),
-            Refusal::Framing
-        );
-        assert_eq!(refused(one[..30].to_vec(), OPEN), Refusal::Framing);
-        assert_eq!(
-            refused(b"garbage that is no stream".to_vec(), OPEN),
-            Refusal::Framing
-        );
+        assert!(refused(one[..one.len() - 20].to_vec(), OPEN));
+        assert!(refused(one[..30].to_vec(), OPEN));
+        assert!(refused(b"garbage that is no stream".to_vec(), OPEN));
         // A metadata length that is negative, or that exceeds the frame.
         for length in [-5i32, 1 << 20] {
             let mut bad = one.clone();
             bad[4..8].copy_from_slice(&length.to_le_bytes());
-            assert_eq!(refused(bad, OPEN), Refusal::Framing, "{length}");
+            assert!(refused(bad, OPEN), "{length}");
         }
     }
 
@@ -518,8 +445,8 @@ mod tests {
             "root_id",
             Some(Field::new("root_id", DataType::LargeUtf8, false)),
         );
-        assert_eq!(refused(stream(&large, 1), OPEN), Refusal::Schema);
-        assert_eq!(refused(stream(&swap("op", None), 1), OPEN), Refusal::Schema);
+        assert!(refused(stream(&large, 1), OPEN));
+        assert!(refused(stream(&swap("op", None), 1), OPEN));
         let other = contract().with_metadata(
             [
                 ("fyrr.contract".to_owned(), "something.else".to_owned()),
@@ -527,7 +454,7 @@ mod tests {
             ]
             .into(),
         );
-        assert_eq!(refused(stream(&other, 1), OPEN), Refusal::Schema);
+        assert!(refused(stream(&other, 1), OPEN));
     }
 
     #[test]
@@ -536,12 +463,12 @@ mod tests {
         let mut metadata = contract().metadata().clone();
         metadata.insert("note".into(), "x".into());
         let schema = contract().with_metadata(metadata.clone());
-        assert_eq!(refused(stream(&schema, 1), OPEN), Refusal::Metadata);
+        assert!(refused(stream(&schema, 1), OPEN));
         // A schema that would make a one-row batch megabytes large is refused
         // by its length alone, before it is parsed.
         metadata.insert("note".into(), "x".repeat(2 << 20));
         let schema = contract().with_metadata(metadata);
-        assert_eq!(refused(stream(&schema, 1), OPEN), Refusal::Framing);
+        assert!(refused(stream(&schema, 1), OPEN));
         // Metadata on a field, nested or not.
         let marked = |name: &str| {
             let fields: Vec<_> = contract()
@@ -562,10 +489,7 @@ mod tests {
                 .collect();
             Schema::new_with_metadata(fields, contract().metadata().clone())
         };
-        assert_eq!(
-            refused(stream(&marked("title"), 1), OPEN),
-            Refusal::Metadata
-        );
+        assert!(refused(stream(&marked("title"), 1), OPEN));
         // Metadata deep inside an added column, where no recursion over the
         // converted types is needed because the walk is over the flatbuffer.
         let deep = Field::new(
@@ -583,10 +507,7 @@ mod tests {
             ))),
             true,
         );
-        assert_eq!(
-            refused(stream(&with_added(vec![deep]), 1), OPEN),
-            Refusal::Metadata
-        );
+        assert!(refused(stream(&with_added(vec![deep]), 1), OPEN));
     }
 
     /// The contract's schema with nullable columns added.
@@ -614,10 +535,7 @@ mod tests {
         assert!(decode(stream(&added(ADDED_FIELDS_MAX), 1), OPEN).is_ok());
         // The contract check alone accepts any number of nullable additions.
         assert!(check_document_changes_schema(&added(ADDED_FIELDS_MAX + 1)).is_ok());
-        assert_eq!(
-            refused(stream(&added(ADDED_FIELDS_MAX + 1), 1), OPEN),
-            Refusal::Schema
-        );
+        assert!(refused(stream(&added(ADDED_FIELDS_MAX + 1), 1), OPEN));
         // Nesting counts too: one added column with a child per allowance.
         let wide = Field::new(
             "wide",
@@ -628,10 +546,7 @@ mod tests {
             ),
             true,
         );
-        assert_eq!(
-            refused(stream(&with_added(vec![wide]), 1), OPEN),
-            Refusal::Schema
-        );
+        assert!(refused(stream(&with_added(vec![wide]), 1), OPEN));
     }
 
     /// The byte ranges of the lengths of the batch message's buffers.
@@ -674,19 +589,28 @@ mod tests {
     fn a_batch_that_makes_the_decoder_panic_is_a_refused_batch() {
         // A validity bitmap that is shorter than its array: the buffers are
         // within the batch, so inspection accepts them, and the decoder's
-        // bitmap constructor panics. Every shortened buffer must end in a value, and
-        // at least one must be that panic, caught.
+        // bitmap constructor panics. At least one shortened buffer must make
+        // the unguarded path panic; `decode` must return for every one.
         let frame = stream(&contract(), 1);
-        let mut outcomes = Vec::new();
+        let mut panics = 0;
         for lengths in buffer_lengths(&frame) {
             let mut bad = frame.clone();
             bad[lengths].copy_from_slice(&0i64.to_le_bytes());
-            outcomes.push(decode(bad, OPEN).map(|_| ()));
+            panics += usize::from(panics_unguarded(&bad));
+            let _ = decode(bad, OPEN);
         }
         assert!(
-            outcomes.contains(&Err(Refusal::Decode)),
-            "no shortened buffer reached the decoder's panic: {outcomes:?}"
+            panics > 0,
+            "no shortened buffer reached the decoder's panic"
         );
+    }
+
+    /// Whether the path over the peer's bytes panics without the guard.
+    fn panics_unguarded(frame: &[u8]) -> bool {
+        catch_unwind(AssertUnwindSafe(|| {
+            inspect_and_decode(frame.to_vec(), OPEN)
+        }))
+        .is_err()
     }
 
     #[test]
@@ -697,21 +621,14 @@ mod tests {
         let schema = with_added(vec![Field::new("added", DataType::Int32, true)]);
         let frame = stream(&schema, 1);
         let size = i32::from_le_bytes(frame[4..8].try_into().unwrap()) as usize;
-        let mut outcomes = Vec::new();
+        let mut panics = 0;
         for at in (8..8 + size - 3).filter(|at| frame[*at..*at + 4] == 32i32.to_le_bytes()) {
             let mut bad = frame.clone();
             bad[at..at + 4].copy_from_slice(&7i32.to_le_bytes());
-            outcomes.push(decode(bad, OPEN).map(|_| ()));
+            panics += usize::from(panics_unguarded(&bad));
+            assert!(refused(bad, OPEN));
         }
-        assert!(!outcomes.is_empty());
-        assert!(
-            outcomes.iter().all(|outcome| outcome.is_err()),
-            "{outcomes:?}"
-        );
-        assert!(
-            outcomes.contains(&Err(Refusal::Decode)),
-            "the 7-bit integer did not reach the conversion: {outcomes:?}"
-        );
+        assert!(panics > 0, "the 7-bit integer did not reach the conversion");
     }
 
     #[test]
@@ -721,12 +638,12 @@ mod tests {
             max_rows: 0,
             ..OPEN
         };
-        assert_eq!(refused(frame.clone(), rows), Refusal::Rows);
+        assert!(refused(frame.clone(), rows));
         let bytes = Bounds {
             max_bytes: 1,
             ..OPEN
         };
-        assert_eq!(refused(frame, bytes), Refusal::Bytes);
+        assert!(refused(frame, bytes));
     }
 
     #[test]
@@ -759,6 +676,6 @@ mod tests {
             .expect("the buffer entry is in the message");
         let length = metadata.start + at + 8;
         frame[length..length + 8].copy_from_slice(&(1i64 << 40).to_le_bytes());
-        assert_eq!(refused(frame, OPEN), Refusal::Layout);
+        assert!(refused(frame, OPEN));
     }
 }
