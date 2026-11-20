@@ -121,12 +121,17 @@ Ubuntu 24.04 release jobs and local assembly inherits the build host's ABI.
 A GLIBC version alone does not guarantee compatibility: the interpreter and
 all required libraries must also be available.
 
-To sync from a source, install the connector package into a Python
-environment and let `fyrr` find it:
+To sync from a source, install the connector SDK into a Python virtual
+environment and let `fyrr` find it. The SDK is not published on a package
+index: each release ships its wheel (`fyrr_connectors-<version>-py3-none-any.whl`)
+next to the binaries, and the wheel of the release that matches your `fyrr`
+is the one to install (the host refuses an SDK that speaks another
+provider-host protocol). Install it with the extras of the provider types you
+use:
 
 ```sh
-python3 -m venv /opt/fyrr-connectors
-/opt/fyrr-connectors/bin/pip install 'fyrr-connectors[jira]'   # the types you use
+python3.13 -m venv /opt/fyrr-connectors
+/opt/fyrr-connectors/bin/pip install './fyrr_connectors-<version>-py3-none-any.whl[jira]'
 export VIRTUAL_ENV=/opt/fyrr-connectors
 fyrr writer providers
 ```
@@ -136,9 +141,12 @@ The commands that run connectors (`writer sync`, `writer providers`,
 `config schema`) start a Python provider host from the first of these that
 exists: `$VIRTUAL_ENV/bin/python`; a `python3` next to the `fyrr`
 executable; `python3` on `PATH`. If none is found, or it cannot import
-`fyrr_connectors`, they stop with one message that says to run
-`pip install fyrr-connectors[<type>]` or set `VIRTUAL_ENV`. An interpreter
-is never run from the current directory. The connector SDK is tested on
+`fyrr_connectors` (or finds an SDK that does not match this `fyrr`), they
+stop with one message that says to install the wheel of this release into a
+virtual environment and set `VIRTUAL_ENV`. The message comes from a worker
+that starts the host under the same limits as every other worker, never
+from a Python that the `fyrr` process itself ran. An interpreter is never
+run from the current directory. The connector SDK is tested on
 Python 3.13 and later (see [the connectors guide](connectors/README.md#python-versions));
 nothing else about the interpreter has to match the `fyrr` binary.
 

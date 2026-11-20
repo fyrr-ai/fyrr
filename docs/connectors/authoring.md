@@ -233,3 +233,30 @@ a newer minor only adds optional fields.
 point `[tool.uv.sources]` at `connectors/` in a checkout, as
 [the example provider](../../examples/markdown-provider/pyproject.toml)
 does.
+
+## How a provider runs
+
+Providers run in a Python host process that fyrr's worker starts. This is
+what a provider author can observe:
+
+- **A fresh process per sync kind.** Each kind of each sync (content,
+  permissions, members, reconcile) runs in a new Python process, and
+  discovery runs in another. Module-level state, caches and open connections
+  do not carry from one kind to the next; keep what must last in the cursor.
+- **Revision callbacks work only while a batch is being produced.**
+  `lookup_revisions` and `next_revisions` answer while the generator runs
+  towards its next `yield`; called from another thread that outlives that
+  step, or after the generator has finished, they raise a `RuntimeError`.
+- **A provider that aborts reports "the provider failed".** `os.abort()`,
+  `os._exit()` and a crash end the host process, not fyrr's worker: the source
+  fails with the closed `the provider failed` diagnostic, with nothing the
+  provider printed or raised.
+- **The memory limit applies per process.** `writer.worker_memory_max_bytes`
+  bounds the worker and, separately, the host the provider runs in; a
+  provider that exceeds it fails with `the provider failed`.
+- **Credentials are in `os.environ` before your code is imported**, set by
+  the host from the stored credentials the source references. They are not
+  in the host's initial environment (`/proc/<pid>/environ`).
+- **Descriptors.** Stdin, stdout and stderr are `/dev/null`, and nothing else
+  that fyrr or its parent held open is available. Printing is allowed and is
+  discarded.

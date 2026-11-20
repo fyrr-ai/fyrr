@@ -35,8 +35,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   the provider checks of `config check` and `config schema`) start it in a
   Python host process, from `$VIRTUAL_ENV/bin/python`, a `python3` next to
   the `fyrr` executable or `python3` on `PATH`, and without one they stop
-  with a message that says to `pip install fyrr-connectors[<type>]` or set
-  `VIRTUAL_ENV`. An interpreter in the current directory is never run. See
+  with a message that says to install the SDK wheel of the release (the
+  SDK is not on a package index) into a virtual environment and set
+  `VIRTUAL_ENV`. A worker starts the host, so no Python runs in the process
+  that prints the message. An interpreter in the current directory is never
+  run. See
   [downloadable binaries](docs/deployment.md#downloadable-binaries).
 - `fyrr-connectors` requires Python 3.13 or later instead of exactly
   Python 3.13; the interpreter no longer has to match the one `fyrr` was
@@ -47,12 +50,27 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `the provider failed` instead of `the worker failed`, because it no longer
   takes the worker down with it. `writer.worker_memory_max_bytes` limits the
   worker and the provider host separately, so provider memory is bounded as
-  before.
+  before and a worker with its host may use up to twice it.
+- What a provider author can observe changes with the process boundary (see
+  [writing a provider](docs/connectors/authoring.md#how-a-provider-runs)):
+  each sync kind runs in a fresh Python process, so module-level state no
+  longer carries from one kind to the next; the revision callbacks of a
+  prepared run work only while a batch is being produced; an aborting
+  provider reports `the provider failed`; the memory limit applies per
+  process.
 - Content rows reach the writer as Arrow IPC streams instead of through the
-  Arrow C Data Interface, which costs one copy of each batch.
-- Stored writer credentials a provider needs are passed in the provider
-  process's environment at start instead of being set in its `os.environ`
-  afterwards.
+  Arrow C Data Interface, which costs one copy of each batch. The writer
+  inspects a stream before decoding it and refuses compression, dictionary
+  batches, more than one schema or batch, and schema metadata beyond the
+  contract's two entries; non-content batches may be as large as
+  `writer.envelope_max_bytes`, as before.
+- Stored writer credentials a provider needs are sent to the host after it
+  starts and set in its `os.environ` before any provider code is imported,
+  as before; they are never in the host's initial environment.
+- A provider host holds only stdio on `/dev/null` and its protocol socket,
+  which neither the provider nor a process it starts inherits.
+- Version strings that the Python side reports (the SDK's and each
+  provider's) are shown only when they have the shape of a version.
 - `writer sync --dry-run` with no configured sources no longer starts a
   worker.
 - The reader shares one immutable admission per subject between its

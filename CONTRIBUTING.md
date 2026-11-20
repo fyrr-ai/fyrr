@@ -178,9 +178,10 @@ not create.
   joins that test.
 - **Python.** No crate links Python. Providers run in a Python host process
   (`python -m fyrr_connectors.host`) that a `fyrr writer __worker` process
-  starts in its own process group and talks to over an inherited socket; the
-  frames are bounded before they are read and every failure is a closed
-  diagnostic. A change to the protocol bumps `PROTOCOL_VERSION` on both sides
+  starts in its own process group and talks to over a socket that is the host's
+  stdin (the host moves it to a close-on-exec descriptor and closes every other);
+  the frames are bounded before they are read, Arrow streams are inspected
+  before they are decoded, and every failure is a closed diagnostic. A change to the protocol bumps `PROTOCOL_VERSION` on both sides
   (`host.py` and `python/wire.rs`).
 - **Reader-only build.** It contains no writer and no provider code;
   `scripts/check-reader-only` proves it.

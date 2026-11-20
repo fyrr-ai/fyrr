@@ -133,8 +133,16 @@ descendant, and the supervisor reaps what is left. Each of the two processes
 has the memory limit (`writer.worker_memory_max_bytes`, applied per process,
 so provider memory is bounded as before), no core dumps and no inherited
 stdin, stdout or stderr. The worker and the host talk over a private socket;
-every frame is size-bounded before it is read, Arrow rows are validated when
-decoded, and a malformed, oversized or out-of-order frame, a host that exits
+every frame is size-bounded before it is read, and an Arrow stream is
+inspected before any of it is decoded (one schema that is the contract's, with
+no metadata beyond the contract's two entries, and one uncompressed record
+batch whose declared rows and buffer bytes are within the limits; compression
+and dictionary batches are refused) and validated when decoded. The host
+receives the protocol socket as stdin, moves it to a close-on-exec descriptor
+and closes every other, so neither the provider nor a process it starts holds
+it. Stored credentials are sent after the host starts and set in its
+environment before any provider code is imported, so they are not in the
+process's initial environment. A malformed, oversized or out-of-order frame, a host that exits
 early and a host that hangs all end in fixed diagnostic codes, never Python
 exception text. Results return over a size-capped socket. A crash or hang
 fails only that source.
