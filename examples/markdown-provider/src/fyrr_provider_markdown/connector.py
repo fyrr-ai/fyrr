@@ -66,6 +66,8 @@ def _matches(parts: tuple[str, ...], pattern: tuple[str, ...]) -> bool:
     path part and a `**` part matches any number of parts."""
     if not pattern:
         return not parts
+    if pattern == ("**",):
+        return bool(parts)
     if pattern[0] == "**":
         return any(_matches(parts[skip:], pattern[1:]) for skip in range(len(parts) + 1))
     return bool(parts) and fnmatchcase(parts[0], pattern[0]) and _matches(parts[1:], pattern[1:])

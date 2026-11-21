@@ -151,8 +151,8 @@ stop with one message that says to install the wheel of this release into a
 virtual environment and set `VIRTUAL_ENV`. The message comes from a worker
 that starts the host under the same limits as every other worker, never
 from a Python that the `fyrr` process itself ran. An interpreter is never
-run from the current directory. The connector SDK is tested on
-Python 3.11 or newer, tested on 3.11, 3.12, 3.13 and 3.14 (see [the connectors guide](connectors/README.md#python-versions));
+run from the current directory. The connector SDK needs
+Python 3.11 or newer (see [the connectors guide](connectors/README.md#python-versions));
 nothing else about the interpreter has to match the `fyrr` binary.
 
 `scripts/release` fails if the full binary's `needed` libraries include
