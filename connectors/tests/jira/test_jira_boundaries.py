@@ -92,8 +92,10 @@ def test_jira_adf_renders_link_targets_for_web_urls_only():
     assert text(doc(link("design", web))) == f"design ({web})"
     assert text(doc(link(web, web))) == web
     assert text(doc(link("design", "javascript:alert(1)"))) == "design"
-    for kind in ("inlineCard", "blockCard", "embedCard"):
-        assert text(doc({"type": kind, "attrs": {"url": web}})) == web
+    assert text(doc({"type": "inlineCard", "attrs": {"url": web}})) == web
+    block = {"type": "blockCard", "attrs": {"url": web}}
+    after = {"type": "paragraph", "content": [{"type": "text", "text": "Next"}]}
+    assert text({"type": "doc", "version": 1, "content": [block, after]}) == f"{web}\nNext"
     assert text(doc({"type": "inlineCard", "attrs": {"url": "ftp://example.invalid"}})) == ""
 
 

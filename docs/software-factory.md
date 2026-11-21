@@ -29,9 +29,8 @@ Three parts of the contract matter for unattended agents:
 An agent that starts from a Jira ticket knows its key. It finds the issue
 with `search`, `attributes: [{"key": "jira.key", "values": ["PROJ-123"]}]`,
 no `query` and `order: "updated_at"`, then reads it with `fetch` and searches
-on for the pull requests and threads about it. The issue's `links` section
-and the URLs in its text name the parent, linked issues and pull requests
-to look up next ([Jira documents](connectors/jira.md#documents)).
+on for the pull requests and threads about it. The URLs in its text, and with fixed readers its `links` section, name
+what to look up next ([Jira documents](connectors/jira.md#documents)).
 
 ## Set it up
 

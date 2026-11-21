@@ -2910,7 +2910,7 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/jira/test_jira_content.py::test_jira_links_section_is_absent_without_links_and_capped": {
+      "python:connectors/tests/jira/test_jira_content.py::test_jira_links_are_not_published_with_synced_permissions": {
         "tier": "quick",
         "seconds": null
       },

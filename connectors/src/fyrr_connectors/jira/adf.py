@@ -45,7 +45,9 @@ def text(value):
             continue
         if kind in ("inlineCard", "blockCard", "embedCard"):
             # A smart link is a pasted URL; one without a plain web URL stays dropped.
-            out.append(link(node.get("attrs", {}).get("url")) or "")
+            url = link(node.get("attrs", {}).get("url")) or ""
+            # Block and embed cards stand between paragraphs.
+            out.append(url if kind == "inlineCard" or not url else url + "\n")
         elif kind == "text":
             body = text(node.get("text"))
             for mark in node.get("marks", ()):

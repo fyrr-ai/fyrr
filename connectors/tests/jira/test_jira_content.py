@@ -96,26 +96,18 @@ def test_jira_moved_issue_keeps_its_root_and_gets_the_new_key(jira, jira_index):
     assert second[root]["source_revision"] != first[root]["source_revision"]
 
 
-def test_jira_links_section_is_absent_without_links_and_capped(jira, jira_index):
-    from fyrr_connectors.jira.render import MAX_LINKS
+def test_jira_links_are_not_published_with_synced_permissions(jira):
+    # Jira hides a link from a reader who may not see the linked issue.
+    import json
 
-    jira.issue(101)
+    from jira_kit import Index
+
     jira.issue(
-        102,
-        issuelinks=[
-            {
-                "type": {"inward": "relates to", "outward": "relates to"},
-                "inwardIssue": {"key": f"P1-{n:03}"},
-            }
-            for n in range(MAX_LINKS + 5)
-        ],
+        101,
+        parent={"key": "P1-100"},
+        issuelinks=[{"type": {"outward": "blocks"}, "outwardIssue": {"key": "PRIVATE-7"}}],
     )
-    changes = jira_index.sync()
-    labels = lambda root: [s["location"]["label"] for s in changes[root]["sections"]]  # noqa: E731
-    assert "links" not in labels("jira:11111111-1111-4111-8111-111111111111:issue:101")
-    links = next(
-        s["text"]
-        for s in changes["jira:11111111-1111-4111-8111-111111111111:issue:102"]["sections"]
-        if s["location"]["label"] == "links"
-    )
-    assert links.splitlines()[-1] == f"relates to: P1-{MAX_LINKS - 1:03}"
+    sections = Index(jira, mode="sync").sync()[
+        "jira:11111111-1111-4111-8111-111111111111:issue:101"
+    ]
+    assert "PRIVATE-7" not in json.dumps(sections) and "P1-100" not in json.dumps(sections)

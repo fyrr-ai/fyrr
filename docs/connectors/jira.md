@@ -78,14 +78,13 @@ key changes, project renames and moves keep their identity.
   issue keeps its document and gets its new key when it is next read.
 - Rich text (Atlassian Document Format) is rendered to plain text; mentions
   keep readable labels. A link renders as `text (url)` and a smart-link card
-  (a pasted pull request or design document) as its URL, for `http` and
-  `https` only. Media is dropped; attachments and linked issues are not
+  as its URL, for `http` and `https` only. Media is dropped; attachments and linked issues are not
   followed.
-- A `links` section lists the issue's parent and issue links, one line each
-  (`parent: PROJ-100`, `blocks: PROJ-140`, `is blocked by: PROJ-88`), at most
-  64. It carries keys only, no summaries: the section has the issue's
-  audience, and a reader of this issue may not be allowed to see the linked
-  one. Look a key up with `jira.key`.
+- Under `permissions = "fixed"`, a `links` section lists the issue's parent
+  and issue links, one line each, keys only (`parent: PROJ-100`,
+  `blocks: PROJ-140`); look a key up with `jira.key`. Under `sync` there is
+  no such section: Jira hides a link from a reader who may not see the
+  linked issue, and an issue's synced audience covers that issue alone.
 - Title, author, project, status and timestamps come from issue fields,
   never from hidden comments. Unknown dates stay null.
 - Issues are discovered through the enhanced search API ordered by ID
