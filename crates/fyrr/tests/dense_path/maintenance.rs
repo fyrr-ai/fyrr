@@ -17,11 +17,17 @@ fn reader_config(worker: &Path, root: &Path, mode: &str) -> PathBuf {
     let host = root.join(format!("reader-{mode}"));
     std::fs::create_dir(&host).unwrap();
     let config = host.join("fyrr.toml");
+    // `interval` is the shipped behavior; the others are test-only switches.
+    let hook = if mode == "interval" {
+        String::new()
+    } else {
+        format!("# fyrr-test-version-check = {mode}\n")
+    };
     let text = std::fs::read_to_string(worker)
         .unwrap()
         .replace(
             "[reader]",
-            &format!("[reader]\nversion_check='{mode}'\nversion_check_interval='100ms'\n"),
+            &format!("{hook}[reader]\nversion_check_interval='100ms'\n"),
         )
         .replace(
             &root.join("mirror").display().to_string(),
@@ -246,7 +252,7 @@ async fn maintenance_restore_rollback_current_rights_deletes_and_cursor_recovery
     assert!(restored["lance_version"].as_u64().unwrap() > current.lance_version);
     let (_, after) = publication(&commit).await;
     assert!(!after.cursor_rewinds.is_empty());
-    let config = reader_config(&worker, &root, "per-request");
+    let config = reader_config(&worker, &root, "every");
     let mut mcp = tools::Mcp::open_logged(&config, &root.join("restore-reader.stderr"));
     assert!(
         !readable(&fetch(&mut mcp, "a")),
@@ -898,7 +904,7 @@ async fn discovers_authorization_after_failed_cursor(operation: &str) {
         } else {
             command(&commit, &["writer", "maintain"]);
         }
-        let config = reader_config(&worker, &root, "per-request");
+        let config = reader_config(&worker, &root, "every");
         let mut reader = tools::Mcp::open(&config);
         assert!(
             !readable(&fetch(&mut reader, "a")),
@@ -1077,7 +1083,7 @@ async fn maintenance_reader_switch_keeps_inflight_pin_and_evicts_old_mirror(back
     let (worker, commit, root) = fixture_on(backend);
     publish_initial(&worker, &commit, &root);
     let (old_head, old) = publication(&commit).await;
-    let config = reader_config(&worker, &root, "off");
+    let config = reader_config(&worker, &root, "held");
     input(
         &root,
         json!({"epoch":2,"content":[[replacement("a","r2","r1","fixture document 2"),replacement("b","r2","r1","fixture document 3")]]}),
@@ -1193,7 +1199,7 @@ async fn maintenance_restore_batched_authorization_boundaries_on_storage() {
         json!({"epoch":epoch,"content":documents.chunks(100).collect::<Vec<_>>(),
             "permissions":permissions.chunks(100).collect::<Vec<_>>()})
     };
-    let config = reader_config(&worker, &root, "per-request");
+    let config = reader_config(&worker, &root, "every");
     let mut reader = tools::Mcp::open(&config);
     let granted = fetch(&mut reader, "restore-0");
     assert!(readable(&granted), "initial grant is live: {granted}");
@@ -1515,7 +1521,7 @@ async fn maintenance_purge_window_and_restore_horizon_on_storage() {
         );
     }
     assert_eq!(command(&commit, &["writer", "verify"])["verified"], true);
-    let config = reader_config(&worker, &root, "off");
+    let config = reader_config(&worker, &root, "held");
     let mut mcp = tools::Mcp::open(&config);
     assert!(!readable(&fetch(&mut mcp, "a")));
     assert!(!readable(&fetch(&mut mcp, "b")));

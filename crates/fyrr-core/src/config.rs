@@ -31,7 +31,7 @@ use crate::units::{ByteSize, ConfigDuration};
 
 /// Configuration schema revision: adding a storage backend changes the URI
 /// contract beyond an optional field, so it starts a new major revision.
-pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(5, 1);
+pub const CONFIG_SCHEMA_VERSION: crate::SchemaVersion = crate::SchemaVersion::new(6, 0);
 
 /// Namespace IDs: lowercase letters, digits and `-`, at most 63 bytes.
 pub const NAMESPACE_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
@@ -71,6 +71,7 @@ const FILTER_COUNT_MAX_ROWS: u64 = 10_000_000;
 const NPROBES_MAX: u64 = 65536;
 const FTS_SEARCH_CHUNK_MAX: u64 = 1024;
 const FTS_PARTITION_MEMORY_MB_MAX: u64 = 1_048_576;
+const INSTRUCTIONS_MAX_CHARS: u64 = 4096;
 const RESPONSE_BYTES_MIN: u64 = 4096;
 const RESPONSE_BYTES_MAX: u64 = 16 * 1024 * 1024;
 
@@ -642,14 +643,9 @@ pub struct ReaderConfig {
     /// Space left unused by generation preparation for requests and allocator overhead.
     #[serde(default = "default_reader_headroom")]
     pub memory_headroom_bytes: ByteSize,
-    /// Serving-head version check mode.
-    #[serde(default)]
-    pub version_check: VersionCheck,
+    /// How often the reader reads the serving head for a new publication.
     #[serde(default = "default_version_check_interval")]
     pub version_check_interval: ConfigDuration,
-    /// `per-request` mode: wait this long for a newer version, then serve flagged.
-    #[serde(default = "default_per_request_wait")]
-    pub per_request_wait: ConfigDuration,
     /// Upper bound on preparing a new generation (mirror sync, maps, prewarm);
     /// `writer.version_grace` must exceed it plus the maximum request deadline.
     #[serde(default = "default_max_preparation")]
@@ -664,6 +660,23 @@ pub struct ReaderConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = RESPONSE_BYTES_MIN, max = RESPONSE_BYTES_MAX))]
     pub max_response_bytes: Option<usize>,
+    /// Text sent to MCP clients as `instructions` in the `initialize` result.
+    /// Absent sends the built-in text; an empty string sends none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = INSTRUCTIONS_MAX_CHARS))]
+    pub instructions: Option<String>,
+}
+
+impl ReaderConfig {
+    /// The `instructions` the reader serves: the configured text, the built-in
+    /// text when absent, nothing when empty.
+    pub fn served_instructions(&self) -> Option<&str> {
+        match self.instructions.as_deref() {
+            None => Some(crate::mcp::SERVER_INSTRUCTIONS),
+            Some("") => None,
+            Some(text) => Some(text),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -682,16 +695,6 @@ pub enum RoutingStrategy {
     Exact,
     Rabitq,
     Auto,
-}
-
-/// Version check modes.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-pub enum VersionCheck {
-    #[default]
-    Interval,
-    Off,
-    PerRequest,
 }
 
 /// Writer settings: envelopes, commit, maintenance, retention.
@@ -1593,9 +1596,6 @@ fn default_directory_interval() -> ConfigDuration {
 }
 fn default_version_check_interval() -> ConfigDuration {
     ConfigDuration::from_secs(30)
-}
-fn default_per_request_wait() -> ConfigDuration {
-    ConfigDuration::from_secs(2)
 }
 fn default_max_preparation() -> ConfigDuration {
     ConfigDuration::from_mins(15)

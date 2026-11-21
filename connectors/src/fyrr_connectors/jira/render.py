@@ -29,7 +29,9 @@ def document(identity, project, issue, comments, context, targets=(), dynamic=Fa
     fields = issue["fields"]
     uri = identity.site + "/browse/" + issue["key"]
     sections = []
-    field_values = {key: fields.get(key) for key in ("summary", "description")}
+    # The key opens the summary so excerpts and key queries carry it.
+    summary = f"{issue['key']} {text(fields.get('summary'))}"
+    field_values = {"summary": summary, "description": fields.get("description")}
     for key in ("status", "issuetype", "priority", "reporter", "assignee"):
         value = fields.get(key)
         if isinstance(value, dict):

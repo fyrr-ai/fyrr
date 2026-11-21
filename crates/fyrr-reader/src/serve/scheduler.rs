@@ -12,6 +12,11 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
     #[cfg(test)]
     let observed_samples = sample_events.clone();
     let http = reader.config.reader.http.is_some();
+    let instructions = reader
+        .config
+        .reader
+        .served_instructions()
+        .map(str::to_owned);
     let cap = reader.config.reader.concurrency;
     let worker_count = crate::generation::PreparationReservation::worker_count(&reader.config);
     let native_slots = Arc::new(tokio::sync::Semaphore::new(cap));
@@ -29,6 +34,7 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
     let context = PreparationContext {
         policy_cache: template.policy_cache.clone(),
         identity_cache: template.identity_cache.clone(),
+        head_cache: template.head_cache.clone(),
         control_backend: template.control_backend.clone(),
         control_root: template.control_root.clone(),
         reranker: template.reranker.clone(),
@@ -62,7 +68,8 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
                 .version_check_interval
                 .as_duration()
                 .min(Duration::from_secs(30));
-            let next_check = Instant::now() + interval;
+            let started = Instant::now();
+            let next_check = started + interval;
             let warm_cancel = CancellationToken::new();
             let next_warm = Instant::now();
             let warm_loss = if template
@@ -78,6 +85,9 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
                 config,
                 interval,
                 next_check,
+                alive: (started, fyrr_core::clock::now()),
+                check_started: started,
+                stalled: None,
                 warm_cancel,
                 next_warm,
                 warm_loss,
@@ -94,7 +104,7 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
                 pending: VecDeque::new(),
                 hup: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
                     .unwrap_or_else(|error| panic!("signal: {error:?}")),
-                tick: tokio::time::interval(Duration::from_millis(10)),
+                tick: tokio::time::interval(TICK),
                 eof: false,
                 reload_reply: None,
                 reload_force: false,
@@ -119,6 +129,7 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
         #[cfg(test)]
         native_slots: observed_native_slots,
         http,
+        instructions,
         sender,
         cancellations: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         slots: Arc::new(tokio::sync::Semaphore::new(cap * 2)),
@@ -133,11 +144,26 @@ type ExecutionResult = (
 );
 type PreparationCompletion = <VersionPreparation as std::future::Future>::Output;
 
+/// How often the scheduler loop passes when nothing else wakes it.
+const TICK: Duration = Duration::from_millis(10);
+/// A gap between two passes of the scheduler loop that means the process did
+/// not run: far above the tick and a busy host's scheduling delay.
+const STALL: Duration = Duration::from_secs(1);
+/// How long requests wait for the version check that follows such a gap
+/// before they are answered from the version the reader holds.
+const VERSION_WAIT: Duration = Duration::from_secs(2);
+
 struct Scheduler {
     context: PreparationContext,
     config: fyrr_core::config::Config,
     interval: Duration,
     next_check: Instant,
+    /// The last pass of the loop, on the monotonic and the wall clock.
+    alive: (Instant, chrono::DateTime<chrono::Utc>),
+    check_started: Instant,
+    /// When the loop found that the process had not run for a while and a
+    /// version check was due or cut off; cleared by a check started later.
+    stalled: Option<Instant>,
     preparation: Option<VersionPreparation>,
     warming: Option<(Arc<()>, VersionPreparation)>,
     warm_cancel: CancellationToken,
@@ -176,6 +202,7 @@ impl Scheduler {
         let mut sampling = FuturesUnordered::new();
         loop {
             let now = Instant::now();
+            self.notice_stall(now);
             let sampling_idle = sampling.is_empty();
             let reserved = self.context.budget.cap.saturating_sub(
                 self.context.budget.permits.available_permits() as u64
@@ -304,7 +331,41 @@ impl Scheduler {
             }
         }
     }
+    /// A process that did not run for a while missed its version checks: an
+    /// environment frozen between requests runs only while it serves one, and
+    /// a suspended host does not run at all. The loop passes every 10 ms, so
+    /// a longer gap on either clock says so. When a check is due after such
+    /// a gap it starts in this pass, or again once a check the gap cut off
+    /// ends, and requests wait for it ([`VERSION_WAIT`] from the gap) rather
+    /// than answer from a version the check is about to replace.
+    fn notice_stall(&mut self, now: Instant) {
+        if self.stalled.is_some_and(|at| now >= at + VERSION_WAIT) {
+            self.stalled = None;
+        }
+        let wall = fyrr_core::clock::now();
+        let (seen, seen_wall) = std::mem::replace(&mut self.alive, (now, wall));
+        let gap = now - seen;
+        // A monotonic clock may stand still while the process is frozen.
+        // Below a tick the difference is the distance between the two reads.
+        let hidden = (wall - seen_wall)
+            .to_std()
+            .unwrap_or_default()
+            .saturating_sub(gap);
+        if hidden >= TICK {
+            self.next_check = self.next_check.checked_sub(hidden).unwrap_or(now);
+        }
+        if gap + hidden >= STALL && now >= self.next_check {
+            self.stalled = Some(now);
+        }
+    }
+    /// Whether `job` still waits for the check after a gap: no longer than
+    /// [`VERSION_WAIT`], and no longer than half of the time it has.
+    fn awaits_check(&self, job: &Job, now: Instant) -> bool {
+        let wait = VERSION_WAIT.min((job.timing.deadline - job.timing.arrived) / 2);
+        self.stalled.is_some() && now < job.timing.arrived + wait
+    }
     fn prepare(&mut self, trigger: Trigger) {
+        self.check_started = Instant::now();
         self.preparation = Some(prepare_version(
             &self.context,
             self.template.as_ref(),
@@ -313,19 +374,19 @@ impl Scheduler {
         ));
     }
     fn dispatch(&mut self, now: Instant) {
+        // The oldest request that no longer waits for a check: one with
+        // little time must not expire behind one that can wait longer.
         while !self.handover
             && !self.idle.is_empty()
-            && !self.pending.is_empty()
-            && !(self.preparation.is_some()
-                && self
-                    .pending
-                    .front()
-                    .is_some_and(|j| now < j.timing.version_wait_until))
+            && let Some(next) = self
+                .pending
+                .iter()
+                .position(|job| !self.awaits_check(job, now))
         {
             let Ok(permit) = self.native_slots.clone().try_acquire_owned() else {
                 break;
             };
-            let Some(mut job) = self.pending.pop_front() else {
+            let Some(mut job) = self.pending.remove(next) else {
                 unreachable!("dispatch requires a pending job");
             };
             #[allow(clippy::cast_possible_truncation)]
@@ -345,7 +406,6 @@ impl Scheduler {
                 arrived: job.timing.arrived,
                 deadline: job.timing.deadline,
                 cancelled: job.timing.cancelled.clone(),
-                version_wait_until: job.timing.version_wait_until,
                 authorization_build_us: 0,
             };
             job.timing.cancelled = CancellationToken::new();
@@ -395,6 +455,13 @@ impl Scheduler {
     }
     async fn on_prepared(&mut self, prepared: PreparationCompletion) {
         self.preparation = None;
+        // A check from before the gap read the head before it: run another.
+        let outdated = self.stalled.is_some_and(|at| self.check_started < at);
+        if outdated {
+            self.next_check = Instant::now();
+        } else if matches!(prepared, Ok(Ok(_))) {
+            self.stalled = None;
+        }
         match prepared {
             Ok(Ok(Some((new, workers)))) => {
                 // Serving readiness retains the last active state
@@ -431,7 +498,9 @@ impl Scheduler {
                     "retry",
                     self.template.as_ref().map_or(0, |r| r.manifest.sequence),
                 );
-                self.next_check = Instant::now() + Duration::from_secs(1);
+                if !outdated {
+                    self.next_check = Instant::now() + Duration::from_secs(1);
+                }
                 if let Some(reply) = self.reload_reply.take() {
                     let _ = reply.send(Err(StorageUnavailable));
                 }
@@ -583,18 +652,17 @@ impl Scheduler {
     }
     fn on_job(&mut self, job: Option<Job>) {
         self.sample_cancel.cancel();
-        let Some(mut job) = job else {
+        let Some(job) = job else {
             self.eof = true;
             return;
         };
-        if self.config.reader.version_check == fyrr_core::config::VersionCheck::PerRequest {
-            if self.preparation.is_none() && !self.handover {
-                self.prepare(Trigger::Check);
-            }
-            job.timing.version_wait_until = job
-                .timing
-                .deadline
-                .min(job.timing.arrived + self.config.reader.per_request_wait.as_duration());
+        #[cfg(feature = "test-store")]
+        if crate::storage::test_store::version_check()
+            == Some(crate::storage::test_store::VersionCheck::Every)
+        {
+            let now = Instant::now();
+            self.next_check = now;
+            self.stalled = Some(now);
         }
         self.pending.push_back(job);
     }

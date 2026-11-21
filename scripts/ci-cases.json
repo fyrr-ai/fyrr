@@ -271,7 +271,7 @@
         "tier": "quick",
         "seconds": 0.1
       },
-      "full:fyrr-reader:lib:fyrr_reader/storage::tests::only_an_absent_directory_needs_no_freshness_proof": {
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::the_publication_decides_whether_the_directory_clock_applies": {
         "tier": "quick",
         "seconds": 0.0
       },
@@ -714,6 +714,102 @@
       "full:fyrr-writer:lib:fyrr_writer/commit::group::fts_partition_tests::absent_target_keeps_one_partition_and_a_set_target_keeps_several_through_merges": {
         "tier": "quick",
         "seconds": 0.5
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::authorization_checks_share_one_head_read_per_interval": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::a_zero_interval_reads_the_head_for_every_check": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::a_fresh_head_read_is_what_checks_see_next": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::an_older_head_read_never_replaces_a_newer_one": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::a_failed_head_read_is_shared_and_not_kept": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::an_abandoned_shared_read_is_never_handed_to_a_later_check": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::checks_read_the_head_themselves_after_two_version_check_intervals": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::an_older_read_is_not_held_after_a_newer_read_failed": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::a_shared_read_that_outlasts_the_age_limit_is_not_served": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_version_manifest_the_publication_lacks_needs_no_storage_request": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::data_ranges_fetch_only_the_pages_they_lack": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_damaged_or_unrecorded_page_is_fetched_again": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_changed_object_fails_closed_and_drops_its_pages": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::prewarm_replaces_pages_with_the_complete_file": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::pages_obey_the_byte_budget_and_the_pins": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::unpinned_pages_are_evicted_to_make_room": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::heads_and_ranges_of_paged_files_share_a_stable_tag": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::heads_of_other_files_are_not_answered_from_the_manifest": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_paged_file_larger_than_the_budget_evicts_nothing": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::prewarm_after_pages_needs_no_room_for_both": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::pages_of_a_new_map_generation_are_verified_again": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_size_change_drops_the_kept_pages": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_damaged_complete_file_is_downloaded_again": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_partial_left_by_a_failed_download_does_not_stop_pages": {
+        "tier": "quick",
+        "seconds": 0.05
       }
     },
     "children": {
@@ -1217,6 +1313,14 @@
       "full:fyrr:test:dense_path/durability_syncs::purged_fragments_are_durable_before_their_envelope_is_unlinked": {
         "tier": "full",
         "seconds": 10
+      },
+      "full:fyrr:test:dense_path/mirror_identity::running_reader_with_a_shared_head_check_follows_the_head_within_its_interval": {
+        "tier": "full",
+        "seconds": 15.0
+      },
+      "full:fyrr:test:dense_path/mirror_identity::reader_paused_past_its_version_check_answers_from_the_new_publication": {
+        "tier": "full",
+        "seconds": 15.0
       }
     },
     "backend": "local"
@@ -1456,6 +1560,10 @@
         "tier": "full",
         "seconds": 156.747
       },
+      "full:fyrr:test:dense_path/http_mcp::a_published_directory_clock_binds_a_reader_without_a_directory_provider_on_storage": {
+        "tier": "full",
+        "seconds": 100.0
+      },
       "full:fyrr:test:dense_path/identity::identity_alias_collision_link_revoke_and_idempotence_on_storage": {
         "tier": "full",
         "seconds": 31.047
@@ -1467,6 +1575,10 @@
       "full:fyrr:test:dense_path/identity::identity_email_evidence_and_cross_issuer_bindings_on_storage": {
         "tier": "full",
         "seconds": 48.179
+      },
+      "full:fyrr:test:dense_path/identity::identity_import_withdraws_the_directory_clock_in_the_same_head_write_on_storage": {
+        "tier": "full",
+        "seconds": 40.0
       },
       "full:fyrr:test:dense_path/identity::identity_large_grants_are_complete_and_over_limit_is_subject_local_on_storage": {
         "tier": "full",
@@ -1653,6 +1765,10 @@
       "full:fyrr:test:dense_path/jira::jira_fixed_issues_comments_quarantine_and_reconcile_on_storage": {
         "tier": "full",
         "seconds": 86.87
+      },
+      "full:fyrr:test:dense_path/jira::jira_issue_key_attribute_finds_one_issue_for_a_permitted_subject_on_storage": {
+        "tier": "full",
+        "seconds": 40
       },
       "full:fyrr:test:dense_path/jira::jira_sync_silent_content_restricted_sections_and_revoke_on_storage": {
         "tier": "full",
@@ -2823,6 +2939,10 @@
         "seconds": null
       },
       "python:connectors/tests/jira/test_jira_content.py::test_jira_fixed_http_gateway_real_requests_and_null_fields": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/jira/test_jira_content.py::test_jira_moved_issue_keeps_its_root_and_gets_the_new_key": {
         "tier": "quick",
         "seconds": null
       },

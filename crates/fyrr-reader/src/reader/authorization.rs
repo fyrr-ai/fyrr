@@ -334,8 +334,21 @@ impl PreparedReader {
             self.manifest.sequence,
             &self.manifest.incarnation,
         ) {
-            // Never serve a namespace that no longer exists at this URI.
-            self.mirror_pin.retire();
+            // A head of this incarnation with a lower sequence is an older
+            // read of the head, not another namespace: sequences only grow
+            // within an incarnation. Refuse the request and keep the pin; if
+            // the head really went back, the next version check sees it
+            // replaced and retires the pin.
+            let older_read = self.head.incarnation == self.manifest.incarnation
+                && self
+                    .head
+                    .content
+                    .as_ref()
+                    .is_some_and(|live| live.sequence < self.manifest.sequence);
+            if !older_read {
+                // Never serve a namespace that no longer exists at this URI.
+                self.mirror_pin.retire();
+            }
             return Err(AuthorizationUnavailable);
         }
         if self
@@ -511,15 +524,13 @@ impl PreparedReader {
     pub(super) async fn refresh_authorization_inner(&mut self, rebuild: bool) -> Result<bool> {
         let root = &self.control_root;
         let store = self.control_store.clone();
-        let current: ServingHead = read_contract(store.as_ref(), &root.clone().join("head.json"))
-            .await
-            .map_err(|code| {
-                if code == crate::storage::StorageError::StorageUnavailable {
-                    StorageUnavailable
-                } else {
-                    AuthorizationUnavailable
-                }
-            })?;
+        let current: ServingHead = self.head_cache.read(&store, root).await.map_err(|code| {
+            if code == crate::storage::StorageError::StorageUnavailable {
+                StorageUnavailable
+            } else {
+                AuthorizationUnavailable
+            }
+        })?;
         if current.namespace != self.config.namespace.name {
             return Err(AuthorizationUnavailable);
         }

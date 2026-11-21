@@ -9,21 +9,32 @@ pub(super) struct Admission {
     store: Arc<dyn ObjectStore>,
     root: Path,
     cached_identity: crate::storage::ArtifactCache<IdentityArtifact>,
+    heads: crate::storage::HeadCache,
 }
 impl Admission {
     pub(super) fn new(
         store: Arc<dyn ObjectStore>,
         root: Path,
         cached_identity: crate::storage::ArtifactCache<IdentityArtifact>,
+        heads: crate::storage::HeadCache,
     ) -> Self {
         Self {
             store,
             root,
             cached_identity,
+            heads,
         }
     }
     pub(super) async fn head(&self) -> Result<ServingHead, ReaderError> {
-        crate::storage::read_contract(self.store.as_ref(), &self.root.clone().join("head.json"))
+        self.heads
+            .read(&self.store, &self.root)
+            .await
+            .map_err(Into::into)
+    }
+    /// The head as storage holds it now, for readiness.
+    pub(super) async fn fresh_head(&self) -> Result<ServingHead, ReaderError> {
+        self.heads
+            .read_fresh(self.store.as_ref(), &self.root)
             .await
             .map_err(Into::into)
     }
@@ -155,6 +166,7 @@ mod tests {
                 mirror.wrap("control", remote.clone()),
                 Path::from("namespace"),
                 Arc::default(),
+                crate::storage::HeadCache::with_interval(std::time::Duration::ZERO),
             );
             let mut test = Self {
                 config,
@@ -224,6 +236,7 @@ mod tests {
             test.admission.store.clone(),
             test.admission.root.clone(),
             test.admission.cached_identity.clone(),
+            test.admission.heads.clone(),
         );
         let before = test.mirror.totals().requests;
         let identity = shared

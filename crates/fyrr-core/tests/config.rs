@@ -237,6 +237,25 @@ fn example_and_minimal_files_are_valid() {
     assert_eq!(errors(&partitioned), Vec::<String>::new());
     assert_eq!(partitioned.config.writer.fts_partition_memory_mb, Some(64));
     assert_eq!(partitioned.config.reader.fts_search_chunk, Some(1));
+    assert_eq!(minimal.config.reader.instructions, None);
+    assert_eq!(
+        minimal.config.reader.served_instructions(),
+        Some(fyrr_core::mcp::SERVER_INSTRUCTIONS)
+    );
+    for (setting, served) in [("\"Search first.\"", Some("Search first.")), ("\"\"", None)] {
+        let parsed = parse(&format!("{MINIMAL}\n[reader]\ninstructions = {setting}\n"))
+            .expect("instructions parse");
+        assert_eq!(errors(&parsed), Vec::<String>::new());
+        assert_eq!(parsed.config.reader.served_instructions(), served);
+    }
+    let longest = format!(
+        "{MINIMAL}\n[reader]\ninstructions = \"{}\"\n",
+        "é".repeat(4096)
+    );
+    assert_eq!(
+        errors(&parse(&longest).expect("parses")),
+        Vec::<String>::new()
+    );
     assert_eq!(
         minimal.config.reader.version_check_interval.to_string(),
         "30s"
@@ -341,6 +360,10 @@ fn cross_field_rules_are_enforced() {
     assert_error(
         "[writer]\nfts_partition_memory_mb = 1048577",
         "writer.fts_partition_memory_mb",
+    );
+    assert_error(
+        &format!("[reader]\ninstructions = \"{}\"", "x".repeat(4097)),
+        "reader.instructions",
     );
     assert_error("[reader]\nfts_search_chunk = 0", "reader.fts_search_chunk");
     assert_error(
@@ -729,7 +752,7 @@ fn every_schema_constraint_is_enforced() {
         "sources[0].retention_days minimum",
         "storage.secret_access_key.env pattern",
         "writer.purge_window pattern",
-        "reader.version_check enum",
+        "identity.directory.provider enum",
         "embedding.model minLength",
         "embedding.model maxLength",
         "embedding.prefix maxLength",
@@ -802,10 +825,7 @@ fn type_errors_never_echo_values() {
             "[embedding]\n",
             format!("[embedding]\ndimensions = \"{SENTINEL}\"\n"),
         ),
-        (
-            "version_check = \"interval\"",
-            format!("version_check = \"{SENTINEL}\""),
-        ),
+        ("provider = \"none\"", format!("provider = \"{SENTINEL}\"")),
         (
             "permissions = \"fixed\"",
             format!("permissions = \"{SENTINEL}\""),
@@ -833,12 +853,12 @@ fn type_errors_never_echo_values() {
             format!("[embedding]\ndimensions = \"a, expected {SENTINEL}\"\n"),
         ),
         (
-            "version_check = \"interval\"",
-            format!("version_check = \"x`, expected \\\"{SENTINEL}\""),
+            "provider = \"none\"",
+            format!("provider = \"x`, expected \\\"{SENTINEL}\""),
         ),
         (
-            "version_check = \"interval\"",
-            format!("version_check = \"it's {SENTINEL}\""),
+            "provider = \"none\"",
+            format!("provider = \"it's {SENTINEL}\""),
         ),
     ] {
         let text = common::read(EXAMPLE).replacen(field, &replacement, 1);

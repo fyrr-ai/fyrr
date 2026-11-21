@@ -1033,7 +1033,7 @@ fn correction_live_mcp_expires_without_commit() {
         .replace("[identity]", "[identity]\nvalidity_deadline = \"6m\"")
         .replace(
             "[reader]",
-            &format!("[identity.directory]\nprovider='snapshot'\nsnapshot_file='{}'\nsync_interval='1s'\n[reader]\nversion_check='off'", directory.display()),
+            &format!("[identity.directory]\nprovider='snapshot'\nsnapshot_file='{}'\nsync_interval='1s'\n# fyrr-test-version-check = held\n[reader]", directory.display()),
         );
     let text = text.replace(
         "[[sources]]",

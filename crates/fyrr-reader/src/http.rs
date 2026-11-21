@@ -429,7 +429,7 @@ async fn readiness(State(state): State<HttpState>) -> Response {
     if !state.auth.ready().await {
         return error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable);
     }
-    let Ok(head) = state.admission.head().await else {
+    let Ok(head) = state.admission.fresh_head().await else {
         return error(StatusCode::SERVICE_UNAVAILABLE, PublicationUnavailable);
     };
     let now = fyrr_core::clock::now();
@@ -507,6 +507,7 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
         reader.control_store.clone(),
         reader.control_root.clone(),
         reader.identity_cache.clone(),
+        reader.head_cache.clone(),
     ));
     let service = crate::serve::start(reader).await?;
     let state = HttpState {

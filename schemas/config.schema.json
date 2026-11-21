@@ -35,9 +35,7 @@
         "mirror_max_bytes": 8589934592,
         "memory_max_bytes": "2304MiB",
         "memory_headroom_bytes": "128MiB",
-        "version_check": "interval",
         "version_check_interval": "30s",
-        "per_request_wait": "2s",
         "max_preparation": "15m"
       }
     },
@@ -919,19 +917,10 @@
           "description": "Space left unused by generation preparation for requests and allocator overhead.",
           "default": "128MiB"
         },
-        "version_check": {
-          "$ref": "#/$defs/VersionCheck",
-          "description": "Serving-head version check mode.",
-          "default": "interval"
-        },
         "version_check_interval": {
           "$ref": "#/$defs/Duration",
+          "description": "How often the reader reads the serving head for a new publication.",
           "default": "30s"
-        },
-        "per_request_wait": {
-          "$ref": "#/$defs/Duration",
-          "description": "`per-request` mode: wait this long for a newer version, then serve flagged.",
-          "default": "2s"
         },
         "max_preparation": {
           "$ref": "#/$defs/Duration",
@@ -947,6 +936,14 @@
           "minimum": 4096,
           "description": "Optional search response budget, in bytes of the serialized MCP tool result\nincluding its structured JSON and text copies, for MCP\nclients that refuse large tool results. Over budget, whole hits are dropped\nfrom the end of the rank order (each query keeps at least 4 while another\nstill has tail hits); only then do the lowest-ranked hits lose their excerpt\nor content. `truncated` reports both counts and the removed bytes count as\n`omitted_bytes`. Absent returns every selected hit.",
           "maximum": 16777216
+        },
+        "instructions": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Text sent to MCP clients as `instructions` in the `initialize` result.\nAbsent sends the built-in text; an empty string sends none.",
+          "maxLength": 4096
         }
       },
       "description": "Reader settings."
@@ -1020,15 +1017,6 @@
       "description": "Byte size: an integer followed by B, KiB, MiB, GiB or TiB (bytes when omitted).",
       "type": "string",
       "pattern": "^(0|[1-9][0-9]*)(B|KiB|MiB|GiB|TiB)?$"
-    },
-    "VersionCheck": {
-      "type": "string",
-      "enum": [
-        "interval",
-        "off",
-        "per-request"
-      ],
-      "description": "Version check modes."
     },
     "WriterConfig": {
       "type": "object",
@@ -1366,5 +1354,5 @@
       "description": "When each of a source's syncs is due."
     }
   },
-  "x-fyrr-schema-version": "5.1"
+  "x-fyrr-schema-version": "6.0"
 }

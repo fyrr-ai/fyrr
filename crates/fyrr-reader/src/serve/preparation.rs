@@ -43,11 +43,10 @@ pub(super) fn prepare_warm(
             for _ in 0..crate::generation::PreparationReservation::worker_count(&config) {
                 workers.push_back(prepared.worker().await?);
             }
-            let latest: fyrr_core::publication::ServingHead = crate::storage::read_contract(
-                prepared.control_store.as_ref(),
-                &prepared.control_root.clone().join("head.json"),
-            )
-            .await?;
+            let latest = prepared
+                .head_cache
+                .read_fresh(prepared.control_store.as_ref(), &prepared.control_root)
+                .await?;
             if latest
                 .content
                 .as_ref()
@@ -69,7 +68,6 @@ pub(super) fn prepare_warm(
 pub(super) enum Trigger {
     Reload,
     Collect,
-    Check,
 }
 
 pub(super) fn prepare_version(
@@ -107,9 +105,9 @@ pub(super) fn prepare_version(
             let store = context.control_backend.clone();
             let root = context.control_root.clone();
             let store = context.mirror.wrap("control", store);
-            let head: fyrr_core::publication::ServingHead =
-                crate::storage::read_contract(store.as_ref(), &root.clone().join("head.json"))
-                    .await?;
+            // A version check, a refresh and SIGHUP read the head here; the
+            // authorization checks of requests see what they saw.
+            let head = context.head_cache.read_fresh(store.as_ref(), &root).await?;
             let pointer = head.content.as_ref().ok_or(PublicationUnavailable)?;
             let mut replaced = false;
             if let Some((sequence, _, committed, pin, (publication_id, incarnation))) = &current {
@@ -135,22 +133,25 @@ pub(super) fn prepare_version(
                     .to_std()
                     .unwrap_or_default();
                 pin.expire(age, config.writer.purge_window.as_duration());
-                let policy: fyrr_core::publication::PolicyArtifact =
-                    crate::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-                let horizon = config
-                    .writer
-                    .purge_window
-                    .as_duration()
-                    .saturating_sub(config.writer.version_grace.as_duration());
-                // Sequences of a replaced namespace say nothing about this one.
-                let mandatory = replaced
-                    || policy.row_acl_sequence.is_some_and(|s| s > *sequence)
-                    || age >= horizon;
+                #[cfg(feature = "test-store")]
                 if trigger != Trigger::Reload
-                    && config.reader.version_check == fyrr_core::config::VersionCheck::Off
-                    && !mandatory
+                    && crate::storage::test_store::version_check()
+                        == Some(crate::storage::test_store::VersionCheck::Held)
                 {
-                    return Ok(None);
+                    let policy: fyrr_core::publication::PolicyArtifact =
+                        crate::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+                    let horizon = config
+                        .writer
+                        .purge_window
+                        .as_duration()
+                        .saturating_sub(config.writer.version_grace.as_duration());
+                    // Sequences of a replaced namespace say nothing about this one.
+                    if !replaced
+                        && policy.row_acl_sequence.is_none_or(|s| s <= *sequence)
+                        && age < horizon
+                    {
+                        return Ok(None);
+                    }
                 }
             }
             // Admission entries name Lance versions, which a replaced
@@ -173,6 +174,7 @@ pub(super) fn prepare_version(
                     context.query_embeddings.clone(),
                     context.policy_cache.clone(),
                     context.identity_cache.clone(),
+                    context.head_cache.clone(),
                 )),
                 context.budget.clone(),
             )
@@ -190,8 +192,7 @@ pub(super) fn prepare_version(
             for _ in 0..crate::generation::PreparationReservation::worker_count(config) {
                 workers.push_back(prepared.worker().await?);
             }
-            let latest: fyrr_core::publication::ServingHead =
-                crate::storage::read_contract(store.as_ref(), &root.join("head.json")).await?;
+            let latest = context.head_cache.read_fresh(store.as_ref(), &root).await?;
             if latest
                 .content
                 .as_ref()

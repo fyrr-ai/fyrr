@@ -8,7 +8,6 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
         .unwrap()
         .config;
     config.reader.concurrency = 1;
-    config.reader.version_check = fyrr_core::config::VersionCheck::Off;
     config.embedding.reader_live = false;
     let reader = crate::search::PreparedReader::open(&config).await.unwrap();
     let hooks = reader.test_hooks.clone();
@@ -21,6 +20,7 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
         reader.control_store.clone(),
         reader.control_root.clone(),
         reader.identity_cache.clone(),
+        reader.head_cache.clone(),
     ));
     let service = crate::serve::start(reader).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

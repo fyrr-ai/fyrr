@@ -99,12 +99,12 @@ struct PreparationContext {
     control_root: object_store::path::Path,
     policy_cache: crate::storage::ArtifactCache<fyrr_core::publication::PolicyArtifact>,
     identity_cache: crate::storage::ArtifactCache<fyrr_core::identity::IdentityArtifact>,
+    head_cache: crate::storage::HeadCache,
 }
 struct RequestTiming {
     arrived: Instant,
     deadline: Instant,
     cancelled: CancellationToken,
-    version_wait_until: Instant,
     authorization_build_us: u64,
 }
 /// Reserve stdio capacity at decoded arrival, before SDK task scheduling can reorder it.
@@ -154,6 +154,7 @@ pub(crate) struct McpService {
     #[cfg(test)]
     native_slots: Arc<tokio::sync::Semaphore>,
     http: bool,
+    instructions: Option<String>,
     sender: mpsc::Sender<Job>,
     cancellations: CancellationRegistry,
     slots: Arc<tokio::sync::Semaphore>,
@@ -294,7 +295,6 @@ pub(crate) async fn cache_test_enqueue(
                 arrived: now,
                 deadline: now + Duration::from_secs(300),
                 cancelled: CancellationToken::new(),
-                version_wait_until: now,
                 authorization_build_us: 0,
             },
         })
