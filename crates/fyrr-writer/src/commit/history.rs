@@ -617,14 +617,28 @@ mod sequence_tests {
             pointer.publication_id = parent.publication_id.clone();
             pointer.manifest = format!("publications/{}.json", parent.publication_id);
             pointer.sequence = sequence;
+            // The committer's process-wide evidence joins the same way.
+            super::super::published_evidence(&config, &cached_head)
+                .await
+                .unwrap();
             if sequence > cached.sequence {
                 history.refresh(&config, &prefix_head).await.unwrap();
+                super::super::published_evidence(&config, &prefix_head)
+                    .await
+                    .unwrap();
             } else {
                 for _ in 0..2 {
                     assert_eq!(
                         history.refresh(&config, &prefix_head).await,
                         Err(WriterError::PublicationInvalid),
                         "a malformed prefix must not join previously cached history",
+                    );
+                    assert!(
+                        matches!(
+                            super::super::published_evidence(&config, &prefix_head).await,
+                            Err(WriterError::PublicationInvalid)
+                        ),
+                        "a malformed prefix must not join cached publication evidence",
                     );
                 }
             }

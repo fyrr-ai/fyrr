@@ -47,6 +47,10 @@ impl Seen {
     fn len(&self) -> usize {
         self.0.lock().unwrap().len()
     }
+    /// Every operation since `from`.
+    fn all(&self, from: usize) -> Vec<String> {
+        self.0.lock().unwrap()[from..].to_vec()
+    }
     /// The operations since `from`: reads of the serving head, and all others.
     fn since(&self, from: usize) -> (usize, Vec<String>) {
         let seen = self.0.lock().unwrap();
@@ -208,5 +212,156 @@ async fn a_running_reader_stays_within_its_storage_request_budget() {
     // Mark teardown before the reader is killed mid-observation.
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     drop(client);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A running writer service, stopped when dropped, also when a check fails.
+struct Service(std::process::Child, Arc<AtomicBool>);
+impl Drop for Service {
+    fn drop(&mut self) {
+        // Mark teardown before the service is stopped mid-observation.
+        self.1.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = Command::new("kill")
+            .args(["-TERM", &self.0.id().to_string()])
+            .status();
+        let _ = self.0.wait();
+    }
+}
+
+/// Publications made before the writer service starts. Work that grows with
+/// the history shows as storage requests that grow with this number.
+/// They and the namespace's first publication form a history of five.
+const PUBLICATIONS: usize = 4;
+/// Ticks of the committer measured once the service has settled.
+const TICKS: u64 = 8;
+/// Storage requests of one idle committer tick, other than reads of
+/// publication manifests: the lease, the head, the policy, the envelope
+/// listing, the dataset open and the head it publishes (17 measured).
+const IDLE_TICK_BUDGET: usize = 17;
+/// Reads of publication manifests by one idle tick: the served manifest,
+/// once for the previous manifest of the group and once for the receipt. A
+/// walk of the history would read `PUBLICATIONS` or more.
+const IDLE_TICK_MANIFESTS: usize = 2;
+
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
+    let (config, root) = setup_on(Backend::Local);
+    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    assert_eq!(endpoint, "local-storage", "owned by the local CI row");
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("# fyrr-test-head-check = every", "")
+        .replacen(
+            "[[sources]]",
+            "[writer.commit]\ncoalescing_timer = \"1s\"\n[[sources]]",
+            1,
+        );
+    std::fs::write(&config, &text).unwrap();
+    let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
+    root.embedding.insert_both("ledger", vector);
+    success(&config, &["writer", "namespace", "create"]);
+    let mut texts = Vec::new();
+    for i in 0..PUBLICATIONS {
+        texts.push((format!("{i}.txt"), format!("ledger entry {i}")));
+        let shown: Vec<_> = texts
+            .iter()
+            .map(|(n, t)| (n.as_str(), t.as_str()))
+            .collect();
+        sync_texts(&config, &root, &shown);
+        success(&config, &["writer", "commit"]);
+    }
+
+    // Only the service runs behind the observer.
+    let seen = Seen::default();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), seen.hook());
+    let service = root.join("service.toml");
+    std::fs::write(&service, text.replace(&endpoint, &observed)).unwrap();
+    let log = root.join("service.log");
+    let mut service = Service(
+        Command::new(crate::common::binary())
+            .arg("--config")
+            .arg(&service)
+            .args(["writer", "serve", "--jobs", "1"])
+            .env(
+                "VIRTUAL_ENV",
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../connectors/.venv"),
+            )
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap(),
+        stop.clone(),
+    );
+    let child = &mut service.0;
+    // Startup runs a sync worker per source, which finds nothing due. The
+    // service is idle once, after its first seconds, two seconds in a row
+    // write nothing but the head.
+    let started = std::time::Instant::now();
+    let deadline = started + Duration::from_secs(120);
+    let mut quiet = 0;
+    while quiet < 2 || started.elapsed() < Duration::from_secs(5) {
+        let mark = seen.len();
+        std::thread::sleep(Duration::from_secs(1));
+        let writes = seen
+            .all(mark)
+            .iter()
+            .filter(|request| request.starts_with("PUT ") && request != &"PUT head.json")
+            .count();
+        quiet = if writes == 0 && seen.len() > mark {
+            quiet + 1
+        } else {
+            0
+        };
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the writer service exited"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the service never settled"
+        );
+    }
+    let published = || {
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .matches("writer_service event=published")
+            .count()
+    };
+    let (mark, before) = (seen.len(), published());
+    std::thread::sleep(Duration::from_secs(TICKS));
+    let requests = seen.all(mark);
+    let published = published() - before;
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the writer service exited"
+    );
+    drop(service);
+
+    let (manifests, rest): (Vec<_>, Vec<_>) = requests
+        .into_iter()
+        .partition(|request| request.starts_with("GET publications/"));
+    // A window of `TICKS` seconds holds at most one tick more; a loaded host
+    // may run fewer, but an idle service publishes at every tick. Only the
+    // service's own events tell a tick from a failed commit: the lease writes
+    // the head too.
+    let ticks = usize::try_from(TICKS).unwrap() + 1;
+    assert!(
+        published >= usize::try_from(TICKS / 2).unwrap(),
+        "only {published} publications: the committer did not tick"
+    );
+    within(
+        "idle writer, manifest reads",
+        (0, manifests),
+        IDLE_TICK_MANIFESTS * ticks,
+        0,
+    );
+    within(
+        "idle writer, other requests",
+        (0, rest),
+        IDLE_TICK_BUDGET * ticks,
+        0,
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
