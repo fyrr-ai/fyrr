@@ -19,6 +19,11 @@ agents must do on top of it.
 - Write the least code that works: reuse what the codebase already has,
   delete rather than add, and add no option, abstraction or "for later" code
   nobody asked for. Leave no dead code behind.
+- fyrr is built on the Lance crates, pinned to one version in `Cargo.toml`.
+  Before you build an engine feature, check whether that Lance version
+  already provides it, and use it if so. If it does not, but a Lance change
+  already merged upstream will, do not build it here: say so on the issue
+  and stop. Bump the Lance pin only when the issue asks for it.
 - Every object-store request is paid for. The storage budget tests in
   `crates/fyrr/tests/dense_path/storage_budget.rs` hold the reader and the
   idle writer to their request counts; raise a budget only on purpose, and
