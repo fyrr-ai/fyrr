@@ -2154,6 +2154,10 @@
         "tier": "quick",
         "seconds": null
       },
+      "python:connectors/tests/github/test_github_content.py::test_documents_the_contract_accepted_keep_their_revision": {
+        "tier": "quick",
+        "seconds": null
+      },
       "python:connectors/tests/github/test_github_content.py::test_force_push_old_commit_and_file_delete": {
         "tier": "quick",
         "seconds": null
@@ -4191,6 +4195,34 @@
         "seconds": null
       },
       "python:connectors/tests/github/test_github_content.py::test_changed_files_request_count": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_control_character_in_an_inline_comment_path_only_changes_the_label": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_display_values_are_fitted_and_the_sync_continues[33-labels]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_display_values_are_fitted_and_the_sync_continues[control-character]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_display_values_are_fitted_and_the_sync_continues[padded-status]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_display_values_are_fitted_and_the_sync_continues[padded-title]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_file_the_contract_rejects_is_quarantined_and_the_sync_continues": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_markdown_headings_are_fitted": {
         "tier": "quick",
         "seconds": null
       },

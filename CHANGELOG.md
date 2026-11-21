@@ -115,6 +115,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   counts toward `document_max_bytes`. See
   [GitHub documents](docs/connectors/github.md#documents).
 
+### Fixed
+
+- A GitHub issue, PR or file the connector contract rejects no longer stalls
+  the content sync: display values are fitted (control characters to spaces,
+  cut to 1,024 bytes, at most 32 labels), anything still rejected is
+  quarantined, and the sync continues. Valid documents keep their revision.
+
 ### Security
 
 - A reader with `identity.directory.provider = "none"` (the Lambda example

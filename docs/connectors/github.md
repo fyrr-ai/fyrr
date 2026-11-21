@@ -79,6 +79,10 @@ listing.
 - Metadata comes from GitHub facts only: title, author, project, status and
   source timestamps; file authors and update times from the last commit at
   the pinned head. Unknown values stay null.
+- Display values (title, author, status, labels, section labels) are fitted to
+  the connector contract; the indexed text keeps the raw title. A document the
+  contract still rejects is quarantined and the sync continues; API failures
+  still fail the pass. Valid documents are published unchanged.
 - Not synced: submodules, symlinks, LFS targets, attachments,
   releases, discussions. Archived repositories stay readable.
 

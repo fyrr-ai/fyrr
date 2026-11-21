@@ -54,6 +54,12 @@ class FakeGitHub:
         self._tick += 1
         return (datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=self._tick)).isoformat()
 
+    def server_time(self):
+        """The time of the `Date` header every response carries right now."""
+        return (
+            datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=self._tick, seconds=30)
+        ).isoformat()
+
     def repo(
         self,
         repo_id: int,
