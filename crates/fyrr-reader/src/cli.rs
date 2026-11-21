@@ -20,7 +20,8 @@ pub enum ReaderCommand {
     Prewarm,
     /// Run one search and print the same JSON as MCP.
     Search {
-        /// Query text.
+        /// Query text; may start with `-`.
+        #[arg(allow_hyphen_values = true)]
         query: Option<String>,
         #[arg(long, default_value_t = 50)]
         limit: usize,

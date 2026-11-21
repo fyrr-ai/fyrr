@@ -189,6 +189,31 @@ fn reader_commands_require_configuration() {
     }
 }
 
+#[test]
+fn reader_search_takes_a_query_that_starts_with_a_dash() {
+    let missing = config_arg(&Path::new(env!("CARGO_TARGET_TMPDIR")).join("does-not-exist.toml"));
+    for args in [
+        &["--no-ignore does not work"][..],
+        &["-j1 is slow"],
+        &["--limit", "5", "-j1 is slow"],
+        &["-j1 is slow", "--limit", "5"],
+        &["--output", "metadata", "--", "-j1 is slow"],
+        &["--", "--limit"],
+        &["--limit", "5", "plain query"],
+    ] {
+        let mut command = vec!["--config", missing.as_str(), "reader", "search"];
+        command.extend_from_slice(args);
+        let output = fyrr(&command, false);
+        let (_, stderr) = text(&output);
+        // A parsed command reaches the missing configuration; a usage error exits 2.
+        assert_eq!(
+            output.status.code(),
+            Some(EXIT_CONFIG),
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
 #[cfg(feature = "writer")]
 #[test]
 fn usage_errors_exit_two() {
