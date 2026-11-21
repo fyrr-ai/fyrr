@@ -116,7 +116,10 @@ team without an identity provider. What to know before you issue one:
   name or hash is written to logs, errors, telemetry or metrics.
 - **Garbage keys cost no storage reads.** A request resolves its key
   against the held head and the identity that head names, both in memory, so
-  a flood of unknown keys makes no storage request of its own. The one read
+  a flood of unknown keys makes no storage request of its own. The version
+  check that reads a new head also loads and verifies the identity it names, so
+  this holds after an identity-only change too: a well-shaped unknown key gets
+  the same `401` as a malformed one and never starts an identity read. The one read
   any request may start is the shared read of the head when the held one is
   older than two intervals, the same for every caller.
 - **Use TLS.** The key is a bearer secret in every request. Terminate TLS in
@@ -145,28 +148,37 @@ team without an identity provider. What to know before you issue one:
   `reader.version_check_interval`s (60 s by default) after the identity was
   published. For an urgent revocation, remove the key on every host that
   publishes identity, publish (`fyrr writer commit`, or restart `writer
-  serve`), then send `POST /admin/refresh` to each reader or `SIGHUP` to its
-  process: both start a version check at once, and the reader refuses the
-  key from its next request on. Without them the key keeps working until the
-  next check.
+  serve`), then send `POST /admin/refresh` to each reader (it needs
+  `reader.http.operator_credential`): it returns after the version check has
+  completed, and the reader refuses the key from its next request on. `SIGHUP`
+  starts a check without waiting for it, so it confirms nothing. Without
+  either, the key keeps working until the next check.
 - **Adding a key** takes the same time: a key published by the writer is
   unknown to a running reader, and gets `401`, until its next version check
-  (or `SIGHUP`, or `POST /admin/refresh`), at the latest two intervals later.
+  (or `POST /admin/refresh`, or the check `SIGHUP` starts), at the latest two
+  intervals later.
 - **Expiry.** `expires` is an RFC 3339 timestamp with an offset, to the whole
-  second (a fraction is dropped). Unlike a removal, it takes effect at once
-  and needs no publication and no version check: the reader's own clock
-  decides. A key is expired from that second on: a request is refused when
+  second (a fraction is dropped). A reader knows an expiry only from the
+  published binding. Once a reader holds it, nothing more is needed when its
+  time comes: no publication and no version check, the reader's own clock
+  decides. Setting or changing an `expires` is an identity change, published
+  and applied like any other. A key is expired from that second on: a request is refused when
   the reader's clock, truncated to whole seconds, is at or after the second
   named by `expires`, and so is a request admitted before it that has not
   finished. The check runs again at two later points: before the candidates'
-  text is sent to an external reranker, and, once the response is fully
-  built, immediately before it is handed to the HTTP transport. So no search
-  or fetch response is handed over once `expires` has passed by the reader's
-  clock at that moment, and no reranker request body is released after it.
-  The guarantee is about that moment: bytes already handed to the transport
-  or sent to the reranker are out of the reader's hands. The published
-  binding carries the expiry, so a reader that has not yet seen an identity
-  that changed an `expires` applies the one it holds.
+  text is sent to an external reranker, and at the HTTP boundary, after the
+  inner service has produced the response and before any of it is returned
+  (earlier checks inside the reader save work but are not the guarantee).
+  A subject that expired by then gets the refusal an expired request gets, a
+  tool error `authorization_unavailable` with the request's id and no result,
+  so no search or fetch result is returned over HTTP once `expires` has
+  passed by the reader's clock at that moment, and no reranker request body
+  is released after it. What is not covered: bytes already handed to the
+  socket (a response whose check passed an instant before `expires` is out of
+  the reader's hands), a reranker body already sent, and stdio, which has no
+  HTTP boundary (its last check is inside the reader, before the reply is
+  handed on). A reader that has not yet seen an identity that changed an
+  `expires` applies the one it holds.
 
 ## Permission modes
 
@@ -216,8 +228,9 @@ plan for:
   version check, not with its next request, and at the latest two
   intervals after it was published (60 s by default): while the reader
   prepares a new version its checks pause, and a request then reads the
-  head itself once the held one is that old. `SIGHUP` and
-  `POST /admin/refresh` start a check at once.
+  head itself once the held one is that old. `POST /admin/refresh` runs a
+  check and returns when it has completed; `SIGHUP` starts one without
+  waiting for it.
   The held head is trusted for two intervals. A request whose held head is
   older (the version check did not run, or the host was suspended; the age
   counts on the monotonic and the wall clock) reads the head itself, one read
@@ -227,10 +240,12 @@ plan for:
 - An API key follows the same rule. A key that is added, removed or rebound
   by an identity publication takes effect on a running reader with its next
   version check, at the latest two intervals after the identity is published
-  (60 s by default); `SIGHUP` and `POST /admin/refresh` apply it at once. A
-  key's `expires` is the exception: the reader's own clock refuses the key
-  from the second it names, even in a request that was admitted before it
-  ([API keys](#api-keys)).
+  (60 s by default); `POST /admin/refresh` applies it before it returns, and
+  `SIGHUP` only starts the check. A key's `expires` is the exception once the
+  reader holds the binding: the reader's own clock refuses the key from the
+  second it names, even in a request that was admitted before it
+  ([API keys](#api-keys)). The `expires` itself is published like any other
+  identity change.
 
 ### Source polling
 

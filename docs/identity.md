@@ -48,7 +48,7 @@ what each key may read, as `stdio_user` and `stdio_readers` do for stdio.
 | `key` | required | `{ env = "VAR" }`: the secret, `fyrr_key_` followed by at least 43 and at most 128 characters from `[A-Za-z0-9_-]`, at least 10 of them distinct. The shape does not prove randomness; generating the secret does: `echo "fyrr_key_$(openssl rand -hex 32)"`. Every key needs its own variable and value. |
 | `readers` | `[]` | Reader tokens (`usr:<id>`, `grp:<id>`) the key acts with, as `stdio_readers`, including source-scoped tokens for `permissions = "sync"` sources. |
 | `user` | absent | 1–512 bytes. Instead of `readers`: act as this canonical directory user (their corporate e-mail), with their groups, and so with whatever the sources grant that user; only a `readers` key has exactly the declared grants. Refused while the user is absent or inactive. |
-| `expires` | absent | An RFC 3339 timestamp with an offset, such as `2027-06-30T00:00:00Z`, to the whole second (a fraction is dropped). The key is expired from that second on: the reader refuses it, and any request admitted before it, whatever the writer has published. |
+| `expires` | absent | An RFC 3339 timestamp with an offset, such as `2027-06-30T00:00:00Z`, to the whole second (a fraction is dropped). The key is expired from that second on: the reader refuses it, and any request admitted before it, with no further step. A reader knows an expiry only from the published binding, so setting or changing one is published like any other identity change. |
 | `requests_per_minute` | absent | At least 1. Replaces `reader.http.user_requests_per_minute` for this key; only with `readers`, because a `user` key shares that user's allowance. |
 
 Set exactly one of `readers` (not empty) and `user`.
@@ -73,11 +73,13 @@ stop the writer's commit instead.
 A key added, removed or rebound by a published identity takes effect on a
 running reader with its next version check
 ([`reader.version_check_interval`](reader-writer.md)), at the latest two
-intervals (60 s by default) after the identity is published; `SIGHUP` and
-`POST /admin/refresh` apply it at once. An `expires` needs no publication:
-the reader's clock refuses the key from that second. For an urgent
+intervals (60 s by default) after the identity is published;
+`POST /admin/refresh` applies it before it returns, and `SIGHUP` only starts
+the check. A published `expires` needs no further step when its time comes:
+the reader's clock refuses the key from that second. Setting or changing one
+is an identity change and reaches readers like any other. For an urgent
 revocation, remove the key on every host that publishes identity, publish
-it, then refresh each reader; see
+it, then send `POST /admin/refresh` to each reader; see
 [API keys](security.md#api-keys).
 
 `reader.http` needs `[identity.oidc]` or at least one API key only where the

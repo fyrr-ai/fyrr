@@ -186,6 +186,53 @@ impl HeadCache {
     }
 }
 
+/// The identity artifact a head names, verified against `config` and loaded
+/// once per generation into `cache`, which the reader's checks and the HTTP
+/// admission share.
+pub(crate) async fn identity_for(
+    cache: &ArtifactCache<fyrr_core::identity::IdentityArtifact>,
+    store: &dyn ObjectStore,
+    root: &Path,
+    config: &Config,
+    pointer: &GenerationPointer,
+) -> Result<Arc<fyrr_core::identity::IdentityArtifact>, StorageError> {
+    let mut cached = cache.lock().await;
+    if let Some((bound, identity)) = cached.as_ref()
+        && bound == pointer
+    {
+        if identity.namespace != config.namespace.name || identity.generation != pointer.generation
+        {
+            return Err(StorageError::AuthorizationUnavailable);
+        }
+        return Ok(identity.clone());
+    }
+    let identity: fyrr_core::identity::IdentityArtifact = artifact(store, root, pointer).await?;
+    if identity.namespace != config.namespace.name || identity.generation != pointer.generation {
+        return Err(StorageError::AuthorizationUnavailable);
+    }
+    let identity = Arc::new(identity);
+    *cached = Some((pointer.clone(), identity.clone()));
+    Ok(identity)
+}
+
+/// What a version check, a refresh and SIGHUP do to the head: read it, and
+/// load the identity it names, so that the admission of an API key, which
+/// looks its binding up in that identity, finds it cached and reads nothing
+/// of its own after an identity-only change. A warm query is unaffected: the
+/// identity is read once per generation. A failed identity read does not fail
+/// the check; the admission reads it itself.
+pub(crate) async fn refresh_head(
+    heads: &HeadCache,
+    identities: &ArtifactCache<fyrr_core::identity::IdentityArtifact>,
+    store: &dyn ObjectStore,
+    root: &Path,
+    config: &Config,
+) -> Result<fyrr_core::publication::ServingHead, StorageError> {
+    let head = heads.read_fresh(store, root).await?;
+    let _ = identity_for(identities, store, root, config, &head.identity).await;
+    Ok(head)
+}
+
 #[cfg(all(feature = "test-store", not(debug_assertions)))]
 compile_error!("test-store must not be enabled in shipping builds");
 #[cfg(feature = "test-store")]

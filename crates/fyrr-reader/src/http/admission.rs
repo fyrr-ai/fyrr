@@ -31,38 +31,32 @@ impl Admission {
             .await
             .map_err(Into::into)
     }
-    /// The head as storage holds it now, for readiness.
-    pub(super) async fn fresh_head(&self) -> Result<ServingHead, ReaderError> {
-        self.heads
-            .read_fresh(self.store.as_ref(), &self.root)
-            .await
-            .map_err(Into::into)
+    /// The head as storage holds it now, for readiness, with the identity it names.
+    pub(super) async fn fresh_head(&self, config: &Config) -> Result<ServingHead, ReaderError> {
+        crate::storage::refresh_head(
+            &self.heads,
+            &self.cached_identity,
+            self.store.as_ref(),
+            &self.root,
+            config,
+        )
+        .await
+        .map_err(Into::into)
     }
     pub(super) async fn identity(
         &self,
         config: &Config,
         pointer: &GenerationPointer,
     ) -> Result<Arc<IdentityArtifact>, ReaderError> {
-        let mut cached = self.cached_identity.lock().await;
-        if let Some((bound, identity)) = cached.as_ref()
-            && bound == pointer
-        {
-            if identity.namespace != config.namespace.name
-                || identity.generation != pointer.generation
-            {
-                return Err(AuthorizationUnavailable);
-            }
-            return Ok(identity.clone());
-        }
-        let identity: IdentityArtifact =
-            crate::storage::artifact(self.store.as_ref(), &self.root, pointer).await?;
-        if identity.namespace != config.namespace.name || identity.generation != pointer.generation
-        {
-            return Err(AuthorizationUnavailable);
-        }
-        let identity = Arc::new(identity);
-        *cached = Some((pointer.clone(), identity.clone()));
-        Ok(identity)
+        crate::storage::identity_for(
+            &self.cached_identity,
+            self.store.as_ref(),
+            &self.root,
+            config,
+            pointer,
+        )
+        .await
+        .map_err(Into::into)
     }
 
     /// Admission of an API key. Its binding is looked up in the identity of the
@@ -273,11 +267,15 @@ mod tests {
         }
         /// What a version check, `SIGHUP` and `POST /admin/refresh` do to the head.
         async fn version_check(&self) {
-            self.admission
-                .heads
-                .read_fresh(self.admission.store.as_ref(), &self.admission.root)
-                .await
-                .unwrap();
+            crate::storage::refresh_head(
+                &self.admission.heads,
+                &self.admission.cached_identity,
+                self.admission.store.as_ref(),
+                &self.admission.root,
+                &self.config,
+            )
+            .await
+            .unwrap();
         }
         async fn authorize(&self) -> Result<Admitted, ReaderError> {
             self.admission
@@ -481,6 +479,26 @@ mod tests {
             .authorize(&test.config, &mut unknown)
             .await
             .unwrap();
+        // An identity-only change: the version check loads the identity the
+        // head now names, so an unknown key that is well-shaped, like a
+        // malformed one, still costs no storage read and gets a 401.
+        let mut other = unknown.clone();
+        other.key = format!("key:{}", "5".repeat(64));
+        test.identity.generation += 1;
+        test.publish_identity().await;
+        test.version_check().await;
+        let before = test.mirror.totals().requests;
+        for _ in 0..50 {
+            assert_eq!(
+                test.admission.authorize(&test.config, &mut other).await,
+                Err(Unauthorized)
+            );
+        }
+        assert_eq!(
+            test.mirror.totals().requests,
+            before,
+            "the identity of a changed head is not read by an unknown key"
+        );
     }
 
     #[tokio::test(start_paused = true)]

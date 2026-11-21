@@ -322,5 +322,13 @@ use recall::{SampleResult, SampleWork, recall_telemetry};
 pub(crate) use scheduler::start;
 pub(crate) use stdio::serve;
 
+/// The reply an expired subject's tool call gets in place of its result, as
+/// the JSON-RPC response the transport sends.
+pub(crate) fn expired_reply(id: &RequestId) -> Value {
+    let mut result = tool_error(AuthorizationUnavailable);
+    result.result_type = None;
+    json!({"jsonrpc": "2.0", "id": id, "result": result})
+}
+
 #[cfg(test)]
 use stdio::StdioTransport;

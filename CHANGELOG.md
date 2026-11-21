@@ -22,9 +22,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   configuration schema stays 5.1. A key added, removed or rebound takes
   effect on a running reader like any other revocation: with its next
   version check, at the latest two intervals (60 s by default) after the
-  identity is published; `SIGHUP` and `POST /admin/refresh` apply it at once.
-  An `expires` is checked against the reader's clock and takes effect at
-  once. See
+  identity is published; `POST /admin/refresh` applies it before it returns,
+  and `SIGHUP` only starts the check. A reader knows an `expires` only from the
+  published binding: a published one needs no further step when its time
+  comes (the reader's clock decides), and setting or changing one is
+  published like any other change. The last expiry check is at the HTTP
+  boundary, after the response is built and before any of it is returned.
+  See
   [HTTP login and users](docs/http-users.md#api-keys).
 - The reader sends `instructions` in the MCP `initialize` result: what
   fyrr searches and a request to search it before looking through files.
@@ -62,7 +66,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   change, retired source or deleted namespace now reaches a running reader
   with its next version check, at the latest two intervals (60 s by
   default) after it was published, rather than with its next request.
-  `SIGHUP` and `POST /admin/refresh` start a check at once. In
+  `POST /admin/refresh` runs a check and returns when it has completed;
+  `SIGHUP` starts one without waiting. In
   `per-request` mode `metadata.stale_version` compares with that head too.
 - The reader's mirror reads data files in 4 KiB pages: a read of part of a
   data file fetches only the pages it lacks, instead of the whole file, and

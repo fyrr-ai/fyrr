@@ -894,9 +894,9 @@ impl Boundary {
         }
     }
 
-    /// Holds the next response at the point where the reader hands it to the
-    /// transport, after it is fully built and its last expiry check is the only
-    /// one left, until the gate is released.
+    /// Holds the next tool-call response at the HTTP boundary, after the inner
+    /// service has built it and before any of it is returned, where the last
+    /// expiry check sits, until the gate is released.
     fn hold_reply(&self) -> RequestGate {
         self.hold(|request| request.starts_with("REPLY ") && request.contains("/handoff "))
     }
@@ -1008,7 +1008,7 @@ async fn api_key_expiry_applies_to_a_request_admitted_just_before_it_on_storage(
     );
     boundary.quiet().await;
 
-    // Held where the finished response is handed to the transport: released
+    // Held at the HTTP boundary, where the finished response is about to be returned: released
     // unchanged, the request is served.
     let gate = boundary.hold_reply();
     let held = call_task(&reader, &keys[0].secret, 2, "search", search.clone());

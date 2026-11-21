@@ -108,7 +108,14 @@ pub(super) fn prepare_version(
             let store = context.mirror.wrap("control", store);
             // A version check, a refresh and SIGHUP read the head here; the
             // authorization checks of requests see what they saw.
-            let head = context.head_cache.read_fresh(store.as_ref(), &root).await?;
+            let head = crate::storage::refresh_head(
+                &context.head_cache,
+                &context.identity_cache,
+                store.as_ref(),
+                &root,
+                config,
+            )
+            .await?;
             let pointer = head.content.as_ref().ok_or(PublicationUnavailable)?;
             let mut replaced = false;
             if let Some((sequence, _, committed, pin, (publication_id, incarnation))) = &current {

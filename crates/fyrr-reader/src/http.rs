@@ -182,6 +182,8 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
     {
         return error(StatusCode::PAYLOAD_TOO_LARGE, InvalidArgument);
     }
+    // The expiry and request of the subject the inner service answers for.
+    let mut guarded = None;
     if request.uri().path() == "/mcp" {
         let token = bearer(&request).map(str::to_owned);
         let (mut parts, body) = request.into_parts();
@@ -250,6 +252,13 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
             Ok(subject) => subject,
             Err(response) => return response,
         };
+        if let Some(rmcp::model::ClientJsonRpcMessage::Request(rpc)) = &message {
+            guarded = Some((
+                subject.expires,
+                rpc.id.clone(),
+                matches!(rpc.request, rmcp::model::ClientRequest::CallToolRequest(_)),
+            ));
+        }
         request = Request::from_parts(parts, axum::body::Body::from(bytes));
         request.extensions_mut().insert(subject);
     }
@@ -258,7 +267,26 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
     }
     let claims = Arc::new(crate::serve::ResponseClaims::default());
     request.extensions_mut().insert(claims.clone());
-    let (parts, body) = next.run(request).await.into_parts();
+    let response = next.run(request).await;
+    // The last check, at the boundary where the response leaves the reader: a
+    // subject that expired while the inner service built it gets the refusal
+    // an expired request gets, and none of the response is returned. The
+    // transport answers with the whole result as one JSON body, so nothing of
+    // it has been sent yet; bytes already handed to the socket are out of reach.
+    #[cfg(feature = "test-store")]
+    if matches!(guarded, Some((_, _, true))) {
+        let _ = crate::storage::test_store::boundary::request_boundary("REPLY", "handoff").await;
+    }
+    if let Some((expires, id, call)) = guarded
+        && expires <= fyrr_core::clock::now().timestamp()
+    {
+        return if call {
+            axum::Json(crate::serve::expired_reply(&id)).into_response()
+        } else {
+            authentication_failure(&state, Unauthorized, &expected)
+        };
+    }
+    let (parts, body) = response.into_parts();
     Response::from_parts(
         parts,
         axum::body::Body::new(AccountedBody {
@@ -462,7 +490,7 @@ async fn readiness(State(state): State<HttpState>) -> Response {
     if !state.auth.ready().await {
         return error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable);
     }
-    let Ok(head) = state.admission.fresh_head().await else {
+    let Ok(head) = state.admission.fresh_head(&state.config).await else {
         return error(StatusCode::SERVICE_UNAVAILABLE, PublicationUnavailable);
     };
     let now = fyrr_core::clock::now();

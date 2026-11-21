@@ -133,10 +133,9 @@ pub(super) async fn execute(
         }
         Err(code) => tool_error(code),
     };
-    // The last check: nothing built for a subject that expired while the
-    // response was sized and serialized leaves the reader.
-    #[cfg(feature = "test-store")]
-    let _ = crate::storage::test_store::boundary::request_boundary("REPLY", "handoff").await;
+    // An earlier check than the HTTP boundary's, which has the last word:
+    // nothing built for a subject that expired while the response was sized
+    // and serialized is handed on.
     let expired = job
         .subject
         .as_ref()

@@ -72,8 +72,8 @@ operator states in the configuration what it may read.
    intermittent `401`. A running reader accepts a new key with its next
    version check, at the latest two `reader.version_check_interval`s (60 s
    by default) after the identity is published, and a request in the
-   meantime gets `401`; `SIGHUP` and `POST /admin/refresh` start the check at
-   once. If keys are configured but none is
+   meantime gets `401`; `POST /admin/refresh` runs the check and returns
+   when it has completed, and `SIGHUP` starts one without waiting for it. If keys are configured but none is
    usable, the reader starts and reports ready while every key gets `401`;
    `fyrr writer status` shows why.
 4. **Start the reader** behind a TLS-terminating proxy, as in
@@ -124,9 +124,13 @@ them: a writer that still runs with the old file republishes the key. A
 running reader refuses the removed key with its next version check, at the
 latest two intervals (60 s by default) after the identity is published. For
 an urgent revocation, publish (`fyrr writer commit`, or restart `writer
-serve`) and then send `POST /admin/refresh` to each reader or `SIGHUP` to its
-process: the key is refused from the next request on. An `expires` needs
-none of this: the reader's clock refuses the key from that second. See
+serve`) and then send `POST /admin/refresh` to each reader (it needs
+`reader.http.operator_credential`): it returns after the check has completed,
+so the key is refused from the next request on. `SIGHUP` only starts a check
+and does not wait for it, so it is not a confirmation. A reader learns an
+`expires` only from the published binding: once published, it needs no
+further step when its time comes, but setting or changing one is an identity
+change, published and applied like any other. See
 [API keys in the security model](security.md#api-keys).
 Removing the last key is fine: the writer then publishes no key bindings,
 and a reader restarted without any key or `identity.oidc` refuses to start.
@@ -326,9 +330,11 @@ starts with `fyrr_key_` is an [API key](#api-keys) and takes its own path
   that and the reader cannot read it, every request gets the same `503`.
 - A binding's `expires` is whole seconds. The key is expired from the second
   it names: a request is refused when the reader's clock, truncated to whole
-  seconds, is at or after it, and the check runs again once the response is
-  built, immediately before it is handed to the transport, so a request
-  admitted just before `expires` returns nothing after it.
+  seconds, is at or after it, and the check runs again at the HTTP boundary,
+  once the response is built and before any of it is returned, so a request
+  admitted just before `expires` returns no result after it (bytes already
+  handed to the socket are out of the reader's hands; see
+  [security](security.md#api-keys)).
 - A bound key then goes through the same admission as an OIDC subject:
   directory freshness, `identity.max_tokens_per_user` and the request
   allowances. A key with `readers` is no group member, so only its own
