@@ -170,7 +170,7 @@
         "subject",
         "principal"
       ],
-      "description": "A hashed issuer-scoped OIDC subject mapped to a canonical principal."
+      "description": "A hashed subject mapped to a principal: an issuer-scoped OIDC subject, or\nan API-key secret."
     }
   },
   "x-fyrr-contract": "identity-artifact",

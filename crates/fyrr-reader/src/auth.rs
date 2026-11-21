@@ -1,6 +1,6 @@
 //! Operator-pinned RS256 trust. Authentication errors expose only bounded codes.
 use crate::error::*;
-use fyrr_core::config::{Config, OidcConfig};
+use fyrr_core::config::{Config, OidcConfig, is_api_key_secret};
 use jsonwebtoken::{
     Algorithm, DecodingKey, Validation, decode, decode_header,
     jwk::{AlgorithmParameters, JwkSet, KeyAlgorithm, KeyOperations, PublicKeyUse},
@@ -17,6 +17,10 @@ pub(crate) struct AuthenticatedSubject {
     pub key: String,
     pub expires: i64,
     pub identity: Option<fyrr_core::publication::GenerationPointer>,
+    /// The subject is the hash of an API-key secret. The secret proves nothing
+    /// until the published identity binds it, so admission looks it up even
+    /// for requests that skip admission for OIDC subjects.
+    pub api_key: bool,
 }
 /// RFC 7519 §4.1.3: `aud` is one string or an array of strings.
 #[derive(Deserialize)]
@@ -46,6 +50,21 @@ struct Trust {
     keys: Option<JwkSet>,
     fetched: Option<Instant>,
     attempted: Option<Instant>,
+}
+/// The subject of an API-key bearer, if its shape is right; the shape is checked
+/// before anything is hashed. The subject says nothing about whether the key
+/// exists: admission looks it up in the identity, so an unknown and a removed
+/// key fail the same way.
+pub(crate) fn api_key(config: &Config, token: &str) -> Result<AuthenticatedSubject> {
+    if !is_api_key_secret(token) {
+        return Err(Unauthorized);
+    }
+    Ok(AuthenticatedSubject {
+        key: crate::storage::api_key_subject(config, token)?,
+        expires: i64::MAX,
+        identity: None,
+        api_key: true,
+    })
 }
 #[derive(Clone)]
 pub(crate) struct Authenticator {
@@ -213,6 +232,7 @@ impl Authenticator {
             key,
             expires: claims.exp,
             identity: None,
+            api_key: false,
         })
     }
     async fn fetch_keys(&self) -> Result<JwkSet> {

@@ -1,13 +1,15 @@
 //! Immutable membership/container inputs, referenced by the published identity generation.
 use crate::{Result, WriterError};
-use fyrr_core::config::Config;
+use fyrr_core::config::{Config, ProcessEnvironment, is_api_key_secret};
 use fyrr_core::connector::{BatchBody, ConnectorBatch, PrincipalSnapshotPart};
 use fyrr_core::envelope::{EnvelopePayload, MembersPayload, PermissionsPayload, PreparedEnvelope};
-use fyrr_core::identity::{IdentityArtifact, IdentityInput, IdentityInputKind, Principal};
+use fyrr_core::identity::{
+    IdentityArtifact, IdentityInput, IdentityInputKind, Principal, SubjectBinding,
+};
 use fyrr_core::publication::ServingHead;
 use fyrr_core::write_contract;
 use fyrr_reader::embedding::digest;
-use fyrr_reader::storage::{hash_principal, namespace_store};
+use fyrr_reader::storage::{api_key_principal, api_key_subject, hash_principal, namespace_store};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -85,19 +87,15 @@ pub async fn build(
         // The stdio subject holds the configured process grants. A configured
         // directory's activity/collision decisions take precedence.
         if directory.is_none() || grants.contains_key(&key) {
-            let operator_tokens = grants.entry(key.clone()).or_default();
-            operator_tokens.extend(configured.tokens.iter().cloned());
-            for source in config
-                .sources
-                .iter()
-                .filter(|s| s.permissions == fyrr_core::config::PermissionsMode::Sync)
-            {
-                for token in &config.identity.stdio_readers {
-                    operator_tokens.insert(crate::apply::reader_token(config, &source.id, token)?);
-                }
-            }
+            grants
+                .entry(key)
+                .or_default()
+                .extend(operator_grants(config, &config.identity.stdio_readers)?);
         }
     }
+    configured
+        .subjects
+        .extend(api_key_bindings(config, &mut grants)?);
     for input in &inputs {
         if input.kind == IdentityInputKind::Directory || input.id.starts_with("permissions:") {
             continue;
@@ -331,6 +329,57 @@ async fn read_directory(
 }
 
 type UserTokens = BTreeMap<String, BTreeSet<String>>;
+
+/// The reader tokens an operator-declared subject holds for `readers`: the
+/// stdio subject's `identity.stdio_readers` and an API key's `readers`. Each
+/// token counts as written, and again under every `permissions = "sync"`
+/// source, whose rows carry source-scoped tokens.
+fn operator_grants(config: &Config, readers: &[String]) -> Result<BTreeSet<String>> {
+    let mut tokens = readers
+        .iter()
+        .map(|token| hash_principal(config, "tok", token).map_err(WriterError::from))
+        .collect::<Result<BTreeSet<_>>>()?;
+    for source in config
+        .sources
+        .iter()
+        .filter(|s| s.permissions == fyrr_core::config::PermissionsMode::Sync)
+    {
+        for token in readers {
+            tokens.insert(crate::apply::reader_token(config, &source.id, token)?);
+        }
+    }
+    Ok(tokens)
+}
+
+/// A subject binding per API key, and the key's own principal with its grants.
+/// Only keyed hashes are published: the subject is the HMAC of the secret, the
+/// principal the HMAC of the name, each in a MAC domain of its own.
+///
+/// A key whose secret is missing or malformed gets no binding, so the reader
+/// refuses it, and one bad variable does not stop the identity of every other
+/// key. Two keys with one secret fail the build: either could act as the other.
+fn api_key_bindings(config: &Config, grants: &mut UserTokens) -> Result<Vec<SubjectBinding>> {
+    let mut bound: Vec<SubjectBinding> = Vec::new();
+    for key in &config.identity.api_keys {
+        let Ok(secret) = key.key.resolve(&ProcessEnvironment) else {
+            continue;
+        };
+        if !is_api_key_secret(secret.expose()) {
+            continue;
+        }
+        let subject = api_key_subject(config, secret.expose())?;
+        if bound.iter().any(|binding| binding.subject == subject) {
+            return Err(WriterError::ConfigurationInvalid);
+        }
+        let principal = api_key_principal(config, &key.name)?;
+        grants
+            .entry(principal.clone())
+            .or_default()
+            .extend(operator_grants(config, &key.readers)?);
+        bound.push(SubjectBinding { subject, principal });
+    }
+    Ok(bound)
+}
 
 async fn source_grants(
     config: &Config,

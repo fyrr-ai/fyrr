@@ -19,6 +19,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   it at once, run `fyrr writer sync <source> --kind content --full`, then
   `fyrr writer commit`. The key counts toward `document_max_bytes`. See
   [Jira](docs/connectors/jira.md#documents).
+- HTTP MCP clients can authenticate with operator-issued API keys without an
+  identity provider. Give each role its own `[[identity.api_keys]]` entry and
+  `readers` grants. To revoke a key, remove it from every writer
+  configuration, republish identity, and refresh the readers. An HTTP
+  reader without an authentication method is now refused when `reader serve`
+  starts, and `config check` reports it as a warning, instead of being a
+  configuration error for every command. See
+  [HTTP login and users](docs/http-users.md#api-keys).
 - The reader sends `instructions` in the MCP `initialize` result: what
   fyrr searches and a request to search it before looking through files.
   Clients that pass instructions on tell their agent when to search.

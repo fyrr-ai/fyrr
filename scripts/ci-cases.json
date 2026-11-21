@@ -989,6 +989,14 @@
       "full:fyrr-core:test:config/local_storage_takes_a_canonical_file_uri_and_no_s3_keys": {
         "tier": "quick",
         "seconds": 0.002
+      },
+      "full:fyrr-core:test:config/api_keys_need_a_name_readers_and_a_well_formed_unique_secret": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
+      "full:fyrr-core:test:config/http_without_a_login_method_stays_valid_for_the_writer_and_the_check_warns": {
+        "tier": "quick",
+        "seconds": 0.01
       }
     }
   },
@@ -1587,6 +1595,22 @@
       "full:fyrr:test:dense_path/identity::identity_scim_namespace_creation_and_import_never_attest_without_proof_on_storage": {
         "tier": "quick",
         "seconds": 12.496
+      },
+      "full:fyrr:test:dense_path/api_keys::roles_are_isolated_without_oidc": {
+        "tier": "quick",
+        "seconds": 9.443
+      },
+      "full:fyrr:test:dense_path/api_keys::last_key_revocation_reaches_a_running_reader": {
+        "tier": "quick",
+        "seconds": 8.728
+      },
+      "full:fyrr:test:dense_path/api_keys::bad_secret_does_not_block_revocation": {
+        "tier": "full",
+        "seconds": 16.63
+      },
+      "full:fyrr:test:dense_path/api_keys::oidc_and_keys_coexist": {
+        "tier": "full",
+        "seconds": 7.006
       }
     }
   },
