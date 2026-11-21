@@ -7,18 +7,10 @@ use super::*;
 use fyrr_reader::storage::{api_key_principal, api_key_subject};
 use std::time::Duration;
 
-/// A realistically shaped secret that is distinct per `n`: `fyrr_key_` and 64
-/// hexadecimal characters, as `openssl rand -hex 32` makes them.
+/// A secret that is distinct per `n` and has the shape `openssl rand -hex 32`
+/// makes: `fyrr_key_` and 64 characters.
 fn secret(n: usize) -> String {
-    let mut state = (n as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    let mut hex = String::new();
-    while hex.len() < 64 {
-        state ^= state >> 29;
-        state = state.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        state ^= state >> 32;
-        hex.push_str(&format!("{state:016x}"));
-    }
-    let secret = format!("fyrr_key_{}", &hex[..64]);
+    let secret = format!("fyrr_key_{n:064}");
     assert!(fyrr_core::config::is_api_key_secret(&secret), "{secret}");
     secret
 }
@@ -72,7 +64,7 @@ async fn identity(config: &Path) -> (u64, fyrr_core::identity::IdentityArtifact)
     (head.identity.generation, identity)
 }
 
-/// The 401 every unauthenticated key gets, as the caller sees it.
+/// What a caller of `tools/list` is told with `token`: status, body, challenge.
 async fn refusal(reader: &Reader, token: &str) -> (u16, String, Option<String>) {
     let response = reader.rpc(token, 1, "tools/list", json!({})).await;
     let status = response.status().as_u16();
@@ -81,14 +73,6 @@ async fn refusal(reader: &Reader, token: &str) -> (u16, String, Option<String>) 
         .get("www-authenticate")
         .map(|v| v.to_str().unwrap().to_owned());
     (status, response.text().await.unwrap(), challenge)
-}
-
-async fn status(reader: &Reader, token: &str) -> u16 {
-    reader
-        .rpc(token, 2, "tools/list", json!({}))
-        .await
-        .status()
-        .as_u16()
 }
 
 /// What an operator does after publishing: `POST /admin/refresh` makes the
@@ -199,6 +183,16 @@ fn search() -> Value {
 #[ignore = "real HTTP MCP executable and local storage; scripts/ci"]
 async fn roles_are_isolated_without_oidc() {
     let mut deployment = Deployment::new().await;
+    // Keys and no identity provider at all: the configuration has no
+    // `[identity.directory]` (`provider = "none"`), which the fixture adds.
+    for text in [&mut deployment.base_worker, &mut deployment.base_commit] {
+        let start = text.find("\n[identity.directory]\n").unwrap();
+        let end = start
+            + text[start..].find("sync_interval='5m'\n").unwrap()
+            + "sync_interval='5m'\n".len();
+        text.replace_range(start..end, "");
+        assert!(!text.contains("identity.directory"));
+    }
     // A document larger than one fetch page (64 KiB), readable by usr:u1. The
     // fixture caps documents at 64 bytes and knows no vector for new text.
     for text in [&mut deployment.base_worker, &mut deployment.base_commit] {
@@ -233,8 +227,7 @@ async fn roles_are_isolated_without_oidc() {
 
     // A deployment with API keys and no OIDC starts and serves. The reader has
     // none of the secrets in its environment.
-    let mut reader =
-        Reader::start_appended(&deployment.worker, &deployment.root, &[], key_http).await;
+    let mut reader = Reader::start_appended(&deployment.worker, &deployment.root, key_http).await;
     let first = roots(&reader.call(&one.secret, 1, "search", search()).await);
     assert!(first.contains(&deployment.doc(1)) && !first.contains(&deployment.doc(2)));
     assert_eq!(
@@ -379,7 +372,7 @@ async fn last_key_revocation_reaches_a_running_reader() {
     // A reader as it ships: it applies a publication at its next version
     // check, or when an operator refreshes it.
     let mut reader =
-        Reader::start_appended(&deployment.shipped(), &deployment.root, &[], key_http).await;
+        Reader::start_appended(&deployment.shipped(), &deployment.root, key_http).await;
     assert_eq!(
         roots(&reader.call(&key.secret, 1, "search", search()).await),
         [deployment.doc(1)]
@@ -455,9 +448,9 @@ async fn bad_secret_does_not_block_revocation() {
     assert!(!report(&check).contains("fyrr_key_too-short"));
 
     let mut reader =
-        Reader::start_appended(&deployment.shipped(), &deployment.root, &[], key_http).await;
-    assert_eq!(status(&reader, &good.secret).await, 200);
-    assert_eq!(status(&reader, &other.secret).await, 200);
+        Reader::start_appended(&deployment.shipped(), &deployment.root, key_http).await;
+    assert_eq!(refusal(&reader, &good.secret).await.0, 200);
+    assert_eq!(refusal(&reader, &other.secret).await.0, 200);
     let wrong = refusal(&reader, &secret(999)).await;
     for key in [&malformed, &unset] {
         assert_eq!(refusal(&reader, &key.secret).await, wrong, "{}", key.name);
@@ -468,7 +461,7 @@ async fn bad_secret_does_not_block_revocation() {
     assert!(revoked.status.success(), "{}", report(&revoked));
     refresh(&reader).await;
     assert_eq!(refusal(&reader, &other.secret).await, wrong, "revoked");
-    assert_eq!(status(&reader, &good.secret).await, 200);
+    assert_eq!(refusal(&reader, &good.secret).await.0, 200);
     reader.stop().await;
 
     // Two keys with one secret stop the commit; the identity stays as it was.
@@ -524,4 +517,24 @@ async fn oidc_and_keys_coexist() {
         .unwrap();
     assert_eq!(metadata.status(), 200);
     reader.stop().await;
+
+    // A reader whose own configuration declares no key takes a published key
+    // for an OIDC token and refuses it with the OIDC challenge.
+    std::fs::write(&deployment.worker, &deployment.base_worker).unwrap();
+    let mut oidc_only = Reader::start(
+        &deployment.worker,
+        &deployment.root,
+        &deployment.issuer,
+        1000,
+        1000,
+    )
+    .await;
+    assert_eq!(
+        roots(&oidc_only.call(&token, 3, "search", search()).await),
+        [deployment.doc(2)]
+    );
+    let refused = refusal(&oidc_only, &key.secret).await;
+    assert_eq!(refused.0, 401);
+    assert!(refused.2.unwrap().contains("resource_metadata"));
+    oidc_only.stop().await;
 }

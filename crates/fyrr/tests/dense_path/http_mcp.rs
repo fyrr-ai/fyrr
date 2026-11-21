@@ -189,7 +189,7 @@ impl Reader {
         } else {
             ""
         };
-        Self::start_appended(config, root, &[], |address, base| {
+        Self::start_appended(config, root, |address, base| {
             format!("\n[identity.oidc]\nissuer='{}'\naudience='fyrr-http-test'\njwks_url='{}/jwks'\njwks_validity='1s'\njwks_refresh_interval='100ms'\nkeycloak={keycloak}\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n{operator}authorization_cache_subjects={capacity}\nuser_requests_per_minute={user_limit}\ngroup_requests_per_minute={group_limit}\n",issuer.url,issuer.url)
         })
         .await
@@ -199,7 +199,6 @@ impl Reader {
     pub(super) async fn start_appended(
         config: &Path,
         root: &Path,
-        env: &[(&str, &str)],
         appended: impl FnOnce(&std::net::SocketAddr, &str) -> String,
     ) -> Self {
         let reserve = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -217,7 +216,6 @@ impl Reader {
         let child = host_command(&config_http)
             .args(["reader", "serve"])
             .env("FYRR_HTTP_OPERATOR", "owned-http-operator-canary")
-            .envs(env.iter().copied())
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(&stderr).unwrap())
             .spawn()

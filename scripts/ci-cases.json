@@ -1585,20 +1585,20 @@
         "seconds": 12.496
       },
       "full:fyrr:test:dense_path/api_keys::roles_are_isolated_without_oidc": {
-        "tier": "full",
-        "seconds": 60.0
+        "tier": "quick",
+        "seconds": 9.443
       },
       "full:fyrr:test:dense_path/api_keys::last_key_revocation_reaches_a_running_reader": {
-        "tier": "full",
-        "seconds": 90.0
+        "tier": "quick",
+        "seconds": 8.728
       },
       "full:fyrr:test:dense_path/api_keys::bad_secret_does_not_block_revocation": {
         "tier": "full",
-        "seconds": 120.0
+        "seconds": 16.63
       },
       "full:fyrr:test:dense_path/api_keys::oidc_and_keys_coexist": {
         "tier": "full",
-        "seconds": 60.0
+        "seconds": 7.006
       }
     }
   },

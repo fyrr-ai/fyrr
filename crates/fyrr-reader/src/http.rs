@@ -291,7 +291,12 @@ async fn authenticate_mcp(
     }
     let authenticated = timeout_at(deadline, async {
         match (token, &state.auth) {
-            (Ok(token), _) if token.starts_with(fyrr_core::config::API_KEY_PREFIX) => {
+            // Only a reader whose own configuration declares API keys takes
+            // this path; any other reader treats the bearer as an OIDC token.
+            (Ok(token), _)
+                if !state.config.identity.api_keys.is_empty()
+                    && token.starts_with(fyrr_core::config::API_KEY_PREFIX) =>
+            {
                 crate::auth::api_key(&state.config, &token)
             }
             (Ok(token), Some(auth)) => auth.authenticate(&token).await,
