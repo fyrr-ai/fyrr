@@ -2806,6 +2806,14 @@
         "tier": "quick",
         "seconds": null
       },
+      "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_adf_renders_link_targets_for_web_urls_only": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/jira/test_jira_content.py::test_jira_links_are_not_published_with_synced_permissions": {
+        "tier": "quick",
+        "seconds": null
+      },
       "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_adf_depth_and_media_exclusion": {
         "tier": "quick",
         "seconds": null

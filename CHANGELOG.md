@@ -46,6 +46,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- The Jira connector keeps link targets (`text (url)`, smart cards as their
+  URL). Under `permissions = "fixed"` it adds a `links` section with the
+  parent and issue links, keys only (`blocks: PROJ-140`). Affected issues are
+  republished at their next update, or at the next full rescan and commit;
+  `sync --kind content --full` followed by `writer commit` does it at once. See
+  [Jira](docs/connectors/jira.md#documents).
 - **Revocation latency.** A request no longer reads the serving head from
   storage for its authorization checks. It checks its grants against the
   head the reader's latest version check read
