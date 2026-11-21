@@ -276,14 +276,16 @@ async fn accept_envelopes(
     Ok((accepted, rejected))
 }
 
-async fn refresh_identity(
+/// The identity the configuration and the inputs give, and whether the head
+/// must point at a new generation of it.
+async fn next_identity(
     config: &Config,
     store: &dyn ObjectStore,
     root: &Path,
-    head: &mut ServingHead,
+    head: &ServingHead,
     envelopes: &[PreparedEnvelope],
     history: Option<&RestoreHistory>,
-) -> Result<bool> {
+) -> Result<(IdentityArtifact, bool)> {
     let current_identity: IdentityArtifact =
         fyrr_reader::storage::artifact(store, root, &head.identity).await?;
     let identity_generation = head
@@ -335,6 +337,19 @@ async fn refresh_identity(
         next_identity.generation = head.identity.generation;
     }
     let pointer_changed = identity_changed || next_identity.inputs != current_identity.inputs;
+    Ok((next_identity, pointer_changed))
+}
+
+async fn refresh_identity(
+    config: &Config,
+    store: &dyn ObjectStore,
+    root: &Path,
+    head: &mut ServingHead,
+    envelopes: &[PreparedEnvelope],
+    history: Option<&RestoreHistory>,
+) -> Result<bool> {
+    let (next_identity, pointer_changed) =
+        next_identity(config, store, root, head, envelopes, history).await?;
     if pointer_changed {
         head.identity = crate::prepare::put_generation(
             store,
@@ -348,6 +363,24 @@ async fn refresh_identity(
     Ok(pointer_changed)
 }
 
+/// The configured policy, when it differs from the one published.
+fn configured_policy(
+    config: &Config,
+    current_policy: &PolicyArtifact,
+) -> Result<Option<PolicyArtifact>> {
+    let source_grants = fixed_grants(config)?;
+    if current_policy.retrieval_policy_digest == config.namespace.retrieval_digest()
+        && current_policy.fixed_grants == source_grants
+    {
+        return Ok(None);
+    }
+    let mut policy = current_policy.clone();
+    policy.schema_version = <PolicyArtifact as fyrr_core::Contract>::VERSION;
+    policy.fixed_grants = source_grants;
+    policy.retrieval_policy_digest = config.namespace.retrieval_digest();
+    Ok(Some(policy))
+}
+
 async fn refresh_policy(
     config: &Config,
     store: &dyn ObjectStore,
@@ -356,28 +389,52 @@ async fn refresh_policy(
     current_policy: &PolicyArtifact,
     envelopes: &[PreparedEnvelope],
 ) -> Result<(bool, bool)> {
-    let source_grants = fixed_grants(config)?;
-    let policy_changed = current_policy.retrieval_policy_digest
-        != config.namespace.retrieval_digest()
-        || current_policy.fixed_grants != source_grants;
     let acl_changed = envelopes
         .iter()
         .any(|e| matches!(&e.payload,EnvelopePayload::Permissions(p) if !p.documents.is_empty()));
-    if policy_changed {
-        let mut policy = current_policy.clone();
-        policy.schema_version = <PolicyArtifact as fyrr_core::Contract>::VERSION;
-        policy.fixed_grants = source_grants;
+    let policy_changed = if let Some(mut policy) = configured_policy(config, current_policy)? {
         policy.generation = head
             .policy
             .generation
             .checked_add(1)
             .ok_or(WriterError::PolicyGenerationOverflow)?;
-        policy.retrieval_policy_digest = config.namespace.retrieval_digest();
         head.policy =
             crate::prepare::put_generation(store, root, "policy", policy.generation, &policy)
                 .await?;
-    }
+        true
+    } else {
+        false
+    };
     Ok((policy_changed, acl_changed))
+}
+
+/// Whether a tick has nothing to commit, found by reads alone: no envelope
+/// waits, no source was purged, and the policy, the identity, the dataset
+/// and its indexes need nothing from the writer. `commit_one` takes these
+/// decisions again under the lease, so a stale answer costs a lease, not
+/// correctness.
+pub(crate) async fn idle(config: &Config, head: &ServingHead) -> Result<bool> {
+    let (store, root) = namespace_store(config)?;
+    let policy: PolicyArtifact =
+        fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+    if !crate::envelopes::purged_envelopes(config, head, &policy)
+        .await?
+        .is_empty()
+        || !pending(config, head).await?.is_empty()
+        || configured_policy(config, &policy)?.is_some()
+        || next_identity(config, store.as_ref(), &root, head, &[], None)
+            .await?
+            .1
+    {
+        return Ok(false);
+    }
+    Ok(match native::published(config, head).await? {
+        Some((dataset, latest)) => {
+            !native::interrupted(head, latest)
+                && !native::fts_merge_needed(config, &dataset).await?
+        }
+        None => true,
+    })
 }
 
 fn vector_index_params(rows: usize, rq_bits: u8, partition_rows: u32) -> VectorIndexParams {

@@ -119,7 +119,8 @@ pub async fn run(
             },
             _ = timer.tick(), if loaded.config.writer.serve.committer => {
                 match crate::commit::commit_until_stopped(&loaded.config, false, Some(&stop)).await {
-                    Ok(_) => eprintln!("writer_service event=published"),
+                    Ok((_, true)) => eprintln!("writer_service event=published"),
+                    Ok((_, false)) => eprintln!("writer_service event=idle"),
                     Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
                     Err(_) => eprintln!("writer_service event=commit_failed"),
                 }
