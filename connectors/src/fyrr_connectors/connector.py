@@ -13,11 +13,14 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar
+from typing import ClassVar, Generic, TypeVar
 
 import pyarrow as pa
 
 from .config import ConfigModel, NoConfig
+
+SettingsT = TypeVar("SettingsT", bound=ConfigModel)
+ScopeT = TypeVar("ScopeT", bound=ConfigModel)
 
 
 class SyncKind(StrEnum):
@@ -45,7 +48,7 @@ class Limits:
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceContext[SettingsT: ConfigModel = ConfigModel, ScopeT: ConfigModel = ConfigModel]:
+class SourceContext(Generic[SettingsT, ScopeT]):
     """One configured source, as the connector sees it."""
 
     source_id: str
@@ -143,7 +146,7 @@ class ListingBatch:
 Batch = ContentBatch | PermissionBatch | PrincipalBatch | ListingBatch
 
 
-class Connector[SettingsT: ConfigModel = ConfigModel, ScopeT: ConfigModel = ConfigModel]:
+class Connector(Generic[SettingsT, ScopeT]):
     """Base class of a connector. Override `content` and, when the source
     supports them, `permissions`, `members` and `listing`; the provider
     metadata derives its sync kinds from the overridden methods."""

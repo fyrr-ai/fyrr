@@ -1,6 +1,7 @@
 """Arrow document-change batches match the published contract exactly."""
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -105,10 +106,7 @@ def test_nulls_in_non_nullable_fields_are_refused_at_any_depth() -> None:
         rows = json.loads(json.dumps(base))
         mutate(rows[0])
         batch = pa.RecordBatch.from_pylist(rows, schema=DOCUMENT_CHANGES_SCHEMA)
-        with pytest.raises(
-            ContractViolation,
-            match=rf"field {field.replace('[', '\\[').replace(']', '\\]')} is not nullable",
-        ):
+        with pytest.raises(ContractViolation, match=f"field {re.escape(field)} is not nullable"):
             check_document_changes(batch)
 
 

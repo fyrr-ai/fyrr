@@ -3082,6 +3082,14 @@
         "tier": "quick",
         "seconds": null
       },
+      "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_invalid_scope_is_configuration_error[scope8]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_invalid_scope_is_configuration_error[scope9]": {
+        "tier": "quick",
+        "seconds": null
+      },
       "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_long_fields_are_split_into_utf8_safe_units": {
         "tier": "quick",
         "seconds": null
@@ -3111,6 +3119,10 @@
         "seconds": null
       },
       "python:connectors/tests/jira/test_jira_content.py::test_jira_comments_name_their_author": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/jira/test_jira_content.py::test_jira_custom_fields_without_text_render_nothing": {
         "tier": "quick",
         "seconds": null
       },

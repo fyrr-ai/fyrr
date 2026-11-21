@@ -15,7 +15,7 @@
 [project]
 name = "fyrr-provider-markdown"
 version = "0.1.0"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = ["fyrr-connectors>=0.1.2,<0.2"]   # the SDK series is the compatibility promise
 
 [project.entry-points."fyrr.connectors"]
@@ -275,8 +275,8 @@ what a provider author can observe:
   descriptors it inherited, and without it the host fails to start.
 - **`multiprocessing` children started with `spawn` or `forkserver` inherit
   `-S`.** They get the parent's `sys.path`, but they do not run `.pth` hooks
-  or `sitecustomize`. On Python 3.13 they also report the base prefix, not
-  the virtual environment's; Python 3.14 keeps the virtual environment's.
+  or `sitecustomize`. Before Python 3.14 they also report the base prefix,
+  not the virtual environment's.
 - **Rows carry only what the contract allows.** The batch's schema carries
   the contract's two metadata entries and nothing else, and fyrr refuses a
   batch whose schema has metadata on any field. A nullable column you add must

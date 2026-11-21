@@ -64,6 +64,12 @@ def document(identity, project, issue, comments, context, targets=(), dynamic=Fa
         )
         if lines:
             field_values["links"] = "\n".join(lines)
+    for key in context.scope.fields:
+        value = fields.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            value = str(value)
+        if isinstance(value, str) or (isinstance(value, dict) and value.get("type") == "doc"):
+            field_values[key] = value
     for key, value in field_values.items():
         body = text(value)
         if len(body.encode()) > context.limits.document_max_bytes:

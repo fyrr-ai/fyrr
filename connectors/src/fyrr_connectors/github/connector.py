@@ -8,7 +8,7 @@ import re
 import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
-from typing import Any
+from typing import Any, TypeVar
 
 from ..arrow import Delete, Metadata, Section, Upsert, document_changes
 from ..connector import (
@@ -41,6 +41,7 @@ from .permissions import AccessSnapshot, container
 from .tree import Tree
 
 QUARANTINE = (Section(text="\0"),)
+EntryT = TypeVar("EntryT")
 
 
 class GitHub(Connector[Settings, Scope]):
@@ -530,7 +531,7 @@ class GitHub(Connector[Settings, Scope]):
 
         width = min(256, self.context.limits.max_rows)
 
-        def seal[EntryT](
+        def seal(
             collection: Sequence[EntryT], make: Callable[[Sequence[EntryT]], PermissionBatch]
         ) -> None:
             pending: list[EntryT] = []

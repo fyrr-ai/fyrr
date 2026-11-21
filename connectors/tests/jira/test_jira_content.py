@@ -26,6 +26,14 @@ def test_jira_content_golden(jira):
             "version": 1,
             "content": [{"type": "paragraph", "content": paragraph}],
         },
+        customfield_10042={
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Rejects bad"}]}
+            ],
+        },
+        customfield_10043="Ship behind a flag",
         parent={"key": "P1-100", "fields": {"summary": "Not shown"}},
         issuelinks=[
             {
@@ -42,8 +50,9 @@ def test_jira_content_golden(jira):
     info = provider_info(
         name="jira", connector=Jira, min_sdk_version="0.1.0", connection_types=("fixed",)
     )
+    scope = {**Index(jira).scope, "fields": ["customfield_10042", "customfield_10043"]}
     result = testkit.run_sync(
-        info, "content", permissions="fixed", settings=Index(jira).settings, scope=Index(jira).scope
+        info, "content", permissions="fixed", settings=Index(jira).settings, scope=scope
     )
     testkit.assert_golden(result, Path(__file__).parent / "golden/content.json")
 
@@ -124,3 +133,23 @@ def test_jira_links_are_not_published_with_synced_permissions(jira):
         "jira:11111111-1111-4111-8111-111111111111:issue:101"
     ]
     assert "PRIVATE-7" not in json.dumps(sections) and "P1-100" not in json.dumps(sections)
+
+
+def test_jira_custom_fields_without_text_render_nothing(jira):
+    from jira_kit import Index
+
+    jira.issue(
+        101,
+        customfield_10001=None,
+        customfield_10002="",
+        customfield_10003={"value": "High", "id": "10000"},
+        customfield_10004=[{"value": "a"}],
+        customfield_10005=True,
+        customfield_10006=3,
+    )
+    index = Index(jira)
+    index.scope["fields"] = [f"customfield_1000{n}" for n in range(8)]
+    sections = index.sync()["jira:11111111-1111-4111-8111-111111111111:issue:101"]["sections"]
+    assert [
+        (s["location"]["label"], s["text"]) for s in sections if "custom" in s["location"]["label"]
+    ] == [("customfield_10006", "3")]
