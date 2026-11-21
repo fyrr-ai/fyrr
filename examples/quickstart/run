@@ -11,7 +11,8 @@
 #
 # Uses local storage by default, with no Docker commands. --s3 starts the
 # S3 fixture when needed and stops only what it started. Every run uses fresh
-# storage and private reader mirrors. Exits nonzero on any failure.
+# storage, a private reader mirror and its own toy embeddings listener.
+# Exits nonzero on any failure.
 #
 #   examples/quickstart/run [--s3]
 source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/lib.sh"
