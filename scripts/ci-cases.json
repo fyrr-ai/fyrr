@@ -1304,6 +1304,10 @@
         "tier": "quick",
         "seconds": 0.029
       },
+      "full:fyrr:test:cli/reader_search_requires_a_query_before_loading_config": {
+        "tier": "quick",
+        "seconds": 0.03
+      },
       "full:fyrr:test:cli/reader_search_takes_a_query_that_starts_with_a_dash": {
         "tier": "quick",
         "seconds": 0.03
@@ -4749,6 +4753,10 @@
       "reader:fyrr:test:cli/reader_only_config_check_says_providers_are_not_checked": {
         "tier": "quick",
         "seconds": 0.009
+      },
+      "reader:fyrr:test:cli/reader_search_requires_a_query_before_loading_config": {
+        "tier": "quick",
+        "seconds": 0.03
       },
       "reader:fyrr:test:cli/reader_search_takes_a_query_that_starts_with_a_dash": {
         "tier": "quick",
