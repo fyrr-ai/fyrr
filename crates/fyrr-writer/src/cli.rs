@@ -27,8 +27,9 @@ pub enum WriterCommand {
         #[arg(long, conflicts_with = "dry_run")]
         full: bool,
         /// Run each source's provider in its own worker and validate its
-        /// output against the connector contract; write nothing.
-        #[arg(long)]
+        /// output against the connector contract without writing.
+        /// Incompatible with --due.
+        #[arg(long, conflicts_with = "due")]
         dry_run: bool,
         /// A sync kind to run (repeatable): content, permissions, members or
         /// reconcile. Default: every kind the provider implements and the
