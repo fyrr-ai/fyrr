@@ -4,8 +4,8 @@
 >
 > - What fyrr trusts and what a deployment must protect itself: [provider](architecture.md#terms) code,
 >   the embeddings and reranker services, the bucket and the reader mirror.
-> - How reader tokens, subjects, permission modes and freshness deadlines
->   decide who may read what, and when a revocation reaches readers.
+> - How reader tokens, subjects and permission modes decide who may read
+>   what, and when a revocation reaches readers.
 > - How secrets, stored credentials and provider workers are handled.
 
 To report a vulnerability, see [SECURITY.md](../SECURITY.md).
@@ -70,24 +70,23 @@ Restricted parts of a document, such as a comment with its own audience, are
 separate records with their own readers. Public and link-only sharing,
 unknown identities and unsupported holder types grant nobody.
 
-## Freshness and revocation
+## Revocation
 
 The authorization gates themselves are described in
 [How fyrr works](architecture.md#authorization). What a deployment has to
 plan for:
 
-- A source's permission and member reads renew its freshness only when they
-  complete. A failed or partial read keeps the last published rights until
-  `identity.validity_deadline`; after that the source alone is hidden from
-  every reader (`metadata.hidden_sources`).
-- A published directory read has a clock. When the serving head carries a
-  directory freshness timestamp (a completed `keycloak` or `snapshot` pull,
-  or a SCIM attestation), every reader refuses the whole namespace once that
-  read is older than `identity.validity_deadline`, whatever its own
-  `identity.directory.provider` says. A head with no timestamp is served as
-  before by a reader with `provider = "none"` (a snapshot imported by hand
-  with `writer directory --snapshot` is not a freshness proof), and refused
-  by a reader that has a directory provider configured.
+- The reader has no clock: results change only with a new publication. The
+  same query over the same published state returns the same result, and
+  nothing disappears on its own. The reader serves the last published
+  content, permissions and identity with no validity deadline.
+- While a connector, the directory provider or the writer is down, a revoked
+  grant keeps serving until a publication carries the revocation. A failed or
+  partial permission or member read publishes nothing. A broken connector is
+  the operator's problem: retire its source (below) to stop serving it.
+- The writer reports the age of the last successful permission and member read
+  per source in `fyrr writer status` (`source_reads`, null when no read ever
+  completed); alert on it. The reader never uses it.
 - A retired source (`fyrr writer source retire`) is denied by every reader
   once it has read the serving head again, and restore and rollback never
   bring it back.

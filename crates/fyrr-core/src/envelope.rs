@@ -13,7 +13,7 @@ use crate::limits::{MAX_REVISION_BYTES, check_digest, check_id, check_text};
 use crate::version::{Contract, SchemaVersion};
 
 /// The envelope contract version written by this build.
-pub const ENVELOPE_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
+pub const ENVELOPE_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
 
 /// A prepared envelope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -33,7 +33,7 @@ pub struct PreparedEnvelope {
     pub restore_sequence: u64,
     /// Connector cursors before and after the envelope's changes.
     pub cursor: CursorStep,
-    /// A freshness-only envelope preserves an absent cursor as well as an opaque one.
+    /// False when the envelope leaves the cursor where it was, absent or opaque.
     pub advances_cursor: bool,
     /// The serving head the worker prepared against; `null` on a namespace
     /// without a publication.
@@ -237,8 +237,8 @@ pub struct ChunkProfileIdentity {
 /// A permission sync's per-document readers and container grants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PermissionsPayload {
-    /// Freshness attestation: when the source's permissions were read.
-    pub read_at: DateTime<Utc>,
+    /// True only on the empty envelope that ends a read replacing a rejected
+    /// generation; it alone consumes the rejection markers.
     pub complete_read: bool,
     pub documents: Vec<DocumentPermission>,
     pub container_grants: Vec<ContainerGrant>,
@@ -247,8 +247,8 @@ pub struct PermissionsPayload {
 /// A membership sync's immutable principal snapshot on S3.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MembersPayload {
-    /// Freshness attestation: when the source's members were read.
-    pub read_at: DateTime<Utc>,
+    /// True only on the empty envelope that ends a read replacing a rejected
+    /// generation; it alone consumes the rejection markers.
     pub complete_read: bool,
     pub snapshot_id: String,
     /// Object key of the snapshot, relative to the namespace root.

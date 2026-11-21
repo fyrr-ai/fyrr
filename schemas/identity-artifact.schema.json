@@ -12,10 +12,6 @@
       "format": "uint64",
       "minimum": 0
     },
-    "built_at": {
-      "type": "string",
-      "format": "date-time"
-    },
     "hashing": {
       "$ref": "#/$defs/HashingScheme",
       "description": "How principal keys and tokens were hashed."
@@ -52,7 +48,6 @@
     "schema_version",
     "namespace",
     "generation",
-    "built_at",
     "hashing",
     "tokens",
     "principals",
@@ -174,5 +169,5 @@
     }
   },
   "x-fyrr-contract": "identity-artifact",
-  "x-fyrr-schema-version": "1.1"
+  "x-fyrr-schema-version": "2.0"
 }

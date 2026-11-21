@@ -199,7 +199,6 @@ async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_s
         .await;
     assert_eq!(refused["scimType"], "invalidValue");
     assert_eq!(state(&commit).await.identity, before.identity);
-    assert_eq!(state(&commit).await.freshness, before.freshness);
     service
         .request(
             Method::DELETE,
@@ -229,7 +228,6 @@ async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_s
         .request(Method::POST, "/scim/v2/Users", body.clone(), None, 201)
         .await;
     let before = state(&commit).await;
-    assert!(before.freshness.directory.is_some());
     let original_version = version(&u).to_owned();
     let unordered: Value = Value::Object(
         body.as_object()
@@ -244,7 +242,7 @@ async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_s
         .request(Method::POST, "/scim/v2/Users", unordered, None, 200)
         .await;
     assert_eq!(replay["id"], u["id"]);
-    assert!(state(&commit).await.freshness.directory > before.freshness.directory);
+    assert_eq!(state(&commit).await.identity, before.identity);
     let child=service.request(Method::POST,"/scim/v2/Groups",json!({"schemas":[GROUP],"displayName":"child","members":[{"value":u["id"],"type":"User"}]}),None,201).await;
     let mut parent=service.request(Method::POST,"/scim/v2/Groups",json!({"schemas":[GROUP],"displayName":"parent","members":[{"value":child["id"],"type":"Group"}]}),None,201).await;
     let a = super::identity::artifact(&commit).await.1;
@@ -266,7 +264,7 @@ async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_s
     let invalid=service.request(Method::PATCH,&path(&u,true),patch(json!([{"op":"replace","path":"active","value":false},{"op":"replace","path":"notAnAttribute","value":"identity-canary"}])),Some(version(&u)),400).await;
     assert_eq!(invalid["scimType"], "invalidPath");
     assert!(!invalid.to_string().contains("identity-canary"));
-    assert_eq!(state(&commit).await.freshness, before.freshness);
+    assert_eq!(state(&commit).await.identity, before.identity);
     assert_eq!(hit_count(&mut client), 2);
     let noop = service
         .request(
@@ -279,7 +277,6 @@ async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_s
         .await;
     assert_eq!(version(&noop), version(&u));
     assert_eq!(state(&commit).await.identity, before.identity);
-    assert!(state(&commit).await.freshness.directory > before.freshness.directory);
     let before = state(&commit).await;
     service
         .request(
@@ -290,7 +287,7 @@ async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_s
             412,
         )
         .await;
-    assert_eq!(state(&commit).await.freshness, before.freshness);
+    assert_eq!(state(&commit).await.identity, before.identity);
     u = service
         .request(
             Method::PATCH,
@@ -330,7 +327,7 @@ async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_s
             412,
         )
         .await;
-    assert_eq!(state(&commit).await.freshness, before_replay.freshness);
+    assert_eq!(state(&commit).await.identity, before_replay.identity);
     let mut other = user("other@example.test");
     other["emails"]
         .as_array_mut()
@@ -350,12 +347,9 @@ async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_s
         )
         .await;
     assert_eq!(hit_count(&mut client), 2);
-    // Four compressed 15-minute reconciliation cycles during a real quiet hour:
-    // GET/list only, no resource mutations and no new identity generations.
-    let clock = DirectoryClock::new(&worker, &root);
-    let mut compressed = Mcp::open(&clock.config);
+    // Reconciliation reads (GET/list only) change no resource and write no
+    // new identity generation.
     let identity = state(&commit).await.identity;
-    let rejected = state(&commit).await;
     service
         .request(
             Method::GET,
@@ -365,29 +359,11 @@ async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_s
             400,
         )
         .await;
-    assert_eq!(state(&commit).await.freshness, rejected.freshness);
-    for _ in 0..4 {
-        let previous = state(&commit).await;
-        service
-            .request(Method::GET, "/scim/v2/Users", Value::Null, None, 200)
-            .await;
-        let next = state(&commit).await;
-        assert!(next.freshness.directory > previous.freshness.directory);
-        assert_eq!(next.identity, identity);
-        assert_eq!(hit_count(&mut client), 2);
-        clock.age(14);
-        assert_eq!(hit_count(&mut compressed), 2);
-    }
-    // No IdP requests: freshness ages to warning, then the deadline.
-    clock.age(16);
-    assert_eq!(clock.warning(), "identity_expiring");
-    clock.age(31);
-    assert_eq!(
-        fixture_hits(&mut compressed)["structuredContent"]["code"],
-        "authorization_unavailable"
-    );
-    drop(compressed);
-    drop(clock);
+    service
+        .request(Method::GET, "/scim/v2/Users", Value::Null, None, 200)
+        .await;
+    assert_eq!(state(&commit).await.identity, identity);
+    assert_eq!(hit_count(&mut client), 2);
     let listed = service
         .request(
             Method::GET,
@@ -433,7 +409,7 @@ async fn identity_directory_scim_crud_patch_replay_collision_and_revocation_on_s
             404,
         )
         .await;
-    assert_eq!(state(&commit).await.freshness, after.freshness);
+    assert_eq!(state(&commit).await.identity, after.identity);
     service
         .request(
             Method::DELETE,
@@ -521,7 +497,7 @@ fn directory_command(config: &Path, token: Option<&str>) -> Output {
 }
 #[tokio::test]
 #[ignore = "owned Keycloak admin API, CLI/MCP and local storage; scripts/ci"]
-async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_storage() {
+async fn identity_directory_keycloak_pull_nested_deactivation_on_storage() {
     let endpoint = std::env::var("FYRR_TEST_KEYCLOAK_ENDPOINT").unwrap();
     let username = std::env::var("FYRR_TEST_KEYCLOAK_USERNAME").unwrap();
     let password = std::env::var("FYRR_TEST_KEYCLOAK_PASSWORD").unwrap();
@@ -642,32 +618,14 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
     assert!(a.principals.iter().any(|p| p.groups.len() == 4));
     let mut mcp = Mcp::open(&worker);
     assert_eq!(hit_count(&mut mcp), 2);
-    // Four unchanged successful pulls model the scheduled pulls during one quiet hour.
-    let clock = DirectoryClock::new(&worker, &root);
-    let mut compressed = Mcp::open(&clock.config);
-    for _ in 0..4 {
-        let before = state(&commit).await;
-        let result = directory_command(&commit, Some(&fresh_token().await));
-        assert!(result.status.success(), "{}", report(&result));
-        let next = state(&commit).await;
-        assert!(next.freshness.directory > before.freshness.directory);
-        assert_eq!(next.identity, before.identity);
-        assert_eq!(hit_count(&mut mcp), 2);
-        clock.age(14);
-        assert_eq!(hit_count(&mut compressed), 2);
-    }
-    clock.age(16);
-    assert_eq!(clock.warning(), "identity_expiring");
-    assert_eq!(hit_count(&mut compressed), 2);
-    clock.age(31);
-    assert_eq!(
-        fixture_hits(&mut compressed)["structuredContent"]["code"],
-        "authorization_unavailable"
-    );
-    drop(compressed);
-    drop(clock);
+    // An unchanged successful pull publishes nothing.
+    let before = state(&commit).await;
+    let result = directory_command(&commit, Some(&fresh_token().await));
+    assert!(result.status.success(), "{}", report(&result));
+    assert_eq!(state(&commit).await.identity, before.identity);
+    assert_eq!(hit_count(&mut mcp), 2);
     // A valid HTTP short page is not completion: retain real Keycloak counts,
-    // but truncate a directory page. No publication or proof may result.
+    // but truncate a directory page. No publication may result.
     for truncated in ["users", "groups", "memberships"] {
         use std::sync::{
             Arc,
@@ -727,7 +685,6 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
             "the authenticated {truncated} response was actually truncated"
         );
         assert_eq!(state(&commit).await.identity, before.identity);
-        assert_eq!(state(&commit).await.freshness, before.freshness);
     }
     let before = state(&commit).await;
     assert!(
@@ -735,7 +692,6 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
             .status
             .success()
     );
-    assert_eq!(state(&commit).await.freshness, before.freshness);
     assert_eq!(state(&commit).await.identity, before.identity);
     assert_eq!(
         client
@@ -777,14 +733,14 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
             .status(),
         200
     );
-    let before = state(&commit).await.freshness.directory;
+    let before = state(&commit).await.identity;
     let output = directory_command(&commit, Some(&fresh_token().await));
     assert!(output.status.success(), "{}", report(&output));
     assert_eq!(
         super::identity::artifact(&commit).await.1.principals.len(),
         3400
     );
-    assert!(state(&commit).await.freshness.directory > before);
+    assert_ne!(state(&commit).await.identity, before);
     assert_eq!(
         client
             .delete(base)
@@ -795,61 +751,4 @@ async fn identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_
             .status(),
         204
     );
-}
-
-/// Time compression changes only observed head freshness; stored payloads and
-/// their hashes stay untouched. The real CLI and MCP still enforce the deadline.
-struct DirectoryClock {
-    age: std::sync::Arc<std::sync::atomic::AtomicI64>,
-    config: PathBuf,
-    _proxy: super::corrections::ProxyGuard,
-}
-impl DirectoryClock {
-    fn new(config: &Path, root: &Path) -> Self {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicI64, Ordering},
-        };
-        let age = Arc::new(AtomicI64::new(14));
-        let observed = age.clone();
-        let transform: super::corrections::ResponseTransform =
-            Arc::new(move |request, response| {
-                if !request.starts_with("GET ") || !request.contains("/head.json") {
-                    return;
-                }
-                super::corrections::rewrite_ok_body(response, |body| {
-                    let mut value: Value = serde_json::from_slice(body).unwrap();
-                    assert!(value["freshness"]["directory"].is_string());
-                    value["freshness"]["directory"] = json!(
-                        (fyrr_core::clock::now()
-                            - chrono::Duration::minutes(observed.load(Ordering::Relaxed)))
-                        .to_rfc3339()
-                    );
-                    *body = serde_json::to_vec(&value).unwrap();
-                    true
-                });
-            });
-        let stop = Arc::new(AtomicBool::new(false));
-        let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
-        let (proxy, thread) =
-            super::corrections::proxy_transform(endpoint.clone(), stop.clone(), transform, None);
-        let target = root.join("directory-clock.toml");
-        let text = std::fs::read_to_string(config)
-            .unwrap()
-            .replace(&endpoint, &proxy)
-            .replace("[identity]", "[identity]\nvalidity_deadline='30m'\n");
-        std::fs::write(&target, text).unwrap();
-        Self {
-            age,
-            config: target,
-            _proxy: thread,
-        }
-    }
-    fn age(&self, minutes: i64) {
-        self.age
-            .store(minutes, std::sync::atomic::Ordering::Relaxed);
-    }
-    fn warning(&self) -> Value {
-        success(&self.config, &["writer", "status"])["directory"]["warning"].clone()
-    }
 }

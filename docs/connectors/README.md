@@ -71,15 +71,15 @@ permissions = "15m"
 members = "15m"
 ```
 
-A failed or partial permission/member read keeps the last published rights
-until the [freshness deadline](../architecture.md#terms), then hides that
-source. See [freshness and revocation](../security.md#freshness-and-revocation).
+A failed or partial permission/member read publishes nothing and keeps the
+last published rights; the reader has no clock, so a source that stays broken
+is retired by the operator. See [revocation](../security.md#revocation).
 
 Common rules for every source:
 
 - `permissions = "sync"` publishes the source's own access rights and needs
   `intervals.permissions`; `intervals.members` is optional and, when set,
-  its reads count toward freshness too. `permissions = "fixed"` grants the
+  its reads are recorded in `writer status` too. `permissions = "fixed"` grants the
   configured `readers` to every document and makes no permission or member
   reads.
 - Every source runs a full-ID listing on `intervals.reconcile` (1 day);

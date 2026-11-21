@@ -9,7 +9,7 @@ const MAX_ROOTS: usize = 256;
 /// content and the pending envelopes. A storage failure, or a request the worker
 /// refuses (more than [`MAX_ROOTS`] roots), fails the call and is kept: the
 /// provider may catch the error and finish, and the read still cannot be
-/// attested complete afterwards.
+/// treated as complete afterwards.
 pub(super) struct RevisionCallbacks<'a> {
     config: &'a fyrr_core::config::Config,
     rt: &'a Arc<tokio::runtime::Runtime>,

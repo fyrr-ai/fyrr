@@ -38,7 +38,6 @@ on a single host a [local directory](configuration.md#local-storage):
 | principal / canonical user | The deployment's user identity to which source accounts and authenticated subjects are linked. |
 | committer | The writer holding the namespace lease while publishing prepared work. |
 | incarnation | A new identity assigned when a namespace is created, distinguishing it from earlier namespaces at the same URI. |
-| freshness deadline | The maximum age of a successful permission, membership or directory read before its grants stop being served (`identity.validity_deadline`). |
 | quarantine | Withholding an invalid document revision while retaining its last good published revision, if any. |
 | provider | A connector provider reads source content and access rights; a directory provider supplies canonical users and groups; an embeddings or reranker provider processes text for retrieval. |
 
@@ -137,19 +136,16 @@ Every `search`, `fetch` and `list_filters` call passes three gates:
    An unreadable head or expired pin gives `storage_unavailable` on stdio.
    Admission also refuses a subject
    that is not in the identity artifact or holds more than
-   `identity.max_tokens_per_user` reader tokens, and an expired directory
-   read (`identity.validity_deadline`) when a directory provider is
-   configured. A `permissions = "sync"` source whose last successful
-   permission or membership read is older than `identity.validity_deadline`
-   is excluded, and named in `metadata.hidden_sources` if the caller could
-   otherwise read it. A retired source is excluded silently.
+   `identity.max_tokens_per_user` reader tokens. A retired source is
+   excluded silently. The reader has no clock: nothing it serves expires
+   between publications.
 2. **Permission predicate.** Lexical and dense candidates are generated under
    a filter on the row's hashed readers, so a row the caller may not read is
    never scored, counted or returned. For `permissions = "fixed"` sources
    the filter checks the readers in the current policy, not the stored rows.
 3. **Final check.** Before a result or error is returned, the reader checks
-   the serving head again, as its latest version check read it. If the policy,
-   identity or hidden sources it shows changed during the request, the
+   the serving head again, as its latest version check read it. If the policy
+   or identity it shows changed during the request, the
    request is refused rather than answered under the old grant.
 
 Unknown and denied documents look the same to `fetch`: an empty result.

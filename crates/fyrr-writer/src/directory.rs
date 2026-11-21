@@ -1,9 +1,8 @@
 //! Directory input publication shares the namespace lease and head CAS.
 use crate::{Result, WriterError};
-use fyrr_core::config::{Config, DirectoryProvider};
+use fyrr_core::config::Config;
 use fyrr_core::directory::DirectorySnapshot;
 use fyrr_core::identity::{IdentityArtifact, IdentityInput, IdentityInputKind, SubjectBinding};
-use fyrr_core::publication::ServingHead;
 use fyrr_core::{Contract, write_contract};
 use fyrr_reader::embedding::digest;
 use fyrr_reader::storage::{hash_principal, namespace_store};
@@ -146,10 +145,6 @@ pub(crate) fn bindings(snapshot: &DirectorySnapshot) -> Vec<SubjectBinding> {
         .collect()
 }
 
-/// Operator import is not a freshness proof. Pull/SCIM adapters provide that
-/// separately after successful application; this path never advances its clock.
-/// With `provider = "none"` an import also withdraws a timestamp left by an
-/// earlier provider, which readers would otherwise enforce for good.
 pub async fn publish(config: &Config, snapshot: &DirectorySnapshot) -> Result<serde_json::Value> {
     snapshot
         .validate()
@@ -158,32 +153,22 @@ pub async fn publish(config: &Config, snapshot: &DirectorySnapshot) -> Result<se
         return Err(WriterError::DirectorySnapshotInvalid);
     }
     crate::lease::LeaseGuard::with(config, |lease| async move {
-        publish_held(config, snapshot, &lease, None).await
+        publish_held(config, snapshot, &lease).await
     })
     .await
 }
 
-/// Both adapters publish through the same holder; a proof is never accepted from operator imports.
+/// The import, pull and SCIM adapters publish through the same holder.
 pub(crate) async fn publish_held(
     config: &Config,
     snapshot: &DirectorySnapshot,
     lease: &crate::lease::LeaseGuard,
-    proof: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<serde_json::Value> {
     snapshot
         .validate()
         .map_err(|_| WriterError::DirectorySnapshotInvalid)?;
     if snapshot.namespace != config.namespace.name || snapshot.built_at > fyrr_core::clock::now() {
         return Err(WriterError::DirectorySnapshotInvalid);
-    }
-    if let Some(at) = proof {
-        let age = fyrr_core::clock::now()
-            .signed_duration_since(at)
-            .to_std()
-            .map_err(|_| WriterError::DirectoryHealthInvalid)?;
-        if age > config.identity.directory.sync_interval.as_duration() {
-            return Err(WriterError::DirectoryHealthInvalid);
-        }
     }
 
     let (store, root) = namespace_store(config)?;
@@ -201,10 +186,6 @@ pub(crate) async fn publish_held(
         if &prior == snapshot {
             if snapshot.built_at < prior_at {
                 return Err(WriterError::DirectorySnapshotStale);
-            }
-            if apply_proof(config, &mut head, proof) {
-                head.updated_at = fyrr_core::clock::now();
-                lease.publish(head.clone()).await?;
             }
             return Ok(
                 serde_json::json!({"identity_generation":head.identity.generation,"changed":false}),
@@ -249,18 +230,13 @@ pub(crate) async fn publish_held(
         .generation
         .checked_add(1)
         .ok_or(WriterError::IdentityGenerationOverflow)?;
-    let configured =
-        crate::commit::configured_identity(config, generation, fyrr_core::clock::now())?;
+    let configured = crate::commit::configured_identity(config, generation)?;
     let next = crate::membership::build(config, &inputs, &head, &[], configured, None).await?;
     if next.principals == current.principals
         && next.tokens == current.tokens
         && next.subjects == current.subjects
         && next.inputs == current.inputs
     {
-        if apply_proof(config, &mut head, proof) {
-            head.updated_at = fyrr_core::clock::now();
-            lease.publish(head.clone()).await?;
-        }
         return Ok(
             serde_json::json!({"identity_generation": head.identity.generation, "changed": false}),
         );
@@ -269,28 +245,10 @@ pub(crate) async fn publish_held(
         crate::prepare::put_generation(store.as_ref(), &root, "identity", generation, &next)
             .await?;
     head.updated_at = fyrr_core::clock::now();
-    apply_proof(config, &mut head, proof);
     lease.publish(head).await?;
     Ok(
         serde_json::json!({"identity_generation": generation, "changed": true, "principals": next.principals.len(), "over_limit_subjects": next.principals.iter().filter(|p| p.tokens.len() > config.identity.max_tokens_per_user as usize).count(), "artifact_bytes": write_contract(&next).len()}),
     )
-}
-
-/// Set `freshness.directory` on the head about to be written; true when it changed.
-/// A proof attests; without one a `none` provider withdraws the timestamp and
-/// any other provider keeps it.
-fn apply_proof(
-    config: &Config,
-    head: &mut ServingHead,
-    proof: Option<chrono::DateTime<chrono::Utc>>,
-) -> bool {
-    if proof.is_none() && config.identity.directory.provider != DirectoryProvider::None {
-        return false;
-    }
-    let next = proof.map(|at| head.freshness.directory.map_or(at, |old| old.max(at)));
-    let changed = head.freshness.directory != next;
-    head.freshness.directory = next;
-    changed
 }
 
 #[cfg(test)]

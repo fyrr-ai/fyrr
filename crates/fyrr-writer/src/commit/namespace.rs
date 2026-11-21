@@ -1,10 +1,6 @@
 use super::*;
 
-pub(crate) fn configured_identity(
-    config: &Config,
-    generation: u64,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Result<IdentityArtifact> {
+pub(crate) fn configured_identity(config: &Config, generation: u64) -> Result<IdentityArtifact> {
     // Even an empty HTTP-only namespace must have its HMAC key available.
     hash_principal(config, "key", "")?;
     let user = config.identity.stdio_user.as_deref();
@@ -20,7 +16,6 @@ pub(crate) fn configured_identity(
         schema_version: IDENTITY_CONTRACT_VERSION,
         namespace: config.namespace.name.clone(),
         generation,
-        built_at: now,
         hashing: HashingScheme {
             algorithm: "hmac-sha256".into(),
             key_id: "namespace-v1".into(),
@@ -51,7 +46,7 @@ pub async fn create(config: &Config) -> Result<()> {
     let mut incarnation = [0; 16];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut incarnation)
         .map_err(|_| WriterError::RuntimeUnavailable)?;
-    let identity = configured_identity(config, 1, now)?;
+    let identity = configured_identity(config, 1)?;
     let policy = PolicyArtifact {
         fixed_grants: fixed_grants(config)?,
         row_acl_sequence: None,
@@ -71,10 +66,6 @@ pub async fn create(config: &Config) -> Result<()> {
         content: None,
         policy: policy_pointer,
         identity: identity_pointer,
-        freshness: FreshnessPointers {
-            directory: None,
-            sources: Vec::new(),
-        },
         lease: None,
         rejected_envelope_ids: Vec::new(),
         updated_at: now,

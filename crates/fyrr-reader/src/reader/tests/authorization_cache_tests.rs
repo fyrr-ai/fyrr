@@ -11,7 +11,6 @@ fn key(subject: &str) -> AuthorizationCacheKey {
         policy: "policy".into(),
         policy_generation: 1,
         content: 1,
-        hidden: Vec::new(),
     }
 }
 #[test]

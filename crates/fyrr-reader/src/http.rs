@@ -458,18 +458,12 @@ async fn readiness(State(state): State<HttpState>) -> Response {
     let Ok(head) = state.admission.fresh_head().await else {
         return error(StatusCode::SERVICE_UNAVAILABLE, PublicationUnavailable);
     };
-    let now = fyrr_core::clock::now();
     if head.namespace != state.config.namespace.name
-        || !crate::storage::directory_fresh(&state.config, head.freshness.directory, now)
-    {
-        return error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable);
-    }
-    if head.freshness.directory.is_none()
-        && state
+        || !state
             .admission
             .identity(&state.config, &head.identity)
             .await
-            .is_err()
+            .is_ok_and(|identity| crate::storage::directory_published(&state.config, &identity))
     {
         return error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable);
     }

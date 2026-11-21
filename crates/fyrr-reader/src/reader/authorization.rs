@@ -31,7 +31,6 @@ impl PreparedReader {
             policy: self.head.policy.digest.clone(),
             policy_generation: self.head.policy.generation,
             content: self.manifest.lance_version,
-            hidden: self.hidden_sources.iter().cloned().collect(),
         };
         if let Some(entry) = self
             .admission_cache
@@ -46,7 +45,7 @@ impl PreparedReader {
             self.scope.admitted(self.head.identity.clone());
             return Ok(());
         }
-        let (mut eligible, reported_hidden_sources) = {
+        let mut eligible = {
             let predicate = Self::predicate(
                 &self.config,
                 &self.identity,
@@ -55,10 +54,10 @@ impl PreparedReader {
             )?;
             let mut eligible = RowAddrTreeMap::new();
             let mut scan = self.dataset.scan();
-            // The source column only tells hidden sources apart; without
+            // The source column only tells retired sources apart; without
             // any, the rows the predicate selects are the eligible ones, and
             // an index-served predicate needs no data file at all.
-            let by_source = !self.hidden_sources.is_empty();
+            let by_source = !self.policy.retired_sources.is_empty();
             let columns: &[&str] = if by_source { &["source_id"] } else { &[] };
             scan.project(columns).map_err(|_| PublicationInvalid)?;
             scan.filter(&predicate)
@@ -70,7 +69,6 @@ impl PreparedReader {
                 .try_into_stream()
                 .await
                 .map_err(|_| StorageUnavailable)?;
-            let mut readable_hidden = BTreeSet::new();
             while let Some(batch) = stream.try_next().await.map_err(|_| StorageUnavailable)? {
                 if !by_source {
                     for id in ids(&batch)?.values() {
@@ -81,20 +79,13 @@ impl PreparedReader {
                 let sources = strings(&batch, "source_id")?;
                 for (row, id) in ids(&batch)?.values().iter().enumerate() {
                     let source = sources.value(row);
-                    if self.hidden_sources.contains(source) {
-                        // A retired source is denied for good and never reported.
-                        if !self.policy.retired_sources.contains_key(source) {
-                            readable_hidden.insert(source.to_owned());
-                        }
-                    } else {
+                    // A retired source is denied for good.
+                    if !self.policy.retired_sources.contains_key(source) {
                         eligible.insert(*id);
                     }
                 }
             }
-            (
-                eligible,
-                readable_hidden.into_iter().take(64).collect::<Vec<_>>(),
-            )
+            eligible
         };
         // Converts containers to runs where that is smaller; the rows are unchanged.
         eligible.optimize();
@@ -136,7 +127,6 @@ impl PreparedReader {
             eligible,
             unindexed,
             maps,
-            reported_hidden_sources,
             fallback_probes: self.fallback_probes,
         });
         self.admission = admission.clone();
@@ -337,7 +327,6 @@ impl PreparedReader {
     }
 
     pub(crate) fn authorization(&self) -> Result<()> {
-        let now = fyrr_core::clock::now();
         if !Self::same_lineage(
             &self.head,
             &self.manifest.publication_id,
@@ -375,8 +364,7 @@ impl PreparedReader {
             || self.identity.namespace != self.config.namespace.name
             || self.policy.generation != self.head.policy.generation
             || self.identity.generation != self.head.identity.generation
-            || self.identity.built_at > now
-            || !directory_fresh(&self.config, self.head.freshness.directory, now)
+            || !crate::storage::directory_published(&self.config, &self.identity)
             || self
                 .policy
                 .row_acl_sequence
@@ -398,49 +386,6 @@ impl PreparedReader {
         }
         Ok(())
     }
-    /// Derived admission cache only; the published head owns all source freshness instants.
-    /// The sources no request may read: those whose permission freshness
-    /// expired, until a read succeeds, and sources retired permanently.
-    /// One list feeds the admission predicate.
-    pub(super) fn hidden(
-        config: &Config,
-        head: &ServingHead,
-        policy: &PolicyArtifact,
-    ) -> Result<BTreeSet<String>> {
-        let mut hidden = Self::expired_sources(config, head)?;
-        hidden.extend(policy.retired_sources.keys().cloned());
-        Ok(hidden)
-    }
-
-    pub(crate) fn expired_sources(config: &Config, head: &ServingHead) -> Result<BTreeSet<String>> {
-        let now = fyrr_core::clock::now();
-        let deadline = chrono::Duration::from_std(config.identity.validity_deadline.as_duration())
-            .map_err(|_| AuthorizationUnavailable)?;
-        Ok(config
-            .sources
-            .iter()
-            .filter(|s| s.permissions == fyrr_core::config::PermissionsMode::Sync)
-            .filter(|s| {
-                head.freshness
-                    .sources
-                    .iter()
-                    .find(|f| f.source_id == s.id)
-                    .is_none_or(|f| {
-                        f.permissions_read_at > now
-                            || f.permissions_read_at + deadline <= now
-                            || (s.intervals.members.is_some()
-                                && f.members_read_at
-                                    .is_none_or(|at| at > now || at + deadline <= now))
-                    })
-            })
-            .map(|s| s.id.clone())
-            .collect())
-    }
-
-    pub(crate) fn reported_hidden_sources(&self) -> Vec<String> {
-        self.admission.reported_hidden_sources.clone()
-    }
-
     pub(crate) fn admission_predicate(&self) -> Result<String> {
         let predicate = Self::predicate(
             &self.config,
@@ -448,13 +393,14 @@ impl PreparedReader {
             &self.policy,
             self.scope.principal(),
         )?;
-        if self.hidden_sources.is_empty() {
+        if self.policy.retired_sources.is_empty() {
             return Ok(predicate);
         }
         Ok(format!(
             "({predicate}) AND source_id NOT IN ({})",
-            self.hidden_sources
-                .iter()
+            self.policy
+                .retired_sources
+                .keys()
                 .map(|s| sql(s))
                 .collect::<Vec<_>>()
                 .join(",")
@@ -545,10 +491,8 @@ impl PreparedReader {
             return Err(AuthorizationUnavailable);
         }
         let policy_changed = current.policy != self.head.policy;
-        let hidden_sources = Self::hidden(&self.config, &current, &self.policy)?;
-        let changed = hidden_sources != self.hidden_sources
-            || self.scope.identity_for_refresh() != Some(&current.identity)
-            || policy_changed;
+        let changed =
+            self.scope.identity_for_refresh() != Some(&current.identity) || policy_changed;
         if changed && !rebuild {
             // An already-materialized answer can only use its original grant.
             // Refuse it without performing native admission work off the slot.
@@ -567,10 +511,6 @@ impl PreparedReader {
             }
             self.policy = cached.as_ref().ok_or(AuthorizationUnavailable)?.1.clone();
         }
-        let hidden_sources = Self::hidden(&self.config, &current, &self.policy)?;
-        let changed = hidden_sources != self.hidden_sources
-            || self.scope.identity_for_refresh() != Some(&current.identity)
-            || policy_changed;
         let identity_changed = current.identity != self.head.identity;
         let refuse_binding = identity_changed
             && self.scope.http_key().is_some()
@@ -604,10 +544,8 @@ impl PreparedReader {
         if changed {
             self.scope.refuse();
         }
-        self.hidden_sources = hidden_sources;
         self.head.policy = current.policy;
         self.head.identity = current.identity;
-        self.head.freshness = current.freshness;
         self.head.content = current.content;
         self.head.incarnation = current.incarnation;
         if refuse_binding {

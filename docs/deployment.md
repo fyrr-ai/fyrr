@@ -234,13 +234,12 @@ the directory on its interval, and commits every
 workers, finishes the current commit group and releases the lease. It does
 not run maintenance: schedule `fyrr writer maintain` next to it.
 
-Sync, directory pulls and commits can also run from cron, except for a SCIM
-directory, whose freshness only `writer serve` with the administration
-listener attests:
+Sync, directory pulls and commits can also run from cron (a SCIM directory
+needs `writer serve` with the administration listener to receive pushes):
 
 ```
 */5 * * * *  fyrr writer sync --due
-*/5 * * * *  fyrr writer sync --directory --due     # with a snapshot or keycloak directory
+*/15 * * * *  fyrr writer sync --directory       # with a snapshot or keycloak directory
 */2 * * * *  fyrr writer commit
 0 */6 * * *  fyrr writer maintain
 ```

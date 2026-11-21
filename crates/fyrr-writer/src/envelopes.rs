@@ -2,6 +2,7 @@
 use crate::{Result, WriterError};
 use futures::{StreamExt, TryStreamExt};
 use fyrr_core::config::Config;
+use fyrr_core::connector::SyncKind;
 use fyrr_core::envelope::{EnvelopePayload, PreparedEnvelope};
 use fyrr_core::publication::ServingHead;
 use fyrr_reader::storage::{namespace_store, optional_head};
@@ -43,6 +44,55 @@ async fn applied_page(
         );
     }
     Ok(applied)
+}
+
+/// When each synced source's permissions and members were last read, from the
+/// cursor states that a completed read stamps (null when none did). A read that
+/// changed nothing writes no envelope. The reader never uses this.
+async fn source_reads(
+    config: &Config,
+    policy: &fyrr_core::publication::PolicyArtifact,
+) -> Result<Vec<serde_json::Value>> {
+    let (store, root) = namespace_store(config)?;
+    let now = fyrr_core::clock::now();
+    let mut reads = Vec::new();
+    for source in config
+        .sources
+        .iter()
+        .filter(|s| s.permissions == fyrr_core::config::PermissionsMode::Sync)
+        .filter(|s| !policy.retired_sources.contains_key(&s.id))
+    {
+        for (kind, interval) in [
+            (SyncKind::Permissions, source.intervals.permissions),
+            (SyncKind::Members, source.intervals.members),
+        ] {
+            if interval.is_none() {
+                continue;
+            }
+            let path =
+                root.clone()
+                    .join("cursors")
+                    .join(format!("{}-{}.json", source.id, kind.as_str()));
+            // A missing, damaged or never-completed cursor is a null read: a
+            // connector broken from the start must show up too.
+            let state = match store.get(&path).await {
+                Ok(object) => fyrr_core::parse_contract::<fyrr_core::connector::CursorState>(
+                    &object.bytes().await?,
+                )
+                .ok(),
+                Err(object_store::Error::NotFound { .. }) => None,
+                Err(_) => return Err(WriterError::StorageUnavailable),
+            }
+            .filter(|state| state.updated_at > chrono::DateTime::UNIX_EPOCH);
+            reads.push(serde_json::json!({
+                "source_id": source.id,
+                "kind": kind,
+                "last_read_at": state.as_ref().map(|s| s.updated_at),
+                "age_ms": state.as_ref().map(|s| (now - s.updated_at).num_milliseconds().max(0)),
+            }));
+        }
+    }
+    Ok(reads)
 }
 
 /// Counts are relative to the content_sequence pinned here, not an atomic
@@ -119,31 +169,11 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     if !retired_configured.is_empty() {
         warnings.push("retired_source_configured");
     }
-    let (directory_age_ms, directory_warning) = match head.freshness.directory {
-        None => (None, Some("directory_freshness_missing")),
-        Some(at) => {
-            let age = fyrr_core::clock::now()
-                .signed_duration_since(at)
-                .to_std()
-                .unwrap_or_default();
-            let deadline = config.identity.validity_deadline.as_duration();
-            (
-                Some(age.as_millis()),
-                if age >= deadline {
-                    Some("identity_expired")
-                } else if age >= deadline / 2 {
-                    Some("identity_expiring")
-                } else {
-                    None
-                },
-            )
-        }
-    };
     let identity: fyrr_core::identity::IdentityArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.identity).await?;
-    let directory = serde_json::json!({"provider":config.identity.directory.provider,"identity_generation":head.identity.generation,"principals":identity.principals.len(),"tokens":identity.tokens.len(),"sync_interval_ms":config.identity.directory.sync_interval.as_millis(),"age_ms":directory_age_ms,"warning":directory_warning,"encrypted_inputs":config.identity.encryption_key.is_some()});
+    let directory = serde_json::json!({"provider":config.identity.directory.provider,"identity_generation":head.identity.generation,"principals":identity.principals.len(),"tokens":identity.tokens.len(),"sync_interval_ms":config.identity.directory.sync_interval.as_millis(),"encrypted_inputs":config.identity.encryption_key.is_some()});
     Ok(
-        serde_json::json!({"directory":directory,"warnings":warnings,"retired_sources_configured":retired_configured,"content_sequence":head.content.map(|p|p.sequence),"envelopes":envelopes,"pending_envelopes":pending,"quarantine":quarantine,"freshness":head.freshness}),
+        serde_json::json!({"directory":directory,"warnings":warnings,"retired_sources_configured":retired_configured,"content_sequence":head.content.map(|p|p.sequence),"envelopes":envelopes,"pending_envelopes":pending,"quarantine":quarantine,"source_reads":source_reads(config,&policy).await?}),
     )
 }
 

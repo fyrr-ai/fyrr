@@ -1,5 +1,5 @@
 //! Pinned local issuer, real reader executable and storage: no model/API calls.
-use super::coordination::{host_command, publication, worker_sync};
+use super::coordination::{host_command, worker_sync};
 use super::*;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use fyrr_core::directory::{DirectoryGroup, DirectorySnapshot, DirectoryUser};
@@ -338,7 +338,6 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     let completed_heads = Arc::new(AtomicUsize::new(0));
     let active_heads = Arc::new(AtomicUsize::new(0));
     let entered = Arc::new(AtomicBool::new(false));
-    let expired_source = Arc::new(AtomicBool::new(false));
     let stall_before = Arc::new(AtomicBool::new(false));
     let publication_hook = Arc::new(Mutex::new(None::<super::corrections::BoundaryHook>));
     let hook = {
@@ -387,30 +386,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
             false
         }) as super::corrections::BoundaryHook
     };
-    let transform: super::corrections::ResponseTransform = {
-        let expired_source = expired_source.clone();
-        Arc::new(move |request, response| {
-            if expired_source.load(Ordering::SeqCst)
-                && request.starts_with("GET ")
-                && request.contains("/head.json ")
-                && response.starts_with(b"HTTP/1.1 200")
-            {
-                super::corrections::rewrite_ok_body(response, |body| {
-                    let mut head: ServingHead = serde_json::from_slice(body).unwrap();
-                    for source in &mut head.freshness.sources {
-                        if source.source_id == "incremental" {
-                            source.permissions_read_at =
-                                fyrr_core::clock::now() - chrono::Duration::hours(2);
-                            source.members_read_at = Some(source.permissions_read_at);
-                        }
-                    }
-                    *body = serde_json::to_vec(&head).unwrap();
-                    true
-                });
-            }
-        })
-    };
-    let (endpoint, proxy) = super::corrections::proxy_transform(
+    let (endpoint, proxy) = super::corrections::proxy_at_boundary(
         loaded
             .config
             .storage
@@ -418,8 +394,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
             .clone()
             .unwrap_or_else(|| "local-storage".into()),
         stop.clone(),
-        transform,
-        Some(hook),
+        hook,
     );
     let mut proxy_guard = proxy;
     proxy_guard.resume = Arc::new(AtomicBool::new(false));
@@ -445,21 +420,6 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     std::fs::write(&config, text).unwrap();
     let mut reader = Reader::start(&config, &root, &issuer, 1000, 1000).await;
     let token = issuer.token("subject-0", json!({}), json!({}));
-    expired_source.store(true, Ordering::SeqCst);
-    let hidden = reader
-        .call(&token, 20, "search", json!({"query":"fixture query"}))
-        .await;
-    assert_eq!(hidden["isError"], false);
-    assert!(
-        hidden["structuredContent"]["hits"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        hidden["structuredContent"]["metadata"]["hidden_sources"],
-        json!(["incremental"])
-    );
     let allowed = issuer.token("subject-2", json!({}), json!({}));
     let visible = reader
         .call(&allowed, 21, "search", json!({"query":"fixture query"}))
@@ -478,26 +438,9 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
             .unwrap()
             .is_empty()
     );
-    expired_source.store(false, Ordering::SeqCst);
-    // Restore the worker's source freshness context before isolating deadlines.
-    let restored = reader
-        .call(
-            &token,
-            22,
-            "search",
-            json!({"query":"fixture query","sources":["incremental"]}),
-        )
-        .await;
-    assert_eq!(restored["isError"], false);
-    assert!(
-        restored["structuredContent"]["metadata"]["hidden_sources"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
     // Live embedding has more than one worker. A single successful request
     // refreshes only its worker; start every deadline worker from the fresh head.
-    let freshness_stderr = reader.stderr.clone();
+    let head_stderr = reader.stderr.clone();
     reader.stop().await;
     reader = Reader::start(&config, &root, &issuer, 1000, 1000).await;
     async fn blocked(entered: &AtomicBool) {
@@ -1000,7 +943,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(reader.child.try_wait().unwrap().is_some());
-    for stderr in [freshness_stderr, initial_stderr, reader.stderr.clone()] {
+    for stderr in [head_stderr, initial_stderr, reader.stderr.clone()] {
         let log = std::fs::read_to_string(stderr).unwrap();
         for private in [
             &token[..],
@@ -1781,137 +1724,4 @@ async fn tools_failed_scheduler_refuses_readiness_on_storage() {
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
     std::fs::remove_dir_all(root).unwrap();
-}
-
-/// `config` without its `[identity.directory]` table: a reader file that names
-/// no directory provider (the Lambda shape), or a writer file that moved to
-/// manual imports.
-fn without_directory(root: &Path, config: &Path) -> PathBuf {
-    let text = std::fs::read_to_string(config).unwrap();
-    let start = text
-        .find("\n[identity.directory]\nprovider='snapshot'")
-        .expect("the fixture's directory table");
-    let end = start
-        + text[start..]
-            .find("sync_interval='5m'\n")
-            .expect("the table's last key")
-        + "sync_interval='5m'\n".len();
-    let stripped = root.join(format!(
-        "without-directory-{}",
-        config.file_name().unwrap().to_string_lossy()
-    ));
-    std::fs::write(&stripped, format!("{}{}", &text[..start], &text[end..])).unwrap();
-    stripped
-}
-
-async fn ask(reader: &Reader, token: &str, search: &Value) -> (u16, String) {
-    let response = reader
-        .rpc(
-            token,
-            1,
-            "tools/call",
-            json!({"name":"search","arguments":search}),
-        )
-        .await;
-    (response.status().as_u16(), response.text().await.unwrap())
-}
-
-#[tokio::test]
-#[ignore = "real writer, HTTP MCP and stdio reader executables, pinned JWKS and local storage; scripts/ci"]
-async fn a_published_directory_clock_binds_a_reader_without_a_directory_provider_on_storage() {
-    let (_, issuer_root) = setup();
-    let issuer = Issuer::new(&issuer_root).await;
-    let (worker, commit, root, mut snapshot) = fixture(&issuer).await;
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let namespace = loaded.config.namespace.name.clone();
-    // The stdio subject is a directory user too; one more pull publishes it.
-    snapshot.users.push(super::identity::user(
-        &loaded.config,
-        loaded.config.identity.stdio_user.as_deref().unwrap(),
-    ));
-    snapshot.built_at = fyrr_core::clock::now();
-    std::fs::write(root.join("http-directory.json"), write_contract(&snapshot)).unwrap();
-    let pull = host_command(&commit)
-        .args(["writer", "sync", "--directory"])
-        .output()
-        .unwrap();
-    assert!(pull.status.success(), "{}", report(&pull));
-    // The reader's own file names no provider; the writer's pull stamped the head.
-    let own = without_directory(&root, &worker);
-    let manual = without_directory(&root, &commit);
-    assert!(publication(&own).await.0.freshness.directory.is_some());
-    let token = issuer.token("subject-1", json!({}), json!({}));
-    let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
-    let doc = format!("{namespace}-http-1");
-    let served = |result: &Value| {
-        assert_eq!(result["isError"], false, "{result}");
-        result["structuredContent"]["hits"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
-            .collect::<Vec<_>>()
-    };
-    let stdio = |expect_served: bool| {
-        let output = run(&own, &["reader", "search", "fixture query"]);
-        if expect_served {
-            assert!(output.status.success(), "{}", report(&output));
-        } else {
-            assert!(!output.status.success(), "{}", report(&output));
-            assert!(
-                String::from_utf8_lossy(&output.stderr).contains("authorization_unavailable"),
-                "{}",
-                report(&output)
-            );
-        }
-    };
-    // A fresh directory read serves both subjects.
-    let mut reader = Reader::start(&own, &root, &issuer, 1000, 1000).await;
-    let (status, body) = ask(&reader, &token, &search).await;
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(
-        served(&serde_json::from_str::<Value>(&body).unwrap()["result"]),
-        [doc.as_str()]
-    );
-    stdio(true);
-
-    // The pulls stop: the published read is older than `validity_deadline`.
-    let loaded = fyrr_core::config::load(&own).unwrap();
-    let (store, path) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let mut head = publication(&own).await.0;
-    let deadline = loaded.config.identity.validity_deadline.as_duration();
-    head.freshness.directory = Some(
-        fyrr_core::clock::now()
-            - chrono::Duration::from_std(deadline).unwrap()
-            - chrono::Duration::minutes(1),
-    );
-    write_head(store.as_ref(), &path, &head).await;
-    let (status, body) = ask(&reader, &token, &search).await;
-    assert_eq!(status, 503, "{body}");
-    assert!(body.contains("authorization_unavailable"), "{body}");
-    stdio(false);
-    reader.stop().await;
-
-    // The deployment moved to manual imports: one import attests nothing and
-    // withdraws the old timestamp, and the reader serves again.
-    let mut imported = snapshot.clone();
-    imported.built_at = fyrr_core::clock::now();
-    let file = root.join("manual-directory.json");
-    std::fs::write(&file, write_contract(&imported)).unwrap();
-    let import = host_command(&manual)
-        .args(["writer", "directory", "--snapshot"])
-        .arg(&file)
-        .output()
-        .unwrap();
-    assert!(import.status.success(), "{}", report(&import));
-    assert_eq!(publication(&own).await.0.freshness.directory, None);
-    let mut reader = Reader::start(&own, &root, &issuer, 1000, 1000).await;
-    let (status, body) = ask(&reader, &token, &search).await;
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(
-        served(&serde_json::from_str::<Value>(&body).unwrap()["result"]),
-        [doc.as_str()]
-    );
-    stdio(true);
-    reader.stop().await;
 }

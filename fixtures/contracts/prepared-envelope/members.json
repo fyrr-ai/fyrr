@@ -1,5 +1,5 @@
 {
-  "schema_version": "4.0",
+  "schema_version": "5.0",
   "envelope_id": "env-680ce56d121f31c0440b3bbdc3bf222d",
   "namespace": "acme",
   "source_id": "slack-acme",
@@ -20,8 +20,7 @@
   "created_at": "2026-09-30T10:00:03Z",
   "payload": {
     "type": "members",
-    "read_at": "2026-09-30T09:00:00Z",
-    "complete_read": true,
+    "complete_read": false,
     "snapshot_id": "snap-2026-09-30T09:00:00Z",
     "snapshot_object": "identity/inputs/slack-acme/snap-2026-09-30T09:00:00Z.json",
     "snapshot_digest": "sha256:28cb1d362aef52f7c19727c8deed79ea8bea9717dc638d13dc1dfd3a53ff9227",

@@ -128,7 +128,6 @@ fn mcp_examples() -> Vec<GeneratedFile> {
                 serde_json::from_slice(include_bytes!(concat!("../../../", $path)))
                     .expect("MCP example");
             value["metadata"]["schema_version"] = MCP_CONTRACT_VERSION.to_string().into();
-            value["metadata"]["hidden_sources"] = serde_json::json!([]);
             let typed: $type = serde_json::from_value(value).expect("MCP example contract");
             GeneratedFile {
                 path: $path,

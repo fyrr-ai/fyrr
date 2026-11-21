@@ -58,16 +58,9 @@ listen = "127.0.0.1:8081"
 public_url = "FUNCTION_URL"
 ```
 
-This file sets no `[identity.directory]`, and that does not turn the
-directory clock off: when the external writer's publication carries a
-directory freshness timestamp (it pulls or receives a directory), the reader
-refuses the namespace once that read is older than
-`identity.validity_deadline`, so keep the writer's directory sync running.
-The reader enforces its own `identity.validity_deadline`, not the writer's:
-set the same value on both hosts. A writer that pulls less often than the
-reader's deadline makes the reader refuse the namespace between pulls.
-A publication without a timestamp, such as a snapshot imported by hand, is
-served without a directory clock.
+This file sets no `[identity.directory]`. The reader needs none: it has no
+clock and serves the last published directory until a newer publication
+replaces it, so the external writer's directory sync decides how fresh it is.
 
 ## Container and secret bootstrap
 

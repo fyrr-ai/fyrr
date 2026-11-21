@@ -16,16 +16,15 @@ Setting a deployment up (topology, images, scheduling) is in
 
 - `fyrr writer status` prints the serving `content_sequence`, envelope and
   pending-envelope counts, quarantined entries per reason, the directory's
-  identity generation and age, per-source permission freshness and a
-  `warnings` list with fixed codes (for example
+  identity generation, the age of the last permission and member read per
+  source (`source_reads`; null for a read that never completed) and a `warnings` list with fixed codes (for example
   `physical_purge_deadline_at_risk`). It never names documents or users.
 - `fyrr reader check` exits nonzero when the publication cannot be admitted;
   the HTTP server answers `/readyz`. A reader whose request scheduler fails
   stops serving (HTTP 503 from `/readyz`, or exit on stdio) and must be
   restarted.
 - Every successful MCP tool response carries stage timings and S3 request counts in
-  `metadata.telemetry`, and `metadata.hidden_sources` names sources hidden
-  for stale permissions.
+  `metadata.telemetry`.
 
 ## Reader refresh
 
@@ -98,9 +97,9 @@ and cursors; each step is idempotent, so an interrupted purge is run again.
 
 ## Upgrades
 
-The current configuration schema is `6.0`, the prepared-envelope and
-rejection contracts are `4.0`, and content manifests and serving heads are
-`3.1`. Embedding settings are required even for the default BGE-M3 model.
+The current configuration schema is `6.0`, the MCP contract is `4.0`, the prepared-envelope and
+rejection contracts are `5.0`, and content manifests and serving heads are
+`4.0`. Embedding settings are required even for the default BGE-M3 model.
 Republish older namespaces before using this build.
 
 Configuration schema `4.0` changes the default retrieval policy to
@@ -112,12 +111,14 @@ to publish the new policy, then use the same settings in readers and writers.
 To retain the previous policy and its digest, explicitly set both
 `dense_weight = 0.25` and `lexical_candidates = 50` under `[namespace.retrieval]`.
 
-Configuration schema `6.0` removes `reader.version_check` and
-`reader.per_request_wait`; delete both keys. `identity.validity_deadline`
-must now cover `reader.version_check_interval` in every configuration
-(`config check` prints the required value). The reader checks for a new
-version every `reader.version_check_interval` and catches up by itself after
-it did not run. Published data is unaffected.
+Configuration schema `6.0` removes `reader.version_check`,
+`reader.per_request_wait` and `identity.validity_deadline`; delete all three
+keys. The reader checks for a new version every `reader.version_check_interval`
+and catches up by itself after it did not run. The reader has no clock: results
+change only with a new publication. The serving head (`4.0`), the prepared envelope (`5.0`) and the identity
+artifact (`2.0`) carry no
+freshness instants and MCP `4.0` has no `metadata.hidden_sources`. Republish
+older namespaces.
 
 Contracts carry `major.minor` versions; a new minor reads older data. These
 changes need a fresh namespace instead: a new contract major, and any change

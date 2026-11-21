@@ -150,7 +150,6 @@ pub(super) async fn content_page(
         state.cursor = Some(batch.cursor.end.clone());
     }
     state.sequence = sequence;
-    state.updated_at = fyrr_core::clock::now();
     lease.write(state.clone()).await?;
     Ok(quarantined_count)
 }

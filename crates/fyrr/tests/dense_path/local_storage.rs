@@ -286,7 +286,7 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
         .find(|(_, e)| {
             e.source_id == "incremental"
                 && e.kind == SyncKind::Members
-                && fyrr_writer::apply::complete_read(e)
+                && matches!(&e.payload, fyrr_core::envelope::EnvelopePayload::Members(p) if p.last)
         })
         .unwrap()
         .1;
@@ -321,9 +321,6 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
                 envelope.cursor.start.as_deref(),
             );
             envelope.created_at = fyrr_core::clock::now() - chrono::Duration::days(4);
-            if let fyrr_core::envelope::EnvelopePayload::Members(payload) = &mut envelope.payload {
-                payload.read_at = envelope.created_at;
-            }
             envelope.validate().unwrap();
             if (offset - 1) * RECEIPTS_PER_PUBLICATION + id < 33_000 {
                 let path = namespace

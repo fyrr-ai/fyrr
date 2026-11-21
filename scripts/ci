@@ -210,7 +210,7 @@ run_row() {
 }
 
 cases_start() {
-  local -x FYRR_SCIM_HEALTH_TEST_BINARY FYRR_ROUTING_TEST_BINARY
+  local -x FYRR_WRITER_TEST_BINARY FYRR_ROUTING_TEST_BINARY
   local -a selected_rows=()
   local row name count
   if [[ -n "$CASE_ROW" ]]; then
@@ -234,7 +234,7 @@ cases_start() {
     done
     return
   fi
-  FYRR_SCIM_HEALTH_TEST_BINARY="${FYRR_SCIM_HEALTH_TEST_BINARY:-$("$ROOT/scripts/ci-cases" binary full:fyrr-writer:lib:fyrr_writer)}" || return 1
+  FYRR_WRITER_TEST_BINARY="${FYRR_WRITER_TEST_BINARY:-$("$ROOT/scripts/ci-cases" binary full:fyrr-writer:lib:fyrr_writer)}" || return 1
   FYRR_ROUTING_TEST_BINARY="${FYRR_ROUTING_TEST_BINARY:-$("$ROOT/scripts/ci-cases" binary full:fyrr-reader:lib:fyrr_reader)}" || return 1
   if [[ -n "$CASE_ROW" ]]; then
     step "$(row_name "$CASE_ROW")" cargo run_row "$CASE_ROW"

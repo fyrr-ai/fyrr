@@ -26,7 +26,7 @@ fn tool(name: &str) -> Value {
 
 #[test]
 fn truncation_is_optional_additive_and_has_bounded_numeric_counts() {
-    assert_eq!(MCP_CONTRACT_VERSION.to_string(), "3.0");
+    assert_eq!(MCP_CONTRACT_VERSION.to_string(), "4.0");
     let schema = tool("search")["outputSchema"].clone();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let legacy = common::read_json("fixtures/mcp/examples/search-output.json");

@@ -285,8 +285,6 @@ fn dense_reader_and_namespace_paths_keep_identity_and_query_values_private() {
         vec!["writer", "sync"],
         vec!["writer", "sync", "--due"],
         vec!["writer", "status"],
-        // Removed unverified attestation must also fail without leaking values.
-        vec!["writer", "attest-directory"],
         vec!["writer", "serve", "--jobs", query.as_str()],
         vec!["writer", "serve", "--timeout", "0s"],
         vec!["writer", "directory", "--snapshot", query.as_str()],
@@ -1633,7 +1631,6 @@ async fn identity_storage_inputs_credentials_missing_key_and_rotation_are_fail_c
             .unwrap()
             .unwrap();
         assert_eq!(after.identity, before.identity);
-        assert_eq!(after.freshness, before.freshness);
         let mut command = common::fyrr();
         command
             .args(args(vec![

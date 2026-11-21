@@ -105,8 +105,8 @@ class overrides.
 
 A document never spans batches; keep every batch within `context.limits`.
 A failed read must raise, not yield partial results: a partial permission
-or membership read leaves the last applied rights in place until the
-source's [freshness deadline](../architecture.md#terms), which is the safe outcome.
+or membership read leaves the last applied rights in place, which is the
+safe outcome; the operator retires a source that stays broken.
 
 ## Documents
 
