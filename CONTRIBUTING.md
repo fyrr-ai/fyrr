@@ -106,8 +106,11 @@ Keycloak and long maintenance/history campaigns. Cases excluded by the tier
 are `n/e` in `case-plan.json` and row results; wholly excluded rows are `n/e`
 in `summary.txt`. A mixed row counts only its selected cases as passed.
 
-PRs and pushes to main run `--quick`; `v*` tags run the full tier and then
-build the release artifacts and images in a separate job (see
+PRs and pushes to main run `--quick`. Changes confined to
+`examples/quickstart/` run the local quickstart row when successful CI has
+cached a binary for their exact base commit on main. A cache miss runs the
+usual quick tier. The `v*` tags run the full tier and then build the release
+artifacts and images in a separate job (see
 [Releasing](#releasing)).
 Private repositories use `--debug-only` and skip release artifacts.
 
