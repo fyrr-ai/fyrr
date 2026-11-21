@@ -38,7 +38,7 @@ ring.workspace = true
 
 [dev-dependencies]
 fyrr-core = { workspace = true, features = ["test-clock"] }
-syn = { version = "=3.0.6", features = ["full", "visit"] }
+syn = { version = "=3.0.10", features = ["full", "visit"] }
 proc-macro2 = "1"
 async-trait.workspace = true
 
