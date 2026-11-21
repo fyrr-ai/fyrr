@@ -137,6 +137,22 @@ jobs:
             mbx stats > target/ci-measurements/cache.txt
           fi
 
+      # A fresh checkout gives every workspace source a new mtime, so workspace
+      # crates and test executables always rebuild. Drop them before the mbx
+      # action saves target/; they are about 70% of its size. Dependencies are
+      # kept. A unit belongs to the workspace when its dep-info lists a source
+      # under crates/.
+      - name: Drop workspace build products from the target cache
+        if: ${{ !cancelled() && steps.quickstart-binary.outputs.cache-hit != 'true' }}
+        run: |
+          du -sh target/debug
+          for depinfo in target/debug/deps/*.d; do
+            grep -q "^crates/.*:\$" "$depinfo" || continue
+            unit="$(basename "$depinfo" .d)"
+            rm -f "target/debug/deps/$unit" "target/debug/deps/$unit".* "target/debug/deps/lib$unit".*
+          done
+          du -sh target/debug
+
       # Only successful main CI publishes a binary. A miss runs the usual suite.
       - name: Cache the verified binary for future quickstart changes
         if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
