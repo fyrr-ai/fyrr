@@ -139,9 +139,7 @@ def test_authoritative_published_channel_loss_empties_grant_and_keeps_other_chan
 @pytest.mark.parametrize(
     "error", ["invalid_auth", "missing_scope", "internal_error", "thread_not_found"]
 )
-def test_ambiguous_auth_or_transient_channel_failure_yields_no_batch(
-    slack, slack_index, error
-):
+def test_ambiguous_auth_or_transient_channel_failure_yields_no_batch(slack, slack_index, error):
     slack.post()
     slack_index.sync()
     slack_index.mode = "sync"
