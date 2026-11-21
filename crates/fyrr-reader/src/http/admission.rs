@@ -78,16 +78,26 @@ impl Admission {
     > {
         let head = self.head().await?;
         let now = fyrr_core::clock::now();
-        if head.namespace != config.namespace.name
-            || subject.expires <= now.timestamp()
-            || !crate::storage::directory_fresh(config, head.freshness.directory, now)
-        {
+        let live = head.namespace == config.namespace.name
+            && subject.expires > now.timestamp()
+            && crate::storage::directory_fresh(config, head.freshness.directory, now);
+        // An API-key secret proves nothing until the identity binds it, so its
+        // lookup comes before the namespace and directory checks: an unbound
+        // key is `Unauthorized` whatever their state.
+        if !live && !subject.api_key {
             return Err(AuthorizationUnavailable);
         }
         let identity = self.identity(config, &head.identity).await?;
         let principal = identity
             .principal_for_subject(&subject.key)
-            .ok_or(AuthorizationUnavailable)?;
+            .ok_or(if subject.api_key {
+                Unauthorized
+            } else {
+                AuthorizationUnavailable
+            })?;
+        if !live {
+            return Err(AuthorizationUnavailable);
+        }
         if principal.tokens.is_empty()
             || principal.tokens.len() > config.identity.max_tokens_per_user as usize
         {
@@ -179,6 +189,7 @@ mod tests {
                 subject: crate::auth::AuthenticatedSubject {
                     key,
                     identity: None,
+                    api_key: false,
                     expires: fyrr_core::clock::now().timestamp() + 600,
                 },
             };

@@ -47,7 +47,8 @@ struct HttpState {
     service: crate::serve::McpService,
     config: Config,
     public: reqwest::Url,
-    auth: crate::auth::Authenticator,
+    /// Absent when only API keys authenticate callers.
+    auth: Option<crate::auth::Authenticator>,
     permits: Arc<Semaphore>,
     controls: Arc<Semaphore>,
     control_limits: Arc<Mutex<ControlLimits>>,
@@ -61,11 +62,8 @@ impl HttpState {
         };
         http
     }
-    fn oidc(&self) -> &fyrr_core::config::OidcConfig {
-        let Some(oidc) = &self.config.identity.oidc else {
-            unreachable!("HTTP state requires OIDC configuration");
-        };
-        oidc
+    fn oidc(&self) -> Option<&fyrr_core::config::OidcConfig> {
+        self.config.identity.oidc.as_ref()
     }
 }
 
@@ -284,7 +282,6 @@ async fn authenticate_mcp(
         }
         _ => None,
     };
-    let public = &state.public;
     let fingerprint: [u8; 32] = Sha256::digest(token.as_deref().unwrap_or("").as_bytes()).into();
     if cancellation.is_some() {
         let mut limits = timeout_at(deadline, state.control_limits.lock()).await?;
@@ -293,41 +290,34 @@ async fn authenticate_mcp(
         }
     }
     let authenticated = timeout_at(deadline, async {
-        match token {
-            Ok(token) => state.auth.authenticate(&token).await,
-            Err(()) => Err(Unauthorized),
+        match (token, &state.auth) {
+            (Ok(token), _) if token.starts_with(fyrr_core::config::API_KEY_PREFIX) => {
+                crate::auth::api_key(&state.config, &token)
+            }
+            (Ok(token), Some(auth)) => auth.authenticate(&token).await,
+            _ => Err(Unauthorized),
         }
     })
     .await?;
     let mut subject = match authenticated {
         Ok(s) => s,
-        Err(code) => {
-            let mut response = error(
-                if code == Unauthorized {
-                    StatusCode::UNAUTHORIZED
-                } else {
-                    StatusCode::SERVICE_UNAVAILABLE
-                },
-                code,
-            );
-            let metadata = format!(
-                "Bearer resource_metadata=\"{}://{}/.well-known/oauth-protected-resource\", \
-                    scope=\"{}\"",
-                public.scheme(),
-                expected,
-                state.oidc().scope
-            );
-            if let Ok(value) = metadata.parse() {
-                response
-                    .headers_mut()
-                    .insert(header::WWW_AUTHENTICATE, value);
-            }
-            return Err(response);
-        }
+        Err(code) => return Err(authentication_failure(state, code, expected)),
+    };
+    // The lookup of an API key precedes everything else, a cancellation included.
+    let admit = || async {
+        timeout_at(deadline, state.admission.authorize(&state.config, &subject))
+            .await?
+            .map_err(|code| match code {
+                Unauthorized => authentication_failure(state, code, expected),
+                _ => error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable),
+            })
     };
     // Authenticated control traffic has its own concurrency bound and never
     // spends a user's or group's request allowance. IDs remain subject-scoped.
     if let Some(cancel) = cancellation {
+        if subject.api_key {
+            admit().await?;
+        }
         let mut limits = timeout_at(deadline, state.control_limits.lock()).await?;
         if !limits.authenticated(fingerprint, &subject.key) {
             return Err(error(StatusCode::TOO_MANY_REQUESTS, RateLimited));
@@ -337,10 +327,7 @@ async fn authenticate_mcp(
         }
         return Err(StatusCode::ACCEPTED.into_response());
     }
-    let (principal, groups, identity) =
-        timeout_at(deadline, state.admission.authorize(&state.config, &subject))
-            .await?
-            .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable))?;
+    let (principal, groups, identity) = admit().await?;
     subject.identity = Some(identity);
     let mut limits = timeout_at(deadline, state.limits.lock()).await?;
     limits.retain(|_, (t, _)| t.elapsed() < RATE_WINDOW);
@@ -371,6 +358,36 @@ async fn authenticate_mcp(
     }
     drop(limits);
     Ok(subject)
+}
+
+/// 401 for an unauthenticated caller and 503 when authentication cannot be
+/// decided. The challenge points at the OIDC resource metadata only when an
+/// authorization server exists.
+fn authentication_failure(state: &HttpState, code: ReaderError, expected: &str) -> Response {
+    let mut response = error(
+        if code == Unauthorized {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        code,
+    );
+    let challenge = match state.oidc() {
+        Some(oidc) => format!(
+            "Bearer resource_metadata=\"{}://{}/.well-known/oauth-protected-resource\", \
+                scope=\"{}\"",
+            state.public.scheme(),
+            expected,
+            oidc.scope
+        ),
+        None => "Bearer".to_owned(),
+    };
+    if let Ok(value) = challenge.parse() {
+        response
+            .headers_mut()
+            .insert(header::WWW_AUTHENTICATE, value);
+    }
+    response
 }
 
 struct AccountedBody {
@@ -419,14 +436,18 @@ impl hyper::body::Body for AccountedBody {
 
 async fn metadata(State(state): State<HttpState>) -> axum::Json<serde_json::Value> {
     let h = state.http();
-    let oidc = state.oidc();
+    let Some(oidc) = state.oidc() else {
+        unreachable!("the metadata routes are registered only with an OIDC configuration");
+    };
     axum::Json(json!({"resource":h.public_url,
             "authorization_servers":[oidc.issuer],
             "scopes_supported":[oidc.scope],
             "bearer_methods_supported":["header"]}))
 }
 async fn readiness(State(state): State<HttpState>) -> Response {
-    if !state.auth.ready().await {
+    if let Some(auth) = &state.auth
+        && !auth.ready().await
+    {
         return error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable);
     }
     let Ok(head) = state.admission.fresh_head().await else {
@@ -499,7 +520,12 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     let config = reader.config.clone();
     let h = config.reader.http.as_ref().ok_or(ConfigurationInvalid)?;
     let public: reqwest::Url = h.public_url.parse().map_err(|_| ConfigurationInvalid)?;
-    let auth = crate::auth::Authenticator::new(&config)?;
+    let auth = config
+        .identity
+        .oidc
+        .is_some()
+        .then(|| crate::auth::Authenticator::new(&config))
+        .transpose()?;
     let listener = tokio::net::TcpListener::bind(&h.listen)
         .await
         .map_err(|_| TransportUnavailable)?;
@@ -539,9 +565,14 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     );
     let mut router = Router::new()
         .route_service("/mcp", mcp)
-        .route("/.well-known/oauth-protected-resource", get(metadata))
-        .route("/.well-known/oauth-protected-resource/mcp", get(metadata))
         .route("/readyz", get(readiness));
+    // Without an authorization server there is no metadata to advertise: the
+    // routes are absent (404), which clients read as "no OAuth here".
+    if config.identity.oidc.is_some() {
+        router = router
+            .route("/.well-known/oauth-protected-resource", get(metadata))
+            .route("/.well-known/oauth-protected-resource/mcp", get(metadata));
+    }
     if h.operator_credential.is_some() {
         router = router.route("/admin/refresh", post(refresh));
     }
