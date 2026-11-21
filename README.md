@@ -159,6 +159,7 @@ The example's top hit is `notes/backup.md`, with the answer:
 | [Deployment](docs/deployment.md) | Production setup, images and scheduling |
 | [AWS Lambda](docs/lambda.md) | Experimental reader deployment |
 | [Operations](docs/operations.md) | Monitor, restore, retire and upgrade |
+| [Storage request costs](docs/storage-costs.md) | What a reader and a writer request from the object store |
 | [Software factories](docs/software-factory.md) | Context for a fleet of unattended coding agents |
 | [Connect an agent](docs/connect.md) | Add fyrr to Claude Code, Codex or another MCP client |
 | [Configuration](docs/configuration.md) | Storage, embeddings, sources and secrets |
