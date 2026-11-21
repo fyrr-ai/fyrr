@@ -4,9 +4,10 @@
 //! column or a few rows: the admission scan reads `source_id` of every file,
 //! rescoring and hydration read scattered rows. Copying the whole object on
 //! the first such read downloads what the query never touches. A ranged read
-//! of a `data/` file whose size the pinned manifest states therefore fetches
-//! only the 4 KiB pages it lacks and keeps them in two owned-private files
-//! named by the blob stem:
+//! of a `data/` file larger than [`WHOLE_FILE_BYTES`] whose size the pinned
+//! manifest states therefore fetches only the 4 KiB pages it lacks and keeps
+//! them in two owned-private files named by the blob stem (a smaller file is
+//! copied whole when the mirror has room for it):
 //!
 //! - `<stem>.sparse`: a sparse file of the object's length holding the pages
 //!   fetched so far;
@@ -45,6 +46,14 @@ const GAP_PAGES: u64 = 16;
 const FETCH_PAGES: u64 = (16 << 20) / PAGE;
 /// Requests of one read in flight at once.
 const FETCH_CONCURRENCY: usize = 16;
+/// A data file up to this size is downloaded whole on its first read rather
+/// than in pages. Opening a reader touches the footer, the column metadata
+/// and the first page of every data file, two or three dependent requests,
+/// and warming then downloads the file anyway: one request instead of up to
+/// four, at the cost of transferring the file before the first answer.
+// shortcut: chosen from a measurement with added latency and no bandwidth
+// limit; confirm it on an object store over a bandwidth-bound link.
+pub(super) const WHOLE_FILE_BYTES: u64 = 2 << 20;
 
 /// Pages of one stem verified in this process, valid for one map generation.
 #[derive(Debug, Default)]

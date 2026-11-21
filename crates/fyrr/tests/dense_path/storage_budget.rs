@@ -127,14 +127,10 @@ const WARM_DELAY_SECS: u64 = 30;
 /// warms the generation: each control artifact, index file and data file
 /// once. They grow with the files of a publication. Raise a budget only on
 /// purpose: every request is paid for on an object store.
-// shortcut: a data file is read twice or three times when searches reach it
-// in pages before warming downloads it whole (open 28 to 30 on a loaded host,
-// switch 26 to 28); lower both budgets once small data files are downloaded
-// whole on their first read.
-const OPEN_BUDGET: usize = 30;
+const OPEN_BUDGET: usize = 27;
 /// The same for switching to a publication that adds one document, warming
 /// of the new generation included.
-const SWITCH_BUDGET: usize = 28;
+const SWITCH_BUDGET: usize = 25;
 
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
