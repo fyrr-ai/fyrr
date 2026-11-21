@@ -24,7 +24,6 @@ async fn generation_inflight_pin_and_mirror_eviction_on_real_s3() {
                     arrived: now,
                     deadline: now + Duration::from_secs(300),
                     cancelled: CancellationToken::new(),
-                    version_wait_until: now,
                     authorization_build_us: 0,
                 },
             })

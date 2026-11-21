@@ -38,8 +38,7 @@ preparation keeps the old version and retries. A pinned version older than
 storage URI is deleted, a running reader refuses every request
 (`storage_unavailable`) from its next version check on. When it is created again there, the reader refuses
 with `authorization_unavailable` until it has prepared the new namespace's
-first publication, then switches to it without a restart, whatever
-`reader.version_check` says; it never serves the old namespace's rows.
+first publication, then switches to it without a restart; it never serves the old namespace's rows.
 Memory and disk are bounded by
 `reader.memory_max_bytes` and `reader.mirror_max_bytes`.
 
@@ -99,7 +98,7 @@ and cursors; each step is idempotent, so an interrupted purge is run again.
 
 ## Upgrades
 
-The current configuration schema is `5.1`, the prepared-envelope and
+The current configuration schema is `6.0`, the prepared-envelope and
 rejection contracts are `4.0`, and content manifests and serving heads are
 `3.1`. Embedding settings are required even for the default BGE-M3 model.
 Republish older namespaces before using this build.
@@ -112,6 +111,13 @@ new defaults refuses a publication using the previous defaults with
 to publish the new policy, then use the same settings in readers and writers.
 To retain the previous policy and its digest, explicitly set both
 `dense_weight = 0.25` and `lexical_candidates = 50` under `[namespace.retrieval]`.
+
+Configuration schema `6.0` removes `reader.version_check` and
+`reader.per_request_wait`; delete both keys. `identity.validity_deadline`
+must now cover `reader.version_check_interval` in every configuration
+(`config check` prints the required value). The reader checks for a new
+version every `reader.version_check_interval` and catches up by itself after
+it did not run. Published data is unaffected.
 
 Contracts carry `major.minor` versions; a new minor reads older data. These
 changes need a fresh namespace instead: a new contract major, and any change

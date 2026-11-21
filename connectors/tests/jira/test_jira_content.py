@@ -10,7 +10,34 @@ def test_jira_content_golden(jira):
     from fyrr_connectors.jira import Jira
     from fyrr_connectors.provider import provider_info
 
-    jira.issue(101)
+    paragraph = [
+        {
+            "type": "text",
+            "text": "approved design",
+            "marks": [{"type": "link", "attrs": {"href": "https://docs.invalid/d"}}],
+        },
+        {"type": "text", "text": " and "},
+        {"type": "inlineCard", "attrs": {"url": "https://github.invalid/o/r/pull/7"}},
+    ]
+    jira.issue(
+        101,
+        description={
+            "type": "doc",
+            "version": 1,
+            "content": [{"type": "paragraph", "content": paragraph}],
+        },
+        parent={"key": "P1-100", "fields": {"summary": "Not shown"}},
+        issuelinks=[
+            {
+                "type": {"inward": "is blocked by", "outward": "blocks"},
+                "outwardIssue": {"key": "P1-140"},
+            },
+            {
+                "type": {"inward": "is blocked by", "outward": "blocks"},
+                "inwardIssue": {"key": "P1-88"},
+            },
+        ],
+    )
     jira.comment(101, 201, "Golden body.")
     info = provider_info(
         name="jira", connector=Jira, min_sdk_version="0.1.0", connection_types=("fixed",)
@@ -54,3 +81,33 @@ def test_jira_fixed_http_gateway_real_requests_and_null_fields(monkeypatch):
         assert index.listing() == set(index.published)
     finally:
         fake.close()
+
+
+def test_jira_moved_issue_keeps_its_root_and_gets_the_new_key(jira, jira_index):
+    jira.issue(101, summary="Login fails")
+    first = jira_index.sync()
+    root = "jira:11111111-1111-4111-8111-111111111111:issue:101"
+    jira.edit(101)
+    jira.issues[101]["key"] = "NEW-7"
+    second = jira_index.sync()
+    assert list(second) == [root]
+    assert second[root]["attributes"] == ["jira.key=NEW-7"]
+    assert second[root]["sections"][0]["text"] == "NEW-7 Login fails"
+    assert second[root]["source_revision"] != first[root]["source_revision"]
+
+
+def test_jira_links_are_not_published_with_synced_permissions(jira):
+    # Jira hides a link from a reader who may not see the linked issue.
+    import json
+
+    from jira_kit import Index
+
+    jira.issue(
+        101,
+        parent={"key": "P1-100"},
+        issuelinks=[{"type": {"outward": "blocks"}, "outwardIssue": {"key": "PRIVATE-7"}}],
+    )
+    sections = Index(jira, mode="sync").sync()[
+        "jira:11111111-1111-4111-8111-111111111111:issue:101"
+    ]
+    assert "PRIVATE-7" not in json.dumps(sections) and "P1-100" not in json.dumps(sections)

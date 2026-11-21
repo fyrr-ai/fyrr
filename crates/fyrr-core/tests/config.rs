@@ -797,7 +797,7 @@ fn every_schema_constraint_is_enforced() {
         "sources[0].retention_days minimum",
         "storage.secret_access_key.env pattern",
         "writer.purge_window pattern",
-        "reader.version_check enum",
+        "identity.directory.provider enum",
         "embedding.model minLength",
         "embedding.model maxLength",
         "embedding.prefix maxLength",
@@ -870,10 +870,7 @@ fn type_errors_never_echo_values() {
             "[embedding]\n",
             format!("[embedding]\ndimensions = \"{SENTINEL}\"\n"),
         ),
-        (
-            "version_check = \"interval\"",
-            format!("version_check = \"{SENTINEL}\""),
-        ),
+        ("provider = \"none\"", format!("provider = \"{SENTINEL}\"")),
         (
             "permissions = \"fixed\"",
             format!("permissions = \"{SENTINEL}\""),
@@ -901,12 +898,12 @@ fn type_errors_never_echo_values() {
             format!("[embedding]\ndimensions = \"a, expected {SENTINEL}\"\n"),
         ),
         (
-            "version_check = \"interval\"",
-            format!("version_check = \"x`, expected \\\"{SENTINEL}\""),
+            "provider = \"none\"",
+            format!("provider = \"x`, expected \\\"{SENTINEL}\""),
         ),
         (
-            "version_check = \"interval\"",
-            format!("version_check = \"it's {SENTINEL}\""),
+            "provider = \"none\"",
+            format!("provider = \"it's {SENTINEL}\""),
         ),
     ] {
         let text = common::read(EXAMPLE).replacen(field, &replacement, 1);

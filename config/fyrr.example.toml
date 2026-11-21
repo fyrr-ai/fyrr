@@ -25,7 +25,6 @@ encryption_key = { env = "FYRR_ENCRYPTION_KEY" }
 provider = "none"
 
 [reader]
-version_check = "interval"
 version_check_interval = "30s"
 # instructions = "..."  # replaces the text MCP clients show the agent; "" sends none
 

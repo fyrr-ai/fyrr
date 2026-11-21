@@ -20,31 +20,56 @@ pub(super) fn native_wrapper(
     Some(Arc::new(ChainedWrappingObjectStore::new(wrappers)))
 }
 
-/// Whether the configuration of this process asks for a head read at every
-/// authorization check (`# fyrr-test-head-check = every`). Suites that assert
-/// on the request right after a publication use it; like the store observer,
-/// it is a comment so that it stays out of the configuration schema. A CLI
-/// process names its configuration with `--config`; a fixture test launched
-/// by a suite receives it in a `FYRR_TEST_*_CONFIG` variable.
+/// A test-only setting of this process: the value of a `# fyrr-test-<name> =
+/// <value>` line in its configuration. Like the store observer, it is a
+/// comment so that it stays out of the configuration schema. A CLI process
+/// names its configuration with `--config`; a fixture test launched by a
+/// suite receives it in a `FYRR_TEST_*_CONFIG` variable.
+fn setting(name: &str) -> Option<String> {
+    let mut arguments = std::env::args_os();
+    let named = arguments
+        .find(|arg| arg == "--config")
+        .and_then(|_| arguments.next());
+    let fixtures = std::env::vars_os()
+        .filter(|(name, _)| {
+            let name = name.to_string_lossy();
+            name.starts_with("FYRR_TEST_") && name.ends_with("_CONFIG")
+        })
+        .map(|(_, path)| path);
+    let prefix = format!("# fyrr-test-{name} = ");
+    named.into_iter().chain(fixtures).find_map(|path| {
+        let text = std::fs::read_to_string(path).ok()?;
+        text.lines()
+            .find_map(|line| line.strip_prefix(&prefix).map(str::to_owned))
+    })
+}
+
+/// Whether every authorization check reads the head
+/// (`# fyrr-test-head-check = every`). Suites that assert on the request
+/// right after a publication use it.
 pub(crate) fn head_check_every() -> bool {
     static EVERY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *EVERY.get_or_init(|| {
-        let mut arguments = std::env::args_os();
-        let named = arguments
-            .find(|arg| arg == "--config")
-            .and_then(|_| arguments.next());
-        let fixtures = std::env::vars_os()
-            .filter(|(name, _)| {
-                let name = name.to_string_lossy();
-                name.starts_with("FYRR_TEST_") && name.ends_with("_CONFIG")
-            })
-            .map(|(_, path)| path);
-        named.into_iter().chain(fixtures).any(|path| {
-            std::fs::read_to_string(path).is_ok_and(|text| {
-                text.lines()
-                    .any(|line| line == "# fyrr-test-head-check = every")
-            })
-        })
+    *EVERY.get_or_init(|| setting("head-check").as_deref() == Some("every"))
+}
+
+/// When the reader checks for a new version, for suites that need the switch
+/// at a known point (`# fyrr-test-version-check = `).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VersionCheck {
+    /// `every`: each request starts a check and waits for it.
+    Every,
+    /// `held`: a check switches only when the old version may no longer be
+    /// served; `SIGHUP` and `POST /admin/refresh` still switch.
+    Held,
+}
+
+pub(crate) fn version_check() -> Option<VersionCheck> {
+    static CHECK: std::sync::OnceLock<Option<VersionCheck>> = std::sync::OnceLock::new();
+    *CHECK.get_or_init(|| match setting("version-check").as_deref() {
+        Some("every") => Some(VersionCheck::Every),
+        Some("held") => Some(VersionCheck::Held),
+        Some(other) => panic!("unknown fyrr-test-version-check: {other}"),
+        None => None,
     })
 }
 

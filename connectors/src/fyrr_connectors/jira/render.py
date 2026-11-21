@@ -29,7 +29,9 @@ def document(identity, project, issue, comments, context, targets=(), dynamic=Fa
     fields = issue["fields"]
     uri = identity.site + "/browse/" + issue["key"]
     sections = []
-    field_values = {key: fields.get(key) for key in ("summary", "description")}
+    # The key opens the summary so excerpts and key queries carry it.
+    summary = f"{issue['key']} {text(fields.get('summary'))}"
+    field_values = {"summary": summary, "description": fields.get("description")}
     for key in ("status", "issuetype", "priority", "reporter", "assignee"):
         value = fields.get(key)
         if isinstance(value, dict):
@@ -40,6 +42,18 @@ def document(identity, project, issue, comments, context, targets=(), dynamic=Fa
                 field_values[key] = label
     if fields.get("labels"):
         field_values["labels"] = ", ".join(fields["labels"])
+    # Only under fixed readers: Jira hides a link from a reader who may not see
+    # the linked issue, and a synced audience covers this issue alone.
+    if context.permissions == "fixed":
+        lines = [f"parent: {fields['parent']['key']}"] if fields.get("parent") else []
+        lines += sorted(
+            f"{entry['type'][side]}: {entry[side + 'Issue']['key']}"
+            for entry in fields.get("issuelinks") or ()
+            for side in ("inward", "outward")
+            if entry.get(side + "Issue")
+        )
+        if lines:
+            field_values["links"] = "\n".join(lines)
     for key, value in field_values.items():
         body = text(value)
         if len(body.encode()) > context.limits.document_max_bytes:

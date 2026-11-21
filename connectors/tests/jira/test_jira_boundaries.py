@@ -77,6 +77,28 @@ def test_jira_adf_depth_and_media_exclusion():
         text({"type": "doc", "version": 1, "content": [node]})
 
 
+def test_jira_adf_renders_link_targets_for_web_urls_only():
+    def doc(*nodes):
+        return {
+            "type": "doc",
+            "version": 1,
+            "content": [{"type": "paragraph", "content": list(nodes)}],
+        }
+
+    def link(label, href):
+        return {"type": "text", "text": label, "marks": [{"type": "link", "attrs": {"href": href}}]}
+
+    web = "https://example.invalid/a"
+    assert text(doc(link("design", web))) == f"design ({web})"
+    assert text(doc(link(web, web))) == web
+    assert text(doc(link("design", "javascript:alert(1)"))) == "design"
+    assert text(doc({"type": "inlineCard", "attrs": {"url": web}})) == web
+    block = {"type": "blockCard", "attrs": {"url": web}}
+    after = {"type": "paragraph", "content": [{"type": "text", "text": "Next"}]}
+    assert text({"type": "doc", "version": 1, "content": [block, after]}) == f"{web}\nNext"
+    assert text(doc({"type": "inlineCard", "attrs": {"url": "ftp://example.invalid"}})) == ""
+
+
 def test_jira_comment_snapshot_movement_retries_once(jira, jira_index):
     jira.issue(101)
     for c in range(201, 205):

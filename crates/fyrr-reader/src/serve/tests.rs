@@ -60,7 +60,6 @@ async fn enqueue(
                 arrived: now,
                 deadline: now + Duration::from_secs(10),
                 cancelled: token,
-                version_wait_until: now,
                 authorization_build_us: 0,
             },
         })

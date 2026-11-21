@@ -21,6 +21,7 @@ from ..connector import (
     PrincipalBatch,
     SyncKind,
 )
+from ..validate import ContractViolation
 from . import render
 from .auth import AppAuth
 from .client import MAX_ENTRIES, ApiError, Client, ResponseLimit, instant, object_id
@@ -141,9 +142,7 @@ class GitHub(Connector[Settings, Scope]):
         self, repo: Repository, ref: ConversationRef, before: dict[str, Any]
     ) -> render.Rendered:
         parts: list[dict[str, Any]] = []
-        text_bytes = len(
-            render.text(before.get("body"), self.context.limits.document_max_bytes).encode()
-        )
+        text_bytes = len(render.opening(before, self.context.limits.document_max_bytes).encode())
         metadata_bytes = 0
 
         def keep(part: dict[str, Any]):
@@ -262,16 +261,21 @@ class GitHub(Connector[Settings, Scope]):
             known = self._lookup(change.root_id)
             if isinstance(change, Upsert) and change.source_revision == known:
                 return
-            if document_changes([change]).get_total_buffer_size() > limits.max_bytes and isinstance(
-                change, Upsert
-            ):
-                change = replace(
-                    change,
-                    sections=QUARANTINE,
-                    metadata=Metadata(
-                        source_uri="https://github.com", source_type="github-document"
-                    ),
-                )
+            if isinstance(change, Upsert):
+                # A document the contract rejects, or that is too large, is
+                # replaced by the quarantine marker and keeps its revision.
+                try:
+                    rejected = document_changes([change]).get_total_buffer_size() > limits.max_bytes
+                except ContractViolation:
+                    rejected = True
+                if rejected:
+                    change = replace(
+                        change,
+                        sections=QUARANTINE,
+                        metadata=Metadata(
+                            source_uri="https://github.com", source_type="github-document"
+                        ),
+                    )
             if document_changes([change]).get_total_buffer_size() > limits.max_bytes:
                 raise ValueError("github_batch_limit")
             candidate = {**pending, change.root_id: change}
