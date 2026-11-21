@@ -54,6 +54,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- The `search` tool description tells agents to search a ticket's title and
+  body as two `queries` for task context.
 - To use connectors, install this release's `fyrr-connectors`
   wheel with your provider extras in a Python 3.13+ virtual environment. Set
   `VIRTUAL_ENV` to its absolute path and run `fyrr writer providers` to verify

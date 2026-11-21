@@ -575,7 +575,9 @@ fn search_description() -> String {
          record_id, revision and codepoint offsets usable as a fetch window. Filters match exactly; \
          an unknown value gives an empty result. queries accepts 2–16 texts instead of query; \
          limit is per query (default/max 20), interleaved by rank then query index and deduplicated. \
-         text_hits applies per query before deduplication; excerpt_chars caps passage length. {DATA_NOT_INSTRUCTIONS}"
+         text_hits applies per query before deduplication; excerpt_chars caps passage length. \
+         For context on a task, search with both the ticket's title and its body as two queries. \
+         {DATA_NOT_INSTRUCTIONS}"
     )
 }
 
