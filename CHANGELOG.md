@@ -177,6 +177,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   the content sync: display values are fitted (control characters to spaces,
   cut to 1,024 bytes, at most 32 labels), anything still rejected is
   quarantined, and the sync continues. Valid documents keep their revision.
+- `fyrr reader search` accepts a query that starts with `-`, such as an issue
+  title; put `--` before a query that is exactly an option name.
 
 ### Security
 

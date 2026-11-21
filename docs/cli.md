@@ -44,7 +44,7 @@ Terms such as serving head, publication and envelope are defined in
 | --- | --- |
 | `reader check` | Runs the startup path without modifying S3 or calling providers (it may create and populate the local mirror): reads the serving head, policy and identity, admits the pinned publication. Prints readiness JSON; exits nonzero when not ready. |
 | `reader prewarm` | Verifies and prewarms the pinned immutable files into the mirror, without provider calls; prints readiness. |
-| `reader search QUERY [--limit N] [--output metadata\|excerpt\|content]` | Runs one search as the configured stdio subject and prints the same JSON as the MCP `search` tool, with `--limit` (default 50) documents and `--output` (default `excerpt`) text per hit. A query is required; query-less listing exists only through the MCP tool. |
+| `reader search QUERY [--limit N] [--output metadata\|excerpt\|content]` | Runs one search as the configured stdio subject and prints the same JSON as the MCP `search` tool, with `--limit` (default 50) documents and `--output` (default `excerpt`) text per hit. A query is required; query-less listing exists only through the MCP tool. A query may start with `-`; put `--` before one that is exactly an option such as `--limit`. |
 | `reader serve` | Serves MCP: over stdio for `identity.stdio_user`, or over Streamable HTTP at `/mcp` when `[reader.http]` is configured. |
 
 ## `fyrr writer`
