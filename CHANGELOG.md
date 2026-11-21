@@ -9,6 +9,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- HTTP MCP clients can authenticate with operator-issued API keys without an
+  identity provider. Give each role its own `[[identity.api_keys]]` entry and
+  `readers` grants. To revoke a key, remove it from every writer
+  configuration, republish identity, and refresh the readers. See
+  [HTTP login and users](docs/http-users.md#api-keys).
 - The reader sends `instructions` in the MCP `initialize` result: what
   fyrr searches and a request to search it before looking through files.
   Clients that pass instructions on tell their agent when to search.

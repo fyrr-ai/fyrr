@@ -3,7 +3,8 @@
 > **In short**
 >
 > - `fyrr reader serve` can serve many users over Streamable HTTP at `/mcp`;
->   each request carries the user's OIDC access token.
+>   each request carries the user's OIDC access token or an
+>   [API key](#api-keys).
 > - With Keycloak it takes two Keycloak objects, about ten configuration
 >   keys, a writer that pulls the users and a reader behind a TLS proxy.
 > - The [reference](#reference) at the end lists the exact token rules and
@@ -19,6 +20,63 @@
 
 The rules behind it (subjects, reader tokens, the canonical directory) are
 in the [security model](security.md).
+
+## API keys
+
+An API key needs no identity provider: it is a secret you issue to an agent
+role, with the reader tokens that role may read. Use one key per role.
+
+1. Generate the secret and keep it in your secret store:
+
+   ```sh
+   echo "fyrr_key_$(openssl rand -hex 32)"
+   ```
+
+2. On every host that publishes identity (each `writer serve` and scheduled
+   `writer commit`), export the secret as an environment variable and add the
+   key to the [configuration file](identity.md#identityapi_keys):
+
+   ```toml
+   [[identity.api_keys]]
+   name = "bugfix-agents"                    # unique ID
+   key = { env = "FYRR_API_KEY_BUGFIX" }
+   readers = ["grp:engineering"]             # as identity.stdio_readers
+
+   [reader.http]
+   listen = "127.0.0.1:8080"
+   public_url = "https://fyrr.example.com/mcp"
+   ```
+
+3. Publish with `fyrr writer commit` (or let `writer serve` do it) and start
+   `fyrr reader serve` behind a TLS-terminating proxy as in
+   [step 3](#3-start-the-writer-and-the-reader). The reader needs no secret.
+   Without TLS the secret crosses the network in clear text: do not expose the
+   listener directly.
+
+4. Connect a client with the secret in its environment:
+
+   ```sh
+   claude mcp add --transport http fyrr https://fyrr.example.com/mcp \
+     --header 'Authorization: Bearer ${FYRR_API_KEY_BUGFIX}'
+   codex mcp add fyrr --url https://fyrr.example.com/mcp \
+     --bearer-token-env-var FYRR_API_KEY_BUGFIX
+   ```
+
+   The single quotes keep the reference in the stored Claude Code setting;
+   the shell must not expand it.
+
+To revoke a key, remove it from the configuration of every host that
+publishes identity and republish (`fyrr writer commit`, or restart `writer
+serve`). Then send `POST /admin/refresh` to each reader; without that, a
+reader refuses the key within two `reader.version_check_interval`s. A
+request with an unknown or removed key gets `401`, and without OIDC the
+challenge is a bare `WWW-Authenticate: Bearer`. A key with a missing or
+malformed secret on the writer is left out of the identity and the other keys
+are published as usual. See [security](security.md#api-keys) for what a key
+grants.
+
+With `[identity.oidc]` as well, the reader accepts both: a bearer that
+starts with `fyrr_key_` is an API key, anything else an OIDC access token.
 
 ## 1. Prepare Keycloak
 

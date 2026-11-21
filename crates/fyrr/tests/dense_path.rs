@@ -4,6 +4,8 @@
 
 mod common;
 
+#[path = "dense_path/api_keys.rs"]
+mod api_keys;
 #[path = "dense_path/coordination.rs"]
 mod coordination;
 #[path = "dense_path/corrections.rs"]
