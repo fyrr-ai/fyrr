@@ -606,3 +606,144 @@ async fn identity_directory_keeps_lease_alive_during_slow_storage_on_storage() {
     assert_eq!(after.freshness, before.freshness);
     assert_eq!(applied(&commit, &root, &directory)["changed"], false);
 }
+
+/// Runs one import with `hook` on every storage request; the hook sees each
+/// head write's body before the store does.
+fn import_observed(
+    config: &Path,
+    root: &Path,
+    snapshot: &DirectorySnapshot,
+    hook: super::corrections::BoundaryHook,
+) -> std::process::Output {
+    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (proxy, thread) =
+        super::corrections::proxy_at_boundary(endpoint.clone(), stop.clone(), hook);
+    let observed = root.join("observed-directory.toml");
+    std::fs::write(
+        &observed,
+        std::fs::read_to_string(config)
+            .unwrap()
+            .replace(&endpoint, &proxy),
+    )
+    .unwrap();
+    let output = import(&observed, root, snapshot);
+    stop.store(true, Ordering::Relaxed);
+    drop(thread);
+    output
+}
+
+type HeadWrites = Arc<std::sync::Mutex<Vec<ServingHead>>>;
+
+/// Records every head write that reaches the store; rejects those `reject` names.
+fn head_writes(
+    reject: impl Fn(&ServingHead) -> bool + Send + Sync + 'static,
+) -> (HeadWrites, super::corrections::BoundaryHook) {
+    let writes: HeadWrites = Arc::default();
+    let seen = writes.clone();
+    let hook: super::corrections::BoundaryHook = Arc::new(move |request, body, after| {
+        if after || !request.starts_with("PUT ") || !request.contains("/head.json ") {
+            return false;
+        }
+        let head: ServingHead = parse_contract(body).unwrap();
+        if reject(&head) {
+            return true;
+        }
+        seen.lock().unwrap().push(head);
+        false
+    });
+    (writes, hook)
+}
+
+/// A manual import under `provider = "none"` withdraws the directory timestamp
+/// of an earlier provider. The new identity and the withdrawal are one head
+/// write: no head ever carries the new identity beside the old timestamp.
+#[tokio::test]
+#[ignore = "real writer, proxied head writes and local storage; scripts/ci"]
+async fn identity_import_withdraws_the_directory_clock_in_the_same_head_write_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let loaded = fyrr_core::config::load(&commit).unwrap();
+    assert_eq!(
+        loaded.config.identity.directory.provider,
+        fyrr_core::config::DirectoryProvider::None
+    );
+    let (store, path) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let plant = |at| {
+        let store = store.clone();
+        let path = path.clone();
+        let commit = commit.clone();
+        async move {
+            let mut head = publication(&commit).await.0;
+            head.freshness.directory = Some(at);
+            super::write_head(store.as_ref(), &path, &head).await;
+            head
+        }
+    };
+    let old = fyrr_core::clock::now() - chrono::Duration::minutes(10);
+    let mut directory = snapshot(&loaded.config, "manual");
+    directory
+        .users
+        .push(user(&loaded.config, "fixture@example.test"));
+
+    // A write that fails leaves the previous head, timestamp included.
+    let before = plant(old).await;
+    let generation = before.identity.generation;
+    let (writes, hook) = head_writes(move |head| head.identity.generation > generation);
+    let failed = import_observed(&commit, &root, &directory, hook);
+    assert!(!failed.status.success(), "{}", report(&failed));
+    assert!(
+        writes
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|head| head.identity == before.identity)
+    );
+    let kept = publication(&commit).await.0;
+    assert_eq!(kept.identity, before.identity);
+    assert_eq!(kept.freshness.directory, Some(old));
+
+    // A changed identity and the withdrawal arrive together.
+    let (writes, hook) = head_writes(|_| false);
+    directory.built_at = fyrr_core::clock::now();
+    let imported = import_observed(&commit, &root, &directory, hook);
+    assert!(imported.status.success(), "{}", report(&imported));
+    let published: Vec<ServingHead> = writes
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|head| head.identity.generation > before.identity.generation)
+        .cloned()
+        .collect();
+    assert!(!published.is_empty(), "the import published its identity");
+    assert!(
+        published
+            .iter()
+            .all(|head| head.freshness.directory.is_none()),
+        "a head carried the new identity beside the old timestamp"
+    );
+    let after = publication(&commit).await.0;
+    assert!(after.identity.generation > before.identity.generation);
+    assert_eq!(after.freshness.directory, None);
+
+    // An import that changes nothing in the identity is the withdrawal alone.
+    let before = plant(old).await;
+    let (writes, hook) = head_writes(|_| false);
+    directory.built_at = fyrr_core::clock::now();
+    let repeated = import_observed(&commit, &root, &directory, hook);
+    assert!(repeated.status.success(), "{}", report(&repeated));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&repeated.stdout).unwrap()["changed"],
+        false
+    );
+    assert!(
+        writes
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|head| head.identity == before.identity)
+    );
+    let after = publication(&commit).await.0;
+    assert_eq!(after.identity, before.identity);
+    assert_eq!(after.freshness.directory, None);
+}

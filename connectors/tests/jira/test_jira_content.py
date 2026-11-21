@@ -54,3 +54,16 @@ def test_jira_fixed_http_gateway_real_requests_and_null_fields(monkeypatch):
         assert index.listing() == set(index.published)
     finally:
         fake.close()
+
+
+def test_jira_moved_issue_keeps_its_root_and_gets_the_new_key(jira, jira_index):
+    jira.issue(101, summary="Login fails")
+    first = jira_index.sync()
+    root = "jira:11111111-1111-4111-8111-111111111111:issue:101"
+    jira.edit(101)
+    jira.issues[101]["key"] = "NEW-7"
+    second = jira_index.sync()
+    assert list(second) == [root]
+    assert second[root]["attributes"] == ["jira.key=NEW-7"]
+    assert second[root]["sections"][0]["text"] == "NEW-7 Login fails"
+    assert second[root]["source_revision"] != first[root]["source_revision"]
