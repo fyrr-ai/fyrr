@@ -37,7 +37,7 @@ from .render import InvalidText, Oversized, Text, clean, title
 from .tree import Ref, Tree, ident, trashed
 
 #: Bumped when the rendered text of an unchanged page would differ.
-RENDER_FORMAT = "2"
+RENDER_FORMAT = "3"
 #: The worker's revision lookup takes at most this many documents.
 LOOKUP_ROWS = 256
 #: Marks a document the worker must quarantine, as `local_files` does.
@@ -157,8 +157,11 @@ class Notion(Connector[Settings, Scope]):
         current = known == revision
         if current and not descend:
             return None, []
-        text = None if current else Text(self.context.limits.document_max_bytes)
-        if text is not None and _parent_type(page) in _ROW_PARENTS:
+        limit = self.context.limits.document_max_bytes
+        row = _parent_type(page) in _ROW_PARENTS
+        text = None if current else Text(limit, None if row else title(page, limit))
+        if text is not None and row:
+            # A row's properties open with its title.
             text.properties(page.get("properties"))
         try:
             children = self._tree.body(ref.id, text)

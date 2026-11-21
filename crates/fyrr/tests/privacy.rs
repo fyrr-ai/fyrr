@@ -163,6 +163,79 @@ fn http_reader_configuration_and_startup_keep_identity_and_credentials_private()
         );
         assert_clean(&sentinels, &output, &sandbox, "HTTP reader diagnostics");
     }
+
+    // API keys: the secret, the name and the hashes derived from them stay out of
+    // every output, for a valid file, a refused one and a started reader.
+    // 32 characters of the secret's random part, beyond the marker.
+    const TAIL: &str = "Zk9Qm3Xw7Vb1Nc5Hd2Fg8Jt4Ls6Pr0Ay";
+    let secret = |sentinels: &mut Sentinels, category: &str| {
+        let secret = format!("fyrr_key_{}-{TAIL}", sentinels.mark(category));
+        assert!(fyrr_core::config::is_api_key_secret(&secret), "{secret}");
+        sentinels.plant(&secret, category);
+        secret
+    };
+    let shared = secret(&mut sentinels, "api-key-secret");
+    sentinels.plant(TAIL, "api-key-secret-tail");
+    let wrong = format!("fyrr_key_{}", sentinels.mark("api-key-malformed"));
+    // `config show` prints the operator's own file, key names included, so the
+    // names are checked everywhere else.
+    let mut names = Sentinels::new();
+    let mut name = |category: &str| {
+        let name = names.mark(category).to_lowercase();
+        names.plant(&name, category);
+        name
+    };
+    let (one, two, three) = (
+        name("key-name-one"),
+        name("key-name-two"),
+        name("key-name-three"),
+    );
+    let group = sentinels.mark("api-key-group");
+    // The hashing key is the test process's own PATH, so that this process can
+    // derive the hashes the reader would; nothing in this test is secret.
+    let config = sandbox.input("api-keys.toml", &format!("[namespace]\nname='privacy-keys'\n[storage]\nuri='s3://privacy-keys'\nendpoint='http://127.0.0.1:9'\nallow_http=true\n[embedding]\nendpoint='http://127.0.0.1:9/v1'\n[identity]\nhashing_key={{env='PATH'}}\n[[identity.api_keys]]\nname='{one}'\nkey={{env='KEYS_SENTINEL_ONE'}}\nreaders=['grp:{group}']\n[[identity.api_keys]]\nname='{two}'\nkey={{env='KEYS_SENTINEL_TWO'}}\nreaders=['grp:{group}']\n[[identity.api_keys]]\nname='{three}'\nkey={{env='KEYS_SENTINEL_THREE'}}\nreaders=['grp:{group}']\n[reader.http]\nlisten='127.0.0.1:0'\npublic_url='http://127.0.0.1:9/mcp'\n"));
+    let loaded = fyrr_core::config::load(&config).expect("the configuration parses");
+    for hash in [
+        fyrr_reader::storage::api_key_subject(&loaded.config, &shared).unwrap(),
+        fyrr_reader::storage::api_key_principal(&loaded.config, &one).unwrap(),
+    ] {
+        sentinels.plant(&hash, "api-key-hash");
+        sentinels.plant(&hash["key:".len()..], "api-key-hash-digits");
+        names.plant(&hash, "api-key-hash");
+    }
+    let environment = [
+        ("KEYS_SENTINEL_ONE", shared.as_str()),
+        // The same secret twice and a malformed one: refused without echo.
+        ("KEYS_SENTINEL_TWO", shared.as_str()),
+        ("KEYS_SENTINEL_THREE", wrong.as_str()),
+        ("AWS_EC2_METADATA_DISABLED", "true"),
+    ];
+    let commands = [
+        vec!["config", "check"],
+        vec!["config", "check", "--no-env"],
+        vec!["config", "show"],
+        vec!["reader", "serve"],
+        vec!["reader", "check"],
+    ];
+    #[cfg(feature = "writer")]
+    let commands = commands
+        .into_iter()
+        .chain([vec!["writer", "status"], vec!["writer", "commit"]]);
+    for args in commands {
+        let mut command = vec!["--config", config.to_str().expect("config path")];
+        command.extend(args);
+        let output = sandbox.run(command.clone(), &environment);
+        assert_clean(&sentinels, &output, &sandbox, "API key diagnostics");
+        if !command.contains(&"show") {
+            assert_clean(&names, &output, &sandbox, "API key names");
+        }
+        if command == ["--config", config.to_str().unwrap(), "config", "check"] {
+            assert!(
+                !output.status.success(),
+                "the shared and malformed secrets are refused"
+            );
+        }
+    }
 }
 
 #[test]

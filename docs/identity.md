@@ -5,7 +5,8 @@
 > - The `[identity]` table: the stdio subject, the hashing and encryption
 >   keys, and how long permission and directory reads stay valid.
 > - `[identity.directory]` selects where [canonical users](architecture.md#terms) and groups come from;
->   `[identity.oidc]` holds the OIDC settings for HTTP MCP.
+>   `[identity.oidc]` holds the OIDC settings for HTTP MCP and
+>   `[[identity.api_keys]]` declares keys with explicit grants.
 > - Read it when you set up who may read: one user over stdio, or many users
 >   over HTTP.
 
@@ -25,6 +26,7 @@ in the [security model](security.md).
 | `validity_deadline` | `1h` | How long the last successful permission and member read of a `permissions = "sync"` source, and the last directory read, stay valid. After it the source is hidden (`metadata.hidden_sources`); an expired directory read refuses the whole namespace. The clock follows the publication: a serving head that carries a directory freshness timestamp (a completed pull or SCIM attestation) is held to the deadline by every reader, whatever its own `provider`. A head with none, such as a snapshot imported by hand, is served without a directory clock by a reader with `provider = "none"`. |
 | `max_tokens_per_user` | `5000` | At least 1. A subject with more reader tokens gets `authorization_unavailable`; other subjects are unaffected. |
 | `oidc` | absent | OIDC settings for HTTP MCP, see below. |
+| `api_keys` | `[]` | `[[identity.api_keys]]` tables: bearer keys for HTTP MCP, see below. |
 | `directory` | see below | Canonical directory. |
 
 `validity_deadline` must cover the longest permission/member interval or
@@ -32,6 +34,31 @@ in the [security model](security.md).
 `writer.commit.coalescing_timer`, a five-minute margin and
 `reader.version_check_interval`. `config check` prints
 the required value.
+
+### `[[identity.api_keys]]`
+
+An API key lets a client without an identity provider use `[reader.http]`.
+The operator declares what each key may read, as `stdio_user` and
+`stdio_readers` do for stdio. [HTTP login and users](http-users.md#api-keys)
+walks through it.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `name` | required | Unique ID like a source ID (`[a-z0-9][a-z0-9_-]{0,62}`). It names the key in this file; the artifacts hold only its hash. |
+| `key` | required | `{ env = "VAR" }`: the secret, `fyrr_key_` followed by at least 43 characters from `[A-Za-z0-9_-]`. Generate it with `echo "fyrr_key_$(openssl rand -hex 32)"`. Every key needs its own value. |
+| `readers` | required | At least one reader token (`usr:<id>`, `grp:<id>`) the key acts with, as `stdio_readers`, including source-scoped tokens for `permissions = "sync"` sources. |
+
+Only the **writer** reads the secret, so the reader needs no key in its
+environment. Every host that publishes identity needs every key's variable:
+a host without one publishes identity without that key's binding. `config
+check` reports a variable that is unset, a secret of the wrong shape and two
+keys with the same secret; `config check --no-env` skips that. The writer
+skips a key whose secret is missing or malformed and publishes every other
+key; two keys with the same secret stop its commit.
+
+`reader serve` over HTTP needs `[identity.oidc]`, an API key or both, and
+refuses to start without them; `config check` warns about it. The writer does
+not need either, so removing the last key still publishes and revokes it.
 
 ### `[identity.directory]`
 

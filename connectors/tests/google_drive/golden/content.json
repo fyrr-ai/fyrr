@@ -13,8 +13,8 @@
         {
           "op": "upsert",
           "root_id": "doc-plan",
-          "source_revision": "7846ec8ff7a1f49e6c4a233fee1262ed",
-          "revision_order": 1,
+          "source_revision": "3dd070a0cc5bb09b226063082b014a95",
+          "revision_order": 102,
           "readers": [
             "grp:staff"
           ],
@@ -35,7 +35,7 @@
           "attributes": [],
           "sections": [
             {
-              "text": "Draft.",
+              "text": "Plan 2026\n\nDraft.",
               "location": {
                 "kind": "heading",
                 "index": 0
@@ -62,8 +62,8 @@
         {
           "op": "upsert",
           "root_id": "sheet-budget",
-          "source_revision": "acc6fc0f1ac0b4486447696cf84bd3f3",
-          "revision_order": 1,
+          "source_revision": "495333af0f8f1b400dfb27ba07a334eb",
+          "revision_order": 102,
           "readers": [
             "grp:staff"
           ],
@@ -83,6 +83,12 @@
           },
           "attributes": [],
           "sections": [
+            {
+              "text": "Budget",
+              "location": {
+                "kind": "title"
+              }
+            },
             {
               "text": "item | eur\nrent | 1200\ntea | 7.5",
               "location": {
@@ -104,8 +110,8 @@
         {
           "op": "upsert",
           "root_id": "deck-roadmap",
-          "source_revision": "d32b8ca0880e8901aebe92619b75510a",
-          "revision_order": 1,
+          "source_revision": "767d29626111f0e17c4dcc98005c6900",
+          "revision_order": 102,
           "readers": [
             "grp:staff"
           ],
@@ -126,6 +132,12 @@
           },
           "attributes": [],
           "sections": [
+            {
+              "text": "Roadmap",
+              "location": {
+                "kind": "title"
+              }
+            },
             {
               "text": "Roadmap\n2026",
               "location": {

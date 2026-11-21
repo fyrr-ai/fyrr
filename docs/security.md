@@ -45,7 +45,9 @@ A **subject** is the caller of a request:
   process, one identity);
 - over HTTP, the `sub` claim of a verified OIDC access token, which must be
   bound in the published identity artifact under its issuer (see
-  [HTTP login and users](http-users.md)).
+  [HTTP login and users](http-users.md));
+- over HTTP, an API key: a bearer secret that the published identity binds to
+  a principal of its own (see below).
 
 A subject with more than `identity.max_tokens_per_user` reader tokens (5000
 by default) is refused with `authorization_unavailable`; other subjects are
@@ -119,6 +121,21 @@ address that the source reports as verified and organization-managed in an
 approved domain (`verified_domains`). Personal or unverified addresses never
 link. An inactive canonical user is denied everywhere. The keys are in
 [identity](identity.md#identitydirectory).
+
+### API keys
+
+An API key (`[[identity.api_keys]]`) holds the grants its operator declares
+in the file, as `identity.stdio_readers` does for the stdio subject, and
+nothing a directory says. The variable holds the secret and the configuration
+only names it; the writer publishes only a keyed hash of the secret and
+another of the key's name, so someone who can read the bucket learns the
+number of keys and nothing that lets them use one. A key is as strong as its
+secret: anyone who holds it can search what its readers allow, so give each
+role its own and serve it over TLS. After the next identity publication,
+every reader refuses a removed key within two version checks. A reader that
+holds a usable head and identity answers an unknown or malformed key with
+`401`; when it cannot read the head or the identity, every caller gets
+`503`.
 
 ## Secrets and stored credentials
 

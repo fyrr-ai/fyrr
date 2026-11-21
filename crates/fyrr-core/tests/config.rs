@@ -659,6 +659,97 @@ fn missing_secrets_are_reported_by_variable_name() {
     assert!(example.missing_secrets(&all_set).is_empty());
 }
 
+const KEY_A: &str = "fyrr_key_aB3_Zk9Qm7aB3_Zk9Qm7aB3_Zk9Qm7aB3_Zk9Qm7aB3";
+const KEY_B: &str = "fyrr_key_xY8-Lp2Nv5xY8-Lp2Nv5xY8-Lp2Nv5xY8-Lp2Nv5xY8";
+
+fn api_key(name: &str, variable: &str, readers: &str) -> String {
+    format!("\n[[identity.api_keys]]\nname='{name}'\nkey={{env='{variable}'}}\nreaders={readers}\n")
+}
+
+#[test]
+fn api_keys_need_a_name_readers_and_a_well_formed_unique_secret() {
+    let one = api_key("agents", "KEY_ONE", "['grp:engineering']");
+    assert!(errors_with(&one).is_empty());
+    assert_error(
+        &format!("{one}{}", api_key("agents", "KEY_TWO", "['usr:7']")),
+        "identity.api_keys[1].name",
+    );
+    assert_error(
+        &api_key("Not Valid", "KEY_ONE", "['usr:7']"),
+        "api_keys[0].name",
+    );
+    assert_error(&api_key("agents", "KEY_ONE", "[]"), "api_keys[0].readers");
+    assert_error(
+        &api_key("agents", "KEY_ONE", "['engineering']"),
+        "api_keys[0].readers",
+    );
+    assert!(
+        parse(&format!(
+            "{MINIMAL}\n[[identity.api_keys]]\nname='agents'\nkey={{env='KEY_ONE'}}\nuser='a@b.c'\n"
+        ))
+        .is_err(),
+        "a key states readers, nothing else"
+    );
+
+    for good in [KEY_A, KEY_B] {
+        assert!(fyrr_core::config::is_api_key_secret(good), "{good}");
+    }
+    for bad in [
+        "",
+        "fyrr_key_",
+        "aB3_Zk9Qm7aB3_Zk9Qm7aB3_Zk9Qm7aB3_Zk9Qm7aB3",
+        &KEY_A[..KEY_A.len() - 1],
+        &format!("{KEY_A}!"),
+        &format!("{KEY_A} "),
+        &format!("{KEY_A}\n"),
+        "fyrr_token_aB3_Zk9Qm7aB3_Zk9Qm7aB3_Zk9Qm7aB3_Zk9Qm7aB3",
+    ] {
+        assert!(!fyrr_core::config::is_api_key_secret(bad), "{bad:?}");
+    }
+
+    let two = format!("{one}{}", api_key("tests", "KEY_TWO", "['usr:7']"));
+    let loaded = parse(&format!("{MINIMAL}\n{two}")).unwrap();
+    let issues = |pairs: &[(&str, &str)]| -> Vec<String> {
+        loaded
+            .api_key_secret_issues(&env(pairs))
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    };
+    assert!(issues(&[("KEY_ONE", KEY_A), ("KEY_TWO", KEY_B)]).is_empty());
+    // An unset variable is `missing_secrets`' to report, a malformed secret this check's.
+    assert!(issues(&[("KEY_ONE", KEY_A)]).is_empty());
+    let malformed = issues(&[("KEY_ONE", KEY_A), ("KEY_TWO", SENTINEL)]);
+    assert_eq!(malformed.len(), 1);
+    assert!(malformed[0].contains("identity.api_keys[1].key"));
+    let duplicate = issues(&[("KEY_ONE", KEY_A), ("KEY_TWO", KEY_A)]);
+    assert_eq!(duplicate.len(), 1);
+    assert!(duplicate[0].contains("identity.api_keys[1].key"));
+    for text in malformed.iter().chain(&duplicate) {
+        assert!(!text.contains(SENTINEL) && !text.contains(KEY_A), "{text}");
+    }
+}
+
+#[test]
+fn http_without_a_login_method_stays_valid_for_the_writer_and_the_check_warns() {
+    let http =
+        "\n[reader.http]\nlisten='127.0.0.1:8080'\npublic_url='https://reader.example/mcp'\n";
+    let loaded = parse(&format!("{MINIMAL}{http}")).unwrap();
+    assert!(
+        errors(&loaded).is_empty(),
+        "the writer publishes without one"
+    );
+    assert!(loaded.config.http_authentication_missing());
+    let keyed = parse(&format!(
+        "{MINIMAL}{http}{}",
+        api_key("agents", "KEY_ONE", "['grp:engineering']")
+    ))
+    .unwrap();
+    assert!(errors(&keyed).is_empty());
+    assert!(!keyed.config.http_authentication_missing());
+    assert!(!parse(MINIMAL).unwrap().config.http_authentication_missing());
+}
+
 /// One step of a path into the configuration.
 #[derive(Debug, Clone)]
 enum Step {
@@ -804,6 +895,8 @@ fn every_schema_constraint_is_enforced() {
         "embedding.roles.document.prefix maxLength",
         "embedding.roles.query.input_type minLength",
         "reader.http.public_url maxLength",
+        "identity.api_keys[0].name pattern",
+        "identity.api_keys[0].key.env pattern",
     ] {
         assert!(
             rendered.iter().any(|found| found == expected),
@@ -811,7 +904,16 @@ fn every_schema_constraint_is_enforced() {
         );
     }
 
-    let base: toml::Table = toml::from_str(&common::read(EXAMPLE)).expect("example TOML");
+    let mut base: toml::Table = toml::from_str(&common::read(EXAMPLE)).expect("example TOML");
+    // The example declares no API key, whose constraints the walk must reach too.
+    let key: toml::Table = toml::from_str(
+        "name = \"agents\"\nkey = { env = \"FYRR_API_KEY_AGENTS\" }\nreaders = [\"grp:engineering\"]\n",
+    )
+    .expect("key TOML");
+    base["identity"]
+        .as_table_mut()
+        .expect("identity table")
+        .insert("api_keys".into(), toml::Value::Array(vec![key.into()]));
     const BAD: &str = "!bad value!";
     for (path, keyword, bound) in &constraints {
         let at = render(path);

@@ -11,9 +11,11 @@
 //! output or `config show` line contains a secret value, and errors never
 //! quote values from the file.
 
+mod api_key;
 mod storage;
 mod validation;
 
+pub use api_key::{API_KEY_PREFIX, ApiKeyConfig, is_api_key_secret};
 pub use storage::StorageBackend;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -492,6 +494,10 @@ pub struct IdentityConfig {
     /// OIDC login for HTTP MCP.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oidc: Option<OidcConfig>,
+    /// Operator-issued bearer keys for HTTP MCP, each with its own grants
+    /// (`[[identity.api_keys]]`). Only the writer reads their secrets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub api_keys: Vec<ApiKeyConfig>,
 }
 
 /// Where canonical users and groups come from.
@@ -1399,6 +1405,8 @@ impl LoadedConfig {
         for value in &mut values {
             if value.path == "identity.stdio_user"
                 || value.path.starts_with("identity.stdio_readers")
+                || (value.path.starts_with("identity.api_keys[")
+                    && value.path.ends_with(".readers"))
             {
                 value.value = "<redacted: identity>".into();
             }

@@ -19,6 +19,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   it at once, run `fyrr writer sync <source> --kind content --full`, then
   `fyrr writer commit`. The key counts toward `document_max_bytes`. See
   [Jira](docs/connectors/jira.md#documents).
+- HTTP MCP clients can authenticate with operator-issued API keys without an
+  identity provider. Give each role its own `[[identity.api_keys]]` entry and
+  `readers` grants. To revoke a key, remove it from every writer
+  configuration, republish identity, and refresh the readers. An HTTP
+  reader without an authentication method is now refused when `reader serve`
+  starts, and `config check` reports it as a warning, instead of being a
+  configuration error for every command. See
+  [HTTP login and users](docs/http-users.md#api-keys).
 - The reader sends `instructions` in the MCP `initialize` result: what
   fyrr searches and a request to search it before looking through files.
   Clients that pass instructions on tell their agent when to search.
@@ -135,6 +143,18 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `fyrr writer sync github --kind content --full` to do it at once. The title
   counts toward `document_max_bytes`. See
   [GitHub documents](docs/connectors/github.md#documents).
+- The Notion and Google Drive connectors index titles. A standalone Notion
+  page's title and a Google Doc's file name are the first line of the first
+  section; a Sheet's or Slides deck's file name is a section of its own
+  before the first one. A word that occurs only in a title is found by
+  full-text search. The title counts toward `document_max_bytes`: a page or
+  file that was just under the limit is quarantined when it is read again
+  and keeps its last good revision until the limit is raised.
+- Existing pages and files get their title when next edited; `fyrr writer sync
+  <source> --kind content --full` followed by a commit republishes all that
+  fit the limit. Going back to an earlier release on the same index is not
+  supported for Google Drive: its revision order now includes the rendering,
+  so the earlier release would skip edits and deletions of published files.
 
 ### Fixed
 

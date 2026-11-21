@@ -67,8 +67,8 @@ what to look up next ([Jira documents](connectors/jira.md#documents)).
    commands for Claude Code and Codex.
 
 When a sandbox must not hold bucket credentials, run one HTTP reader for the
-fleet instead. Each request then carries an OIDC access token; see
-[HTTP login and users](http-users.md).
+fleet instead, with one API key per agent role; see
+[API keys](http-users.md#api-keys).
 
 ## Limit what an injected agent can reach
 

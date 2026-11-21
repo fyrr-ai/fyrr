@@ -61,11 +61,11 @@ fi
 # permissions, embeddings and discover-then-initialize MCP handshake.
 fresh() {
   local name="$1" copy="$WORK/$1" namespace="${1%.toml}"
-  python3 - "$EXAMPLE/$name" "$copy" "$MODE" "$WORK/$namespace" <<'CONFIG'
+  python3 - "$EXAMPLE/$name" "$copy" "$MODE" "$WORK/$namespace" "$EMBEDDINGS_ENDPOINT" <<'CONFIG' || return 1
 from pathlib import Path
 import json
 import sys
-source, destination, mode, root = sys.argv[1:]
+source, destination, mode, root, embeddings_endpoint = sys.argv[1:]
 text = Path(source).read_text()
 uri = Path(root).as_uri() if mode == "local" else "s3://fyrr-test/" + Path(root).parent.name + "-" + Path(root).name
 storage = "[storage]\nuri = " + json.dumps(uri) + "\n"
@@ -73,18 +73,32 @@ if mode == "s3":
     storage += 'allow_http = true\naccess_key_id = { env = "FYRR_TEST_S3_ACCESS_KEY_ID" }\nsecret_access_key = { env = "FYRR_TEST_S3_SECRET_ACCESS_KEY" }\n'
 start = text.index("[storage]")
 end = text.index("\n# The toy", start)
-Path(destination).write_text(text[:start] + storage + text[end:])
+text = text[:start] + storage + text[end:]
+default_endpoint = 'endpoint = "http://127.0.0.1:8089/v1"'
+if default_endpoint not in text:
+    raise ValueError("expected the quickstart embedding endpoint")
+Path(destination).write_text(
+    text.replace(default_endpoint, "endpoint = " + json.dumps(embeddings_endpoint), 1)
+)
 CONFIG
   printf '%s\n' "$copy"
 }
 
-python3 "$EXAMPLE/toy-embeddings.py" &
+# Port 0 lets the kernel choose a free port at bind time. The child prints
+# its endpoint only after it owns the listener.
+python3 "$EXAMPLE/toy-embeddings.py" 0 >"$WORK/embeddings.log" &
 EMBEDDINGS_PID=$!
+EMBEDDINGS_ENDPOINT=
 for _ in $(seq 1 50); do
-  curl -fsS -o /dev/null http://127.0.0.1:8089/v1/models 2>/dev/null && break
+  kill -0 "$EMBEDDINGS_PID" 2>/dev/null || fail "the toy embeddings service exited during startup"
+  if [[ -s "$WORK/embeddings.log" ]] && IFS= read -r announcement <"$WORK/embeddings.log"; then
+    EMBEDDINGS_ENDPOINT="${announcement#toy embeddings at }"
+    printf '%s\n' "$announcement"
+    break
+  fi
   sleep 0.2
 done
-kill -0 "$EMBEDDINGS_PID" 2>/dev/null || fail "the toy embeddings service did not start (port 8089 in use?)"
+[[ -n "$EMBEDDINGS_ENDPOINT" ]] || fail "the toy embeddings service did not announce its endpoint"
 
 publish() {
   fyrr config check

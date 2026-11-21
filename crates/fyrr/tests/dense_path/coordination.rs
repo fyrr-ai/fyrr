@@ -90,6 +90,26 @@ pub(super) fn worker_command(config: &Path) -> Command {
         .env("PYTHONPATH", checkout.join("crates/fyrr/tests/providers"));
     command
 }
+/// A `PYTHONPATH` for a worker that runs an earlier release of a connector:
+/// `patch` is Python that undoes what changed, run against the installed
+/// package. The embedded interpreter reads `sitecustomize` before it puts the
+/// virtual environment on its path, so this does it first.
+pub(super) fn earlier_release(config: &Path, patch: &str) -> String {
+    let dir = config.parent().unwrap().join("earlier-release");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(
+        dir.join("sitecustomize.py"),
+        format!(
+            "import os, site, sysconfig\n\
+             venv = os.environ['VIRTUAL_ENV']\n\
+             site.addsitedir(sysconfig.get_path('purelib', vars={{'base': venv, 'platbase': venv}}))\n\
+             {patch}"
+        ),
+    )
+    .unwrap();
+    let providers = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/providers");
+    format!("{}:{}", dir.display(), providers.display())
+}
 pub(super) fn command(config: &Path, args: &[&str]) -> Value {
     let output = host_command(config).args(args).output().unwrap();
     assert!(

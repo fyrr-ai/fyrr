@@ -1081,6 +1081,14 @@
       "full:fyrr-core:test:config/local_storage_takes_a_canonical_file_uri_and_no_s3_keys": {
         "tier": "quick",
         "seconds": 0.002
+      },
+      "full:fyrr-core:test:config/api_keys_need_a_name_readers_and_a_well_formed_unique_secret": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
+      "full:fyrr-core:test:config/http_without_a_login_method_stays_valid_for_the_writer_and_the_check_warns": {
+        "tier": "quick",
+        "seconds": 0.01
       }
     }
   },
@@ -1703,6 +1711,22 @@
       "full:fyrr:test:dense_path/identity::identity_scim_namespace_creation_and_import_never_attest_without_proof_on_storage": {
         "tier": "quick",
         "seconds": 12.496
+      },
+      "full:fyrr:test:dense_path/api_keys::roles_are_isolated_without_oidc": {
+        "tier": "quick",
+        "seconds": 9.443
+      },
+      "full:fyrr:test:dense_path/api_keys::last_key_revocation_reaches_a_running_reader": {
+        "tier": "quick",
+        "seconds": 8.728
+      },
+      "full:fyrr:test:dense_path/api_keys::bad_secret_does_not_block_revocation": {
+        "tier": "full",
+        "seconds": 16.63
+      },
+      "full:fyrr:test:dense_path/api_keys::oidc_and_keys_coexist": {
+        "tier": "full",
+        "seconds": 7.006
       }
     }
   },
@@ -1733,6 +1757,10 @@
       "full:fyrr:test:dense_path/google_drive::google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_storage": {
         "tier": "full",
         "seconds": 32.14
+      },
+      "full:fyrr:test:dense_path/google_drive::google_drive_full_sync_indexes_the_name_of_a_file_published_without_it_on_storage": {
+        "tier": "full",
+        "seconds": 51.0
       },
       "full:fyrr:test:dense_path/google_drive::google_drive_quarantine_and_permission_read_failure_deadline_on_storage": {
         "tier": "full",
@@ -1912,6 +1940,10 @@
       "full:fyrr:test:dense_path/notion::notion_content_changes_quarantine_and_reconcile_on_storage": {
         "tier": "full",
         "seconds": 96.859
+      },
+      "full:fyrr:test:dense_path/notion::notion_full_sync_indexes_the_title_of_a_page_published_without_it_on_storage": {
+        "tier": "full",
+        "seconds": 114.0
       }
     }
   },
@@ -4559,6 +4591,58 @@
         "seconds": null
       },
       "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message15]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/notion/test_notion_render.py::test_the_title_opens_the_first_section_above_the_body": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/notion/test_notion_render.py::test_a_title_equal_to_the_first_line_is_not_repeated": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/notion/test_notion_render.py::test_the_title_counts_toward_the_limit_in_bytes": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/notion/test_notion_sync.py::test_a_standalone_page_title_is_indexed_and_a_row_title_is_not_repeated": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_export.py::test_a_docs_title_opens_its_first_section_above_the_text": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_export.py::test_a_docs_title_equal_to_its_first_line_is_not_repeated": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_export.py::test_a_missing_title_changes_nothing": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_export.py::test_a_file_without_text_stays_without_sections_whatever_its_title": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_export.py::test_a_sheet_or_deck_title_is_its_own_section_before_the_first_sheet_or_slide": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_export.py::test_the_title_counts_toward_the_limit_in_bytes": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_sync.py::test_a_rename_republishes_the_file_with_its_new_name": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_sync.py::test_a_long_name_is_indexed_whole_and_only_the_title_metadata_is_capped": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_sync.py::test_a_name_that_pushes_a_file_over_the_limit_quarantines_it": {
         "tier": "quick",
         "seconds": null
       }

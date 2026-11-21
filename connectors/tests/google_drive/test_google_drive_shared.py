@@ -46,7 +46,7 @@ def test_a_fixed_connection_takes_shared_files_and_reads_no_permissions(
     assert index.listing(**SHARED) == ["mine", "theirs"]
 
     drive.put("theirs", b"Carol rewrites.")
-    assert index.sync(**SHARED)["theirs"]["sections"][0]["text"] == "Carol rewrites."
+    assert index.sync(**SHARED)["theirs"]["sections"][0]["text"] == "theirs\n\nCarol rewrites."
     # Alice loses the file: her feed only says `removed`, the listing decides.
     drive.unshare("theirs", f"p-{ALICE}")
     assert index.sync(**SHARED) == {}
