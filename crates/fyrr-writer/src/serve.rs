@@ -5,7 +5,7 @@ use fyrr_core::config::{DirectoryProvider, LoadedConfig};
 use std::path::Path;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -31,14 +31,22 @@ pub async fn run(
         }
         requested.store(true, Ordering::Release);
     });
+    // A change of the served head, which carries rejections and rewinds, makes
+    // every source due: the tick counts them, the supervisor reads the count.
+    let heads = Arc::new(AtomicU64::new(0));
+    let mut head = served(&loaded.config).await;
     let admin = crate::admin::start(&loaded.config, stop.clone()).await?;
     let stopped = stop.clone();
     let config = loaded.config.clone();
     let path = path.to_owned();
+    let observed = heads.clone();
     let supervisor = tokio::task::spawn_blocking(move || {
         let mut due = vec![Instant::now(); config.sources.len()];
+        // The head count each source's last worker started under.
+        let mut started = vec![0; config.sources.len()];
         let mut running = Vec::<(usize, Running)>::new();
         while !stopped.load(Ordering::Relaxed) {
+            let heads = observed.load(Ordering::Acquire);
             let mut waiting = Vec::new();
             for (i, mut worker) in running {
                 match worker.poll() {
@@ -48,7 +56,7 @@ pub async fn run(
                             eprintln!("writer_service event=worker_failed");
                         }
                         let intervals = &config.sources[i].intervals;
-                        let interval = [
+                        let retry = [
                             Some(intervals.content),
                             intervals.permissions,
                             intervals.members,
@@ -58,9 +66,15 @@ pub async fn run(
                         .flatten()
                         .map(|v| v.as_duration())
                         .min()
-                        .unwrap_or(Duration::from_secs(60));
-                        // Cursor timestamps, not this retry clock, decide whether a kind is due.
-                        due[i] = Instant::now() + interval.min(Duration::from_secs(60));
+                        .unwrap_or(Duration::from_secs(60))
+                        .min(Duration::from_secs(60));
+                        // The cursors' timestamps decide what is due; a worker
+                        // that failed, or reported no schedule, is retried sooner.
+                        let wait = match &result {
+                            Ok(Some(outcome)) if outcome.failure().is_none() => next_due(outcome),
+                            _ => None,
+                        };
+                        due[i] = Instant::now() + wait.unwrap_or(retry);
                     }
                 }
             }
@@ -69,9 +83,13 @@ pub async fn run(
                 if running.len() >= jobs {
                     break;
                 }
-                if due[i] > Instant::now() || running.iter().any(|(n, _)| *n == i) {
+                // A head that changed since the source's worker started makes it due.
+                if (due[i] > Instant::now() && started[i] == heads)
+                    || running.iter().any(|(n, _)| *n == i)
+                {
                     continue;
                 }
+                started[i] = heads;
                 let job = Job::Sync {
                     config: path.clone(),
                     source: source.id.clone(),
@@ -117,14 +135,21 @@ pub async fn run(
                     eprintln!("writer_service event=directory_pull_failed");
                 }
             },
-            _ = timer.tick(), if loaded.config.writer.serve.committer => {
-                match crate::commit::commit_until_stopped(&loaded.config, false, Some(&stop)).await {
-                    Ok(_) => eprintln!("writer_service event=published"),
-                    Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
-                    Err(_) => eprintln!("writer_service event=commit_failed"),
+            _ = timer.tick() => {
+                if loaded.config.writer.serve.committer {
+                    match crate::commit::commit_until_stopped(&loaded.config, false, Some(&stop)).await {
+                        Ok(_) => eprintln!("writer_service event=published"),
+                        Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
+                        Err(_) => eprintln!("writer_service event=commit_failed"),
+                    }
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
                 }
-                if stop.load(Ordering::Acquire) {
-                    break;
+                let now = served(&loaded.config).await;
+                if now.is_some() && now != head {
+                    heads.fetch_add(1, Ordering::Release);
+                    head = now;
                 }
             }
         }
@@ -139,4 +164,18 @@ pub async fn run(
         task.await.map_err(|_| WriterError::AdminServiceFailed)??;
     }
     Ok(serde_json::json!({"stopped":true}))
+}
+
+/// The served head, as far as it matters to a worker; `None` when unreadable.
+async fn served(config: &fyrr_core::config::Config) -> Option<fyrr_core::publication::ServingHead> {
+    let head = fyrr_reader::storage::optional_head(config).await.ok()??;
+    Some(crate::python::served_identity(&head))
+}
+
+/// How long until the source's kinds are next due, as its worker reported it.
+fn next_due(outcome: &crate::worker::Outcome) -> Option<Duration> {
+    let report: serde_json::Value = serde_json::from_slice(outcome.result_line()?).ok()?;
+    let due: chrono::DateTime<chrono::Utc> =
+        serde_json::from_value(report["next_due"].clone()).ok()?;
+    Some((due - fyrr_core::clock::now()).to_std().unwrap_or_default())
 }

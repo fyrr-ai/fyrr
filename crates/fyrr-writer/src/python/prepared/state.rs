@@ -15,6 +15,15 @@ struct Snapshot {
     index: crate::commit::history::index::Index,
 }
 
+/// The head without what does not change publication evidence: the lease and
+/// its renewal timestamps.
+pub(crate) fn served_identity(head: &ServingHead) -> ServingHead {
+    let mut identity = head.clone();
+    identity.lease = None;
+    identity.updated_at = chrono::DateTime::UNIX_EPOCH;
+    identity
+}
+
 impl CommandEvidence {
     fn refresh(
         &mut self,
@@ -22,10 +31,7 @@ impl CommandEvidence {
         rt: &tokio::runtime::Runtime,
         head: &ServingHead,
     ) -> Result<()> {
-        let mut identity = head.clone();
-        identity.lease = None;
-        // Lease renewal timestamps do not change publication evidence.
-        identity.updated_at = chrono::DateTime::UNIX_EPOCH;
+        let identity = served_identity(head);
         if self
             .snapshot
             .as_ref()
@@ -45,6 +51,114 @@ impl CommandEvidence {
         });
         Ok(())
     }
+
+    /// The rejection markers and cursor rewinds the head's publications record.
+    fn markers(
+        &mut self,
+        config: &fyrr_core::config::Config,
+        rt: &tokio::runtime::Runtime,
+        head: &ServingHead,
+    ) -> Result<&[RejectionMarker]> {
+        self.refresh(config, rt, head)?;
+        Ok(&self
+            .snapshot
+            .as_ref()
+            .ok_or(WriterError::PublicationInvalid)?
+            .markers)
+    }
+}
+
+fn interval(
+    source: &fyrr_core::config::SourceConfig,
+    kind: SyncKind,
+) -> Option<std::time::Duration> {
+    match kind {
+        SyncKind::Content => Some(source.intervals.content),
+        SyncKind::Permissions => source.intervals.permissions,
+        SyncKind::Members => source.intervals.members,
+        SyncKind::Reconcile => Some(source.intervals.reconcile),
+    }
+    .map(|i| i.as_duration())
+}
+
+/// The markers a read of `kind` has not yet consumed.
+fn unconsumed<'a>(
+    markers: &'a [RejectionMarker],
+    source: &str,
+    kind: SyncKind,
+    state: &CursorState,
+) -> Vec<&'a RejectionMarker> {
+    markers
+        .iter()
+        .filter(|m| {
+            m.source_id == source
+                && m.kind == kind
+                && (m.rejection_generation >= state.rejection_generation
+                    || m.restore_sequence > state.restore_sequence)
+        })
+        .collect()
+}
+
+/// Whether the last completed read is younger than the kind's interval.
+fn within_interval(state: &CursorState, interval: Option<std::time::Duration>) -> bool {
+    interval.is_some_and(|i| {
+        (fyrr_core::clock::now() - state.updated_at)
+            .to_std()
+            .is_ok_and(|elapsed| elapsed < i)
+    })
+}
+
+/// When the schedule makes `kind` due, from its stored cursor.
+pub(super) fn next_due(
+    source: &fyrr_core::config::SourceConfig,
+    kind: SyncKind,
+    state: &CursorState,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    state
+        .updated_at
+        .checked_add_signed(chrono::TimeDelta::from_std(interval(source, kind)?).ok()?)
+}
+
+/// When `kind` of `source` is next due, if the head and the cursor alone show
+/// that it is not due now. Reads only: no lease, no listing of envelopes.
+/// `None` when it may be due; the cursor lease then decides.
+pub(super) fn idle_until(
+    config: &fyrr_core::config::Config,
+    source: &fyrr_core::config::SourceConfig,
+    kind: SyncKind,
+    rt: &tokio::runtime::Runtime,
+    evidence: &mut CommandEvidence,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let Some(head) = rt.block_on(fyrr_reader::storage::optional_head(config))? else {
+        return Ok(None);
+    };
+    let Some(state) = rt.block_on(crate::sync_lease::CursorLease::peek(
+        config, &source.id, kind,
+    ))?
+    else {
+        return Ok(None);
+    };
+    // shortcut: whether a permission or member recovery is unfinished is known
+    // from the envelopes, which are not listed here; such a kind after any
+    // rejection takes the lease to decide. Upgrade: record the completed
+    // generation in the cursor.
+    if matches!(kind, SyncKind::Permissions | SyncKind::Members) && state.rejection_generation > 0 {
+        return Ok(None);
+    }
+    // A cursor behind its envelopes (a worker that died after publishing one)
+    // has the lower generation: it can only find more markers, never fewer.
+    if !unconsumed(
+        evidence.markers(config, rt, &head)?,
+        &source.id,
+        kind,
+        &state,
+    )
+    .is_empty()
+        || !within_interval(&state, interval(source, kind))
+    {
+        return Ok(None);
+    }
+    Ok(next_due(source, kind, &state))
 }
 
 pub(super) struct Pending {
@@ -212,22 +326,8 @@ impl Preparation<'_> {
             &mut state,
             &durable.cursors,
         ))?;
-        let interval = match self.kind {
-            SyncKind::Content => Some(self.source.intervals.content),
-            SyncKind::Permissions => self.source.intervals.permissions,
-            SyncKind::Members => self.source.intervals.members,
-            SyncKind::Reconcile => Some(self.source.intervals.reconcile),
-        };
-        let markers = durable
-            .markers
-            .iter()
-            .filter(|m| {
-                m.source_id == self.source.id
-                    && m.kind == self.kind
-                    && (m.rejection_generation >= state.rejection_generation
-                        || m.restore_sequence > state.restore_sequence)
-            })
-            .collect::<Vec<_>>();
+        let interval = interval(self.source, self.kind);
+        let markers = unconsumed(&durable.markers, &self.source.id, self.kind, &state);
         if let Some(oldest) = markers.iter().min_by_key(|m| m.sequence) {
             state.cursor = if markers
                 .iter()
@@ -257,15 +357,7 @@ impl Preparation<'_> {
         // delays an unfinished permission or member recovery.
         let replaces = state.rejection_generation > durable.completed_generation;
         let recovering = replaces && matches!(self.kind, SyncKind::Permissions | SyncKind::Members);
-        if due
-            && markers.is_empty()
-            && !recovering
-            && interval.is_some_and(|i| {
-                (fyrr_core::clock::now() - state.updated_at)
-                    .to_std()
-                    .is_ok_and(|elapsed| elapsed < i.as_duration())
-            })
-        {
+        if due && markers.is_empty() && !recovering && within_interval(&state, interval) {
             return Ok((state, true, false));
         }
         Ok((state, false, replaces))
