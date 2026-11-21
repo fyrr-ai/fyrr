@@ -95,6 +95,10 @@ done
 kill -0 "$FYRR_TOY_EMBEDDINGS_PID" && curl -fsS -o /dev/null http://127.0.0.1:8089/v1/models
 ```
 
+The build links no Python. `VIRTUAL_ENV` names the connectors environment
+that `scripts/doctor` created; `fyrr` starts the bundled providers in that
+environment's Python when it syncs.
+
 The toy service matches words. For semantic results, choose an
 [OpenAI-compatible embeddings endpoint](configuration.md#embedding) and
 publish into a fresh namespace when changing models.

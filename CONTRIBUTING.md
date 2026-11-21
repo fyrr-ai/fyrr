@@ -37,12 +37,16 @@ cargo build --locked -p fyrr --no-default-features             # reader-only bui
 Both builds write `target/debug/fyrr`, so the second replaces the first; use
 `--target-dir` to keep both. Use rustup's Cargo (`~/.cargo/bin` first on
 `PATH`) and this checkout's own `target/`. `.cargo/config.toml` points
-`PROTOC` at the pinned protoc and `PYO3_PYTHON` at the connectors venv.
+`PROTOC` at the pinned protoc. The build links no Python.
 
 To run the bundled providers from a development build, point the writer at
 the venv: `VIRTUAL_ENV=$PWD/connectors/.venv target/debug/fyrr writer
-providers`. The Python SDK has its own tests:
-`cd connectors && uv sync --locked --all-extras && uv run pytest`.
+providers` (the full tests set it themselves). The Python SDK has its own
+tests: `cd connectors && uv sync --locked --all-extras && uv run pytest`. It
+supports Python 3.11 or newer (tested on 3.11, 3.12, 3.13 and 3.14); to try
+another interpreter without touching `connectors/.venv`, give `uv` its own
+environment, for example
+`UV_PROJECT_ENVIRONMENT=/tmp/venv311 uv run --python 3.11 --all-extras pytest`.
 
 `cd connectors && uv run --locked --all-extras mypy` checks the SDK, bundled
 providers and example provider. Bodies are checked with partial signature
@@ -54,7 +58,7 @@ annotations; PyArrow's untyped API remains covered by Arrow contract tests.
 | --- | --- |
 | `crates/fyrr-core` | Contracts, configuration, MCP tool schemas. No S3 or Lance. |
 | `crates/fyrr-reader` | Pinned Lance reads, authorization, hybrid search, read-through mirror, MCP over stdio and HTTP. |
-| `crates/fyrr-writer` | Full build only: provider discovery, Python workers, batch validation, committer, maintenance, directory and SCIM. |
+| `crates/fyrr-writer` | Full build only: provider discovery, workers and their Python provider host, batch validation, committer, maintenance, directory and SCIM. |
 | `crates/fyrr` | The `fyrr` binary; feature `writer` (default) is the full build. |
 | `connectors/` | Python package `fyrr-connectors`: provider API, test kit and the bundled providers. |
 | `examples/` | The quickstart (configuration, documents and `run`), an independently built provider wheel and a derived-image Dockerfile. |
@@ -83,6 +87,8 @@ provider, the quickstart on local storage, local-storage scenarios,
 and a small external-services set against owned RustFS and Keycloak fixtures.
 It keeps going after a failure and writes
 `target/ci-logs/<UTC stamp>/` with one log per step and `summary.txt`.
+Set `FYRR_CI_LOG_DIR` to choose a different directory. Relative paths are
+resolved from the checkout root.
 
 Build helpers use pinned mr-boxington (`mbx`) with rustup's Cargo first on
 `PATH`. Each test feature set is built once; cases execute preserved full
@@ -106,9 +112,14 @@ Keycloak and long maintenance/history campaigns. Cases excluded by the tier
 are `n/e` in `case-plan.json` and row results; wholly excluded rows are `n/e`
 in `summary.txt`. A mixed row counts only its selected cases as passed.
 
-PRs and pushes to main run `--quick`; `v*` tags run the full tier and then
-build the release artifacts and images in a separate job (see
+PRs and pushes to main run `--quick`. Changes confined to
+`examples/quickstart/` run the local quickstart row when successful CI has
+cached a binary for their exact base commit on main. A cache miss runs the
+usual quick tier. The `v*` tags run the full tier and then build the release
+artifacts and images in a separate job (see
 [Releasing](#releasing)).
+New PR commits cancel superseded CI runs. On main, the active run finishes
+and the newest pending revision runs next.
 Private repositories use `--debug-only` and skip release artifacts.
 
 This checkout owns its `target/`. Fat-LTO and image checks run only with
@@ -131,7 +142,7 @@ anything that moves image size also need `scripts/ci --images`.
 | `scripts/ci-cases check\|inventory\|run ROW` | Test-case ownership; runs one CI row exactly as CI does. |
 | `scripts/s3-fixture start\|env\|status\|stop` | A loopback RustFS container for this checkout; `env` prints the `FYRR_TEST_S3_*` variables. |
 | `scripts/keycloak-fixture start\|env\|status\|stop` | A loopback Keycloak for the identity rows. |
-| `scripts/check-reader-only` | Proves the reader-only build links no writer, Python or PyO3. |
+| `scripts/check-reader-only` | Proves the reader-only build contains no writer or provider code, and that neither build links Python. |
 | `scripts/images` | Builds, tests and measures both images. It compiles the binaries in the pinned builder stage, or packages existing ones with `--binaries DIR`. |
 | `scripts/release` | Assembles versioned local release artifacts with SHA-256 sums; it publishes nothing itself (see [Releasing](#releasing)). |
 
@@ -177,8 +188,18 @@ not create.
   document text, identities and queries, runs every CLI path and asserts that
   none appears in output or written files. A new CLI path, log or artifact
   joins that test.
-- **Reader-only build.** All Python runs in `fyrr writer __worker`
-  processes; the reader-only build links no Python.
+- **Python.** No crate links Python. Providers run in a Python host process
+  that a `fyrr writer __worker` process starts in its own process group
+  (`python -S -c BOOTSTRAP`, built in `python/host.rs`) and talks to over a
+  socket that is the host's stdin. The bootstrap uses only built-in modules to
+  settle the descriptors (the socket moves to a close-on-exec descriptor and
+  every other inherited descriptor is closed) before it runs site code and
+  imports `fyrr_connectors.host`. The frames are bounded before they are read,
+  Arrow streams are inspected before they are decoded, and every failure is a
+  closed diagnostic. A change to the protocol bumps `PROTOCOL_VERSION` on both
+  sides (`host.py` and `python/wire.rs`).
+- **Reader-only build.** It contains no writer and no provider code;
+  `scripts/check-reader-only` proves it.
 
 ## Code and commits
 

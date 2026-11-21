@@ -57,7 +57,8 @@ pub struct Principal {
     pub groups: Vec<u32>,
 }
 
-/// A hashed issuer-scoped OIDC subject mapped to a canonical principal.
+/// A hashed subject mapped to a principal: an issuer-scoped OIDC subject, or
+/// an API-key secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SubjectBinding {
     pub subject: String,

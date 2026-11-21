@@ -5,9 +5,10 @@ description = "Example fyrr connector provider: Markdown files in a local direct
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.13"
-# The SDK series (0.1) is the compatibility promise.
-dependencies = ["fyrr-connectors>=0.1,<0.2"]
+requires-python = ">=3.11"
+# The SDK series (0.1) is the compatibility promise; 0.1.0 and 0.1.1 were built
+# for the embedded interpreter and do not work with this fyrr.
+dependencies = ["fyrr-connectors>=0.1.2,<0.2"]
 
 [project.entry-points."fyrr.connectors"]
 markdown-dir = "fyrr_provider_markdown:provider_info"
@@ -29,7 +30,7 @@ fyrr-connectors = { path = "../../connectors" }
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]

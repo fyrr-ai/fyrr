@@ -23,9 +23,34 @@ use jsonschema::paths::LocationSegment;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-/// Distribution names and versions shown in listings.
+/// Distribution names shown in listings.
 static DISPLAYABLE: LazyLock<regex::Regex> =
     LazyLock::new(|| compiled(r"^[A-Za-z0-9][A-Za-z0-9._+!-]{0,99}$"));
+/// A version of a Python distribution that fyrr will show: a release of one to
+/// four dot-separated integers, then at most three of the PEP 440 pre, post and
+/// dev suffixes (`a`, `b`, `rc`, `post`, `dev`, each with digits). Integers
+/// are at most six digits long, so a version is at most 57 characters. Epochs
+/// and local segments are not shown.
+static VERSION: LazyLock<regex::Regex> = LazyLock::new(|| {
+    compiled(r"^[0-9]{1,6}(\.[0-9]{1,6}){0,3}(\.?(a|b|rc|post|dev)[0-9]{1,6}){0,3}$")
+});
+
+/// Shown where a name or version is absent.
+pub(crate) const NO_VALUE: &str = "-";
+/// Shown in place of a name or version that is not what it should look like.
+pub(crate) const INVALID_VALUE: &str = "<invalid>";
+
+/// A version string the Python side supplied, as the text fyrr may show:
+/// the string itself when it is made of verified numeric parts and a closed
+/// set of suffixes (see [`VERSION`]), else [`INVALID_VALUE`]. Every version of
+/// the peer enters through here.
+pub(crate) fn version_text(version: &str) -> String {
+    if VERSION.is_match(version) {
+        version.to_owned()
+    } else {
+        INVALID_VALUE.to_owned()
+    }
+}
 
 fn compiled(pattern: &str) -> regex::Regex {
     regex::Regex::new(pattern).unwrap_or_else(|error| unreachable!("valid pattern: {error}"))
@@ -92,8 +117,8 @@ impl Provider {
 fn displayable(value: Option<&str>) -> &str {
     match value {
         Some(value) if DISPLAYABLE.is_match(value) => value,
-        Some(_) => "<invalid>",
-        None => "-",
+        Some(_) => INVALID_VALUE,
+        None => NO_VALUE,
     }
 }
 
@@ -129,7 +154,7 @@ pub fn parse_discovery(json: &[u8]) -> Result<Discovery, String> {
         })
         .collect();
     Ok(Discovery {
-        sdk_version: displayable(Some(&raw.sdk_version)).to_owned(),
+        sdk_version: version_text(&raw.sdk_version),
         providers,
     })
 }
@@ -138,7 +163,7 @@ fn validate(entry: RawEntry, installed: &Result<SdkVersion, String>, duplicate: 
     let mut provider = Provider {
         name: entry.entry_point,
         distribution: entry.distribution,
-        version: entry.version,
+        version: entry.version.as_deref().map(version_text),
         info: None,
         status: Err(String::new()),
     };
@@ -209,13 +234,16 @@ impl Discovery {
             rows.push([
                 provider.display_name().to_owned(),
                 displayable(provider.distribution.as_deref()).to_owned(),
-                displayable(provider.version.as_deref()).to_owned(),
+                provider
+                    .version
+                    .clone()
+                    .unwrap_or_else(|| NO_VALUE.to_owned()),
                 info.map_or_else(
-                    || "-".to_owned(),
+                    || NO_VALUE.to_owned(),
                     |info| format!(">={}", info.min_sdk_version),
                 ),
                 info.map_or_else(
-                    || "-".to_owned(),
+                    || NO_VALUE.to_owned(),
                     |info| {
                         join(
                             info.connection_types
@@ -225,7 +253,7 @@ impl Discovery {
                     },
                 ),
                 info.map_or_else(
-                    || "-".to_owned(),
+                    || NO_VALUE.to_owned(),
                     |info| join(info.sync_kinds.iter().map(|kind| kind.as_str())),
                 ),
                 match &provider.status {
@@ -421,10 +449,20 @@ fn schema_message(kind: &jsonschema::error::ValidationErrorKind) -> String {
                 unexpected.join(", ")
             )
         }
-        Kind::Required { property } => format!(
-            "missing field `{}` required by the provider",
-            property.as_str().unwrap_or("?")
-        ),
+        // The property name comes from the provider's own schema, which may
+        // carry anything: it is shown only when it is a plain identifier.
+        Kind::Required { property } => match property.as_str() {
+            Some(name)
+                if name.len() <= 64
+                    && !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-')) =>
+            {
+                format!("missing field `{name}` required by the provider")
+            }
+            _ => "a field the provider requires is missing".to_owned(),
+        },
         other => format!(
             "does not match the provider's config schema ({})",
             other.keyword()
@@ -652,6 +690,55 @@ mod tests {
             Ok(_) => "ok".to_owned(),
             Err(reason) => reason.clone(),
         }
+    }
+
+    #[test]
+    fn versions_the_python_side_reports_are_shown_only_when_built_from_verified_parts() {
+        for good in [
+            "0.1.2",
+            "1.0.0rc1",
+            "1.0.post1.dev2",
+            "1.2.3.4",
+            "1.0a2",
+            "2024.11",
+            "9",
+            "123456.0",
+        ] {
+            assert_eq!(version_text(good), good);
+        }
+        for bad in [
+            "",
+            "0.1 2",
+            "0.1.2\nSENTINEL",
+            "<script>",
+            "SENTINEL",
+            "1.0.SENTINEL",
+            "1.0rcSENTINEL",
+            "1.0final",
+            "1.0.dev",
+            "v1.0",
+            "1.2.3.4.5",
+            "1234567",
+            "1..2",
+            "2!1.0",
+            "1.0+local.7",
+            "1.0.post1.post2.post3.post4",
+            "1_0",
+            "é1",
+            &"1".repeat(65),
+        ] {
+            assert_eq!(version_text(bad), INVALID_VALUE, "{bad:?}");
+        }
+        let mut entries = vec![entry("markdown-dir", info("markdown-dir", "0.1.0"))];
+        entries[0]["version"] = json!(format!("1.0 {SENTINEL}"));
+        let found = discovery("0.1.2", entries);
+        assert_eq!(found.providers[0].version.as_deref(), Some(INVALID_VALUE));
+        let table = found.render();
+        assert!(!table.contains(SENTINEL), "{table}");
+        let raw = json!({"sdk_version": format!("0.1.2 {SENTINEL}"), "providers": []});
+        let found = parse_discovery(raw.to_string().as_bytes()).expect("discovery");
+        assert_eq!(found.sdk_version, INVALID_VALUE);
+        assert!(!found.render().contains(SENTINEL));
     }
 
     #[test]

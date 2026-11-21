@@ -45,7 +45,9 @@ A **subject** is the caller of a request:
   process, one identity);
 - over HTTP, the `sub` claim of a verified OIDC access token, which must be
   bound in the published identity artifact under its issuer (see
-  [HTTP login and users](http-users.md)).
+  [HTTP login and users](http-users.md));
+- over HTTP, an API key: a bearer secret that the published identity binds to
+  a principal of its own (see below).
 
 A subject with more than `identity.max_tokens_per_user` reader tokens (5000
 by default) is refused with `authorization_unavailable`; other subjects are
@@ -78,10 +80,14 @@ plan for:
   complete. A failed or partial read keeps the last published rights until
   `identity.validity_deadline`; after that the source alone is hidden from
   every reader (`metadata.hidden_sources`).
-- A configured directory provider (`snapshot`, `keycloak` or `scim`) needs a
-  completed read within `identity.validity_deadline`, or the whole namespace
-  is refused. With the default `provider = "none"` no directory clock
-  applies.
+- A published directory read has a clock. When the serving head carries a
+  directory freshness timestamp (a completed `keycloak` or `snapshot` pull,
+  or a SCIM attestation), every reader refuses the whole namespace once that
+  read is older than `identity.validity_deadline`, whatever its own
+  `identity.directory.provider` says. A head with no timestamp is served as
+  before by a reader with `provider = "none"` (a snapshot imported by hand
+  with `writer directory --snapshot` is not a freshness proof), and refused
+  by a reader that has a directory provider configured.
 - A retired source (`fyrr writer source retire`) is denied by every reader
   once it has read the serving head again, and restore and rollback never
   bring it back.
@@ -116,6 +122,21 @@ approved domain (`verified_domains`). Personal or unverified addresses never
 link. An inactive canonical user is denied everywhere. The keys are in
 [identity](identity.md#identitydirectory).
 
+### API keys
+
+An API key (`[[identity.api_keys]]`) holds the grants its operator declares
+in the file, as `identity.stdio_readers` does for the stdio subject, and
+nothing a directory says. The variable holds the secret and the configuration
+only names it; the writer publishes only a keyed hash of the secret and
+another of the key's name, so someone who can read the bucket learns the
+number of keys and nothing that lets them use one. A key is as strong as its
+secret: anyone who holds it can search what its readers allow, so give each
+role its own and serve it over TLS. After the next identity publication,
+every reader refuses a removed key within two version checks. A reader that
+holds a usable head and identity answers an unknown or malformed key with
+`401`; when it cannot read the head or the identity, every caller gets
+`503`.
+
 ## Secrets and stored credentials
 
 - Configuration holds `{ env = "VAR" }` references only. Inline secrets,
@@ -136,12 +157,61 @@ link. An inactive canonical user is denied everywhere. The keys are in
 
 ## Worker isolation
 
-All Python runs in `fyrr writer __worker` child processes, one per source
-(provider discovery uses its own worker), with a timeout that also kills descendants, a memory limit
-(`writer.worker_memory_max_bytes`), no core dumps and provider stdout and
-stderr discarded. Results return over a size-capped socket with fixed
-diagnostic codes, never Python exception text. A crash or hang fails only
-that source.
+No Python runs in the `fyrr` executable. Provider code runs in a Python
+host process that a `fyrr writer __worker` child process starts, one host per
+sync kind of a source (provider discovery uses its own worker). The host stays
+in the worker's process group, so the worker's timeout kills it and every
+descendant. Each of the two processes has the memory limit
+(`writer.worker_memory_max_bytes`, applied per process), no core dumps and no
+inherited stdin, stdout or stderr. They talk over a private socket. Provider
+code is trusted (above): the checks below keep a faulty provider from taking
+the worker down or being mistaken for a valid batch, and are not a sandbox.
+
+What the worker checks about what the host sends:
+
+- Every frame's length is bounded before anything is allocated for it.
+- An Arrow stream is inspected before it is decoded: one schema message that
+  is the contract's (only nullable additions) and one uncompressed record
+  batch, no dictionary batches, with the declared row count and buffer ranges
+  within the limits. The schema carries no metadata beyond the contract's two
+  entries and no field metadata. Its fields, at every nesting level, are
+  counted against the contract's own plus a small allowance of added fields
+  before it is converted, because a flatbuffer can share offsets, so a small
+  message can describe a far larger tree.
+- Inspection, schema conversion and decoding run under one panic guard: a
+  stream that makes any of them panic is a refused batch, with the same closed
+  diagnostic as any other. The panic message goes to the worker's stderr,
+  which is `/dev/null`.
+- A malformed, oversized or out-of-order frame, a host that exits early and
+  a host that hangs all end in fixed diagnostic codes, never Python
+  exception text, and none carries a value the host chose except a version
+  built from numbers and a few fixed suffixes and, in `fyrr config check`,
+  the name of a field a provider's schema requires when it is a plain
+  identifier. A crash or exhausted memory limit
+  of the host (`the provider failed`) and a hang (the worker's timeout)
+  fail only that source.
+
+When a host's conversation ends, the worker shuts its side of the socket
+down. The host then closes the provider's generator, so its `finally` blocks
+run, and exits; it is killed five seconds after the shutdown, or at once when
+the conversation was out of step.
+
+What the host guarantees about itself: the interpreter starts without site
+code, and a bootstrap that uses only built-in modules moves the protocol
+socket (its stdin) to a close-on-exec descriptor, points stdin at `/dev/null`
+and closes every other inherited descriptor, before `.pth` files,
+`sitecustomize` or any provider import run. A process that provider code
+forks closes the socket too, site code included. Start-up code can see the
+socket as an open descriptor that no child inherits.
+
+Stored credentials a source references are sent to the host after it starts
+and set in its environment before the SDK imports any provider code; their
+names are removed from the environment the host inherits, so they are not in
+its initial environment. `fyrr-core` owns the name rule (`config check`
+refuses a referenced stored credential named `PATH`, `VIRTUAL_ENV`,
+`PYTHON*` or `LD_*`, or over 256 bytes, naming the key); the worker checks the
+names and the values, which only it can know, once before it starts the host,
+and the host checks the message again before it sets any of it.
 
 The [deployment guide](deployment.md#topology) covers reader hosts; the
 [reader settings](reader-writer.md#reader) specify mirror ownership and modes.

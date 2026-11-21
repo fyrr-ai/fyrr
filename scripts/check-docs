@@ -313,7 +313,10 @@ def config_sections(doc):
             spans = [s.strip("[]") for s in CODE.findall(heading) if s.startswith("[")]
             if not spans:
                 continue
-            parts = [s.replace("sources", "sources[]").split(".") for s in spans]
+            parts = [
+                s.replace("sources", "sources[]").replace("api_keys", "api_keys[]").split(".")
+                for s in spans
+            ]
             base = parts[0] if len(parts) == 1 else parts[0][:-1]
             body = body.split("\n### ", 1)[0]
             result.append((tuple(base), table(body)))

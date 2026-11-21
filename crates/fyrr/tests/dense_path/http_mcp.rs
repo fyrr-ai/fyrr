@@ -1,5 +1,5 @@
 //! Pinned local issuer, real reader executable and storage: no model/API calls.
-use super::coordination::{host_command, worker_sync};
+use super::coordination::{host_command, publication, worker_sync};
 use super::*;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use fyrr_core::directory::{DirectoryGroup, DirectorySnapshot, DirectoryUser};
@@ -130,10 +130,14 @@ impl Drop for Issuer {
 pub(super) struct Reader {
     child: std::process::Child,
     pub(super) base: String,
-    client: Client,
+    pub(super) client: Client,
     stderr: PathBuf,
 }
 impl Reader {
+    /// Everything the reader process has written to stderr so far.
+    pub(super) fn stderr_text(&self) -> String {
+        String::from_utf8_lossy(&std::fs::read(&self.stderr).unwrap_or_default()).into_owned()
+    }
     fn search_task(&self, token: &str, id: u64, deadline: u32) -> tokio::task::JoinHandle<Value> {
         let client = self.client.clone();
         let url = format!("{}/mcp", self.base);
@@ -150,7 +154,7 @@ impl Reader {
             response.json::<Value>().await.unwrap()["result"].clone()
         })
     }
-    async fn start(
+    pub(super) async fn start(
         config: &Path,
         root: &Path,
         issuer: &Issuer,
@@ -180,18 +184,34 @@ impl Reader {
         keycloak: bool,
         operator: bool,
     ) -> Self {
+        let operator = if operator {
+            "operator_credential={env='FYRR_HTTP_OPERATOR'}\n"
+        } else {
+            ""
+        };
+        Self::start_appended(config, root, |address, base| {
+            format!("\n[identity.oidc]\nissuer='{}'\naudience='fyrr-http-test'\njwks_url='{}/jwks'\njwks_validity='1s'\njwks_refresh_interval='100ms'\nkeycloak={keycloak}\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n{operator}authorization_cache_subjects={capacity}\nuser_requests_per_minute={user_limit}\ngroup_requests_per_minute={group_limit}\n",issuer.url,issuer.url)
+        })
+        .await
+    }
+    /// Starts `reader serve` on `config` with the text `appended` builds for
+    /// the reserved listen address and public base URL.
+    pub(super) async fn start_appended(
+        config: &Path,
+        root: &Path,
+        appended: impl FnOnce(&std::net::SocketAddr, &str) -> String,
+    ) -> Self {
         let reserve = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = reserve.local_addr().unwrap();
         drop(reserve);
         let base = format!("http://{address}");
         let config_http = root.join(format!("http-{address}.toml"));
         let config_text = std::fs::read_to_string(config).unwrap();
-        let operator = if operator {
-            "operator_credential={env='FYRR_HTTP_OPERATOR'}\n"
-        } else {
-            ""
-        };
-        std::fs::write(&config_http,format!("{config_text}\n[identity.oidc]\nissuer='{}'\naudience='fyrr-http-test'\njwks_url='{}/jwks'\njwks_validity='1s'\njwks_refresh_interval='100ms'\nkeycloak={keycloak}\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n{operator}authorization_cache_subjects={capacity}\nuser_requests_per_minute={user_limit}\ngroup_requests_per_minute={group_limit}\n",issuer.url,issuer.url)).unwrap();
+        std::fs::write(
+            &config_http,
+            format!("{config_text}{}", appended(&address, &base)),
+        )
+        .unwrap();
         let stderr = root.join(format!("http-{address}.stderr"));
         let child = host_command(&config_http)
             .args(["reader", "serve"])
@@ -255,7 +275,13 @@ impl Reader {
         }
         panic!("HTTP reader startup");
     }
-    async fn rpc(&self, token: &str, id: u64, method: &str, params: Value) -> reqwest::Response {
+    pub(super) async fn rpc(
+        &self,
+        token: &str,
+        id: u64,
+        method: &str,
+        params: Value,
+    ) -> reqwest::Response {
         self.client
             .post(format!("{}/mcp", self.base))
             .bearer_auth(token)
@@ -996,7 +1022,7 @@ impl Drop for Reader {
         }
     }
 }
-async fn fixture(issuer: &Issuer) -> (PathBuf, PathBuf, FixtureRoot, DirectorySnapshot) {
+pub(super) async fn fixture(issuer: &Issuer) -> (PathBuf, PathBuf, FixtureRoot, DirectorySnapshot) {
     fixture_for_issuer(&issuer.url, Backend::selected()).await
 }
 pub(super) async fn fixture_for_issuer(
@@ -1152,6 +1178,9 @@ async fn identity_http_authentication_isolation_rate_limits_drain_and_refresh_on
         (json!({}), json!({"kid":"unknown"})),
         (json!({"sub":""}), json!({})),
         (json!({"exp":null}), json!({})),
+        (json!({"exp":"9999999999"}), json!({})),
+        (json!({"exp":-1}), json!({})),
+        (json!({"nbf":"x"}), json!({})),
     ] {
         let token = issuer.token("subject-0", claims, header);
         assert_eq!(
@@ -1752,4 +1781,137 @@ async fn tools_failed_scheduler_refuses_readiness_on_storage() {
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// `config` without its `[identity.directory]` table: a reader file that names
+/// no directory provider (the Lambda shape), or a writer file that moved to
+/// manual imports.
+fn without_directory(root: &Path, config: &Path) -> PathBuf {
+    let text = std::fs::read_to_string(config).unwrap();
+    let start = text
+        .find("\n[identity.directory]\nprovider='snapshot'")
+        .expect("the fixture's directory table");
+    let end = start
+        + text[start..]
+            .find("sync_interval='5m'\n")
+            .expect("the table's last key")
+        + "sync_interval='5m'\n".len();
+    let stripped = root.join(format!(
+        "without-directory-{}",
+        config.file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::write(&stripped, format!("{}{}", &text[..start], &text[end..])).unwrap();
+    stripped
+}
+
+async fn ask(reader: &Reader, token: &str, search: &Value) -> (u16, String) {
+    let response = reader
+        .rpc(
+            token,
+            1,
+            "tools/call",
+            json!({"name":"search","arguments":search}),
+        )
+        .await;
+    (response.status().as_u16(), response.text().await.unwrap())
+}
+
+#[tokio::test]
+#[ignore = "real writer, HTTP MCP and stdio reader executables, pinned JWKS and local storage; scripts/ci"]
+async fn a_published_directory_clock_binds_a_reader_without_a_directory_provider_on_storage() {
+    let (_, issuer_root) = setup();
+    let issuer = Issuer::new(&issuer_root).await;
+    let (worker, commit, root, mut snapshot) = fixture(&issuer).await;
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let namespace = loaded.config.namespace.name.clone();
+    // The stdio subject is a directory user too; one more pull publishes it.
+    snapshot.users.push(super::identity::user(
+        &loaded.config,
+        loaded.config.identity.stdio_user.as_deref().unwrap(),
+    ));
+    snapshot.built_at = fyrr_core::clock::now();
+    std::fs::write(root.join("http-directory.json"), write_contract(&snapshot)).unwrap();
+    let pull = host_command(&commit)
+        .args(["writer", "sync", "--directory"])
+        .output()
+        .unwrap();
+    assert!(pull.status.success(), "{}", report(&pull));
+    // The reader's own file names no provider; the writer's pull stamped the head.
+    let own = without_directory(&root, &worker);
+    let manual = without_directory(&root, &commit);
+    assert!(publication(&own).await.0.freshness.directory.is_some());
+    let token = issuer.token("subject-1", json!({}), json!({}));
+    let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
+    let doc = format!("{namespace}-http-1");
+    let served = |result: &Value| {
+        assert_eq!(result["isError"], false, "{result}");
+        result["structuredContent"]["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let stdio = |expect_served: bool| {
+        let output = run(&own, &["reader", "search", "fixture query"]);
+        if expect_served {
+            assert!(output.status.success(), "{}", report(&output));
+        } else {
+            assert!(!output.status.success(), "{}", report(&output));
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("authorization_unavailable"),
+                "{}",
+                report(&output)
+            );
+        }
+    };
+    // A fresh directory read serves both subjects.
+    let mut reader = Reader::start(&own, &root, &issuer, 1000, 1000).await;
+    let (status, body) = ask(&reader, &token, &search).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        served(&serde_json::from_str::<Value>(&body).unwrap()["result"]),
+        [doc.as_str()]
+    );
+    stdio(true);
+
+    // The pulls stop: the published read is older than `validity_deadline`.
+    let loaded = fyrr_core::config::load(&own).unwrap();
+    let (store, path) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let mut head = publication(&own).await.0;
+    let deadline = loaded.config.identity.validity_deadline.as_duration();
+    head.freshness.directory = Some(
+        fyrr_core::clock::now()
+            - chrono::Duration::from_std(deadline).unwrap()
+            - chrono::Duration::minutes(1),
+    );
+    write_head(store.as_ref(), &path, &head).await;
+    let (status, body) = ask(&reader, &token, &search).await;
+    assert_eq!(status, 503, "{body}");
+    assert!(body.contains("authorization_unavailable"), "{body}");
+    stdio(false);
+    reader.stop().await;
+
+    // The deployment moved to manual imports: one import attests nothing and
+    // withdraws the old timestamp, and the reader serves again.
+    let mut imported = snapshot.clone();
+    imported.built_at = fyrr_core::clock::now();
+    let file = root.join("manual-directory.json");
+    std::fs::write(&file, write_contract(&imported)).unwrap();
+    let import = host_command(&manual)
+        .args(["writer", "directory", "--snapshot"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(import.status.success(), "{}", report(&import));
+    assert_eq!(publication(&own).await.0.freshness.directory, None);
+    let mut reader = Reader::start(&own, &root, &issuer, 1000, 1000).await;
+    let (status, body) = ask(&reader, &token, &search).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        served(&serde_json::from_str::<Value>(&body).unwrap()["result"]),
+        [doc.as_str()]
+    );
+    stdio(true);
+    reader.stop().await;
 }

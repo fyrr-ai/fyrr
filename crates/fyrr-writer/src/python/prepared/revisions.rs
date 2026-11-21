@@ -9,7 +9,7 @@ pub(super) type RevisionFailure = Arc<Mutex<Option<WriterError>>>;
 pub(super) struct RevisionView<'a> {
     pub(super) dataset: &'a Option<Arc<lance::Dataset>>,
     pub(super) pending: Arc<PendingRevisions>,
-    pub(super) revisions: Arc<Mutex<RevisionStream>>,
+    pub(super) revisions: RevisionStream,
     pub(super) failure: &'a RevisionFailure,
 }
 

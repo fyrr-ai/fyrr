@@ -8,6 +8,7 @@ impl LoadedConfig {
         let mut error = |path: &str, message: String| issues.push(Issue::error(path, message));
         rerank(config, &mut error);
         identity_keys(config, &mut error);
+        api_key::validate(config, &mut error);
         identity_urls_and_http(config, &mut error);
         patterns(config, &mut error);
         dense_weight(config, &mut error);
@@ -157,9 +158,6 @@ fn identity_urls_and_http(config: &Config, error: &mut impl FnMut(&str, String))
                 "reader.http.public_url",
                 "requires a secure /mcp URL".into(),
             );
-        }
-        if config.identity.oidc.is_none() {
-            error("identity.oidc", "required for HTTP MCP".into());
         }
         if http.listen.parse::<std::net::SocketAddr>().is_err()
             || http.public_url.is_empty()
@@ -836,6 +834,16 @@ fn sources(config: &Config, error: &mut impl FnMut(&str, String)) -> (ConfigDura
             );
             for (path, message) in inline {
                 error(&path, message);
+            }
+            // A stored credential reaches the provider host's environment.
+            let mut references = Vec::new();
+            env_references(&at(table), &Value::Object(value.clone()), &mut references);
+            for (path, name) in references {
+                if writer.credentials.contains_key(&name)
+                    && let Some(message) = host_env_refusal(&name)
+                {
+                    error(&path, message.into());
+                }
             }
         }
     }

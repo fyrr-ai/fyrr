@@ -9,6 +9,28 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The Jira connector indexes the custom fields listed in the new
+  `scope.fields` (rich text, string or number values) as `field` sections
+  labelled with the field ID, for example acceptance criteria. See
+  [Jira](docs/connectors/jira.md#documents).
+- The Jira connector records each issue's key as the document attribute
+  `jira.key` and starts the summary section with it (`PROJ-123 Summary`).
+  `search` with `attributes: [{"key": "jira.key", "values": ["PROJ-123"]}]`
+  and `order: "updated_at"` returns that issue without a `query`. Every Jira
+  issue gets a new revision and its summary is embedded again: at its next
+  update, or at the connector's next full rescan (the first content sync at
+  least 12 hours after the previous one) and the commit that follows. To do
+  it at once, run `fyrr writer sync <source> --kind content --full`, then
+  `fyrr writer commit`. The key counts toward `document_max_bytes`. See
+  [Jira](docs/connectors/jira.md#documents).
+- HTTP MCP clients can authenticate with operator-issued API keys without an
+  identity provider. Give each role its own `[[identity.api_keys]]` entry and
+  `readers` grants. To revoke a key, remove it from every writer
+  configuration, republish identity, and refresh the readers. An HTTP
+  reader without an authentication method is now refused when `reader serve`
+  starts, and `config check` reports it as a warning, instead of being a
+  configuration error for every command. See
+  [HTTP login and users](docs/http-users.md#api-keys).
 - The reader sends `instructions` in the MCP `initialize` result: what
   fyrr searches and a request to search it before looking through files.
   Clients that pass instructions on tell their agent when to search.
@@ -36,6 +58,40 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- The `search` tool description tells agents to search a ticket's title and
+  body as two `queries` for task context.
+- The software factory guide and the Claude Code plugin tell an agent to
+  start a task with one `search` whose two `queries` are the ticket's title
+  and body. The agent takes its current ticket from the tracker; fyrr
+  supplies the earlier tickets, pull requests and threads around it.
+- To use connectors, install this release's `fyrr-connectors`
+  wheel with your provider extras in a Python 3.11+ virtual environment (tested
+  on 3.11, 3.12, 3.13 and 3.14). Set
+  `VIRTUAL_ENV` to its absolute path and run `fyrr writer providers` to verify
+  the installation. The full image includes the SDK and bundled providers.
+  Commands that run no connector need no Python. Each sync kind runs in a
+  fresh Python process; the worker memory limit applies to that process
+  separately. What breaks for existing users:
+  - The embedded interpreter is gone: the binary links no Python
+    (`PYO3_PYTHON`, `libpython`).
+  - SDK 0.1.2 or newer is needed; 0.1.0 and 0.1.1 do not work.
+  - A provider that aborts fails its source with `the provider failed`.
+  - `PATH`, `VIRTUAL_ENV` and names starting with `PYTHON` or `LD_` are
+    reserved names for stored credentials a source references;
+    `fyrr config check` refuses them.
+  See [how a provider runs](docs/connectors/authoring.md#how-a-provider-runs).
+- The Jira connector keeps link targets (`text (url)`, smart cards as their
+  URL). Under `permissions = "fixed"` it adds a `links` section with the
+  parent and issue links, keys only (`blocks: PROJ-140`). Affected issues are
+  republished at their next update, or at the next full rescan and commit;
+  `sync --kind content --full` followed by `writer commit` does it at once. See
+  [Jira](docs/connectors/jira.md#documents).
+- GitHub and Jira comments start with a line naming their author
+  (`ada (member):` with GitHub's `author_association`; `Ada Lovelace:`).
+  Conversations and issues with comments that still fit `document_max_bytes`
+  get a new revision at their next update or rotation (12-hour target) and
+  the commit after it;
+  `writer sync <source> --kind content --full`, then `writer commit`, does it at once.
 - **Revocation latency.** A request no longer reads the serving head from
   storage for its authorization checks. It checks its grants against the
   head the reader's latest version check read
@@ -66,6 +122,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   or the served manifest has a cursor rewind. With five publications, eight idle ticks made 152 storage
   requests instead of 472, and the manifest reads per tick no longer grow
   with the history.
+- Building a subject's admission no longer reads the `source_id` column of
+  every data file when no source is hidden (expired or retired); the
+  predicate's scalar indexes give the rows. Opening a 100,000-row namespace
+  on an empty mirror made 19 storage requests instead of 1,044 and took
+  0.42 s instead of 1.32 s with 25 ms per request; its first search took
+  446 ms instead of 513 ms. A namespace with fixed grants still reads
+  `source_id`, which has no index.
 - The reader no longer asks storage for a version manifest its publication
   does not list. Lance looks for a version under its other manifest name
   each time it opens the dataset, once per worker of every generation; the
@@ -105,9 +168,45 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   their rows through the scalar indexes too, instead of passing the
   subject's rows to Lance as a row mask. Results and authorization are
   unchanged.
+- The GitHub connector indexes an issue or PR title as the first line of its
+  first section, so title-only words are searchable. Conversations with a body
+  get a new revision and are re-embedded as they refresh; run
+  `fyrr writer sync github --kind content --full` to do it at once. The title
+  counts toward `document_max_bytes`. See
+  [GitHub documents](docs/connectors/github.md#documents).
+- The Notion and Google Drive connectors index titles. A standalone Notion
+  page's title and a Google Doc's file name are the first line of the first
+  section; a Sheet's or Slides deck's file name is a section of its own
+  before the first one. A word that occurs only in a title is found by
+  full-text search. The title counts toward `document_max_bytes`: a page or
+  file that was just under the limit is quarantined when it is read again
+  and keeps its last good revision until the limit is raised.
+- Existing pages and files get their title when next edited; `fyrr writer sync
+  <source> --kind content --full` followed by a commit republishes all that
+  fit the limit. Going back to an earlier release on the same index is not
+  supported for Google Drive: its revision order now includes the rendering,
+  so the earlier release would skip edits and deletions of published files.
+
+### Fixed
+
+- A GitHub issue, PR or file the connector contract rejects no longer stalls
+  the content sync: display values are fitted (control characters to spaces,
+  cut to 1,024 bytes, at most 32 labels), anything still rejected is
+  quarantined, and the sync continues. Valid documents keep their revision.
+- `fyrr reader search` accepts a query that starts with `-`, such as an issue
+  title; put `--` before a query that is exactly an option name.
 
 ### Security
 
+- A reader with `identity.directory.provider = "none"` (the Lambda example
+  omits it) no longer skips the directory freshness check when the serving
+  head carries a timestamp. Reading a namespace whose writer pulls a
+  directory, it now answers `authorization_unavailable` once the pulls have
+  stopped for longer than `identity.validity_deadline`. A deployment that
+  moved to manual imports under `provider = "none"` is served again by one
+  `writer directory --snapshot` import, which withdraws the timestamp; the
+  snapshot must not be older than the last pull, or it is refused as stale.
+  Lambda readers should use the writer host's `validity_deadline`.
 - The README, quickstart and software factory guide no longer store
   `FYRR_IDENTITY_KEY` in Claude Code's settings: they add the reader
   without `-e` and start Claude Code from a shell with the key exported.
@@ -163,6 +262,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Fixed
 
+- **A late head read is not used for authorization.** When a check waited for
+  a shared head read that storage answered after more than two version-check
+  intervals, the check was served with the head as it was when the read
+  began, so a revocation published meanwhile could be missed for longer than
+  the documented two intervals. Such a read now fails the checks that waited
+  for it with `authorization_unavailable`, and the next check reads again.
+  If the reader answers so persistently, storage takes longer than two
+  intervals to return the head: raise `reader.version_check_interval`.
 - Prepared sync timeout errors name the elapsed worker limit and `--timeout`,
   including deadline exhaustion during cleanup. Deployment guidance covers
   larger initial loads, durable envelopes, source leases and vector-cache reuse.

@@ -1,11 +1,11 @@
 //! fyrr writer: sync, commit, maintenance and administration.
 //!
 //! Linked only into the full build (cargo feature `writer` of the `fyrr`
-//! binary); the reader-only build never depends on this crate, Python or
-//! PyO3, and CI proves it. Each source's connector provider runs in an
-//! embedded interpreter in its own worker process; its Arrow output is
-//! validated at the boundary and written as envelopes that the namespace's
-//! single committer publishes.
+//! binary); the reader-only build never depends on this crate, and CI proves
+//! it. No crate links Python. Each source's connector provider runs in a
+//! Python host process that its own worker process starts; its Arrow output
+//! is validated at the boundary and written as envelopes that the
+//! namespace's single committer publishes.
 
 #![cfg_attr(
     not(test),
