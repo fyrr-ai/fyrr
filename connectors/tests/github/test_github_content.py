@@ -56,6 +56,28 @@ def test_issues_prs_prose_and_metadata(github, index):
     assert index.listing() == set(changes)
 
 
+def test_comments_name_their_author_and_association(github, index):
+    github.topic(kind="pr", number=2, body="PR body.")
+    github.comment(kind="pr", number=2, body="Default.")
+    github.comment(kind="pr", number=2, body="Drive-by.", author_association="NONE")
+    github.comment(kind="pr", number=2, body="No association.", author_association=None)
+    github.comment(kind="pr", number=2, body="Deleted.", user=None)
+    github.comment(kind="pr", number=2, body="Ghost.", user={"login": "ghost"})
+    review = github.comment(kind="pr", number=2, body="", state="APPROVED")
+    github.comment(kind="pr", number=2, body="Inline.", review_id=review["id"])
+    texts = [s["text"] for s in next(iter(index.sync().values()))["sections"]]
+    assert texts[0] == "Synthetic pr 2\n\nPR body."
+    assert texts[1:] == [
+        "synthetic-commenter (member):\nDefault.",
+        "synthetic-commenter (none):\nDrive-by.",
+        "synthetic-commenter:\nNo association.",
+        "unknown:\nDeleted.",
+        "unknown:\nGhost.",
+        "synthetic-commenter (member):",
+        "synthetic-commenter (member):\nInline.",
+    ]
+
+
 def test_force_push_old_commit_and_file_delete(github, index):
     old = github.branch(1, {"old.md": "Old prose."})
     before = index.sync()
@@ -118,6 +140,7 @@ def test_golden_sdk_arrow_and_cursors(github):
     from pathlib import Path
 
     github.topic(body="Golden body.")
+    github.comment(body="Golden comment.")
     info = provider_info(
         name="github", connector=GitHub, min_sdk_version="0.1.0", connection_types=("fixed",)
     )
@@ -277,7 +300,10 @@ def test_control_character_in_an_inline_comment_path_only_changes_the_label(gith
     github.topic(number=2, body="Good.")
     synced(index, [], ISSUE.format(102, 2))
     sections = index.published["github:repo:1:pr:1001:1"]["sections"]
-    assert [section["text"] for section in sections][1:] == ["Review.", "Inline."]
+    assert [section["text"] for section in sections][1:] == [
+        "synthetic-commenter (member):\nReview.",
+        "synthetic-commenter (member):\nInline.",
+    ]
     assert sections[-1]["location"]["label"].endswith("discussion_r1: a /b.py:3")
 
 
@@ -304,9 +330,10 @@ def valid_document_revisions(renderer):
 
 
 # Produced by loading render.py of commit 34fa1eb (before this change) as a
-# temporary module and running valid_document_revisions against it.
+# temporary module and running valid_document_revisions against it. The
+# multibyte-title value was recomputed when comments gained an author line.
 PINNED_REVISIONS = {
-    "multibyte-title": "517172447a82b8eacbb7f23ae3580c775724cd94da1a7082c2caf7483ca3b9cc",
+    "multibyte-title": "af2fe7a2717b636b2f3e39525c90b11e20175db1e9d14d6035080442146d606c",
     "heading-trailing-spaces": "9a67d0a343ef77b29f13c2cf6e48b6bc252802a0716497c45f3be7aa113576d4",
     "long-path-label": "6bfc44e1cb1e7169c3c874525b39a688f023ffcb59d1dc78b6434fcd4c7fa8a3",
 }

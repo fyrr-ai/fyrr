@@ -80,6 +80,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   republished at their next update, or at the next full rescan and commit;
   `sync --kind content --full` followed by `writer commit` does it at once. See
   [Jira](docs/connectors/jira.md#documents).
+- GitHub and Jira comments start with a line naming their author
+  (`ada (member):` with GitHub's `author_association`; `Ada Lovelace:`).
+  Conversations and issues with comments that still fit `document_max_bytes`
+  get a new revision at their next update or rotation (12-hour target) and
+  the commit after it;
+  `writer sync <source> --kind content --full`, then `writer commit`, does it at once.
 - **Revocation latency.** A request no longer reads the serving head from
   storage for its authorization checks. It checks its grants against the
   head the reader's latest version check read

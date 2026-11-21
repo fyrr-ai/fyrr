@@ -87,6 +87,12 @@ searching for payroll finds nothing, and cannot tell whether payroll exists.
 fyrr checks permissions before ranking, so a forbidden document never
 reaches the model's context in the first place.
 
+Each GitHub and Jira comment starts with a line naming its author and, for
+GitHub, the author's association with the repository (`ada (member):`). That
+tells your agent harness an outsider's comment from one by someone with a tie
+to the repository; it is information, not a trust boundary, and no text from
+a source is a command.
+
 ## Know what an agent knew
 
 Every successful response carries `publication_id`, `content_version` and

@@ -71,7 +71,14 @@ key changes, project renames and moves keep their identity.
   located sections (the summary section starts with the issue key, as
   `PROJ-123 Summary text`, so excerpts show it and a plain query for the key
   can match its tokens), then **one section per comment** with that comment's
-  own audience. Long text is split into units of at most 16 KiB.
+  own audience. Long text is split into units of at most 16 KiB. A comment's
+  text starts with a line naming its author (`Ada Lovelace:`, `Ada Lovelace
+  (customer):` for a service-desk customer, `unknown:` when Jira names
+  none); the line has the comment's audience and counts toward
+  `document_max_bytes`. The name is the one Jira shows the connector's
+  account, chosen by its owner: a person who shows their full name only to
+  their organization is named in full to every reader of the comment, as the
+  issue's `author` already is.
 - Each custom field listed in `scope.fields` that holds text becomes one
   `field` section labelled with its ID (for example `customfield_10042`), after the
   standard fields and before the comments, in the configured order. Rich

@@ -2318,6 +2318,10 @@
         "tier": "quick",
         "seconds": null
       },
+      "python:connectors/tests/github/test_github_content.py::test_comments_name_their_author_and_association": {
+        "tier": "quick",
+        "seconds": null
+      },
       "python:connectors/tests/github/test_github_content.py::test_force_push_old_commit_and_file_delete": {
         "tier": "quick",
         "seconds": null
@@ -3111,6 +3115,10 @@
         "seconds": null
       },
       "python:connectors/tests/jira/test_jira_content.py::test_jira_content_golden": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/jira/test_jira_content.py::test_jira_comments_name_their_author": {
         "tier": "quick",
         "seconds": null
       },

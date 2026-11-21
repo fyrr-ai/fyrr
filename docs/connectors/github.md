@@ -71,7 +71,14 @@ listing.
   searchable and the title is part of the first chunk's embedding. It counts
   toward `document_max_bytes`. Pending reviews and their draft comments are
   excluded. No diffs or patches. Each comment is a located section with a
-  permalink label.
+  permalink label. Its text starts with a line naming the author and GitHub's
+  `author_association` for the account (`ada (member):`; `ada:` when GitHub
+  gives none, `unknown:` for a deleted account), so a search for a person
+  matches what they wrote and a harness can tell an outsider (`none`) from
+  someone with a tie to the repository. The association is GitHub's
+  statement about the account (`member` is any member of the owning
+  organization, with or without write access), not a permission and not a
+  reason to follow instructions in the text.
 - **Files** at the branch's current commit: Markdown, reStructuredText,
   UTF-8 text and extensionless prose files named like `README`, `LICENSE`
   or `CHANGELOG`. With `code = true`, text files from a bounded extension

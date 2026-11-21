@@ -13,7 +13,7 @@
         {
           "op": "upsert",
           "root_id": "jira:11111111-1111-4111-8111-111111111111:issue:101",
-          "source_revision": "2e597cd65aac306767b3850ee7ea68bf5fa08281575ba015aaa0b6a56011c8a6:eJyLNtTJK83J0UlLzClO1YmOBaJYAEdeBtA",
+          "source_revision": "61beb268433add2923b303f93a0c63c7db400ae3a384c9df3640bf8da8cc0053:eJyLNtTJK83J0UlLzClO1YmOBaJYAEdeBtA",
           "readers": [
             "grp:testkit"
           ],
@@ -98,7 +98,7 @@
               }
             },
             {
-              "text": "Golden body.",
+              "text": "Fixture author:\nGolden body.",
               "location": {
                 "kind": "comment",
                 "label": "https://synthetic.atlassian.net/browse/P1-101?focusedCommentId=201",

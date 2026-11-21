@@ -126,7 +126,13 @@ class GitHub(Connector[Settings, Scope]):
             "line",
             "original_line",
         )
-        return {**{key: entry[key] for key in keys if key in entry}, "kind": kind}
+        user = entry.get("user")
+        return {
+            **{key: entry[key] for key in keys if key in entry},
+            "login": user.get("login") if isinstance(user, dict) else None,
+            "association": entry.get("author_association"),
+            "kind": kind,
+        }
 
     def _conversation(
         self, repo: Repository, ref: ConversationRef, before: dict[str, Any]

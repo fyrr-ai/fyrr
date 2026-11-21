@@ -57,6 +57,19 @@ def test_jira_content_golden(jira):
     testkit.assert_golden(result, Path(__file__).parent / "golden/content.json")
 
 
+def test_jira_comments_name_their_author(jira, jira_index):
+    jira.issue(101)
+    jira.comment(101, 201, "Staff.")
+    jira.comment(101, 202, "Customer.", author={"displayName": "Cora", "accountType": "customer"})
+    del jira.comment(101, 203, "Anonymous.")["author"]
+    sections = jira_index.sync()["jira:11111111-1111-4111-8111-111111111111:issue:101"]["sections"]
+    assert [s["text"] for s in sections if s["location"]["kind"] == "comment"] == [
+        "Fixture author:\nStaff.",
+        "Cora (customer):\nCustomer.",
+        "unknown:\nAnonymous.",
+    ]
+
+
 def test_jira_fixed_http_gateway_real_requests_and_null_fields(monkeypatch):
     import requests
     from fake_jira import FakeServer
