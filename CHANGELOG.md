@@ -58,6 +58,21 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- To use connectors, install this release's `fyrr-connectors`
+  wheel with your provider extras in a Python 3.13+ virtual environment. Set
+  `VIRTUAL_ENV` to its absolute path and run `fyrr writer providers` to verify
+  the installation. The full image includes the SDK and bundled providers.
+  Commands that run no connector need no Python. Each sync kind runs in a
+  fresh Python process; the worker memory limit applies to that process
+  separately. What breaks for existing users:
+  - The embedded interpreter is gone: the binary links no Python
+    (`PYO3_PYTHON`, `libpython`).
+  - SDK 0.1.2 or newer is needed; 0.1.0 and 0.1.1 do not work.
+  - A provider that aborts fails its source with `the provider failed`.
+  - `PATH`, `VIRTUAL_ENV` and names starting with `PYTHON` or `LD_` are
+    reserved names for stored credentials a source references;
+    `fyrr config check` refuses them.
+  See [how a provider runs](docs/connectors/authoring.md#how-a-provider-runs).
 - The Jira connector keeps link targets (`text (url)`, smart cards as their
   URL). Under `permissions = "fixed"` it adds a `links` section with the
   parent and issue links, keys only (`blocks: PROJ-140`). Affected issues are

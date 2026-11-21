@@ -1,70 +1,77 @@
 //! Revision lookup and streaming callbacks for prepared provider reads.
 use super::*;
+use crate::python::host::Revisions;
 
-impl Preparation<'_> {
-    pub(super) fn callbacks<'py>(
-        &self,
-        py: Python<'py>,
-        view: RevisionView<'_>,
-    ) -> Result<(Bound<'py, PyCFunction>, Bound<'py, PyCFunction>), WriterError> {
-        let callback_failure = view.failure;
-        let cfg = self.config.clone();
-        let d = view.dataset.clone();
-        let p = view.pending;
-        let lookup_rt = self.rt.clone();
-        let lookup_failure = callback_failure.clone();
-        let lookup_callback = move |args: &Bound<'_, pyo3::types::PyTuple>,
-                                    _: Option<&Bound<'_, pyo3::types::PyDict>>|
-              -> PyResult<_> {
-            let (roots,): (Vec<String>,) = args.extract()?;
-            if roots.len() > 256 {
-                return Err(PyRuntimeError::new_err(
-                    WriterError::RevisionPageInvalid.as_str(),
-                ));
+/// The most roots one `lookup_revisions` may ask for.
+const MAX_ROOTS: usize = 256;
+
+/// Answers the provider's two callbacks from the namespace's published
+/// content and the pending envelopes. A storage failure, or a request the worker
+/// refuses (more than [`MAX_ROOTS`] roots), fails the call and is kept: the
+/// provider may catch the error and finish, and the read still cannot be
+/// attested complete afterwards.
+pub(super) struct RevisionCallbacks<'a> {
+    config: &'a fyrr_core::config::Config,
+    rt: &'a Arc<tokio::runtime::Runtime>,
+    dataset: Option<Arc<lance::Dataset>>,
+    pending: Arc<PendingRevisions>,
+    revisions: RevisionStream,
+    failure: &'a revisions::RevisionFailure,
+}
+
+impl<'a> RevisionCallbacks<'a> {
+    pub(super) fn new(
+        config: &'a fyrr_core::config::Config,
+        rt: &'a Arc<tokio::runtime::Runtime>,
+        view: RevisionView<'a>,
+    ) -> Self {
+        Self {
+            config,
+            rt,
+            dataset: view.dataset.clone(),
+            pending: view.pending,
+            revisions: view.revisions,
+            failure: view.failure,
+        }
+    }
+}
+
+impl Revisions for RevisionCallbacks<'_> {
+    fn lookup(&mut self, roots: &[String]) -> Option<BTreeMap<String, String>> {
+        if roots.len() > MAX_ROOTS {
+            *crate::lock(self.failure) = Some(WriterError::HostCallbackFailed);
+            return None;
+        }
+        match self.rt.block_on(lookup_revisions(
+            self.config,
+            self.dataset.as_deref(),
+            &self.pending,
+            roots,
+        )) {
+            Ok(revisions) => Some(
+                revisions
+                    .into_iter()
+                    .map(|(root, (revision, _))| (root, revision))
+                    .collect(),
+            ),
+            Err(code) => {
+                *crate::lock(self.failure) = Some(code);
+                None
             }
-            lookup_rt
-                .block_on(lookup_revisions(&cfg, d.as_deref(), &p, &roots))
-                .map(|revisions| {
-                    revisions
-                        .into_iter()
-                        .map(|(root, (revision, _))| (root, revision))
-                        .collect::<std::collections::BTreeMap<_, _>>()
-                })
-                .map_err(|code| {
-                    *crate::lock(&lookup_failure) = Some(code);
-                    PyRuntimeError::new_err(WriterError::HostCallbackFailed.as_str())
-                })
-        };
-        // PyO3 0.28 omits this bound (RUSTSEC-2026-0177).
-        let _: &dyn Sync = &lookup_callback;
-        let lookup = PyCFunction::new_closure(py, Some(c"lookup_revisions"), None, lookup_callback)
-            .map_err(|_| WriterError::RevisionViewInvalid)?;
-        let next_failure = callback_failure.clone();
-        let next_rt = self.rt.clone();
-        let revisions = view.revisions;
-        let next_callback = move |_: &Bound<'_, pyo3::types::PyTuple>,
-                                  _: Option<&Bound<'_, pyo3::types::PyDict>>|
-              -> PyResult<Vec<(String, String)>> {
-            let mut stream = revisions
-                .lock()
-                .map_err(|_| PyRuntimeError::new_err(WriterError::RevisionViewInvalid.as_str()))?;
-            loop {
-                match next_rt.block_on(stream.next()) {
-                    Some(Ok(rows)) if rows.is_empty() => continue,
-                    Some(rows) => {
-                        return rows.map_err(|code| {
-                            *crate::lock(&next_failure) = Some(code);
-                            PyRuntimeError::new_err(WriterError::HostCallbackFailed.as_str())
-                        });
-                    }
-                    None => return Ok(Vec::new()),
+        }
+    }
+
+    fn next(&mut self) -> Option<Vec<(String, String)>> {
+        loop {
+            match self.rt.block_on(self.revisions.next()) {
+                Some(Ok(rows)) if rows.is_empty() => {}
+                Some(Ok(rows)) => return Some(rows),
+                Some(Err(code)) => {
+                    *crate::lock(self.failure) = Some(code);
+                    return None;
                 }
+                None => return Some(Vec::new()),
             }
-        };
-        let _: &dyn Sync = &next_callback;
-        let next = PyCFunction::new_closure(py, Some(c"next_revisions"), None, next_callback)
-            .map_err(|_| WriterError::RevisionViewInvalid)?;
-
-        Ok((lookup, next))
+        }
     }
 }

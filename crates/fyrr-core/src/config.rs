@@ -916,12 +916,60 @@ const SECRET_IN_FILE: &str =
 /// Environment variable names a secret reference may use.
 const ENV_NAME: &str = "[A-Z_][A-Z0-9_]*";
 
-fn valid_env_name(name: &str) -> bool {
+/// Whether `name` is an environment variable name a secret reference may use.
+pub fn valid_env_name(name: &str) -> bool {
     !name.is_empty()
         && !name.as_bytes()[0].is_ascii_digit()
         && name
             .bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// The longest credential variable name the provider host takes.
+pub const HOST_ENV_NAME_MAX: usize = 256;
+
+/// Why the provider host refuses a stored credential under `name`, or `None`.
+/// `PATH`, `VIRTUAL_ENV`, `PYTHON*` and `LD_*` would change which interpreter,
+/// modules or libraries the host runs, and a longer name is over its limit.
+pub fn host_env_refusal(name: &str) -> Option<&'static str> {
+    if name.len() > HOST_ENV_NAME_MAX {
+        Some("a name delivered to the provider host is at most 256 bytes")
+    } else if matches!(name, "PATH" | "VIRTUAL_ENV")
+        || name.starts_with("PYTHON")
+        || name.starts_with("LD_")
+    {
+        Some(
+            "PATH, VIRTUAL_ENV and names starting with PYTHON or LD_ cannot be delivered to \
+             the provider host: they would change what it runs",
+        )
+    } else {
+        None
+    }
+}
+
+/// The environment references (`{ env = "NAME" }`) in a provider's `settings`
+/// or `scope`, as (path, name): the one walk that `config check` and the writer
+/// worker, which delivers the stored credentials, both use.
+pub fn env_references(path: &str, value: &Value, found: &mut Vec<(String, String)>) {
+    match value {
+        Value::Object(map) => {
+            if map.len() == 1
+                && let Some(name) = map.get("env").and_then(Value::as_str)
+            {
+                found.push((path.to_owned(), name.to_owned()));
+            } else {
+                for (key, child) in map {
+                    env_references(&format!("{path}.{key}"), child, found);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                env_references(&format!("{path}[{index}]"), child, found);
+            }
+        }
+        _ => {}
+    }
 }
 
 impl<'de> Deserialize<'de> for SecretRef {

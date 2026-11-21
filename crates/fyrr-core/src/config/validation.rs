@@ -835,6 +835,16 @@ fn sources(config: &Config, error: &mut impl FnMut(&str, String)) -> (ConfigDura
             for (path, message) in inline {
                 error(&path, message);
             }
+            // A stored credential reaches the provider host's environment.
+            let mut references = Vec::new();
+            env_references(&at(table), &Value::Object(value.clone()), &mut references);
+            for (path, name) in references {
+                if writer.credentials.contains_key(&name)
+                    && let Some(message) = host_env_refusal(&name)
+                {
+                    error(&path, message.into());
+                }
+            }
         }
     }
 

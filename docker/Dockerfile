@@ -1,10 +1,12 @@
 # The two images of the one fyrr binary:
-#   --target fyrr-reader  reader-only build: no writer, Python or PyO3
-#   --target fyrr         full build with the embedded Python, the connector
-#                         SDK and the bundled providers
+#   --target fyrr-reader  reader-only build: no writer, no Python
+#   --target fyrr         full build, the Python interpreter, the connector
+#                         SDK and the bundled providers (the binary itself
+#                         contains no Python and finds the interpreter next
+#                         to itself, in /usr/local/bin)
 # Build from the repository root; scripts/images builds, tests and measures
 # both. Base images are pinned by digest; both runtimes are Debian 13, like
-# the builder, so the binary's glibc and libpython match.
+# the builder, so the binary's glibc matches.
 #
 # BINARIES selects where the two binaries come from:
 #   builder   (default) compile them here with scripts/lib.sh release_binaries
@@ -18,21 +20,13 @@ ARG PYTHON_IMAGE=python:3.13.17-slim-trixie@sha256:d98cc29d3266e535dd9da1099688d
 ARG READER_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:cb87acc574abe719b6e5c547384defa2f7b1f24af9605d3f618cf852495d8be2
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.12.21@sha256:a7aed3216253ee804de3e2d8afa5073baa1a177335345d43845cd4165e43b711
 
-FROM ${RUST_IMAGE} AS rust
 FROM ${UV_IMAGE} AS uv
 
 # Builds both binaries in one cargo target (cache mounts keep the registry,
-# git checkouts and target between builds). The Python of the full image's
-# base links PyO3, so libpython matches at run time.
-FROM ${PYTHON_BUILD_IMAGE} AS builder
+# git checkouts and target between builds).
+FROM ${RUST_IMAGE} AS builder
 ARG CARGO_BUILD_JOBS=4
-COPY --from=rust /usr/local/cargo /usr/local/cargo
-COPY --from=rust /usr/local/rustup /usr/local/rustup
-ENV RUSTUP_HOME=/usr/local/rustup \
-    CARGO_HOME=/usr/local/cargo \
-    PATH=/usr/local/cargo/bin:$PATH \
-    RUSTUP_TOOLCHAIN=1.97.1 \
-    PYO3_PYTHON=/usr/local/bin/python3.13 \
+ENV RUSTUP_TOOLCHAIN=1.97.1 \
     CARGO_TARGET_DIR=/cache/target
 WORKDIR /src
 # The pinned, checksum-verified protoc that Lance's build scripts need.

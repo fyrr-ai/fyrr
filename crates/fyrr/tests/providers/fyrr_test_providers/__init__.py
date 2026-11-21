@@ -222,7 +222,7 @@ class InvalidConnector(Connector):
 
 
 class FailingSettings(ConfigModel):
-    mode: Literal["raise", "abort", "exit", "hang", "print"] = setting(
+    mode: Literal["raise", "abort", "exit", "hang", "print", "memory", "die"] = setting(
         description="How the provider fails."
     )
 
@@ -237,6 +237,10 @@ class FailingConnector(Connector):
         data = _fixture(self)
         marker = data["documents"][0]["text"]
         mode = self.context.settings.mode
+        pid_dir = os.environ.get("FYRR_TEST_PID_DIR")
+        if pid_dir:
+            # Lets a test prove that no provider process outlives the command.
+            Path(pid_dir, f"{mode}.pid").write_text(str(os.getpid()))
         if mode == "raise":
             raise ValueError(f"cannot parse document {marker}")
         if mode == "abort":
@@ -245,6 +249,17 @@ class FailingConnector(Connector):
             raise SystemExit(f"giving up on {marker}")
         if mode == "hang":
             time.sleep(3600)
+        if mode == "memory":
+            # Far above any worker memory limit the tests configure.
+            try:
+                hoard = [bytearray(1 << 30) for _ in range(64)]
+            except MemoryError:
+                if pid_dir:
+                    Path(pid_dir, "memory.limited").write_text("1")
+                raise
+            raise ValueError(len(hoard))
+        if mode == "die":
+            os._exit(7)
         print("provider stdout line")
         yield ContentBatch(changes=document_changes([]), cursor="printed")
 
@@ -301,10 +316,94 @@ def bad_metadata_info() -> dict:
     return info
 
 
+def bad_required_info() -> dict:
+    """A provider whose config schema names a required property with a marker,
+    which fyrr must not print when the source leaves it out."""
+    marker = os.environ.get("FYRR_TEST_METADATA_MARKER", "marker")
+    info = provider_info(
+        name="sentinel-bad-required", connector=DocsConnector, min_sdk_version="0.1.0"
+    )
+    info["config_schema"]["scope"]["required"] = ["fixture", f"{marker}\nsecond-line"]
+    return info
+
+
+def versioned_info() -> dict:
+    """Registered by a distribution whose version is not a version (its
+    METADATA says `9.9 SENTINEL-VERSION`)."""
+    return provider_info(
+        name="sentinel-versioned", connector=DocsConnector, min_sdk_version="0.1.0"
+    )
+
+
 def raising_metadata_info() -> dict:
     if os.environ.get("FYRR_TEST_METADATA_ABORT"):
         os.abort()
     raise RuntimeError(os.environ.get("FYRR_TEST_METADATA_MARKER", "marker"))
+
+
+def _worker_result_name() -> str:
+    """The name of the worker's result channel. The worker keeps it in its own
+    environment, which its provider host does not inherit; a hostile provider
+    reads it from its parent, as this does, and speaks on the channel."""
+    environ = Path(f"/proc/{os.getppid()}/environ").read_bytes().split(b"\0")
+    entry = next(e for e in environ if e.startswith(b"FYRR_WORKER_RESULT="))
+    return entry.split(b"=", 1)[1].decode()
+
+
+def _descriptors() -> list[dict]:
+    """The open descriptors of this process: number, target, close-on-exec."""
+    found = []
+    for name in sorted(os.listdir("/proc/self/fd"), key=int):
+        try:
+            target = os.readlink(f"/proc/self/fd/{name}")
+            info = Path(f"/proc/self/fdinfo/{name}").read_text()
+        except OSError:
+            continue  # the descriptor of the listing itself
+        flags = int(
+            next(line for line in info.splitlines() if line.startswith("flags:")).split()[1], 8
+        )
+        found.append({"fd": int(name), "target": target, "cloexec": bool(flags & os.O_CLOEXEC)})
+    return found
+
+
+def _forked_descriptors(path: str) -> list[dict]:
+    """What a process this provider forks (`os.fork`, which no close-on-exec
+    flag covers) holds."""
+    pid = os.fork()
+    if pid == 0:
+        try:
+            Path(path + ".fork").write_text(json.dumps(_descriptors()))
+        finally:
+            os._exit(0)
+    os.waitpid(pid, 0)
+    return json.loads(Path(path + ".fork").read_text())
+
+
+def _report_descriptors(path: str) -> None:
+    """What this provider, a child it starts (without closing descriptors, as a
+    careless provider would) and a process it forks hold, for the test to read."""
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, os; d = '/proc/self/fd/'; print(json.dumps([[int(n), os.readlink(d + n)] "
+            "for n in os.listdir(d) if os.path.lexists(d + n)]))",
+        ],
+        close_fds=False,
+        capture_output=True,
+        check=True,
+    )
+    internal = ("FYRR_WORKER_RESULT", "FYRR_WORKER_MEMORY", "FYRR_WRITER_EMBEDDING_CAP")
+    Path(path).write_text(
+        json.dumps(
+            {
+                "provider": _descriptors(),
+                "forked": _forked_descriptors(path),
+                "child": json.loads(child.stdout),
+                "inherited_internal": any(name in os.environ for name in internal),
+            }
+        )
+    )
 
 
 class ReviewSettings(ConfigModel):
@@ -333,6 +432,8 @@ class ReviewConnector(Connector):
                 + b"\n",
             )
             os._exit(17)
+        if mode == "fds":
+            _report_descriptors(data["fd_report"])
         if mode.startswith("child-"):
             child = subprocess.Popen(
                 ["/bin/sleep", "60"], start_new_session=data.get("detached", False)
@@ -344,7 +445,7 @@ class ReviewConnector(Connector):
                 raise ValueError(marker)
             if mode == "child-parent-error":
                 channel = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                channel.connect("\0" + os.environ["FYRR_WORKER_RESULT"])
+                channel.connect("\0" + _worker_result_name())
                 channel.sendall(b"x" * ((1 << 20) + 1))
                 time.sleep(60)
             if mode == "child-timeout":
@@ -381,7 +482,7 @@ class ReviewConnector(Connector):
                     "error": None,
                 }
             channel = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            channel.connect("\0" + os.environ["FYRR_WORKER_RESULT"])
+            channel.connect("\0" + _worker_result_name())
             channel.sendall(json.dumps(payload).encode())
             os._exit(0)
         if mode == "allocate":
