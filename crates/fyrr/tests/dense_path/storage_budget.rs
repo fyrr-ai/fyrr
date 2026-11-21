@@ -232,16 +232,24 @@ impl Drop for Service {
 /// the history shows as storage requests that grow with this number.
 /// They and the namespace's first publication form a history of five.
 const PUBLICATIONS: usize = 4;
+/// Whether a request changes storage: an idle service takes no lease and
+/// writes nothing, not even the head.
+fn writes_storage(request: &str) -> bool {
+    !["GET ", "HEAD ", "LIST "]
+        .iter()
+        .any(|read| request.starts_with(read))
+}
+
 /// Ticks of the committer measured once the service has settled.
 const TICKS: u64 = 8;
 /// Storage requests of one idle committer tick, other than reads of
-/// publication manifests: the lease, the head, the policy, the envelope
-/// listing, the dataset open and the head it publishes (17 measured).
-const IDLE_TICK_BUDGET: usize = 17;
+/// publication manifests: the head, the policy twice, the envelope listing,
+/// the identity and the dataset open (12 measured). None of them writes.
+const IDLE_TICK_BUDGET: usize = 12;
 /// Reads of publication manifests by one idle tick: the served manifest,
-/// once for the previous manifest of the group and once for the receipt. A
-/// walk of the history would read `PUBLICATIONS` or more.
-const IDLE_TICK_MANIFESTS: usize = 2;
+/// once for the receipt. A walk of the history would read `PUBLICATIONS` or
+/// more.
+const IDLE_TICK_MANIFESTS: usize = 1;
 
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
@@ -297,7 +305,7 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
     let child = &mut service.0;
     // Startup runs a sync worker per source, which finds nothing due. The
     // service is idle once, after its first seconds, two seconds in a row
-    // write nothing but the head.
+    // write nothing.
     let started = std::time::Instant::now();
     let deadline = started + Duration::from_secs(120);
     let mut quiet = 0;
@@ -307,7 +315,7 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
         let writes = seen
             .all(mark)
             .iter()
-            .filter(|request| request.starts_with("PUT ") && request != &"PUT head.json")
+            .filter(|request| writes_storage(request))
             .count();
         quiet = if writes == 0 && seen.len() > mark {
             quiet + 1
@@ -323,16 +331,19 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
             "the service never settled"
         );
     }
-    let published = || {
+    let events = |event: &str| {
         std::fs::read_to_string(&log)
             .unwrap()
-            .matches("writer_service event=published")
+            .matches(&format!("writer_service event={event}"))
             .count()
     };
-    let (mark, before) = (seen.len(), published());
+    let (mark, idle_before, published_before) = (seen.len(), events("idle"), events("published"));
     std::thread::sleep(Duration::from_secs(TICKS));
     let requests = seen.all(mark);
-    let published = published() - before;
+    let (idle, published) = (
+        events("idle") - idle_before,
+        events("published") - published_before,
+    );
     assert!(
         child.try_wait().unwrap().is_none(),
         "the writer service exited"
@@ -343,14 +354,19 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
         .into_iter()
         .partition(|request| request.starts_with("GET publications/"));
     // A window of `TICKS` seconds holds at most one tick more; a loaded host
-    // may run fewer, but an idle service publishes at every tick. Only the
-    // service's own events tell a tick from a failed commit: the lease writes
-    // the head too.
+    // may run fewer. Only the service's own events tell an idle tick from a
+    // tick that had nothing to look at: the committer ticked and took no lease.
     let ticks = usize::try_from(TICKS).unwrap() + 1;
     assert!(
-        published >= usize::try_from(TICKS / 2).unwrap(),
-        "only {published} publications: the committer did not tick"
+        idle >= usize::try_from(TICKS / 2).unwrap(),
+        "only {idle} idle ticks: the committer did not tick"
     );
+    assert_eq!(published, 0, "an idle service committed");
+    let writes: Vec<_> = rest
+        .iter()
+        .filter(|request| writes_storage(request))
+        .collect();
+    assert!(writes.is_empty(), "an idle service wrote {writes:?}");
     within(
         "idle writer, manifest reads",
         (0, manifests),

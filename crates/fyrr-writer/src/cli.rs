@@ -249,7 +249,9 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
                 let result = if let Some(id) = receipt {
                     crate::commit::receipt(config, id).await
                 } else {
-                    crate::commit::commit_until_stopped(config, *stage_timings, None).await
+                    crate::commit::commit_until_stopped(config, *stage_timings, None)
+                        .await
+                        .map(|(receipt, _)| receipt)
                 };
                 result.map(|receipt| serde_json::json!(receipt))
             }),

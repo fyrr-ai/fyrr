@@ -177,6 +177,32 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     )
 }
 
+/// The envelopes of purged sources, found by reads alone.
+pub(crate) async fn purged_envelopes(
+    config: &Config,
+    head: &ServingHead,
+    policy: &fyrr_core::publication::PolicyArtifact,
+) -> Result<Vec<(Path, PreparedEnvelope)>> {
+    if !policy
+        .retired_sources
+        .values()
+        .any(|source| source.purged_at.is_some())
+    {
+        return Ok(Vec::new());
+    }
+    let (paths, _) = crate::commit::envelope_paths(config, head).await?;
+    Ok(crate::commit::read_envelopes(config, &paths)
+        .await?
+        .into_iter()
+        .filter(|(_, envelope)| {
+            policy
+                .retired_sources
+                .get(&envelope.source_id)
+                .is_some_and(|source| source.purged_at.is_some())
+        })
+        .collect())
+}
+
 /// Purged sources cannot leave unpublished worker payloads in the log.
 /// Applied fragments remain pinned by retained publications and age out normally.
 pub(crate) async fn discard_purged(
@@ -187,24 +213,13 @@ pub(crate) async fn discard_purged(
     let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
     let policy: fyrr_core::publication::PolicyArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-    if !policy
-        .retired_sources
-        .values()
-        .any(|source| source.purged_at.is_some())
-    {
+    let purged = purged_envelopes(config, &head, &policy).await?;
+    if purged.is_empty() {
         return Ok(0);
     }
-    let (paths, _) = crate::commit::envelope_paths(config, &head).await?;
     let (applied, _) = crate::commit::published_ids(config, &head).await?;
     let mut retired = Vec::new();
-    for (path, envelope) in crate::commit::read_envelopes(config, &paths).await? {
-        if !policy
-            .retired_sources
-            .get(&envelope.source_id)
-            .is_some_and(|source| source.purged_at.is_some())
-        {
-            continue;
-        }
+    for (path, envelope) in purged {
         if !applied.contains(&envelope.envelope_id)
             && let EnvelopePayload::Content(payload) = &envelope.payload
         {
