@@ -233,7 +233,7 @@ curl https://fyrr.example.com/mcp \
 | Symptom | Cause and fix |
 | --- | --- |
 | `401 unauthorized` | The token failed a [token rule](#tokens): usually the audience (`fyrr:read` is not a default scope of the sign-in client, or its Audience mapper does not add `fyrr` to the access token), an expired token, or a token from another realm. Decode it and compare `iss`, `aud`, `scope` and `typ`. |
-| `503 authorization_unavailable` | The token is valid but its subject is not bound: the user is not yet in a published directory pull, is disabled, or has no verified e-mail in `verified_domains`. It also means the last directory pull is older than `identity.validity_deadline`, or the keys could not be fetched. Check `fyrr writer status`. |
+| `503 authorization_unavailable` | The token is valid but its subject is not bound: the user is not yet in a published directory pull, is disabled, or has no verified e-mail in `verified_domains`. It also means the keys could not be fetched. Check `fyrr writer status`. |
 | A user is missing although the e-mail looks right | Keycloak does not mark it verified. Users federated from LDAP need *Trust Email* on the LDAP provider, or a verified flag set by an administrator. |
 | `403 host_mismatch` | The proxy does not pass the public `Host`: set `proxy_set_header Host $host`. The reader logs `http refused code=host_mismatch`. |
 | `403 invalid_argument` | The request had an `Origin` header: browsers cannot call `/mcp` directly. |
@@ -259,10 +259,7 @@ subject bindings return `503 authorization_unavailable`.
   leeway; `sub` has 1–512 bytes.
 - The subject (`iss` and `sub`) must be bound to an active canonical user in
   the published identity, or the request gets `503
-  authorization_unavailable`. The same answer follows when the serving head
-  carries a directory freshness timestamp older than
-  `identity.validity_deadline`, whatever the reader's own
-  `identity.directory.provider`.
+  authorization_unavailable`.
 
 ### Keys
 

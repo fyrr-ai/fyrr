@@ -1313,7 +1313,7 @@ async fn maintenance_restore_batched_authorization_boundaries_on_storage() {
         // Event order comes from the acknowledged restore callbacks, not this watchdog.
         let mut probe = Command::new("timeout");
         probe.args(["--kill-after=5s", "180s"]).arg(
-            std::env::var_os("FYRR_SCIM_HEALTH_TEST_BINARY")
+            std::env::var_os("FYRR_WRITER_TEST_BINARY")
                 .expect("writer libtest built by scripts/ci"),
         );
         if let Some(case) = &case {
@@ -1537,98 +1537,4 @@ async fn maintenance_purge_window_and_restore_horizon_on_storage() {
     );
     drop(mcp);
     drop(guard);
-}
-
-#[tokio::test]
-#[ignore = "requires owned real-S3 fixture"]
-async fn maintenance_restore_rejected_authorization_freezes_freshness_on_storage() {
-    use super::incremental::{envelopes, rows};
-    use fyrr_core::connector::SyncKind;
-    use fyrr_core::envelope::EnvelopePayload;
-    for kind in [SyncKind::Permissions, SyncKind::Members] {
-        let (worker, commit, root) = fixture();
-        publish_initial(&worker, &commit, &root);
-        input(
-            &root,
-            json!({"epoch":2,"content":[[doc("a","r2","fixture document 2")]]}),
-        );
-        worker_sync(&worker, &["incremental", "--kind", "content"]);
-        input(
-            &root,
-            if kind == SyncKind::Permissions {
-                json!({"epoch":3,"permissions":[[{"id":"a","revision":"p2","readers":[]}]]})
-            } else {
-                json!({"epoch":3,"members":[{"users":[{"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}],"groups":[{"id":"child","members":[]},{"id":"group","members":["grp:child"]}]}]})
-            },
-        );
-        worker_sync(&worker, &["incremental", "--kind", kind.as_str()]);
-        let loaded = fyrr_core::config::load(&worker).unwrap();
-        let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-        let target = publication(&worker).await.1;
-        let mut rejected_id = String::new();
-        for (path, mut envelope) in envelopes(&worker).await {
-            if (kind == SyncKind::Permissions
-                && matches!(&envelope.payload, EnvelopePayload::Permissions(p) if p.documents.iter().any(|d| d.permission_revision == "p2")))
-                || (kind == SyncKind::Members
-                    && envelope.kind == kind
-                    && envelope.sequence > 2
-                    && matches!(&envelope.payload, EnvelopePayload::Members(p) if !p.complete_read))
-            {
-                rejected_id = envelope.envelope_id.clone();
-                envelope.created_at = fyrr_core::clock::now() - chrono::Duration::days(4);
-                store
-                    .put(&path, fyrr_core::write_contract(&envelope).into())
-                    .await
-                    .unwrap();
-            }
-        }
-        assert!(!rejected_id.is_empty());
-        input(&root, json!({"epoch":4}));
-        worker_sync(
-            &worker,
-            &["incremental", "--kind", "permissions", "--kind", "members"],
-        );
-        // Time compression: expire only this source's head freshness, keeping identity/directory live.
-        let mut before = publication(&worker).await.0;
-        let old = before
-            .freshness
-            .sources
-            .iter_mut()
-            .find(|f| f.source_id == "incremental")
-            .unwrap();
-        old.permissions_read_at = fyrr_core::clock::now() - chrono::Duration::hours(2);
-        old.members_read_at = Some(old.permissions_read_at);
-        let old = old.clone();
-        store
-            .put(
-                &ns.clone().join("head.json"),
-                fyrr_core::write_contract(&before).into(),
-            )
-            .await
-            .unwrap();
-        command(&commit, &["writer", "restore", &target.publication_id]);
-        let (head, _) = publication(&worker).await;
-        assert_eq!(
-            head.freshness
-                .sources
-                .iter()
-                .find(|f| f.source_id == "incremental")
-                .unwrap(),
-            &old
-        );
-        assert!(
-            fyrr_writer::commit::published_ids(&loaded.config, &head)
-                .await
-                .unwrap()
-                .1
-                .contains(&rejected_id)
-        );
-        let batch = rows(&worker).await;
-        assert!(
-            fyrr_writer::apply::strings(&batch, "source_revision")
-                .unwrap()
-                .iter()
-                .all(|r| r == Some("r1"))
-        );
-    }
 }

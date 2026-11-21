@@ -521,7 +521,7 @@ class Slack(Connector[Settings, Scope]):
         return snapshot
 
     def _check_batches(self, kind, cursor, batches):
-        # Preflight every frame before yielding, so no later size error renews freshness.
+        # Preflight every frame before yielding, so no later size error leaves part of the read yielded.
         for batch in batches:
             header, _ = encode(self.context.source_id, kind, cursor, batch)
             if len(json.dumps(header).encode()) > self.context.limits.max_bytes:

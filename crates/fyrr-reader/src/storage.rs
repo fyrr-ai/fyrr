@@ -639,26 +639,17 @@ pub async fn artifact<T: fyrr_core::Contract>(
     parse_contract(&bytes).map_err(|_| StorageError::AuthorizationUnavailable)
 }
 
-/// Directory proof is valid strictly before its deadline, never in the future.
-///
-/// The publication decides whether a directory clock exists, not the reader's
-/// own `identity.directory.provider`: a serving head that carries a freshness
-/// timestamp is the writer's attestation of a directory read, and every reader
-/// holds it to `identity.validity_deadline`. A head without one (a snapshot
-/// imported by hand, which proves nothing about freshness) is served only by a
-/// reader without a directory provider; a reader that has one refuses it.
-pub fn directory_fresh(
+/// A reader configured with a directory provider serves only an identity that
+/// holds a published directory read; none is served before the first one.
+pub fn directory_published(
     config: &Config,
-    freshness: Option<chrono::DateTime<chrono::Utc>>,
-    now: chrono::DateTime<chrono::Utc>,
+    identity: &fyrr_core::identity::IdentityArtifact,
 ) -> bool {
-    let Some(at) = freshness else {
-        return config.identity.directory.provider == fyrr_core::config::DirectoryProvider::None;
-    };
-    at <= now
-        && (now - at)
-            .to_std()
-            .is_ok_and(|age| age < config.identity.validity_deadline.as_duration())
+    config.identity.directory.provider == fyrr_core::config::DirectoryProvider::None
+        || identity
+            .inputs
+            .iter()
+            .any(|i| i.kind == fyrr_core::identity::IdentityInputKind::Directory)
 }
 
 pub async fn pinned(

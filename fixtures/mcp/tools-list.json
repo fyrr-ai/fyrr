@@ -413,14 +413,6 @@
                   "type": "string"
                 }
               },
-              "hidden_sources": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "default": [],
-                "maxItems": 64
-              },
               "stale_version": {
                 "type": "boolean"
               },
@@ -544,7 +536,6 @@
               "content_version",
               "committed_at",
               "degraded",
-              "hidden_sources",
               "stale_version",
               "omitted_bytes",
               "telemetry"
@@ -564,7 +555,7 @@
         "openWorldHint": false
       },
       "_meta": {
-        "fyrr/schema_version": "3.0"
+        "fyrr/schema_version": "4.0"
       }
     },
     {
@@ -950,14 +941,6 @@
                   "type": "string"
                 }
               },
-              "hidden_sources": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "default": [],
-                "maxItems": 64
-              },
               "stale_version": {
                 "type": "boolean"
               },
@@ -1081,7 +1064,6 @@
               "content_version",
               "committed_at",
               "degraded",
-              "hidden_sources",
               "stale_version",
               "omitted_bytes",
               "telemetry"
@@ -1104,7 +1086,7 @@
         "openWorldHint": false
       },
       "_meta": {
-        "fyrr/schema_version": "3.0"
+        "fyrr/schema_version": "4.0"
       }
     },
     {
@@ -1261,14 +1243,6 @@
                   "type": "string"
                 }
               },
-              "hidden_sources": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "default": [],
-                "maxItems": 64
-              },
               "stale_version": {
                 "type": "boolean"
               },
@@ -1392,7 +1366,6 @@
               "content_version",
               "committed_at",
               "degraded",
-              "hidden_sources",
               "stale_version",
               "omitted_bytes",
               "telemetry"
@@ -1414,7 +1387,7 @@
         "openWorldHint": false
       },
       "_meta": {
-        "fyrr/schema_version": "3.0"
+        "fyrr/schema_version": "4.0"
       }
     }
   ]

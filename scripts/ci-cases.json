@@ -279,10 +279,6 @@
         "tier": "quick",
         "seconds": 0.1
       },
-      "full:fyrr-reader:lib:fyrr_reader/storage::tests::the_publication_decides_whether_the_directory_clock_applies": {
-        "tier": "quick",
-        "seconds": 0.0
-      },
       "full:fyrr-reader:lib:fyrr_reader/tools::cursor_tests::list_cursor_maximum_identifiers_and_windows_fit_and_roundtrip": {
         "tier": "quick",
         "seconds": 0.001
@@ -539,7 +535,7 @@
         "tier": "quick",
         "seconds": 0.001
       },
-      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::cached_identity_never_skips_token_or_directory_expiry": {
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::cached_identity_never_skips_token_expiry": {
         "tier": "quick",
         "seconds": 0.001
       },
@@ -1120,14 +1116,6 @@
         "tier": "quick",
         "seconds": 0.0
       },
-      "full:fyrr-core:test:contracts/manifest_without_dense_rq_bits_means_one_bit": {
-        "tier": "quick",
-        "seconds": 0.01
-      },
-      "full:fyrr-core:test:contracts/manifest_without_dense_partition_rows_means_550": {
-        "tier": "quick",
-        "seconds": 0.01
-      },
       "full:fyrr-core:test:contracts/committed_compat_fixtures_behave": {
         "tier": "quick",
         "seconds": 0.004
@@ -1494,25 +1482,13 @@
         "tier": "full",
         "seconds": 36.761
       },
-      "full:fyrr:test:dense_path/publication_lifecycle::unverified_attestation_does_not_renew_authorization": {
-        "tier": "quick",
-        "seconds": 25.899
-      },
       "full:fyrr:test:dense_path/publication_lifecycle::serve_isolates_failed_providers_while_publishing_on_storage": {
         "tier": "full",
         "seconds": 33.382
       },
-      "full:fyrr:test:dense_path/publication_lifecycle::serve_timer_disabled_committer_and_directory_hook_on_storage": {
+      "full:fyrr:test:dense_path/publication_lifecycle::serve_timer_disabled_committer_on_storage": {
         "tier": "full",
         "seconds": 96.301
-      }
-    },
-    "children": {
-      "full:fyrr-writer:lib:fyrr_writer/serve::tests::scim_verified_applied_sync_hook": {
-        "tier": "quick",
-        "parents": [
-          "full:fyrr:test:dense_path/publication_lifecycle::unverified_attestation_does_not_renew_authorization"
-        ]
       }
     }
   },
@@ -1589,17 +1565,6 @@
       "full:fyrr:test:dense_path/corrections::retrieval_error_revocation_cases": {
         "tier": "quick",
         "seconds": 12.037
-      }
-    }
-  },
-  "local-live-expiry": {
-    "title": "local: live-expiry",
-    "kind": "rust",
-    "backend": "local",
-    "cases": {
-      "full:fyrr:test:dense_path/corrections::correction_live_mcp_expires_without_commit": {
-        "tier": "quick",
-        "seconds": 5.427
       }
     }
   },
@@ -1682,7 +1647,7 @@
     "kind": "rust",
     "backend": "local",
     "cases": {
-      "full:fyrr:test:dense_path/directory_ops::identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_storage": {
+      "full:fyrr:test:dense_path/directory_ops::identity_directory_keycloak_pull_nested_deactivation_on_storage": {
         "tier": "full",
         "seconds": 82.627
       },
@@ -1712,10 +1677,6 @@
         "tier": "full",
         "seconds": 156.747
       },
-      "full:fyrr:test:dense_path/http_mcp::a_published_directory_clock_binds_a_reader_without_a_directory_provider_on_storage": {
-        "tier": "full",
-        "seconds": 100.0
-      },
       "full:fyrr:test:dense_path/identity::identity_alias_collision_link_revoke_and_idempotence_on_storage": {
         "tier": "full",
         "seconds": 31.047
@@ -1728,17 +1689,9 @@
         "tier": "full",
         "seconds": 48.179
       },
-      "full:fyrr:test:dense_path/identity::identity_import_withdraws_the_directory_clock_in_the_same_head_write_on_storage": {
-        "tier": "full",
-        "seconds": 40.0
-      },
       "full:fyrr:test:dense_path/identity::identity_large_grants_are_complete_and_over_limit_is_subject_local_on_storage": {
         "tier": "full",
         "seconds": 26.613
-      },
-      "full:fyrr:test:dense_path/identity::identity_scim_namespace_creation_and_import_never_attest_without_proof_on_storage": {
-        "tier": "quick",
-        "seconds": 12.496
       },
       "full:fyrr:test:dense_path/api_keys::roles_are_isolated_without_oidc": {
         "tier": "quick",
@@ -1790,7 +1743,7 @@
         "tier": "full",
         "seconds": 51.0
       },
-      "full:fyrr:test:dense_path/google_drive::google_drive_quarantine_and_permission_read_failure_deadline_on_storage": {
+      "full:fyrr:test:dense_path/google_drive::google_drive_quarantine_and_permission_read_failure_keeps_rights_on_storage": {
         "tier": "full",
         "seconds": 45.653
       },
@@ -1836,10 +1789,6 @@
       "full:fyrr:test:dense_path/maintenance::maintenance_restore_discovers_authorization_after_failed_cursor_on_storage": {
         "tier": "full",
         "seconds": 70.21
-      },
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_rejected_authorization_freezes_freshness_on_storage": {
-        "tier": "full",
-        "seconds": 73.103
       },
       "full:fyrr:test:dense_path/maintenance::maintenance_retired_source_commits_are_fenced_on_storage": {
         "tier": "full",
@@ -1887,11 +1836,11 @@
     "kind": "rust",
     "backend": "local",
     "cases": {
-      "full:fyrr:test:dense_path/incremental::incremental_caught_revision_failure_never_attests_on_storage": {
+      "full:fyrr:test:dense_path/incremental::incremental_caught_revision_failure_fails_the_read_on_storage": {
         "tier": "full",
         "seconds": 141.246
       },
-      "full:fyrr:test:dense_path/incremental::incremental_caught_refused_revision_request_never_attests_on_storage": {
+      "full:fyrr:test:dense_path/incremental::incremental_caught_refused_revision_request_fails_the_read_on_storage": {
         "tier": "full",
         "seconds": 30.0
       },
@@ -1907,10 +1856,6 @@
         "tier": "full",
         "seconds": 44.076
       },
-      "full:fyrr:test:dense_path/incremental::incremental_delta_expired_source_isolated_on_storage": {
-        "tier": "full",
-        "seconds": 26.637
-      },
       "full:fyrr:test:dense_path/incremental::incremental_delta_genesis_undeclared_row_rejected_on_storage": {
         "tier": "full",
         "seconds": 29.872
@@ -1918,10 +1863,6 @@
       "full:fyrr:test:dense_path/incremental::incremental_rejected_authorization_requires_complete_replacement_on_storage": {
         "tier": "full",
         "seconds": 103.26
-      },
-      "full:fyrr:test:dense_path/incremental::incremental_members_alone_never_attest_permissions_on_storage": {
-        "tier": "quick",
-        "seconds": 34.768
       },
       "full:fyrr:test:dense_path/incremental::incremental_section_readers_survive_a_later_permission_state_on_storage": {
         "tier": "full",
@@ -1938,6 +1879,10 @@
       "full:fyrr:test:dense_path/incremental::incremental_large_members_snapshot_passes_dry_run_and_a_prepared_run_on_storage": {
         "tier": "full",
         "seconds": 60.0
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_idle_member_reread_publishes_nothing_on_storage": {
+        "tier": "full",
+        "seconds": 20.0
       }
     }
   },
@@ -3870,19 +3815,19 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_never_renews_freshness[internal_error]": {
+      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_yields_no_batch[internal_error]": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_never_renews_freshness[invalid_auth]": {
+      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_yields_no_batch[invalid_auth]": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_never_renews_freshness[missing_scope]": {
+      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_yields_no_batch[missing_scope]": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_never_renews_freshness[thread_not_found]": {
+      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_yields_no_batch[thread_not_found]": {
         "tier": "quick",
         "seconds": null
       },
@@ -4042,11 +3987,11 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/slack/test_slack_permissions.py::test_rate_limit_exhaustion_yields_no_freshness[members]": {
+      "python:connectors/tests/slack/test_slack_permissions.py::test_rate_limit_exhaustion_raises_after_bounded_retries[members]": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/slack/test_slack_permissions.py::test_rate_limit_exhaustion_yields_no_freshness[permissions]": {
+      "python:connectors/tests/slack/test_slack_permissions.py::test_rate_limit_exhaustion_raises_after_bounded_retries[permissions]": {
         "tier": "quick",
         "seconds": null
       },
@@ -4912,25 +4857,6 @@
       "full:fyrr:test:dense_path/index_errors::writer_verify_preserves_incompatible_index_on_storage": {
         "tier": "full",
         "seconds": 7.977
-      }
-    }
-  },
-  "local-admission-refresh": {
-    "title": "local: admission-refresh",
-    "kind": "rust",
-    "backend": "local",
-    "cases": {
-      "full:fyrr:test:dense_path/embedding::tools_directory_recovery_refuses_admission_after_failed_refresh_on_storage": {
-        "tier": "quick",
-        "seconds": 7.792
-      }
-    },
-    "children": {
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::failed_refresh_cannot_admit_a_stale_mask_after_directory_recovery_on_storage": {
-        "tier": "quick",
-        "parents": [
-          "full:fyrr:test:dense_path/embedding::tools_directory_recovery_refuses_admission_after_failed_refresh_on_storage"
-        ]
       }
     }
   },

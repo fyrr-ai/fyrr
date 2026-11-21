@@ -138,7 +138,7 @@ def test_failed_acl_pass_publishes_no_partial_state(github, index, status, kind)
     with pytest.raises((ApiError, ValueError)):
         for batch in index.run(kind):
             parts.append(batch)
-    assert parts == [], "no freshness can be renewed before all ACL reads succeed"
+    assert parts == [], "no batch is yielded before all ACL reads succeed"
 
 
 def test_malformed_permissions_fail_instead_of_empty_acl_success(github, index):

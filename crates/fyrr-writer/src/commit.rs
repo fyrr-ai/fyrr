@@ -589,9 +589,8 @@ async fn commit_group_with_rejections(
         .map(|(i, s)| (s, i))
         .collect();
     let count = order.len().max(1);
-    // Reject expired authorization inputs before later attestations of either kind.
-    // Otherwise a permission heartbeat can advance freshness before a queued member
-    // rejection becomes visible. Valid authorization reads still precede content.
+    // Reject over-age authorization inputs first so their rejections become visible
+    // before later reads of either kind. Valid authorization reads still precede content.
     // Source fairness applies after priority; valid sequences stay ordered within a kind.
     // Keep age priorities fixed while the sorter compares envelopes.
     let now = fyrr_core::clock::now();
@@ -905,23 +904,6 @@ const INDEXES: &[(&str, &str, IndexType, &str)] = &[
         "inverted",
     ),
 ];
-
-fn source_freshness<'a>(head: &'a mut ServingHead, source: &str) -> &'a mut SourceFreshness {
-    let index = head
-        .freshness
-        .sources
-        .iter()
-        .position(|f| f.source_id == source)
-        .unwrap_or_else(|| {
-            head.freshness.sources.push(SourceFreshness {
-                source_id: source.into(),
-                permissions_read_at: chrono::DateTime::UNIX_EPOCH,
-                members_read_at: None,
-            });
-            head.freshness.sources.len() - 1
-        });
-    &mut head.freshness.sources[index]
-}
 
 pub(crate) async fn read_envelopes(
     config: &Config,

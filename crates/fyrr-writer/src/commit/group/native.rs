@@ -168,7 +168,6 @@ impl<'a> ContentWork<'a> {
     pub(super) async fn apply_non_content(
         &mut self,
         head: &mut ServingHead,
-        blocked: &BTreeSet<String>,
         non_content: Vec<&PreparedEnvelope>,
         receipts: &mut Vec<String>,
         sequence: u64,
@@ -177,26 +176,13 @@ impl<'a> ContentWork<'a> {
         let lease = self.lease;
         for envelope in non_content {
             match &envelope.payload {
-                EnvelopePayload::Permissions(p) => {
+                EnvelopePayload::Permissions(_) => {
                     if head.content.is_none()
                         && let Some(ds) = &mut self.dataset
                     {
                         let (keys, fragments) =
                             crate::apply::permissions(config, ds, envelope).await?;
                         apply_staged(config, ds, lease, &mut self.lineage, keys, fragments).await?;
-                    }
-                    if p.complete_read && !blocked.contains(&envelope.source_id) {
-                        let f = source_freshness(head, &envelope.source_id);
-                        f.permissions_read_at = f.permissions_read_at.max(p.read_at);
-                    }
-                }
-                EnvelopePayload::Members(p) => {
-                    if p.complete_read && !blocked.contains(&envelope.source_id) {
-                        let f = source_freshness(head, &envelope.source_id);
-                        f.members_read_at = Some(
-                            f.members_read_at
-                                .map_or(p.read_at, |old| old.max(p.read_at)),
-                        );
                     }
                 }
                 EnvelopePayload::Reconcile(_) => {

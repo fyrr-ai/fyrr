@@ -19,7 +19,7 @@ pub enum WriterCommand {
     /// Sync all configured sources, or the named ones, into prepared envelopes.
     Sync {
         /// Pull the configured canonical directory instead of connector sources.
-        #[arg(long, conflicts_with_all = ["sources", "kinds", "dry_run"])]
+        #[arg(long, conflicts_with_all = ["sources", "kinds", "dry_run", "due"])]
         directory: bool,
         /// Source IDs; all configured sources when omitted.
         sources: Vec<String>,
@@ -58,7 +58,6 @@ pub enum WriterCommand {
         receipt: Option<String>,
     },
     /// Publish a complete hashed directory snapshot under the namespace lease.
-    /// Does not attest directory freshness.
     Directory {
         #[arg(long)]
         snapshot: std::path::PathBuf,
@@ -81,7 +80,7 @@ pub enum WriterCommand {
         #[arg(long, default_value = "10m")]
         timeout: ConfigDuration,
     },
-    /// Show publications, envelopes, quarantine, backpressure and freshness.
+    /// Show publications, envelopes, quarantine, backpressure and the last permission and member read per source.
     /// Counts are relative to the printed, pinned content_sequence and exact in
     /// a quiescent namespace. Concurrent commits and arrivals can overcount pending work.
     Status,
@@ -207,7 +206,6 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
                 if *directory {
                     return runtime_command(crate::directory_pull::pull(
                         config,
-                        *due,
                         timeout.as_duration(),
                     ));
                 }

@@ -53,6 +53,8 @@ pub(super) struct Pending {
     pub(super) cursors: Vec<(u64, Option<String>)>,
     pub(super) generation: u32,
     pub(super) restore_sequence: u64,
+    /// The newest rejection generation that a complete-read envelope ended.
+    pub(super) completed_generation: u32,
     pub(super) members_tail: Option<(u64, bool)>,
     pub(super) store: Arc<dyn ObjectStore>,
     content_count: u64,
@@ -72,6 +74,7 @@ impl Preparation<'_> {
         let mut durable_generation = 0;
         let mut durable_restore_sequence = 0;
         let mut members_tail = None;
+        let mut completed_generation = 0;
         evidence.refresh(self.config, self.rt, head)?;
         let Snapshot {
             published,
@@ -152,6 +155,13 @@ impl Preparation<'_> {
             if envelope.source_id == self.source.id && envelope.kind == self.kind {
                 durable_generation = durable_generation.max(envelope.rejection_generation);
                 durable_restore_sequence = durable_restore_sequence.max(envelope.restore_sequence);
+                if matches!(
+                    envelope.payload,
+                    EnvelopePayload::Permissions(_) | EnvelopePayload::Members(_)
+                ) && crate::apply::complete_read(&envelope)
+                {
+                    completed_generation = completed_generation.max(envelope.rejection_generation);
+                }
                 if let EnvelopePayload::Members(part) = &envelope.payload
                     && !part.complete_read
                     && members_tail.is_none_or(|(sequence, _)| envelope.sequence > sequence)
@@ -177,6 +187,7 @@ impl Preparation<'_> {
             cursors: durable_cursors,
             generation: durable_generation,
             restore_sequence: durable_restore_sequence,
+            completed_generation,
             members_tail,
             store,
             content_count,
@@ -185,7 +196,13 @@ impl Preparation<'_> {
         })
     }
 
-    pub(super) fn cursor_state(&self, durable: &Pending, due: bool) -> Result<(CursorState, bool)> {
+    /// The cursor state, whether the kind is not due, and whether this read
+    /// replaces a rejected generation that no complete read has ended.
+    pub(super) fn cursor_state(
+        &self,
+        durable: &Pending,
+        due: bool,
+    ) -> Result<(CursorState, bool, bool)> {
         let mut state = self.rt.block_on(self.lease.state())?;
         state.rejection_generation = state.rejection_generation.max(durable.generation);
         state.restore_sequence = state.restore_sequence.max(durable.restore_sequence);
@@ -235,18 +252,23 @@ impl Preparation<'_> {
                 .ok_or(WriterError::RejectionGenerationOverflow)?;
             self.rt.block_on(self.lease.write(state.clone()))?;
         }
+        // A generation no complete-read envelope has ended is a replacement of a
+        // rejection, also after an earlier attempt failed; the schedule never
+        // delays an unfinished permission or member recovery.
+        let replaces = state.rejection_generation > durable.completed_generation;
+        let recovering = replaces && matches!(self.kind, SyncKind::Permissions | SyncKind::Members);
         if due
             && markers.is_empty()
-            && state.sequence > 0
+            && !recovering
             && interval.is_some_and(|i| {
                 (fyrr_core::clock::now() - state.updated_at)
                     .to_std()
                     .is_ok_and(|elapsed| elapsed < i.as_duration())
             })
         {
-            return Ok((state, true));
+            return Ok((state, true, false));
         }
-        Ok((state, false))
+        Ok((state, false, replaces))
     }
 
     pub(super) fn backpressure(&self, pending: &Pending, full: bool) -> Result<()> {

@@ -15,7 +15,6 @@
       "$ref": "#/$defs/IdentityConfig",
       "default": {
         "stdio_readers": [],
-        "validity_deadline": "1h",
         "max_tokens_per_user": 5000,
         "directory": {
           "provider": "none",
@@ -676,11 +675,6 @@
           ],
           "description": "Namespace HMAC key, required; only an environment reference is accepted."
         },
-        "validity_deadline": {
-          "$ref": "#/$defs/Duration",
-          "description": "Identity artifact validity, counted from the directory freshness instant.",
-          "default": "1h"
-        },
         "max_tokens_per_user": {
           "type": "integer",
           "format": "uint32",
@@ -734,7 +728,7 @@
         },
         "sync_interval": {
           "$ref": "#/$defs/Duration",
-          "description": "Pull interval, or the attestation interval of SCIM push.",
+          "description": "Pull interval of the `keycloak` and `snapshot` providers.",
           "default": "15m"
         },
         "credentials": {
@@ -1208,7 +1202,7 @@
           "default": "16GiB"
         }
       },
-      "description": "Content backpressure; permission, member and freshness work always passes."
+      "description": "Content backpressure; permission and member work always passes."
     },
     "WriterServeConfig": {
       "type": "object",

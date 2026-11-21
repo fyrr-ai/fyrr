@@ -185,7 +185,6 @@ async fn restore_history_checks_order_before_recovery_on_storage() {
             assert_eq!(after.content, corrupt_head.content);
             assert_eq!(after.policy, corrupt_head.policy);
             assert_eq!(after.identity, corrupt_head.identity);
-            assert_eq!(after.freshness, corrupt_head.freshness);
             store
                 .put(
                     &namespace.clone().join("head.json"),
@@ -204,7 +203,7 @@ async fn restore_history_checks_order_before_recovery_on_storage() {
 #[ignore = "real S3 cached history library path; scripts/ci"]
 fn cached_restore_history_checks_sequence_joins_on_storage() {
     let (config, _root, _) = super::tools::fixture();
-    let output = Command::new(std::env::var_os("FYRR_SCIM_HEALTH_TEST_BINARY").unwrap())
+    let output = Command::new(std::env::var_os("FYRR_WRITER_TEST_BINARY").unwrap())
         .args([
             "commit::history::sequence_tests::cached_history_checks_sequence_at_joins_on_storage",
             "--exact",

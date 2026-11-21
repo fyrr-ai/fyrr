@@ -266,7 +266,7 @@ async fn committer_indexes_and_stale_prepared_acl_on_storage() {
 
 #[tokio::test]
 #[ignore = "real CLI 60-second service timer and RustFS; scripts/ci"]
-async fn serve_timer_disabled_committer_and_directory_hook_on_storage() {
+async fn serve_timer_disabled_committer_on_storage() {
     let (config, commit, root) = fixture();
     let initial = publication(&commit).await.0.content.unwrap();
     input(
@@ -277,7 +277,7 @@ async fn serve_timer_disabled_committer_and_directory_hook_on_storage() {
     // No source polling is needed for this timer proof; the backlog lives only on S3.
     let mut text = std::fs::read_to_string(&commit).unwrap();
     text.truncate(text.find("[[sources]]").unwrap());
-    text.push_str("\n[writer.serve]\ncommitter=false\n[identity.directory]\nprovider='scim'\nissuer='https://issuer.one'\nverified_domains=['example.test']\n");
+    text.push_str("\n[writer.serve]\ncommitter=false\n");
     let service = root.join("committer-host/service.toml");
     std::fs::write(&service, &text).unwrap();
     let mut child = host_command(&service)
@@ -297,7 +297,6 @@ async fn serve_timer_disabled_committer_and_directory_hook_on_storage() {
         .unwrap();
     assert!(child.wait().unwrap().success());
     std::fs::write(&service, text.replace("committer=false", "committer=true")).unwrap();
-    let before = publication(&commit).await.0;
     let began = std::time::Instant::now();
     let mut child = host_command(&service)
         .args(["writer", "serve"])
@@ -328,11 +327,6 @@ async fn serve_timer_disabled_committer_and_directory_hook_on_storage() {
     assert!(child.wait().unwrap().success());
     assert!(observed);
     assert!(began.elapsed().as_secs() >= 60);
-    let after = publication(&commit).await.0;
-    assert_eq!(
-        before.freshness.directory, after.freshness.directory,
-        "ordinary SCIM commit must not attest health"
-    );
     publish(&commit);
 }
 
@@ -382,137 +376,6 @@ async fn serve_isolates_failed_providers_while_publishing_on_storage() {
     let result = process.finish();
     assert!(result.status.success(), "{}", report(&result));
     success(&commit, &["writer", "verify"]);
-}
-
-#[tokio::test]
-#[ignore = "real CLI, test-only SCIM health source and RustFS; scripts/ci"]
-async fn unverified_attestation_does_not_renew_authorization() {
-    use object_store::ObjectStoreExt;
-    let (config, commit, root) = fixture();
-    let service = root.join("unverified-scim.toml");
-    std::fs::write(
-        &service,
-        format!(
-            "{}\n[identity.directory]\nprovider='scim'\nissuer='https://issuer.one'\nverified_domains=['example.test']\n",
-            std::fs::read_to_string(&config).unwrap()
-        ),
-    )
-    .unwrap();
-    // Start with a completed read; an ordinary commit cannot renew this proof.
-    let verified = root.join("verified-directory.toml");
-    let directory = root.join("verified-directory.json");
-    let configured = fyrr_core::config::load(&commit).unwrap();
-    let mut snapshot = super::identity::snapshot(&configured.config, "snapshot");
-    snapshot.users.push(super::identity::user(
-        &configured.config,
-        configured.config.identity.stdio_user.as_deref().unwrap(),
-    ));
-    std::fs::write(&directory, write_contract(&snapshot)).unwrap();
-    std::fs::write(
-        &verified,
-        format!(
-            "{}\n[identity.directory]\nprovider='snapshot'\nsnapshot_file='{}'\n",
-            std::fs::read_to_string(&commit).unwrap(),
-            directory.display()
-        ),
-    )
-    .unwrap();
-    success(&verified, &["writer", "sync", "--directory", "--full"]);
-    let loaded = fyrr_core::config::load(&service).unwrap();
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let mut client = super::tools::Mcp::open(&service);
-    let args = json!({"order":"updated_at","sources":["allowed"],"limit":1});
-    assert!(
-        !client.call("search", args.clone())["structuredContent"]["hits"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    let mut head = publication(&commit).await.0;
-    head.freshness.directory = Some(fyrr_core::clock::now() - chrono::Duration::hours(2));
-    store
-        .put(
-            &ns.clone().join("head.json"),
-            fyrr_core::write_contract(&head).into(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        client.call("search", args.clone())["structuredContent"]["code"],
-        "authorization_unavailable"
-    );
-    let rejected = host_command(&service)
-        .args(["writer", "attest-directory"])
-        .output()
-        .unwrap();
-    assert!(
-        !rejected.status.success(),
-        "standalone unverified attestation must not exist"
-    );
-    assert_eq!(
-        publication(&commit).await.0.freshness.directory,
-        head.freshness.directory
-    );
-    // An ordinary SCIM commit also has no proof, and cannot revive the reader.
-    publish(&service);
-    assert_eq!(
-        publication(&commit).await.0.freshness.directory,
-        head.freshness.directory
-    );
-    assert_eq!(
-        client.call("search", args.clone())["structuredContent"]["code"],
-        "authorization_unavailable"
-    );
-    let unattended = root.join("committer-host/unverified-serve.toml");
-    let mut text = std::fs::read_to_string(&commit).unwrap();
-    text.truncate(text.find("[[sources]]").unwrap());
-    std::fs::write(&unattended, format!("{text}\n[writer.commit]\ncoalescing_timer='1s'\n[identity.directory]\nprovider='scim'\nissuer='https://issuer.one'\nverified_domains=['example.test']\n")).unwrap();
-    let mut process = super::coordination::CommitProcess::spawn_command(
-        &unattended,
-        &["writer", "serve"],
-        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    );
-    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
-    Command::new("kill")
-        .args(["-TERM", &process.child().id().to_string()])
-        .status()
-        .unwrap();
-    assert!(process.finish().status.success());
-    assert_eq!(
-        publication(&commit).await.0.freshness.directory,
-        head.freshness.directory
-    );
-    assert_eq!(
-        client.call("search", args.clone())["structuredContent"]["code"],
-        "authorization_unavailable"
-    );
-    // The proof source exists only in the writer library's test executable.
-    let output = Command::new(
-        std::env::var_os("FYRR_SCIM_HEALTH_TEST_BINARY")
-            .expect("build writer libtest before this campaign"),
-    )
-    .args([
-        "serve::tests::scim_verified_applied_sync_hook",
-        "--exact",
-        "--ignored",
-    ])
-    .env("FYRR_SCIM_HEALTH_TEST_CONFIG", &service)
-    .current_dir(service.parent().unwrap())
-    .output()
-    .unwrap();
-    assert!(
-        output.status.success(),
-        "{} {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
-    assert!(
-        !client.call("search", args)["structuredContent"]["hits"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
 }
 
 #[tokio::test]

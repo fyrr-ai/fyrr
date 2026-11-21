@@ -1,4 +1,4 @@
-//! Complete bounded directory reads. Failed/partial reads never publish or attest.
+//! Complete bounded directory reads. Failed or partial reads never publish.
 use crate::{Result, WriterError};
 use fyrr_core::{
     Contract,
@@ -320,51 +320,30 @@ async fn read_snapshot(config: &Config) -> Result<DirectorySnapshot> {
     snapshot.state = None;
     Ok(snapshot)
 }
-pub async fn pull(config: &Config, due: bool, timeout: std::time::Duration) -> Result<Value> {
-    let started = fyrr_reader::storage::optional_head(config)
-        .await?
-        .ok_or(WriterError::NamespaceUnavailable)?;
-    if due {
-        let head = &started;
-        if head.freshness.directory.is_some_and(|at| {
-            fyrr_core::clock::now()
-                .signed_duration_since(at)
-                .to_std()
-                .is_ok_and(|age| age < config.identity.directory.sync_interval.as_duration())
-        }) {
-            return Ok(serde_json::json!({"directory_due":false}));
-        }
-    }
-    let read = async {
-        match config.identity.directory.provider {
-            DirectoryProvider::Keycloak => keycloak(config).await,
-            DirectoryProvider::Snapshot => read_snapshot(config).await,
-            _ => Err(WriterError::DirectoryPullUnsupported),
-        }
-    };
-    let mut snapshot = tokio::time::timeout(timeout, read)
-        .await
-        .map_err(|_| WriterError::DirectoryPullTimeout)??;
+pub async fn pull(config: &Config, timeout: std::time::Duration) -> Result<Value> {
+    // The namespace lease is held from before the read until its publication, so
+    // an older read can never publish after a newer one and restore a grant that
+    // the newer one revoked.
     crate::lease::LeaseGuard::with(config, |lease| async move {
-        snapshot.built_at = fyrr_core::clock::now();
-
-        async {
-            // An overlapping publisher invalidates the read, even if this older read
-            // completed later. Never replace a newer revocation or freshness proof.
-            let live = lease.head().await?;
-            if live.identity != started.identity
-                || live.freshness.directory != started.freshness.directory
-            {
-                return Err(WriterError::DirectoryPullStale);
+        let read_started = fyrr_core::clock::now();
+        let read = async {
+            match config.identity.directory.provider {
+                DirectoryProvider::Keycloak => keycloak(config).await,
+                DirectoryProvider::Snapshot => read_snapshot(config).await,
+                _ => Err(WriterError::DirectoryPullUnsupported),
             }
-            if config.identity.directory.provider == DirectoryProvider::Keycloak
-                && let Some(prior) = current(config, &lease.head().await?).await?
-            {
-                snapshot.links = prior.links;
-            }
-            crate::directory::publish_held(config, &snapshot, &lease, Some(snapshot.built_at)).await
+        };
+        let mut snapshot = tokio::time::timeout(timeout, read)
+            .await
+            .map_err(|_| WriterError::DirectoryPullTimeout)??;
+        // The directory input carries the instant the read started.
+        snapshot.built_at = read_started;
+        if config.identity.directory.provider == DirectoryProvider::Keycloak
+            && let Some(prior) = current(config, &lease.head().await?).await?
+        {
+            snapshot.links = prior.links;
         }
-        .await
+        crate::directory::publish_held(config, &snapshot, &lease).await
     })
     .await
 }

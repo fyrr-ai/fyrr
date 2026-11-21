@@ -46,7 +46,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   [reader and writer settings](docs/reader-writer.md).
 - `namespace.dense_rq_bits` (1 to 9, default 1) sets the RaBitQ bits per
   dimension of the vector index. The value is recorded in the content
-  manifest (publication contract 3.1) and fixed once a namespace is
+  manifest (publication contract 4.0) and fixed once a namespace is
   published; see [tuning](docs/tuning.md).
 - `namespace.dense_partition_rows` (32 to 4096, default 550) sets the target
   rows per partition of the vector index, recorded and fixed like
@@ -102,6 +102,35 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   with its next version check, at the latest two intervals (60 s by
   default) after it was published, rather than with its next request.
   `SIGHUP` and `POST /admin/refresh` start a check at once.
+- **Breaking: the reader has no clock.** Results change only with a new
+  publication: the same query over the same published state returns the same
+  result, and nothing disappears on its own. The reader serves the last
+  published content, permissions and identity with no validity deadline, so
+  while a connector, the directory provider or the writer is down, a revoked
+  grant keeps serving until a publication carries the revocation; retire a
+  source whose connector stays broken. The writer publishes only on a real
+  change: an idle namespace gets no freshness envelope, no directory
+  attestation and no publication from the commit timer (the lease is still
+  taken and released). A member read whose snapshot equals the published one
+  (as a set) moves only its cursor and writes no envelope; a permission batch
+  with no document changes or container grants does the same, but a permission
+  batch that repeats rights is still written. Removed: the configuration key `identity.validity_deadline` (a
+  configuration that sets it is refused; configuration schema 6.0),
+  `freshness` in the serving head and `writer status`, the SCIM health proof
+  and the directory attestation of `writer serve`, the
+  `directory_health_invalid` error, the reader's directory-age,
+  identity-age and per-source hiding, `read_at` in the permission and member
+  envelope payloads, the 3.x defaults for manifests without `dense_rq_bits`
+  and `dense_partition_rows`, and `metadata.hidden_sources` in every MCP
+  response. Contract versions: MCP 4.0, serving head and content manifest
+  4.0, prepared envelope 5.0, identity artifact 2.0 (no `built_at`); republish
+  older namespaces. `writer status`
+  now reports `source_reads`: when each `permissions = "sync"` source's
+  permissions and members were last read, from the source's cursor state, with
+  nulls for a read that never completed. `writer sync --directory` no longer takes `--due`: the
+  `writer serve` timer or your scheduler decides when to pull. A pull holds the
+  namespace lease from before its read until its publication, so pulls cannot
+  publish out of order.
 - **Breaking: `reader.version_check` and `reader.per_request_wait` are
   removed** (configuration schema 6.0); a configuration that sets either is
   refused. `reader.version_check_interval` is the one setting. The reader
@@ -111,8 +140,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   replaces the `per-request` mode, which read the serving head for every
   request; such a reader now reads it at most once per interval and an
   answer can lag a publication by up to one interval. The `off` mode has no
-  replacement. `identity.validity_deadline` must now cover the interval in
-  every configuration. `metadata.stale_version` is now set in every reader whenever
+  replacement. `metadata.stale_version` is now set in every reader whenever
   the answer comes from an older version than the head the reader last
   read.
 - The reader's mirror downloads a data file of up to 2 MiB whole on its
@@ -209,15 +237,6 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Security
 
-- A reader with `identity.directory.provider = "none"` (the Lambda example
-  omits it) no longer skips the directory freshness check when the serving
-  head carries a timestamp. Reading a namespace whose writer pulls a
-  directory, it now answers `authorization_unavailable` once the pulls have
-  stopped for longer than `identity.validity_deadline`. A deployment that
-  moved to manual imports under `provider = "none"` is served again by one
-  `writer directory --snapshot` import, which withdraws the timestamp; the
-  snapshot must not be older than the last pull, or it is refused as stale.
-  Lambda readers should use the writer host's `validity_deadline`.
 - The README, quickstart and software factory guide no longer store
   `FYRR_IDENTITY_KEY` in Claude Code's settings: they add the reader
   without `-e` and start Claude Code from a shell with the key exported.

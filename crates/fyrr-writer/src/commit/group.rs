@@ -47,7 +47,7 @@ pub(crate) async fn commit_one(
         })
         .collect();
     stage(stage_timings, "envelopes", preparation_start);
-    let next_identity = refresh_identity(
+    let identity_changed = refresh_identity(
         config,
         store.as_ref(),
         &root,
@@ -65,13 +65,6 @@ pub(crate) async fn commit_one(
         &envelopes,
     )
     .await?;
-    if !next_identity
-        .inputs
-        .iter()
-        .any(|input| input.kind == IdentityInputKind::Directory)
-    {
-        head.freshness.directory = None;
-    }
     let data_start = std::time::Instant::now();
     let mut work = native::ContentWork::open(config, lease, &head, acl_changed).await?;
     let fts_merge_needed = work.fts_merge_needed().await?;
@@ -81,8 +74,11 @@ pub(crate) async fn commit_one(
         && (!policy_changed || head.content.is_none())
         && !fts_merge_needed
     {
-        head.updated_at = fyrr_core::clock::now();
-        lease.publish(head.clone()).await?;
+        // An idle namespace publishes nothing.
+        if identity_changed || policy_changed {
+            head.updated_at = fyrr_core::clock::now();
+            lease.publish(head.clone()).await?;
+        }
         return Ok(head.content.map_or(0, |p| p.lance_version));
     }
     let sequence = head.content.as_ref().map_or(Ok(1), |p| {
@@ -97,7 +93,7 @@ pub(crate) async fn commit_one(
         .collect();
     let mut receipts = envelopes.iter().map(|e| e.envelope_id.clone()).collect();
     work.apply_groups(&non_content, groups, sequence).await?;
-    work.apply_non_content(&mut head, &blocked, non_content, &mut receipts, sequence)
+    work.apply_non_content(&mut head, non_content, &mut receipts, sequence)
         .await?;
     for envelope in &envelopes {
         if crate::apply::rejected(config, &envelope.envelope_id).await? {
@@ -287,7 +283,7 @@ async fn refresh_identity(
     head: &mut ServingHead,
     envelopes: &[PreparedEnvelope],
     history: Option<&RestoreHistory>,
-) -> Result<IdentityArtifact> {
+) -> Result<bool> {
     let current_identity: IdentityArtifact =
         fyrr_reader::storage::artifact(store, root, &head.identity).await?;
     let identity_generation = head
@@ -295,7 +291,7 @@ async fn refresh_identity(
         .generation
         .checked_add(1)
         .ok_or(WriterError::IdentityGenerationOverflow)?;
-    let configured = configured_identity(config, identity_generation, fyrr_core::clock::now())?;
+    let configured = configured_identity(config, identity_generation)?;
     let member_paths = history
         .map(|h| {
             h.envelopes
@@ -338,7 +334,8 @@ async fn refresh_identity(
     if !identity_changed {
         next_identity.generation = head.identity.generation;
     }
-    if identity_changed || next_identity.inputs != current_identity.inputs {
+    let pointer_changed = identity_changed || next_identity.inputs != current_identity.inputs;
+    if pointer_changed {
         head.identity = crate::prepare::put_generation(
             store,
             root,
@@ -348,7 +345,7 @@ async fn refresh_identity(
         )
         .await?;
     }
-    Ok(next_identity)
+    Ok(pointer_changed)
 }
 
 async fn refresh_policy(

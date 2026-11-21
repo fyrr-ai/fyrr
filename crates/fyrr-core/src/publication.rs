@@ -5,9 +5,9 @@
 //! retrieval-policy digest, index and file identities, and the envelope IDs it
 //! published (the commit point of their receipts). The serving head points at
 //! the content publication and, separately, at the policy and identity
-//! generations and the per-source freshness instants, so those can move
-//! without a new content publication. Head CAS is the only visibility point;
-//! readers compare publication IDs, generations and instants, never ETags.
+//! generations, so those can move without a new content publication. Head CAS
+//! is the only visibility point; readers compare publication IDs and
+//! generations, never ETags.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,14 +20,7 @@ use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
 
 /// The publication contract version (manifest and head) written by this build.
-pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(3, 1);
-
-/// Bit width of publications that predate `ContentManifest::dense_rq_bits`.
-pub const LEGACY_DENSE_RQ_BITS: u8 = 1;
-
-/// Target partition rows of publications that predate
-/// `ContentManifest::dense_partition_rows`.
-pub const LEGACY_DENSE_PARTITION_ROWS: u32 = 550;
+pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
 
 /// Immutable policy generation used by the reader's admission path.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -109,13 +102,9 @@ pub struct ContentManifest {
     pub embedding: EmbeddingIdentity,
     pub chunk_profile: ChunkProfileIdentity,
     pub fts: FtsSettings,
-    /// RaBitQ bits per dimension of the vector index; absent in manifests
-    /// written before 3.1, which means 1.
-    #[serde(default = "legacy_dense_rq_bits")]
+    /// RaBitQ bits per dimension of the vector index.
     pub dense_rq_bits: u8,
-    /// Target rows per partition of the vector index; absent in manifests
-    /// written before 3.1, which means 550.
-    #[serde(default = "legacy_dense_partition_rows")]
+    /// Target rows per partition of the vector index.
     pub dense_partition_rows: u32,
     /// Digest of the retrieval policy, including the result composition.
     pub retrieval_policy_digest: String,
@@ -157,14 +146,6 @@ pub struct LineageTransaction {
     pub transaction_id: String,
 }
 
-fn legacy_dense_rq_bits() -> u8 {
-    LEGACY_DENSE_RQ_BITS
-}
-
-fn legacy_dense_partition_rows() -> u32 {
-    LEGACY_DENSE_PARTITION_ROWS
-}
-
 /// FTS analyzer settings, part of the publication identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FtsSettings {
@@ -197,7 +178,6 @@ pub struct ServingHead {
     pub content: Option<ContentPointer>,
     pub policy: GenerationPointer,
     pub identity: GenerationPointer,
-    pub freshness: FreshnessPointers,
     /// The single committer's lease; renewals change the ETag, not what is served.
     pub lease: Option<Lease>,
     pub updated_at: DateTime<Utc>,
@@ -229,25 +209,6 @@ pub struct GenerationPointer {
     /// Object key, relative to the namespace root.
     pub object: String,
     pub digest: String,
-}
-
-/// Published freshness instants.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct FreshnessPointers {
-    /// Last directory freshness attestation; the identity validity deadline
-    /// counts from it.
-    pub directory: Option<DateTime<Utc>>,
-    /// Last successful permission read per source with synced permissions.
-    pub sources: Vec<SourceFreshness>,
-}
-
-/// Last successful permission read of one source.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct SourceFreshness {
-    pub source_id: String,
-    pub permissions_read_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub members_read_at: Option<DateTime<Utc>>,
 }
 
 /// The namespace committer lease.
@@ -331,15 +292,6 @@ impl Contract for ServingHead {
         check_digest("policy.digest", &self.policy.digest)?;
         check_digest("identity.digest", &self.identity.digest)?;
         check_id("incarnation", &self.incarnation)?;
-        let mut sources = BTreeSet::new();
-        if !self
-            .freshness
-            .sources
-            .iter()
-            .all(|source| sources.insert(&source.source_id))
-        {
-            return Err("freshness.sources has duplicate sources".into());
-        }
         Ok(())
     }
 }

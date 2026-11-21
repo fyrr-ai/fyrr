@@ -93,9 +93,6 @@ pub const LANCE_UNREFERENCED_RETENTION: ConfigDuration = ConfigDuration::from_da
 pub const ENVELOPE_AGE_MARGIN: ConfigDuration = ConfigDuration::from_days(1);
 /// The maximum MCP request deadline; the version grace must exceed it.
 pub const MAX_REQUEST_DEADLINE: ConfigDuration = ConfigDuration::from_secs(300);
-/// Margin the identity validity deadline keeps beyond the visible sync,
-/// commit and version-check intervals.
-pub const IDENTITY_DEADLINE_MARGIN: ConfigDuration = ConfigDuration::from_mins(5);
 /// Providers whose sources expose no permissions to read, so their
 /// connections always use fixed readers.
 pub const FIXED_ONLY_PROVIDERS: [&str; 2] = ["local-files", "notion"];
@@ -479,9 +476,6 @@ pub struct IdentityConfig {
     /// Namespace HMAC key, required; only an environment reference is accepted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hashing_key: Option<SecretRef>,
-    /// Identity artifact validity, counted from the directory freshness instant.
-    #[serde(default = "default_validity_deadline")]
-    pub validity_deadline: ConfigDuration,
     /// A subject with more reader tokens gets `authorization_unavailable`.
     #[serde(default = "default_max_tokens_per_user")]
     #[schemars(range(min = 1))]
@@ -506,7 +500,7 @@ pub struct IdentityConfig {
 pub struct DirectoryConfig {
     #[serde(default)]
     pub provider: DirectoryProvider,
-    /// Pull interval, or the attestation interval of SCIM push.
+    /// Pull interval of the `keycloak` and `snapshot` providers.
     #[serde(default = "default_directory_interval")]
     pub sync_interval: ConfigDuration,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -784,7 +778,7 @@ pub struct MaintenanceConfig {
     pub step_max_duration: ConfigDuration,
 }
 
-/// Content backpressure; permission, member and freshness work always passes.
+/// Content backpressure; permission and member work always passes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BackpressureConfig {
@@ -1600,10 +1594,10 @@ fn default_fts_max_token_length() -> u32 {
     40
 }
 fn default_dense_rq_bits() -> u8 {
-    crate::publication::LEGACY_DENSE_RQ_BITS
+    1
 }
 fn default_dense_partition_rows() -> u32 {
-    crate::publication::LEGACY_DENSE_PARTITION_ROWS
+    550
 }
 fn default_region() -> String {
     "us-east-1".to_owned()
@@ -1640,9 +1634,6 @@ fn default_embedding_timeout() -> ConfigDuration {
 }
 fn default_embedding_retries() -> u32 {
     3
-}
-fn default_validity_deadline() -> ConfigDuration {
-    ConfigDuration::from_hours(1)
 }
 fn default_max_tokens_per_user() -> u32 {
     5000

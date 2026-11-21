@@ -119,7 +119,6 @@ impl PreparedReader {
             config: config.clone(),
             dataset,
             manifest,
-            hidden_sources: Self::hidden(config, &head, &policy)?,
             head,
             policy,
             identity,
@@ -339,7 +338,6 @@ impl PreparedReader {
         let config = self.config.clone();
         let manifest = self.manifest.clone();
         let head = self.head.clone();
-        let hidden_sources = self.hidden_sources.clone();
         let policy = self.policy.clone();
         let policy_cache = self.policy_cache.clone();
         let identity_cache = self.identity_cache.clone();
@@ -390,7 +388,6 @@ impl PreparedReader {
                 dataset,
                 manifest: manifest.clone(),
                 head: head.clone(),
-                hidden_sources: hidden_sources.clone(),
                 policy_cache: policy_cache.clone(),
                 identity_cache: identity_cache.clone(),
                 head_cache: head_cache.clone(),

@@ -932,8 +932,7 @@ fn coordination_status_bounded_backlog_on_storage() {
     let marker = sentinels.mark("status-private-cursor");
     let result_path = root.join("status-counts.json");
     let output = Command::new(
-        std::env::var_os("FYRR_SCIM_HEALTH_TEST_BINARY")
-            .expect("writer libtest built by scripts/ci"),
+        std::env::var_os("FYRR_WRITER_TEST_BINARY").expect("writer libtest built by scripts/ci"),
     )
     .args([
         "envelopes::tests::status_bounded_backlog_on_storage",
@@ -988,7 +987,6 @@ fn coordination_status_bounded_backlog_on_storage() {
         "envelopes",
         "pending_envelopes",
         "quarantine",
-        "freshness",
     ] {
         assert_eq!(actual[field], expected[field], "status field {field}");
     }

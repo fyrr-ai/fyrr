@@ -100,7 +100,8 @@ pub(super) fn prepared_kind(
             content_sequence: p.sequence,
             lance_version: p.lance_version,
         });
-        let (mut state, skip_not_due) = preparation.cursor_state(&pending, due)?;
+        let (mut state, skip_not_due, replaces_rejection) =
+            preparation.cursor_state(&pending, due)?;
         if skip_not_due {
             return Ok(default_report(ReportDefaults::NotDue(kind)));
         }
@@ -133,12 +134,15 @@ pub(super) fn prepared_kind(
             },
             &mut embedding,
             permission_stream,
+            replaces_rejection,
         )?;
+        // A completed read, even one that found nothing, moves the schedule and
+        // is the record of the source's last read.
+        state.updated_at = fyrr_core::clock::now();
+        rt.block_on(lease.write(state.clone()))?;
         let Some(cache) = &embedding else {
             return Ok(default_report(ReportDefaults::Kind { kind, stats }));
         };
-        state.updated_at = fyrr_core::clock::now();
-        rt.block_on(lease.write(state.clone()))?;
         Ok(serde_json::json!({
             "kind": kind,
             "stats": stats,
@@ -163,6 +167,7 @@ pub(super) fn prepared_kind(
 }
 
 impl Preparation<'_> {
+    #[allow(clippy::too_many_arguments)]
     fn read(
         &self,
         state: &mut CursorState,
@@ -171,6 +176,7 @@ impl Preparation<'_> {
         view: RevisionView<'_>,
         embedding: &mut Option<WriterEmbedding>,
         permission_stream: bool,
+        replaces_rejection: bool,
     ) -> Result<KindStats> {
         let dataset = view.dataset;
         let mut content = if self.kind == SyncKind::Content {
@@ -196,6 +202,9 @@ impl Preparation<'_> {
             let mut callbacks = RevisionCallbacks::new(self.config, self.rt, view);
             let limits = crate::batch::Limits::for_source(self.config, self.source);
             let source_json = crate::sync::source_json(self.source, limits);
+            // shortcut: a members snapshot is held whole until the provider read
+            // ends, as the commit holds it whole too.
+            let mut held: Vec<ConnectorBatch> = Vec::new();
             let mut checker =
                 BatchChecker::new(&self.source.id, self.kind, limits, state.cursor.clone());
             let cursor = state.cursor.clone();
@@ -228,6 +237,11 @@ impl Preparation<'_> {
                             permission_stream,
                             budget,
                         )
+                    } else if self.kind == SyncKind::Members {
+                        // The whole snapshot is held until the read completes: an
+                        // unchanged one writes nothing.
+                        held.push(batch);
+                        Ok(())
                     } else {
                         self.rt.block_on(crate::prepare::non_content(
                             self.config,
@@ -241,7 +255,7 @@ impl Preparation<'_> {
                     }
                 },
             )?;
-            // A caught callback failure still forbids a complete-read attestation.
+            // A caught callback failure still forbids a complete read.
             if let Some(code) = *callback_failure
                 .lock()
                 .map_err(|_| WriterError::RevisionViewInvalid)?
@@ -255,14 +269,47 @@ impl Preparation<'_> {
             {
                 return Err(WriterError::MembershipSnapshotIncomplete);
             }
-            if self.kind == SyncKind::Permissions || self.kind == SyncKind::Members {
+            // Only the read that replaces a rejected generation ends with a
+            // complete-read envelope: it alone consumes the rejection markers.
+            // Any other read writes nothing beyond its own changes.
+            if !held.is_empty() {
+                let unchanged = !replaces_rejection
+                    && pending.paths.is_empty()
+                    && self
+                        .rt
+                        .block_on(crate::membership::published_members_equal(
+                            self.config,
+                            &self.source.id,
+                            &held,
+                        ))?;
+                if unchanged {
+                    if let Some(last) = held.last() {
+                        state.cursor = Some(last.cursor.end.clone());
+                    }
+                } else {
+                    for batch in &held {
+                        self.rt.block_on(crate::prepare::non_content(
+                            self.config,
+                            &self.source.id,
+                            batch,
+                            state,
+                            self.lease,
+                            base.clone(),
+                            false,
+                        ))?;
+                    }
+                }
+            }
+            if replaces_rejection
+                && (self.kind == SyncKind::Permissions || self.kind == SyncKind::Members)
+            {
                 let batch = ConnectorBatch {
                     schema_version: fyrr_core::connector::CONNECTOR_CONTRACT_VERSION,
                     source_id: self.source.id.clone(),
                     kind: self.kind,
                     cursor: fyrr_core::connector::CursorStep {
                         start: state.cursor.clone(),
-                        end: state.cursor.clone().unwrap_or_else(|| "attestation".into()),
+                        end: state.cursor.clone().unwrap_or_else(|| "complete".into()),
                     },
                     body: if self.kind == SyncKind::Permissions {
                         fyrr_core::connector::BatchBody::PermissionChanges {
@@ -272,7 +319,7 @@ impl Preparation<'_> {
                     } else {
                         fyrr_core::connector::BatchBody::PrincipalSnapshot(
                             fyrr_core::connector::PrincipalSnapshotPart {
-                                snapshot_id: format!("attest-{}", state.sequence),
+                                snapshot_id: format!("complete-{}", state.sequence),
                                 part: 0,
                                 last: false,
                                 users: Vec::new(),

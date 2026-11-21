@@ -452,14 +452,6 @@ fn tools_timed_out_admission_rebuild_refuses_stale_mask_on_storage() {
 }
 
 #[test]
-#[ignore = "real S3 and stdio directory freshness recovery"]
-fn tools_directory_recovery_refuses_admission_after_failed_refresh_on_storage() {
-    parked_reader_test(
-        "serve::tests::embedding::failed_refresh_cannot_admit_a_stale_mask_after_directory_recovery_on_storage",
-    );
-}
-
-#[test]
 #[ignore = "real S3 and stdio failure lifecycle"]
 fn tools_failed_scheduler_terminates_stdio_on_storage() {
     parked_reader_test(

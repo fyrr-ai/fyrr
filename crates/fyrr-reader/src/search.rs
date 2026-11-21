@@ -197,7 +197,6 @@ struct AuthorizationCacheKey {
     policy: String,
     policy_generation: u64,
     content: u64,
-    hidden: Vec<String>,
 }
 impl AuthorizationCacheKey {
     fn memory_bound(&self) -> usize {
@@ -206,8 +205,6 @@ impl AuthorizationCacheKey {
             + self.subject.capacity()
             + self.identity.capacity()
             + self.policy.capacity()
-            + self.hidden.capacity() * std::mem::size_of::<String>()
-            + self.hidden.iter().map(String::capacity).sum::<usize>()
     }
 }
 /// One completed admission: the rows a caller may read and the routing hints
@@ -220,7 +217,6 @@ pub(crate) struct Admission {
     /// Eligible rows of fragments outside the vector index coverage.
     unindexed: RowAddrTreeMap,
     maps: Option<Vec<PartitionMap>>,
-    reported_hidden_sources: Vec<String>,
     fallback_probes: usize,
 }
 impl Admission {
@@ -233,7 +229,6 @@ impl Admission {
             eligible: RowAddrMask::allow_nothing(),
             unindexed: RowAddrTreeMap::new(),
             maps: None,
-            reported_hidden_sources: Vec::new(),
             fallback_probes: 0,
         }
     }
@@ -249,20 +244,9 @@ impl Admission {
                     .sum::<usize>()
         })
     }
-    fn hidden_bytes(&self) -> usize {
-        self.reported_hidden_sources.capacity() * std::mem::size_of::<String>()
-            + self
-                .reported_hidden_sources
-                .iter()
-                .map(String::capacity)
-                .sum::<usize>()
-    }
     /// Lance bitmap accounting and owned buffers, excluding shared native indexes.
     fn estimated_private_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.bitmap_bytes()
-            + self.partition_bytes()
-            + self.hidden_bytes()
+        std::mem::size_of::<Self>() + self.bitmap_bytes() + self.partition_bytes()
     }
     /// Roaring containers of both bitmaps. Each costs a container struct, its
     /// own allocation and allocator slack that the serialized size omits; a
@@ -287,8 +271,6 @@ impl Admission {
             + Self::CONTAINER_OVERHEAD_BYTES * self.bitmap_containers()
             + self.partition_bytes()
             + self.maps.as_ref().map_or(0, |m| m.len() * 128)
-            + self.hidden_bytes()
-            + self.reported_hidden_sources.len() * 32
     }
 }
 #[derive(Debug)]
@@ -445,7 +427,6 @@ pub struct PreparedReader {
     pub(crate) filter_selection: Option<FilterSelection>,
     pub(crate) response_claim: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
     pub(crate) execution_slot: Option<Arc<crate::serve::ExecutionSlot>>,
-    pub(crate) hidden_sources: BTreeSet<String>,
 }
 
 #[allow(clippy::cast_possible_truncation)] // Preserve native fragment-key bit extraction.

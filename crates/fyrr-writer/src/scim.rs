@@ -485,10 +485,7 @@ impl std::fmt::Debug for Mutation {
         f.write_str("Mutation(<redacted>)")
     }
 }
-pub(crate) async fn mutate(
-    config: &Config,
-    request: Mutation,
-) -> Result<(u16, Value, Option<chrono::DateTime<chrono::Utc>>)> {
+pub(crate) async fn mutate(config: &Config, request: Mutation) -> Result<(u16, Value)> {
     crate::lease::LeaseGuard::with(config, |lease| async move {
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
             let head = lease.head().await?;
@@ -503,7 +500,7 @@ pub(crate) async fn mutate(
             }
             let mut state = ScimState::load(config, current.as_ref()).await?;
             let value = match apply_mutation(&mut state, &request, revision)? {
-                MutationResult::Unchanged(body) => return Ok((200, body, None)),
+                MutationResult::Unchanged(body) => return Ok((200, body)),
                 MutationResult::Changed(value) => value,
             };
             let mut snapshot = state.snapshot(config)?;
@@ -523,8 +520,7 @@ pub(crate) async fn mutate(
             )
             .await?;
             snapshot.state = Some(DirectoryStatePointer { object, digest });
-            crate::directory::publish_held(config, &snapshot, &lease, Some(snapshot.built_at))
-                .await?;
+            crate::directory::publish_held(config, &snapshot, &lease).await?;
             let body = value
                 .as_ref()
                 .map_or(Value::Null, |v| response(v, request.users));
@@ -537,7 +533,6 @@ pub(crate) async fn mutate(
                     200
                 },
                 body,
-                Some(snapshot.built_at),
             ))
         })
         .await

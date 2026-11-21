@@ -975,7 +975,7 @@ fn correction_inflight_identity_change_on_storage() {
             .len(),
         0
     );
-    // A no-op commit during final refresh changes freshness alone and succeeds.
+    // A no-op commit during final refresh changes nothing served and succeeds.
     revoke.store(1, Ordering::SeqCst);
     writeln!(input, "{request}").unwrap();
     line.clear();
@@ -1008,107 +1008,6 @@ fn correction_inflight_identity_change_on_storage() {
     );
     stop.store(true, Ordering::Relaxed);
     drop(thread);
-}
-
-#[test]
-#[ignore = "wall-clock freshness expiry on real MCP; scripts/ci security gate"]
-#[allow(clippy::print_stderr)]
-fn correction_live_mcp_expires_without_commit() {
-    let (config, root) = setup();
-    let directory = root.join("expiry-directory.json");
-    let loaded = fyrr_core::config::load(&config).unwrap();
-    let mut snapshot = super::identity::snapshot(&loaded.config, "snapshot");
-    snapshot.users.push(super::identity::user(
-        &loaded.config,
-        loaded.config.identity.stdio_user.as_deref().unwrap(),
-    ));
-    std::fs::write(&directory, write_contract(&snapshot)).unwrap();
-    let text = std::fs::read_to_string(&config).unwrap();
-    let text = text
-        .split("[[sources]]")
-        .take(2)
-        .collect::<Vec<_>>()
-        .join("[[sources]]");
-    let text = text
-        .replace("[identity]", "[identity]\nvalidity_deadline = \"6m\"")
-        .replace(
-            "[reader]",
-            &format!("[identity.directory]\nprovider='snapshot'\nsnapshot_file='{}'\nsync_interval='1s'\n# fyrr-test-version-check = held\n[reader]", directory.display()),
-        );
-    let text = text.replace(
-        "[[sources]]",
-        "[writer.commit]\ncoalescing_timer = \"1s\"\n[[sources]]",
-    );
-    std::fs::write(&config, text).unwrap();
-    let sources = root.join("sources");
-    std::fs::remove_dir_all(&sources).unwrap();
-    std::fs::create_dir(&sources).unwrap();
-    std::fs::write(sources.join("0.txt"), "fixture document 0").unwrap();
-    success(&config, &["writer", "namespace", "create"]);
-    let sync = run(&config, &["writer", "sync"]);
-    assert!(
-        sync.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&sync.stdout),
-        String::from_utf8_lossy(&sync.stderr)
-    );
-    success(&config, &["writer", "commit"]);
-    let unread = run(&config, &["reader", "check"]);
-    assert!(!unread.status.success());
-    assert!(String::from_utf8_lossy(&unread.stderr).contains("authorization_unavailable"));
-    success(&config, &["writer", "sync", "--directory", "--full"]);
-    let mut child = Command::new(crate::common::binary())
-        .arg("--config")
-        .arg(&config)
-        .args(["reader", "serve"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut input = child.stdin.take().unwrap();
-    let mut output = BufReader::new(child.stdout.take().unwrap());
-    let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"fixture query"}}});
-    initialize_stdio(&mut input, &mut output);
-    let mut line = String::new();
-    writeln!(input, "{request}").unwrap();
-    output.read_line(&mut line).unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&line).unwrap()["result"]["isError"],
-        false
-    );
-    success(&config, &["writer", "commit"]);
-    writeln!(input, "{request}").unwrap();
-    line.clear();
-    output.read_line(&mut line).unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&line).unwrap()["result"]["isError"],
-        false
-    );
-    // No commit or directory read occurs while the live reader loses freshness.
-    fyrr_core::clock::advance(Duration::from_secs(361)).unwrap();
-    writeln!(input, "{request}").unwrap();
-    line.clear();
-    output.read_line(&mut line).unwrap();
-    assert!(line.contains("authorization_unavailable"), "{line}");
-    success(&config, &["writer", "commit"]);
-    writeln!(input, "{request}").unwrap();
-    line.clear();
-    output.read_line(&mut line).unwrap();
-    assert!(
-        line.contains("authorization_unavailable"),
-        "a commit is not a directory read: {line}"
-    );
-    success(&config, &["writer", "sync", "--directory", "--full"]);
-    writeln!(input, "{request}").unwrap();
-    line.clear();
-    output.read_line(&mut line).unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&line).unwrap()["result"]["isError"],
-        false,
-        "a completed read renews authorization without reader restart"
-    );
-    drop(input);
-    assert!(child.wait().unwrap().success());
 }
 
 // The mirror is deliberately too small to retain immutable files, ensuring a

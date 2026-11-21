@@ -19,7 +19,7 @@ use crate::limits::mcp::*;
 use crate::version::SchemaVersion;
 
 /// The MCP tool schema version, reported in tool `_meta` and every response.
-pub const MCP_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(3, 0);
+pub const MCP_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
 
 /// `tools/list` must stay within this many bytes of compact JSON.
 pub const TOOLS_LIST_MAX_BYTES: usize = 16 * 1024;
@@ -363,10 +363,6 @@ pub struct ResponseMetadata {
     pub committed_at: McpTime,
     /// Lanes skipped by degradation (e.g. dense after a failed query embedding).
     pub degraded: Vec<Lane>,
-    /// Readable sources hidden by expiry.
-    #[serde(default)]
-    #[schemars(length(max = 64))]
-    pub hidden_sources: Vec<String>,
     /// The answer comes from an older version than the serving head the
     /// reader last read.
     pub stale_version: bool,
@@ -527,7 +523,7 @@ impl ErrorCode {
         match self {
             Self::InvalidArgument => "input outside the schema or its limits; never clamped",
             Self::AuthorizationUnavailable => {
-                "policy or identity missing, expired or malformed, or the caller exceeds the per-user token limit"
+                "policy or identity missing or malformed, or the caller exceeds the per-user token limit"
             }
             Self::StorageUnavailable => "storage could not be read",
             Self::IncompatibleIndex => "the published index does not match this reader",

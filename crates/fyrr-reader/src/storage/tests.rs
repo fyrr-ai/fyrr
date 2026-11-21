@@ -1,49 +1,5 @@
 use super::*;
 #[test]
-fn the_publication_decides_whether_the_directory_clock_applies() {
-    use fyrr_core::config::DirectoryProvider;
-    let mut config = fyrr_core::config::parse(concat!(
-        "[namespace]\nname='freshness'\n",
-        "[storage]\nuri='s3://freshness'\n",
-        "[embedding]\nendpoint='https://embed.invalid'\n"
-    ))
-    .unwrap()
-    .config;
-    let now = fyrr_core::clock::now();
-    let deadline =
-        chrono::Duration::from_std(config.identity.validity_deadline.as_duration()).unwrap();
-    for provider in [
-        DirectoryProvider::None,
-        DirectoryProvider::Scim,
-        DirectoryProvider::Keycloak,
-        DirectoryProvider::Snapshot,
-    ] {
-        config.identity.directory.provider = provider;
-        for (freshness, valid) in [
-            (None, false),
-            (Some(now), true),
-            (Some(now + chrono::Duration::nanoseconds(1)), false),
-            (Some(now - chrono::Duration::days(1)), false),
-            (Some(now - deadline), false),
-            (
-                Some(now - deadline + chrono::Duration::nanoseconds(1)),
-                true,
-            ),
-        ] {
-            // Without a freshness timestamp only a reader without a directory
-            // provider serves (a snapshot imported by hand). A timestamp is
-            // the writer's attestation, and it binds every reader: the
-            // reader's own provider setting cannot waive it.
-            assert_eq!(
-                directory_fresh(&config, freshness, now),
-                valid || (freshness.is_none() && provider == DirectoryProvider::None),
-                "{provider:?}: {freshness:?}"
-            );
-        }
-    }
-}
-
-#[test]
 fn ec2_metadata_opt_out_preserves_other_credential_sources() {
     use AmazonS3ConfigKey as Key;
     let cases: &[(&[(AmazonS3ConfigKey, &str)], bool)] = &[

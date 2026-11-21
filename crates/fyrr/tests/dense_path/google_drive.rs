@@ -2,9 +2,7 @@
 //! real delegated sign-in and the owned RustFS, against the fake Drive served
 //! over HTTP (`connectors/tests/google_drive/fake_drive.py`). Path S of
 //! docs/connectors/google-drive.md §6.
-use super::coordination::{
-    command, committer_host, earlier_release, publication, worker_command, worker_sync,
-};
+use super::coordination::{command, committer_host, earlier_release, worker_command, worker_sync};
 use super::incremental::{envelopes, publish, roots, row_readers, source_rows};
 use super::tools::Mcp;
 use super::*;
@@ -548,11 +546,10 @@ async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_s
 }
 
 /// A file that cannot be exported is quarantined while the sync goes on, and
-/// a failed permission read keeps the last rights until the default validity
-/// deadline, then hides only this source until a read succeeds.
+/// a failed permission read leaves the last rights in place.
 #[tokio::test]
 #[ignore = "real CLI, fake Drive and local storage; scripts/ci"]
-async fn google_drive_quarantine_and_permission_read_failure_deadline_on_storage() {
+async fn google_drive_quarantine_and_permission_read_failure_keeps_rights_on_storage() {
     let drive = Drive::start();
     let place = json!({"drive":"drive-eng"});
     drive
@@ -612,16 +609,7 @@ async fn google_drive_quarantine_and_permission_read_failure_deadline_on_storage
     );
 
     // The shared drive's members cannot be read: nothing is derived from the
-    // failed read, and the source's permission clock stands still.
-    let read_at = |head: ServingHead| {
-        head.freshness
-            .sources
-            .into_iter()
-            .find(|fresh| fresh.source_id == "drive")
-            .unwrap()
-            .permissions_read_at
-    };
-    let before = read_at(publication(&worker).await.0);
+    // failed read, and the last rights stand.
     drive.server
         .call_async(
             "fail",
@@ -630,68 +618,20 @@ async fn google_drive_quarantine_and_permission_read_failure_deadline_on_storage
         .await;
     drive.refused(&worker, &["--kind", "permissions"]);
     publish(&commit);
-    assert_eq!(read_at(publication(&worker).await.0), before);
     assert!(readable(&worker, "good"));
 
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let search = || {
-        command(
-            &worker,
-            &["reader", "search", "fixture query", "--limit", "2"],
-        )
-    };
-    let sources = |search: &Value| {
-        search["hits"]
+    // A later successful read changes nothing visible, and the writer still
+    // reports when each source's permissions were last read.
+    drive.synced(&worker, &["--kind", "permissions"]);
+    publish(&commit);
+    assert!(readable(&worker, "good"));
+    let status = command(&commit, &["writer", "status"]);
+    assert!(
+        status["source_reads"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|hit| hit["source_id"].as_str().unwrap().to_owned())
-            .collect::<BTreeSet<_>>()
-    };
-    let drive_hits = || {
-        let result = Mcp::open(&worker).call(
-            "search",
-            json!({"query":"fixture query","sources":["drive"],"limit":5}),
-        );
-        assert!(!result["isError"].as_bool().unwrap_or(false), "{result}");
-        result["structuredContent"]["hits"]
-            .as_array()
-            .unwrap()
-            .len()
-    };
-    // The deadline is the default one hour: no `validity_deadline` is configured.
-    for (minutes, hidden) in [(59, false), (61, true)] {
-        let mut head = publication(&worker).await.0;
-        head.freshness
-            .sources
-            .iter_mut()
-            .find(|fresh| fresh.source_id == "drive")
-            .unwrap()
-            .permissions_read_at = fyrr_core::clock::now() - chrono::Duration::minutes(minutes);
-        write_head(store.as_ref(), &namespace, &head).await;
-        let found = search();
-        let expected = if hidden { json!(["drive"]) } else { json!([]) };
-        assert_eq!(
-            found["metadata"]["hidden_sources"], expected,
-            "{minutes} min"
-        );
-        assert!(
-            sources(&found).contains("allowed"),
-            "the namespace keeps serving"
-        );
-        assert!(
-            !hidden || !sources(&found).contains("drive"),
-            "{minutes} min"
-        );
-        assert_eq!(drive_hits(), usize::from(!hidden), "{minutes} min");
-        assert_eq!(readable(&worker, "good"), !hidden, "{minutes} min");
-    }
-
-    // A successful read restarts the clock.
-    drive.synced(&worker, &["--kind", "permissions"]);
-    publish(&commit);
-    assert!(read_at(publication(&worker).await.0) > before);
-    assert_eq!(search()["metadata"]["hidden_sources"], json!([]));
-    assert!(readable(&worker, "good"));
+            .any(|read| read["source_id"] == "drive" && read["kind"] == "permissions"),
+        "{status}"
+    );
 }

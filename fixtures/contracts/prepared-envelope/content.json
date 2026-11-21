@@ -1,5 +1,5 @@
 {
-  "schema_version": "4.0",
+  "schema_version": "5.0",
   "envelope_id": "env-ab0dc87cb67ccdbb62a36a806c0cd6c5",
   "namespace": "acme",
   "source_id": "jira-eng",

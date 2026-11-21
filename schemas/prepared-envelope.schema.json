@@ -41,7 +41,7 @@
     },
     "advances_cursor": {
       "type": "boolean",
-      "description": "A freshness-only envelope preserves an absent cursor as well as an opaque one."
+      "description": "False when the envelope leaves the cursor where it was, absent or opaque."
     },
     "base_head": {
       "anyOf": [
@@ -558,13 +558,9 @@
     "PermissionsPayload": {
       "type": "object",
       "properties": {
-        "read_at": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Freshness attestation: when the source's permissions were read."
-        },
         "complete_read": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "True only on the empty envelope that ends a read replacing a rejected\ngeneration; it alone consumes the rejection markers."
         },
         "documents": {
           "type": "array",
@@ -580,7 +576,6 @@
         }
       },
       "required": [
-        "read_at",
         "complete_read",
         "documents",
         "container_grants"
@@ -590,13 +585,9 @@
     "MembersPayload": {
       "type": "object",
       "properties": {
-        "read_at": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Freshness attestation: when the source's members were read."
-        },
         "complete_read": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "True only on the empty envelope that ends a read replacing a rejected\ngeneration; it alone consumes the rejection markers."
         },
         "snapshot_id": {
           "type": "string"
@@ -623,7 +614,6 @@
         }
       },
       "required": [
-        "read_at",
         "complete_read",
         "snapshot_id",
         "snapshot_object",
@@ -676,5 +666,5 @@
     }
   },
   "x-fyrr-contract": "prepared-envelope",
-  "x-fyrr-schema-version": "4.0"
+  "x-fyrr-schema-version": "5.0"
 }

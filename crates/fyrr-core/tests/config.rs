@@ -260,7 +260,6 @@ fn example_and_minimal_files_are_valid() {
         minimal.config.reader.version_check_interval.to_string(),
         "30s"
     );
-    assert_eq!(minimal.config.identity.validity_deadline.to_string(), "1h");
 }
 
 #[test]
@@ -472,19 +471,7 @@ fn cross_field_rules_are_enforced() {
         "[[sources]]\nid = \"a\"\ntype = \"jira\"\nrow_warning = 10\nrow_error = 10\n[sources.intervals]\npermissions = \"30m\"",
         "sources[0].row_warning",
     );
-    // deadline > longest permission/member interval + commit timer + version check + margin.
-    assert_error(
-        "[[sources]]\nid = \"a\"\ntype = \"jira\"\n[sources.intervals]\npermissions = \"1h\"",
-        "identity.validity_deadline",
-    );
-    assert!(
-        errors(&parse(&with_identity("validity_deadline = \"10m\"")).unwrap())
-            .iter()
-            .any(|error| error.contains("identity.validity_deadline"))
-    );
-    let synced = with_identity(
-        "validity_deadline = \"2h\"\nencryption_key = { env = \"FYRR_ENCRYPTION_KEY\" }",
-    );
+    let synced = with_identity("encryption_key = { env = \"FYRR_ENCRYPTION_KEY\" }");
     assert_eq!(
         errors(
             &parse(&format!(

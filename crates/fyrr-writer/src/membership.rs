@@ -243,7 +243,7 @@ async fn member_input(
         id: envelope.source_id.clone(),
         object,
         digest: hash,
-        read_at: payload.read_at,
+        read_at: envelope.created_at,
     })
 }
 
@@ -290,7 +290,7 @@ async fn permission_input(
         id,
         object,
         digest: hash,
-        read_at: payload.read_at,
+        read_at: envelope.created_at,
     })
 }
 
@@ -512,4 +512,70 @@ async fn container_grants(
         }
     }
     Ok(())
+}
+
+/// Whether the snapshot held in `parts` equals, as a set, the principal snapshot
+/// that the published identity holds for `source`. Snapshot IDs, cursors and
+/// read times do not count.
+pub(crate) async fn published_members_equal(
+    config: &Config,
+    source: &str,
+    parts: &[ConnectorBatch],
+) -> Result<bool> {
+    let Some(head) = fyrr_reader::storage::optional_head(config).await? else {
+        return Ok(false);
+    };
+    let (store, root) = namespace_store(config)?;
+    let identity: IdentityArtifact =
+        fyrr_reader::storage::artifact(store.as_ref(), &root, &head.identity).await?;
+    let Some(input) = identity
+        .inputs
+        .iter()
+        .find(|i| i.kind == IdentityInputKind::Source && i.id == source)
+    else {
+        return Ok(false);
+    };
+    let published: ConnectorBatch = crate::secrets::read(
+        config,
+        store.as_ref(),
+        &object_store::path::Path::from(format!("{root}/{}", input.object)),
+    )
+    .await?;
+    let BatchBody::PrincipalSnapshot(published) = published.body else {
+        return Ok(false);
+    };
+    // Order within and between users, groups and group members is not content.
+    let normalized = |users: Vec<&fyrr_core::connector::SourceUser>,
+                      groups: Vec<&fyrr_core::connector::SourceGroup>| {
+        let mut users: Vec<String> = users
+            .into_iter()
+            .filter_map(|u| serde_json::to_string(u).ok())
+            .collect();
+        users.sort();
+        let mut groups: Vec<String> = groups
+            .into_iter()
+            .filter_map(|g| {
+                let mut g = g.clone();
+                g.members.sort();
+                g.members.dedup();
+                serde_json::to_string(&g).ok()
+            })
+            .collect();
+        groups.sort();
+        (users, groups)
+    };
+    let mut users = Vec::new();
+    let mut groups = Vec::new();
+    for part in parts {
+        let BatchBody::PrincipalSnapshot(part) = &part.body else {
+            return Ok(false);
+        };
+        users.extend(part.users.iter());
+        groups.extend(part.groups.iter());
+    }
+    Ok(normalized(users, groups)
+        == normalized(
+            published.users.iter().collect(),
+            published.groups.iter().collect(),
+        ))
 }

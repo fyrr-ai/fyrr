@@ -339,7 +339,6 @@ async fn rerank_inner(
             let admitted = reader.head.clone();
             let heads = reader.head_cache.clone();
             let config_snapshot = reader.config.clone();
-            let hidden_sources = reader.hidden_sources.clone();
             let refused = refused_admission.clone();
             let refused_guard = refused.clone();
             let authorization = async move {
@@ -356,13 +355,6 @@ async fn rerank_inner(
                 if current.namespace != config_snapshot.namespace.name
                     || current.policy != admitted.policy
                     || current.identity != admitted.identity
-                    || PreparedReader::expired_sources(&config_snapshot, &current)?
-                        != hidden_sources
-                    || !crate::storage::directory_fresh(
-                        &config_snapshot,
-                        current.freshness.directory,
-                        fyrr_core::clock::now(),
-                    )
                 {
                     refused_guard.store(true, Ordering::Release);
                     return Err(AuthorizationUnavailable);

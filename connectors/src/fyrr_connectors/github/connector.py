@@ -496,7 +496,7 @@ class GitHub(Connector[Settings, Scope]):
         state = Cursor.decode(cursor, self.scope)
         self._missing_roots(state.observed)
         # Every required inventory, catalog, negative check and ACL read must
-        # finish before the first permission batch can renew source freshness.
+        # finish before the first permission batch is yielded.
         roots = self._listing_ids(state.observed) | set(self.known)
         access = AccessSnapshot.read(self.client, self.repos)
         configured = {repo.id for repo in self.scope.repositories}
