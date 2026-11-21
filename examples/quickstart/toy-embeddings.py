@@ -61,5 +61,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 port = int(sys.argv[1]) if len(sys.argv) > 1 else 8089
-print(f"toy embeddings at http://127.0.0.1:{port}/v1", flush=True)
-HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+with HTTPServer(("127.0.0.1", port), Handler) as server:
+    print(f"toy embeddings at http://127.0.0.1:{server.server_port}/v1", flush=True)
+    server.serve_forever()
