@@ -69,7 +69,11 @@ key changes, project renames and moves keep their identity.
   located sections (the summary section starts with the issue key, as
   `PROJ-123 Summary text`, so excerpts show it and a plain query for the key
   can match its tokens), then **one section per comment** with that comment's
-  own audience. Long text is split into units of at most 16 KiB.
+  own audience. Long text is split into units of at most 16 KiB. A comment's
+  text starts with a line naming its author (`Ada Lovelace:`, `Ada Lovelace
+  (customer):` for a service-desk customer, `unknown:` when Jira names
+  none); the line has the comment's audience and counts toward
+  `document_max_bytes`. A display name is chosen by its owner.
 - The issue key is the document attribute `jira.key`, exactly as Jira
   returns it. `search` with `attributes: [{"key": "jira.key", "values":
   ["PROJ-123"]}]` returns that issue if the caller may read it, also without

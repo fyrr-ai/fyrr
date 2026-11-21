@@ -25,6 +25,15 @@ def date(value):
         raise ADFError() from None
 
 
+def byline(comment):
+    """`displayName:` for a comment, `displayName (customer):` for a service-desk customer."""
+    author = comment.body.get("author")
+    name = text(author.get("displayName")) if isinstance(author, dict) else ""
+    if not name:
+        return "unknown:"
+    return f"{name} (customer):" if author.get("accountType") == "customer" else f"{name}:"
+
+
 def document(identity, project, issue, comments, context, targets=(), dynamic=False, groups=()):
     fields = issue["fields"]
     uri = identity.site + "/browse/" + issue["key"]
@@ -70,6 +79,7 @@ def document(identity, project, issue, comments, context, targets=(), dynamic=Fa
         body = text(comment.body.get("body"))
         if not body:
             continue
+        body = f"{byline(comment)}\n{body}"
         readers: tuple[str, ...] | None = None
         if comment.restricted:
             target = next((item for item in targets if item[0] == comment.id), None)
