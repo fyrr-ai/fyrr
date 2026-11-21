@@ -138,7 +138,10 @@ Upsert(
 - Unknown metadata stays `None`; never substitute the ingest time.
 - `source_revision` must change whenever text, sections or metadata
   change. `revision_order` is optional and lets fyrr order edits that
-  arrive out of sequence; omit it when timestamps cannot order them.
+  arrive out of sequence; omit it when timestamps cannot order them. When
+  you set it, a change whose order is not above the published revision's is
+  not applied, so a document rendered again without an upstream change
+  needs a higher order.
 - Under `permissions = "fixed"` the writer applies the configured readers;
   setting `context.readers` on an upsert is optional.
   Under `permissions = "sync"` content carries no readers, containers or

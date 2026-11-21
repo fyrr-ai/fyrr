@@ -5,7 +5,7 @@
     "kind": "content",
     "cursor": {
       "start": null,
-      "end": "{\"path\":[],\"root_revisions\":{\"7c26efed-680e-5524-a21f-39014aecde94\":\"7aeed9452297e94754d2550337c063ae\"},\"roots\":[\"7c26efed-680e-5524-a21f-39014aecde94\"],\"since\":\"2026-01-01T00:21:00.000Z\",\"v\":1,\"walks\":[]}"
+      "end": "{\"path\":[],\"root_revisions\":{\"7c26efed-680e-5524-a21f-39014aecde94\":\"b30f5af2c6ff6e1821fa638dfb844c0b\"},\"roots\":[\"7c26efed-680e-5524-a21f-39014aecde94\"],\"since\":\"2026-01-01T00:21:00.000Z\",\"v\":1,\"walks\":[]}"
     },
     "body": {
       "type": "document_changes",
@@ -13,7 +13,7 @@
         {
           "op": "upsert",
           "root_id": "b51cee89-34a7-5af0-81a2-084b8b232784",
-          "source_revision": "a20b3af816b33cc6f066d9e919d0a5d1",
+          "source_revision": "580c8f88beb72bd15b2cb7f71cff5180",
           "readers": [
             "grp:staff"
           ],
@@ -36,7 +36,7 @@
           "attributes": [],
           "sections": [
             {
-              "text": "Draft.",
+              "text": "Plan 2026\n\nDraft.",
               "location": {
                 "kind": "heading",
                 "index": 0
@@ -63,7 +63,7 @@
         {
           "op": "upsert",
           "root_id": "078037db-feab-5710-ba83-8661249c7b8c",
-          "source_revision": "09bbf8df4a434a2ee9fdec7461dfd357",
+          "source_revision": "4a4909b4e2b00c7ae986ea96550b69c2",
           "readers": [
             "grp:staff"
           ],
@@ -86,7 +86,7 @@
           "attributes": [],
           "sections": [
             {
-              "text": "> Few.",
+              "text": "Risks\n\n> Few.",
               "location": {
                 "kind": "heading",
                 "index": 0
@@ -97,7 +97,7 @@
         {
           "op": "upsert",
           "root_id": "50d5f48c-133d-5540-99a1-0ffae87b59c4",
-          "source_revision": "7d085617595c8c946585c818f875bc61",
+          "source_revision": "dac53e568e0f7b93ddb4453548f73266",
           "readers": [
             "grp:staff"
           ],
@@ -139,7 +139,7 @@
         {
           "op": "upsert",
           "root_id": "8161cc8e-ff9c-5cba-82a3-8619c6e3cf7a",
-          "source_revision": "7c1338c9713448e4cf3933f037316a88",
+          "source_revision": "9aca9bfeafd0b3d0184da6dac41ec086",
           "readers": [
             "grp:staff"
           ],
@@ -162,7 +162,7 @@
           "attributes": [],
           "sections": [
             {
-              "text": "Row sub-page.",
+              "text": "Notes\n\nRow sub-page.",
               "location": {
                 "kind": "heading",
                 "index": 0
@@ -173,7 +173,7 @@
         {
           "op": "upsert",
           "root_id": "f71ba8b2-d39f-517d-8b3e-1e6e6b2aea3c",
-          "source_revision": "d242ff17c5303216d8b362f3b8c7ebdb",
+          "source_revision": "ada2cc8afd0fd076badf8f5b2e8bf310",
           "readers": [
             "grp:staff"
           ],
