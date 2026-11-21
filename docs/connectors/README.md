@@ -44,9 +44,9 @@ to reader tokens (user and group grants), and known limits.
 
 ## Python versions
 
-The SDK and the bundled providers need Python 3.13 or later: the SDK uses
-type-parameter defaults (PEP 696), which older interpreters do not parse. The
-connector test suite and `mypy` pass under CPython 3.13 and 3.14. The `fyrr`
+The SDK and the bundled providers need Python 3.11 or newer. The connector
+test suite and `mypy` were run by hand under CPython 3.11, 3.12, 3.13 and 3.14
+for this release; CI runs the default, 3.13. The `fyrr`
 binary does not link Python, so the interpreter only has to be one the
 SDK supports; it need not match the one `fyrr` was built with.
 

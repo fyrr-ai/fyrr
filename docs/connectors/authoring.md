@@ -15,7 +15,7 @@
 [project]
 name = "fyrr-provider-markdown"
 version = "0.1.0"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = ["fyrr-connectors>=0.1.2,<0.2"]   # the SDK series is the compatibility promise
 
 [project.entry-points."fyrr.connectors"]

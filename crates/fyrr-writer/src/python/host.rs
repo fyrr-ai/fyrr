@@ -47,7 +47,7 @@ const EXIT_OLD_PYTHON: i32 = 92;
 /// The descriptors could not be set up:
 const EXIT_DETACH: i32 = 93;
 /// The oldest interpreter that can run the SDK, as (major, minor).
-pub(super) const MIN_PYTHON: (u32, u32) = (3, 13);
+pub(super) const MIN_PYTHON: (u32, u32) = (3, 11);
 
 /// The arguments that start the host: no site code (`-S`), then a bootstrap
 /// that runs in this order, using only built-in modules until the last step:

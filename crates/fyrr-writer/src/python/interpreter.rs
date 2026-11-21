@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 /// embedded interpreter too; neither works with this fyrr, which needs the wheel
 /// of its own release (0.1.2 or newer), shipped with each release.
 pub(super) const FIX: &str = "install the fyrr-connectors wheel from this fyrr release, with the \
-extras of the providers you need, into a Python 3.13+ virtual environment (for example `python3.13 \
+extras of the providers you need, into a Python 3.11+ virtual environment (for example `python3 \
 -m venv VENV && VENV/bin/pip install 'fyrr_connectors-<version>-py3-none-any.whl[<type>]'`), and \
 set VIRTUAL_ENV to VENV (or put its python3 on PATH)";
 

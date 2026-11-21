@@ -97,7 +97,8 @@ kill -0 "$FYRR_TOY_EMBEDDINGS_PID" && curl -fsS -o /dev/null http://127.0.0.1:80
 
 The build links no Python. `VIRTUAL_ENV` names the connectors environment
 that `scripts/doctor` created; `fyrr` starts the bundled providers in that
-environment's Python when it syncs.
+environment's Python when it syncs. The connector SDK needs Python 3.11 or
+newer and is tested on 3.11, 3.12, 3.13 and 3.14.
 
 The toy service matches words. For semantic results, choose an
 [OpenAI-compatible embeddings endpoint](configuration.md#embedding) and

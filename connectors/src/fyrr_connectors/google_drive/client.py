@@ -9,7 +9,7 @@ import hashlib
 import json
 import threading
 from collections.abc import Callable, Iterator, Mapping
-from typing import Any
+from typing import Any, TypeVar
 
 import requests
 from google.auth.transport.requests import AuthorizedSession
@@ -17,6 +17,8 @@ from google.oauth2 import service_account
 
 from .. import _http
 from .._http import time as time
+
+T = TypeVar("T")
 
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 DIRECTORY_SCOPES = (
@@ -106,7 +108,7 @@ class Client:
             self._sessions.clear()
             self._local = threading.local()
 
-    def _request[T](
+    def _request(
         self,
         subject: str,
         path: str,
