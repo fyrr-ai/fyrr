@@ -9,6 +9,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The Jira connector indexes the custom fields listed in the new
+  `scope.fields` (rich text, string or number values) as `field` sections
+  labelled with the field ID, for example acceptance criteria. See
+  [Jira](docs/connectors/jira.md#documents).
 - The Jira connector records each issue's key as the document attribute
   `jira.key` and starts the summary section with it (`PROJ-123 Summary`).
   `search` with `attributes: [{"key": "jira.key", "values": ["PROJ-123"]}]`
@@ -59,7 +63,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   and body. The agent takes its current ticket from the tracker; fyrr
   supplies the earlier tickets, pull requests and threads around it.
 - To use connectors, install this release's `fyrr-connectors`
-  wheel with your provider extras in a Python 3.13+ virtual environment. Set
+  wheel with your provider extras in a Python 3.11+ virtual environment (tested
+  on 3.11, 3.12, 3.13 and 3.14). Set
   `VIRTUAL_ENV` to its absolute path and run `fyrr writer providers` to verify
   the installation. The full image includes the SDK and bundled providers.
   Commands that run no connector need no Python. Each sync kind runs in a

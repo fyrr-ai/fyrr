@@ -46,6 +46,8 @@ To read a ticket the current one names, look it up by key: `search` with
 `order: "updated_at"`. The URLs in a ticket's text, and with fixed readers
 its `links` section, name what to look up next
 ([Jira documents](connectors/jira.md#documents)).
+Acceptance criteria kept in a custom field are indexed when `scope.fields`
+lists that field's ID.
 
 ## Set it up
 

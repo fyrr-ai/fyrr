@@ -10,10 +10,12 @@ Unavailable roots, directory symlinks and enumeration failures refuse the read.
 from __future__ import annotations
 
 import hashlib
+import os
 import stat
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from pathlib import Path
+from fnmatch import fnmatchcase
+from pathlib import Path, PurePath
 
 from fyrr_connectors import (
     ConfigModel,
@@ -57,6 +59,18 @@ class Scope(ConfigModel):
             or ".." in Path(self.pattern).parts
         ):
             raise ValueError("scope_pattern_invalid")
+
+
+def _matches(parts: tuple[str, ...], pattern: tuple[str, ...]) -> bool:
+    """`PurePath.full_match`, which needs Python 3.13: `*` stays inside one
+    path part and a `**` part matches any number of parts."""
+    if not pattern:
+        return not parts
+    if pattern == ("**",):
+        return bool(parts)
+    if pattern[0] == "**":
+        return any(_matches(parts[skip:], pattern[1:]) for skip in range(len(parts) + 1))
+    return bool(parts) and fnmatchcase(parts[0], pattern[0]) and _matches(parts[1:], pattern[1:])
 
 
 def _front_matter(text: str) -> tuple[dict[str, str], str]:
@@ -109,13 +123,15 @@ class MarkdownConnector(Connector[Settings, Scope]):
 
         found = []
         try:
-            for parent, _, names in root.walk(on_error=unavailable):
-                for name in names:
-                    path = parent / name
+            for parent, directories, names in os.walk(root, onerror=unavailable):
+                # `os.walk` lists a directory symlink with the directories, not
+                # the files; it must still refuse the read.
+                for name in (*directories, *names):
+                    path = Path(parent, name)
                     relative = path.relative_to(root)
                     if path.is_symlink() and stat.S_ISDIR(path.stat().st_mode):
                         raise ValueError("source_unavailable")
-                    if not relative.full_match(self.context.scope.pattern):
+                    if not _matches(relative.parts, PurePath(self.context.scope.pattern).parts):
                         continue
                     info = path.stat()
                     if (

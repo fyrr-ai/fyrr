@@ -22,6 +22,8 @@ from fyrr_connectors.jira.feeds import Cursor, IssueBinding
         {"jql": "filter = 1"},
         {"jql": "updated > now()"},
         {"projects": [1], "labels": ["\0"]},
+        {"projects": [1], "fields": ["description"]},
+        {"projects": [1], "fields": ["customfield_10042", "customfield_10042"]},
     ],
 )
 def test_jira_invalid_scope_is_configuration_error(scope):
