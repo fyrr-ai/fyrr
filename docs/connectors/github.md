@@ -64,9 +64,12 @@ listing.
 
 ## Documents
 
-- **Conversations**: one document per issue or pull request with the body,
-  issue comments, submitted review bodies and inline review comments, in
-  source creation order. Pending reviews and their draft comments are
+- **Conversations**: one document per issue or pull request with the title,
+  body, issue comments, submitted review bodies and inline review comments,
+  in source creation order. The title is the first line of the first
+  section, above the body, so a word that occurs only in a title is
+  searchable and the title is part of the first chunk's embedding. It counts
+  toward `document_max_bytes`. Pending reviews and their draft comments are
   excluded. No diffs or patches. Each comment is a located section with a
   permalink label.
 - **Files** at the branch's current commit: Markdown, reStructuredText,

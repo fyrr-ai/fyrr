@@ -271,7 +271,7 @@
         "tier": "quick",
         "seconds": 0.1
       },
-      "full:fyrr-reader:lib:fyrr_reader/storage::tests::only_an_absent_directory_needs_no_freshness_proof": {
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::the_publication_decides_whether_the_directory_clock_applies": {
         "tier": "quick",
         "seconds": 0.0
       },
@@ -744,6 +744,14 @@
         "seconds": 0.05
       },
       "full:fyrr-reader:lib:fyrr_reader/storage::tests::an_older_read_is_not_held_after_a_newer_read_failed": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::a_shared_read_that_outlasts_the_age_limit_is_not_served": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_version_manifest_the_publication_lacks_needs_no_storage_request": {
         "tier": "quick",
         "seconds": 0.05
       },
@@ -1552,6 +1560,10 @@
         "tier": "full",
         "seconds": 156.747
       },
+      "full:fyrr:test:dense_path/http_mcp::a_published_directory_clock_binds_a_reader_without_a_directory_provider_on_storage": {
+        "tier": "full",
+        "seconds": 100.0
+      },
       "full:fyrr:test:dense_path/identity::identity_alias_collision_link_revoke_and_idempotence_on_storage": {
         "tier": "full",
         "seconds": 31.047
@@ -1563,6 +1575,10 @@
       "full:fyrr:test:dense_path/identity::identity_email_evidence_and_cross_issuer_bindings_on_storage": {
         "tier": "full",
         "seconds": 48.179
+      },
+      "full:fyrr:test:dense_path/identity::identity_import_withdraws_the_directory_clock_in_the_same_head_write_on_storage": {
+        "tier": "full",
+        "seconds": 40.0
       },
       "full:fyrr:test:dense_path/identity::identity_large_grants_are_complete_and_over_limit_is_subject_local_on_storage": {
         "tier": "full",
@@ -1586,6 +1602,10 @@
       "full:fyrr:test:dense_path/github::github_sync_silent_content_and_revoke_on_storage": {
         "tier": "full",
         "seconds": 31.856
+      },
+      "full:fyrr:test:dense_path/github::github_title_only_word_is_found_by_lexical_search_on_storage": {
+        "tier": "full",
+        "seconds": 13.23
       }
     }
   },
@@ -2151,6 +2171,18 @@
         "seconds": null
       },
       "python:connectors/tests/github/test_github_content.py::test_quarantine_keeps_last_good_revision": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_title_counts_toward_the_document_limit": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_title_counts_while_comment_pages_are_read": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_title_opens_the_first_section_so_it_is_searchable": {
         "tier": "quick",
         "seconds": null
       },
@@ -2770,11 +2802,15 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_adf_depth_and_media_exclusion": {
+      "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_adf_renders_link_targets_for_web_urls_only": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_adf_renders_link_targets_for_web_urls_only": {
+      "python:connectors/tests/jira/test_jira_content.py::test_jira_links_are_not_published_with_synced_permissions": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_adf_depth_and_media_exclusion": {
         "tier": "quick",
         "seconds": null
       },
@@ -2907,10 +2943,6 @@
         "seconds": null
       },
       "python:connectors/tests/jira/test_jira_content.py::test_jira_fixed_http_gateway_real_requests_and_null_fields": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/jira/test_jira_content.py::test_jira_links_are_not_published_with_synced_permissions": {
         "tier": "quick",
         "seconds": null
       },

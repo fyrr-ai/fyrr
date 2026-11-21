@@ -39,9 +39,12 @@ pub(crate) type ArtifactCache<T> = Arc<tokio::sync::Mutex<Option<(GenerationPoin
 /// age counts on the monotonic clock and on the wall clock). Such checks
 /// share one read, run on its own task, and its outcome: no lock is held
 /// across the request, and a failure is given to the checks that waited for
-/// it and then forgotten. The held head is always the one whose read started
-/// last, so a slower, older read never replaces a newer one, and a generation
-/// opened from a fresh read never meets an older head here.
+/// it and then forgotten. A read that is itself older than two intervals when
+/// it ends, because storage answered late, fails the checks that waited for it
+/// the same way: its head is as old as the read is. The held head is always
+/// the one whose read started last, so a slower, older read never replaces a
+/// newer one, and a generation opened from a fresh read never meets an older
+/// head here.
 #[derive(Debug, Clone)]
 pub(crate) struct HeadCache {
     max_age: std::time::Duration,
@@ -150,6 +153,12 @@ impl HeadCache {
             Some(held) if held.started >= read_started && self.young(held) => Ok(held.head.clone()),
             _ if state.latest.is_some_and(|latest| latest > read_started) => {
                 Err(StorageError::StorageUnavailable)
+            }
+            // A read that outlasted the age limit answers with a head older
+            // than a check may use, whatever its own age on arrival: its age
+            // counts from when it started. The next check reads again.
+            Some(held) if held.started == read_started => {
+                Err(StorageError::AuthorizationUnavailable)
             }
             _ => outcome,
         }
@@ -605,21 +614,25 @@ pub async fn artifact<T: fyrr_core::Contract>(
 }
 
 /// Directory proof is valid strictly before its deadline, never in the future.
-/// Disabled providers use immutable operator-managed identity and need no live proof.
+///
+/// The publication decides whether a directory clock exists, not the reader's
+/// own `identity.directory.provider`: a serving head that carries a freshness
+/// timestamp is the writer's attestation of a directory read, and every reader
+/// holds it to `identity.validity_deadline`. A head without one (a snapshot
+/// imported by hand, which proves nothing about freshness) is served only by a
+/// reader without a directory provider; a reader that has one refuses it.
 pub fn directory_fresh(
     config: &Config,
     freshness: Option<chrono::DateTime<chrono::Utc>>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> bool {
-    if config.identity.directory.provider == fyrr_core::config::DirectoryProvider::None {
-        return true;
-    }
-    freshness.is_some_and(|at| {
-        at <= now
-            && (now - at)
-                .to_std()
-                .is_ok_and(|age| age < config.identity.validity_deadline.as_duration())
-    })
+    let Some(at) = freshness else {
+        return config.identity.directory.provider == fyrr_core::config::DirectoryProvider::None;
+    };
+    at <= now
+        && (now - at)
+            .to_std()
+            .is_ok_and(|age| age < config.identity.validity_deadline.as_duration())
 }
 
 pub async fn pinned(
