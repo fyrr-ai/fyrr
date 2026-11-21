@@ -9,6 +9,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The Jira connector indexes the custom fields listed in the new
+  `scope.fields` (rich text, string or number values) as `field` sections
+  labelled with the field ID, for example acceptance criteria. See
+  [Jira](docs/connectors/jira.md#documents).
 - The Jira connector records each issue's key as the document attribute
   `jira.key` and starts the summary section with it (`PROJ-123 Summary`).
   `search` with `attributes: [{"key": "jira.key", "values": ["PROJ-123"]}]`
