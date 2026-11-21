@@ -7,9 +7,22 @@ name: ci
 on:
   push:
     branches: ["main"]
-    paths-ignore: ["docs/**", "site/**", "**/*.md", ".github/ISSUE_TEMPLATE/**"]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!site/**"
+      - "!**/*.md"
+      - "!.github/ISSUE_TEMPLATE/**"
+      # Quickstart Markdown is test input.
+      - "examples/quickstart/**"
   pull_request:
-    paths-ignore: ["docs/**", "site/**", "**/*.md", ".github/ISSUE_TEMPLATE/**"]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!site/**"
+      - "!**/*.md"
+      - "!.github/ISSUE_TEMPLATE/**"
+      - "examples/quickstart/**"
   workflow_dispatch:
   workflow_call:
 
