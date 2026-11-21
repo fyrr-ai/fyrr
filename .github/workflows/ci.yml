@@ -31,7 +31,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Let main finish verification and save its caches during a burst of merges.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: never
@@ -144,11 +145,11 @@ jobs:
           path: target/ci-build/full/fyrr
 
       - name: Show the summary
-        if: always()
+        if: ${{ !cancelled() && hashFiles('target/ci-logs/*/summary.txt') != '' }}
         run: cat target/ci-logs/*/summary.txt
 
       - name: Upload the logs
-        if: always()
+        if: ${{ !cancelled() && hashFiles('target/ci-logs/*/ci.log', 'target/ci-measurements/*') != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-logs-${{ github.sha }}

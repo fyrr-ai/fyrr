@@ -116,6 +116,8 @@ cached a binary for their exact base commit on main. A cache miss runs the
 usual quick tier. The `v*` tags run the full tier and then build the release
 artifacts and images in a separate job (see
 [Releasing](#releasing)).
+New PR commits cancel superseded CI runs. On main, the active run finishes
+and the newest pending revision runs next.
 Private repositories use `--debug-only` and skip release artifacts.
 
 This checkout owns its `target/`. Fat-LTO and image checks run only with
