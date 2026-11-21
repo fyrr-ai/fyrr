@@ -551,10 +551,6 @@
         "tier": "quick",
         "seconds": 0.001
       },
-      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::the_published_directory_clock_binds_a_reader_without_a_directory_provider": {
-        "tier": "quick",
-        "seconds": 0.001
-      },
       "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::invalid_identity_digest_never_reuses_cached_grants": {
         "tier": "quick",
         "seconds": 0.001

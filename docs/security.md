@@ -82,12 +82,10 @@ plan for:
   directory freshness timestamp (a completed `keycloak` or `snapshot` pull,
   or a SCIM attestation), every reader refuses the whole namespace once that
   read is older than `identity.validity_deadline`, whatever its own
-  `identity.directory.provider` says: the publication attests the directory,
-  so a reader's local setting cannot waive the clock for OIDC subjects or any
-  other directory-bound subject. A head with no timestamp is served as before
-  by a reader with `provider = "none"` (a snapshot imported by hand with
-  `writer directory --snapshot` is not a freshness proof), and refused by a
-  reader that has a directory provider configured.
+  `identity.directory.provider` says. A head with no timestamp is served as
+  before by a reader with `provider = "none"` (a snapshot imported by hand
+  with `writer directory --snapshot` is not a freshness proof), and refused
+  by a reader that has a directory provider configured.
 - A retired source (`fyrr writer source retire`) is denied by every reader
   once it has read the serving head again, and restore and rollback never
   bring it back.

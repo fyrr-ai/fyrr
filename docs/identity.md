@@ -58,9 +58,6 @@ imported snapshot must be built after the last provider pull (its `built_at`
 not older than that pull's): an older one is refused as stale
 (`directory_snapshot_stale`) and the timestamp stays. With a provider
 configured, an import keeps the timestamp the provider attested.
-Once a head carries a timestamp, readers enforce `validity_deadline` on it
-even if their own `provider` is `none`: the publication, not the reader's
-file, says whether a directory clock exists.
 
 Keycloak directory snapshots are bounded to 100,000 users, 100,000 groups
 and 1,000,000 combined user/group membership edges. Each user needs two

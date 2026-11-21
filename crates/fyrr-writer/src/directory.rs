@@ -1,6 +1,6 @@
 //! Directory input publication shares the namespace lease and head CAS.
 use crate::{Result, WriterError};
-use fyrr_core::config::Config;
+use fyrr_core::config::{Config, DirectoryProvider};
 use fyrr_core::directory::DirectorySnapshot;
 use fyrr_core::identity::{IdentityArtifact, IdentityInput, IdentityInputKind, SubjectBinding};
 use fyrr_core::publication::ServingHead;
@@ -148,11 +148,8 @@ pub(crate) fn bindings(snapshot: &DirectorySnapshot) -> Vec<SubjectBinding> {
 
 /// Operator import is not a freshness proof. Pull/SCIM adapters provide that
 /// separately after successful application; this path never advances its clock.
-/// With `provider = "none"` the operator's imports are the directory and attest
-/// nothing, so an import also withdraws a timestamp left by an earlier provider:
-/// readers hold a published timestamp to `validity_deadline` whatever their own
-/// provider, and a namespace that can no longer pull would otherwise be refused
-/// for good once it passed.
+/// With `provider = "none"` an import also withdraws a timestamp left by an
+/// earlier provider, which readers would otherwise enforce for good.
 pub async fn publish(config: &Config, snapshot: &DirectorySnapshot) -> Result<serde_json::Value> {
     snapshot
         .validate()
@@ -160,29 +157,10 @@ pub async fn publish(config: &Config, snapshot: &DirectorySnapshot) -> Result<se
     if snapshot.namespace != config.namespace.name || snapshot.built_at > fyrr_core::clock::now() {
         return Err(WriterError::DirectorySnapshotInvalid);
     }
-    let clock = if config.identity.directory.provider == fyrr_core::config::DirectoryProvider::None
-    {
-        DirectoryClock::Withdraw
-    } else {
-        DirectoryClock::Keep
-    };
     crate::lease::LeaseGuard::with(config, |lease| async move {
-        publish_held(config, snapshot, &lease, clock).await
+        publish_held(config, snapshot, &lease, None).await
     })
     .await
-}
-
-/// What a directory publication does to `freshness.directory`, in the same head
-/// write that publishes its identity: a reader never sees the new identity
-/// beside the timestamp it replaces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DirectoryClock {
-    /// Leave the timestamp as it is.
-    Keep,
-    /// A provider pull or SCIM push succeeded at this instant.
-    Attest(chrono::DateTime<chrono::Utc>),
-    /// The import is the directory and attests nothing: clear the timestamp.
-    Withdraw,
 }
 
 /// Both adapters publish through the same holder; a proof is never accepted from operator imports.
@@ -190,7 +168,7 @@ pub(crate) async fn publish_held(
     config: &Config,
     snapshot: &DirectorySnapshot,
     lease: &crate::lease::LeaseGuard,
-    clock: DirectoryClock,
+    proof: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<serde_json::Value> {
     snapshot
         .validate()
@@ -198,7 +176,7 @@ pub(crate) async fn publish_held(
     if snapshot.namespace != config.namespace.name || snapshot.built_at > fyrr_core::clock::now() {
         return Err(WriterError::DirectorySnapshotInvalid);
     }
-    if let DirectoryClock::Attest(at) = clock {
+    if let Some(at) = proof {
         let age = fyrr_core::clock::now()
             .signed_duration_since(at)
             .to_std()
@@ -224,7 +202,7 @@ pub(crate) async fn publish_held(
             if snapshot.built_at < prior_at {
                 return Err(WriterError::DirectorySnapshotStale);
             }
-            if apply_clock(&mut head, clock) {
+            if apply_proof(config, &mut head, proof) {
                 head.updated_at = fyrr_core::clock::now();
                 lease.publish(head.clone()).await?;
             }
@@ -279,7 +257,7 @@ pub(crate) async fn publish_held(
         && next.subjects == current.subjects
         && next.inputs == current.inputs
     {
-        if apply_clock(&mut head, clock) {
+        if apply_proof(config, &mut head, proof) {
             head.updated_at = fyrr_core::clock::now();
             lease.publish(head.clone()).await?;
         }
@@ -291,20 +269,25 @@ pub(crate) async fn publish_held(
         crate::prepare::put_generation(store.as_ref(), &root, "identity", generation, &next)
             .await?;
     head.updated_at = fyrr_core::clock::now();
-    apply_clock(&mut head, clock);
+    apply_proof(config, &mut head, proof);
     lease.publish(head).await?;
     Ok(
         serde_json::json!({"identity_generation": generation, "changed": true, "principals": next.principals.len(), "over_limit_subjects": next.principals.iter().filter(|p| p.tokens.len() > config.identity.max_tokens_per_user as usize).count(), "artifact_bytes": write_contract(&next).len()}),
     )
 }
 
-/// Apply `clock` to the head about to be written; true when the timestamp changed.
-fn apply_clock(head: &mut ServingHead, clock: DirectoryClock) -> bool {
-    let next = match clock {
-        DirectoryClock::Keep => return false,
-        DirectoryClock::Attest(at) => Some(head.freshness.directory.map_or(at, |old| old.max(at))),
-        DirectoryClock::Withdraw => None,
-    };
+/// Set `freshness.directory` on the head about to be written; true when it changed.
+/// A proof attests; without one a `none` provider withdraws the timestamp and
+/// any other provider keeps it.
+fn apply_proof(
+    config: &Config,
+    head: &mut ServingHead,
+    proof: Option<chrono::DateTime<chrono::Utc>>,
+) -> bool {
+    if proof.is_none() && config.identity.directory.provider != DirectoryProvider::None {
+        return false;
+    }
+    let next = proof.map(|at| head.freshness.directory.map_or(at, |old| old.max(at)));
     let changed = head.freshness.directory != next;
     head.freshness.directory = next;
     changed
