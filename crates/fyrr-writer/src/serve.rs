@@ -66,6 +66,8 @@ pub async fn run(
         let mut started = vec![0; config.sources.len()];
         let mut running = Vec::<(usize, Running)>::new();
         let mut last = fyrr_core::clock::now();
+        // Clock steps back so far, and the count each source's last worker started under.
+        let (mut steps, mut started_steps) = (0, vec![0; config.sources.len()]);
         while !stopped.load(Ordering::Relaxed) {
             let heads = observed.load(Ordering::Acquire);
             let now = fyrr_core::clock::now();
@@ -73,6 +75,7 @@ pub async fn run(
             // which the worker treats as due; wake every source to let it.
             if now < last {
                 due.fill(now);
+                steps += 1;
             }
             last = now;
             let mut waiting = Vec::new();
@@ -105,6 +108,10 @@ pub async fn run(
                         due[i] = wait.unwrap_or_else(|| {
                             now + chrono::TimeDelta::from_std(retry).unwrap_or_default()
                         });
+                        // A schedule computed before a clock step back is stale.
+                        if started_steps[i] != steps {
+                            due[i] = now;
+                        }
                     }
                 }
             }
@@ -121,6 +128,7 @@ pub async fn run(
                     continue;
                 }
                 started[i] = heads;
+                started_steps[i] = steps;
                 let job = Job::Sync {
                     config: path.clone(),
                     source: source.id.clone(),
