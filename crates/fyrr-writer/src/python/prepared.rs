@@ -273,7 +273,24 @@ impl Preparation<'_> {
             // complete-read envelope: it alone consumes the rejection markers.
             // Any other read writes nothing beyond its own changes.
             if !held.is_empty() {
+                // Only a whole snapshot read here, parts 0 to last, can be
+                // compared; a read resumed after an earlier part was written
+                // writes its parts.
+                let parts: Vec<_> = held
+                    .iter()
+                    .filter_map(|batch| match &batch.body {
+                        fyrr_core::connector::BatchBody::PrincipalSnapshot(part) => Some(part),
+                        _ => None,
+                    })
+                    .collect();
+                let whole = parts.len() == held.len()
+                    && parts.iter().enumerate().all(|(i, part)| {
+                        usize::try_from(part.part).is_ok_and(|n| n == i)
+                            && part.snapshot_id == parts[0].snapshot_id
+                            && part.last == (i + 1 == parts.len())
+                    });
                 let unchanged = !replaces_rejection
+                    && whole
                     && pending.paths.is_empty()
                     && self
                         .rt
