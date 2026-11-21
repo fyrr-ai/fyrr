@@ -43,6 +43,11 @@ export const navigation = [
         "Keep the lamp lit. Roll back when the sea turns."
       ],
       [
+        "storage-costs.md",
+        "Storage costs",
+        "Every request to the bucket is billed. Know the count."
+      ],
+      [
         "software-factory.md",
         "Software factories",
         "A fleet with no one on deck. Every ship reads the same chart."
