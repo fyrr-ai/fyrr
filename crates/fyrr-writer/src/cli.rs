@@ -107,7 +107,7 @@ pub enum WriterCommand {
     /// List installed connector providers and check SDK compatibility; exits
     /// 1 when any installed provider is refused.
     Providers,
-    /// Internal: the worker process that runs the embedded Python.
+    /// Internal: the worker process that runs one source's Python provider host.
     #[command(name = "__worker", hide = true, subcommand)]
     Worker(WorkerJob),
 }
@@ -266,12 +266,23 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
                 action: NamespaceAction::Delete { export },
             } => runtime_command(crate::commit::delete(config, export.as_deref())),
             WriterCommand::Maintain => runtime_command(crate::maintenance::maintain(config)),
-            WriterCommand::Serve { jobs, timeout } => runtime_command(crate::serve::run(
-                loaded,
-                path,
-                usize::from(*jobs),
-                timeout.as_duration(),
-            )),
+            WriterCommand::Serve { jobs, timeout } => {
+                // Source jobs need the providers' Python: say so once, up
+                // front, from an inventory worker (this process runs none).
+                if !config.sources.is_empty()
+                    && let Err(error) =
+                        sync::inventory(config.writer.worker_memory_max_bytes.as_u64())
+                {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(exit::FAILURE);
+                }
+                runtime_command(crate::serve::run(
+                    loaded,
+                    path,
+                    usize::from(*jobs),
+                    timeout.as_duration(),
+                ))
+            }
             WriterCommand::Status => runtime_command(crate::envelopes::status(config)),
             WriterCommand::Restore { publication } => {
                 runtime_command(crate::maintenance::restore(config, Some(publication)))
@@ -359,13 +370,20 @@ fn worker(job: &WorkerJob, config: &Path) -> ExitCode {
     }
     match job {
         WorkerJob::Discover | WorkerJob::Metadata { .. } => {
-            let result = python::with_runtime(|py, runtime| match job {
-                WorkerJob::Discover => python::inventory(py, runtime),
-                WorkerJob::Metadata { provider } => {
-                    python::discover_provider(py, runtime, provider)
+            // The host is started here, under the worker's limits; a host that
+            // cannot start is reported as a closed code, which the process
+            // that prints turns into one message.
+            let mut host = match python::start_host() {
+                Ok(host) => host,
+                Err(error) => {
+                    let _ = crate::worker::send(&python::host_error_result(&error));
+                    return ExitCode::from(exit::FAILURE);
                 }
-                WorkerJob::Sync { .. } => unreachable!(),
-            });
+            };
+            let result = match job {
+                WorkerJob::Metadata { provider } => python::discover_provider(&mut host, provider),
+                _ => python::inventory(&mut host),
+            };
             match result {
                 Ok(json) if crate::worker::send(json.as_bytes()).is_ok() => ExitCode::SUCCESS,
                 _ => ExitCode::from(exit::FAILURE),
@@ -378,13 +396,13 @@ fn worker(job: &WorkerJob, config: &Path) -> ExitCode {
             full,
             due,
         } => with_config(config, |loaded| {
-            if crate::secrets::install_worker_credentials(&loaded.config, source).is_err() {
+            let Ok(credentials) = crate::secrets::worker_credentials(&loaded.config, source) else {
                 return ExitCode::from(exit::FAILURE);
-            }
+            };
             if *prepare {
-                crate::python::prepared_sync(loaded, source, kinds, *full, *due)
+                crate::python::prepared_sync(loaded, source, kinds, *full, *due, &credentials)
             } else {
-                sync::worker_sync(loaded, source, kinds)
+                sync::worker_sync(loaded, source, kinds, &credentials)
             }
         }),
     }

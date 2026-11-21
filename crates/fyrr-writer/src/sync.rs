@@ -1,6 +1,6 @@
 //! `fyrr writer sync` and the worker side of a source sync. Each
-//! source's provider runs in its own worker process; its batches arrive
-//! through the Arrow C Data Interface and are validated at the boundary.
+//! source's provider runs in the Python host process of its own worker; its
+//! batches arrive over the host's socket and are validated at the boundary.
 //! `--dry-run` writes nothing. The output holds counts, never values.
 
 use crate::{Result, WriterError};
@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::batch::{BatchChecker, KindStats, Limits};
 use crate::providers::{self, Discovery};
 use crate::python;
+use crate::secrets::Credentials;
 use crate::worker::{self, Diagnostic, Job, Outcome, Running};
 
 static SOURCE_ID: LazyLock<regex::Regex> = LazyLock::new(|| {
@@ -87,17 +88,30 @@ impl SourceReport {
     }
 }
 
-/// Discovers the installed providers in a worker process.
-pub fn discover(memory: u64) -> Result<Discovery, String> {
+/// Lists the installed providers' entry points in a worker process, which
+/// starts a Python host and so verifies the installation.
+pub fn inventory(memory: u64) -> Result<serde_json::Value, String> {
     let outcome = Running::spawn_with_memory(&Job::Discover, worker::DISCOVERY_TIMEOUT, memory)
         .and_then(Running::wait)
         .map_err(|_| "cannot start the Python worker")?;
+    // A host that could not start is reported by its worker as a closed code;
+    // this process, which runs no Python, prints the one message that names the fix.
+    if let Some(error) = outcome
+        .result_line()
+        .and_then(python::host_error_from_result)
+    {
+        return Err(error.to_string());
+    }
     if let Some(failure) = outcome.failure() {
         return Err(failure.to_string());
     }
-    let mut inventory: serde_json::Value =
-        serde_json::from_slice(outcome.result_line().unwrap_or_default())
-            .map_err(|_| "the provider inventory is unreadable")?;
+    serde_json::from_slice(outcome.result_line().unwrap_or_default())
+        .map_err(|_| "the provider inventory is unreadable".to_owned())
+}
+
+/// Discovers the installed providers in worker processes.
+pub fn discover(memory: u64) -> Result<Discovery, String> {
+    let mut inventory = inventory(memory)?;
     let entries = inventory
         .get_mut("providers")
         .and_then(serde_json::Value::as_array_mut)
@@ -270,6 +284,13 @@ pub fn dry_run(loaded: &LoadedConfig, options: &SyncOptions<'_>) -> ExitCode {
 /// Validate all configured sources before dispatch, in both sync modes.
 #[allow(clippy::print_stderr)]
 fn checked_discovery(config: &fyrr_core::config::Config) -> Result<Discovery, ExitCode> {
+    // No sources, no providers, no Python.
+    if config.sources.is_empty() {
+        return Ok(Discovery {
+            sdk_version: providers::NO_VALUE.to_owned(),
+            providers: Vec::new(),
+        });
+    }
     let discovery = match discover(config.writer.worker_memory_max_bytes.as_u64()) {
         Ok(discovery) => discovery,
         Err(error) => {
@@ -305,7 +326,10 @@ fn plan<'a>(source: &'a SourceConfig, discovery: &Discovery, requested: &[SyncKi
     Plan {
         source,
         provider: provider.display_name().to_owned(),
-        version: provider.version.clone().unwrap_or_default(),
+        version: provider
+            .version
+            .clone()
+            .unwrap_or_else(|| providers::NO_VALUE.to_owned()),
         kinds,
         skipped,
     }
@@ -440,10 +464,15 @@ fn print_report(plan: &Plan<'_>, report: &SourceReport) {
     }
 }
 
-/// The worker side: runs the given kinds of one source in this process's
-/// embedded interpreter and sends one structured report on its result channel.
-pub fn worker_sync(loaded: &LoadedConfig, source_id: &str, kinds: &[SyncKind]) -> ExitCode {
-    let report = sync_source(loaded, source_id, kinds);
+/// The worker side: runs the given kinds of one source in Python hosts of
+/// this process and sends one structured report on its result channel.
+pub fn worker_sync(
+    loaded: &LoadedConfig,
+    source_id: &str,
+    kinds: &[SyncKind],
+    credentials: &Credentials,
+) -> ExitCode {
+    let report = sync_source(loaded, source_id, kinds, credentials);
     let sent = serde_json::to_vec(&report)
         .ok()
         .is_some_and(|bytes| worker::send(&bytes).is_ok());
@@ -454,7 +483,12 @@ pub fn worker_sync(loaded: &LoadedConfig, source_id: &str, kinds: &[SyncKind]) -
     }
 }
 
-fn sync_source(loaded: &LoadedConfig, source_id: &str, kinds: &[SyncKind]) -> SourceReport {
+fn sync_source(
+    loaded: &LoadedConfig,
+    source_id: &str,
+    kinds: &[SyncKind],
+    credentials: &Credentials,
+) -> SourceReport {
     let config = &loaded.config;
     let Some((index, source)) = config
         .sources
@@ -468,35 +502,38 @@ fn sync_source(loaded: &LoadedConfig, source_id: &str, kinds: &[SyncKind]) -> So
         };
     };
     let limits = Limits::for_source(config, source);
-    let outcome = python::with_runtime(|py, runtime| {
+    // The discovery host ends with this call, before any kind starts its own:
+    // at most one Python process per worker runs at a time.
+    let checked = python::with_host(credentials, |host| {
         let discovery = providers::parse_discovery(
-            python::discover_provider(py, runtime, &source.provider)?.as_bytes(),
+            python::discover_provider(host, &source.provider)?.as_bytes(),
         )?;
         let issues = providers::check_source(index, source, &discovery);
         if issues.iter().any(|issue| issue.severity == Severity::Error) {
             return Err("the source does not match its provider; run `fyrr config check`".into());
         }
-        let source_json = source_json(source, limits);
-        Ok(kinds
-            .iter()
-            .map(|&kind| {
-                let mut checker = BatchChecker::new(&source.id, kind, limits, None);
-                let error = python::run_kind(py, runtime, &source_json, kind, &mut checker).err();
-                KindReport {
-                    kind,
-                    stats: checker.stats,
-                    error,
-                }
-            })
-            .collect())
+        Ok(())
     });
-    match outcome {
-        Ok(kinds) => SourceReport { kinds, error: None },
-        Err(_) => SourceReport {
+    if checked.is_err() {
+        return SourceReport {
             kinds: Vec::new(),
             error: Some(Diagnostic::InvalidSource),
-        },
+        };
     }
+    let source_json = source_json(source, limits);
+    let kinds = kinds
+        .iter()
+        .map(|&kind| {
+            let mut checker = BatchChecker::new(&source.id, kind, limits, None);
+            let error = python::run_kind(credentials, &source_json, kind, &mut checker).err();
+            KindReport {
+                kind,
+                stats: checker.stats,
+                error,
+            }
+        })
+        .collect();
+    SourceReport { kinds, error: None }
 }
 
 /// Real preparation shares the existing source-isolated worker supervisor.
@@ -511,9 +548,7 @@ pub fn prepared(
         eprintln!("error: source_invalid");
         return ExitCode::from(exit::USAGE);
     };
-    if !loaded.config.sources.is_empty()
-        && let Err(code) = checked_discovery(&loaded.config)
-    {
+    if let Err(code) = checked_discovery(&loaded.config) {
         return code;
     }
     let sources: Vec<_> = selected.collect();

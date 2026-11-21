@@ -713,6 +713,13 @@
             }
           ],
           "description": "OIDC login for HTTP MCP."
+        },
+        "api_keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApiKeyConfig"
+          },
+          "description": "Operator-issued bearer keys for HTTP MCP, each with its own grants\n(`[[identity.api_keys]]`). Only the writer reads their secrets."
         }
       },
       "description": "Identity mapping and the identity artifact."
@@ -834,6 +841,34 @@
         "audience"
       ],
       "description": "OIDC resource-server settings for HTTP MCP."
+    },
+    "ApiKeyConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique ID of the key, as source IDs are. It names the key in this file\nonly; the published artifacts hold its hash.",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"
+        },
+        "key": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The bearer secret, `{ env = \"VAR\" }`: `fyrr_key_` followed by at least\n43 characters from `[A-Za-z0-9_-]`. Only the writer reads the variable."
+        },
+        "readers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Reader tokens (`usr:<id>`, `grp:<id>`) the key acts with, as\n`identity.stdio_readers` states them for the stdio subject."
+        }
+      },
+      "required": [
+        "name",
+        "key",
+        "readers"
+      ],
+      "description": "One API key."
     },
     "ReaderConfig": {
       "type": "object",

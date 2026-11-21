@@ -229,8 +229,10 @@ fn filters() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// The admission as `rebuild_admission` builds it: rows of the predicate
-/// scan, minus the hidden sources.
+/// The admission `rebuild_admission` builds: rows of the predicate scan,
+/// minus the hidden sources. It reads `source_id` even without hidden
+/// sources, where `rebuild_admission` projects nothing; both select the
+/// same rows (compare `filter_rows`).
 async fn admission(dataset: &Dataset, predicate: &str, hidden: &[&str]) -> RowAddrMask {
     let mut scan = dataset.scan();
     scan.project(&["source_id"]).unwrap();
@@ -319,6 +321,33 @@ async fn selection_equals_the_masked_scan_for_every_subject_and_filter() {
             tail,
             "rows of the unindexed fragment are selected"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// Without hidden sources `rebuild_admission` scans row ids only; that scan
+/// selects the rows of the `source_id` scan, deleted and unindexed ones too.
+#[tokio::test]
+async fn a_row_id_admission_scan_selects_the_rows_of_the_source_scan() {
+    for tail in [false, true] {
+        let (dataset, root) = fixture(if tail { "ids-tail" } else { "ids" }, tail).await;
+        for (subject, predicate, _) in subjects() {
+            let mut scan = dataset.scan();
+            scan.project::<&str>(&[]).unwrap();
+            scan.filter(&predicate).unwrap().with_row_id();
+            let batch = scan.try_into_batch().await.unwrap();
+            let by_id: RowAddrTreeMap = ids(&batch).unwrap().values().iter().copied().collect();
+            let by_source = admission(&dataset, &predicate, &[]).await;
+            assert_eq!(
+                RowAddrMask::from_allowed(by_id)
+                    .iter_addrs()
+                    .map(|r| r.map(u64::from).collect::<Vec<_>>()),
+                by_source
+                    .iter_addrs()
+                    .map(|r| r.map(u64::from).collect::<Vec<_>>()),
+                "tail={tail} subject={subject}"
+            );
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 }

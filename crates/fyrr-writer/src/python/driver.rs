@@ -1,13 +1,10 @@
 //! One provider boundary with explicit row and diagnostic policies.
-use super::ProviderGenerator;
+use super::host::{Bounds, Failure, Host, Revisions, Rows};
 use crate::batch::{BatchChecker, KindStats};
 use crate::worker::Diagnostic;
 use crate::{Result, WriterError};
 use arrow_array::RecordBatch;
-use arrow_pyarrow::FromPyArrow;
-use pyo3::call::PyCallArgs;
-use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use fyrr_core::connector::SyncKind;
 
 #[derive(Clone, Copy)]
 pub(super) enum RowPolicy {
@@ -21,6 +18,16 @@ pub(super) struct ErrMap<E> {
     tuple: E,
     batch: E,
     validation: fn(String) -> E,
+}
+
+impl<E: Copy> ErrMap<E> {
+    fn of(&self, failure: Failure) -> E {
+        match failure {
+            Failure::Provider => self.provider,
+            Failure::Tuple => self.tuple,
+            Failure::Batch => self.batch,
+        }
+    }
 }
 
 impl ErrMap<Diagnostic> {
@@ -45,51 +52,61 @@ impl ErrMap<WriterError> {
     };
 }
 
-pub(super) fn drive_provider<'py, E: Copy>(
-    runtime: &Bound<'py, PyModule>,
-    (checker, args): (&mut BatchChecker, impl PyCallArgs<'py>),
+/// What to run: one sync kind of one source, from `cursor`.
+pub(super) struct Request<'a> {
+    pub(super) source_json: &'a str,
+    pub(super) kind: SyncKind,
+    pub(super) cursor: Option<&'a str>,
+}
+
+/// Runs the request in `host` and passes every checked batch to `on_batch`.
+pub(super) fn drive_provider<E: Copy>(
+    host: &mut Host,
+    request: &Request<'_>,
+    mut revisions: Option<&mut dyn Revisions>,
+    checker: &mut BatchChecker,
     policy: RowPolicy,
     errors: ErrMap<E>,
     mut on_batch: impl FnMut(&str, Option<&RecordBatch>, &mut KindStats) -> Result<(), E>,
-) -> Result<ProviderGenerator<'py>, E> {
-    let value = runtime
-        .call_method1("run", args)
-        .map_err(|_| errors.provider)?;
-    let generator = ProviderGenerator::new(value);
-    for item in generator.value.try_iter().map_err(|_| errors.provider)? {
-        let (header, rows): (String, Bound<'_, PyAny>) = item
-            .map_err(|_| errors.provider)?
-            .extract()
-            .map_err(|_| errors.tuple)?;
-        let rows = match (policy, rows.is_none()) {
-            (RowPolicy::Forbidden | RowPolicy::Optional, true) => None,
-            (RowPolicy::Forbidden, false) => return Err(errors.batch),
-            _ => {
-                let limits = checker.limits;
-                // Slices retain backing buffers. Measure before the C Data import.
-                let over_rows = matches!(policy, RowPolicy::Optional)
-                    && rows
-                        .getattr("num_rows")
-                        .and_then(|v| v.extract::<u64>())
-                        .map_err(|_| errors.batch)?
-                        > limits.max_rows;
-                let bytes = rows
-                    .call_method0("get_total_buffer_size")
-                    .and_then(|v| v.extract::<u64>())
-                    .map_err(|_| errors.batch)?;
-                if over_rows || bytes > limits.max_bytes {
-                    return Err(errors.batch);
-                }
-                Some(RecordBatch::from_pyarrow_bound(&rows).map_err(|_| errors.batch)?)
-            }
-        };
+) -> Result<(), E> {
+    let mut run = host
+        .run(
+            request.source_json,
+            request.kind,
+            request.cursor,
+            revisions.is_some(),
+        )
+        .map_err(|failure| errors.of(failure))?;
+    // Every frame and the declared and decoded rows are bounded before they
+    // are used, whatever the row policy: a header is as large as the envelope.
+    let bounds = Bounds {
+        max_bytes: checker.limits.max_bytes,
+        // Content rows are bounded as they are inspected, before they are
+        // decoded; the checker enforces the same limit on what it is given.
+        rows: match policy {
+            RowPolicy::Forbidden => Rows::Forbidden,
+            RowPolicy::Optional | RowPolicy::Required => Rows::AtMost(checker.limits.max_rows),
+        },
+    };
+    while let Some(item) = run
+        .next(
+            bounds,
+            revisions.as_deref_mut().map(|r| r as &mut dyn Revisions),
+        )
+        .map_err(|failure| errors.of(failure))?
+    {
+        let rows = item.rows;
+        if matches!(policy, RowPolicy::Required) && rows.is_none() {
+            return Err(errors.batch);
+        }
         match policy {
-            RowPolicy::Required => checker.check_prepared(&header, rows.as_ref()),
-            RowPolicy::Optional | RowPolicy::Forbidden => checker.check(&header, rows.as_ref()),
+            RowPolicy::Required => checker.check_prepared(&item.header, rows.as_ref()),
+            RowPolicy::Optional | RowPolicy::Forbidden => {
+                checker.check(&item.header, rows.as_ref())
+            }
         }
         .map_err(errors.validation)?;
-        on_batch(&header, rows.as_ref(), &mut checker.stats)?;
+        on_batch(&item.header, rows.as_ref(), &mut checker.stats)?;
     }
-    // The caller still has to validate completion before marking it successful.
-    Ok(generator)
+    Ok(())
 }

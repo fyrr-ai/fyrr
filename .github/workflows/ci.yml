@@ -7,9 +7,22 @@ name: ci
 on:
   push:
     branches: ["main"]
-    paths-ignore: ["docs/**", "site/**", "**/*.md", ".github/ISSUE_TEMPLATE/**"]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!site/**"
+      - "!**/*.md"
+      - "!.github/ISSUE_TEMPLATE/**"
+      # Quickstart Markdown is test input.
+      - "examples/quickstart/**"
   pull_request:
-    paths-ignore: ["docs/**", "site/**", "**/*.md", ".github/ISSUE_TEMPLATE/**"]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!site/**"
+      - "!**/*.md"
+      - "!.github/ISSUE_TEMPLATE/**"
+      - "examples/quickstart/**"
   workflow_dispatch:
   workflow_call:
 
@@ -18,7 +31,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Let main finish verification and save its caches during a burst of merges.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: never
@@ -32,8 +46,29 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
+
+      - name: Check whether the change only touches the quickstart
+        id: scope
+        if: (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ "$(git rev-parse --verify HEAD^1)" == "$BASE_SHA" ]] &&
+             git diff --quiet "$BASE_SHA" HEAD -- . ':(exclude,glob)examples/quickstart/**'; then
+            echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore the verified base binary
+        id: quickstart-binary
+        if: steps.scope.outputs.base != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: fyrr-quickstart-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.scope.outputs.base }}
+          path: target/ci-build/full/fyrr
 
       - name: Free disk space for Cargo builds
+        if: steps.quickstart-binary.outputs.cache-hit != 'true'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
           df -h "$GITHUB_WORKSPACE"
@@ -41,6 +76,7 @@ jobs:
       # External-service rows run real fixtures next to test processes; swap
       # keeps smaller runners from aborting on memory.
       - name: Add swap
+        if: steps.quickstart-binary.outputs.cache-hit != 'true'
         run: |
           sudo fallocate -l 12G /fyrr-swapfile
           sudo chmod 600 /fyrr-swapfile
@@ -49,6 +85,7 @@ jobs:
           free -g
 
       - name: Install the pinned Rust toolchain
+        if: steps.quickstart-binary.outputs.cache-hit != 'true'
         run: |
           channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
           rustup toolchain install "$channel" --profile minimal --component rustfmt,clippy
@@ -57,6 +94,7 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - name: Shared Cargo compilation cache
+        if: steps.quickstart-binary.outputs.cache-hit != 'true'
         uses: jdx/mr-boxington-action@88acf2bb50552c7c508cbac13e5f8c576b95b1de # v1
         with:
           version: '1.30.0'
@@ -64,6 +102,7 @@ jobs:
           save-on-workflow-dispatch: 'true'
 
       - name: Install checksum-verified cargo-deny
+        if: steps.quickstart-binary.outputs.cache-hit != 'true'
         run: |
           source scripts/pins.env
           archive="$RUNNER_TEMP/cargo-deny.tar.gz"
@@ -75,25 +114,42 @@ jobs:
       - name: scripts/ci
         env:
           FYRR_CI_REVISION: ${{ github.sha }}
-          CI_EVENT: ${{ github.event_name }}
           CI_REF: ${{ github.ref }}
           CI_PRIVATE: ${{ github.event.repository.private }}
+          CI_QUICKSTART_BINARY: ${{ steps.quickstart-binary.outputs.cache-hit }}
         run: |
           args=()
           # Tags run the full tier; everything else runs the quick tier.
           if [[ "$CI_REF" != refs/tags/v* ]]; then args+=(--quick); fi
           if [[ "$CI_PRIVATE" == true ]]; then args+=(--debug-only); fi
+          if [[ "$CI_QUICKSTART_BINARY" == true ]]; then
+            uv sync --locked --no-dev --project connectors
+            python_lib="$(connectors/.venv/bin/python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')"
+            export LD_LIBRARY_PATH="$python_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export FYRR_CI_PREBUILT=1
+            args+=("--step=quickstart example (local storage)")
+          fi
           mkdir -p target/ci-measurements
           /usr/bin/time -v -o target/ci-measurements/ci.time scripts/ci "${args[@]}"
           du -sh target | tee target/ci-measurements/size.txt
-          mbx stats > target/ci-measurements/cache.txt
+          if [[ "$CI_QUICKSTART_BINARY" != true ]]; then
+            mbx stats > target/ci-measurements/cache.txt
+          fi
+
+      # Only successful main CI publishes a binary. A miss runs the usual suite.
+      - name: Cache the verified binary for future quickstart changes
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: fyrr-quickstart-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          path: target/ci-build/full/fyrr
 
       - name: Show the summary
-        if: always()
+        if: ${{ !cancelled() && hashFiles('target/ci-logs/*/summary.txt') != '' }}
         run: cat target/ci-logs/*/summary.txt
 
       - name: Upload the logs
-        if: always()
+        if: ${{ !cancelled() && hashFiles('target/ci-logs/*/ci.log', 'target/ci-measurements/*') != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-logs-${{ github.sha }}

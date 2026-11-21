@@ -191,46 +191,31 @@ pub async fn resolve(config: &Config, reference: &SecretRef) -> Result<String> {
             .map_err(|_| WriterError::CredentialUnavailable)
     }
 }
-/// Invoked only inside the already isolated Python worker, before any provider runs.
-pub fn install_worker_credentials(config: &Config, source: &str) -> Result<()> {
-    fn references(value: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
-        match value {
-            serde_json::Value::Object(map) => {
-                if map.len() == 1
-                    && let Some(env) = map.get("env").and_then(serde_json::Value::as_str)
-                {
-                    out.insert(env.to_owned());
-                } else {
-                    for child in map.values() {
-                        references(child, out);
-                    }
-                }
-            }
-            serde_json::Value::Array(items) => {
-                for child in items {
-                    references(child, out);
-                }
-            }
-            _ => {}
-        }
-    }
+/// Resolved credential values, as (environment variable, value).
+pub type Credentials = Vec<(String, String)>;
+
+/// The stored credentials that `source` references, for its provider process's
+/// environment. Invoked only inside the already isolated worker, before any
+/// provider runs.
+pub fn worker_credentials(config: &Config, source: &str) -> Result<Credentials> {
     if config.writer.credentials.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let source = config
         .sources
         .iter()
         .find(|s| s.id == source)
         .ok_or(WriterError::SourceUnavailable)?;
-    let mut referenced = std::collections::BTreeSet::new();
-    references(
-        &serde_json::Value::Object(source.settings.clone()),
-        &mut referenced,
-    );
-    references(
-        &serde_json::Value::Object(source.scope.clone()),
-        &mut referenced,
-    );
+    let mut found = Vec::new();
+    for table in [&source.settings, &source.scope] {
+        fyrr_core::config::env_references(
+            "",
+            &serde_json::Value::Object(table.clone()),
+            &mut found,
+        );
+    }
+    let referenced: std::collections::BTreeSet<_> =
+        found.into_iter().map(|(_, name)| name).collect();
     let runtime = tokio::runtime::Runtime::new().map_err(|_| WriterError::CredentialUnavailable)?;
     let mut values = Vec::new();
     for env in config
@@ -244,20 +229,5 @@ pub fn install_worker_credentials(config: &Config, source: &str) -> Result<()> {
             runtime.block_on(resolve(config, &SecretRef { env: env.clone() }))?,
         ));
     }
-    crate::python::with_runtime(|py, _| {
-        use pyo3::prelude::*;
-        let os = py
-            .import("os")
-            .map_err(|_| WriterError::CredentialUnavailable.to_owned())?;
-        let environment = os
-            .getattr("environ")
-            .map_err(|_| WriterError::CredentialUnavailable.to_owned())?;
-        for (name, value) in &values {
-            environment
-                .set_item(name, value)
-                .map_err(|_| WriterError::CredentialUnavailable.to_owned())?;
-        }
-        Ok(())
-    })
-    .map_err(|_| WriterError::CredentialUnavailable)
+    Ok(values)
 }

@@ -146,5 +146,7 @@ def test_invalid_utf8_quarantines_one_document_and_keeps_walking(notion, index):
     notion.page("fine", "root", blocks=[block("paragraph", "Fine.")])
     seen = index.sync()
     assert seen["invalid"]["sections"] == [{"text": "\0"}]
-    assert text(seen["leaf"]) == "Child still found." and text(seen["fine"]) == "Fine."
+    assert (
+        text(seen["leaf"]) == "leaf\n\nChild still found." and text(seen["fine"]) == "fine\n\nFine."
+    )
     assert json.loads(index.cursor)["walks"] == []

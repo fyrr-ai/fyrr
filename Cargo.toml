@@ -28,6 +28,9 @@ lance = { version = "=14.0.3", default-features = false, features = ["aws"] }
 # Arrow major must match Lance's (58 for 14.0.3).
 arrow-array = "58"
 arrow-select = "58"
+# The Python provider host sends content rows as Arrow IPC streams.
+arrow-ipc = "58"
+arrow-data = "58"
 arrow-buffer = "58"
 arrow-schema = { version = "58", features = ["serde"] }
 
@@ -42,12 +45,6 @@ toml = { version = "1.2.1", default-features = false, features = ["parse", "disp
 # Validates golden fixtures (dev) and, in the writer, source settings against
 # connector providers' config schemas.
 jsonschema = { version = "0.61.2", default-features = false }
-# Embedded Python for connector providers, full build only.
-# arrow-pyarrow 58 imports pyarrow batches through the Arrow C Data Interface
-# (PyCapsules, zero-copy) and requires PyO3 0.28.
-pyo3 = { version = "0.28", default-features = false }
-pyo3-build-config = "0.28"
-arrow-pyarrow = "58"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 # Already in the graph through Lance; used for deterministic IDs and digests.
 base64 = { version = "=0.23.1", default-features = false, features = ["std"] }

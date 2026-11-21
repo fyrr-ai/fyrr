@@ -127,14 +127,14 @@ def test_bad_pages_are_quarantined_and_the_sync_goes_on(notion: FakeNotion, inde
     changes = index.sync()
     assert changes["huge"]["sections"] == QUARANTINED
     assert changes["broken"]["sections"] == QUARANTINED
-    assert text(changes["last"]) == "Still published."
-    assert text(changes["under-huge"]) == "Still found."
+    assert text(changes["last"]) == "last\n\nStill published."
+    assert text(changes["under-huge"]) == "under-huge\n\nStill found."
     assert changes["huge"]["metadata"]["title"] == "huge"
     assert notion.sleeps == [], "a bad document is not retried"
     assert json.loads(index.cursor)["since"] == notion.pages[ident("last")]["edited"]
 
     notion.page("huge", blocks=[block("paragraph", "Small again.")])
-    assert text(index.sync()["huge"]) == "Small again."
+    assert text(index.sync()["huge"]) == "huge\n\nSmall again."
 
 
 @pytest.mark.usefixtures("notion")
@@ -150,7 +150,7 @@ def test_a_rate_limit_or_an_outage_fails_the_sync_and_keeps_the_cursor(
     with pytest.raises(ApiError) as caught:
         index.sync()
     assert caught.value.transient and index.cursor == cursor
-    assert text(index.sync()["plan"]) == "Changed."
+    assert text(index.sync()["plan"]) == "Plan 2026\n\nChanged."
 
 
 @pytest.mark.parametrize("status", [401, 403])
@@ -216,5 +216,24 @@ def test_a_synced_copy_gives_text_but_not_the_pages_beneath_it(
     assert outside["blocks"]
     notion.page("plan", "root", blocks=[block("synced_block", synced_from="outside/original")])
     seen = index.sync()
-    assert sorted(seen) == ["plan"] and text(seen["plan"]) == "Shared text."
+    assert sorted(seen) == ["plan"] and text(seen["plan"]) == "plan\n\nShared text."
     assert index.listing() == ["plan", "root"]
+
+
+def test_a_standalone_page_title_is_indexed_and_a_row_title_is_not_repeated(
+    notion: FakeNotion, index: Index
+) -> None:
+    notion.page("quokka", "root", title="Quokka marshaller", blocks=[block("paragraph", "Body.")])
+    notion.page("same", "root", title="Same", blocks=[block("paragraph", "Same")])
+    notion.page("bare", "root", title="Bare title", blocks=[])
+    notion.page("long", "root", title="q" * 1500, blocks=[block("paragraph", "Body.")])
+    notion.database("tasks", "root", title="Tasks")
+    notion.row("task", "tasks", title="Row title", blocks=[block("paragraph", "Row body.")])
+    changes = index.sync()
+    assert text(changes["quokka"]) == "Quokka marshaller\n\nBody."
+    assert changes["quokka"]["metadata"]["title"] == "Quokka marshaller"
+    assert text(changes["long"]) == "q" * 1500 + "\n\nBody."
+    assert len(changes["long"]["metadata"]["title"]) == 1024
+    assert text(changes["same"]) == "Same"
+    assert "bare" not in changes, "a page without text is not published"
+    assert text(changes["task"]) == "Name: Row title\n---\nRow body."

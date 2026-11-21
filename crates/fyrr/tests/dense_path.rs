@@ -4,6 +4,8 @@
 
 mod common;
 
+#[path = "dense_path/api_keys.rs"]
+mod api_keys;
 #[path = "dense_path/coordination.rs"]
 mod coordination;
 #[path = "dense_path/corrections.rs"]
@@ -483,11 +485,13 @@ async fn dense_path_and_namespace_contracts(backend: Backend) {
     let mut expired = head.clone();
     expired.freshness.directory = Some(fyrr_core::clock::now() - chrono::Duration::days(2));
     write_head(store.as_ref(), &path, &expired).await;
-    let static_result = success(&config, &["reader", "search", "fixture query"]);
-    assert!(!static_result["hits"].as_array().unwrap().is_empty());
-    let output = run(&directory_checks, &["reader", "search", "fixture query"]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("authorization_unavailable"));
+    // The head carries a directory clock now, and the publication attests the
+    // directory: a reader whose own file names no provider is held to it too.
+    for file in [&config, &directory_checks] {
+        let output = run(file, &["reader", "search", "fixture query"]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("authorization_unavailable"));
+    }
     store
         .put(
             &path.clone().join("head.json"),
@@ -622,8 +626,8 @@ async fn dense_path_and_namespace_contracts(backend: Backend) {
     stdout.read_line(&mut line).unwrap();
     assert_eq!(
         serde_json::from_str::<Value>(&line).unwrap()["result"]["isError"],
-        false,
-        "a disabled directory has no live freshness deadline"
+        true,
+        "a published directory clock binds a reader without a directory provider"
     );
     let expired_directory = run(&directory_checks, &["reader", "search", "fixture query"]);
     assert!(!expired_directory.status.success());

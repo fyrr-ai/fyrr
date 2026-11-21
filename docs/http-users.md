@@ -3,7 +3,8 @@
 > **In short**
 >
 > - `fyrr reader serve` can serve many users over Streamable HTTP at `/mcp`;
->   each request carries the user's OIDC access token.
+>   each request carries the user's OIDC access token or an
+>   [API key](#api-keys).
 > - With Keycloak it takes two Keycloak objects, about ten configuration
 >   keys, a writer that pulls the users and a reader behind a TLS proxy.
 > - The [reference](#reference) at the end lists the exact token rules and
@@ -19,6 +20,82 @@
 
 The rules behind it (subjects, reader tokens, the canonical directory) are
 in the [security model](security.md).
+
+## API keys
+
+An API key needs no identity provider: it is a secret you issue to an agent
+role, with the reader tokens that role may read. Use one key per role.
+
+1. Generate the secret and keep it in your secret store:
+
+   ```sh
+   echo "fyrr_key_$(openssl rand -hex 32)"
+   ```
+
+2. On every host that publishes identity (each `writer serve` and scheduled
+   `writer commit`), export the secret as an environment variable and add the
+   key to the [configuration file](identity.md#identityapi_keys):
+
+   ```toml
+   [[identity.api_keys]]
+   name = "bugfix-agents"                    # unique ID
+   key = { env = "FYRR_API_KEY_BUGFIX" }
+   readers = ["grp:engineering"]             # as identity.stdio_readers
+
+   [reader.http]
+   listen = "127.0.0.1:8080"
+   public_url = "https://fyrr.example.com/mcp"
+   ```
+
+3. Publish with `fyrr writer commit` (or let `writer serve` do it) and start
+   `fyrr reader serve` behind a TLS-terminating proxy as in
+   [step 3](#3-start-the-writer-and-the-reader). The reader needs the
+   namespace `hashing_key`, but no key's secret variable; on a reader host,
+   `fyrr config check` reports those variables as absent unless you run it
+   with `--no-env`. Without TLS the secret crosses the network in clear text:
+   do not expose the listener directly.
+
+4. Connect a client with the secret in its environment:
+
+   ```sh
+   claude mcp add --transport http fyrr https://fyrr.example.com/mcp \
+     --header 'Authorization: Bearer ${FYRR_API_KEY_BUGFIX}'
+   codex mcp add fyrr --url https://fyrr.example.com/mcp \
+     --bearer-token-env-var FYRR_API_KEY_BUGFIX
+   ```
+
+   The single quotes keep the literal `${FYRR_API_KEY_BUGFIX}` in what Claude
+   Code stores (`~/.claude.json` at the default scope, `.mcp.json` with
+   `--scope project`) and it expands the variable when it connects; the
+   shell must not expand it.
+
+To revoke a key:
+
+1. Remove it from the configuration on every host that publishes identity.
+2. Restart every running `writer serve` there, and let scheduled `writer
+   commit` jobs pick up the file. A running `writer serve` keeps the
+   configuration it started with and republishes a removed key at its next
+   commit.
+3. Publish: run `fyrr writer commit`, or wait for the restarted service's
+   next commit (after `writer.commit.coalescing_timer`, default 60 s, unless
+   `writer.serve.committer = false`). A commit rebuilds the identity from the
+   configuration even when no content changed, so no other change is needed.
+4. Send `POST /admin/refresh` to each reader; without that, a reader refuses
+   the key within two `reader.version_check_interval`s.
+
+A reader that holds a usable head and identity answers an unknown, malformed
+or removed key with `401`, and without OIDC the challenge is a bare
+`WWW-Authenticate: Bearer`. When the reader cannot read the head or the
+identity, every caller gets `503 authorization_unavailable`. A key with a
+missing or malformed secret on the writer is left out of the identity and the
+other keys are published as usual. See [security](security.md#api-keys) for
+what a key grants.
+
+With `[identity.oidc]` as well, the reader accepts both: a bearer that
+starts with `fyrr_key_` is an API key, anything else an OIDC access token.
+A reader takes the key path only when its own configuration declares at least
+one `[[identity.api_keys]]`; otherwise a `fyrr_key_` bearer is an OIDC token
+and is refused as one.
 
 ## 1. Prepare Keycloak
 
@@ -182,7 +259,10 @@ subject bindings return `503 authorization_unavailable`.
   leeway; `sub` has 1–512 bytes.
 - The subject (`iss` and `sub`) must be bound to an active canonical user in
   the published identity, or the request gets `503
-  authorization_unavailable`.
+  authorization_unavailable`. The same answer follows when the serving head
+  carries a directory freshness timestamp older than
+  `identity.validity_deadline`, whatever the reader's own
+  `identity.directory.provider`.
 
 ### Keys
 

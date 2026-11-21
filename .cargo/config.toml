@@ -2,6 +2,3 @@
 # Lance's build scripts compile protobuf definitions. `scripts/doctor` fetches
 # the pinned, checksum-verified protoc (scripts/pins.env) into target/tools.
 PROTOC = { value = "target/tools/protoc/bin/protoc", relative = true, force = true }
-# PyO3 (full build) links the pinned, uv-managed CPython of the connectors
-# venv (`scripts/doctor` creates it). Not forced: the image build sets its own.
-PYO3_PYTHON = { value = "connectors/.venv/bin/python", relative = true }

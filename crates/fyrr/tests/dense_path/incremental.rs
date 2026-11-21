@@ -869,6 +869,69 @@ async fn rejected_authorization(kind: SyncKind) {
     assert_eq!(denied["structuredContent"]["documents"], json!([]));
 }
 
+/// A non-content batch is a header with no rows and may be as large as the
+/// configured envelope: one members part (at most 256 users and groups) whose
+/// groups list a thousand members each is a header of over 2 MiB, which both
+/// the dry run and a prepared run, in real workers with the real Python host,
+/// accept.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_large_members_snapshot_passes_dry_run_and_a_prepared_run_on_storage() {
+    let (worker, commit, root) = fixture();
+    initial(&root);
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    publish(&commit);
+    let users: Vec<Value> = (0..50)
+        .map(|n| {
+            json!({
+                "id": format!("user-{n:06}"),
+                "email": format!("person.number.{n:06}@example.test"),
+                "active": true,
+            })
+        })
+        .collect();
+    let groups: Vec<Value> = (0..150)
+        .map(|group| {
+            let members: Vec<String> = (0..1000)
+                .map(|member| format!("usr:user-{:06}", group * 1000 + member))
+                .collect();
+            json!({"id": format!("group-{group:03}"), "members": members})
+        })
+        .collect();
+    let part = json!({"users": users, "groups": groups, "last": true});
+    assert!(
+        part.to_string().len() > 2 << 20,
+        "the header must exceed 2 MiB"
+    );
+    input(&root, json!({"epoch": 3, "members": [part]}));
+
+    let dry = super::coordination::worker_command(&worker)
+        .args([
+            "writer",
+            "sync",
+            "--dry-run",
+            "incremental",
+            "--kind",
+            "members",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&dry.stdout);
+    assert!(
+        dry.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&dry.stderr)
+    );
+    assert!(stdout.contains("users=50 groups=150"), "{stdout}");
+
+    worker_sync(&worker, &["incremental", "--kind", "members"]);
+    let pending = envelopes(&worker).await;
+    assert!(pending.iter().any(|(_, e)| matches!(
+        &e.payload,
+        EnvelopePayload::Members(p) if p.complete_read
+    )));
+}
+
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn incremental_members_alone_never_attest_permissions_on_storage() {
@@ -1136,6 +1199,39 @@ async fn incremental_delta_expired_source_isolated_on_storage() {
     }
 }
 
+/// A prepared content run's provider asks the worker for stored revisions, in a
+/// real worker with the real Python host, through both callbacks, and gets
+/// answers: the second sync sees the revisions the first stored and published.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_provider_receives_stored_revisions_through_the_host_on_storage() {
+    let (worker, commit, root) = fixture();
+    let seen = || -> Value {
+        serde_json::from_str(&std::fs::read_to_string(root.join("revisions-seen.json")).unwrap())
+            .unwrap()
+    };
+    let asked = json!(["a", "b", "missing"]);
+    input(
+        &root,
+        json!({"epoch":1,"record_revisions":asked,"content":[[
+            doc("a","r1","fixture document 0"),doc("b","r1","fixture document 1")
+        ]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    assert_eq!(seen(), json!({"lookup": {}, "next": []}));
+    publish(&commit);
+    input(
+        &root,
+        json!({"epoch":2,"record_revisions":asked,"content":[[doc("a","r2","fixture document 2")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    let second = seen();
+    assert_eq!(second["lookup"], json!({"a": "r1", "b": "r1"}));
+    let mut pages = second["next"].as_array().unwrap().clone();
+    pages.sort_by_key(ToString::to_string);
+    assert_eq!(pages, [json!(["a", "r1"]), json!(["b", "r1"])]);
+}
+
 /// Catching a failed host revision callback cannot attest an incomplete read.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
@@ -1253,6 +1349,35 @@ async fn incremental_caught_revision_failure_never_attests_on_storage() {
         assert_eq!(outcome["error"], "storage_unavailable", "{outcome}");
         assert_eq!(outcome["no_attestation"], true, "{outcome}");
         assert_eq!(outcome["freshness_unchanged"], true, "{outcome}");
+    }
+}
+
+/// A provider that asks for more roots than allowed, catches the refusal and
+/// finishes must not get its read attested complete.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_caught_refused_revision_request_never_attests_on_storage() {
+    for kind in [SyncKind::Permissions, SyncKind::Members] {
+        let (worker, commit, root) = fixture();
+        publish_initial(&worker, &commit, &root);
+        let staged = envelopes(&worker).await.len();
+        input(
+            &root,
+            json!({"epoch":3,"catch_revision_failure":"lookup_many"}),
+        );
+        let output = super::coordination::worker_command(&worker)
+            .args(["writer", "sync", "incremental", "--kind", kind.as_str()])
+            .output()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("revision-callback")).unwrap(),
+            "caught",
+            "{kind:?}"
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(!output.status.success(), "{kind:?}: {report}");
+        assert_eq!(report["kinds"][0]["error"], "host_callback_failed");
+        assert_eq!(envelopes(&worker).await.len(), staged, "{kind:?}");
     }
 }
 

@@ -174,8 +174,17 @@ fn config_check(path: &Path, no_env: bool) -> ExitCode {
         Err(code) => return code,
     };
     let mut issues = loaded.validate();
+    // Only the HTTP reader needs a way to authenticate callers, so this is not
+    // a validation error: the writer publishes identity from the same file.
+    if loaded.config.http_authentication_missing() {
+        issues.push(Issue::warning(
+            "reader.http",
+            "no identity.oidc and no identity.api_keys: `reader serve` refuses to start",
+        ));
+    }
     if !no_env {
         issues.extend(loaded.missing_secrets(&ProcessEnvironment));
+        issues.extend(loaded.api_key_secret_issues(&ProcessEnvironment));
     }
     // Sources against their installed connector providers.
     #[cfg(feature = "writer")]

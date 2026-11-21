@@ -53,7 +53,7 @@ impl Seen {
         let (heads, others): (Vec<_>, Vec<_>) = seen[from..]
             .iter()
             .cloned()
-            .partition(|request| request.ends_with(" head.json"));
+            .partition(|request| *request == "GET head.json");
         (heads.len(), others)
     }
     /// Waits until only the version check still reads, for two quiet
@@ -158,7 +158,15 @@ async fn a_running_reader_stays_within_its_storage_request_budget() {
     let first = served(&mut client).unwrap().0;
     seen.settle();
     let allowed = head_reads_allowed(started.elapsed(), 1);
-    within("open", seen.since(0), OPEN_BUDGET, allowed);
+    // The budgets are upper bounds: a detached observer would pass them.
+    let opened = seen.since(0);
+    assert!(
+        opened.0 >= 1 && !opened.1.is_empty(),
+        "the observer saw {} head reads and {} other requests while the reader opened",
+        opened.0,
+        opened.1.len()
+    );
+    within("open", opened, OPEN_BUDGET, allowed);
 
     // A warm reader: searches cost nothing, an idle reader only checks.
     let (mark, started) = (seen.len(), std::time::Instant::now());
@@ -174,8 +182,13 @@ async fn a_running_reader_stays_within_its_storage_request_budget() {
     let (mark, started) = (seen.len(), std::time::Instant::now());
     sync_texts(&config, &root, &[("kept.txt", KEPT), ("extra.txt", EXTRA)]);
     success(&config, &["writer", "commit"]);
+    let second = super::coordination::publication(&config)
+        .await
+        .1
+        .publication_id;
+    assert_ne!(second, first);
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    while served(&mut client).is_ok_and(|(publication, _)| publication == first) {
+    while served(&mut client).map(|(publication, _)| publication) != Ok(second.clone()) {
         assert!(std::time::Instant::now() < deadline, "never switched");
         std::thread::sleep(Duration::from_millis(250));
     }

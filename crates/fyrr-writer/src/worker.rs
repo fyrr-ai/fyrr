@@ -7,7 +7,7 @@ use std::io::{self, Read, Write};
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -121,31 +121,13 @@ pub fn command(job: &Job) -> io::Result<Command> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0);
-    python_home(&mut command);
     Ok(command)
 }
 
-fn python_home(command: &mut Command) {
-    if std::env::var_os("PYTHONHOME").is_some() {
-        return;
-    }
-    let Some(venv) = std::env::var_os("VIRTUAL_ENV") else {
-        return;
-    };
-    let Ok(text) = std::fs::read_to_string(Path::new(&venv).join("pyvenv.cfg")) else {
-        return;
-    };
-    let home = text.lines().find_map(|line| {
-        let (key, value) = line.split_once('=')?;
-        (key.trim() == "home").then(|| PathBuf::from(value.trim()))
-    });
-    if let Some(prefix) = home.as_deref().and_then(Path::parent) {
-        command.env("PYTHONHOME", prefix);
-    }
-}
-
-/// Called before initializing Python. DATA limits heap and anonymous mappings,
-/// without restricting the allocator's virtual address-space reservations.
+/// Called first in a worker. DATA limits heap and anonymous mappings, without
+/// restricting the allocator's virtual address-space reservations. The limit
+/// is inherited by the Python provider host the worker starts, so it bounds
+/// provider memory in that process and again in this one.
 pub fn initialize() -> io::Result<()> {
     let null = std::fs::OpenOptions::new().write(true).open("/dev/null")?;
     rustix::stdio::dup2_stdout(&null)?;
