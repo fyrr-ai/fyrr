@@ -68,7 +68,6 @@ pub(super) fn prepare_warm(
 pub(super) enum Trigger {
     Reload,
     Collect,
-    Check,
 }
 
 pub(super) fn prepare_version(
@@ -134,22 +133,25 @@ pub(super) fn prepare_version(
                     .to_std()
                     .unwrap_or_default();
                 pin.expire(age, config.writer.purge_window.as_duration());
-                let policy: fyrr_core::publication::PolicyArtifact =
-                    crate::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-                let horizon = config
-                    .writer
-                    .purge_window
-                    .as_duration()
-                    .saturating_sub(config.writer.version_grace.as_duration());
-                // Sequences of a replaced namespace say nothing about this one.
-                let mandatory = replaced
-                    || policy.row_acl_sequence.is_some_and(|s| s > *sequence)
-                    || age >= horizon;
+                #[cfg(feature = "test-store")]
                 if trigger != Trigger::Reload
-                    && config.reader.version_check == fyrr_core::config::VersionCheck::Off
-                    && !mandatory
+                    && crate::storage::test_store::version_check()
+                        == Some(crate::storage::test_store::VersionCheck::Held)
                 {
-                    return Ok(None);
+                    let policy: fyrr_core::publication::PolicyArtifact =
+                        crate::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+                    let horizon = config
+                        .writer
+                        .purge_window
+                        .as_duration()
+                        .saturating_sub(config.writer.version_grace.as_duration());
+                    // Sequences of a replaced namespace say nothing about this one.
+                    if !replaced
+                        && policy.row_acl_sequence.is_none_or(|s| s <= *sequence)
+                        && age < horizon
+                    {
+                        return Ok(None);
+                    }
                 }
             }
             // Admission entries name Lance versions, which a replaced

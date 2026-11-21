@@ -851,10 +851,7 @@ fn identity_deadline(
     let writer = &config.writer;
     // The deadline must exceed the longest visible sync interval
     // plus the commit timer, the version check and a margin.
-    let version_check = match config.reader.version_check {
-        VersionCheck::Interval => config.reader.version_check_interval,
-        VersionCheck::Off | VersionCheck::PerRequest => ConfigDuration::from_millis(0),
-    };
+    let version_check = config.reader.version_check_interval;
     let needed = longest_identity_interval
         .0
         .saturating_add(writer.commit.coalescing_timer)

@@ -300,7 +300,6 @@ impl ServerHandler for McpService {
                 arrived,
                 deadline: arrived + Duration::from_millis(u64::from(ms)),
                 cancelled: cancellation,
-                version_wait_until: arrived,
                 authorization_build_us: 0,
             },
             subject,

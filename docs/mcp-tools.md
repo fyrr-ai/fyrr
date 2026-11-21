@@ -154,7 +154,7 @@ Every successful tool response carries `metadata`:
 | `publication_id`, `content_version`, `committed_at` | The publication the request was pinned to. |
 | `degraded` | Lanes that did not contribute: `dense` (no query embedding), `rerank`; `lexical` is reserved. |
 | `hidden_sources` | Up to 64 source IDs hidden because their permission or membership freshness expired, among those with at least one row the caller could otherwise read. |
-| `stale_version` | The reader served an older pin than the live head allows (`per-request` mode). |
+| `stale_version` | The answer comes from an older version than the serving head the reader last read: a newer one is published and the reader has not switched to it yet. |
 | `omitted_bytes` | Bytes clipped from the response. |
 | `telemetry` | `cache` (`hot`, `warm`; `cold` is reserved), `queue_wait_ms`, per-stage microseconds in `stage_us`, S3 requests and bytes per stage, candidate counts, `unindexed_rows_scanned`, `filter_rows_scanned`, `routing_strategy`, `routing_fallback`, `rerank_us`. |
 

@@ -132,7 +132,6 @@ impl ParkedEmbedding {
             max_call_microusd: 10,
         });
         config.reader.concurrency = 1;
-        config.reader.version_check = fyrr_core::config::VersionCheck::Off;
         let server = tokio::spawn(async move {
             axum::serve(socket, app).await.unwrap();
         });
@@ -286,7 +285,6 @@ async fn interrupted_admission_rebuild(deadline: bool) {
         .unwrap()
         .config;
     config.reader.concurrency = 1;
-    config.reader.version_check = fyrr_core::config::VersionCheck::Off;
     config.embedding.reader_live = false;
     let mut reader = PreparedReader::open(&config).await.unwrap();
     reader.prewarm().await.unwrap();
@@ -377,7 +375,6 @@ async fn failed_refresh_cannot_admit_a_stale_mask_after_directory_recovery_on_st
         .unwrap()
         .config;
     config.reader.concurrency = 1;
-    config.reader.version_check = fyrr_core::config::VersionCheck::Off;
     config.embedding.reader_live = false;
     config.identity.directory.provider = fyrr_core::config::DirectoryProvider::Snapshot;
     let (store, root) = crate::storage::namespace_store(&config).unwrap();
@@ -469,7 +466,6 @@ async fn stdio_terminates_after_scheduler_failure_on_storage() {
         .unwrap()
         .config;
     config.reader.concurrency = 1;
-    config.reader.version_check = fyrr_core::config::VersionCheck::Off;
     config.embedding.reader_live = false;
     let mut reader = PreparedReader::open(&config).await.unwrap();
     reader.prewarm().await.unwrap();
@@ -847,7 +843,6 @@ async fn default_concurrency_serves_eight_simultaneous_clients_on_storage() {
         .unwrap()
         .config;
     config.reader.concurrency = fyrr_core::config::ReaderConfig::default().concurrency;
-    config.reader.version_check = fyrr_core::config::VersionCheck::Off;
     config.embedding.reader_live = false;
     let mut reader = PreparedReader::open(&config).await.unwrap();
     reader.prewarm().await.unwrap();

@@ -22,13 +22,11 @@ impl PreparedReader {
         before: crate::mirror::IoSnapshot,
     ) {
         let after = self.mirror.counters();
-        metadata.stale_version = self.config.reader.version_check
-            == fyrr_core::config::VersionCheck::PerRequest
-            && self
-                .head
-                .content
-                .as_ref()
-                .is_some_and(|p| p.sequence != self.manifest.sequence);
+        metadata.stale_version = self
+            .head
+            .content
+            .as_ref()
+            .is_some_and(|p| p.sequence != self.manifest.sequence);
         metadata.telemetry.s3_requests = after.requests - before.requests;
         metadata.telemetry.s3_bytes = after.bytes - before.bytes;
         metadata.telemetry.cache = if after.hits > before.hits {

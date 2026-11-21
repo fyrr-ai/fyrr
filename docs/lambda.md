@@ -52,8 +52,6 @@ mirror_max_bytes = 402653184
 memory_max_bytes = "768MiB"
 memory_headroom_bytes = "64MiB"
 concurrency = 1
-version_check = "per-request"
-per_request_wait = "2s"
 max_response_bytes = 1048576
 [reader.http]
 listen = "127.0.0.1:8081"
@@ -287,8 +285,14 @@ signing path. See [AWS Function URL authentication](https://docs.aws.amazon.com/
   Query cache hits can reuse an embedding within an environment.
 - The trial successfully refreshed JWKS after idle reuse. Validate your
   issuer's key rotation and availability across idle periods.
-- Frozen environments cannot keep background version checks running.
-  Use `per-request`. Lambda provides no operator SIGHUP path. The reader's
+- A frozen environment runs no background version check. The reader notices
+  that it did not run and, when a check is due
+  (`reader.version_check_interval`, 30 s), runs it before it answers the
+  request that woke it; the request waits up to 2 s for it. An answer can
+  therefore lag a publication by up to one interval, as on any other host,
+  or longer when the check takes more than 2 s; once the reader has read
+  the newer head, such answers are flagged `stale_version`.
+  Lambda provides no operator SIGHUP path. The reader's
   `/admin/refresh` needs a configured operator credential and an active
   invocation, including the adapter's authorization-header mapping.
 - Keep the writer as a normal scheduled job publishing to S3. The trial
