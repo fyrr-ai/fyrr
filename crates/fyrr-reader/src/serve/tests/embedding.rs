@@ -192,30 +192,31 @@ impl ParkedEmbedding {
         }
     }
 
-    async fn settled(&mut self, pins: usize, native: usize, admission: usize) {
-        // A subsequent SDK response is a transport flush barrier: the
-        // previous response's admission/scratch claims have been dropped.
-        self.wire
-            .send(json!({"jsonrpc":"2.0","id":900,"method":"ping"}))
-            .await;
-        assert_eq!(self.wire.reply().await["id"], 900);
-        loop {
-            let done = self.hooks.request_finished.notified();
-            if self.pin.request_count() == pins
-                && self.service.native_slots.available_permits() == native
-                && self.service.slots.available_permits() == admission
-                && self.memory.available_permits() == self.baseline_memory
-            {
-                break;
+    async fn settled(&self, pins: usize, native: usize, admission: usize) {
+        let counts = || {
+            (
+                self.pin.request_count(),
+                self.service.native_slots.available_permits(),
+                self.service.slots.available_permits(),
+                self.memory.available_permits(),
+            )
+        };
+        let expected = (pins, native, admission, self.baseline_memory);
+        tokio::time::timeout(Duration::from_secs(8), async {
+            // Worker return and response-claim release happen on separate
+            // tasks. Only worker return signals request_finished.
+            self.hooks.request_finished.notified().await;
+            while counts() != expected {
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            tokio::time::timeout(Duration::from_secs(8), done)
-                .await
-                .unwrap();
-        }
-        assert_eq!(self.pin.request_count(), pins);
-        assert_eq!(self.memory.available_permits(), self.baseline_memory);
-        assert_eq!(self.service.native_slots.available_permits(), native);
-        assert_eq!(self.service.slots.available_permits(), admission);
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "request did not settle (pins, native, admission, memory): expected {expected:?}, observed {:?}",
+                counts()
+            )
+        });
     }
     async fn close(self) {
         self.wire.close().await;
