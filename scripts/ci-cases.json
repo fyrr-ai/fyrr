@@ -747,6 +747,10 @@
         "tier": "quick",
         "seconds": 0.05
       },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::a_shared_read_that_outlasts_the_age_limit_is_not_served": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_version_manifest_the_publication_lacks_needs_no_storage_request": {
         "tier": "quick",
         "seconds": 0.05

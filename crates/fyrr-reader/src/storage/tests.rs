@@ -361,6 +361,41 @@ async fn an_abandoned_shared_read_is_never_handed_to_a_later_check() {
     assert_eq!(heads.reads(), 2);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_shared_read_that_outlasts_the_age_limit_is_not_served() {
+    let heads = Heads::new().await;
+    let cache = HeadCache::with_interval(std::time::Duration::from_secs(60));
+    let slow: Arc<dyn ObjectStore> = Arc::new(SlowReads {
+        inner: heads.store.clone(),
+        delay: std::time::Duration::from_secs(90),
+    });
+    // A check starts a read that is answered with the head as it is now, but
+    // only after 90 s: longer than a head may be used for.
+    let first = tokio::spawn({
+        let (cache, slow, root) = (cache.clone(), slow.clone(), heads.root.clone());
+        async move { cache.read(&slow, &root).await }
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(10)).await;
+    // A revocation is published after the read began; a second check joins it.
+    let revoked = heads.publish(1).await;
+    let joined = tokio::spawn({
+        let (cache, slow, root) = (cache.clone(), slow.clone(), heads.root.clone());
+        async move { cache.read(&slow, &root).await }
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(80)).await;
+    // The read ends with a head older than the limit: neither check gets it.
+    for check in [first.await.unwrap(), joined.await.unwrap()] {
+        assert_eq!(check, Err(StorageError::AuthorizationUnavailable));
+    }
+    assert_eq!(heads.reads(), 1);
+    // The next check reads again and sees the revocation.
+    let store = heads.store();
+    assert_eq!(cache.read(&store, &heads.root).await.unwrap(), revoked);
+    assert_eq!(heads.reads(), 2);
+}
+
 #[test]
 fn checks_read_the_head_themselves_after_two_version_check_intervals() {
     let config = |reader: &str| {
