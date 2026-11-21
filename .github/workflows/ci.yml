@@ -30,7 +30,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Key pull requests by number so a pull_request run, which cancels in
+  # progress, can never share main's group and cancel main's runs.
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   # Let main finish verification and save its caches during a burst of merges.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
