@@ -13,7 +13,7 @@
         {
           "op": "upsert",
           "root_id": "github:repo:1:issue:101:1",
-          "source_revision": "ccafd13a20b20086645d40cea5d068199efc01e46f9f683e3f6006a13c315a66",
+          "source_revision": "45f66cc204fa654354c2773d9631a37c32b6e127ab4d1410727ff61c66b201d7",
           "readers": [
             "grp:testkit"
           ],
@@ -37,7 +37,7 @@
           "attributes": [],
           "sections": [
             {
-              "text": "Golden body.",
+              "text": "Synthetic issue 1\n\nGolden body.",
               "location": {
                 "kind": "heading",
                 "label": "Synthetic issue 1",

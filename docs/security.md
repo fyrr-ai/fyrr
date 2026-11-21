@@ -80,10 +80,14 @@ plan for:
   complete. A failed or partial read keeps the last published rights until
   `identity.validity_deadline`; after that the source alone is hidden from
   every reader (`metadata.hidden_sources`).
-- A configured directory provider (`snapshot`, `keycloak` or `scim`) needs a
-  completed read within `identity.validity_deadline`, or the whole namespace
-  is refused. With the default `provider = "none"` no directory clock
-  applies.
+- A published directory read has a clock. When the serving head carries a
+  directory freshness timestamp (a completed `keycloak` or `snapshot` pull,
+  or a SCIM attestation), every reader refuses the whole namespace once that
+  read is older than `identity.validity_deadline`, whatever its own
+  `identity.directory.provider` says. A head with no timestamp is served as
+  before by a reader with `provider = "none"` (a snapshot imported by hand
+  with `writer directory --snapshot` is not a freshness proof), and refused
+  by a reader that has a directory provider configured.
 - A retired source (`fyrr writer source retire`) is denied by every reader
   once it has read the serving head again, and restore and rollback never
   bring it back.

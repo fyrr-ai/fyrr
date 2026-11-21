@@ -23,7 +23,7 @@ in the [security model](security.md).
 | `stdio_readers` | `[]` | Reader tokens (`usr:<id>`, `grp:<id>`) of the stdio subject. |
 | `hashing_key` | required | Namespace HMAC key, `{ env = "VAR" }`; the same value on every writer and reader. Only hashed reader tokens and [principal](architecture.md#terms) keys enter the published artifacts and rows. |
 | `encryption_key` | absent | 32 random bytes as 64 hexadecimal characters, `{ env = "VAR" }`; a separate secret from `hashing_key`. Encrypts persisted identity inputs (directory snapshots, membership, SCIM state, stored credentials). `config check` requires it with a `permissions = "sync"` source, a `snapshot` or `keycloak` directory, or writer administration. |
-| `validity_deadline` | `1h` | How long the last successful permission and member read of a `permissions = "sync"` source, and the last directory read, stay valid. After it the source is hidden (`metadata.hidden_sources`); an expired directory read refuses the whole namespace. No directory clock applies when `provider = "none"`. |
+| `validity_deadline` | `1h` | How long the last successful permission and member read of a `permissions = "sync"` source, and the last directory read, stay valid. After it the source is hidden (`metadata.hidden_sources`); an expired directory read refuses the whole namespace. The clock follows the publication: a serving head that carries a directory freshness timestamp (a completed pull or SCIM attestation) is held to the deadline by every reader, whatever its own `provider`. A head with none, such as a snapshot imported by hand, is served without a directory clock by a reader with `provider = "none"`. |
 | `max_tokens_per_user` | `5000` | At least 1. A subject with more reader tokens gets `authorization_unavailable`; other subjects are unaffected. |
 | `oidc` | absent | OIDC settings for HTTP MCP, see below. |
 | `api_keys` | `[]` | `[[identity.api_keys]]` tables: bearer keys for HTTP MCP, see below. |
@@ -76,7 +76,15 @@ not need either, so removing the last key still publishes and revokes it.
 
 Only a completed directory read advances directory freshness. Ordinary commits
 and `writer directory --snapshot` imports do not. With `provider = "none"`,
-imported snapshots remain usable without a directory freshness timestamp.
+imported snapshots remain usable without a directory freshness timestamp, and
+an import under `provider = "none"` withdraws a timestamp that an earlier
+provider left, so a deployment that moves from `keycloak`, `scim` or
+`snapshot` to manual imports needs only one import to be served again. The
+import publishes its identity and the withdrawal in one head write. The
+imported snapshot must be built after the last provider pull (its `built_at`
+not older than that pull's): an older one is refused as stale
+(`directory_snapshot_stale`) and the timestamp stays. With a provider
+configured, an import keeps the timestamp the provider attested.
 
 Keycloak directory snapshots are bounded to 100,000 users, 100,000 groups
 and 1,000,000 combined user/group membership edges. Each user needs two

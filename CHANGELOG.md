@@ -9,6 +9,16 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The Jira connector records each issue's key as the document attribute
+  `jira.key` and starts the summary section with it (`PROJ-123 Summary`).
+  `search` with `attributes: [{"key": "jira.key", "values": ["PROJ-123"]}]`
+  and `order: "updated_at"` returns that issue without a `query`. Every Jira
+  issue gets a new revision and its summary is embedded again: at its next
+  update, or at the connector's next full rescan (the first content sync at
+  least 12 hours after the previous one) and the commit that follows. To do
+  it at once, run `fyrr writer sync <source> --kind content --full`, then
+  `fyrr writer commit`. The key counts toward `document_max_bytes`. See
+  [Jira](docs/connectors/jira.md#documents).
 - HTTP MCP clients can authenticate with operator-issued API keys without an
   identity provider. Give each role its own `[[identity.api_keys]]` entry and
   `readers` grants. To revoke a key, remove it from every writer
@@ -106,9 +116,24 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   their rows through the scalar indexes too, instead of passing the
   subject's rows to Lance as a row mask. Results and authorization are
   unchanged.
+- The GitHub connector indexes an issue or PR title as the first line of its
+  first section, so title-only words are searchable. Conversations with a body
+  get a new revision and are re-embedded as they refresh; run
+  `fyrr writer sync github --kind content --full` to do it at once. The title
+  counts toward `document_max_bytes`. See
+  [GitHub documents](docs/connectors/github.md#documents).
 
 ### Security
 
+- A reader with `identity.directory.provider = "none"` (the Lambda example
+  omits it) no longer skips the directory freshness check when the serving
+  head carries a timestamp. Reading a namespace whose writer pulls a
+  directory, it now answers `authorization_unavailable` once the pulls have
+  stopped for longer than `identity.validity_deadline`. A deployment that
+  moved to manual imports under `provider = "none"` is served again by one
+  `writer directory --snapshot` import, which withdraws the timestamp; the
+  snapshot must not be older than the last pull, or it is refused as stale.
+  Lambda readers should use the writer host's `validity_deadline`.
 - The README, quickstart and software factory guide no longer store
   `FYRR_IDENTITY_KEY` in Claude Code's settings: they add the reader
   without `-e` and start Claude Code from a shell with the key exported.
@@ -164,6 +189,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Fixed
 
+- **A late head read is not used for authorization.** When a check waited for
+  a shared head read that storage answered after more than two version-check
+  intervals, the check was served with the head as it was when the read
+  began, so a revocation published meanwhile could be missed for longer than
+  the documented two intervals. Such a read now fails the checks that waited
+  for it with `authorization_unavailable`, and the next check reads again.
+  If the reader answers so persistently, storage takes longer than two
+  intervals to return the head: raise `reader.version_check_interval`.
 - Prepared sync timeout errors name the elapsed worker limit and `--timeout`,
   including deadline exhaustion during cleanup. Deployment guidance covers
   larger initial loads, durable envelopes, source leases and vector-cache reuse.
