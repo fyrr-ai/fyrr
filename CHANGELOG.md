@@ -101,7 +101,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   file that was just under the limit is quarantined when it is read again
   and keeps its last good revision until the limit is raised.
 - Existing pages and files get their title when next edited; `fyrr writer sync
-  <source> --kind content --full` followed by a commit republishes all.
+  <source> --kind content --full` followed by a commit republishes all that
+  fit the limit. Going back to an earlier release on the same index is not
+  supported for Google Drive: its revision order now includes the rendering,
+  so the earlier release would skip edits and deletions of published files.
 
 ### Security
 
