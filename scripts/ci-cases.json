@@ -1498,6 +1498,10 @@
         "tier": "full",
         "seconds": 33.382
       },
+      "full:fyrr:test:dense_path/publication_lifecycle::serve_runs_a_source_again_when_a_rejection_is_published_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
       "full:fyrr:test:dense_path/publication_lifecycle::serve_timer_disabled_committer_on_storage": {
         "tier": "full",
         "seconds": 96.301

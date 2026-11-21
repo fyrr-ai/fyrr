@@ -5,9 +5,9 @@ use fyrr_core::config::{DirectoryProvider, LoadedConfig};
 use std::path::Path;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Workers have their existing independent process deadlines even during commits.
 #[allow(clippy::print_stderr)]
@@ -31,14 +31,53 @@ pub async fn run(
         }
         requested.store(true, Ordering::Release);
     });
+    // A change of the served head, which carries rejections and rewinds, makes
+    // every source due: a task of its own counts them, so that a long commit
+    // does not delay them; the supervisor reads the count.
+    let heads = Arc::new(AtomicU64::new(0));
+    let watch = {
+        let config = loaded.config.clone();
+        let heads = heads.clone();
+        let period = config.writer.commit.coalescing_timer.as_duration();
+        let mut head = served(&config).await;
+        tokio::spawn(async move {
+            let mut timer = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                timer.tick().await;
+                let now = served(&config).await;
+                if now.is_some() && now != head {
+                    heads.fetch_add(1, Ordering::Release);
+                    head = now;
+                }
+            }
+        })
+    };
     let admin = crate::admin::start(&loaded.config, stop.clone()).await?;
     let stopped = stop.clone();
     let config = loaded.config.clone();
     let path = path.to_owned();
+    let observed = heads.clone();
     let supervisor = tokio::task::spawn_blocking(move || {
-        let mut due = vec![Instant::now(); config.sources.len()];
+        let mut due = vec![fyrr_core::clock::now(); config.sources.len()];
+        // Where a pass starts, so that a source is not always the first to be served.
+        let mut first = 0;
+        // The head count each source's last worker started under.
+        let mut started = vec![0; config.sources.len()];
         let mut running = Vec::<(usize, Running)>::new();
+        let mut last = fyrr_core::clock::now();
+        // Clock steps back so far, and the count each source's last worker started under.
+        let (mut steps, mut started_steps) = (0, vec![0; config.sources.len()]);
         while !stopped.load(Ordering::Relaxed) {
+            let heads = observed.load(Ordering::Acquire);
+            let now = fyrr_core::clock::now();
+            // A clock stepped back leaves the cursors' times in the future,
+            // which the worker treats as due; wake every source to let it.
+            if now < last {
+                due.fill(now);
+                steps += 1;
+            }
+            last = now;
             let mut waiting = Vec::new();
             for (i, mut worker) in running {
                 match worker.poll() {
@@ -48,7 +87,7 @@ pub async fn run(
                             eprintln!("writer_service event=worker_failed");
                         }
                         let intervals = &config.sources[i].intervals;
-                        let interval = [
+                        let retry = [
                             Some(intervals.content),
                             intervals.permissions,
                             intervals.members,
@@ -58,20 +97,38 @@ pub async fn run(
                         .flatten()
                         .map(|v| v.as_duration())
                         .min()
-                        .unwrap_or(Duration::from_secs(60));
-                        // Cursor timestamps, not this retry clock, decide whether a kind is due.
-                        due[i] = Instant::now() + interval.min(Duration::from_secs(60));
+                        .unwrap_or(Duration::from_secs(60))
+                        .min(Duration::from_secs(60));
+                        // The cursors' timestamps decide what is due; a worker
+                        // that failed, or reported no schedule, is retried sooner.
+                        let wait = match &result {
+                            Ok(Some(outcome)) if outcome.failure().is_none() => next_due(outcome),
+                            _ => None,
+                        };
+                        due[i] = wait.unwrap_or_else(|| {
+                            now + chrono::TimeDelta::from_std(retry).unwrap_or_default()
+                        });
+                        // A schedule computed before a clock step back is stale.
+                        if started_steps[i] != steps {
+                            due[i] = now;
+                        }
                     }
                 }
             }
             running = waiting;
-            for (i, source) in config.sources.iter().enumerate() {
+            let start = first;
+            for k in 0..config.sources.len() {
+                let i = (start + k) % config.sources.len();
+                let source = &config.sources[i];
                 if running.len() >= jobs {
                     break;
                 }
-                if due[i] > Instant::now() || running.iter().any(|(n, _)| *n == i) {
+                // A head that changed since the source's worker started makes it due.
+                if (due[i] > now && started[i] == heads) || running.iter().any(|(n, _)| *n == i) {
                     continue;
                 }
+                started[i] = heads;
+                started_steps[i] = steps;
                 let job = Job::Sync {
                     config: path.clone(),
                     source: source.id.clone(),
@@ -92,10 +149,11 @@ pub async fn run(
                 ) {
                     Ok(worker) => running.push((i, worker)),
                     Err(_) => {
-                        due[i] = Instant::now() + Duration::from_secs(1);
+                        due[i] = now + chrono::TimeDelta::seconds(1);
                         eprintln!("writer_service event=worker_failed");
                     }
                 }
+                first = (i + 1) % config.sources.len();
             }
             std::thread::sleep(crate::worker::POLL);
         }
@@ -131,6 +189,8 @@ pub async fn run(
         }
     }
     stop.store(true, Ordering::Release);
+    watch.abort();
+    let _ = watch.await;
     if !shutdown.is_finished() {
         shutdown.abort();
         let _ = shutdown.await;
@@ -140,4 +200,16 @@ pub async fn run(
         task.await.map_err(|_| WriterError::AdminServiceFailed)??;
     }
     Ok(serde_json::json!({"stopped":true}))
+}
+
+/// The served head, as far as it matters to a worker; `None` when unreadable.
+async fn served(config: &fyrr_core::config::Config) -> Option<fyrr_core::publication::ServingHead> {
+    let head = fyrr_reader::storage::optional_head(config).await.ok()??;
+    Some(crate::python::served_identity(&head))
+}
+
+/// When the source's kinds are next due, as its worker reported it.
+fn next_due(outcome: &crate::worker::Outcome) -> Option<chrono::DateTime<chrono::Utc>> {
+    let report: serde_json::Value = serde_json::from_slice(outcome.result_line()?).ok()?;
+    serde_json::from_value(report["next_due"].clone()).ok()
 }

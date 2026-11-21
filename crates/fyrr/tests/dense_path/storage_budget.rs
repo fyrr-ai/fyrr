@@ -232,6 +232,10 @@ impl Drop for Service {
 /// the history shows as storage requests that grow with this number.
 /// They and the namespace's first publication form a history of five.
 const PUBLICATIONS: usize = 4;
+/// Seconds after the service settled that it is watched for sync workers:
+/// past the minute after the last worker ended, when one used to be started
+/// again whatever its intervals.
+const RESPAWN_WINDOW_SECS: u64 = 70;
 /// Whether a request changes storage: an idle service takes no lease and
 /// writes nothing, not even the head.
 fn writes_storage(request: &str) -> bool {
@@ -244,8 +248,10 @@ fn writes_storage(request: &str) -> bool {
 const TICKS: u64 = 8;
 /// Storage requests of one idle committer tick, other than reads of
 /// publication manifests: the head, the policy twice, the envelope listing,
-/// the identity and the dataset open (12 measured). None of them writes.
-const IDLE_TICK_BUDGET: usize = 12;
+/// the identity and the dataset open (12 measured), and the head once more
+/// for the service's own watch for a change of the head (13). None of them
+/// writes.
+const IDLE_TICK_BUDGET: usize = 13;
 /// Reads of publication manifests by one idle tick: the served manifest,
 /// once for the receipt. A walk of the history would read `PUBLICATIONS` or
 /// more.
@@ -337,7 +343,12 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
             .matches(&format!("writer_service event={event}"))
             .count()
     };
-    let (mark, idle_before, published_before) = (seen.len(), events("idle"), events("published"));
+    let (settled, mark, idle_before, published_before) = (
+        std::time::Instant::now(),
+        seen.len(),
+        events("idle"),
+        events("published"),
+    );
     std::thread::sleep(Duration::from_secs(TICKS));
     let requests = seen.all(mark);
     let (idle, published) = (
@@ -348,7 +359,41 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
         child.try_wait().unwrap().is_none(),
         "the writer service exited"
     );
+    // Past the minute after which a sync worker used to be started again
+    // whatever its intervals: a source with nothing due starts none, and the
+    // service writes nothing. A worker reads its cursors first.
+    std::thread::sleep(
+        (settled + Duration::from_secs(RESPAWN_WINDOW_SECS))
+            .saturating_duration_since(std::time::Instant::now()),
+    );
+    let all = seen.all(mark);
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the writer service exited"
+    );
     drop(service);
+    let workers: Vec<_> = all
+        .iter()
+        .filter(|request| request.contains(" cursors/"))
+        .cloned()
+        .collect();
+    within(
+        "idle writer, sync workers past the first minute",
+        (0, workers),
+        0,
+        0,
+    );
+    let writes: Vec<_> = all
+        .iter()
+        .filter(|request| writes_storage(request))
+        .cloned()
+        .collect();
+    within(
+        "idle writer, writes over the whole window",
+        (0, writes),
+        0,
+        0,
+    );
 
     let (manifests, rest): (Vec<_>, Vec<_>) = requests
         .into_iter()

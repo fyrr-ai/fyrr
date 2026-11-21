@@ -530,3 +530,66 @@ async fn delta_shutdown_finishes_only_current_group_on_storage() {
             .is_empty()
     );
 }
+
+#[tokio::test]
+#[ignore = "real CLI service and local storage; scripts/ci"]
+async fn serve_runs_a_source_again_when_a_rejection_is_published_on_storage() {
+    use super::incremental::{envelopes, initial, publish_initial};
+    use fyrr_core::envelope::EnvelopePayload;
+    use object_store::ObjectStoreExt;
+    use std::sync::{Arc, atomic::AtomicBool};
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    initial(&root);
+    let mut next =
+        serde_json::from_slice::<Value>(&std::fs::read(root.join("input.json")).unwrap()).unwrap();
+    next["epoch"] = json!(2);
+    next["permissions"][0][0]["revision"] = json!("p2");
+    next["permissions"][0][0]["readers"] = json!([]);
+    input(&root, next);
+    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
+    // The committer rejects an envelope that stayed unapplied for days. The
+    // permission interval is five minutes and was restarted by the sync above:
+    // only the published rejection can make the source read again within the test.
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, _) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    for (path, mut envelope) in envelopes(&worker).await {
+        if matches!(&envelope.payload, EnvelopePayload::Permissions(p) if p.documents.iter().any(|d| d.permission_revision == "p2"))
+        {
+            envelope.created_at = fyrr_core::clock::now() - chrono::Duration::days(4);
+            store
+                .put(&path, fyrr_core::write_contract(&envelope).into())
+                .await
+                .unwrap();
+        }
+    }
+    let mut text = std::fs::read_to_string(&worker).unwrap();
+    text.push_str("\n[writer.commit]\ncoalescing_timer='1s'\n");
+    let service = root.join("service.toml");
+    std::fs::write(&service, text).unwrap();
+    let mut command = super::coordination::worker_command(&service);
+    command.args(["writer", "serve"]);
+    let mut process =
+        super::coordination::CommitProcess::from_command(command, Arc::new(AtomicBool::new(true)));
+    // A replacement read ends with a complete-read envelope of a later generation.
+    let mut observed = false;
+    for _ in 0..120 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        observed = envelopes(&worker).await.iter().any(|(_, e)| {
+            e.source_id == "incremental"
+                && e.kind == fyrr_core::connector::SyncKind::Permissions
+                && e.rejection_generation > 0
+                && fyrr_writer::apply::complete_read(e)
+        });
+        if observed {
+            break;
+        }
+    }
+    Command::new("kill")
+        .args(["-TERM", &process.child().id().to_string()])
+        .status()
+        .unwrap();
+    let result = process.finish();
+    assert!(observed, "the rejection did not make the source read again");
+    assert!(result.status.success(), "{}", report(&result));
+}

@@ -58,6 +58,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- `writer serve` no longer takes the cursor lease, or lists the envelopes,
+  to find that a kind of a source is not due: it reads the head and the
+  kind's cursor, which are read only. Each sync worker reports when its
+  source is next due, and the service starts the next worker then, instead
+  of once a minute. A change of the served head, which carries rejections
+  and rewinds, makes every source due at the next committer timer tick, as
+  before. A permissions or members kind that ever had a rejection still
+  takes the lease to decide.
 - The `search` tool description tells agents to search a ticket's title and
   body as two `queries` for task context.
 - The software factory guide and the Claude Code plugin tell an agent to

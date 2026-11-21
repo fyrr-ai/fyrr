@@ -25,6 +25,7 @@ use crate::worker::Diagnostic;
 use host::Host;
 
 pub(crate) use host::StartError;
+pub(crate) use prepared::served_identity;
 
 /// Starts a provider host and runs `body` with it; the host ends with it.
 pub(crate) fn with_host<R>(
@@ -177,6 +178,16 @@ pub fn prepared_sync(
             .cloned()
             .unwrap_or_else(|| default_report(ReportDefaults::Source));
         let mut report = content;
+        // The earliest time a kind of the source is due again.
+        let next_due = reports
+            .iter()
+            .filter_map(|r| {
+                serde_json::from_value::<chrono::DateTime<chrono::Utc>>(r["next_due"].clone()).ok()
+            })
+            .min();
+        if let Some(next_due) = next_due {
+            report["next_due"] = serde_json::json!(next_due);
+        }
         report["source_id"] = serde_json::json!(source_id);
         report["kinds"] = serde_json::json!(reports);
         report["failed"] = serde_json::json!(failed);

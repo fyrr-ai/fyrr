@@ -24,6 +24,7 @@ mod content;
 mod revisions;
 mod state;
 pub(super) use state::CommandEvidence;
+pub(crate) use state::served_identity;
 
 struct Preparation<'a> {
     config: &'a fyrr_core::config::Config,
@@ -58,7 +59,16 @@ pub(super) fn prepared_kind(
     if rt.block_on(crate::source::retired(&config, &source.id))? {
         return Err(WriterError::SourceRetired);
     }
+    // A kind that is not due takes no lease and lists no envelopes: the head
+    // and its cursor, which are read, show it. The lease decides the rest.
+    if due && let Some(next) = state::idle_until(&config, &source, kind, &rt, evidence)? {
+        return Ok(scheduled(
+            default_report(ReportDefaults::NotDue(kind)),
+            Some(next),
+        ));
+    }
     let mut embedding = None;
+    let mut next_due = None;
     let result = crate::sync_lease::CursorLease::with(&rt, &config, &source.id, kind, |lease| {
         let preparation = Preparation {
             config: &config,
@@ -103,6 +113,7 @@ pub(super) fn prepared_kind(
         let (mut state, skip_not_due, replaces_rejection) =
             preparation.cursor_state(&pending, due)?;
         if skip_not_due {
+            next_due = state::next_due(&source, kind, &state);
             return Ok(default_report(ReportDefaults::NotDue(kind)));
         }
         preparation.backpressure(&pending, full)?;
@@ -140,6 +151,7 @@ pub(super) fn prepared_kind(
         // is the record of the source's last read.
         state.updated_at = fyrr_core::clock::now();
         rt.block_on(lease.write(state.clone()))?;
+        next_due = state::next_due(&source, kind, &state);
         let Some(cache) = &embedding else {
             return Ok(default_report(ReportDefaults::Kind { kind, stats }));
         };
@@ -154,7 +166,7 @@ pub(super) fn prepared_kind(
         }))
     });
     let result = match result {
-        Ok(value) => Ok(value),
+        Ok(value) => Ok(scheduled(value, next_due)),
         Err(crate::sync_lease::ScopeError::Operation(code)) => Err(code),
         Err(crate::sync_lease::ScopeError::Lease(code)) => return Err(code),
     };
@@ -164,6 +176,17 @@ pub(super) fn prepared_kind(
             "reserved_microusd":cache.stats.reserved_microusd})),
         (result, _) => result,
     }
+}
+
+/// The worker's report with when the schedule makes the kind due again.
+fn scheduled(
+    mut report: serde_json::Value,
+    next_due: Option<chrono::DateTime<chrono::Utc>>,
+) -> serde_json::Value {
+    if let Some(next_due) = next_due {
+        report["next_due"] = serde_json::json!(next_due);
+    }
+    report
 }
 
 impl Preparation<'_> {
