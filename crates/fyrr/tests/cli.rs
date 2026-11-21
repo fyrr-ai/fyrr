@@ -236,6 +236,26 @@ fn usage_errors_exit_two() {
 
 #[cfg(feature = "writer")]
 #[test]
+fn writer_sync_rejects_dry_run_with_due_before_loading_config() {
+    let missing = config_arg(&Path::new(env!("CARGO_TARGET_TMPDIR")).join("does-not-exist.toml"));
+    for flags in [["--dry-run", "--due"], ["--due", "--dry-run"]] {
+        let [first, second] = flags;
+        let output = fyrr(
+            &["--config", &missing, "writer", "sync", first, second],
+            false,
+        );
+        let (stdout, stderr) = text(&output);
+        assert_eq!(output.status.code(), Some(2), "{flags:?}: {stderr}");
+        assert!(stdout.is_empty(), "{flags:?}: {stdout}");
+        assert!(
+            stderr.contains("cannot be used with"),
+            "{flags:?}: {stderr}"
+        );
+    }
+}
+
+#[cfg(feature = "writer")]
+#[test]
 fn writer_service_requires_configuration() {
     let output = fyrr(&["writer", "serve"], false);
     let (_, stderr) = text(&output);
