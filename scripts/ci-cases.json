@@ -1758,6 +1758,10 @@
         "tier": "full",
         "seconds": 86.87
       },
+      "full:fyrr:test:dense_path/jira::jira_issue_key_attribute_finds_one_issue_for_a_permitted_subject_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
       "full:fyrr:test:dense_path/jira::jira_sync_silent_content_restricted_sections_and_revoke_on_storage": {
         "tier": "full",
         "seconds": 35.809
@@ -2923,6 +2927,10 @@
         "seconds": null
       },
       "python:connectors/tests/jira/test_jira_content.py::test_jira_fixed_http_gateway_real_requests_and_null_fields": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/jira/test_jira_content.py::test_jira_moved_issue_keeps_its_root_and_gets_the_new_key": {
         "tier": "quick",
         "seconds": null
       },

@@ -9,6 +9,16 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The Jira connector records each issue's key as the document attribute
+  `jira.key` and starts the summary section with it (`PROJ-123 Summary`).
+  `search` with `attributes: [{"key": "jira.key", "values": ["PROJ-123"]}]`
+  and `order: "updated_at"` returns that issue without a `query`. Every Jira
+  issue gets a new revision and its summary is embedded again: at its next
+  update, or at the connector's next full rescan (the first content sync at
+  least 12 hours after the previous one) and the commit that follows. To do
+  it at once, run `fyrr writer sync <source> --kind content --full`, then
+  `fyrr writer commit`. The key counts toward `document_max_bytes`. See
+  [Jira](docs/connectors/jira.md#documents).
 - The reader sends `instructions` in the MCP `initialize` result: what
   fyrr searches and a request to search it before looking through files.
   Clients that pass instructions on tell their agent when to search.
