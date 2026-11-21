@@ -59,6 +59,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   every configuration. `metadata.stale_version` is now set in every reader whenever
   the answer comes from an older version than the head the reader last
   read.
+- An idle `writer serve` no longer reads the whole publication history at
+  every committer tick. The committer remembers the evidence of the
+  publications it has read and reads only newer ones, and it lists and
+  reads the retained envelopes only when the history records a rejection
+  or the served manifest has a cursor rewind. With five publications, eight idle ticks made 152 storage
+  requests instead of 472, and the manifest reads per tick no longer grow
+  with the history.
 - The reader no longer asks storage for a version manifest its publication
   does not list. Lance looks for a version under its other manifest name
   each time it opens the dataset, once per worker of every generation; the

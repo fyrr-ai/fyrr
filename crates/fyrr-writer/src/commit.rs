@@ -86,31 +86,108 @@ pub(crate) struct PublishedEvidence {
     rewinds: Vec<String>,
 }
 
+/// What the manifest chain ending at `manifest` records. Publications are
+/// immutable, so a later walk stops at a manifest it has seen.
+#[derive(Clone)]
+struct ChainEvidence {
+    manifest: String,
+    sequence: u64,
+    applied: Arc<BTreeSet<String>>,
+    rejected: Arc<BTreeSet<String>>,
+    rewinds: Arc<Vec<String>>,
+}
+
+/// The chain evidence of the newest head this process walked, by namespace
+/// root and incarnation. A long-running committer reads every publication
+/// once instead of walking the whole history at each tick.
+// shortcut: entries are never evicted, and each holds every envelope id the
+// namespace has applied; a process keeps one per namespace and incarnation
+// it served. Bound it like `RestoreHistory` if a process serves many
+// namespaces or a history outgrows memory.
+static CHAIN_EVIDENCE: std::sync::Mutex<BTreeMap<(String, String), ChainEvidence>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
 pub(crate) async fn published_evidence(
     config: &Config,
     head: &ServingHead,
 ) -> Result<PublishedEvidence> {
     let (store, root) = namespace_store(config)?;
-    let mut evidence = PublishedEvidence {
-        applied: BTreeSet::new(),
-        rejected: head.rejected_envelope_ids.iter().cloned().collect(),
-        rewinds: Vec::new(),
+    let mut rejected: BTreeSet<String> = head.rejected_envelope_ids.iter().cloned().collect();
+    let Some(newest) = head.content.as_ref().map(|p| p.manifest.clone()) else {
+        return Ok(PublishedEvidence {
+            applied: BTreeSet::new(),
+            rejected,
+            rewinds: Vec::new(),
+        });
     };
-    let mut chain = fyrr_reader::storage::manifest_chain(
-        store,
-        root,
-        head.content.as_ref().map(|p| p.manifest.clone()),
-    );
-    let mut latest = true;
-    while let Some(publication) = chain.try_next().await? {
-        if latest {
-            evidence.rewinds.clone_from(&publication.cursor_rewinds);
-            latest = false;
-        }
-        evidence.applied.extend(publication.envelope_ids);
-        evidence.rejected.extend(publication.rejected_envelope_ids);
+    let key = (root.to_string(), head.incarnation.clone());
+    let known = CHAIN_EVIDENCE
+        .lock()
+        .map_err(|_| WriterError::RuntimeUnavailable)?
+        .get(&key)
+        .cloned();
+    // An idle tick: the head serves the manifest walked last.
+    if let Some(known) = known.as_ref().filter(|known| known.manifest == newest) {
+        rejected.extend(known.rejected.iter().cloned());
+        return Ok(PublishedEvidence {
+            applied: known.applied.as_ref().clone(),
+            rejected,
+            rewinds: known.rewinds.to_vec(),
+        });
     }
-    Ok(evidence)
+    let mut applied = BTreeSet::new();
+    let mut chain_rejected = BTreeSet::new();
+    let mut rewinds = None;
+    let mut newest_sequence = None;
+    let mut next = Some(newest.clone());
+    let mut newer_sequence: Option<u64> = None;
+    while let Some(path) = next {
+        if let Some(known) = known.as_ref().filter(|known| known.manifest == path) {
+            // The join obeys the same order as every other step.
+            if newer_sequence.is_some_and(|newer| known.sequence >= newer) {
+                return Err(WriterError::PublicationInvalid);
+            }
+            applied.extend(known.applied.iter().cloned());
+            chain_rejected.extend(known.rejected.iter().cloned());
+            rewinds.get_or_insert_with(|| known.rewinds.to_vec());
+            break;
+        }
+        let publication = fyrr_reader::storage::read_manifest(store.as_ref(), &root, &path).await?;
+        // As in `manifest_chain`: every older publication has a lower sequence.
+        if newer_sequence.is_some_and(|newer| publication.sequence >= newer) {
+            return Err(WriterError::PublicationInvalid);
+        }
+        newer_sequence = Some(publication.sequence);
+        newest_sequence.get_or_insert(publication.sequence);
+        rewinds.get_or_insert_with(|| publication.cursor_rewinds.clone());
+        applied.extend(publication.envelope_ids);
+        chain_rejected.extend(publication.rejected_envelope_ids);
+        next = publication
+            .previous_publication_id
+            .map(|id| format!("publications/{id}.json"));
+    }
+    let rewinds = rewinds.unwrap_or_default();
+    if let Some(sequence) = newest_sequence {
+        CHAIN_EVIDENCE
+            .lock()
+            .map_err(|_| WriterError::RuntimeUnavailable)?
+            .insert(
+                key,
+                ChainEvidence {
+                    manifest: newest,
+                    sequence,
+                    applied: Arc::new(applied.clone()),
+                    rejected: Arc::new(chain_rejected.clone()),
+                    rewinds: Arc::new(rewinds.clone()),
+                },
+            );
+    }
+    rejected.extend(chain_rejected);
+    Ok(PublishedEvidence {
+        applied,
+        rejected,
+        rewinds,
+    })
 }
 
 pub(crate) async fn rejection_markers(
@@ -187,7 +264,14 @@ pub async fn unconsumed_rejections(
     applying: &[PreparedEnvelope],
 ) -> Result<Vec<RejectionMarker>> {
     let (store, root) = namespace_store(config)?;
-    let (applied, rejected) = published_ids(config, head).await?;
+    let evidence = published_evidence(config, head).await?;
+    // Markers are the rejected envelopes and the cursor rewinds of the
+    // served manifest; without either nothing is unconsumed, and the
+    // retained envelopes need not be listed or read.
+    if evidence.rejected.is_empty() && evidence.rewinds.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (applied, rejected) = (evidence.applied, evidence.rejected);
     let mut reads = applying.to_vec();
     let paths: Vec<_> = store
         .list(Some(&root.clone().join("envelopes")))
