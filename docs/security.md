@@ -127,8 +127,11 @@ only names it; the writer publishes only a keyed hash of the secret and
 another of the key's name, so someone who can read the bucket learns the
 number of keys and nothing that lets them use one. A key is as strong as its
 secret: anyone who holds it can search what its readers allow, so give each
-role its own and serve it over TLS. Removing a key revokes it with the next
-version check of every reader.
+role its own and serve it over TLS. After the next identity publication,
+every reader refuses a removed key within two version checks. A reader that
+holds a usable head and identity answers an unknown or malformed key with
+`401`; when it cannot read the head or the identity, every caller gets
+`503`.
 
 ## Secrets and stored credentials
 

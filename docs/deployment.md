@@ -92,7 +92,8 @@ and a writer that runs on its own.
 
    For one user over stdio, add `stdio_user` and `stdio_readers` to
    `[identity]`; for many users over HTTP, add a directory,
-   `[identity.oidc]` (or API keys) and `[reader.http]` as in
+   `[identity.oidc]` (or API keys, which need no directory) and
+   `[reader.http]` as in
    [HTTP login and users](http-users.md). The embedding
    model and dimensions bind the namespace; see
    [upgrades](operations.md#upgrades).
