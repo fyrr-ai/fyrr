@@ -65,9 +65,16 @@ pub async fn run(
         // The head count each source's last worker started under.
         let mut started = vec![0; config.sources.len()];
         let mut running = Vec::<(usize, Running)>::new();
+        let mut last = fyrr_core::clock::now();
         while !stopped.load(Ordering::Relaxed) {
             let heads = observed.load(Ordering::Acquire);
             let now = fyrr_core::clock::now();
+            // A clock stepped back leaves the cursors' times in the future,
+            // which the worker treats as due; wake every source to let it.
+            if now < last {
+                due.fill(now);
+            }
+            last = now;
             let mut waiting = Vec::new();
             for (i, mut worker) in running {
                 match worker.poll() {
@@ -102,8 +109,9 @@ pub async fn run(
                 }
             }
             running = waiting;
+            let start = first;
             for k in 0..config.sources.len() {
-                let i = (first + k) % config.sources.len();
+                let i = (start + k) % config.sources.len();
                 let source = &config.sources[i];
                 if running.len() >= jobs {
                     break;
