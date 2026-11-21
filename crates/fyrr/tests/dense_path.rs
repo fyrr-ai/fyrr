@@ -50,6 +50,8 @@ mod rerank;
 mod retrieval;
 #[path = "dense_path/slack.rs"]
 mod slack;
+#[path = "dense_path/storage_budget.rs"]
+mod storage_budget;
 #[path = "dense_path/synthetic.rs"]
 mod synthetic;
 #[path = "dense_path/tools.rs"]

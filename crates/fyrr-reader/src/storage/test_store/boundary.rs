@@ -246,7 +246,15 @@ impl ObjectStore for Store {
         path: &Path,
         options: PutMultipartOptions,
     ) -> Result<Box<dyn MultipartUpload>> {
-        self.inner.put_multipart_opts(path, options).await
+        let mut operation = self.client.operation().await?;
+        operation
+            .observe("MULTIPART", path, false, 0, &[], None)
+            .await?;
+        let result = self.inner.put_multipart_opts(path, options).await;
+        operation
+            .observe("MULTIPART", path, true, status(&result), &[], None)
+            .await?;
+        result
     }
 
     async fn get_opts(&self, path: &Path, options: GetOptions) -> Result<GetResult> {
@@ -352,12 +360,29 @@ impl ObjectStore for Store {
         .boxed()
     }
 
+    // A listing of one directory level, under its own label so that hooks
+    // written for streamed listings keep their meaning.
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
-        self.inner.list_with_delimiter(prefix).await
+        let path = prefix.cloned().unwrap_or_default();
+        let mut operation = self.client.operation().await?;
+        operation
+            .observe("LISTDIR", &path, false, 0, &[], None)
+            .await?;
+        let result = self.inner.list_with_delimiter(prefix).await;
+        operation
+            .observe("LISTDIR", &path, true, status(&result), &[], None)
+            .await?;
+        result
     }
 
     async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
-        self.inner.copy_opts(from, to, options).await
+        let mut operation = self.client.operation().await?;
+        operation.observe("COPY", to, false, 0, &[], None).await?;
+        let result = self.inner.copy_opts(from, to, options).await;
+        operation
+            .observe("COPY", to, true, status(&result), &[], None)
+            .await?;
+        result
     }
 }
 
