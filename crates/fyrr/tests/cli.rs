@@ -190,6 +190,19 @@ fn reader_commands_require_configuration() {
 }
 
 #[test]
+fn reader_search_requires_a_query_before_loading_config() {
+    let missing = config_arg(&Path::new(env!("CARGO_TARGET_TMPDIR")).join("does-not-exist.toml"));
+    for args in [&[][..], &["--limit", "5"], &["--output", "metadata"]] {
+        let mut command = vec!["--config", missing.as_str(), "reader", "search"];
+        command.extend_from_slice(args);
+        let output = fyrr(&command, false);
+        let (_, stderr) = text(&output);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains("<QUERY>"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
 fn reader_search_takes_a_query_that_starts_with_a_dash() {
     let missing = config_arg(&Path::new(env!("CARGO_TARGET_TMPDIR")).join("does-not-exist.toml"));
     for args in [
