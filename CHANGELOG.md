@@ -58,6 +58,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- The `search` tool description tells agents to search a ticket's title and
+  body as two `queries` for task context.
 - The software factory guide and the Claude Code plugin tell an agent to
   start a task with one `search` whose two `queries` are the ticket's title
   and body. The agent takes its current ticket from the tracker; fyrr
