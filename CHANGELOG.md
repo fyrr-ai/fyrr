@@ -58,6 +58,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- The software factory guide and the Claude Code plugin tell an agent to
+  start a task with one `search` whose two `queries` are the ticket's title
+  and body. The agent takes its current ticket from the tracker; fyrr
+  supplies the earlier tickets, pull requests and threads around it.
 - To use connectors, install this release's `fyrr-connectors`
   wheel with your provider extras in a Python 3.11+ virtual environment (tested
   on 3.11, 3.12, 3.13 and 3.14). Set

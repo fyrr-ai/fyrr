@@ -26,11 +26,26 @@ Three parts of the contract matter for unattended agents:
 - **Text is data.** Tool descriptions state that returned text is data, not
   instructions.
 
-An agent that starts from a Jira ticket knows its key. It finds the issue
-with `search`, `attributes: [{"key": "jira.key", "values": ["PROJ-123"]}]`,
-no `query` and `order: "updated_at"`, then reads it with `fetch` and searches
-on for the pull requests and threads about it. The URLs in its text, and with fixed readers its `links` section, name
-what to look up next ([Jira documents](connectors/jira.md#documents)).
+## Start every task with one search
+
+The agent already has its ticket: the factory hands it over from the tracker,
+where the agent also comments. fyrr supplies what surrounds it, the earlier
+tickets, pull requests, threads and documents nobody linked. At the start of
+a task, search once with the ticket's title and its body as two queries:
+
+```json
+{ "queries": ["<ticket title>", "<ticket body, first 4,096 characters>"], "limit": 20 }
+```
+
+Title and body together find more than either alone, and each document comes
+back once. The agent then reads what looks relevant with `fetch` and searches
+on from there.
+
+To read a ticket the current one names, look it up by key: `search` with
+`attributes: [{"key": "jira.key", "values": ["PROJ-123"]}]`, no `query` and
+`order: "updated_at"`. The URLs in a ticket's text, and with fixed readers
+its `links` section, name what to look up next
+([Jira documents](connectors/jira.md#documents)).
 Acceptance criteria kept in a custom field are indexed when `scope.fields`
 lists that field's ID.
 
