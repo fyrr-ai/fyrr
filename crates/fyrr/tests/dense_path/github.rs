@@ -13,9 +13,14 @@ impl Fake {
         let key = server.connection["private_key"].as_str().unwrap().into();
         Self { server, key }
     }
-    fn topic(&self, number: usize, text: &str) {
+    /// An issue whose indexed text is its title above `text`; the embedding
+    /// service knows that text by the vector it has for `text` itself.
+    fn topic(&self, root: &FixtureRoot, number: usize, text: &str) {
         self.server
             .call("topic", json!({"repo_id":1,"number":number,"body":text}));
+        let indexed = format!("Synthetic issue {number}\n\n{text}");
+        root.embedding
+            .insert_both(&indexed, root.embedding.vector(text));
     }
 }
 fn fixture(fake: &Fake, mode: &str) -> (PathBuf, PathBuf, FixtureRoot) {
@@ -74,9 +79,9 @@ fn synced(worker: &Path, fake: &Fake, kinds: &[&str]) -> Value {
 #[ignore = "real worker and local storage; coordinator Cargo slot"]
 async fn github_fixed_replay_quarantine_scope_and_reconcile_on_storage() {
     let fake = Fake::start();
-    let (worker, commit, _root) = fixture(&fake, "fixed");
+    let (worker, commit, root) = fixture(&fake, "fixed");
     for number in 1..=3 {
-        fake.topic(number, &format!("fixture document {}", number - 1));
+        fake.topic(&root, number, &format!("fixture document {}", number - 1));
     }
     fake.server.call("fail", json!({"path":"/repos/synthetic/repo-1/issues/3/comments","status":503,"times":6,"headers":{"Retry-After":"0"}}));
     assert!(
@@ -96,8 +101,11 @@ async fn github_fixed_replay_quarantine_scope_and_reconcile_on_storage() {
     );
     publish(&commit);
     assert_eq!(source_roots(&worker, "github").await.len(), 3);
-    fake.topic(1, "fixture document 4");
-    fake.topic(4, &"fixture document 6 ".repeat(8));
+    fake.topic(&root, 1, "fixture document 4");
+    fake.server.call(
+        "topic",
+        json!({"repo_id":1,"number":4,"body":"fixture document 6 ".repeat(8)}),
+    );
     let report = synced(&worker, &fake, &["--kind", "content"]);
     assert_eq!(report["stats"]["quarantined"], 1);
     publish(&commit);
@@ -130,12 +138,46 @@ async fn github_fixed_replay_quarantine_scope_and_reconcile_on_storage() {
     );
 }
 
+/// A word only in a pull request's title finds the pull request by full-text
+/// search alone: the query has no vector, so the dense lane is degraded.
+#[tokio::test]
+#[ignore = "real worker and local storage; coordinator Cargo slot"]
+async fn github_title_only_word_is_found_by_lexical_search_on_storage() {
+    let fake = Fake::start();
+    let (worker, commit, root) = fixture(&fake, "fixed");
+    fake.server.call(
+        "topic",
+        json!({"repo_id":1,"kind":"pr","number":5,"body":"fixture document 9",
+               "title":"Rename the quokka marshaller"}),
+    );
+    root.embedding.insert_both(
+        "Rename the quokka marshaller\n\nfixture document 9",
+        root.embedding.vector("fixture document 9"),
+    );
+    synced(&worker, &fake, &["--kind", "content"]);
+    publish(&commit);
+    let result = super::tools::Mcp::open(&worker).call(
+        "search",
+        json!({"sources":["github"],"query":"quokka","limit":10,"output":"metadata"}),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    let body = &result["structuredContent"];
+    assert_eq!(body["metadata"]["degraded"], json!(["dense"]));
+    let roots: Vec<_> = body["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["root_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(roots, ["github:repo:1:pr:1005:5"]);
+}
+
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn github_sync_silent_content_and_revoke_on_storage() {
     let fake = Fake::start();
-    let (worker, commit, _root) = fixture(&fake, "sync");
-    fake.topic(1, "fixture document 0");
+    let (worker, commit, root) = fixture(&fake, "sync");
+    fake.topic(&root, 1, "fixture document 0");
     fake.server
         .call("collaborator", json!({"repo_id":1,"user_id":7}));
     super::identity::link_account(&worker, "github", "github.com:7").await;

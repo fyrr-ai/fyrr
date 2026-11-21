@@ -141,9 +141,7 @@ class GitHub(Connector[Settings, Scope]):
         self, repo: Repository, ref: ConversationRef, before: dict[str, Any]
     ) -> render.Rendered:
         parts: list[dict[str, Any]] = []
-        text_bytes = len(
-            render.text(before.get("body"), self.context.limits.document_max_bytes).encode()
-        )
+        text_bytes = len(render.opening(before, self.context.limits.document_max_bytes).encode())
         metadata_bytes = 0
 
         def keep(part: dict[str, Any]):

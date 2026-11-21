@@ -98,6 +98,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   their rows through the scalar indexes too, instead of passing the
   subject's rows to Lance as a row mask. Results and authorization are
   unchanged.
+- The GitHub connector indexes an issue or PR title as the first line of its
+  first section, so title-only words are searchable. Conversations with a body
+  get a new revision and are re-embedded as they refresh; run
+  `fyrr writer sync github --kind content --full` to do it at once. The title
+  counts toward `document_max_bytes`. See
+  [GitHub documents](docs/connectors/github.md#documents).
 
 ### Security
 

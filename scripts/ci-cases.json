@@ -1594,6 +1594,10 @@
       "full:fyrr:test:dense_path/github::github_sync_silent_content_and_revoke_on_storage": {
         "tier": "full",
         "seconds": 31.856
+      },
+      "full:fyrr:test:dense_path/github::github_title_only_word_is_found_by_lexical_search_on_storage": {
+        "tier": "full",
+        "seconds": 13.23
       }
     }
   },
@@ -2155,6 +2159,18 @@
         "seconds": null
       },
       "python:connectors/tests/github/test_github_content.py::test_quarantine_keeps_last_good_revision": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_title_counts_toward_the_document_limit": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_title_counts_while_comment_pages_are_read": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_title_opens_the_first_section_so_it_is_searchable": {
         "tier": "quick",
         "seconds": null
       },
