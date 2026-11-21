@@ -182,7 +182,10 @@ subject bindings return `503 authorization_unavailable`.
   leeway; `sub` has 1–512 bytes.
 - The subject (`iss` and `sub`) must be bound to an active canonical user in
   the published identity, or the request gets `503
-  authorization_unavailable`.
+  authorization_unavailable`. The same answer follows when the serving head
+  carries a directory freshness timestamp older than
+  `identity.validity_deadline`, whatever the reader's own
+  `identity.directory.provider`.
 
 ### Keys
 

@@ -614,21 +614,25 @@ pub async fn artifact<T: fyrr_core::Contract>(
 }
 
 /// Directory proof is valid strictly before its deadline, never in the future.
-/// Disabled providers use immutable operator-managed identity and need no live proof.
+///
+/// The publication decides whether a directory clock exists, not the reader's
+/// own `identity.directory.provider`: a serving head that carries a freshness
+/// timestamp is the writer's attestation of a directory read, and every reader
+/// holds it to `identity.validity_deadline`. A head without one (a snapshot
+/// imported by hand, which proves nothing about freshness) is served only by a
+/// reader without a directory provider; a reader that has one refuses it.
 pub fn directory_fresh(
     config: &Config,
     freshness: Option<chrono::DateTime<chrono::Utc>>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> bool {
-    if config.identity.directory.provider == fyrr_core::config::DirectoryProvider::None {
-        return true;
-    }
-    freshness.is_some_and(|at| {
-        at <= now
-            && (now - at)
-                .to_std()
-                .is_ok_and(|age| age < config.identity.validity_deadline.as_duration())
-    })
+    let Some(at) = freshness else {
+        return config.identity.directory.provider == fyrr_core::config::DirectoryProvider::None;
+    };
+    at <= now
+        && (now - at)
+            .to_std()
+            .is_ok_and(|age| age < config.identity.validity_deadline.as_duration())
 }
 
 pub async fn pinned(

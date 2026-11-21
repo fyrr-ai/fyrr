@@ -271,7 +271,7 @@
         "tier": "quick",
         "seconds": 0.1
       },
-      "full:fyrr-reader:lib:fyrr_reader/storage::tests::only_an_absent_directory_needs_no_freshness_proof": {
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::the_publication_decides_whether_the_directory_clock_applies": {
         "tier": "quick",
         "seconds": 0.0
       },
@@ -1560,6 +1560,10 @@
         "tier": "full",
         "seconds": 156.747
       },
+      "full:fyrr:test:dense_path/http_mcp::a_published_directory_clock_binds_a_reader_without_a_directory_provider_on_storage": {
+        "tier": "full",
+        "seconds": 100.0
+      },
       "full:fyrr:test:dense_path/identity::identity_alias_collision_link_revoke_and_idempotence_on_storage": {
         "tier": "full",
         "seconds": 31.047
@@ -1571,6 +1575,10 @@
       "full:fyrr:test:dense_path/identity::identity_email_evidence_and_cross_issuer_bindings_on_storage": {
         "tier": "full",
         "seconds": 48.179
+      },
+      "full:fyrr:test:dense_path/identity::identity_import_withdraws_the_directory_clock_in_the_same_head_write_on_storage": {
+        "tier": "full",
+        "seconds": 40.0
       },
       "full:fyrr:test:dense_path/identity::identity_large_grants_are_complete_and_over_limit_is_subject_local_on_storage": {
         "tier": "full",

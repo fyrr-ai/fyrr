@@ -117,6 +117,15 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Security
 
+- A reader with `identity.directory.provider = "none"` (the Lambda example
+  omits it) no longer skips the directory freshness check when the serving
+  head carries a timestamp. Reading a namespace whose writer pulls a
+  directory, it now answers `authorization_unavailable` once the pulls have
+  stopped for longer than `identity.validity_deadline`. A deployment that
+  moved to manual imports under `provider = "none"` is served again by one
+  `writer directory --snapshot` import, which withdraws the timestamp; the
+  snapshot must not be older than the last pull, or it is refused as stale.
+  Lambda readers should use the writer host's `validity_deadline`.
 - The README, quickstart and software factory guide no longer store
   `FYRR_IDENTITY_KEY` in Claude Code's settings: they add the reader
   without `-e` and start Claude Code from a shell with the key exported.
