@@ -188,6 +188,8 @@ async fn local_operation_boundaries_preserve_durability_and_release_killed_write
     drop(gate);
     drop(controller);
 
+    // A commit with nothing to commit never takes the lease: give it a document.
+    super::super::mirror_identity::sync_texts(&config, &root, &[("kept.txt", "kept text")]);
     let (gate, hook) = RequestGate::new(|request, _, after| {
         !after && request.starts_with("PUT ") && request.contains("/head.json ")
     });

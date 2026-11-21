@@ -48,6 +48,10 @@ async fn tools_embedding_empty_admission_and_profile_mismatch_make_no_calls_on_s
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("embedding_profile_mismatch"));
     assert_eq!(provider.calls(), 0);
+    // An idle commit takes no lease, yet it still refuses a changed profile.
+    let rejected = run(&mismatch, &["writer", "commit"]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("embedding_profile_mismatch"));
     let uncapped = root.join("embedding-uncapped.toml");
     std::fs::write(
         &uncapped,
