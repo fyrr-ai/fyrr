@@ -22,7 +22,7 @@ pub enum ReaderCommand {
     Search {
         /// Query text; may start with `-`.
         #[arg(allow_hyphen_values = true)]
-        query: Option<String>,
+        query: String,
         #[arg(long, default_value_t = 50)]
         limit: usize,
         /// Text per hit.
@@ -75,7 +75,6 @@ pub fn run(command: &ReaderCommand, config: &Path) -> ExitCode {
                 limit,
                 output,
             } => {
-                let query = query.as_deref().ok_or(InvalidArgument)?;
                 let args = serde_json::from_value(
                     serde_json::json!({"query": query, "limit": limit, "output": output}),
                 )
