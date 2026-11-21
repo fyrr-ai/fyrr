@@ -49,6 +49,7 @@ projects = [10001, 10002]              # stable numeric project IDs ...
 issue_types = []                       # issue type IDs; empty = all
 labels = []                            # any-of exact labels
 skip_comment_authors = []              # account IDs whose comments are omitted
+fields = ["customfield_10042"]         # custom field IDs to index as text; default []
 ```
 
 | Key | Meaning |
@@ -58,6 +59,7 @@ skip_comment_authors = []              # account IDs whose comments are omitted
 | `settings.api_endpoint` | Optional HTTPS or loopback origin instead of the cloud gateway. |
 | `scope.projects` or `scope.jql` | Exactly one. JQL is a bounded static expression: no `ORDER BY`, saved filters, `currentUser()`, `membersOf()` or relative-time functions. |
 | `scope.issue_types`, `labels`, `skip_comment_authors` | Optional narrowing (at most 256, 64 and 256 entries). |
+| `scope.fields` | Optional custom field IDs (`customfield_<number>`, at most 16, unique) rendered as text, for example acceptance criteria. |
 
 Issues are identified by numeric ID (`jira:<cloud-id>:issue:<id>`), so
 key changes, project renames and moves keep their identity.
@@ -69,7 +71,26 @@ key changes, project renames and moves keep their identity.
   located sections (the summary section starts with the issue key, as
   `PROJ-123 Summary text`, so excerpts show it and a plain query for the key
   can match its tokens), then **one section per comment** with that comment's
-  own audience. Long text is split into units of at most 16 KiB.
+  own audience. Long text is split into units of at most 16 KiB. A comment's
+  text starts with a line naming its author (`Ada Lovelace:`, `Ada Lovelace
+  (customer):` for a service-desk customer, `unknown:` when Jira names
+  none); the line has the comment's audience and counts toward
+  `document_max_bytes`. The name is the one Jira shows the connector's
+  account, chosen by its owner: a person who shows their full name only to
+  their organization is named in full to every reader of the comment, as the
+  issue's `author` already is.
+- Each custom field listed in `scope.fields` that holds text becomes one
+  `field` section labelled with its ID (for example `customfield_10042`), after the
+  standard fields and before the comments, in the configured order. Rich
+  text, plain strings (dates and URLs among them) and numbers are rendered;
+  other values (options, lists, users) and empty fields are skipped. A field's text has the
+  issue's audience, like the description, so list only fields every reader
+  of the issue may see (not, for example, the Development field, which Jira
+  shows only with the development-tools permission). Find a field's ID in its URL in
+  Jira administration (**Issue fields**) or with `GET /rest/api/3/field`.
+  Changing `scope.fields` makes the next content sync reread every issue; to
+  apply it at once run `fyrr writer sync <source> --kind content --full`,
+  then `fyrr writer commit`.
 - The issue key is the document attribute `jira.key`, exactly as Jira
   returns it. `search` with `attributes: [{"key": "jira.key", "values":
   ["PROJ-123"]}]` returns that issue if the caller may read it, also without

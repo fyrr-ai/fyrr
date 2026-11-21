@@ -68,6 +68,16 @@ def opening(parent: dict[str, Any], limit: int) -> str:
     return text(f"{title}\n\n{body}" if title and body else title or body, limit)
 
 
+def byline(part: dict[str, Any]) -> str:
+    """`login (association):` for a comment, review or inline comment. The
+    association is GitHub's statement about the account, not a permission."""
+    login = text(part.get("login"), 320)
+    if login in ("", "ghost"):
+        return "unknown:"
+    association = text(part.get("association"), 64).lower()
+    return f"{login} ({association}):" if association else f"{login}:"
+
+
 def conversation(
     repo: Repository,
     ref: ConversationRef,
@@ -89,6 +99,7 @@ def conversation(
         parts, key=lambda item: (item.get("created_at") or "", item["kind"], item["id"])
     ):
         body = text(part.get("body"), limit)
+        body = f"{byline(part)}\n{body}" if body else byline(part)
         size += len(body.encode())
         if size > limit:
             raise InvalidDocument

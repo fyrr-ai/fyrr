@@ -8,7 +8,7 @@ import re
 import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
-from typing import Any
+from typing import Any, TypeVar
 
 from ..arrow import Delete, Metadata, Section, Upsert, document_changes
 from ..connector import (
@@ -41,6 +41,7 @@ from .permissions import AccessSnapshot, container
 from .tree import Tree
 
 QUARANTINE = (Section(text="\0"),)
+EntryT = TypeVar("EntryT")
 
 
 class GitHub(Connector[Settings, Scope]):
@@ -125,7 +126,13 @@ class GitHub(Connector[Settings, Scope]):
             "line",
             "original_line",
         )
-        return {**{key: entry[key] for key in keys if key in entry}, "kind": kind}
+        user = entry.get("user")
+        return {
+            **{key: entry[key] for key in keys if key in entry},
+            "login": user.get("login") if isinstance(user, dict) else None,
+            "association": entry.get("author_association"),
+            "kind": kind,
+        }
 
     def _conversation(
         self, repo: Repository, ref: ConversationRef, before: dict[str, Any]
@@ -524,7 +531,7 @@ class GitHub(Connector[Settings, Scope]):
 
         width = min(256, self.context.limits.max_rows)
 
-        def seal[EntryT](
+        def seal(
             collection: Sequence[EntryT], make: Callable[[Sequence[EntryT]], PermissionBatch]
         ) -> None:
             pending: list[EntryT] = []

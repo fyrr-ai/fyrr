@@ -101,7 +101,15 @@ class FakeGitHub:
         return entry
 
     def comment(
-        self, repo_id=1, kind="issue", number=1, body="Comment.", *, review_id=None, state=None
+        self,
+        repo_id=1,
+        kind="issue",
+        number=1,
+        body="Comment.",
+        *,
+        review_id=None,
+        state=None,
+        **fields,
     ):
         key = (repo_id, kind, number)
         target = (
@@ -116,6 +124,9 @@ class FakeGitHub:
             "body": body,
             "created_at": self.stamp(),
             "updated_at": self.stamp(),
+            "user": {"id": 8, "login": "synthetic-commenter"},
+            "author_association": "MEMBER",
+            **fields,
         }
         if state is not None:
             entry.update(state=state, submitted_at=None if state == "PENDING" else self.stamp())

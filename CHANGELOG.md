@@ -9,6 +9,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The Jira connector indexes the custom fields listed in the new
+  `scope.fields` (rich text, string or number values) as `field` sections
+  labelled with the field ID, for example acceptance criteria. See
+  [Jira](docs/connectors/jira.md#documents).
 - The Jira connector records each issue's key as the document attribute
   `jira.key` and starts the summary section with it (`PROJ-123 Summary`).
   `search` with `attributes: [{"key": "jira.key", "values": ["PROJ-123"]}]`
@@ -56,8 +60,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 - The `search` tool description tells agents to search a ticket's title and
   body as two `queries` for task context.
+- The software factory guide and the Claude Code plugin tell an agent to
+  start a task with one `search` whose two `queries` are the ticket's title
+  and body. The agent takes its current ticket from the tracker; fyrr
+  supplies the earlier tickets, pull requests and threads around it.
 - To use connectors, install this release's `fyrr-connectors`
-  wheel with your provider extras in a Python 3.13+ virtual environment. Set
+  wheel with your provider extras in a Python 3.11+ virtual environment (tested
+  on 3.11, 3.12, 3.13 and 3.14). Set
   `VIRTUAL_ENV` to its absolute path and run `fyrr writer providers` to verify
   the installation. The full image includes the SDK and bundled providers.
   Commands that run no connector need no Python. Each sync kind runs in a
@@ -77,6 +86,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   republished at their next update, or at the next full rescan and commit;
   `sync --kind content --full` followed by `writer commit` does it at once. See
   [Jira](docs/connectors/jira.md#documents).
+- GitHub and Jira comments start with a line naming their author
+  (`ada (member):` with GitHub's `author_association`; `Ada Lovelace:`).
+  Conversations and issues with comments that still fit `document_max_bytes`
+  get a new revision at their next update or rotation (12-hour target) and
+  the commit after it;
+  `writer sync <source> --kind content --full`, then `writer commit`, does it at once.
 - **Revocation latency.** A request no longer reads the serving head from
   storage for its authorization checks. It checks its grants against the
   head the reader's latest version check read

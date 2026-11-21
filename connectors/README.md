@@ -16,7 +16,7 @@ schemas bundled in the wheel.
 The `fyrr` binary contains no connectors and no Python: it starts a Python
 provider host from the environment this package is installed in (set
 `VIRTUAL_ENV` to it, or have its `python3` next to `fyrr` or on `PATH`). The
-package needs Python 3.13 or later.
+package needs Python 3.11 or newer; it is tested on 3.11, 3.12, 3.13 and 3.14.
 
 The package version is declared in `pyproject.toml`; read the installed
 version with `importlib.metadata.version("fyrr-connectors")`. The SDK series

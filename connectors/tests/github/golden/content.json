@@ -5,7 +5,7 @@
     "kind": "content",
     "cursor": {
       "start": null,
-      "end": "{\"observed\":[1],\"repos\":{\"1\":{\"commit\":\"2cf2887d2aa96ccfead49950afb47141d9bcdf0e\",\"refresh_step\":1767225810,\"rotate\":[0,0],\"rotation_start\":1767225810,\"since\":\"2026-01-01T00:03:30+00:00\"}},\"scope\":\"a1c416fd91ed218fa0a083e1c3001675a97be567020cd434b1464903d48a8cfa\",\"v\":1}"
+      "end": "{\"observed\":[1],\"repos\":{\"1\":{\"commit\":\"2cf2887d2aa96ccfead49950afb47141d9bcdf0e\",\"refresh_step\":1767225930,\"rotate\":[0,0],\"rotation_start\":1767225930,\"since\":\"2026-01-01T00:05:30+00:00\"}},\"scope\":\"a1c416fd91ed218fa0a083e1c3001675a97be567020cd434b1464903d48a8cfa\",\"v\":1}"
     },
     "body": {
       "type": "document_changes",
@@ -13,7 +13,7 @@
         {
           "op": "upsert",
           "root_id": "github:repo:1:issue:101:1",
-          "source_revision": "45f66cc204fa654354c2773d9631a37c32b6e127ab4d1410727ff61c66b201d7",
+          "source_revision": "bcf829a5637e6b5ec7eca47b5cc1dd2ebb5aad5238ba618b6a0c9a25ce8506f4",
           "readers": [
             "grp:testkit"
           ],
@@ -27,7 +27,7 @@
             "status": "open",
             "labels": [],
             "created_at": "2026-01-01T00:02:00Z",
-            "updated_at": "2026-01-01T00:03:00Z",
+            "updated_at": "2026-01-01T00:05:00Z",
             "connector_map": {
               "repository_id": 1,
               "object_id": 101,
@@ -42,6 +42,14 @@
                 "kind": "heading",
                 "label": "Synthetic issue 1",
                 "index": 0
+              }
+            },
+            {
+              "text": "synthetic-commenter (member):\nGolden comment.",
+              "location": {
+                "kind": "message",
+                "label": "https://github.com/synthetic/repo-1/issues/1#issuecomment-1",
+                "index": 1
               }
             }
           ]

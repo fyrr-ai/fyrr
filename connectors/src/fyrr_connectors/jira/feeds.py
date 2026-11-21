@@ -23,8 +23,10 @@ def stamp(value):
 
 
 def fingerprint(settings, scope):
+    # An unset `fields` is left out, so cursors written before the key existed stay valid.
+    described = {key: value for key, value in asdict(scope).items() if value or key != "fields"}
     return hashlib.sha256(
-        json.dumps(["jira-1", settings.cloud_id, asdict(scope)], sort_keys=True).encode()
+        json.dumps(["jira-1", settings.cloud_id, described], sort_keys=True).encode()
     ).hexdigest()
 
 

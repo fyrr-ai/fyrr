@@ -215,7 +215,7 @@ fn an_interpreter_older_than_the_minimum_ends_at_the_version_check_and_says_so()
     assert_eq!(error.code(), "python_unavailable");
     let message = super::host::unavailable(Ok(PathBuf::from("/venv/bin/python")));
     assert!(
-        message.contains("/venv/bin/python") && message.contains("needs Python 3.13 or newer"),
+        message.contains("/venv/bin/python") && message.contains("needs Python 3.11 or newer"),
         "{message}"
     );
 }

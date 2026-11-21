@@ -70,6 +70,11 @@ class Scope(ConfigModel):
     skip_comment_authors: list[str] = setting(
         description="Opaque account IDs to omit", default_factory=list, max_items=256
     )
+    fields: list[str] = setting(
+        description="Custom field IDs to index as text, in this order",
+        default_factory=list,
+        max_items=16,
+    )
 
     def __post_init__(self):
         if bool(self.projects) == bool(self.jql):
@@ -92,6 +97,10 @@ class Scope(ConfigModel):
             for v in (*self.labels, *self.skip_comment_authors)
         ):
             raise ConfigError("scope", "selectors must be bounded nonempty strings")
+        if any(not re.fullmatch(r"customfield_[0-9]{1,18}", v) for v in self.fields) or len(
+            set(self.fields)
+        ) != len(self.fields):
+            raise ConfigError("scope.fields", "must be unique custom field IDs")
 
     def query(self):
         return self.jql or "project in (" + ",".join(map(str, self.projects)) + ")"

@@ -17,6 +17,14 @@ fn fixture(fake: &Fake, mode: &str) -> (PathBuf, PathBuf, FixtureRoot) {
                 .insert_both(&format!("P1-{id} {text}"), root.embedding.vector(&text));
         }
     }
+    // A comment's text opens with its author's line.
+    for row in [1, 3] {
+        let text = format!("fixture document {row}");
+        root.embedding.insert_both(
+            &format!("Fixture author:\n{text}"),
+            root.embedding.vector(&text),
+        );
+    }
     let text = std::fs::read_to_string(&worker).unwrap();
     let readers = if mode == "fixed" {
         "readers=['grp:allow']\n"
