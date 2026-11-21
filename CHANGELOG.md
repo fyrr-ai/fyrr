@@ -59,6 +59,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   every configuration. `metadata.stale_version` is now set in every reader whenever
   the answer comes from an older version than the head the reader last
   read.
+- Building a subject's admission no longer reads the `source_id` column of
+  every data file when no source is hidden (expired or retired); the
+  predicate's scalar indexes give the rows. Opening a 100,000-row namespace
+  on an empty mirror made 19 storage requests instead of 1,044 and took
+  0.42 s instead of 1.32 s with 25 ms per request; its first search took
+  446 ms instead of 513 ms. A namespace with fixed grants still reads
+  `source_id`, which has no index.
 - The reader no longer asks storage for a version manifest its publication
   does not list. Lance looks for a version under its other manifest name
   each time it opens the dataset, once per worker of every generation; the

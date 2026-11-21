@@ -239,6 +239,10 @@
         "tier": "quick",
         "seconds": 0.1
       },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::a_row_id_admission_scan_selects_the_rows_of_the_source_scan": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
       "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::selection_reads_the_scalar_indexes_and_not_the_admitted_rows": {
         "tier": "quick",
         "seconds": 0.1
