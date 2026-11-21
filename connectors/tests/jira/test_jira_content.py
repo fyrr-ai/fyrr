@@ -10,7 +10,34 @@ def test_jira_content_golden(jira):
     from fyrr_connectors.jira import Jira
     from fyrr_connectors.provider import provider_info
 
-    jira.issue(101)
+    paragraph = [
+        {
+            "type": "text",
+            "text": "approved design",
+            "marks": [{"type": "link", "attrs": {"href": "https://docs.invalid/d"}}],
+        },
+        {"type": "text", "text": " and "},
+        {"type": "inlineCard", "attrs": {"url": "https://github.invalid/o/r/pull/7"}},
+    ]
+    jira.issue(
+        101,
+        description={
+            "type": "doc",
+            "version": 1,
+            "content": [{"type": "paragraph", "content": paragraph}],
+        },
+        parent={"key": "P1-100", "fields": {"summary": "Not shown"}},
+        issuelinks=[
+            {
+                "type": {"inward": "is blocked by", "outward": "blocks"},
+                "outwardIssue": {"key": "P1-140"},
+            },
+            {
+                "type": {"inward": "is blocked by", "outward": "blocks"},
+                "inwardIssue": {"key": "P1-88"},
+            },
+        ],
+    )
     jira.comment(101, 201, "Golden body.")
     info = provider_info(
         name="jira", connector=Jira, min_sdk_version="0.1.0", connection_types=("fixed",)
@@ -67,3 +94,28 @@ def test_jira_moved_issue_keeps_its_root_and_gets_the_new_key(jira, jira_index):
     assert second[root]["attributes"] == ["jira.key=NEW-7"]
     assert second[root]["sections"][0]["text"] == "NEW-7 Login fails"
     assert second[root]["source_revision"] != first[root]["source_revision"]
+
+
+def test_jira_links_section_is_absent_without_links_and_capped(jira, jira_index):
+    from fyrr_connectors.jira.render import MAX_LINKS
+
+    jira.issue(101)
+    jira.issue(
+        102,
+        issuelinks=[
+            {
+                "type": {"inward": "relates to", "outward": "relates to"},
+                "inwardIssue": {"key": f"P1-{n:03}"},
+            }
+            for n in range(MAX_LINKS + 5)
+        ],
+    )
+    changes = jira_index.sync()
+    labels = lambda root: [s["location"]["label"] for s in changes[root]["sections"]]  # noqa: E731
+    assert "links" not in labels("jira:11111111-1111-4111-8111-111111111111:issue:101")
+    links = next(
+        s["text"]
+        for s in changes["jira:11111111-1111-4111-8111-111111111111:issue:102"]["sections"]
+        if s["location"]["label"] == "links"
+    )
+    assert links.splitlines()[-1] == f"relates to: P1-{MAX_LINKS - 1:03}"

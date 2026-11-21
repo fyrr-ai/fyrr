@@ -2774,6 +2774,10 @@
         "tier": "quick",
         "seconds": null
       },
+      "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_adf_renders_link_targets_for_web_urls_only": {
+        "tier": "quick",
+        "seconds": null
+      },
       "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_ambiguous_clock_header_fails_before_any_cursor": {
         "tier": "quick",
         "seconds": null
@@ -2903,6 +2907,10 @@
         "seconds": null
       },
       "python:connectors/tests/jira/test_jira_content.py::test_jira_fixed_http_gateway_real_requests_and_null_fields": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/jira/test_jira_content.py::test_jira_links_section_is_absent_without_links_and_capped": {
         "tier": "quick",
         "seconds": null
       },

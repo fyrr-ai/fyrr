@@ -6,6 +6,12 @@ class ADFError(ValueError):
         super().__init__("jira_adf_invalid")
 
 
+def link(value):
+    if isinstance(value, str) and value.lower().startswith(("http://", "https://")):
+        return text(value)
+    return None
+
+
 def text(value):
     if value is None:
         return ""
@@ -35,10 +41,19 @@ def text(value):
         ):
             raise ADFError()
         kind = node["type"]
-        if kind.startswith("media") or kind in ("inlineCard", "blockCard", "embedCard"):
+        if kind.startswith("media"):
             continue
-        if kind == "text":
-            out.append(text(node.get("text")))
+        if kind in ("inlineCard", "blockCard", "embedCard"):
+            # A smart link is a pasted URL; one without a plain web URL stays dropped.
+            out.append(link(node.get("attrs", {}).get("url")) or "")
+        elif kind == "text":
+            body = text(node.get("text"))
+            for mark in node.get("marks", ()):
+                href = mark.get("type") == "link" and link(mark.get("attrs", {}).get("href"))
+                if href:
+                    body = body if body == href else f"{body} ({href})"
+                    break
+            out.append(body)
         elif kind == "mention":
             attrs = node.get("attrs", {})
             if not isinstance(attrs, dict):

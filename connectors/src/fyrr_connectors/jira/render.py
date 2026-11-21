@@ -11,6 +11,8 @@ from .comments import visibility_signature
 from .feeds import IssueBinding
 
 FORMAT = "jira-1"
+# Lines in the links section; the rest, in sorted order, is dropped.
+MAX_LINKS = 64
 
 
 def date(value):
@@ -42,6 +44,16 @@ def document(identity, project, issue, comments, context, targets=(), dynamic=Fa
                 field_values[key] = label
     if fields.get("labels"):
         field_values["labels"] = ", ".join(fields["labels"])
+    # Keys only: a linked issue's summary may be hidden from readers of this issue.
+    relations = set()
+    for entry in fields.get("issuelinks") or ():
+        for side in ("inward", "outward"):
+            if entry.get(side + "Issue"):
+                relations.add(f"{entry['type'][side]}: {entry[side + 'Issue']['key']}")
+    lines = [f"parent: {fields['parent']['key']}"] if fields.get("parent") else []
+    lines += sorted(relations)
+    if lines:
+        field_values["links"] = "\n".join(lines[:MAX_LINKS])
     for key, value in field_values.items():
         body = text(value)
         if len(body.encode()) > context.limits.document_max_bytes:
