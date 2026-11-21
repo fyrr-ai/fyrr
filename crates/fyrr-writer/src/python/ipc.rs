@@ -26,7 +26,6 @@ use arrow_ipc::{Endianness, MessageHeader, root_as_message};
 use arrow_schema::Schema;
 use fyrr_core::connector::{check_document_changes_schema, document_changes_arrow_schema};
 use std::collections::HashMap;
-use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, LazyLock};
 

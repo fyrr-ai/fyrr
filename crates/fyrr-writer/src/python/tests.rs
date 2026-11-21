@@ -4,7 +4,7 @@
 //! real host is covered by its own tests and by the CLI tests.
 
 use super::driver::{ErrMap, Request, RowPolicy, drive_provider};
-use super::host::{Bounds, Failure, Host, MIN_PYTHON, Rows, StartError, entry};
+use super::host::{Bounds, Failure, Host, Rows, StartError, entry};
 use super::*;
 use crate::worker::Diagnostic;
 use std::path::PathBuf;
@@ -170,7 +170,7 @@ fn credentials_reach_the_provider_only_through_the_socket_and_bad_ones_start_no_
     // Names of the configured lengths are taken by the real host.
     let credentials = ["HOME".to_owned(), "N".repeat(129), "N".repeat(256)]
         .map(|name| (name, "SECRET-VALUE".to_owned()));
-    let mut host = Host::start(&credentials).unwrap();
+    let mut host = Host::start_with(python(), &credentials).unwrap();
     let environ = std::fs::read(format!("/proc/{}/environ", host.pid())).unwrap();
     assert!(!environ.windows(12).any(|window| window == b"SECRET-VALUE"));
     assert!(
@@ -198,7 +198,7 @@ fn credentials_reach_the_provider_only_through_the_socket_and_bad_ones_start_no_
         ("PYTHONPATH", "SECRET-VALUE"),
         ("LD_PRELOAD", "SECRET-VALUE"),
     ] {
-        let error = Host::start(&[(name.to_owned(), value.to_owned())])
+        let error = Host::start_with(python(), &[(name.to_owned(), value.to_owned())])
             .err()
             .unwrap();
         assert_eq!(error, StartError::Failed);

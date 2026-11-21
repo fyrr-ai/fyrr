@@ -340,10 +340,18 @@ impl Host {
     /// exports under such a name nor the credential is in the host's initial
     /// environment (`/proc/<pid>/environ`).
     pub(super) fn start(credentials: &[(String, String)]) -> Result<Self, StartError> {
+        let python = interpreter::resolve().map_err(|_| StartError::PythonUnavailable)?;
+        Self::start_with(python, credentials)
+    }
+
+    /// [`Host::start`] with the interpreter chosen by the caller, which tests use.
+    pub(super) fn start_with(
+        python: std::path::PathBuf,
+        credentials: &[(String, String)],
+    ) -> Result<Self, StartError> {
         if !acceptable(credentials) {
             return Err(StartError::Failed);
         }
-        let python = interpreter::resolve().map_err(|_| StartError::PythonUnavailable)?;
         let names: Vec<&str> = credentials.iter().map(|(name, _)| name.as_str()).collect();
         let mut host = Self::spawn(python, &entry(MIN_PYTHON), &[], &names)?;
         host.set_environment(credentials)?;
