@@ -1454,6 +1454,10 @@
         "tier": "full",
         "seconds": 15.0
       },
+      "full:fyrr:test:dense_path/storage_budget::an_idle_writer_service_stays_within_its_storage_request_budget": {
+        "tier": "full",
+        "seconds": 40.0
+      },
       "full:fyrr:test:dense_path/storage_budget::a_running_reader_stays_within_its_storage_request_budget": {
         "tier": "full",
         "seconds": 70.0
