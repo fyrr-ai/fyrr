@@ -1,7 +1,8 @@
 """Contract-exact Arrow document batches built from Upsert and Delete values.
 
-The bundled JSON schema fixes types, nested nullability and metadata. The Rust
-worker imports these batches through the Arrow C Data Interface and checks them.
+The bundled JSON schema fixes types, nested nullability and metadata. The
+provider host sends these batches to fyrr's worker as Arrow IPC streams, and
+the worker checks them.
 """
 
 from __future__ import annotations

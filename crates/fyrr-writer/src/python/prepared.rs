@@ -1,9 +1,11 @@
 //! Source preparation under the cursor lease.
-use super::driver::{ErrMap, RowPolicy, drive_provider};
+use super::driver::{ErrMap, Request, RowPolicy, drive_provider};
+use super::host::Host;
 use super::*;
 use crate::batch::KindStats;
 use crate::embedding::WriterEmbedding;
 use arrow_array::RecordBatch;
+use callbacks::RevisionCallbacks;
 use futures::StreamExt;
 use fyrr_core::connector::{ConnectorBatch, CursorState};
 use fyrr_core::envelope::{
@@ -11,8 +13,9 @@ use fyrr_core::envelope::{
 };
 use fyrr_core::publication::ServingHead;
 use object_store::{ObjectStore, path::Path};
-use pyo3::{exceptions::PyRuntimeError, types::PyCFunction};
-use revisions::{PendingRevisions, RevisionView, lookup_revisions, revision_views, source_counts};
+use revisions::{
+    PendingRevisions, RevisionStream, RevisionView, lookup_revisions, revision_views, source_counts,
+};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -21,6 +24,7 @@ mod content;
 mod revisions;
 mod state;
 pub(super) use state::CommandEvidence;
+pub(crate) use state::served_identity;
 
 struct Preparation<'a> {
     config: &'a fyrr_core::config::Config,
@@ -28,9 +32,10 @@ struct Preparation<'a> {
     kind: SyncKind,
     rt: &'a std::sync::Arc<tokio::runtime::Runtime>,
     lease: &'a std::sync::Arc<crate::sync_lease::CursorLease>,
+    credentials: &'a Credentials,
 }
 
-#[allow(clippy::print_stdout)]
+#[allow(clippy::print_stdout, clippy::too_many_arguments)]
 pub(super) fn prepared_kind(
     loaded: &fyrr_core::config::LoadedConfig,
     source_id: &str,
@@ -39,6 +44,7 @@ pub(super) fn prepared_kind(
     due: bool,
     permission_stream: bool,
     evidence: &mut CommandEvidence,
+    credentials: &Credentials,
 ) -> Result<serde_json::Value> {
     let config = loaded.config.clone();
     let source = config
@@ -53,7 +59,16 @@ pub(super) fn prepared_kind(
     if rt.block_on(crate::source::retired(&config, &source.id))? {
         return Err(WriterError::SourceRetired);
     }
+    // A kind that is not due takes no lease and lists no envelopes: the head
+    // and its cursor, which are read, show it. The lease decides the rest.
+    if due && let Some(next) = state::idle_until(&config, &source, kind, &rt, evidence)? {
+        return Ok(scheduled(
+            default_report(ReportDefaults::NotDue(kind)),
+            Some(next),
+        ));
+    }
     let mut embedding = None;
+    let mut next_due = None;
     let result = crate::sync_lease::CursorLease::with(&rt, &config, &source.id, kind, |lease| {
         let preparation = Preparation {
             config: &config,
@@ -61,6 +76,7 @@ pub(super) fn prepared_kind(
             kind,
             rt: &rt,
             lease,
+            credentials,
         };
         let head = rt
             .block_on(fyrr_reader::storage::optional_head(&config))?
@@ -94,8 +110,10 @@ pub(super) fn prepared_kind(
             content_sequence: p.sequence,
             lance_version: p.lance_version,
         });
-        let (mut state, skip_not_due) = preparation.cursor_state(&pending, due)?;
+        let (mut state, skip_not_due, replaces_rejection) =
+            preparation.cursor_state(&pending, due)?;
         if skip_not_due {
+            next_due = state::next_due(&source, kind, &state);
             return Ok(default_report(ReportDefaults::NotDue(kind)));
         }
         preparation.backpressure(&pending, full)?;
@@ -122,17 +140,21 @@ pub(super) fn prepared_kind(
             RevisionView {
                 dataset: &dataset,
                 pending: revisions,
-                revisions: Arc::new(Mutex::new(revision_batches)),
+                revisions: revision_batches,
                 failure: &callback_failure,
             },
             &mut embedding,
             permission_stream,
+            replaces_rejection,
         )?;
+        // A completed read, even one that found nothing, moves the schedule and
+        // is the record of the source's last read.
+        state.updated_at = fyrr_core::clock::now();
+        rt.block_on(lease.write(state.clone()))?;
+        next_due = state::next_due(&source, kind, &state);
         let Some(cache) = &embedding else {
             return Ok(default_report(ReportDefaults::Kind { kind, stats }));
         };
-        state.updated_at = fyrr_core::clock::now();
-        rt.block_on(lease.write(state.clone()))?;
         Ok(serde_json::json!({
             "kind": kind,
             "stats": stats,
@@ -144,7 +166,7 @@ pub(super) fn prepared_kind(
         }))
     });
     let result = match result {
-        Ok(value) => Ok(value),
+        Ok(value) => Ok(scheduled(value, next_due)),
         Err(crate::sync_lease::ScopeError::Operation(code)) => Err(code),
         Err(crate::sync_lease::ScopeError::Lease(code)) => return Err(code),
     };
@@ -156,7 +178,19 @@ pub(super) fn prepared_kind(
     }
 }
 
+/// The worker's report with when the schedule makes the kind due again.
+fn scheduled(
+    mut report: serde_json::Value,
+    next_due: Option<chrono::DateTime<chrono::Utc>>,
+) -> serde_json::Value {
+    if let Some(next_due) = next_due {
+        report["next_due"] = serde_json::json!(next_due);
+    }
+    report
+}
+
 impl Preparation<'_> {
+    #[allow(clippy::too_many_arguments)]
     fn read(
         &self,
         state: &mut CursorState,
@@ -165,6 +199,7 @@ impl Preparation<'_> {
         view: RevisionView<'_>,
         embedding: &mut Option<WriterEmbedding>,
         permission_stream: bool,
+        replaces_rejection: bool,
     ) -> Result<KindStats> {
         let dataset = view.dataset;
         let mut content = if self.kind == SyncKind::Content {
@@ -184,111 +219,167 @@ impl Preparation<'_> {
         };
         let revisions = view.pending.clone();
         let callback_failure = view.failure;
-        let outcome = with_runtime_error::<_, WriterError>(
-            |py, runtime| {
-                let callbacks = self.callbacks(py, view)?;
-                let limits = crate::batch::Limits::for_source(self.config, self.source);
-                let source_json = crate::sync::source_json(self.source, limits);
-                let mut checker =
-                    BatchChecker::new(&self.source.id, self.kind, limits, state.cursor.clone());
-                let mut generator = drive_provider(
-                    runtime,
-                    (
-                        &mut checker,
-                        (
-                            source_json,
-                            self.kind.as_str(),
-                            state.cursor.clone(),
-                            callbacks,
-                        ),
-                    ),
-                    policy,
-                    errors,
-                    |header, rows, stats| {
-                        let batch: ConnectorBatch = fyrr_core::parse_contract(header.as_bytes())
-                            .map_err(|_| WriterError::BatchInvalid)?;
-                        if let Some((cache, budget)) = &mut content {
-                            let rows = rows.ok_or(WriterError::BatchInvalid)?;
-                            self.prepare_batch(
-                                &batch,
-                                rows,
-                                stats,
-                                state,
-                                base,
-                                dataset,
-                                &revisions,
-                                cache,
-                                permission_stream,
-                                budget,
-                            )
-                        } else {
-                            self.rt.block_on(crate::prepare::non_content(
-                                self.config,
-                                &self.source.id,
-                                &batch,
-                                state,
-                                self.lease,
-                                base.clone(),
-                                false,
-                            ))
-                        }
+        let outcome = (|| -> Result<KindStats> {
+            let mut host =
+                Host::start(self.credentials).map_err(|_| WriterError::ProviderFailure)?;
+            let mut callbacks = RevisionCallbacks::new(self.config, self.rt, view);
+            let limits = crate::batch::Limits::for_source(self.config, self.source);
+            let source_json = crate::sync::source_json(self.source, limits);
+            // shortcut: a members snapshot is held whole until the provider read
+            // ends, as the commit holds it whole too.
+            let mut held: Vec<ConnectorBatch> = Vec::new();
+            let mut checker =
+                BatchChecker::new(&self.source.id, self.kind, limits, state.cursor.clone());
+            let cursor = state.cursor.clone();
+            let request = Request {
+                source_json: &source_json,
+                kind: self.kind,
+                cursor: cursor.as_deref(),
+            };
+            drive_provider(
+                &mut host,
+                &request,
+                Some(&mut callbacks),
+                &mut checker,
+                policy,
+                errors,
+                |header, rows, stats| {
+                    let batch: ConnectorBatch = fyrr_core::parse_contract(header.as_bytes())
+                        .map_err(|_| WriterError::BatchInvalid)?;
+                    if let Some((cache, budget)) = &mut content {
+                        let rows = rows.ok_or(WriterError::BatchInvalid)?;
+                        self.prepare_batch(
+                            &batch,
+                            rows,
+                            stats,
+                            state,
+                            base,
+                            dataset,
+                            &revisions,
+                            cache,
+                            permission_stream,
+                            budget,
+                        )
+                    } else if self.kind == SyncKind::Members {
+                        // The whole snapshot is held until the read completes: an
+                        // unchanged one writes nothing.
+                        held.push(batch);
+                        Ok(())
+                    } else {
+                        self.rt.block_on(crate::prepare::non_content(
+                            self.config,
+                            &self.source.id,
+                            &batch,
+                            state,
+                            self.lease,
+                            base.clone(),
+                            false,
+                        ))
+                    }
+                },
+            )?;
+            // A caught callback failure still forbids a complete read.
+            if let Some(code) = *callback_failure
+                .lock()
+                .map_err(|_| WriterError::RevisionViewInvalid)?
+            {
+                return Err(code);
+            }
+            if self.kind == SyncKind::Members
+                && ((checker.stats.batches > 0 && !checker.stats.members_complete)
+                    || (checker.stats.batches == 0
+                        && pending.members_tail.is_some_and(|(_, last)| !last)))
+            {
+                return Err(WriterError::MembershipSnapshotIncomplete);
+            }
+            // Only the read that replaces a rejected generation ends with a
+            // complete-read envelope: it alone consumes the rejection markers.
+            // Any other read writes nothing beyond its own changes.
+            if !held.is_empty() {
+                // Only a whole snapshot read here, parts 0 to last, can be
+                // compared; a read resumed after an earlier part was written
+                // writes its parts.
+                let parts: Vec<_> = held
+                    .iter()
+                    .filter_map(|batch| match &batch.body {
+                        fyrr_core::connector::BatchBody::PrincipalSnapshot(part) => Some(part),
+                        _ => None,
+                    })
+                    .collect();
+                let whole = parts.len() == held.len()
+                    && parts.iter().enumerate().all(|(i, part)| {
+                        usize::try_from(part.part).is_ok_and(|n| n == i)
+                            && part.snapshot_id == parts[0].snapshot_id
+                            && part.last == (i + 1 == parts.len())
+                    });
+                let unchanged = !replaces_rejection
+                    && whole
+                    && pending.paths.is_empty()
+                    && self
+                        .rt
+                        .block_on(crate::membership::published_members_equal(
+                            self.config,
+                            &self.source.id,
+                            &held,
+                        ))?;
+                if unchanged {
+                    if let Some(last) = held.last() {
+                        state.cursor = Some(last.cursor.end.clone());
+                    }
+                } else {
+                    for batch in &held {
+                        self.rt.block_on(crate::prepare::non_content(
+                            self.config,
+                            &self.source.id,
+                            batch,
+                            state,
+                            self.lease,
+                            base.clone(),
+                            false,
+                        ))?;
+                    }
+                }
+            }
+            if replaces_rejection
+                && (self.kind == SyncKind::Permissions || self.kind == SyncKind::Members)
+            {
+                let batch = ConnectorBatch {
+                    schema_version: fyrr_core::connector::CONNECTOR_CONTRACT_VERSION,
+                    source_id: self.source.id.clone(),
+                    kind: self.kind,
+                    cursor: fyrr_core::connector::CursorStep {
+                        start: state.cursor.clone(),
+                        end: state.cursor.clone().unwrap_or_else(|| "complete".into()),
                     },
-                )?;
-                // A caught callback failure still forbids a complete-read attestation.
-                if let Some(code) = *callback_failure
-                    .lock()
-                    .map_err(|_| WriterError::RevisionViewInvalid)?
-                {
-                    return Err(code);
-                }
-                if self.kind == SyncKind::Members
-                    && ((checker.stats.batches > 0 && !checker.stats.members_complete)
-                        || (checker.stats.batches == 0
-                            && pending.members_tail.is_some_and(|(_, last)| !last)))
-                {
-                    return Err(WriterError::MembershipSnapshotIncomplete);
-                }
-                if self.kind == SyncKind::Permissions || self.kind == SyncKind::Members {
-                    let batch = ConnectorBatch {
-                        schema_version: fyrr_core::connector::CONNECTOR_CONTRACT_VERSION,
-                        source_id: self.source.id.clone(),
-                        kind: self.kind,
-                        cursor: fyrr_core::connector::CursorStep {
-                            start: state.cursor.clone(),
-                            end: state.cursor.clone().unwrap_or_else(|| "attestation".into()),
-                        },
-                        body: if self.kind == SyncKind::Permissions {
-                            fyrr_core::connector::BatchBody::PermissionChanges {
-                                documents: Vec::new(),
-                                container_grants: Vec::new(),
-                            }
-                        } else {
-                            fyrr_core::connector::BatchBody::PrincipalSnapshot(
-                                fyrr_core::connector::PrincipalSnapshotPart {
-                                    snapshot_id: format!("attest-{}", state.sequence),
-                                    part: 0,
-                                    last: false,
-                                    users: Vec::new(),
-                                    groups: Vec::new(),
-                                },
-                            )
-                        },
-                    };
-                    self.rt.block_on(crate::prepare::non_content(
-                        self.config,
-                        &self.source.id,
-                        &batch,
-                        state,
-                        self.lease,
-                        base.clone(),
-                        true,
-                    ))?;
-                }
-                generator.finish();
-                Ok(checker.stats)
-            },
-            WriterError::from_provider,
-        );
+                    body: if self.kind == SyncKind::Permissions {
+                        fyrr_core::connector::BatchBody::PermissionChanges {
+                            documents: Vec::new(),
+                            container_grants: Vec::new(),
+                        }
+                    } else {
+                        fyrr_core::connector::BatchBody::PrincipalSnapshot(
+                            fyrr_core::connector::PrincipalSnapshotPart {
+                                snapshot_id: format!("complete-{}", state.sequence),
+                                part: 0,
+                                last: false,
+                                users: Vec::new(),
+                                groups: Vec::new(),
+                            },
+                        )
+                    },
+                };
+                self.rt.block_on(crate::prepare::non_content(
+                    self.config,
+                    &self.source.id,
+                    &batch,
+                    state,
+                    self.lease,
+                    base.clone(),
+                    true,
+                ))?;
+            }
+            Ok(checker.stats)
+        })();
         if let Some(code) = *callback_failure
             .lock()
             .map_err(|_| WriterError::RevisionViewInvalid)?

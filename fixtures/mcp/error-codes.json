@@ -7,7 +7,7 @@
   {
     "code": "authorization_unavailable",
     "retryable": true,
-    "meaning": "policy or identity missing, expired or malformed, or the caller exceeds the per-user token limit"
+    "meaning": "policy or identity missing or malformed, or the caller exceeds the per-user token limit"
   },
   {
     "code": "storage_unavailable",

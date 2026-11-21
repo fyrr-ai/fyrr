@@ -130,10 +130,14 @@ impl Drop for Issuer {
 pub(super) struct Reader {
     child: std::process::Child,
     pub(super) base: String,
-    client: Client,
+    pub(super) client: Client,
     stderr: PathBuf,
 }
 impl Reader {
+    /// Everything the reader process has written to stderr so far.
+    pub(super) fn stderr_text(&self) -> String {
+        String::from_utf8_lossy(&std::fs::read(&self.stderr).unwrap_or_default()).into_owned()
+    }
     fn search_task(&self, token: &str, id: u64, deadline: u32) -> tokio::task::JoinHandle<Value> {
         let client = self.client.clone();
         let url = format!("{}/mcp", self.base);
@@ -150,7 +154,7 @@ impl Reader {
             response.json::<Value>().await.unwrap()["result"].clone()
         })
     }
-    async fn start(
+    pub(super) async fn start(
         config: &Path,
         root: &Path,
         issuer: &Issuer,
@@ -180,18 +184,34 @@ impl Reader {
         keycloak: bool,
         operator: bool,
     ) -> Self {
+        let operator = if operator {
+            "operator_credential={env='FYRR_HTTP_OPERATOR'}\n"
+        } else {
+            ""
+        };
+        Self::start_appended(config, root, |address, base| {
+            format!("\n[identity.oidc]\nissuer='{}'\naudience='fyrr-http-test'\njwks_url='{}/jwks'\njwks_validity='1s'\njwks_refresh_interval='100ms'\nkeycloak={keycloak}\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n{operator}authorization_cache_subjects={capacity}\nuser_requests_per_minute={user_limit}\ngroup_requests_per_minute={group_limit}\n",issuer.url,issuer.url)
+        })
+        .await
+    }
+    /// Starts `reader serve` on `config` with the text `appended` builds for
+    /// the reserved listen address and public base URL.
+    pub(super) async fn start_appended(
+        config: &Path,
+        root: &Path,
+        appended: impl FnOnce(&std::net::SocketAddr, &str) -> String,
+    ) -> Self {
         let reserve = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = reserve.local_addr().unwrap();
         drop(reserve);
         let base = format!("http://{address}");
         let config_http = root.join(format!("http-{address}.toml"));
         let config_text = std::fs::read_to_string(config).unwrap();
-        let operator = if operator {
-            "operator_credential={env='FYRR_HTTP_OPERATOR'}\n"
-        } else {
-            ""
-        };
-        std::fs::write(&config_http,format!("{config_text}\n[identity.oidc]\nissuer='{}'\naudience='fyrr-http-test'\njwks_url='{}/jwks'\njwks_validity='1s'\njwks_refresh_interval='100ms'\nkeycloak={keycloak}\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n{operator}authorization_cache_subjects={capacity}\nuser_requests_per_minute={user_limit}\ngroup_requests_per_minute={group_limit}\n",issuer.url,issuer.url)).unwrap();
+        std::fs::write(
+            &config_http,
+            format!("{config_text}{}", appended(&address, &base)),
+        )
+        .unwrap();
         let stderr = root.join(format!("http-{address}.stderr"));
         let child = host_command(&config_http)
             .args(["reader", "serve"])
@@ -255,7 +275,13 @@ impl Reader {
         }
         panic!("HTTP reader startup");
     }
-    async fn rpc(&self, token: &str, id: u64, method: &str, params: Value) -> reqwest::Response {
+    pub(super) async fn rpc(
+        &self,
+        token: &str,
+        id: u64,
+        method: &str,
+        params: Value,
+    ) -> reqwest::Response {
         self.client
             .post(format!("{}/mcp", self.base))
             .bearer_auth(token)
@@ -312,7 +338,6 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     let completed_heads = Arc::new(AtomicUsize::new(0));
     let active_heads = Arc::new(AtomicUsize::new(0));
     let entered = Arc::new(AtomicBool::new(false));
-    let expired_source = Arc::new(AtomicBool::new(false));
     let stall_before = Arc::new(AtomicBool::new(false));
     let publication_hook = Arc::new(Mutex::new(None::<super::corrections::BoundaryHook>));
     let hook = {
@@ -361,30 +386,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
             false
         }) as super::corrections::BoundaryHook
     };
-    let transform: super::corrections::ResponseTransform = {
-        let expired_source = expired_source.clone();
-        Arc::new(move |request, response| {
-            if expired_source.load(Ordering::SeqCst)
-                && request.starts_with("GET ")
-                && request.contains("/head.json ")
-                && response.starts_with(b"HTTP/1.1 200")
-            {
-                super::corrections::rewrite_ok_body(response, |body| {
-                    let mut head: ServingHead = serde_json::from_slice(body).unwrap();
-                    for source in &mut head.freshness.sources {
-                        if source.source_id == "incremental" {
-                            source.permissions_read_at =
-                                fyrr_core::clock::now() - chrono::Duration::hours(2);
-                            source.members_read_at = Some(source.permissions_read_at);
-                        }
-                    }
-                    *body = serde_json::to_vec(&head).unwrap();
-                    true
-                });
-            }
-        })
-    };
-    let (endpoint, proxy) = super::corrections::proxy_transform(
+    let (endpoint, proxy) = super::corrections::proxy_at_boundary(
         loaded
             .config
             .storage
@@ -392,8 +394,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
             .clone()
             .unwrap_or_else(|| "local-storage".into()),
         stop.clone(),
-        transform,
-        Some(hook),
+        hook,
     );
     let mut proxy_guard = proxy;
     proxy_guard.resume = Arc::new(AtomicBool::new(false));
@@ -419,21 +420,6 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
     std::fs::write(&config, text).unwrap();
     let mut reader = Reader::start(&config, &root, &issuer, 1000, 1000).await;
     let token = issuer.token("subject-0", json!({}), json!({}));
-    expired_source.store(true, Ordering::SeqCst);
-    let hidden = reader
-        .call(&token, 20, "search", json!({"query":"fixture query"}))
-        .await;
-    assert_eq!(hidden["isError"], false);
-    assert!(
-        hidden["structuredContent"]["hits"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        hidden["structuredContent"]["metadata"]["hidden_sources"],
-        json!(["incremental"])
-    );
     let allowed = issuer.token("subject-2", json!({}), json!({}));
     let visible = reader
         .call(&allowed, 21, "search", json!({"query":"fixture query"}))
@@ -452,26 +438,9 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
             .unwrap()
             .is_empty()
     );
-    expired_source.store(false, Ordering::SeqCst);
-    // Restore the worker's source freshness context before isolating deadlines.
-    let restored = reader
-        .call(
-            &token,
-            22,
-            "search",
-            json!({"query":"fixture query","sources":["incremental"]}),
-        )
-        .await;
-    assert_eq!(restored["isError"], false);
-    assert!(
-        restored["structuredContent"]["metadata"]["hidden_sources"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
     // Live embedding has more than one worker. A single successful request
     // refreshes only its worker; start every deadline worker from the fresh head.
-    let freshness_stderr = reader.stderr.clone();
+    let head_stderr = reader.stderr.clone();
     reader.stop().await;
     reader = Reader::start(&config, &root, &issuer, 1000, 1000).await;
     async fn blocked(entered: &AtomicBool) {
@@ -974,7 +943,7 @@ async fn identity_http_deadline_cancellation_busy_inflight_refusal_and_active_dr
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(reader.child.try_wait().unwrap().is_some());
-    for stderr in [freshness_stderr, initial_stderr, reader.stderr.clone()] {
+    for stderr in [head_stderr, initial_stderr, reader.stderr.clone()] {
         let log = std::fs::read_to_string(stderr).unwrap();
         for private in [
             &token[..],
@@ -996,7 +965,7 @@ impl Drop for Reader {
         }
     }
 }
-async fn fixture(issuer: &Issuer) -> (PathBuf, PathBuf, FixtureRoot, DirectorySnapshot) {
+pub(super) async fn fixture(issuer: &Issuer) -> (PathBuf, PathBuf, FixtureRoot, DirectorySnapshot) {
     fixture_for_issuer(&issuer.url, Backend::selected()).await
 }
 pub(super) async fn fixture_for_issuer(
@@ -1152,6 +1121,9 @@ async fn identity_http_authentication_isolation_rate_limits_drain_and_refresh_on
         (json!({}), json!({"kid":"unknown"})),
         (json!({"sub":""}), json!({})),
         (json!({"exp":null}), json!({})),
+        (json!({"exp":"9999999999"}), json!({})),
+        (json!({"exp":-1}), json!({})),
+        (json!({"nbf":"x"}), json!({})),
     ] {
         let token = issuer.token("subject-0", claims, header);
         assert_eq!(

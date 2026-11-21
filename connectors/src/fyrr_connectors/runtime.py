@@ -1,7 +1,9 @@
-"""The worker's provider boundary: discovery, configuration and batch encoding.
+"""The provider boundary: discovery, configuration and batch encoding.
 
-Content leaves through Arrow's C Data Interface; other batches use JSON.
-Provider failures use closed diagnostics, without exception text or values.
+`fyrr_connectors.host` serves these functions to fyrr's worker over a socket.
+Content rows leave as Arrow record batches (the host sends them as Arrow IPC
+streams); other batches use JSON. Provider failures use closed diagnostics,
+without exception text or values.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ import dataclasses
 import json
 import os
 import traceback
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from importlib import import_module, metadata
 from typing import Any
 
@@ -216,7 +218,7 @@ def _plain(value: Any) -> dict[str, Any]:
 
 def run(
     source_json: str, kind: str, cursor: str | None, revision_view: tuple[Any, Any] | None = None
-) -> Iterator[tuple[str, Any]]:
+) -> Generator[tuple[str, Any]]:
     """Run one sync kind of one source; yields (header JSON, rows or None).
     Any provider failure becomes a value-free `ProviderFailure`."""
     source = json.loads(source_json)

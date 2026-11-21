@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # Proves the reader-only build (`--no-default-features`, the fyrr-reader
-# image) links no writer crate, Python or PyO3, twice:
-# 1. dependency graph: no forbidden crate in the reader-only build's normal
-#    and build dependencies (a crate outside the graph cannot be linked);
-# 2. linked binary: the debug reader-only binary has no libpython in its
-#    dynamic section (DT_NEEDED), with the full debug binary as a control.
+# image) contains no writer and no provider code, and that neither build
+# links Python, in three ways:
+# 1. dependency graph: no writer crate in the reader-only build's normal and
+#    build dependencies (a crate outside the graph cannot be linked), and no
+#    Python-binding crate in either build;
+# 2. linked binaries: neither debug binary has libpython in its dynamic
+#    section (DT_NEEDED);
+# 3. content: only the full debug binary holds the writer's provider-host
+#    entry point name, with the full binary as the control.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT"
 
-FORBIDDEN='^(fyrr-writer|pyo3|pyo3-ffi|pyo3-macros|pyo3-build-config|python3-dll-a|arrow-pyarrow|numpy) '
+WRITER='^fyrr-writer '
+PYTHON_BINDINGS='^(pyo3|pyo3-ffi|pyo3-macros|pyo3-build-config|python3-dll-a|arrow-pyarrow|numpy) '
 
 graph() {
   cargo tree --locked -p fyrr -e normal,build --prefix none -f '{p}' "$@" | sed 's/ (\*)$//' | sort -u
@@ -17,17 +22,22 @@ graph() {
 reader="$(graph --no-default-features)"
 full="$(graph)"
 
-for crate in fyrr-writer pyo3 pyo3-ffi arrow-pyarrow; do
-  grep -q "^$crate " <<<"$full" || die "control failed: the full build's graph has no $crate, so this check proves nothing"
-done
-echo "control: the full build's graph contains fyrr-writer, pyo3, pyo3-ffi and arrow-pyarrow"
+grep -Eq "$WRITER" <<<"$full" || die "control failed: the full build's graph has no fyrr-writer, so this check proves nothing"
+echo "control: the full build's graph contains fyrr-writer"
 
-if offenders="$(grep -E "$FORBIDDEN" <<<"$reader")"; then
+if offenders="$(grep -E "$WRITER" <<<"$reader")"; then
   echo "FAIL: the reader-only build depends on:" >&2
   echo "$offenders" >&2
   exit 1
 fi
-echo "ok: the reader-only build's graph ($(grep -c . <<<"$reader") packages) contains no fyrr-writer, Python or PyO3 crate"
+echo "ok: the reader-only build's graph ($(grep -c . <<<"$reader") packages) contains no writer crate"
+
+if offenders="$(grep -E "$PYTHON_BINDINGS" <<<"$full")"; then
+  echo "FAIL: the full build depends on Python bindings:" >&2
+  echo "$offenders" >&2
+  exit 1
+fi
+echo "ok: neither build's graph contains a Python binding crate (PyO3, arrow-pyarrow)"
 
 # Development instrumentation must stay out of both shipping package graphs.
 for variant in full reader; do
@@ -56,8 +66,14 @@ if [[ "${FYRR_CI_PREBUILT:-}" != 1 ]]; then
   "$ROOT/scripts/ci-cases" build
 fi
 full_needed="$(needed "$ROOT/target/ci-build/full/fyrr")"
-grep -q '^libpython' <<<"$full_needed" || die "full debug control needs no libpython"
 reader_needed="$(needed "$ROOT/target/ci-build/reader/fyrr")"
+[[ -n "$full_needed" ]] || die "control failed: the full debug binary lists no needed libraries"
+if grep -qi python <<<"$full_needed"; then die "full debug binary links Python"; fi
 if grep -qi python <<<"$reader_needed"; then die "reader-only debug binary links Python"; fi
-echo "control: the full debug binary needs $(grep '^libpython' <<<"$full_needed")"
+echo "ok: the full debug binary needs only: $(tr '\n' ' ' <<<"$full_needed")"
 echo "ok: the reader-only debug binary needs only: $(tr '\n' ' ' <<<"$reader_needed")"
+
+MARKER='fyrr_connectors.host'
+LC_ALL=C grep -aFq "$MARKER" "$ROOT/target/ci-build/full/fyrr" || die "control failed: the full debug binary does not hold the provider-host entry point name"
+if LC_ALL=C grep -aFq "$MARKER" "$ROOT/target/ci-build/reader/fyrr"; then die "reader-only debug binary holds provider-host code"; fi
+echo "ok: only the full debug binary holds the provider-host entry point name ($MARKER)"

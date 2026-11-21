@@ -525,6 +525,10 @@ mod tests {
         assert_eq!(initial[0].rejection_generation, 1);
         let mut replacement = envelope("permissions");
         replacement.namespace = config.namespace.name.clone();
+        // Only the terminal envelope of a replacement consumes a marker.
+        if let EnvelopePayload::Permissions(payload) = &mut replacement.payload {
+            payload.complete_read = true;
+        }
         for (generation, restore, expected) in [(5, 7, Some(9)), (10, 6, Some(1)), (10, 7, None)] {
             replacement.rejection_generation = generation;
             replacement.restore_sequence = restore;

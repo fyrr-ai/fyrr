@@ -35,12 +35,11 @@
     "end": 70
   },
   "metadata": {
-    "schema_version": "3.0",
+    "schema_version": "4.0",
     "publication_id": "pub-000042",
     "content_version": 121,
     "committed_at": "2026-09-30T10:01:30Z",
     "degraded": [],
-    "hidden_sources": [],
     "stale_version": false,
     "omitted_bytes": 0,
     "telemetry": {

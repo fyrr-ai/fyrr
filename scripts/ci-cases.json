@@ -23,6 +23,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/auth::time_tests::token_times_have_no_leeway": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/error::tests::every_reader_error_preserves_legacy_mcp_mapping": {
         "tier": "quick",
         "seconds": 0.0
@@ -239,6 +243,10 @@
         "tier": "quick",
         "seconds": 0.1
       },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::a_row_id_admission_scan_selects_the_rows_of_the_source_scan": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
       "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::selection_reads_the_scalar_indexes_and_not_the_admitted_rows": {
         "tier": "quick",
         "seconds": 0.1
@@ -270,10 +278,6 @@
       "full:fyrr-reader:lib:fyrr_reader/search::tests::unindexed_fragment_bitmap_equals_the_per_row_tail": {
         "tier": "quick",
         "seconds": 0.1
-      },
-      "full:fyrr-reader:lib:fyrr_reader/storage::tests::only_an_absent_directory_needs_no_freshness_proof": {
-        "tier": "quick",
-        "seconds": 0.0
       },
       "full:fyrr-reader:lib:fyrr_reader/tools::cursor_tests::list_cursor_maximum_identifiers_and_windows_fit_and_roundtrip": {
         "tier": "quick",
@@ -415,22 +419,6 @@
         "tier": "quick",
         "seconds": 0.0
       },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::prepared_generator_closes_retained_iterators_and_preserves_errors": {
-        "tier": "quick",
-        "seconds": 0.009
-      },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::prepared_generator_success_does_not_call_close": {
-        "tier": "quick",
-        "seconds": 0.001
-      },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::provider_driver_preserves_row_and_error_policies": {
-        "tier": "quick",
-        "seconds": 0.004
-      },
-      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::run_kind_closes_retained_iterators_and_preserves_errors": {
-        "tier": "quick",
-        "seconds": 0.001
-      },
       "full:fyrr-writer:lib:fyrr_writer/sync::report_tests::every_closed_code_survives_reports_with_other_kind_statistics": {
         "tier": "quick",
         "seconds": 0.008
@@ -547,7 +535,7 @@
         "tier": "quick",
         "seconds": 0.001
       },
-      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::cached_identity_never_skips_token_or_directory_expiry": {
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::cached_identity_never_skips_token_expiry": {
         "tier": "quick",
         "seconds": 0.001
       },
@@ -715,6 +703,110 @@
         "tier": "quick",
         "seconds": 0.5
       },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::frames_over_their_bound_and_unusable_rows_are_batch_failures": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::the_row_and_error_policies_map_each_failure_to_its_own_diagnostic": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_dry_run_maps_failures_to_worker_diagnostics_and_runs_empty_providers": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_host_that_hangs_in_cleanup_is_killed_and_leaves_no_process": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::wire::tests::a_length_over_the_bound_is_refused_before_any_payload_is_read": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::wire::tests::an_unknown_kind_and_a_truncated_payload_are_refused": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::interpreter::tests::a_relative_location_is_never_run": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::interpreter::tests::the_three_places_are_tried_in_order": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/providers::tests::versions_the_python_side_reports_are_shown_only_when_built_from_verified_parts": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::a_batch_header_over_the_envelope_and_its_slack_is_refused_unread": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::the_handshake_refuses_another_protocol_and_names_the_sdk_as_a_closed_code": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::an_interpreter_older_than_the_minimum_ends_at_the_version_check_and_says_so": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::diagnostics_tests::credentials_reach_the_provider_only_through_the_socket_and_bad_ones_start_no_host": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::a_compressed_batch_is_refused_before_anything_is_inflated": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::a_schema_with_more_fields_than_the_contract_and_its_allowance_is_refused_unconverted": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::a_batch_that_makes_the_decoder_panic_is_a_refused_batch": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::a_schema_that_makes_the_conversion_panic_is_a_refused_batch": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::a_schema_that_is_not_the_contracts_is_refused": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::buffers_that_point_outside_the_batch_are_refused": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::dictionary_batches_are_refused": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::only_the_variadic_view_types_are_refused_for_an_added_column": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::exactly_one_schema_and_one_record_batch_are_required": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::framing_that_is_not_an_ipc_stream_is_refused": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::metadata_beyond_the_contracts_two_entries_is_refused": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::rows_and_buffer_bytes_over_the_limits_are_refused": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/python::ipc::tests::the_contract_stream_is_accepted_and_decoded_to_its_rows": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/storage::tests::authorization_checks_share_one_head_read_per_interval": {
         "tier": "quick",
         "seconds": 0.05
@@ -747,7 +839,19 @@
         "tier": "quick",
         "seconds": 0.05
       },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::a_shared_read_that_outlasts_the_age_limit_is_not_served": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_version_manifest_the_publication_lacks_needs_no_storage_request": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_small_data_file_that_cannot_be_kept_whole_is_not_downloaded_whole": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_small_data_file_is_downloaded_whole_on_its_first_read": {
         "tier": "quick",
         "seconds": 0.05
       },
@@ -882,6 +986,10 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-core:test:config/credential_names_the_provider_host_refuses_are_configuration_errors": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-core:test:config/cross_field_rules_are_enforced": {
         "tier": "quick",
         "seconds": 0.001
@@ -985,6 +1093,14 @@
       "full:fyrr-core:test:config/local_storage_takes_a_canonical_file_uri_and_no_s3_keys": {
         "tier": "quick",
         "seconds": 0.002
+      },
+      "full:fyrr-core:test:config/api_keys_need_a_name_readers_and_a_well_formed_unique_secret": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
+      "full:fyrr-core:test:config/http_without_a_login_method_stays_valid_for_the_writer_and_the_check_warns": {
+        "tier": "quick",
+        "seconds": 0.01
       }
     }
   },
@@ -999,14 +1115,6 @@
       "full:fyrr-core:test:contracts/arrow_nested_additions_follow_the_minor_rule": {
         "tier": "quick",
         "seconds": 0.0
-      },
-      "full:fyrr-core:test:contracts/manifest_without_dense_rq_bits_means_one_bit": {
-        "tier": "quick",
-        "seconds": 0.01
-      },
-      "full:fyrr-core:test:contracts/manifest_without_dense_partition_rows_means_550": {
-        "tier": "quick",
-        "seconds": 0.01
       },
       "full:fyrr-core:test:contracts/committed_compat_fixtures_behave": {
         "tier": "quick",
@@ -1164,6 +1272,10 @@
         "tier": "quick",
         "seconds": 0.097
       },
+      "full:fyrr:test:cli/providers::commands_without_python_name_the_fix_and_the_others_run": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
       "full:fyrr:test:cli/providers::config_check_validates_sources_against_their_providers": {
         "tier": "quick",
         "seconds": 13.624
@@ -1171,6 +1283,10 @@
       "full:fyrr:test:cli/providers::dry_run_validates_each_source_in_its_own_worker": {
         "tier": "quick",
         "seconds": 9.558
+      },
+      "full:fyrr:test:cli/providers::failing_providers_end_in_closed_diagnostics_and_leave_no_process": {
+        "tier": "quick",
+        "seconds": 15.0
       },
       "full:fyrr:test:cli/providers::fixed_connections_make_no_permission_or_member_reads": {
         "tier": "quick",
@@ -1183,6 +1299,14 @@
       "full:fyrr:test:cli/reader_commands_require_configuration": {
         "tier": "quick",
         "seconds": 0.029
+      },
+      "full:fyrr:test:cli/reader_search_requires_a_query_before_loading_config": {
+        "tier": "quick",
+        "seconds": 0.03
+      },
+      "full:fyrr:test:cli/reader_search_takes_a_query_that_starts_with_a_dash": {
+        "tier": "quick",
+        "seconds": 0.03
       },
       "full:fyrr:test:cli/usage_errors_exit_two": {
         "tier": "quick",
@@ -1199,6 +1323,30 @@
       "full:fyrr:test:cli/writer_service_requires_configuration": {
         "tier": "quick",
         "seconds": 0.01
+      },
+      "full:fyrr:test:cli/writer_sync_rejects_dry_run_with_due_before_loading_config": {
+        "tier": "quick",
+        "seconds": 0.03
+      },
+      "full:fyrr:test:cli/writer_directory_sync_rejects_connector_only_options": {
+        "tier": "quick",
+        "seconds": 0.03
+      },
+      "full:fyrr:test:cli/providers::python_runs_only_under_a_worker_and_a_host_that_cannot_start_is_named": {
+        "tier": "quick",
+        "seconds": 10.0
+      },
+      "full:fyrr:test:cli/providers::a_dry_run_keeps_one_host_alive_at_a_time": {
+        "tier": "quick",
+        "seconds": 10.0
+      },
+      "full:fyrr:test:cli/providers::a_provider_and_its_children_hold_no_descriptor_but_stdio_and_the_host_socket": {
+        "tier": "quick",
+        "seconds": 5.0
+      },
+      "full:fyrr:test:cli/providers::a_pth_file_runs_after_the_socket_is_detached_and_inherited_descriptors_are_closed": {
+        "tier": "quick",
+        "seconds": 5.0
       }
     }
   },
@@ -1346,25 +1494,17 @@
         "tier": "full",
         "seconds": 36.761
       },
-      "full:fyrr:test:dense_path/publication_lifecycle::unverified_attestation_does_not_renew_authorization": {
-        "tier": "quick",
-        "seconds": 25.899
-      },
       "full:fyrr:test:dense_path/publication_lifecycle::serve_isolates_failed_providers_while_publishing_on_storage": {
         "tier": "full",
         "seconds": 33.382
       },
-      "full:fyrr:test:dense_path/publication_lifecycle::serve_timer_disabled_committer_and_directory_hook_on_storage": {
+      "full:fyrr:test:dense_path/publication_lifecycle::serve_runs_a_source_again_when_a_rejection_is_published_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/publication_lifecycle::serve_timer_disabled_committer_on_storage": {
         "tier": "full",
         "seconds": 96.301
-      }
-    },
-    "children": {
-      "full:fyrr-writer:lib:fyrr_writer/serve::tests::scim_verified_applied_sync_hook": {
-        "tier": "quick",
-        "parents": [
-          "full:fyrr:test:dense_path/publication_lifecycle::unverified_attestation_does_not_renew_authorization"
-        ]
       }
     }
   },
@@ -1441,17 +1581,6 @@
       "full:fyrr:test:dense_path/corrections::retrieval_error_revocation_cases": {
         "tier": "quick",
         "seconds": 12.037
-      }
-    }
-  },
-  "local-live-expiry": {
-    "title": "local: live-expiry",
-    "kind": "rust",
-    "backend": "local",
-    "cases": {
-      "full:fyrr:test:dense_path/corrections::correction_live_mcp_expires_without_commit": {
-        "tier": "quick",
-        "seconds": 5.427
       }
     }
   },
@@ -1534,7 +1663,7 @@
     "kind": "rust",
     "backend": "local",
     "cases": {
-      "full:fyrr:test:dense_path/directory_ops::identity_directory_keycloak_pull_nested_deactivation_and_quiet_hour_on_storage": {
+      "full:fyrr:test:dense_path/directory_ops::identity_directory_keycloak_pull_nested_deactivation_on_storage": {
         "tier": "full",
         "seconds": 82.627
       },
@@ -1580,9 +1709,21 @@
         "tier": "full",
         "seconds": 26.613
       },
-      "full:fyrr:test:dense_path/identity::identity_scim_namespace_creation_and_import_never_attest_without_proof_on_storage": {
+      "full:fyrr:test:dense_path/api_keys::roles_are_isolated_without_oidc": {
         "tier": "quick",
-        "seconds": 12.496
+        "seconds": 9.443
+      },
+      "full:fyrr:test:dense_path/api_keys::last_key_revocation_reaches_a_running_reader": {
+        "tier": "quick",
+        "seconds": 8.728
+      },
+      "full:fyrr:test:dense_path/api_keys::bad_secret_does_not_block_revocation": {
+        "tier": "full",
+        "seconds": 16.63
+      },
+      "full:fyrr:test:dense_path/api_keys::oidc_and_keys_coexist": {
+        "tier": "full",
+        "seconds": 7.006
       }
     }
   },
@@ -1598,6 +1739,10 @@
       "full:fyrr:test:dense_path/github::github_sync_silent_content_and_revoke_on_storage": {
         "tier": "full",
         "seconds": 31.856
+      },
+      "full:fyrr:test:dense_path/github::github_title_only_word_is_found_by_lexical_search_on_storage": {
+        "tier": "full",
+        "seconds": 13.23
       }
     }
   },
@@ -1610,7 +1755,11 @@
         "tier": "full",
         "seconds": 32.14
       },
-      "full:fyrr:test:dense_path/google_drive::google_drive_quarantine_and_permission_read_failure_deadline_on_storage": {
+      "full:fyrr:test:dense_path/google_drive::google_drive_full_sync_indexes_the_name_of_a_file_published_without_it_on_storage": {
+        "tier": "full",
+        "seconds": 51.0
+      },
+      "full:fyrr:test:dense_path/google_drive::google_drive_quarantine_and_permission_read_failure_keeps_rights_on_storage": {
         "tier": "full",
         "seconds": 45.653
       },
@@ -1656,10 +1805,6 @@
       "full:fyrr:test:dense_path/maintenance::maintenance_restore_discovers_authorization_after_failed_cursor_on_storage": {
         "tier": "full",
         "seconds": 70.21
-      },
-      "full:fyrr:test:dense_path/maintenance::maintenance_restore_rejected_authorization_freezes_freshness_on_storage": {
-        "tier": "full",
-        "seconds": 73.103
       },
       "full:fyrr:test:dense_path/maintenance::maintenance_retired_source_commits_are_fenced_on_storage": {
         "tier": "full",
@@ -1707,9 +1852,17 @@
     "kind": "rust",
     "backend": "local",
     "cases": {
-      "full:fyrr:test:dense_path/incremental::incremental_caught_revision_failure_never_attests_on_storage": {
+      "full:fyrr:test:dense_path/incremental::incremental_caught_revision_failure_fails_the_read_on_storage": {
         "tier": "full",
         "seconds": 141.246
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_caught_refused_revision_request_fails_the_read_on_storage": {
+        "tier": "full",
+        "seconds": 30.0
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_provider_receives_stored_revisions_through_the_host_on_storage": {
+        "tier": "full",
+        "seconds": 60.0
       },
       "full:fyrr:test:dense_path/incremental::incremental_content_only_provider_empty_readers_narrow_to_nobody_on_storage": {
         "tier": "full",
@@ -1719,10 +1872,6 @@
         "tier": "full",
         "seconds": 44.076
       },
-      "full:fyrr:test:dense_path/incremental::incremental_delta_expired_source_isolated_on_storage": {
-        "tier": "full",
-        "seconds": 26.637
-      },
       "full:fyrr:test:dense_path/incremental::incremental_delta_genesis_undeclared_row_rejected_on_storage": {
         "tier": "full",
         "seconds": 29.872
@@ -1730,10 +1879,6 @@
       "full:fyrr:test:dense_path/incremental::incremental_rejected_authorization_requires_complete_replacement_on_storage": {
         "tier": "full",
         "seconds": 103.26
-      },
-      "full:fyrr:test:dense_path/incremental::incremental_members_alone_never_attest_permissions_on_storage": {
-        "tier": "quick",
-        "seconds": 34.768
       },
       "full:fyrr:test:dense_path/incremental::incremental_section_readers_survive_a_later_permission_state_on_storage": {
         "tier": "full",
@@ -1746,6 +1891,14 @@
       "full:fyrr:test:dense_path/incremental::incremental_unchanged_upsert_still_protects_pending_reconciliation_on_storage": {
         "tier": "full",
         "seconds": 13.973
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_large_members_snapshot_passes_dry_run_and_a_prepared_run_on_storage": {
+        "tier": "full",
+        "seconds": 60.0
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_idle_member_reread_publishes_nothing_on_storage": {
+        "tier": "full",
+        "seconds": 20.0
       }
     }
   },
@@ -1757,6 +1910,10 @@
       "full:fyrr:test:dense_path/jira::jira_fixed_issues_comments_quarantine_and_reconcile_on_storage": {
         "tier": "full",
         "seconds": 86.87
+      },
+      "full:fyrr:test:dense_path/jira::jira_issue_key_attribute_finds_one_issue_for_a_permitted_subject_on_storage": {
+        "tier": "full",
+        "seconds": 40
       },
       "full:fyrr:test:dense_path/jira::jira_sync_silent_content_restricted_sections_and_revoke_on_storage": {
         "tier": "full",
@@ -1772,6 +1929,10 @@
       "full:fyrr:test:dense_path/notion::notion_content_changes_quarantine_and_reconcile_on_storage": {
         "tier": "full",
         "seconds": 96.859
+      },
+      "full:fyrr:test:dense_path/notion::notion_full_sync_indexes_the_title_of_a_page_published_without_it_on_storage": {
+        "tier": "full",
+        "seconds": 114.0
       }
     }
   },
@@ -2142,6 +2303,14 @@
         "tier": "quick",
         "seconds": null
       },
+      "python:connectors/tests/github/test_github_content.py::test_documents_the_contract_accepted_keep_their_revision": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_comments_name_their_author_and_association": {
+        "tier": "quick",
+        "seconds": null
+      },
       "python:connectors/tests/github/test_github_content.py::test_force_push_old_commit_and_file_delete": {
         "tier": "quick",
         "seconds": null
@@ -2159,6 +2328,18 @@
         "seconds": null
       },
       "python:connectors/tests/github/test_github_content.py::test_quarantine_keeps_last_good_revision": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_title_counts_toward_the_document_limit": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_title_counts_while_comment_pages_are_read": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_title_opens_the_first_section_so_it_is_searchable": {
         "tier": "quick",
         "seconds": null
       },
@@ -2778,6 +2959,14 @@
         "tier": "quick",
         "seconds": null
       },
+      "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_adf_renders_link_targets_for_web_urls_only": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/jira/test_jira_content.py::test_jira_links_are_not_published_with_synced_permissions": {
+        "tier": "quick",
+        "seconds": null
+      },
       "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_adf_depth_and_media_exclusion": {
         "tier": "quick",
         "seconds": null
@@ -2882,6 +3071,14 @@
         "tier": "quick",
         "seconds": null
       },
+      "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_invalid_scope_is_configuration_error[scope8]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_invalid_scope_is_configuration_error[scope9]": {
+        "tier": "quick",
+        "seconds": null
+      },
       "python:connectors/tests/jira/test_jira_boundaries.py::test_jira_long_fields_are_split_into_utf8_safe_units": {
         "tier": "quick",
         "seconds": null
@@ -2910,7 +3107,19 @@
         "tier": "quick",
         "seconds": null
       },
+      "python:connectors/tests/jira/test_jira_content.py::test_jira_comments_name_their_author": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/jira/test_jira_content.py::test_jira_custom_fields_without_text_render_nothing": {
+        "tier": "quick",
+        "seconds": null
+      },
       "python:connectors/tests/jira/test_jira_content.py::test_jira_fixed_http_gateway_real_requests_and_null_fields": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/jira/test_jira_content.py::test_jira_moved_issue_keeps_its_root_and_gets_the_new_key": {
         "tier": "quick",
         "seconds": null
       },
@@ -3622,19 +3831,19 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_never_renews_freshness[internal_error]": {
+      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_yields_no_batch[internal_error]": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_never_renews_freshness[invalid_auth]": {
+      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_yields_no_batch[invalid_auth]": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_never_renews_freshness[missing_scope]": {
+      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_yields_no_batch[missing_scope]": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_never_renews_freshness[thread_not_found]": {
+      "python:connectors/tests/slack/test_slack_permissions.py::test_ambiguous_auth_or_transient_channel_failure_yields_no_batch[thread_not_found]": {
         "tier": "quick",
         "seconds": null
       },
@@ -3794,11 +4003,11 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/slack/test_slack_permissions.py::test_rate_limit_exhaustion_yields_no_freshness[members]": {
+      "python:connectors/tests/slack/test_slack_permissions.py::test_rate_limit_exhaustion_raises_after_bounded_retries[members]": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/slack/test_slack_permissions.py::test_rate_limit_exhaustion_yields_no_freshness[permissions]": {
+      "python:connectors/tests/slack/test_slack_permissions.py::test_rate_limit_exhaustion_raises_after_bounded_retries[permissions]": {
         "tier": "quick",
         "seconds": null
       },
@@ -4166,6 +4375,34 @@
         "tier": "quick",
         "seconds": null
       },
+      "python:connectors/tests/github/test_github_content.py::test_control_character_in_an_inline_comment_path_only_changes_the_label": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_display_values_are_fitted_and_the_sync_continues[33-labels]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_display_values_are_fitted_and_the_sync_continues[control-character]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_display_values_are_fitted_and_the_sync_continues[padded-status]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_display_values_are_fitted_and_the_sync_continues[padded-title]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_file_the_contract_rejects_is_quarantined_and_the_sync_continues": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/github/test_github_content.py::test_markdown_headings_are_fitted": {
+        "tier": "quick",
+        "seconds": null
+      },
       "python:connectors/tests/google_drive/test_google_drive_client.py::test_aggregate_limits_abort[MAX_BYTES]": {
         "tier": "quick",
         "seconds": null
@@ -4261,6 +4498,162 @@
       "python:connectors/tests/test_provider_runtime.py::test_local_files_normalizes_controls_without_changing_raw_revision_identity": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "python:connectors/tests/test_host.py::test_end_of_file_runs_the_generators_cleanup": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_a_batch_over_the_byte_limit_is_refused_before_it_is_serialized[SampleConnector-settings0-scope0]": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "python:connectors/tests/test_host.py::test_a_batch_over_the_byte_limit_is_refused_before_it_is_serialized[Noisy-settings1-scope1]": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "python:connectors/tests/test_host.py::test_a_callback_error_raises_in_the_provider_without_a_value": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_without_revisions_the_provider_has_no_callbacks": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_credentials_set_the_environment_before_any_provider_code_and_are_not_echoed": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message0]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message1]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message2]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message3]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message4]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message5]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message6]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_the_environment_may_only_be_set_before_any_other_request": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_rows_leave_with_only_the_contract_metadata": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_a_name_of_the_full_configured_length_is_accepted": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_the_host_process_serves_over_its_socket_and_exits_on_eof": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message7]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message8]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message9]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message10]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message11]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message12]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message13]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message14]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/test_host.py::test_an_invalid_environment_message_ends_the_conversation[message15]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/notion/test_notion_render.py::test_the_title_opens_the_first_section_above_the_body": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/notion/test_notion_render.py::test_a_title_equal_to_the_first_line_is_not_repeated": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/notion/test_notion_render.py::test_the_title_counts_toward_the_limit_in_bytes": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/notion/test_notion_sync.py::test_a_standalone_page_title_is_indexed_and_a_row_title_is_not_repeated": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_export.py::test_a_docs_title_opens_its_first_section_above_the_text": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_export.py::test_a_docs_title_equal_to_its_first_line_is_not_repeated": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_export.py::test_a_missing_title_changes_nothing": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_export.py::test_a_file_without_text_stays_without_sections_whatever_its_title": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_export.py::test_a_sheet_or_deck_title_is_its_own_section_before_the_first_sheet_or_slide": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_export.py::test_the_title_counts_toward_the_limit_in_bytes": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_sync.py::test_a_rename_republishes_the_file_with_its_new_name": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_sync.py::test_a_long_name_is_indexed_whole_and_only_the_title_metadata_is_capped": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:connectors/tests/google_drive/test_google_drive_sync.py::test_a_name_that_pushes_a_file_over_the_limit_quarantines_it": {
+        "tier": "quick",
+        "seconds": null
       }
     }
   },
@@ -4325,6 +4718,14 @@
       "reader:fyrr:test:cli/reader_only_config_check_says_providers_are_not_checked": {
         "tier": "quick",
         "seconds": 0.009
+      },
+      "reader:fyrr:test:cli/reader_search_requires_a_query_before_loading_config": {
+        "tier": "quick",
+        "seconds": 0.03
+      },
+      "reader:fyrr:test:cli/reader_search_takes_a_query_that_starts_with_a_dash": {
+        "tier": "quick",
+        "seconds": 0.03
       },
       "reader:fyrr:test:cli/worker_memory_ceiling_is_configurable_and_validated": {
         "tier": "quick",
@@ -4476,25 +4877,6 @@
       "full:fyrr:test:dense_path/index_errors::writer_verify_preserves_incompatible_index_on_storage": {
         "tier": "full",
         "seconds": 7.977
-      }
-    }
-  },
-  "local-admission-refresh": {
-    "title": "local: admission-refresh",
-    "kind": "rust",
-    "backend": "local",
-    "cases": {
-      "full:fyrr:test:dense_path/embedding::tools_directory_recovery_refuses_admission_after_failed_refresh_on_storage": {
-        "tier": "quick",
-        "seconds": 7.792
-      }
-    },
-    "children": {
-      "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::failed_refresh_cannot_admit_a_stale_mask_after_directory_recovery_on_storage": {
-        "tier": "quick",
-        "parents": [
-          "full:fyrr:test:dense_path/embedding::tools_directory_recovery_refuses_admission_after_failed_refresh_on_storage"
-        ]
       }
     }
   },

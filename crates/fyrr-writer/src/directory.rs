@@ -145,8 +145,6 @@ pub(crate) fn bindings(snapshot: &DirectorySnapshot) -> Vec<SubjectBinding> {
         .collect()
 }
 
-/// Operator import is not a freshness proof. Pull/SCIM adapters provide that
-/// separately after successful application; this path never advances its clock.
 pub async fn publish(config: &Config, snapshot: &DirectorySnapshot) -> Result<serde_json::Value> {
     snapshot
         .validate()
@@ -155,32 +153,22 @@ pub async fn publish(config: &Config, snapshot: &DirectorySnapshot) -> Result<se
         return Err(WriterError::DirectorySnapshotInvalid);
     }
     crate::lease::LeaseGuard::with(config, |lease| async move {
-        publish_held(config, snapshot, &lease, None).await
+        publish_held(config, snapshot, &lease).await
     })
     .await
 }
 
-/// Both adapters publish through the same holder; a proof is never accepted from operator imports.
+/// The import, pull and SCIM adapters publish through the same holder.
 pub(crate) async fn publish_held(
     config: &Config,
     snapshot: &DirectorySnapshot,
     lease: &crate::lease::LeaseGuard,
-    proof: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<serde_json::Value> {
     snapshot
         .validate()
         .map_err(|_| WriterError::DirectorySnapshotInvalid)?;
     if snapshot.namespace != config.namespace.name || snapshot.built_at > fyrr_core::clock::now() {
         return Err(WriterError::DirectorySnapshotInvalid);
-    }
-    if let Some(at) = proof {
-        let age = fyrr_core::clock::now()
-            .signed_duration_since(at)
-            .to_std()
-            .map_err(|_| WriterError::DirectoryHealthInvalid)?;
-        if age > config.identity.directory.sync_interval.as_duration() {
-            return Err(WriterError::DirectoryHealthInvalid);
-        }
     }
 
     let (store, root) = namespace_store(config)?;
@@ -198,14 +186,6 @@ pub(crate) async fn publish_held(
         if &prior == snapshot {
             if snapshot.built_at < prior_at {
                 return Err(WriterError::DirectorySnapshotStale);
-            }
-            if let Some(at) = proof {
-                let next = head.freshness.directory.map_or(at, |old| old.max(at));
-                if head.freshness.directory != Some(next) {
-                    head.freshness.directory = Some(next);
-                    head.updated_at = fyrr_core::clock::now();
-                    lease.publish(head.clone()).await?;
-                }
             }
             return Ok(
                 serde_json::json!({"identity_generation":head.identity.generation,"changed":false}),
@@ -250,8 +230,7 @@ pub(crate) async fn publish_held(
         .generation
         .checked_add(1)
         .ok_or(WriterError::IdentityGenerationOverflow)?;
-    let configured =
-        crate::commit::configured_identity(config, generation, fyrr_core::clock::now())?;
+    let configured = crate::commit::configured_identity(config, generation)?;
     let next = crate::membership::build(config, &inputs, &head, &[], configured, None).await?;
     if next.principals == current.principals
         && next.tokens == current.tokens
@@ -266,9 +245,6 @@ pub(crate) async fn publish_held(
         crate::prepare::put_generation(store.as_ref(), &root, "identity", generation, &next)
             .await?;
     head.updated_at = fyrr_core::clock::now();
-    if let Some(at) = proof {
-        head.freshness.directory = Some(head.freshness.directory.map_or(at, |old| old.max(at)));
-    }
     lease.publish(head).await?;
     Ok(
         serde_json::json!({"identity_generation": generation, "changed": true, "principals": next.principals.len(), "over_limit_subjects": next.principals.iter().filter(|p| p.tokens.len() > config.identity.max_tokens_per_user as usize).count(), "artifact_bytes": write_contract(&next).len()}),

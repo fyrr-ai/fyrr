@@ -8,7 +8,7 @@ import re
 import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
-from typing import Any
+from typing import Any, TypeVar
 
 from ..arrow import Delete, Metadata, Section, Upsert, document_changes
 from ..connector import (
@@ -21,6 +21,7 @@ from ..connector import (
     PrincipalBatch,
     SyncKind,
 )
+from ..validate import ContractViolation
 from . import render
 from .auth import AppAuth
 from .client import MAX_ENTRIES, ApiError, Client, ResponseLimit, instant, object_id
@@ -40,6 +41,7 @@ from .permissions import AccessSnapshot, container
 from .tree import Tree
 
 QUARANTINE = (Section(text="\0"),)
+EntryT = TypeVar("EntryT")
 
 
 class GitHub(Connector[Settings, Scope]):
@@ -124,7 +126,13 @@ class GitHub(Connector[Settings, Scope]):
             "line",
             "original_line",
         )
-        return {**{key: entry[key] for key in keys if key in entry}, "kind": kind}
+        user = entry.get("user")
+        return {
+            **{key: entry[key] for key in keys if key in entry},
+            "login": user.get("login") if isinstance(user, dict) else None,
+            "association": entry.get("author_association"),
+            "kind": kind,
+        }
 
     def _conversation(
         self, repo: Repository, ref: ConversationRef, before: dict[str, Any]
@@ -141,9 +149,7 @@ class GitHub(Connector[Settings, Scope]):
         self, repo: Repository, ref: ConversationRef, before: dict[str, Any]
     ) -> render.Rendered:
         parts: list[dict[str, Any]] = []
-        text_bytes = len(
-            render.text(before.get("body"), self.context.limits.document_max_bytes).encode()
-        )
+        text_bytes = len(render.opening(before, self.context.limits.document_max_bytes).encode())
         metadata_bytes = 0
 
         def keep(part: dict[str, Any]):
@@ -262,16 +268,21 @@ class GitHub(Connector[Settings, Scope]):
             known = self._lookup(change.root_id)
             if isinstance(change, Upsert) and change.source_revision == known:
                 return
-            if document_changes([change]).get_total_buffer_size() > limits.max_bytes and isinstance(
-                change, Upsert
-            ):
-                change = replace(
-                    change,
-                    sections=QUARANTINE,
-                    metadata=Metadata(
-                        source_uri="https://github.com", source_type="github-document"
-                    ),
-                )
+            if isinstance(change, Upsert):
+                # A document the contract rejects, or that is too large, is
+                # replaced by the quarantine marker and keeps its revision.
+                try:
+                    rejected = document_changes([change]).get_total_buffer_size() > limits.max_bytes
+                except ContractViolation:
+                    rejected = True
+                if rejected:
+                    change = replace(
+                        change,
+                        sections=QUARANTINE,
+                        metadata=Metadata(
+                            source_uri="https://github.com", source_type="github-document"
+                        ),
+                    )
             if document_changes([change]).get_total_buffer_size() > limits.max_bytes:
                 raise ValueError("github_batch_limit")
             candidate = {**pending, change.root_id: change}
@@ -485,7 +496,7 @@ class GitHub(Connector[Settings, Scope]):
         state = Cursor.decode(cursor, self.scope)
         self._missing_roots(state.observed)
         # Every required inventory, catalog, negative check and ACL read must
-        # finish before the first permission batch can renew source freshness.
+        # finish before the first permission batch is yielded.
         roots = self._listing_ids(state.observed) | set(self.known)
         access = AccessSnapshot.read(self.client, self.repos)
         configured = {repo.id for repo in self.scope.repositories}
@@ -520,7 +531,7 @@ class GitHub(Connector[Settings, Scope]):
 
         width = min(256, self.context.limits.max_rows)
 
-        def seal[EntryT](
+        def seal(
             collection: Sequence[EntryT], make: Callable[[Sequence[EntryT]], PermissionBatch]
         ) -> None:
             pending: list[EntryT] = []

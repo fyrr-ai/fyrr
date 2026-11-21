@@ -8,6 +8,23 @@ use super::synthetic::Server as Fake;
 
 fn fixture(fake: &Fake, mode: &str) -> (PathBuf, PathBuf, FixtureRoot) {
     let (worker, root) = setup();
+    // The summary section opens with the issue key (`P1-<id>`); the fake
+    // embedder knows only registered texts.
+    for row in 0..5 {
+        let text = format!("fixture document {row}");
+        for id in 101..=104 {
+            root.embedding
+                .insert_both(&format!("P1-{id} {text}"), root.embedding.vector(&text));
+        }
+    }
+    // A comment's text opens with its author's line.
+    for row in [1, 3] {
+        let text = format!("fixture document {row}");
+        root.embedding.insert_both(
+            &format!("Fixture author:\n{text}"),
+            root.embedding.vector(&text),
+        );
+    }
     let text = std::fs::read_to_string(&worker).unwrap();
     let readers = if mode == "fixed" {
         "readers=['grp:allow']\n"
@@ -183,4 +200,52 @@ async fn jira_sync_silent_content_restricted_sections_and_revoke_on_storage() {
                 .is_empty()
         );
     }
+}
+
+#[tokio::test]
+#[ignore = "actual worker/reader and local storage; coordinator Cargo slot"]
+async fn jira_issue_key_attribute_finds_one_issue_for_a_permitted_subject_on_storage() {
+    let fake = Fake::start("jira/fake_jira.py");
+    let (worker, commit, _root) = fixture(&fake, "fixed");
+    for (id, summary) in [(101, "fixture document 0"), (102, "fixture document 1")] {
+        fake.call("issue", json!({"identity":id,"summary":summary,"description":null,"status":null,"issuetype":{"id":"1"},"reporter":null}));
+    }
+    synced(&worker, &["--kind", "content"]);
+    publish(&commit);
+    let by_key = |key: &str| json!({"sources":["jira"],"attributes":[{"key":"jira.key","values":[key]}],"order":"updated_at","limit":10});
+    let mut reader = super::tools::Mcp::open(&worker);
+    let result = super::tools::body(reader.call("search", by_key("P1-101")));
+    let hits = result["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1, "one issue carries the key: {result}");
+    assert_eq!(
+        hits[0]["root_id"],
+        "jira:11111111-1111-4111-8111-111111111111:issue:101"
+    );
+    assert_eq!(
+        hits[0]["source_uri"],
+        "https://synthetic.atlassian.net/browse/P1-101"
+    );
+    let result = super::tools::body(reader.call("search", by_key("P1-999")));
+    assert!(result["hits"].as_array().unwrap().is_empty());
+    drop(reader);
+
+    let denied = worker.with_file_name("jira-key-no-grants.toml");
+    std::fs::write(
+        &denied,
+        std::fs::read_to_string(&worker)
+            .unwrap()
+            .replace("fixture-subject", "no-grants-subject")
+            .replace(
+                "stdio_readers = [\"grp:allow\"]",
+                "stdio_readers = [\"grp:nobody\"]",
+            ),
+    )
+    .unwrap();
+    publish(&denied);
+    let mut reader = super::tools::Mcp::open(&denied);
+    let result = super::tools::body(reader.call("search", by_key("P1-101")));
+    assert!(
+        result["hits"].as_array().unwrap().is_empty(),
+        "a subject without the grant finds nothing: {result}"
+    );
 }

@@ -1,5 +1,5 @@
 {
-  "schema_version": "3.1",
+  "schema_version": "4.0",
   "namespace": "acme",
   "content": {
     "publication_id": "pub-000042",
@@ -17,15 +17,6 @@
     "generation": 27,
     "object": "identity/generation-27.json",
     "digest": "sha256:e98ebb5d4453a02a1afafdb5aba80c49519a5970736363bb0b13e373106ceb72"
-  },
-  "freshness": {
-    "directory": "2026-09-30T10:00:00Z",
-    "sources": [
-      {
-        "source_id": "gdrive-main",
-        "permissions_read_at": "2026-09-30T09:59:58Z"
-      }
-    ]
   },
   "lease": {
     "holder": "writer-host-a/pid-4242",

@@ -48,6 +48,10 @@ async fn tools_embedding_empty_admission_and_profile_mismatch_make_no_calls_on_s
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("embedding_profile_mismatch"));
     assert_eq!(provider.calls(), 0);
+    // An idle commit takes no lease, yet it still refuses a changed profile.
+    let rejected = run(&mismatch, &["writer", "commit"]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("embedding_profile_mismatch"));
     let uncapped = root.join("embedding-uncapped.toml");
     std::fs::write(
         &uncapped,
@@ -448,14 +452,6 @@ fn tools_cancelled_admission_rebuild_refuses_stale_mask_on_storage() {
 fn tools_timed_out_admission_rebuild_refuses_stale_mask_on_storage() {
     parked_reader_test(
         "serve::tests::embedding::timed_out_admission_rebuild_cannot_reuse_stale_stdio_mask_on_storage",
-    );
-}
-
-#[test]
-#[ignore = "real S3 and stdio directory freshness recovery"]
-fn tools_directory_recovery_refuses_admission_after_failed_refresh_on_storage() {
-    parked_reader_test(
-        "serve::tests::embedding::failed_refresh_cannot_admit_a_stale_mask_after_directory_recovery_on_storage",
     );
 }
 

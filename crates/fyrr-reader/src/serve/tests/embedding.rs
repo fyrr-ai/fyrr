@@ -192,30 +192,31 @@ impl ParkedEmbedding {
         }
     }
 
-    async fn settled(&mut self, pins: usize, native: usize, admission: usize) {
-        // A subsequent SDK response is a transport flush barrier: the
-        // previous response's admission/scratch claims have been dropped.
-        self.wire
-            .send(json!({"jsonrpc":"2.0","id":900,"method":"ping"}))
-            .await;
-        assert_eq!(self.wire.reply().await["id"], 900);
-        loop {
-            let done = self.hooks.request_finished.notified();
-            if self.pin.request_count() == pins
-                && self.service.native_slots.available_permits() == native
-                && self.service.slots.available_permits() == admission
-                && self.memory.available_permits() == self.baseline_memory
-            {
-                break;
+    async fn settled(&self, pins: usize, native: usize, admission: usize) {
+        let counts = || {
+            (
+                self.pin.request_count(),
+                self.service.native_slots.available_permits(),
+                self.service.slots.available_permits(),
+                self.memory.available_permits(),
+            )
+        };
+        let expected = (pins, native, admission, self.baseline_memory);
+        tokio::time::timeout(Duration::from_secs(8), async {
+            // Worker return and response-claim release happen on separate
+            // tasks. Only worker return signals request_finished.
+            self.hooks.request_finished.notified().await;
+            while counts() != expected {
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            tokio::time::timeout(Duration::from_secs(8), done)
-                .await
-                .unwrap();
-        }
-        assert_eq!(self.pin.request_count(), pins);
-        assert_eq!(self.memory.available_permits(), self.baseline_memory);
-        assert_eq!(self.service.native_slots.available_permits(), native);
-        assert_eq!(self.service.slots.available_permits(), admission);
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "request did not settle (pins, native, admission, memory): expected {expected:?}, observed {:?}",
+                counts()
+            )
+        });
     }
     async fn close(self) {
         self.wire.close().await;
@@ -265,6 +266,53 @@ async fn embedding_wait_revocation_refuses_old_authorization_on_storage() {
     fixture.close().await;
 }
 
+/// Publishes a policy generation that retires the permission-synced `allowed`
+/// source: the grant change that makes a reader rebuild its admission.
+async fn retire_allowed_source(
+    config: &fyrr_core::config::Config,
+    head: &mut fyrr_core::publication::ServingHead,
+) {
+    use fyrr_core::publication::{GenerationPointer, PolicyArtifact, RetiredSource};
+    use object_store::ObjectStoreExt;
+
+    assert!(config.sources.iter().any(|source| source.id == "allowed"
+        && source.permissions == fyrr_core::config::PermissionsMode::Sync));
+    let (store, root) = crate::storage::namespace_store(config).unwrap();
+    let mut policy: PolicyArtifact = crate::storage::artifact(store.as_ref(), &root, &head.policy)
+        .await
+        .unwrap();
+    policy.generation += 1;
+    policy.retired_sources.insert(
+        "allowed".into(),
+        RetiredSource {
+            retired_at: fyrr_core::clock::now(),
+            purged_at: None,
+        },
+    );
+    let bytes = fyrr_core::write_contract(&policy);
+    let digest = crate::embedding::digest(&bytes);
+    let object = format!("policy/{}-{}.json", policy.generation, &digest[7..]);
+    store
+        .put(
+            &object_store::path::Path::from(format!("{root}/{object}")),
+            bytes.into(),
+        )
+        .await
+        .unwrap();
+    head.policy = GenerationPointer {
+        generation: policy.generation,
+        object,
+        digest,
+    };
+    store
+        .put(
+            &root.join("head.json"),
+            fyrr_core::write_contract(head).into(),
+        )
+        .await
+        .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real S3 publication and stdio cancellation during admission"]
 async fn cancelled_admission_rebuild_cannot_reuse_stale_stdio_mask_on_storage() {
@@ -278,8 +326,6 @@ async fn timed_out_admission_rebuild_cannot_reuse_stale_stdio_mask_on_storage() 
 }
 
 async fn interrupted_admission_rebuild(deadline: bool) {
-    use object_store::ObjectStoreExt;
-
     let path = std::env::var_os("FYRR_TEST_EMBED_CONFIG").expect("publication fixture config");
     let mut config = fyrr_core::config::load(std::path::Path::new(&path))
         .unwrap()
@@ -302,23 +348,7 @@ async fn interrupted_admission_rebuild(deadline: bool) {
             .unwrap()
             .is_empty()
     );
-    assert!(config.sources.iter().any(|source| source.id == "allowed"
-        && source.permissions == fyrr_core::config::PermissionsMode::Sync));
-    let freshness = head
-        .freshness
-        .sources
-        .iter_mut()
-        .find(|source| source.source_id == "allowed")
-        .unwrap();
-    freshness.permissions_read_at = chrono::DateTime::UNIX_EPOCH;
-    let (store, root) = crate::storage::namespace_store(&config).unwrap();
-    store
-        .put(
-            &root.join("head.json"),
-            fyrr_core::write_contract(&head).into(),
-        )
-        .await
-        .unwrap();
+    retire_allowed_source(&config, &mut head).await;
     hooks.admission_scan.enabled.store(true, Ordering::SeqCst);
     let mut interrupted = args.clone();
     interrupted["deadline_ms"] = json!(if deadline { 1000 } else { 8000 });
@@ -328,7 +358,7 @@ async fn interrupted_admission_rebuild(deadline: bool) {
         hooks.admission_scan.entered.notified(),
     )
     .await
-    .expect("the expired-source rebuild reaches the native scan boundary");
+    .expect("the retired-source rebuild reaches the native scan boundary");
     if !deadline {
         wire.cancel(2).await;
     }
@@ -354,106 +384,7 @@ async fn interrupted_admission_rebuild(deadline: bool) {
     assert_eq!(
         next["result"]["structuredContent"]["hits"],
         json!([]),
-        "a reused stdio worker must not expose rows from the expired source"
-    );
-    assert_eq!(
-        next["result"]["structuredContent"]["metadata"]["hidden_sources"],
-        json!(["allowed"])
-    );
-    wire.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real S3 and stdio directory freshness recovery"]
-async fn failed_refresh_cannot_admit_a_stale_mask_after_directory_recovery_on_storage() {
-    use crate::storage::read_contract;
-    use fyrr_core::publication::ServingHead;
-    use object_store::ObjectStoreExt;
-
-    let path = std::env::var_os("FYRR_TEST_EMBED_CONFIG").expect("publication fixture config");
-    let mut config = fyrr_core::config::load(std::path::Path::new(&path))
-        .unwrap()
-        .config;
-    config.reader.concurrency = 1;
-    config.embedding.reader_live = false;
-    config.identity.directory.provider = fyrr_core::config::DirectoryProvider::Snapshot;
-    let (store, root) = crate::storage::namespace_store(&config).unwrap();
-    let head_path = root.join("head.json");
-    let mut head: ServingHead = read_contract(store.as_ref(), &head_path).await.unwrap();
-    head.freshness.directory = Some(fyrr_core::clock::now());
-    store
-        .put(&head_path, fyrr_core::write_contract(&head).into())
-        .await
-        .unwrap();
-    let admitted = head.clone();
-    let mut reader = PreparedReader::open(&config).await.unwrap();
-    reader.prewarm().await.unwrap();
-    let service = start(reader).await.unwrap();
-    let mut wire = EmbeddingWire::open(service).await;
-    let args = json!({"query":"exactneedle","limit":4,"output":"metadata"});
-    wire.call(1, "search", args.clone()).await;
-    let first = wire.reply().await;
-    assert_ne!(first["result"]["isError"], true, "{first}");
-    let hits = first["result"]["structuredContent"]["hits"]
-        .as_array()
-        .unwrap();
-    assert!(!hits.is_empty());
-    assert!(hits.iter().all(|hit| hit["source_id"] == "allowed"));
-    assert!(config.sources.iter().any(|source| source.id == "allowed"
-        && source.permissions == fyrr_core::config::PermissionsMode::Sync));
-
-    head.freshness.directory = Some(chrono::DateTime::UNIX_EPOCH);
-    head.freshness
-        .sources
-        .iter_mut()
-        .find(|source| source.source_id == "allowed")
-        .unwrap()
-        .permissions_read_at = chrono::DateTime::UNIX_EPOCH;
-    store
-        .put(&head_path, fyrr_core::write_contract(&head).into())
-        .await
-        .unwrap();
-    wire.call(2, "search", args.clone()).await;
-    let denied = wire.reply().await;
-    assert_eq!(denied["id"], 2);
-    assert_eq!(denied["result"]["isError"], true);
-    assert_eq!(
-        denied["result"]["structuredContent"]["code"],
-        "authorization_unavailable"
-    );
-    assert!(denied["result"]["structuredContent"]["hits"].is_null());
-
-    // An unchanged directory read can refresh its proof without changing identity.
-    // Publish that exact state transition through the real fixture object store.
-    head.freshness.directory = Some(fyrr_core::clock::now());
-    assert_eq!(head.identity, admitted.identity);
-    assert_eq!(head.policy, admitted.policy);
-    assert_eq!(head.content, admitted.content);
-    assert_eq!(
-        PreparedReader::expired_sources(&config, &head).unwrap(),
-        std::collections::BTreeSet::from(["allowed".into()])
-    );
-    assert!(crate::storage::directory_fresh(
-        &config,
-        head.freshness.directory,
-        fyrr_core::clock::now()
-    ));
-    store
-        .put(&head_path, fyrr_core::write_contract(&head).into())
-        .await
-        .unwrap();
-    wire.call(3, "search", args).await;
-    let recovered = wire.reply().await;
-    assert_eq!(recovered["id"], 3);
-    assert_ne!(recovered["result"]["isError"], true, "{recovered}");
-    assert_eq!(
-        recovered["result"]["structuredContent"]["hits"],
-        json!([]),
-        "directory recovery must not reuse admission from before the source expired"
-    );
-    assert_eq!(
-        recovered["result"]["structuredContent"]["metadata"]["hidden_sources"],
-        json!(["allowed"])
+        "a reused stdio worker must not expose rows from the retired source"
     );
     wire.close().await;
 }
@@ -526,8 +457,6 @@ async fn stdio_terminates_after_scheduler_failure_on_storage() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real S3 publication, SDK transport and gated embedding before rerank refresh"]
 async fn rerank_refresh_preserves_rebuilt_admission_on_storage() {
-    use object_store::ObjectStoreExt;
-
     let mut fixture = ParkedEmbedding::open("10s").await;
     assert!(fixture.config.namespace.rerank.is_some());
     *crate::sync::lock(&fixture.hooks.admission_probe) = Some(AdmissionProbe {
@@ -567,22 +496,8 @@ async fn rerank_refresh_preserves_rebuilt_admission_on_storage() {
         .authorization_output
         .enabled
         .store(true, Ordering::SeqCst);
-    fixture
-        .head
-        .freshness
-        .sources
-        .iter_mut()
-        .find(|source| source.source_id == "allowed")
-        .unwrap()
-        .permissions_read_at = chrono::DateTime::UNIX_EPOCH;
-    let (store, root) = crate::storage::namespace_store(&fixture.config).unwrap();
-    store
-        .put(
-            &root.join("head.json"),
-            fyrr_core::write_contract(&fixture.head).into(),
-        )
-        .await
-        .unwrap();
+    let config = fixture.config.clone();
+    retire_allowed_source(&config, &mut fixture.head).await;
     fixture.provider.release.add_permits(1);
     tokio::time::timeout(
         Duration::from_secs(8),
@@ -604,7 +519,7 @@ async fn rerank_refresh_preserves_rebuilt_admission_on_storage() {
         assert_eq!(before.head, fixture.head);
         assert!(
             !before.selected,
-            "the mid-rerank rebuild must first remove the expired source"
+            "the mid-rerank rebuild must first remove the retired source"
         );
     }
     fixture.hooks.authorization_output.release.add_permits(1);
@@ -660,7 +575,7 @@ async fn rerank_refresh_preserves_rebuilt_admission_on_storage() {
     assert_eq!(
         visible,
         vec![Some(0), Some(0)],
-        "both reused workers must answer successfully without expired-source rows"
+        "both reused workers must answer successfully without retired-source rows"
     );
     fixture.close().await;
 }

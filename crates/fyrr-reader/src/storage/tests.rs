@@ -1,45 +1,5 @@
 use super::*;
 #[test]
-fn only_an_absent_directory_needs_no_freshness_proof() {
-    use fyrr_core::config::DirectoryProvider;
-    let mut config = fyrr_core::config::parse(concat!(
-        "[namespace]\nname='freshness'\n",
-        "[storage]\nuri='s3://freshness'\n",
-        "[embedding]\nendpoint='https://embed.invalid'\n"
-    ))
-    .unwrap()
-    .config;
-    let now = fyrr_core::clock::now();
-    let deadline =
-        chrono::Duration::from_std(config.identity.validity_deadline.as_duration()).unwrap();
-    for provider in [
-        DirectoryProvider::None,
-        DirectoryProvider::Scim,
-        DirectoryProvider::Keycloak,
-        DirectoryProvider::Snapshot,
-    ] {
-        config.identity.directory.provider = provider;
-        for (freshness, valid) in [
-            (None, false),
-            (Some(now), true),
-            (Some(now + chrono::Duration::nanoseconds(1)), false),
-            (Some(now - chrono::Duration::days(1)), false),
-            (Some(now - deadline), false),
-            (
-                Some(now - deadline + chrono::Duration::nanoseconds(1)),
-                true,
-            ),
-        ] {
-            assert_eq!(
-                directory_fresh(&config, freshness, now),
-                valid || provider == DirectoryProvider::None,
-                "{provider:?}: {freshness:?}"
-            );
-        }
-    }
-}
-
-#[test]
 fn ec2_metadata_opt_out_preserves_other_credential_sources() {
     use AmazonS3ConfigKey as Key;
     let cases: &[(&[(AmazonS3ConfigKey, &str)], bool)] = &[
@@ -358,6 +318,41 @@ async fn an_abandoned_shared_read_is_never_handed_to_a_later_check() {
     tokio::time::advance(std::time::Duration::from_secs(3600)).await;
     let store = heads.store();
     assert_eq!(cache.read(&store, &heads.root).await.unwrap(), changed);
+    assert_eq!(heads.reads(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_shared_read_that_outlasts_the_age_limit_is_not_served() {
+    let heads = Heads::new().await;
+    let cache = HeadCache::with_interval(std::time::Duration::from_secs(60));
+    let slow: Arc<dyn ObjectStore> = Arc::new(SlowReads {
+        inner: heads.store.clone(),
+        delay: std::time::Duration::from_secs(90),
+    });
+    // A check starts a read that is answered with the head as it is now, but
+    // only after 90 s: longer than a head may be used for.
+    let first = tokio::spawn({
+        let (cache, slow, root) = (cache.clone(), slow.clone(), heads.root.clone());
+        async move { cache.read(&slow, &root).await }
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(10)).await;
+    // A revocation is published after the read began; a second check joins it.
+    let revoked = heads.publish(1).await;
+    let joined = tokio::spawn({
+        let (cache, slow, root) = (cache.clone(), slow.clone(), heads.root.clone());
+        async move { cache.read(&slow, &root).await }
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(80)).await;
+    // The read ends with a head older than the limit: neither check gets it.
+    for check in [first.await.unwrap(), joined.await.unwrap()] {
+        assert_eq!(check, Err(StorageError::AuthorizationUnavailable));
+    }
+    assert_eq!(heads.reads(), 1);
+    // The next check reads again and sees the revocation.
+    let store = heads.store();
+    assert_eq!(cache.read(&store, &heads.root).await.unwrap(), revoked);
     assert_eq!(heads.reads(), 2);
 }
 

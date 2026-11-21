@@ -14,14 +14,12 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 
-type Health = Arc<Mutex<Option<chrono::DateTime<chrono::Utc>>>>;
 struct AdminState {
     config: Config,
     operator: hmac::Tag,
     scim: Option<hmac::Tag>,
-    health: Health,
     capacity: Arc<Semaphore>,
 }
 impl std::fmt::Debug for AdminState {
@@ -115,27 +113,12 @@ async fn handle(State(state): State<Arc<AdminState>>, request: Request) -> Respo
     let Ok(permit) = state.capacity.clone().try_acquire_owned() else {
         return error(ScimError::new(503, "temporarilyUnavailable"));
     };
-    let scim = path.starts_with("/scim/v2/");
-    // Retain the request's capacity through health publication. Detached mutations
-    // keep a clone if their client disconnects, preserving bounded work throughout.
-    let permit = Arc::new(permit);
-    let response = process_request(State(state.clone()), request, permit.clone()).await;
-    if scim && response.status().is_success() {
-        let processed = fyrr_core::clock::now();
-        // Authentication and validation succeeded and the entire operation completed.
-        // Reads and no-op reconciliation count; errors and listener uptime do not.
-        if let Err(e) = crate::serve::attest_directory(&state.config, Some(processed)).await {
-            return error(e.into());
-        }
-        let mut health = state.health.lock().await;
-        *health = Some(health.map_or(processed, |old| old.max(processed)));
-    }
-    response
+    process_request(State(state), request, permit).await
 }
 async fn process_request(
     State(state): State<Arc<AdminState>>,
     request: Request,
-    permit: Arc<tokio::sync::OwnedSemaphorePermit>,
+    permit: tokio::sync::OwnedSemaphorePermit,
 ) -> Response {
     let path = request.uri().path().to_owned();
     let method = request.method().as_str().to_owned();
@@ -226,12 +209,12 @@ async fn process_request(
             Err(_) => return error(ScimError::new(400, "invalidSyntax")),
         }
     };
-    // Keep the lease lifecycle alive even if the client closes its connection.
+    // Keep the lease lifecycle, and the request's capacity, alive even if the
+    // client closes its connection.
     let config = state.config.clone();
-    let health = state.health.clone();
     let result = tokio::spawn(async move {
         let _permit = permit;
-        let result = crate::scim::mutate(
+        crate::scim::mutate(
             &config,
             Mutation {
                 users,
@@ -242,16 +225,11 @@ async fn process_request(
                 body,
             },
         )
-        .await;
-        if let Ok((_, _, Some(applied))) = &result {
-            let mut health = health.lock().await;
-            *health = Some(health.map_or(*applied, |old| old.max(*applied)));
-        }
-        result
+        .await
     })
     .await;
     match result {
-        Ok(Ok((status, body, _))) => reply(status, body),
+        Ok(Ok((status, body))) => reply(status, body),
         Ok(Err(e)) => error(e),
         Err(_) => error(ScimError::new(503, "temporarilyUnavailable")),
     }
@@ -260,7 +238,7 @@ async fn process_request(
 pub(crate) async fn start(
     config: &Config,
     stop: Arc<AtomicBool>,
-) -> Result<Option<(tokio::task::JoinHandle<Result<(), WriterError>>, Health)>> {
+) -> Result<Option<tokio::task::JoinHandle<Result<(), WriterError>>>> {
     let Some(admin) = &config.writer.serve.admin else {
         return Ok(None);
     };
@@ -295,12 +273,10 @@ pub(crate) async fn start(
     {
         return Err(WriterError::AdminCredentialsMustDiffer);
     }
-    let health = Arc::new(Mutex::new(None));
     let state = Arc::new(AdminState {
         config: config.clone(),
         operator,
         scim,
-        health: health.clone(),
         capacity: Arc::new(Semaphore::new(8)),
     });
     let listener = tokio::net::TcpListener::bind(address)
@@ -316,7 +292,7 @@ pub(crate) async fn start(
             .await
             .map_err(|_| WriterError::AdminServiceFailed)
     });
-    Ok(Some((task, health)))
+    Ok(Some(task))
 }
 use object_store::path::Path;
 

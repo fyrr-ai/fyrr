@@ -1,135 +1,107 @@
-//! The embedded Python interpreter, used only inside a worker
-//! process (see [`crate::worker`]), never in the process that reads the
-//! configuration or orchestrates sources.
+//! The connector providers, run by the Python provider host: a child process
+//! of a worker (see [`crate::worker`]), never of the process that reads the
+//! configuration or orchestrates sources, and never the `fyrr` executable
+//! itself, which contains no Python.
 //!
-//! The interpreter finds its standard library from `PYTHONHOME` or its
-//! build prefix (`/usr/local` in the image); the parent derives `PYTHONHOME`
-//! from `VIRTUAL_ENV` for development. Providers and the SDK come from the
-//! interpreter's site-packages (the image), the user site (a mounted wheel
-//! directory), `PYTHONPATH`, or the virtual environment named by
-//! `VIRTUAL_ENV`, whose `.pth` files are processed.
+//! [`interpreter`] finds the Python to run: `$VIRTUAL_ENV/bin/python`, a
+//! `python3` next to the `fyrr` executable, then `python3` on `PATH`. The
+//! SDK and the providers come from that interpreter's environment. Only
+//! workers run it: the process that prints the diagnostics never does.
 //!
-//! Content rows cross from Python to Rust through the Arrow C Data
-//! Interface (`__arrow_c_array__` PyCapsules, no copy); everything printed is
-//! value-free: Python failures use closed diagnostic codes.
+//! The worker and the host talk over a socket ([`wire`] frames, [`host`]
+//! client). Content rows cross as Arrow IPC streams, which the worker bounds
+//! before it allocates, inspects before it decodes ([`ipc`]) and validates
+//! when it decodes them; everything printed is value-free: provider failures
+//! are closed diagnostics, and a host that cannot start is one closed
+//! [`StartError`].
 
 use crate::{Result, WriterError};
 use fyrr_core::connector::SyncKind;
-use pyo3::prelude::*;
-use pyo3::types::PyModule;
 
 use crate::batch::BatchChecker;
+use crate::secrets::Credentials;
 use crate::sync::{ReportDefaults, default_report};
 use crate::worker::Diagnostic;
+use host::Host;
 
-// Exception names and frames can contain supplied values.
-const PYTHON_FAILURE: &str = "Python failure";
+pub(crate) use host::StartError;
+pub(crate) use prepared::served_identity;
 
-/// Runs before the SDK is imported: the virtual environment, if any, becomes a site dir.
-/// The worker suppresses stdout/stderr at the OS boundary before Python starts.
-const BOOTSTRAP: &std::ffi::CStr = c"
-import os, site, sys, sysconfig
-_venv = os.environ.get('VIRTUAL_ENV')
-if _venv:
-    site.addsitedir(sysconfig.get_path('purelib', vars={'base': _venv, 'platbase': _venv}))
-del _venv
-";
-
-/// Starts the interpreter, imports the SDK runtime and runs `body` with it.
-pub fn with_runtime<R>(
-    body: impl for<'py> FnOnce(Python<'py>, &Bound<'py, PyModule>) -> Result<R, String>,
+/// Starts a provider host and runs `body` with it; the host ends with it.
+pub(crate) fn with_host<R>(
+    credentials: &Credentials,
+    body: impl FnOnce(&mut Host) -> Result<R, String>,
 ) -> Result<R, String> {
-    with_runtime_error(body, std::convert::identity)
+    body(&mut Host::start(credentials).map_err(|error| error.to_string())?)
 }
 
-fn with_runtime_error<R, E>(
-    body: impl for<'py> FnOnce(Python<'py>, &Bound<'py, PyModule>) -> Result<R, E>,
-    map_error: fn(String) -> E,
-) -> Result<R, E> {
-    Python::initialize();
-    Python::attach(|py| {
-        py.run(BOOTSTRAP, None, None).map_err(|_| {
-            map_error("the embedded Python could not start (Python failure)".into())
-        })?;
-        let runtime = py.import("fyrr_connectors.runtime").map_err(|_| {
-            map_error(
-                concat!(
-                    "cannot import the connector SDK fyrr_connectors (Python failure); ",
-                    "install fyrr-connectors, or set VIRTUAL_ENV to an environment that has it"
-                )
-                .into(),
-            )
-        })?;
-        body(py, &runtime)
-    })
+/// Starts a provider host for a discovery worker, which reports why it could
+/// not as a closed code.
+pub(crate) fn start_host() -> Result<Host, StartError> {
+    Host::start(&[])
 }
 
-/// Close a provider iterator unless the entire read succeeds.
-struct ProviderGenerator<'py> {
-    value: Bound<'py, PyAny>,
-    finished: bool,
-}
-impl<'py> ProviderGenerator<'py> {
-    fn new(value: Bound<'py, PyAny>) -> Self {
-        Self {
-            value,
-            finished: false,
-        }
-    }
-    fn finish(&mut self) {
-        self.finished = true;
-    }
-}
-impl Drop for ProviderGenerator<'_> {
-    fn drop(&mut self) {
-        if !self.finished {
-            // Cleanup failure must never replace the original diagnostic.
-            let _ = self.value.call_method0("close");
-        }
-    }
-}
-
-/// Runs one sync kind of one source and checks every batch at the boundary.
-pub fn run_kind(
-    _py: Python<'_>,
-    runtime: &Bound<'_, PyModule>,
+/// Runs one sync kind of one source in a host of its own and checks every
+/// batch at the boundary.
+pub(crate) fn run_kind(
+    credentials: &Credentials,
     source_json: &str,
     kind: SyncKind,
     checker: &mut BatchChecker,
 ) -> Result<(), Diagnostic> {
-    let mut generator = driver::drive_provider(
-        runtime,
-        (checker, (source_json, kind.as_str(), None::<String>)),
+    let mut host = Host::start(credentials).map_err(|_| Diagnostic::ProviderFailure)?;
+    let request = driver::Request {
+        source_json,
+        kind,
+        cursor: None,
+    };
+    driver::drive_provider(
+        &mut host,
+        &request,
+        None,
+        checker,
         driver::RowPolicy::Optional,
         driver::ErrMap::DRY_RUN,
         |_, _, _| Ok(()),
-    )?;
-    generator.finish();
-    Ok(())
+    )
+}
+
+/// The result a discovery worker sends when its host cannot start: the closed
+/// code, and the SDK's version when a mismatch has one.
+pub(crate) fn host_error_result(error: &StartError) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "host_error": error.code(),
+        "sdk_version": error.sdk_version(),
+    }))
+    .unwrap_or_default()
+}
+
+/// The start error a discovery worker's result reports, if it reports one.
+pub(crate) fn host_error_from_result(result: &[u8]) -> Option<StartError> {
+    let value: serde_json::Value = serde_json::from_slice(result).ok()?;
+    let code = value.get("host_error")?.as_str()?;
+    Some(StartError::parse(
+        code,
+        value.get("sdk_version").and_then(serde_json::Value::as_str),
+    ))
 }
 
 /// Enumerates entry points without importing or executing providers.
-pub fn inventory(_py: Python<'_>, runtime: &Bound<'_, PyModule>) -> Result<String, String> {
-    runtime
-        .call_method0("inventory")
-        .and_then(|r| r.extract::<String>())
-        .map_err(|_| PYTHON_FAILURE.to_owned())
+pub(crate) fn inventory(host: &mut Host) -> Result<String, String> {
+    host.document(&serde_json::json!({"t": "inventory"}))
 }
 
 /// Loads metadata for exactly one entry point.
-pub fn discover_provider(
-    _py: Python<'_>,
-    runtime: &Bound<'_, PyModule>,
-    name: &str,
-) -> Result<String, String> {
-    runtime
-        .call_method1("discover", (name,))
-        .and_then(|r| r.extract::<String>())
-        .map_err(|_| PYTHON_FAILURE.to_owned())
+pub(crate) fn discover_provider(host: &mut Host, name: &str) -> Result<String, String> {
+    host.document(&serde_json::json!({"t": "discover", "name": name}))
 }
 
 mod driver;
+mod host;
+mod interpreter;
+mod ipc;
 mod prepared;
+mod wire;
 use prepared::prepared_kind;
 
 /// One process loads only its own provider and runs independent leased kinds.
@@ -139,6 +111,7 @@ pub fn prepared_sync(
     requested: &[fyrr_core::connector::SyncKind],
     full: bool,
     due: bool,
+    credentials: &Credentials,
 ) -> std::process::ExitCode {
     use fyrr_core::connector::SyncKind;
     let result = (|| -> Result<serde_json::Value> {
@@ -150,9 +123,9 @@ pub fn prepared_sync(
             .find(|(_, s)| s.id == source_id)
             .ok_or(WriterError::SourceInvalid)?;
         // Whether the provider delivers permissions through its own stream.
-        let (kinds, permission_stream) = with_runtime(|py, runtime| {
+        let (kinds, permission_stream) = with_host(credentials, |host| {
             let discovery = crate::providers::parse_discovery(
-                discover_provider(py, runtime, &source.provider)?.as_bytes(),
+                discover_provider(host, &source.provider)?.as_bytes(),
             )?;
             // Parsed metadata may belong to a refused provider. Apply the same
             // checks as dry run before dispatching any kind, including serve jobs.
@@ -187,6 +160,7 @@ pub fn prepared_sync(
                 due || (requested.is_empty() && kind == SyncKind::Reconcile),
                 permission_stream,
                 &mut evidence,
+                credentials,
             ) {
                 Ok(value) => {
                     failed |= value.get("error").is_some();
@@ -204,6 +178,16 @@ pub fn prepared_sync(
             .cloned()
             .unwrap_or_else(|| default_report(ReportDefaults::Source));
         let mut report = content;
+        // The earliest time a kind of the source is due again.
+        let next_due = reports
+            .iter()
+            .filter_map(|r| {
+                serde_json::from_value::<chrono::DateTime<chrono::Utc>>(r["next_due"].clone()).ok()
+            })
+            .min();
+        if let Some(next_due) = next_due {
+            report["next_due"] = serde_json::json!(next_due);
+        }
         report["source_id"] = serde_json::json!(source_id);
         report["kinds"] = serde_json::json!(reports);
         report["failed"] = serde_json::json!(failed);

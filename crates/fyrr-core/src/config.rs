@@ -11,9 +11,11 @@
 //! output or `config show` line contains a secret value, and errors never
 //! quote values from the file.
 
+mod api_key;
 mod storage;
 mod validation;
 
+pub use api_key::{API_KEY_PREFIX, ApiKeyConfig, is_api_key_secret};
 pub use storage::StorageBackend;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -91,9 +93,6 @@ pub const LANCE_UNREFERENCED_RETENTION: ConfigDuration = ConfigDuration::from_da
 pub const ENVELOPE_AGE_MARGIN: ConfigDuration = ConfigDuration::from_days(1);
 /// The maximum MCP request deadline; the version grace must exceed it.
 pub const MAX_REQUEST_DEADLINE: ConfigDuration = ConfigDuration::from_secs(300);
-/// Margin the identity validity deadline keeps beyond the visible sync,
-/// commit and version-check intervals.
-pub const IDENTITY_DEADLINE_MARGIN: ConfigDuration = ConfigDuration::from_mins(5);
 /// Providers whose sources expose no permissions to read, so their
 /// connections always use fixed readers.
 pub const FIXED_ONLY_PROVIDERS: [&str; 2] = ["local-files", "notion"];
@@ -477,9 +476,6 @@ pub struct IdentityConfig {
     /// Namespace HMAC key, required; only an environment reference is accepted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hashing_key: Option<SecretRef>,
-    /// Identity artifact validity, counted from the directory freshness instant.
-    #[serde(default = "default_validity_deadline")]
-    pub validity_deadline: ConfigDuration,
     /// A subject with more reader tokens gets `authorization_unavailable`.
     #[serde(default = "default_max_tokens_per_user")]
     #[schemars(range(min = 1))]
@@ -492,6 +488,10 @@ pub struct IdentityConfig {
     /// OIDC login for HTTP MCP.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oidc: Option<OidcConfig>,
+    /// Operator-issued bearer keys for HTTP MCP, each with its own grants
+    /// (`[[identity.api_keys]]`). Only the writer reads their secrets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub api_keys: Vec<ApiKeyConfig>,
 }
 
 /// Where canonical users and groups come from.
@@ -500,7 +500,7 @@ pub struct IdentityConfig {
 pub struct DirectoryConfig {
     #[serde(default)]
     pub provider: DirectoryProvider,
-    /// Pull interval, or the attestation interval of SCIM push.
+    /// Pull interval of the `keycloak` and `snapshot` providers.
     #[serde(default = "default_directory_interval")]
     pub sync_interval: ConfigDuration,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -778,7 +778,7 @@ pub struct MaintenanceConfig {
     pub step_max_duration: ConfigDuration,
 }
 
-/// Content backpressure; permission, member and freshness work always passes.
+/// Content backpressure; permission and member work always passes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BackpressureConfig {
@@ -910,12 +910,60 @@ const SECRET_IN_FILE: &str =
 /// Environment variable names a secret reference may use.
 const ENV_NAME: &str = "[A-Z_][A-Z0-9_]*";
 
-fn valid_env_name(name: &str) -> bool {
+/// Whether `name` is an environment variable name a secret reference may use.
+pub fn valid_env_name(name: &str) -> bool {
     !name.is_empty()
         && !name.as_bytes()[0].is_ascii_digit()
         && name
             .bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// The longest credential variable name the provider host takes.
+pub const HOST_ENV_NAME_MAX: usize = 256;
+
+/// Why the provider host refuses a stored credential under `name`, or `None`.
+/// `PATH`, `VIRTUAL_ENV`, `PYTHON*` and `LD_*` would change which interpreter,
+/// modules or libraries the host runs, and a longer name is over its limit.
+pub fn host_env_refusal(name: &str) -> Option<&'static str> {
+    if name.len() > HOST_ENV_NAME_MAX {
+        Some("a name delivered to the provider host is at most 256 bytes")
+    } else if matches!(name, "PATH" | "VIRTUAL_ENV")
+        || name.starts_with("PYTHON")
+        || name.starts_with("LD_")
+    {
+        Some(
+            "PATH, VIRTUAL_ENV and names starting with PYTHON or LD_ cannot be delivered to \
+             the provider host: they would change what it runs",
+        )
+    } else {
+        None
+    }
+}
+
+/// The environment references (`{ env = "NAME" }`) in a provider's `settings`
+/// or `scope`, as (path, name): the one walk that `config check` and the writer
+/// worker, which delivers the stored credentials, both use.
+pub fn env_references(path: &str, value: &Value, found: &mut Vec<(String, String)>) {
+    match value {
+        Value::Object(map) => {
+            if map.len() == 1
+                && let Some(name) = map.get("env").and_then(Value::as_str)
+            {
+                found.push((path.to_owned(), name.to_owned()));
+            } else {
+                for (key, child) in map {
+                    env_references(&format!("{path}.{key}"), child, found);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                env_references(&format!("{path}[{index}]"), child, found);
+            }
+        }
+        _ => {}
+    }
 }
 
 impl<'de> Deserialize<'de> for SecretRef {
@@ -1351,6 +1399,8 @@ impl LoadedConfig {
         for value in &mut values {
             if value.path == "identity.stdio_user"
                 || value.path.starts_with("identity.stdio_readers")
+                || (value.path.starts_with("identity.api_keys[")
+                    && value.path.ends_with(".readers"))
             {
                 value.value = "<redacted: identity>".into();
             }
@@ -1544,10 +1594,10 @@ fn default_fts_max_token_length() -> u32 {
     40
 }
 fn default_dense_rq_bits() -> u8 {
-    crate::publication::LEGACY_DENSE_RQ_BITS
+    1
 }
 fn default_dense_partition_rows() -> u32 {
-    crate::publication::LEGACY_DENSE_PARTITION_ROWS
+    550
 }
 fn default_region() -> String {
     "us-east-1".to_owned()
@@ -1584,9 +1634,6 @@ fn default_embedding_timeout() -> ConfigDuration {
 }
 fn default_embedding_retries() -> u32 {
     3
-}
-fn default_validity_deadline() -> ConfigDuration {
-    ConfigDuration::from_hours(1)
 }
 fn default_max_tokens_per_user() -> u32 {
     5000

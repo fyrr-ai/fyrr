@@ -118,7 +118,6 @@ async fn preparation_reuses_bodies_but_discovers_new_envelopes_on_local_storage(
             "permissions",
             "--kind",
             "members",
-            "--due",
         ])
         .output()
         .unwrap();

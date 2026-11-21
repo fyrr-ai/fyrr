@@ -8,6 +8,39 @@ pub(super) struct ContentWork<'a> {
     pub(super) lineage: CommitLineage,
     pub(super) acl_changed: bool,
 }
+
+/// The published version of the dataset and the latest version of any
+/// commit, published or not. None before the first publication.
+pub(super) async fn published(
+    config: &Config,
+    head: &ServingHead,
+) -> Result<Option<(Dataset, u64)>> {
+    if head.content.is_none() {
+        return Ok(None);
+    }
+    let pinned = fyrr_reader::storage::pinned(config, head).await?;
+    let latest = pinned.latest_version_id().await?;
+    Ok(Some((pinned, latest)))
+}
+
+/// A commit was interrupted after it wrote versions the head never published.
+pub(super) fn interrupted(head: &ServingHead, latest: u64) -> bool {
+    head.content
+        .as_ref()
+        .is_some_and(|pointer| pointer.lance_version != latest)
+}
+
+pub(super) async fn fts_merge_needed(config: &Config, dataset: &Dataset) -> Result<bool> {
+    Ok(config.writer.commit.merge_fts_segments
+        && dataset
+            .load_indices()
+            .await?
+            .iter()
+            .filter(|i| i.name == "fts_idx")
+            .count()
+            > 1)
+}
+
 impl<'a> ContentWork<'a> {
     pub(super) async fn open(
         config: &'a Config,
@@ -16,11 +49,9 @@ impl<'a> ContentWork<'a> {
         acl_changed: bool,
     ) -> Result<Self> {
         let mut lineage = crate::maintenance::lineage(lease, head);
-        let dataset = if let Some(pointer) = &head.content {
-            let mut pinned = fyrr_reader::storage::pinned(config, head).await?;
+        let dataset = if let Some((mut pinned, latest)) = published(config, head).await? {
             // Discard unpublished intermediate versions from an interrupted commit.
-            let latest = pinned.latest_version_id().await?;
-            if latest != pointer.lance_version {
+            if interrupted(head, latest) {
                 native_step(lease, pinned.restore(), WriterError::StorageUnavailable).await?;
                 record_transaction(&pinned, &mut lineage, latest).await?;
                 lineage.recovery_version = Some(pinned.version().version);
@@ -38,24 +69,10 @@ impl<'a> ContentWork<'a> {
         })
     }
     pub(super) async fn fts_merge_needed(&self) -> Result<bool> {
-        let config = self.config;
-        let dataset = &self.dataset;
-        let needed = if config.writer.commit.merge_fts_segments {
-            if let Some(dataset) = dataset {
-                dataset
-                    .load_indices()
-                    .await?
-                    .iter()
-                    .filter(|i| i.name == "fts_idx")
-                    .count()
-                    > 1
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-        Ok(needed)
+        match &self.dataset {
+            Some(dataset) => fts_merge_needed(self.config, dataset).await,
+            None => Ok(false),
+        }
     }
 
     pub(super) async fn apply_groups(
@@ -168,7 +185,6 @@ impl<'a> ContentWork<'a> {
     pub(super) async fn apply_non_content(
         &mut self,
         head: &mut ServingHead,
-        blocked: &BTreeSet<String>,
         non_content: Vec<&PreparedEnvelope>,
         receipts: &mut Vec<String>,
         sequence: u64,
@@ -177,26 +193,13 @@ impl<'a> ContentWork<'a> {
         let lease = self.lease;
         for envelope in non_content {
             match &envelope.payload {
-                EnvelopePayload::Permissions(p) => {
+                EnvelopePayload::Permissions(_) => {
                     if head.content.is_none()
                         && let Some(ds) = &mut self.dataset
                     {
                         let (keys, fragments) =
                             crate::apply::permissions(config, ds, envelope).await?;
                         apply_staged(config, ds, lease, &mut self.lineage, keys, fragments).await?;
-                    }
-                    if p.complete_read && !blocked.contains(&envelope.source_id) {
-                        let f = source_freshness(head, &envelope.source_id);
-                        f.permissions_read_at = f.permissions_read_at.max(p.read_at);
-                    }
-                }
-                EnvelopePayload::Members(p) => {
-                    if p.complete_read && !blocked.contains(&envelope.source_id) {
-                        let f = source_freshness(head, &envelope.source_id);
-                        f.members_read_at = Some(
-                            f.members_read_at
-                                .map_or(p.read_at, |old| old.max(p.read_at)),
-                        );
                     }
                 }
                 EnvelopePayload::Reconcile(_) => {

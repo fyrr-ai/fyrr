@@ -612,10 +612,13 @@ async fn numbered_files(
     files
 }
 
+/// A mirror bound to `s3://bucket/dataset.lance` that reads every pinned
+/// data file in pages, however small.
 fn bound_mirror(directory: &std::path::Path, max_bytes: u64) -> Arc<MirrorStore> {
-    let mirror = Arc::new(MirrorStore::new(directory.to_owned(), max_bytes).unwrap());
+    let mut mirror = MirrorStore::new(directory.to_owned(), max_bytes).unwrap();
+    mirror.whole_bytes = 0;
     mirror.bind_dataset("s3://bucket/dataset.lance").unwrap();
-    mirror
+    Arc::new(mirror)
 }
 
 fn probes(mirror: &MirrorStore) -> (u64, u64, u64) {
@@ -948,6 +951,158 @@ impl Drop for PagedFixture {
     }
 }
 
+/// A small data file in a mirror of `max_bytes`, pinned at `PAGED_SIZE`,
+/// whose stored object holds `content`.
+async fn small_file(
+    name: &str,
+    max_bytes: u64,
+    content: Vec<u8>,
+) -> (
+    PathBuf,
+    Arc<MirrorStore>,
+    Arc<dyn ObjectStore>,
+    Arc<MirrorLease>,
+    Path,
+) {
+    let directory = temporary_directory(name);
+    let mirror = Arc::new({
+        let mirror = MirrorStore::new(directory.clone(), max_bytes).unwrap();
+        mirror.bind_dataset("s3://bucket/dataset.lance").unwrap();
+        mirror
+    });
+    let source = Arc::new(object_store::memory::InMemory::new());
+    let path = Path::from("dataset.lance/data/f.lance");
+    source.put(&path, content.into()).await.unwrap();
+    let lease = mirror
+        .pin(&[fyrr_core::envelope::FileRef {
+            path: "data/f.lance".into(),
+            size_bytes: PAGED_SIZE as u64,
+        }])
+        .await
+        .unwrap();
+    let store = mirror.wrap("s3$bucket", source);
+    (directory, mirror, store, lease, path)
+}
+
+/// A small data file larger than the mirror is read past it, one request per
+/// read, and one whose stored size differs from the manifest fails.
+#[tokio::test]
+async fn a_small_data_file_that_cannot_be_kept_whole_is_not_downloaded_whole() {
+    let expected = PagedFixture::bytes(0);
+    let (directory, mirror, store, _lease, path) =
+        small_file("small-no-room", 50_000, expected.clone()).await;
+    for range in [90_000..100_000_usize, 0..4096] {
+        let bytes = range.start as u64..range.end as u64;
+        assert_eq!(
+            store.get_range(&path, bytes).await.unwrap(),
+            expected[range]
+        );
+    }
+    assert_eq!(mirror.totals().requests, 2, "one ranged request per read");
+    assert!(
+        mirror.totals().bytes < PAGED_SIZE as u64,
+        "never the whole file"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+
+    // A file that fits alone but not next to a pinned one: no whole GET.
+    let (directory, mirror, store, _lease, path) =
+        small_file("small-full", 150_000, expected.clone()).await;
+    let other = Path::from("dataset.lance/data/g.lance");
+    let source = Arc::new(object_store::memory::InMemory::new());
+    source.put(&path, expected.clone().into()).await.unwrap();
+    source.put(&other, expected.clone().into()).await.unwrap();
+    let _other_lease = mirror
+        .pin(&[fyrr_core::envelope::FileRef {
+            path: "data/g.lance".into(),
+            size_bytes: PAGED_SIZE as u64,
+        }])
+        .await
+        .unwrap();
+    let store_both = mirror.wrap("s3$bucket", source);
+    drop(store);
+    store_both.get_range(&other, 0..4096).await.unwrap();
+    let before = mirror.totals();
+    assert_eq!((before.requests, before.bytes), (1, PAGED_SIZE as u64));
+    for range in [90_000..100_000_usize, 0..4096] {
+        let bytes = range.start as u64..range.end as u64;
+        assert_eq!(
+            store_both.get_range(&path, bytes).await.unwrap(),
+            expected[range]
+        );
+    }
+    let after = mirror.totals();
+    assert_eq!(
+        after.requests - before.requests,
+        2,
+        "one ranged request per read"
+    );
+    assert!(
+        after.bytes - before.bytes < PAGED_SIZE as u64,
+        "never the whole file"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+
+    let (directory, _mirror, store, _lease, path) =
+        small_file("small-changed", 1 << 20, vec![0; 10]).await;
+    assert!(store.get_range(&path, 0..5).await.is_err());
+    assert!(
+        !std::fs::read_dir(&directory).unwrap().any(|entry| entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_some_and(|e| e == "blob")),
+        "a file of another size is not kept"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// A data file no larger than `WHOLE_FILE_BYTES` is downloaded whole by its
+/// first ranged read: one request instead of one per scattered range.
+#[tokio::test]
+async fn a_small_data_file_is_downloaded_whole_on_its_first_read() {
+    let directory = temporary_directory("small-whole");
+    let mirror = Arc::new({
+        let mirror = MirrorStore::new(directory.clone(), 1 << 20).unwrap();
+        assert!(mirror.whole_bytes >= PAGED_SIZE as u64);
+        mirror.bind_dataset("s3://bucket/dataset.lance").unwrap();
+        mirror
+    });
+    let source = Arc::new(object_store::memory::InMemory::new());
+    let path = Path::from("dataset.lance/data/f.lance");
+    let expected = PagedFixture::bytes(0);
+    source.put(&path, expected.clone().into()).await.unwrap();
+    let _lease = mirror
+        .pin(&[fyrr_core::envelope::FileRef {
+            path: "data/f.lance".into(),
+            size_bytes: PAGED_SIZE as u64,
+        }])
+        .await
+        .unwrap();
+    let store = mirror.wrap("s3$bucket", source);
+    assert_eq!(store.head(&path).await.unwrap().size, PAGED_SIZE as u64);
+    assert_eq!(
+        mirror.totals().requests,
+        0,
+        "a pinned head needs no request"
+    );
+    for range in [90_000..100_000_usize, 0..4096, 50_000..50_010] {
+        let bytes = range.start as u64..range.end as u64;
+        assert_eq!(
+            store.get_range(&path, bytes).await.unwrap(),
+            expected[range]
+        );
+    }
+    assert_eq!(
+        (mirror.totals().requests, mirror.totals().bytes),
+        (1, PAGED_SIZE as u64),
+        "one whole download serves every range"
+    );
+    let blob = directory.join(mirror.blob_name("s3$bucket", path.as_ref()).unwrap());
+    assert!(blob.exists() && !blob.with_extension("sparse").exists());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[tokio::test]
 async fn data_ranges_fetch_only_the_pages_they_lack() {
     let f = PagedFixture::new("pages", 1 << 20).await;
@@ -1035,7 +1190,8 @@ async fn a_damaged_or_unrecorded_page_is_fetched_again() {
         std::os::unix::fs::FileExt::write_all_at(&map, &[0; 16], 128 + 3 * 16).unwrap();
     }
     // A restarted process verifies each page before serving it.
-    let restarted = MirrorStore::new(f.directory.clone(), 1 << 20).unwrap();
+    let mut restarted = MirrorStore::new(f.directory.clone(), 1 << 20).unwrap();
+    restarted.whole_bytes = 0;
     restarted.bind_dataset("s3://bucket/dataset.lance").unwrap();
     let restarted = Arc::new(restarted);
     let _lease = restarted.pin(&f.files).await.unwrap();
@@ -1179,7 +1335,8 @@ async fn a_damaged_complete_file_is_downloaded_again() {
         .unwrap();
     // A new process verifies the complete file before trusting it.
     let restarted = Arc::new({
-        let restarted = MirrorStore::new(f.directory.clone(), 1 << 20).unwrap();
+        let mut restarted = MirrorStore::new(f.directory.clone(), 1 << 20).unwrap();
+        restarted.whole_bytes = 0;
         restarted.bind_dataset("s3://bucket/dataset.lance").unwrap();
         restarted
     });

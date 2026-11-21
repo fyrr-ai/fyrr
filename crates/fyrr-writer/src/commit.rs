@@ -408,15 +408,43 @@ pub async fn receipt(config: &Config, envelope_id: &str) -> Result<CommitReceipt
 }
 
 /// A service stops only between fully published groups, then releases its lease.
+/// The lease costs two writes of the head, so a namespace with nothing to
+/// commit is looked at by reads alone: the answer says whether the lease was
+/// taken.
 pub async fn commit_until_stopped(
     config: &Config,
     stage_timings: bool,
     stop: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<CommitReceipt> {
-    crate::lease::LeaseGuard::with(config, |lease| async move {
+) -> Result<(CommitReceipt, bool)> {
+    let head = crate::lease::LeaseGuard::peek(config).await?;
+    if group::idle(config, &head).await? {
+        return Ok((served_receipt(config, &head).await?, false));
+    }
+    let receipt = crate::lease::LeaseGuard::with(config, |lease| async move {
         drain(config, stage_timings, &lease, stop).await
     })
-    .await
+    .await?;
+    Ok((receipt, true))
+}
+
+/// The receipt of the served publication; it fails as a commit does when the
+/// configuration no longer matches the namespace that publication built.
+async fn served_receipt(config: &Config, head: &ServingHead) -> Result<CommitReceipt> {
+    let (store, root) = namespace_store(config)?;
+    let Some(manifest) =
+        publication::previous_manifest(config, store.as_ref(), &root, head).await?
+    else {
+        return Ok(CommitReceipt {
+            lance_version: 0,
+            publication_id: None,
+            envelope_ids: Vec::new(),
+        });
+    };
+    Ok(CommitReceipt {
+        lance_version: manifest.lance_version,
+        publication_id: Some(manifest.publication_id),
+        envelope_ids: manifest.envelope_ids,
+    })
 }
 
 /// Maintenance services authorization at every boundary without draining content backlog.
@@ -533,25 +561,7 @@ async fn drain(
                 next.as_ref().is_some_and(Vec::is_empty)
             }
         {
-            let head = lease.head().await?;
-            let Some(pointer) = head.content else {
-                return Ok(CommitReceipt {
-                    lance_version: 0,
-                    publication_id: None,
-                    envelope_ids: Vec::new(),
-                });
-            };
-            let (store, root) = namespace_store(config)?;
-            let manifest: ContentManifest = fyrr_reader::storage::read_contract(
-                store.as_ref(),
-                &Path::from(format!("{root}/{}", pointer.manifest)),
-            )
-            .await?;
-            return Ok(CommitReceipt {
-                lance_version: manifest.lance_version,
-                publication_id: Some(manifest.publication_id),
-                envelope_ids: manifest.envelope_ids,
-            });
+            return served_receipt(config, &lease.head().await?).await;
         }
     }
 }
@@ -589,9 +599,8 @@ async fn commit_group_with_rejections(
         .map(|(i, s)| (s, i))
         .collect();
     let count = order.len().max(1);
-    // Reject expired authorization inputs before later attestations of either kind.
-    // Otherwise a permission heartbeat can advance freshness before a queued member
-    // rejection becomes visible. Valid authorization reads still precede content.
+    // Reject over-age authorization inputs first so their rejections become visible
+    // before later reads of either kind. Valid authorization reads still precede content.
     // Source fairness applies after priority; valid sequences stay ordered within a kind.
     // Keep age priorities fixed while the sorter compares envelopes.
     let now = fyrr_core::clock::now();
@@ -905,23 +914,6 @@ const INDEXES: &[(&str, &str, IndexType, &str)] = &[
         "inverted",
     ),
 ];
-
-fn source_freshness<'a>(head: &'a mut ServingHead, source: &str) -> &'a mut SourceFreshness {
-    let index = head
-        .freshness
-        .sources
-        .iter()
-        .position(|f| f.source_id == source)
-        .unwrap_or_else(|| {
-            head.freshness.sources.push(SourceFreshness {
-                source_id: source.into(),
-                permissions_read_at: chrono::DateTime::UNIX_EPOCH,
-                members_read_at: None,
-            });
-            head.freshness.sources.len() - 1
-        });
-    &mut head.freshness.sources[index]
-}
 
 pub(crate) async fn read_envelopes(
     config: &Config,

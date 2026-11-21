@@ -1,8 +1,7 @@
 {
-  "schema_version": "1.1",
+  "schema_version": "2.0",
   "namespace": "acme",
   "generation": 27,
-  "built_at": "2026-09-30T10:00:10Z",
   "hashing": {
     "algorithm": "hmac-sha256",
     "key_id": "acme-identity-key-2026-09"

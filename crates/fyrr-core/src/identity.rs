@@ -14,7 +14,7 @@ use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
 
 /// The identity artifact contract version written by this build.
-pub const IDENTITY_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(1, 1);
+pub const IDENTITY_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(2, 0);
 
 /// One identity artifact generation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -22,7 +22,6 @@ pub struct IdentityArtifact {
     pub schema_version: SchemaVersion,
     pub namespace: String,
     pub generation: u64,
-    pub built_at: DateTime<Utc>,
     /// How principal keys and tokens were hashed.
     pub hashing: HashingScheme,
     /// Hashed reader tokens (`tok:<64 lowercase hex>`, the HMAC-SHA256 of the
@@ -57,7 +56,8 @@ pub struct Principal {
     pub groups: Vec<u32>,
 }
 
-/// A hashed issuer-scoped OIDC subject mapped to a canonical principal.
+/// A hashed subject mapped to a principal: an issuer-scoped OIDC subject, or
+/// an API-key secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SubjectBinding {
     pub subject: String,

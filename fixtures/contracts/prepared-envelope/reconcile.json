@@ -1,5 +1,5 @@
 {
-  "schema_version": "4.0",
+  "schema_version": "5.0",
   "envelope_id": "env-6ca49aedee91c2774a574e3fe193b827",
   "namespace": "acme",
   "source_id": "local-docs",

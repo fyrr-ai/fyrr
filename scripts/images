@@ -245,7 +245,6 @@ max_call_microusd = 1
 stdio_user = "image-subject"
 stdio_readers = ["grp:allow"]
 hashing_key = { env = "FYRR_TEST_S3_SECRET_ACCESS_KEY" }
-validity_deadline = "1h"
 [reader]
 mirror_path = "/mirror/private-full"
 mirror_max_bytes = 16777216

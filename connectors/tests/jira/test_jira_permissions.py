@@ -20,7 +20,7 @@ def test_jira_static_browse_and_secured_comment_intersections(jira, jira_index):
     groups = {g.id: set(g.members) for b in members for g in b.groups}
     assert any(v == {"usr:atlassian.net:" + jira.cloud + ":U001"} for v in groups.values())
     content = [r for b in jira_index.run() for r in rows_to_json(b.changes)]
-    restricted = next(s for s in content[0]["sections"] if s["text"] == "Restricted.")
+    restricted = next(s for s in content[0]["sections"] if s["text"].endswith("\nRestricted."))
     assert not content[0]["readers"]
     assert len(restricted["readers"]) == 1 and restricted["readers"][0].startswith("grp:")
     assert restricted["readers"][0] in grants[0].readers

@@ -9,7 +9,6 @@ impl PreparedReader {
             content_version: self.manifest.lance_version,
             committed_at: McpTime(self.manifest.committed_at),
             degraded: vec![],
-            hidden_sources: self.reported_hidden_sources(),
             stale_version: false,
             omitted_bytes: 0,
             telemetry,

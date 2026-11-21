@@ -139,9 +139,7 @@ def test_authoritative_published_channel_loss_empties_grant_and_keeps_other_chan
 @pytest.mark.parametrize(
     "error", ["invalid_auth", "missing_scope", "internal_error", "thread_not_found"]
 )
-def test_ambiguous_auth_or_transient_channel_failure_never_renews_freshness(
-    slack, slack_index, error
-):
+def test_ambiguous_auth_or_transient_channel_failure_yields_no_batch(slack, slack_index, error):
     slack.post()
     slack_index.sync()
     slack_index.mode = "sync"
@@ -323,7 +321,7 @@ def test_member_missing_from_list_is_proved_without_expanding_workspace_floor(sl
 
 
 @pytest.mark.parametrize("kind", ["permissions", "members"])
-def test_rate_limit_exhaustion_yields_no_freshness(slack, slack_index, kind):
+def test_rate_limit_exhaustion_raises_after_bounded_retries(slack, slack_index, kind):
     slack_index.mode = "sync"
     slack.fail("users.list", times=6, status=429, headers={"Retry-After": "1"})
     with pytest.raises(ApiError, match="rate_limited"):

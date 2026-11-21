@@ -12,10 +12,6 @@
       "format": "uint64",
       "minimum": 0
     },
-    "built_at": {
-      "type": "string",
-      "format": "date-time"
-    },
     "hashing": {
       "$ref": "#/$defs/HashingScheme",
       "description": "How principal keys and tokens were hashed."
@@ -52,7 +48,6 @@
     "schema_version",
     "namespace",
     "generation",
-    "built_at",
     "hashing",
     "tokens",
     "principals",
@@ -170,9 +165,9 @@
         "subject",
         "principal"
       ],
-      "description": "A hashed issuer-scoped OIDC subject mapped to a canonical principal."
+      "description": "A hashed subject mapped to a principal: an issuer-scoped OIDC subject, or\nan API-key secret."
     }
   },
   "x-fyrr-contract": "identity-artifact",
-  "x-fyrr-schema-version": "1.1"
+  "x-fyrr-schema-version": "2.0"
 }

@@ -78,7 +78,8 @@ impl MirrorStore {
     }
     /// A read through the mirror. With `paged`, a head of a pinned `data/`
     /// file is answered from the manifest and a ranged read of one is served
-    /// in pages; without it, a miss downloads the complete file.
+    /// in pages, or downloads a small file whole when it fits; without it, a
+    /// miss downloads the complete file.
     async fn get_immutable(
         &self,
         location: &Path,
@@ -132,7 +133,11 @@ impl MirrorStore {
         }
         // A complete file that failed verification is downloaded again whole.
         let unverified = file.symlink_metadata().is_ok();
-        if let (Some(size), Some(range), false) = (size, &options.range, unverified) {
+        // A small data file is downloaded whole when the mirror has room for
+        // it; otherwise, as a larger one, in pages or past the mirror.
+        if let (Some(size), Some(range), false) = (size, &options.range, unverified)
+            && (size > self.whole_bytes || !self.whole_fits(&file, size).await?)
+        {
             if !self.pages_fit(size) {
                 if size > self.max_bytes {
                     Self::remember_oversized(&self.oversized, file);
@@ -151,7 +156,9 @@ impl MirrorStore {
             .download_lock(&file)
             .await
             .map_err(|_| Self::failure())?;
-        let result = self.populate(location, options, &counters, file).await;
+        let result = self
+            .populate(location, options, &counters, file, size)
+            .await;
         object.finish().await.map_err(|_| Self::failure())?;
         result
     }
@@ -162,6 +169,7 @@ impl MirrorStore {
         options: GetOptions,
         counters: &IoCounters,
         file: PathBuf,
+        expected: Option<u64>,
     ) -> Result<GetResult> {
         let _lock = self.lock.lock().await;
         let _host = self.host_lock().await.map_err(|_| Self::failure())?;
@@ -179,6 +187,10 @@ impl MirrorStore {
         self.record(counters, Io::Request, 1);
         let download = self.target().get(location).await?;
         let metadata = download.meta.clone();
+        // A pinned data file has the size its manifest states, as in pages.
+        if expected.is_some_and(|size| size != metadata.size) {
+            return Err(Self::failure());
+        }
         if metadata.size > self.max_bytes {
             Self::remember_oversized(&self.oversized, file);
             return self.pass_through(location, options, counters).await;
@@ -291,6 +303,21 @@ impl MirrorStore {
         self.make_room_by_eviction(incoming)
     }
 
+    /// Whether a small data file of `size` fits next to what the mirror
+    /// holds, without evicting: a mirror at its budget, even with unpinned
+    /// files of an older generation, reads it in pages, which may evict, and
+    /// warming copies it later. One already read in pages stays in pages until
+    /// warming replaces them, without a scan of the mirror. Population checks
+    /// the room again.
+    async fn whole_fits(&self, file: &std::path::Path, size: u64) -> Result<bool> {
+        if size > self.max_bytes || file.with_extension("sparse").symlink_metadata().is_ok() {
+            return Ok(false);
+        }
+        // `used_bytes` records sizes and removes dead partials: global locks.
+        let _lock = self.lock.lock().await;
+        let _host = self.host_lock().await.map_err(|_| Self::failure())?;
+        Ok(self.used_bytes()?.saturating_add(size) <= self.max_bytes)
+    }
     // Apparent bytes of every `.blob` and `.partial` seen under its name. A name
     // fixes its size (mirrored objects are immutable), so an entry is statted
     // once; a dead partial stays counted until the eviction path or a sweep

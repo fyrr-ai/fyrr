@@ -20,8 +20,9 @@ pub enum ReaderCommand {
     Prewarm,
     /// Run one search and print the same JSON as MCP.
     Search {
-        /// Query text.
-        query: Option<String>,
+        /// Query text; may start with `-`.
+        #[arg(allow_hyphen_values = true)]
+        query: String,
         #[arg(long, default_value_t = 50)]
         limit: usize,
         /// Text per hit.
@@ -31,12 +32,18 @@ pub enum ReaderCommand {
 }
 
 /// Runs a reader command.
-#[allow(clippy::print_stdout)]
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn run(command: &ReaderCommand, config: &Path) -> ExitCode {
     let loaded = match load(config) {
         Ok(loaded) => loaded,
         Err(code) => return code,
     };
+    // The HTTP reader needs a way to authenticate callers; the file stays valid
+    // for the writer without one (see `Config::http_authentication_missing`).
+    if matches!(command, ReaderCommand::Serve) && loaded.config.http_authentication_missing() {
+        eprintln!("error: configuration_invalid");
+        return ExitCode::from(exit::CONFIG);
+    }
     // No runtime, Lance call or worker thread exists yet.
     crate::fts_layout::apply(&loaded.config.reader);
     // SDK dispatch stays ordered on one reactor; native work uses the bounded workers.
@@ -68,7 +75,6 @@ pub fn run(command: &ReaderCommand, config: &Path) -> ExitCode {
                 limit,
                 output,
             } => {
-                let query = query.as_deref().ok_or(InvalidArgument)?;
                 let args = serde_json::from_value(
                     serde_json::json!({"query": query, "limit": limit, "output": output}),
                 )

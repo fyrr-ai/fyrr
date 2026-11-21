@@ -5,6 +5,7 @@ sentinel-failing = fyrr_test_providers:failing_info
 sentinel-secret = fyrr_test_providers:secret_info
 sentinel-future-sdk = fyrr_test_providers:future_sdk_info
 sentinel-bad-metadata = fyrr_test_providers:bad_metadata_info
+sentinel-bad-required = fyrr_test_providers:bad_required_info
 sentinel-raising-metadata = fyrr_test_providers:raising_metadata_info
 sentinel-review = fyrr_test_providers:review_info
 sentinel-nested = fyrr_test_providers:nested_info

@@ -15,8 +15,8 @@
 [project]
 name = "fyrr-provider-markdown"
 version = "0.1.0"
-requires-python = ">=3.13"
-dependencies = ["fyrr-connectors>=0.1,<0.2"]     # the SDK series is the compatibility promise
+requires-python = ">=3.11"
+dependencies = ["fyrr-connectors>=0.1.2,<0.2"]   # the SDK series is the compatibility promise
 
 [project.entry-points."fyrr.connectors"]
 markdown-dir = "fyrr_provider_markdown:provider_info"   # the source `type`
@@ -82,8 +82,11 @@ The connector receives a `SourceContext`: `source_id`, `permissions`
 `scope`, `limits` (`max_rows`, `max_bytes`, `document_max_bytes`, optional
 row thresholds and retention) and two optional callbacks:
 `lookup_revisions(root_ids)` returns the published or pending revision of
-each root and `next_revisions()` pages every published and pending `(root_id, revision)`, so a resumed sync can
-skip what fyrr already has.
+each root (at most 256 per call) and `next_revisions()` pages every published and pending `(root_id, revision)`, so a resumed sync can
+skip what fyrr already has. They answer from the process that runs your
+connector, so call them while your `content` iterator is producing a batch
+(from any thread), not between batches; a failed call raises
+`RuntimeError`.
 
 ## Sync kinds
 
@@ -102,8 +105,8 @@ class overrides.
 
 A document never spans batches; keep every batch within `context.limits`.
 A failed read must raise, not yield partial results: a partial permission
-or membership read leaves the last applied rights in place until the
-source's [freshness deadline](../architecture.md#terms), which is the safe outcome.
+or membership read leaves the last applied rights in place, which is the
+safe outcome; the operator retires a source that stays broken.
 
 ## Documents
 
@@ -138,7 +141,10 @@ Upsert(
 - Unknown metadata stays `None`; never substitute the ingest time.
 - `source_revision` must change whenever text, sections or metadata
   change. `revision_order` is optional and lets fyrr order edits that
-  arrive out of sequence; omit it when timestamps cannot order them.
+  arrive out of sequence; omit it when timestamps cannot order them. When
+  you set it, a change whose order is not above the published revision's is
+  not applied, so a document rendered again without an upstream change
+  needs a higher order.
 - Under `permissions = "fixed"` the writer applies the configured readers;
   setting `context.readers` on an upsert is optional.
   Under `permissions = "sync"` content carries no readers, containers or
@@ -187,7 +193,8 @@ when a pass completed; a changed scope must restart from `None`.
 `writer.commit.group_max_rows` and 256. Use the supplied limit for every
 content batch, even when the configured envelope limit is larger.
 
-Workers run with a time limit, a memory limit and no stdout or stderr. Raise
+Providers run in a Python host process with a time limit, a memory limit
+and no stdin, stdout or stderr. Raise
 an exception for any failure; fyrr reports a fixed diagnostic code and
 never the exception text. Bound everything you read from the network
 (response sizes, page counts, traversal depth) and honor the service's
@@ -222,10 +229,56 @@ whose minimum is in another series than the installed SDK, or newer than
 it, and refuses every provider when the installed `fyrr-connectors` is in
 another series than the one this build loads. `fyrr writer providers` names
 that series. Pin the dependency to one series
-(`fyrr-connectors>=0.1,<0.2`). Contract documents carry `major.minor` too:
+(`fyrr-connectors>=0.1.2,<0.2`). Contract documents carry `major.minor` too:
 a newer minor only adds optional fields.
 
-`fyrr-connectors` is not on PyPI: install the SDK wheel from a release, or
-point `[tool.uv.sources]` at `connectors/` in a checkout, as
-[the example provider](../../examples/markdown-provider/pyproject.toml)
-does.
+The package index has `fyrr-connectors` 0.1.0, and fyrr 0.1.1 shipped a
+0.1.1 wheel; both were built for the embedded interpreter of earlier fyrr
+versions, have no provider host and do not work with this fyrr. This fyrr
+needs the SDK wheel of its own release (0.1.2 or newer), installed from the
+release, or `[tool.uv.sources]` pointing at `connectors/` in a checkout, as
+[the example provider](../../examples/markdown-provider/pyproject.toml) does.
+
+## How a provider runs
+
+Providers run in a Python host process that fyrr's worker starts. This is
+what a provider author can observe:
+
+- **A fresh process per sync kind.** Each kind of each sync (content,
+  permissions, members, reconcile) runs in a new Python process, and
+  discovery runs in another. Module-level state, caches and open connections
+  do not carry from one kind to the next; keep what must last in the cursor.
+  The memory limit `writer.worker_memory_max_bytes` applies to that process
+  separately from the worker.
+- **A provider that aborts reports "the provider failed".** `os.abort()`,
+  `os._exit()`, a crash and running out of memory end the host process, not
+  fyrr's worker, and nothing the provider printed or raised is reported.
+- **Revision callbacks work only while a batch is being produced.**
+  `lookup_revisions` and `next_revisions` answer while the generator runs
+  towards its next `yield`; called from another thread that outlives that
+  step, or after the generator has finished, they raise
+  `RuntimeError("host_callback_failed")`. When the worker refuses a request
+  (more than 256 roots, a storage failure), catching the error and carrying
+  on never lets the run count as a complete read.
+- **Credentials are in `os.environ` before the SDK imports your provider**,
+  set by the host from the stored credentials the source references, and
+  never in its initial environment (`/proc/<pid>/environ`). Start-up code
+  (`.pth` files, `sitecustomize`) runs earlier and sees neither the
+  credentials nor a conversation with fyrr, though it can see the protocol
+  socket as an open descriptor, which no process it starts inherits.
+- **Cleanup has five seconds.** When fyrr stops a run before your generator is
+  exhausted (a refused batch, or any failure), it ends the host's conversation
+  and the host closes the generator, so `finally` blocks run. Five seconds
+  after that fyrr kills the host; when the conversation is out of step it
+  kills it at once.
+- **The host needs `/proc`.** It reads `/proc/self/fd` to close the
+  descriptors it inherited, and without it the host fails to start.
+- **`multiprocessing` children started with `spawn` or `forkserver` inherit
+  `-S`.** They get the parent's `sys.path`, but they do not run `.pth` hooks
+  or `sitecustomize`. Before Python 3.14 they also report the base prefix,
+  not the virtual environment's.
+- **Rows carry only what the contract allows.** The batch's schema carries
+  the contract's two metadata entries and nothing else, and fyrr refuses a
+  batch whose schema has metadata on any field. A nullable column you add must
+  not use a dictionary type, `string_view` or `binary_view` (the list-view
+  types are accepted); fyrr also refuses compression.

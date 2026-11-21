@@ -13,6 +13,7 @@
 #   PLATFORM_DIR. They are platform independent; the other directories'
 #   copies are dropped;
 # - manifest.txt, which lists the platforms, and SHA256SUMS over every file.
+# The result directory must not contain any input or be an input itself.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 VERSION=""
@@ -30,7 +31,11 @@ done
 [[ -n "$OUT" ]] || die "--out is required"
 ((${#INPUTS[@]})) || die "name at least one platform directory"
 
-DIR="$OUT/fyrr-$VERSION"
+DIR="${OUT%/}/fyrr-$VERSION"
+for input in "${INPUTS[@]}"; do
+  [[ "$input" != "$DIR" && "$input" != "$DIR/"* ]] ||
+    die "output directory would overwrite input: $input"
+done
 rm -rf "$DIR"
 mkdir -p "$DIR"
 platforms=()

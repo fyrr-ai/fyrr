@@ -302,6 +302,7 @@ def run(spec):
 
 async def pool(manifest, logs, jobs, rows):
     """Schedule independent parents; every worker owns its fixture and process."""
+    display_logs = logs.relative_to(ROOT) if logs.is_relative_to(ROOT) else logs
     selected = [(row, case) for row in rows for case in selected_cases(manifest[row])]
     selected.sort(key=lambda item: -case_seconds(manifest[item[0]]["cases"][item[1]]))
     plan = [
@@ -428,7 +429,7 @@ async def pool(manifest, logs, jobs, rows):
                 "seconds": round(duration, 3),
                 "elapsed_seconds": round(time.monotonic() - started, 3),
                 "finished_at": datetime.datetime.now(datetime.UTC).isoformat(),
-                "log": str((directory / "runner.log").relative_to(ROOT)),
+                "log": str(display_logs / row / key / "runner.log"),
             }
             results[row].append(result)
             print("ci-result " + json.dumps(result), flush=True)
@@ -464,7 +465,7 @@ async def pool(manifest, logs, jobs, rows):
         path.write_text(json.dumps(items, indent=2) + "\n")
         line = (
             f"{manifest[row]['title']:<38} {status:<5} {passed:7} {failed:7} {ignored:8} "
-            f"{seconds:6}s  {path.relative_to(ROOT)}\n"
+            f"{seconds:6}s  {display_logs / row / 'cases.json'}\n"
         )
         (logs / row / "summary.txt").write_text(line)
     if any(item["status"] not in {"pass", "n/e"} for items in results.values() for item in items):

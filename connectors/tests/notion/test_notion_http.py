@@ -52,7 +52,7 @@ def test_a_sync_runs_over_http_with_the_connectors_own_session(
         world.row(f"task-{number}", "tasks", title=f"Task {number}")
     seen = remote.sync()
     assert sorted(seen) == ["plan", "task-0", "task-1", "task-2"]
-    assert text(seen["plan"]) == "# Plan\n\nShip."
+    assert text(seen["plan"]) == "plan\n\n# Plan\n\nShip."
     assert seen["plan"]["metadata"]["author"] == "Ada Example"
     assert remote.listing() == ["plan", "root", "task-0", "task-1", "task-2"]
     assert remote.sync() == {}

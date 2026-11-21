@@ -191,6 +191,28 @@ pub(super) fn publish_initial(worker: &Path, commit: &Path, root: &Path) {
     publish(commit);
 }
 
+/// A member read that repeats the published snapshot writes no envelope and
+/// publishes nothing.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_idle_member_reread_publishes_nothing_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let before = publication(&commit).await;
+    let staged = envelopes(&worker).await.len();
+    let mut repeated: Value =
+        serde_json::from_slice(&std::fs::read(root.join("input.json")).unwrap()).unwrap();
+    repeated["epoch"] = json!(2);
+    input(&root, repeated);
+    worker_sync(&worker, &["incremental", "--kind", "members"]);
+    assert_eq!(envelopes(&worker).await.len(), staged, "no envelope");
+    publish(&commit);
+    let after = publication(&commit).await;
+    assert_eq!(after.0.content, before.0.content);
+    assert_eq!(after.0.identity, before.0.identity);
+    assert_eq!(after.1.publication_id, before.1.publication_id);
+}
+
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
 async fn incremental_sub_envelope_cursor_recovery_and_atomic_chunk_groups_on_storage() {
@@ -518,12 +540,7 @@ async fn rejected_authorization(kind: SyncKind) {
         .await
         .into_iter()
         .map(|(_, e)| e)
-        .filter(|e| {
-            e.source_id == "incremental"
-                && e.kind == kind
-                && !matches!(&e.payload,
-            EnvelopePayload::Permissions(p) if p.complete_read)
-        })
+        .filter(|e| e.source_id == "incremental" && e.kind == kind)
         .min_by_key(|e| e.sequence)
         .unwrap();
     input(
@@ -543,12 +560,19 @@ async fn rejected_authorization(kind: SyncKind) {
     let loaded = fyrr_core::config::load(&worker).unwrap();
     let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
     let mut rejected_id = String::new();
+    let newest_members = envelopes(&worker)
+        .await
+        .iter()
+        .filter(|(_, e)| e.source_id == "incremental" && e.kind == SyncKind::Members)
+        .map(|(_, e)| e.sequence)
+        .max();
     for (path, mut envelope) in envelopes(&worker).await {
         if (kind == SyncKind::Permissions
             && matches!(&envelope.payload, EnvelopePayload::Permissions(p) if p.documents.iter().any(|d| d.permission_revision == "p2")))
             || (kind == SyncKind::Members
+                && envelope.source_id == "incremental"
                 && envelope.kind == kind
-                && envelope.sequence > 2
+                && Some(envelope.sequence) == newest_members
                 && matches!(&envelope.payload, EnvelopePayload::Members(p) if !p.complete_read))
         {
             rejected_id = envelope.envelope_id.clone();
@@ -565,34 +589,8 @@ async fn rejected_authorization(kind: SyncKind) {
         &worker,
         &["incremental", "--kind", "permissions", "--kind", "members"],
     );
-    // Time compression: expire only this source's head freshness, keeping identity/directory live.
-    let mut before = publication(&worker).await.0;
-    let old = before
-        .freshness
-        .sources
-        .iter_mut()
-        .find(|f| f.source_id == "incremental")
-        .unwrap();
-    old.permissions_read_at = fyrr_core::clock::now() - chrono::Duration::hours(2);
-    old.members_read_at = Some(old.permissions_read_at);
-    let old = old.clone();
-    store
-        .put(
-            &ns.clone().join("head.json"),
-            fyrr_core::write_contract(&before).into(),
-        )
-        .await
-        .unwrap();
     publish(&commit);
     let (head, _) = publication(&worker).await;
-    assert_eq!(
-        head.freshness
-            .sources
-            .iter()
-            .find(|f| f.source_id == "incremental")
-            .unwrap(),
-        &old
-    );
     assert!(
         fyrr_writer::commit::published_ids(&loaded.config, &head)
             .await
@@ -607,14 +605,18 @@ async fn rejected_authorization(kind: SyncKind) {
             .iter()
             .all(|r| r == Some("r1"))
     );
-    let mut client = super::tools::Mcp::open(&worker);
-    let denied = client.call("fetch", json!({"source_id":"incremental","root_id":"a"}));
-    assert_eq!(
-        denied["structuredContent"]["documents"],
-        json!([]),
-        "{denied}"
-    );
     // Re-fetch both kinds from the rewound generation, then separate partial and complete reads.
+    // A first replacement attempt fails after the generation moved on. The
+    // next one must still end with the completion envelope that consumes the marker.
+    input(
+        &root,
+        json!({"epoch":41,"catch_revision_failure":"lookup_many"}),
+    );
+    let failed = super::coordination::worker_command(&worker)
+        .args(["writer", "sync", "incremental", "--kind", kind.as_str()])
+        .output()
+        .unwrap();
+    assert!(!failed.status.success(), "{kind:?}: failed attempt");
     initial(&root);
     let mut repaired: Value =
         serde_json::from_slice(&std::fs::read(root.join("input.json")).unwrap()).unwrap();
@@ -635,8 +637,8 @@ async fn rejected_authorization(kind: SyncKind) {
         &worker,
         &["incremental", "--kind", "permissions", "--kind", "members"],
     );
-    // Keep both terminal attestations for the original completion control.
-    // Only the rejected kind has a marker that this partial read could consume.
+    // Only the rejected kind replaces a rejection, so only it ends with a
+    // terminal completion envelope. Keep it for the original completion control.
     let marker: fyrr_core::envelope::RejectionMarker = fyrr_reader::storage::read_contract(
         store.as_ref(),
         &ns.clone()
@@ -730,22 +732,6 @@ async fn rejected_authorization(kind: SyncKind) {
         "r1",
         "{kind:?}: partial_replacement"
     );
-    let partial_head = publication(&worker).await.0;
-    assert_eq!(
-        partial_head
-            .freshness
-            .sources
-            .iter()
-            .find(|f| f.source_id == "incremental")
-            .unwrap(),
-        &old,
-        "{kind:?}: partial_replacement freshness"
-    );
-    let status = super::coordination::command(&commit, &["writer", "status"]);
-    assert_eq!(
-        status["freshness"],
-        serde_json::to_value(&partial_head.freshness).unwrap()
-    );
     let control = source_rows(&worker, "allowed").await;
     let row = roots(&control).iter().position(|id| id == "0.txt").unwrap();
     assert_eq!(
@@ -774,21 +760,6 @@ async fn rejected_authorization(kind: SyncKind) {
             .value(row),
         "fixture document 4"
     );
-    let recovered = publication(&worker).await.0;
-    let status = super::coordination::command(&commit, &["writer", "status"]);
-    assert_eq!(
-        status["freshness"],
-        serde_json::to_value(&recovered.freshness).unwrap()
-    );
-
-    let fresh = recovered
-        .freshness
-        .sources
-        .iter()
-        .find(|f| f.source_id == "incremental")
-        .unwrap();
-    assert!(fresh.permissions_read_at > old.permissions_read_at);
-    assert!(fresh.members_read_at > old.members_read_at);
     let batch = rows(&worker).await;
     let row = roots(&batch).iter().position(|id| id == "a").unwrap();
     assert_eq!(
@@ -802,11 +773,6 @@ async fn rejected_authorization(kind: SyncKind) {
     }
     let denied = super::tools::Mcp::open(&worker)
         .call("fetch", json!({"source_id":"incremental","root_id":"a"}));
-    assert_eq!(
-        denied["structuredContent"]["metadata"]["hidden_sources"],
-        json!([]),
-        "access is the applied revoke, not stale-source hiding"
-    );
     assert_eq!(
         denied["structuredContent"]["documents"],
         json!([]),
@@ -862,284 +828,109 @@ async fn rejected_authorization(kind: SyncKind) {
     );
     let denied = super::tools::Mcp::open(&worker)
         .call("fetch", json!({"source_id":"incremental","root_id":"a"}));
-    assert_eq!(
-        denied["structuredContent"]["metadata"]["hidden_sources"],
-        json!([])
-    );
     assert_eq!(denied["structuredContent"]["documents"], json!([]));
 }
 
+/// A non-content batch is a header with no rows and may be as large as the
+/// configured envelope: one members part (at most 256 users and groups) whose
+/// groups list a thousand members each is a header of over 2 MiB, which both
+/// the dry run and a prepared run, in real workers with the real Python host,
+/// accept.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
-async fn incremental_members_alone_never_attest_permissions_on_storage() {
+async fn incremental_large_members_snapshot_passes_dry_run_and_a_prepared_run_on_storage() {
     let (worker, commit, root) = fixture();
     initial(&root);
     worker_sync(&worker, &["incremental", "--kind", "content"]);
     publish(&commit);
-    assert_eq!(roots(&rows(&worker).await), ["a", "b"]);
+    let users: Vec<Value> = (0..50)
+        .map(|n| {
+            json!({
+                "id": format!("user-{n:06}"),
+                "email": format!("person.number.{n:06}@example.test"),
+                "active": true,
+            })
+        })
+        .collect();
+    let groups: Vec<Value> = (0..150)
+        .map(|group| {
+            let members: Vec<String> = (0..1000)
+                .map(|member| format!("usr:user-{:06}", group * 1000 + member))
+                .collect();
+            json!({"id": format!("group-{group:03}"), "members": members})
+        })
+        .collect();
+    let part = json!({"users": users, "groups": groups, "last": true});
     assert!(
-        publication(&worker)
-            .await
-            .0
-            .freshness
-            .sources
-            .iter()
-            .all(|f| f.source_id != "incremental")
+        part.to_string().len() > 2 << 20,
+        "the header must exceed 2 MiB"
     );
+    input(&root, json!({"epoch": 3, "members": [part]}));
+
+    let dry = super::coordination::worker_command(&worker)
+        .args([
+            "writer",
+            "sync",
+            "--dry-run",
+            "incremental",
+            "--kind",
+            "members",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&dry.stdout);
+    assert!(
+        dry.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&dry.stderr)
+    );
+    assert!(stdout.contains("users=50 groups=150"), "{stdout}");
 
     worker_sync(&worker, &["incremental", "--kind", "members"]);
     let pending = envelopes(&worker).await;
-    assert!(!pending.is_empty());
     assert!(pending.iter().any(|(_, e)| matches!(
         &e.payload,
-        EnvelopePayload::Members(p) if p.complete_read
+        EnvelopePayload::Members(p) if p.last
     )));
-    assert!(pending.iter().all(|(_, e)| e.kind != SyncKind::Permissions));
-    publish(&commit);
-    let head = publication(&worker).await.0;
-    let freshness = head
-        .freshness
-        .sources
-        .iter()
-        .find(|f| f.source_id == "incremental")
-        .unwrap();
-    assert_eq!(freshness.permissions_read_at, chrono::DateTime::UNIX_EPOCH);
-    assert!(freshness.members_read_at.is_some());
-    let hidden = success(
-        &worker,
-        &["reader", "search", "fixture query", "--limit", "75"],
-    );
-    assert_eq!(hidden["metadata"]["hidden_sources"], json!(["incremental"]));
-    assert!(
-        hidden["hits"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|h| h["source_id"] != "incremental")
-    );
-    let listing = super::tools::Mcp::open(&worker).call(
-        "search",
-        json!({"sources":["incremental"],"order":"updated_at","limit":75}),
-    );
-    assert_eq!(listing["isError"], false);
-    assert_eq!(listing["structuredContent"]["hits"], json!([]));
-    assert_eq!(
-        listing["structuredContent"]["metadata"]["hidden_sources"],
-        json!(["incremental"])
-    );
-
-    worker_sync(&worker, &["incremental", "--kind", "permissions"]);
-    publish(&commit);
-    let head = publication(&worker).await.0;
-    assert!(
-        head.freshness
-            .sources
-            .iter()
-            .any(|f| f.source_id == "incremental"
-                && f.permissions_read_at > chrono::DateTime::UNIX_EPOCH
-                && f.members_read_at == freshness.members_read_at)
-    );
-    let admitted = super::tools::Mcp::open(&worker).call(
-        "search",
-        json!({"sources":["incremental"],"order":"updated_at","limit":75}),
-    );
-    assert_eq!(admitted["isError"], false);
-    assert_eq!(
-        admitted["structuredContent"]["metadata"]["hidden_sources"],
-        json!([])
-    );
-    assert_eq!(
-        admitted["structuredContent"]["hits"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    assert!(
-        admitted["structuredContent"]["hits"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|h| h["source_id"] == "incremental")
-    );
 }
 
-#[tokio::test]
-#[ignore = "real CLI and RustFS; scripts/ci"]
-async fn incremental_delta_expired_source_isolated_on_storage() {
-    let (worker, commit, root) = fixture();
-    publish_initial(&worker, &commit, &root);
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let (store, ns) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let (mut head, _) = publication(&worker).await;
-    let mut identity: fyrr_core::identity::IdentityArtifact = fyrr_reader::storage::read_contract(
-        store.as_ref(),
-        &object_store::path::Path::from(format!("{ns}/{}", head.identity.object)),
-    )
-    .await
-    .unwrap();
-    let fixed_token =
-        fyrr_reader::storage::hash_principal(&loaded.config, "tok", "grp:allow").unwrap();
-    let fixed_id = identity
-        .tokens
-        .iter()
-        .position(|t| t == &fixed_token)
-        .unwrap() as u32;
-    identity.principals.push(fyrr_core::identity::Principal {
-        groups: Vec::new(),
-        key: fyrr_reader::storage::hash_principal(&loaded.config, "key", "fixed-only@example.test")
-            .unwrap(),
-        tokens: vec![fixed_id],
-    });
-    identity.principals.sort_by(|a, b| a.key.cmp(&b.key));
-    identity.generation += 1;
-    identity.built_at = fyrr_core::clock::now();
-    let hash = digest(&fyrr_core::write_contract(&identity));
-    let object = format!("identity/{}-{}.json", identity.generation, &hash[7..]);
-    fyrr_writer::prepare::put_immutable(
-        store.as_ref(),
-        &object_store::path::Path::from(format!("{ns}/{object}")),
-        &identity,
-    )
-    .await
-    .unwrap();
-    head.identity = fyrr_core::publication::GenerationPointer {
-        generation: identity.generation,
-        object,
-        digest: hash,
-    };
-    store
-        .put(
-            &ns.clone().join("head.json"),
-            fyrr_core::write_contract(&head).into(),
-        )
-        .await
-        .unwrap();
-    let denied_config = worker.parent().unwrap().join("fixed-only.toml");
-    std::fs::write(
-        &denied_config,
-        std::fs::read_to_string(&worker)
-            .unwrap()
-            .replace("fixture@example.test", "fixed-only@example.test"),
-    )
-    .unwrap();
-    let mut fixed_only = super::tools::Mcp::open(&denied_config);
-    let mut client = super::tools::Mcp::open(&worker);
-    let initial = client.call("fetch", json!({"source_id":"incremental","root_id":"a"}));
-    assert_eq!(
-        initial["structuredContent"]["documents"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    for kind in [SyncKind::Permissions, SyncKind::Members] {
-        let mut head = publication(&worker).await.0;
-        let fresh = head
-            .freshness
-            .sources
-            .iter_mut()
-            .find(|f| f.source_id == "incremental")
-            .unwrap();
-        fresh.permissions_read_at = fyrr_core::clock::now();
-        fresh.members_read_at = Some(fyrr_core::clock::now());
-        let expired = fyrr_core::clock::now() - chrono::Duration::hours(2);
-        match kind {
-            SyncKind::Permissions => fresh.permissions_read_at = expired,
-            _ => fresh.members_read_at = Some(expired),
-        }
-        store
-            .put(
-                &ns.clone().join("head.json"),
-                fyrr_core::write_contract(&head).into(),
-            )
-            .await
-            .unwrap();
-        let search = command(
-            &worker,
-            &["reader", "search", "fixture query", "--limit", "2"],
-        );
-        assert_eq!(search["metadata"]["hidden_sources"], json!(["incremental"]));
-        assert!(
-            search["hits"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|h| h["source_id"] == "allowed")
-        );
-        assert_eq!(search["hits"].as_array().unwrap().len(), 2);
-        for (tool, args) in [
-            (
-                "search",
-                json!({"sources":["incremental"],"order":"updated_at"}),
-            ),
-            ("fetch", json!({"source_id":"incremental","root_id":"a"})),
-            ("fetch", json!({"uri":"test://a"})),
-        ] {
-            let result = client.call(tool, args);
-            assert!(!result["isError"].as_bool().unwrap_or(false), "{result}");
-            let body = &result["structuredContent"];
-            assert_eq!(body["metadata"]["hidden_sources"], json!(["incremental"]));
-            let key = if tool == "search" {
-                "hits"
-            } else {
-                "documents"
-            };
-            assert_eq!(body[key], json!([]), "{result}");
-        }
-        let listing = client.call(
-            "search",
-            json!({"sources":["allowed"],"limit":75,"order":"updated_at"}),
-        );
-        let body = &listing["structuredContent"];
-        assert_eq!(body["hits"].as_array().unwrap().len(), 75);
-        assert!(
-            body["hits"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|h| h["source_id"] == "allowed")
-        );
-        let counts = client.call("list_filters", json!({}));
-        assert_eq!(
-            counts["structuredContent"]["source_types"]["values"],
-            json!([{ "value":"local-files", "count":768 }])
-        );
-        assert_eq!(
-            counts["structuredContent"]["metadata"]["hidden_sources"],
-            json!(["incremental"])
-        );
-        for (tool, args) in [
-            ("search", json!({"query":"fixture query","limit":2})),
-            (
-                "search",
-                json!({"sources":["allowed"],"order":"updated_at","limit":75}),
-            ),
-            ("fetch", json!({"source_id":"allowed","root_id":"0.txt"})),
-            ("fetch", json!({"source_id":"incremental","root_id":"a"})),
-            ("list_filters", json!({})),
-        ] {
-            let result = fixed_only.call(tool, args);
-            assert!(!result["isError"].as_bool().unwrap_or(false), "{result}");
-            let body = &result["structuredContent"];
-            assert_eq!(body["metadata"]["hidden_sources"], json!([]), "{result}");
-            if tool == "search" {
-                assert!(!body["hits"].as_array().unwrap().is_empty());
-            }
-            if tool == "list_filters" {
-                assert_eq!(
-                    body["source_types"]["values"],
-                    json!([{ "value":"local-files", "count":768 }])
-                );
-            }
-        }
-    }
-}
-
-/// Catching a failed host revision callback cannot attest an incomplete read.
+/// A prepared content run's provider asks the worker for stored revisions, in a
+/// real worker with the real Python host, through both callbacks, and gets
+/// answers: the second sync sees the revisions the first stored and published.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
-async fn incremental_caught_revision_failure_never_attests_on_storage() {
+async fn incremental_provider_receives_stored_revisions_through_the_host_on_storage() {
+    let (worker, commit, root) = fixture();
+    let seen = || -> Value {
+        serde_json::from_str(&std::fs::read_to_string(root.join("revisions-seen.json")).unwrap())
+            .unwrap()
+    };
+    let asked = json!(["a", "b", "missing"]);
+    input(
+        &root,
+        json!({"epoch":1,"record_revisions":asked,"content":[[
+            doc("a","r1","fixture document 0"),doc("b","r1","fixture document 1")
+        ]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    assert_eq!(seen(), json!({"lookup": {}, "next": []}));
+    publish(&commit);
+    input(
+        &root,
+        json!({"epoch":2,"record_revisions":asked,"content":[[doc("a","r2","fixture document 2")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    let second = seen();
+    assert_eq!(second["lookup"], json!({"a": "r1", "b": "r1"}));
+    let mut pages = second["next"].as_array().unwrap().clone();
+    pages.sort_by_key(ToString::to_string);
+    assert_eq!(pages, [json!(["a", "r1"]), json!(["b", "r1"])]);
+}
+
+/// A provider that catches a failed host revision callback still fails its read.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_caught_revision_failure_fails_the_read_on_storage() {
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -1149,14 +940,6 @@ async fn incremental_caught_revision_failure_never_attests_on_storage() {
         for callback in ["lookup", "next"] {
             let (worker, commit, root) = fixture();
             publish_initial(&worker, &commit, &root);
-            let before = publication(&worker)
-                .await
-                .0
-                .freshness
-                .sources
-                .into_iter()
-                .find(|f| f.source_id == "incremental")
-                .unwrap();
             input(
                 &root,
                 json!({"epoch":2,"content":[[doc("a","r2","fixture document 2")]]}),
@@ -1207,52 +990,48 @@ async fn incremental_caught_revision_failure_never_attests_on_storage() {
             );
             assert_eq!(std::fs::read_to_string(&marker).unwrap(), "caught");
             let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-            let no_attestation = envelopes(&worker).await.len() == staged;
+            let unstaged = envelopes(&worker).await.len() == staged;
             publish(&commit);
-            let after = publication(&worker)
-                .await
-                .0
-                .freshness
-                .sources
-                .into_iter()
-                .find(|f| f.source_id == "incremental")
-                .unwrap();
-            outcomes.push(json!({"kind":kind,"callback":callback,"failed":!output.status.success(),"error":report["kinds"][0]["error"],"no_attestation":no_attestation,"freshness_unchanged":after == before}));
+            outcomes.push(json!({"kind":kind,"callback":callback,"failed":!output.status.success(),"error":report["kinds"][0]["error"],"unstaged":unstaged}));
             // The failed view must not poison a later complete read.
             input(&root, json!({"epoch":4}));
             worker_sync(&worker, &["incremental", "--kind", kind.as_str()]);
-            assert!(
-                envelopes(&worker)
-                    .await
-                    .iter()
-                    .any(|(_, e)| match &e.payload {
-                        EnvelopePayload::Permissions(p) =>
-                            kind == SyncKind::Permissions && p.complete_read,
-                        EnvelopePayload::Members(p) => kind == SyncKind::Members && p.complete_read,
-                        _ => false,
-                    })
-            );
             publish(&commit);
-            let good = publication(&worker)
-                .await
-                .0
-                .freshness
-                .sources
-                .into_iter()
-                .find(|f| f.source_id == "incremental")
-                .unwrap();
-            if kind == SyncKind::Permissions {
-                assert!(good.permissions_read_at > after.permissions_read_at);
-            } else {
-                assert!(good.members_read_at > after.members_read_at);
-            }
         }
     }
     for outcome in outcomes {
         assert_eq!(outcome["failed"], true, "{outcome}");
         assert_eq!(outcome["error"], "storage_unavailable", "{outcome}");
-        assert_eq!(outcome["no_attestation"], true, "{outcome}");
-        assert_eq!(outcome["freshness_unchanged"], true, "{outcome}");
+        assert_eq!(outcome["unstaged"], true, "{outcome}");
+    }
+}
+
+/// A provider that asks for more roots than allowed, catches the refusal and
+/// finishes still fails its read.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_caught_refused_revision_request_fails_the_read_on_storage() {
+    for kind in [SyncKind::Permissions, SyncKind::Members] {
+        let (worker, commit, root) = fixture();
+        publish_initial(&worker, &commit, &root);
+        let staged = envelopes(&worker).await.len();
+        input(
+            &root,
+            json!({"epoch":3,"catch_revision_failure":"lookup_many"}),
+        );
+        let output = super::coordination::worker_command(&worker)
+            .args(["writer", "sync", "incremental", "--kind", kind.as_str()])
+            .output()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("revision-callback")).unwrap(),
+            "caught",
+            "{kind:?}"
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(!output.status.success(), "{kind:?}: {report}");
+        assert_eq!(report["kinds"][0]["error"], "host_callback_failed");
+        assert_eq!(envelopes(&worker).await.len(), staged, "{kind:?}");
     }
 }
 

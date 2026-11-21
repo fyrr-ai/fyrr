@@ -109,63 +109,6 @@ pub(super) async fn artifact(config: &Path) -> (ServingHead, IdentityArtifact) {
 }
 
 #[tokio::test]
-#[ignore = "real writer and local storage; scripts/ci"]
-async fn identity_scim_namespace_creation_and_import_never_attest_without_proof_on_storage() {
-    for (stdio, provider) in [
-        (true, "none"),
-        (false, "none"),
-        (true, "scim"),
-        (false, "scim"),
-        (true, "keycloak"),
-        (false, "keycloak"),
-        (true, "snapshot"),
-        (false, "snapshot"),
-    ] {
-        let (config, root) = setup();
-        let mut text = std::fs::read_to_string(&config).unwrap();
-        if !stdio {
-            text = text.replace("stdio_user = \"fixture-subject\"\n", "");
-        }
-        std::fs::write(
-            &config,
-            format!("{text}\n[identity.directory]\nprovider='{provider}'\nissuer='https://issuer.one'\nendpoint='http://127.0.0.1:9'\nrealm='owned-test-realm'\nverified_domains=['example.test']\ncredentials={{env='DIRECTORY_UNUSED_CREDENTIAL'}}\nsnapshot_file='unused-snapshot.json'\n"),
-        )
-        .unwrap();
-        success(&config, &["writer", "namespace", "create"]);
-        let loaded = fyrr_core::config::load(&config).unwrap();
-        let before = fyrr_reader::storage::optional_head(&loaded.config)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(before.freshness.directory.is_none());
-        success(&config, &["writer", "commit"]);
-        assert!(
-            fyrr_reader::storage::optional_head(&loaded.config)
-                .await
-                .unwrap()
-                .unwrap()
-                .freshness
-                .directory
-                .is_none()
-        );
-        let mut directory = snapshot(&loaded.config, "scim");
-        directory.provider = provider.into();
-        directory
-            .users
-            .push(user(&loaded.config, "new@example.test"));
-        applied(&config, &root, &directory);
-        success(&config, &["writer", "commit"]);
-        let after = fyrr_reader::storage::optional_head(&loaded.config)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(after.freshness.directory.is_none());
-        assert!(after.content.is_none());
-        assert!(after.identity.generation > before.identity.generation);
-    }
-}
-
-#[tokio::test]
 #[ignore = "real writer/MCP and local storage; scripts/ci"]
 async fn identity_alias_collision_link_revoke_and_idempotence_on_storage() {
     let (worker, commit, root) = fixture();
@@ -216,10 +159,6 @@ async fn identity_alias_collision_link_revoke_and_idempotence_on_storage() {
         config.identity.directory.provider,
         fyrr_core::config::DirectoryProvider::None
     );
-    assert!(
-        before.freshness.directory.is_none(),
-        "this regression must not acquire directory freshness during setup"
-    );
     let mut wrong_namespace = directory.clone();
     wrong_namespace.namespace = "another-namespace".into();
     assert!(!import(&commit, &root, &wrong_namespace).status.success());
@@ -240,10 +179,6 @@ async fn identity_alias_collision_link_revoke_and_idempotence_on_storage() {
         "identity-only publication must not rewrite content"
     );
     assert_eq!(after.policy, before.policy);
-    assert_eq!(
-        after.freshness, before.freshness,
-        "operator imports cannot attest freshness"
-    );
     assert!(
         identity
             .inputs
@@ -269,10 +204,6 @@ async fn identity_alias_collision_link_revoke_and_idempotence_on_storage() {
     publish(&commit);
     let (rebuilt, rebuilt_identity) = artifact(&commit).await;
     assert_eq!(rebuilt.identity, after.identity);
-    assert_eq!(
-        rebuilt.freshness, after.freshness,
-        "ordinary commit cannot renew directory input"
-    );
     assert_eq!(identity, rebuilt_identity);
     let original = directory.clone();
     let mut conflicting = directory.clone();
@@ -603,6 +534,5 @@ async fn identity_directory_keeps_lease_alive_during_slow_storage_on_storage() {
     assert!(after.identity.generation > before.identity.generation);
     assert_eq!(after.content, before.content);
     assert_eq!(after.policy, before.policy);
-    assert_eq!(after.freshness, before.freshness);
     assert_eq!(applied(&commit, &root, &directory)["changed"], false);
 }

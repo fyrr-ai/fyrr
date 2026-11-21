@@ -1,6 +1,6 @@
 //! Operator-pinned RS256 trust. Authentication errors expose only bounded codes.
 use crate::error::*;
-use fyrr_core::config::{Config, OidcConfig};
+use fyrr_core::config::{Config, OidcConfig, is_api_key_secret};
 use jsonwebtoken::{
     Algorithm, DecodingKey, Validation, decode, decode_header,
     jwk::{AlgorithmParameters, JwkSet, KeyAlgorithm, KeyOperations, PublicKeyUse},
@@ -17,6 +17,10 @@ pub(crate) struct AuthenticatedSubject {
     pub key: String,
     pub expires: i64,
     pub identity: Option<fyrr_core::publication::GenerationPointer>,
+    /// The subject is the hash of an API-key secret. The secret proves nothing
+    /// until the published identity binds it, so admission looks it up even
+    /// for requests that skip admission for OIDC subjects.
+    pub api_key: bool,
 }
 /// RFC 7519 §4.1.3: `aud` is one string or an array of strings.
 #[derive(Deserialize)]
@@ -39,6 +43,7 @@ struct Claims {
     aud: Audience,
     sub: String,
     exp: i64,
+    nbf: Option<i64>,
     scope: String,
     typ: Option<String>,
 }
@@ -46,6 +51,21 @@ struct Trust {
     keys: Option<JwkSet>,
     fetched: Option<Instant>,
     attempted: Option<Instant>,
+}
+/// The subject of an API-key bearer, if its shape is right; the shape is checked
+/// before anything is hashed. The subject says nothing about whether the key
+/// exists: admission looks it up in the identity, so an unknown and a removed
+/// key fail the same way.
+pub(crate) fn api_key(config: &Config, token: &str) -> Result<AuthenticatedSubject> {
+    if !is_api_key_secret(token) {
+        return Err(Unauthorized);
+    }
+    Ok(AuthenticatedSubject {
+        key: crate::storage::api_key_subject(config, token)?,
+        expires: i64::MAX,
+        identity: None,
+        api_key: true,
+    })
 }
 #[derive(Clone)]
 pub(crate) struct Authenticator {
@@ -179,14 +199,19 @@ impl Authenticator {
         }
         let key = DecodingKey::from_jwk(key).map_err(|_| Unauthorized)?;
         let mut validation = Validation::new(Algorithm::RS256);
-        validation.leeway = 0;
-        validation.validate_nbf = true;
+        // The times are checked below on the clock every other expiry of the
+        // reader uses; the library would read the system clock.
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
         validation.set_issuer(&[self.oidc.issuer.as_str()]);
         validation.set_audience(&[self.oidc.audience.as_str()]);
         validation.set_required_spec_claims(&["exp", "sub", "iss", "aud"]);
         let claims = decode::<Claims>(token, &key, &validation)
             .map_err(|_| Unauthorized)?
             .claims;
+        if !times_valid(claims.exp, claims.nbf, fyrr_core::clock::now().timestamp()) {
+            return Err(Unauthorized);
+        }
         if claims.iss != self.oidc.issuer
             || !claims.aud.contains(&self.oidc.audience)
             || claims.sub.is_empty()
@@ -213,6 +238,7 @@ impl Authenticator {
             key,
             expires: claims.exp,
             identity: None,
+            api_key: false,
         })
     }
     async fn fetch_keys(&self) -> Result<JwkSet> {
@@ -244,5 +270,23 @@ impl Authenticator {
             }
         }
         Ok(keys)
+    }
+}
+
+/// The token times at `now`, without leeway: valid up to and including
+/// `exp`, and from `nbf` on.
+fn times_valid(exp: i64, nbf: Option<i64>, now: i64) -> bool {
+    exp >= now && nbf.is_none_or(|nbf| nbf <= now)
+}
+
+#[cfg(test)]
+mod time_tests {
+    #[test]
+    fn token_times_have_no_leeway() {
+        let now = 1_000;
+        assert!(super::times_valid(now, None, now));
+        assert!(!super::times_valid(now - 1, None, now));
+        assert!(super::times_valid(now + 600, Some(now), now));
+        assert!(!super::times_valid(now + 600, Some(now + 1), now));
     }
 }

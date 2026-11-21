@@ -5,7 +5,7 @@
     "kind": "content",
     "cursor": {
       "start": null,
-      "end": "{\"full\":0,\"holder_types\":\"\",\"marker\":0,\"policies\":\"\",\"scope\":\"6460f35288ea6b5e86e3044a336ee1ce14af700acd175af34dbd54c4a085508d\",\"start\":0,\"step\":0,\"updated\":0}"
+      "end": "{\"full\":0,\"holder_types\":\"\",\"marker\":0,\"policies\":\"\",\"scope\":\"6d8748db1bcf456dc3ef9daf416458fb52152de4ed0cf51192381923789d4b08\",\"start\":0,\"step\":0,\"updated\":0}"
     },
     "body": {
       "type": "document_changes",
@@ -13,7 +13,7 @@
         {
           "op": "upsert",
           "root_id": "jira:11111111-1111-4111-8111-111111111111:issue:101",
-          "source_revision": "0d86dded2cace5fb9075d238f9ee699f461157a1dfa9bde8db8fcfbda5cdf506:eJyLNtTJK83J0UlLzClO1YmOBaJYAEdeBtA",
+          "source_revision": "61beb268433add2923b303f93a0c63c7db400ae3a384c9df3640bf8da8cc0053:eJyLNtTJK83J0UlLzClO1YmOBaJYAEdeBtA",
           "readers": [
             "grp:testkit"
           ],
@@ -29,10 +29,12 @@
             "created_at": "2026-01-01T00:00:01Z",
             "updated_at": "2026-01-01T00:00:02Z"
           },
-          "attributes": [],
+          "attributes": [
+            "jira.key=P1-101"
+          ],
           "sections": [
             {
-              "text": "Issue 101",
+              "text": "P1-101 Issue 101",
               "location": {
                 "kind": "field",
                 "label": "summary",
@@ -40,7 +42,7 @@
               }
             },
             {
-              "text": "Description.",
+              "text": "approved design (https://docs.invalid/d) and https://github.invalid/o/r/pull/7",
               "location": {
                 "kind": "field",
                 "label": "description",
@@ -72,7 +74,31 @@
               }
             },
             {
-              "text": "Golden body.",
+              "text": "parent: P1-100\nblocks: P1-140\nis blocked by: P1-88",
+              "location": {
+                "kind": "field",
+                "label": "links",
+                "index": 0
+              }
+            },
+            {
+              "text": "Rejects bad",
+              "location": {
+                "kind": "field",
+                "label": "customfield_10042",
+                "index": 0
+              }
+            },
+            {
+              "text": "Ship behind a flag",
+              "location": {
+                "kind": "field",
+                "label": "customfield_10043",
+                "index": 0
+              }
+            },
+            {
+              "text": "Fixture author:\nGolden body.",
               "location": {
                 "kind": "comment",
                 "label": "https://synthetic.atlassian.net/browse/P1-101?focusedCommentId=201",
@@ -89,8 +115,8 @@
     "source_id": "testkit-source",
     "kind": "content",
     "cursor": {
-      "start": "{\"full\":0,\"holder_types\":\"\",\"marker\":0,\"policies\":\"\",\"scope\":\"6460f35288ea6b5e86e3044a336ee1ce14af700acd175af34dbd54c4a085508d\",\"start\":0,\"step\":0,\"updated\":0}",
-      "end": "{\"full\":1767225602,\"holder_types\":\"\",\"marker\":0,\"policies\":\"\",\"scope\":\"6460f35288ea6b5e86e3044a336ee1ce14af700acd175af34dbd54c4a085508d\",\"start\":1767225602,\"step\":1767225602,\"updated\":1767225602}"
+      "start": "{\"full\":0,\"holder_types\":\"\",\"marker\":0,\"policies\":\"\",\"scope\":\"6d8748db1bcf456dc3ef9daf416458fb52152de4ed0cf51192381923789d4b08\",\"start\":0,\"step\":0,\"updated\":0}",
+      "end": "{\"full\":1767225602,\"holder_types\":\"\",\"marker\":0,\"policies\":\"\",\"scope\":\"6d8748db1bcf456dc3ef9daf416458fb52152de4ed0cf51192381923789d4b08\",\"start\":1767225602,\"step\":1767225602,\"updated\":1767225602}"
     },
     "body": {
       "type": "document_changes",

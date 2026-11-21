@@ -57,7 +57,7 @@ impl Seen {
         let (heads, others): (Vec<_>, Vec<_>) = seen[from..]
             .iter()
             .cloned()
-            .partition(|request| request.ends_with(" head.json"));
+            .partition(|request| *request == "GET head.json");
         (heads.len(), others)
     }
     /// Waits until only the version check still reads, for two quiet
@@ -127,14 +127,10 @@ const WARM_DELAY_SECS: u64 = 30;
 /// warms the generation: each control artifact, index file and data file
 /// once. They grow with the files of a publication. Raise a budget only on
 /// purpose: every request is paid for on an object store.
-// shortcut: a data file is read twice when a search reaches it in pages
-// before warming downloads it whole (open 28 or 29, switch 26 or 27); lower
-// both budgets by one once small data files are downloaded whole on their
-// first read.
-const OPEN_BUDGET: usize = 29;
+const OPEN_BUDGET: usize = 27;
 /// The same for switching to a publication that adds one document, warming
 /// of the new generation included.
-const SWITCH_BUDGET: usize = 27;
+const SWITCH_BUDGET: usize = 25;
 
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
@@ -166,7 +162,15 @@ async fn a_running_reader_stays_within_its_storage_request_budget() {
     let first = served(&mut client).unwrap().0;
     seen.settle();
     let allowed = head_reads_allowed(started.elapsed(), 1);
-    within("open", seen.since(0), OPEN_BUDGET, allowed);
+    // The budgets are upper bounds: a detached observer would pass them.
+    let opened = seen.since(0);
+    assert!(
+        opened.0 >= 1 && !opened.1.is_empty(),
+        "the observer saw {} head reads and {} other requests while the reader opened",
+        opened.0,
+        opened.1.len()
+    );
+    within("open", opened, OPEN_BUDGET, allowed);
 
     // A warm reader: searches cost nothing, an idle reader only checks.
     let (mark, started) = (seen.len(), std::time::Instant::now());
@@ -182,8 +186,13 @@ async fn a_running_reader_stays_within_its_storage_request_budget() {
     let (mark, started) = (seen.len(), std::time::Instant::now());
     sync_texts(&config, &root, &[("kept.txt", KEPT), ("extra.txt", EXTRA)]);
     success(&config, &["writer", "commit"]);
+    let second = super::coordination::publication(&config)
+        .await
+        .1
+        .publication_id;
+    assert_ne!(second, first);
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    while served(&mut client).is_ok_and(|(publication, _)| publication == first) {
+    while served(&mut client).map(|(publication, _)| publication) != Ok(second.clone()) {
         assert!(std::time::Instant::now() < deadline, "never switched");
         std::thread::sleep(Duration::from_millis(250));
     }
@@ -223,16 +232,30 @@ impl Drop for Service {
 /// the history shows as storage requests that grow with this number.
 /// They and the namespace's first publication form a history of five.
 const PUBLICATIONS: usize = 4;
+/// Seconds after the service settled that it is watched for sync workers:
+/// past the minute after the last worker ended, when one used to be started
+/// again whatever its intervals.
+const RESPAWN_WINDOW_SECS: u64 = 70;
+/// Whether a request changes storage: an idle service takes no lease and
+/// writes nothing, not even the head.
+fn writes_storage(request: &str) -> bool {
+    !["GET ", "HEAD ", "LIST "]
+        .iter()
+        .any(|read| request.starts_with(read))
+}
+
 /// Ticks of the committer measured once the service has settled.
 const TICKS: u64 = 8;
 /// Storage requests of one idle committer tick, other than reads of
-/// publication manifests: the lease, the head, the policy, the envelope
-/// listing, the dataset open and the head it publishes (17 measured).
-const IDLE_TICK_BUDGET: usize = 17;
+/// publication manifests: the head, the policy twice, the envelope listing,
+/// the identity and the dataset open (12 measured), and the head once more
+/// for the service's own watch for a change of the head (13). None of them
+/// writes.
+const IDLE_TICK_BUDGET: usize = 13;
 /// Reads of publication manifests by one idle tick: the served manifest,
-/// once for the previous manifest of the group and once for the receipt. A
-/// walk of the history would read `PUBLICATIONS` or more.
-const IDLE_TICK_MANIFESTS: usize = 2;
+/// once for the receipt. A walk of the history would read `PUBLICATIONS` or
+/// more.
+const IDLE_TICK_MANIFESTS: usize = 1;
 
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
@@ -269,6 +292,7 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
     let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), seen.hook());
     let service = root.join("service.toml");
     std::fs::write(&service, text.replace(&endpoint, &observed)).unwrap();
+    let log = root.join("service.log");
     let mut service = Service(
         Command::new(crate::common::binary())
             .arg("--config")
@@ -279,7 +303,7 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("../../connectors/.venv"),
             )
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
             .spawn()
             .unwrap(),
         stop.clone(),
@@ -287,7 +311,7 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
     let child = &mut service.0;
     // Startup runs a sync worker per source, which finds nothing due. The
     // service is idle once, after its first seconds, two seconds in a row
-    // write nothing but the head.
+    // write nothing.
     let started = std::time::Instant::now();
     let deadline = started + Duration::from_secs(120);
     let mut quiet = 0;
@@ -297,7 +321,7 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
         let writes = seen
             .all(mark)
             .iter()
-            .filter(|request| request.starts_with("PUT ") && request != &"PUT head.json")
+            .filter(|request| writes_storage(request))
             .count();
         quiet = if writes == 0 && seen.len() > mark {
             quiet + 1
@@ -313,29 +337,81 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
             "the service never settled"
         );
     }
-    let mark = seen.len();
+    let events = |event: &str| {
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .matches(&format!("writer_service event={event}"))
+            .count()
+    };
+    let (settled, mark, idle_before, published_before) = (
+        std::time::Instant::now(),
+        seen.len(),
+        events("idle"),
+        events("published"),
+    );
     std::thread::sleep(Duration::from_secs(TICKS));
     let requests = seen.all(mark);
+    let (idle, published) = (
+        events("idle") - idle_before,
+        events("published") - published_before,
+    );
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the writer service exited"
+    );
+    // Past the minute after which a sync worker used to be started again
+    // whatever its intervals: a source with nothing due starts none, and the
+    // service writes nothing. A worker reads its cursors first.
+    std::thread::sleep(
+        (settled + Duration::from_secs(RESPAWN_WINDOW_SECS))
+            .saturating_duration_since(std::time::Instant::now()),
+    );
+    let all = seen.all(mark);
     assert!(
         child.try_wait().unwrap().is_none(),
         "the writer service exited"
     );
     drop(service);
+    let workers: Vec<_> = all
+        .iter()
+        .filter(|request| request.contains(" cursors/"))
+        .cloned()
+        .collect();
+    within(
+        "idle writer, sync workers past the first minute",
+        (0, workers),
+        0,
+        0,
+    );
+    let writes: Vec<_> = all
+        .iter()
+        .filter(|request| writes_storage(request))
+        .cloned()
+        .collect();
+    within(
+        "idle writer, writes over the whole window",
+        (0, writes),
+        0,
+        0,
+    );
 
     let (manifests, rest): (Vec<_>, Vec<_>) = requests
         .into_iter()
         .partition(|request| request.starts_with("GET publications/"));
     // A window of `TICKS` seconds holds at most one tick more; a loaded host
-    // may run fewer, but an idle service publishes its head at every tick.
+    // may run fewer. Only the service's own events tell an idle tick from a
+    // tick that had nothing to look at: the committer ticked and took no lease.
     let ticks = usize::try_from(TICKS).unwrap() + 1;
-    let published = rest
-        .iter()
-        .filter(|request| *request == "PUT head.json")
-        .count();
     assert!(
-        published >= usize::try_from(TICKS / 2).unwrap(),
-        "only {published} head writes: the committer did not tick"
+        idle >= usize::try_from(TICKS / 2).unwrap(),
+        "only {idle} idle ticks: the committer did not tick"
     );
+    assert_eq!(published, 0, "an idle service committed");
+    let writes: Vec<_> = rest
+        .iter()
+        .filter(|request| writes_storage(request))
+        .collect();
+    assert!(writes.is_empty(), "an idle service wrote {writes:?}");
     within(
         "idle writer, manifest reads",
         (0, manifests),

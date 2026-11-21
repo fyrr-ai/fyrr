@@ -25,6 +25,12 @@ pub struct CursorLease {
     ttl: Duration,
     observed: fyrr_reader::storage::ObservedDurability,
 }
+fn cursor_path(root: &Path, source: &str, kind: SyncKind) -> Path {
+    root.clone()
+        .join("cursors")
+        .join(format!("{source}-{}.json", kind.as_str()))
+}
+
 impl CursorLease {
     pub(crate) fn with<T, E>(
         rt: &tokio::runtime::Runtime,
@@ -60,32 +66,57 @@ impl CursorLease {
                 .is_some_and(|l| l.expires_at > fyrr_core::clock::now())
     }
 
-    pub async fn acquire(config: &Config, source: &str, kind: SyncKind) -> Result<Arc<Self>> {
-        let (store, root) = namespace_store(config)?;
-        crate::commit::sources_allowed(config, store.as_ref(), &root).await?;
-        let path = root
-            .clone()
-            .join("cursors")
-            .join(format!("{source}-{}.json", kind.as_str()));
-        let (mut state, mode) = match store.get(&path).await {
-            Ok(object) => {
-                let version = version_of(&object.meta);
-                let state = parse_contract::<CursorState>(&object.bytes().await?)
-                    .map_err(|_| WriterError::CursorInvalid)?;
-                (state, PutMode::Update(version))
-            }
-            Err(object_store::Error::NotFound { .. }) => (
-                crate::prepare::initial_cursor(config, source, kind),
-                PutMode::Create,
-            ),
+    /// The stored cursor and its version; `None` before the first read.
+    async fn read(
+        config: &Config,
+        store: &dyn ObjectStore,
+        path: &Path,
+        source: &str,
+        kind: SyncKind,
+    ) -> Result<Option<(CursorState, UpdateVersion)>> {
+        let object = match store.get(path).await {
+            Ok(object) => object,
+            Err(object_store::Error::NotFound { .. }) => return Ok(None),
             Err(_) => return Err(WriterError::StorageUnavailable),
         };
+        let version = version_of(&object.meta);
+        let state = parse_contract::<CursorState>(&object.bytes().await?)
+            .map_err(|_| WriterError::CursorInvalid)?;
         if state.namespace != config.namespace.name
             || state.source_id != source
             || state.kind != kind
         {
             return Err(WriterError::CursorInvalid);
         }
+        Ok(Some((state, version)))
+    }
+
+    /// The stored cursor, read without the lease: a schedule decision that
+    /// takes the lease only when it finds the kind possibly due.
+    pub(crate) async fn peek(
+        config: &Config,
+        source: &str,
+        kind: SyncKind,
+    ) -> Result<Option<CursorState>> {
+        let (store, root) = namespace_store(config)?;
+        let path = cursor_path(&root, source, kind);
+        Ok(Self::read(config, store.as_ref(), &path, source, kind)
+            .await?
+            .map(|(state, _)| state))
+    }
+
+    pub async fn acquire(config: &Config, source: &str, kind: SyncKind) -> Result<Arc<Self>> {
+        let (store, root) = namespace_store(config)?;
+        crate::commit::sources_allowed(config, store.as_ref(), &root).await?;
+        let path = cursor_path(&root, source, kind);
+        let (mut state, mode) =
+            match Self::read(config, store.as_ref(), &path, source, kind).await? {
+                Some((state, version)) => (state, PutMode::Update(version)),
+                None => (
+                    crate::prepare::initial_cursor(config, source, kind),
+                    PutMode::Create,
+                ),
+            };
         let now = fyrr_core::clock::now();
         if state.lease.as_ref().is_some_and(|l| l.expires_at > now) {
             return Err(WriterError::SyncBusy);

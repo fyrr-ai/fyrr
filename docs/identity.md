@@ -5,7 +5,8 @@
 > - The `[identity]` table: the stdio subject, the hashing and encryption
 >   keys, and how long permission and directory reads stay valid.
 > - `[identity.directory]` selects where [canonical users](architecture.md#terms) and groups come from;
->   `[identity.oidc]` holds the OIDC settings for HTTP MCP.
+>   `[identity.oidc]` holds the OIDC settings for HTTP MCP and
+>   `[[identity.api_keys]]` declares keys with explicit grants.
 > - Read it when you set up who may read: one user over stdio, or many users
 >   over HTTP.
 
@@ -22,23 +23,42 @@ in the [security model](security.md).
 | `stdio_readers` | `[]` | Reader tokens (`usr:<id>`, `grp:<id>`) of the stdio subject. |
 | `hashing_key` | required | Namespace HMAC key, `{ env = "VAR" }`; the same value on every writer and reader. Only hashed reader tokens and [principal](architecture.md#terms) keys enter the published artifacts and rows. |
 | `encryption_key` | absent | 32 random bytes as 64 hexadecimal characters, `{ env = "VAR" }`; a separate secret from `hashing_key`. Encrypts persisted identity inputs (directory snapshots, membership, SCIM state, stored credentials). `config check` requires it with a `permissions = "sync"` source, a `snapshot` or `keycloak` directory, or writer administration. |
-| `validity_deadline` | `1h` | How long the last successful permission and member read of a `permissions = "sync"` source, and the last directory read, stay valid. After it the source is hidden (`metadata.hidden_sources`); an expired directory read refuses the whole namespace. No directory clock applies when `provider = "none"`. |
 | `max_tokens_per_user` | `5000` | At least 1. A subject with more reader tokens gets `authorization_unavailable`; other subjects are unaffected. |
 | `oidc` | absent | OIDC settings for HTTP MCP, see below. |
+| `api_keys` | `[]` | `[[identity.api_keys]]` tables: bearer keys for HTTP MCP, see below. |
 | `directory` | see below | Canonical directory. |
 
-`validity_deadline` must cover the longest permission/member interval or
-`identity.directory.sync_interval` (even with `provider = "none"`), plus
-`writer.commit.coalescing_timer`, a five-minute margin and
-`reader.version_check_interval`. `config check` prints
-the required value.
+### `[[identity.api_keys]]`
+
+An API key lets a client without an identity provider use `[reader.http]`.
+The operator declares what each key may read, as `stdio_user` and
+`stdio_readers` do for stdio. [HTTP login and users](http-users.md#api-keys)
+walks through it.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `name` | required | Unique ID like a source ID (`[a-z0-9][a-z0-9_-]{0,62}`). It names the key in this file; the artifacts hold only its hash. |
+| `key` | required | `{ env = "VAR" }`: the secret, `fyrr_key_` followed by at least 43 characters from `[A-Za-z0-9_-]`. Generate it with `echo "fyrr_key_$(openssl rand -hex 32)"`. Every key needs its own value. |
+| `readers` | required | At least one reader token (`usr:<id>`, `grp:<id>`) the key acts with, as `stdio_readers`, including source-scoped tokens for `permissions = "sync"` sources. |
+
+Only the **writer** reads the secret, so the reader needs no key in its
+environment. Every host that publishes identity needs every key's variable:
+a host without one publishes identity without that key's binding. `config
+check` reports a variable that is unset, a secret of the wrong shape and two
+keys with the same secret; `config check --no-env` skips that. The writer
+skips a key whose secret is missing or malformed and publishes every other
+key; two keys with the same secret stop its commit.
+
+`reader serve` over HTTP needs `[identity.oidc]`, an API key or both, and
+refuses to start without them; `config check` warns about it. The writer does
+not need either, so removing the last key still publishes and revokes it.
 
 ### `[identity.directory]`
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `provider` | `none` | `none`, `snapshot`, `keycloak` or `scim`. |
-| `sync_interval` | `15m` | Pull interval, or SCIM liveness interval renewed by any successful authenticated SCIM request. |
+| `sync_interval` | `15m` | Pull interval of `writer serve` for the `keycloak` and `snapshot` providers. SCIM pushes need none. |
 | `credentials` | absent | `{ env = "VAR" }`: a Keycloak admin bearer token, a Keycloak client secret when `client_id` is set, or the SCIM [provider](architecture.md#terms) credential. |
 | `endpoint` | absent | Keycloak base URL (HTTPS, or explicitly allowed loopback). |
 | `realm` | absent | Keycloak realm. |
@@ -47,9 +67,12 @@ the required value.
 | `verified_domains` | `[]` | Corporate e-mail domains accepted for canonical users; required for SCIM and Keycloak. Slack and Jira sources without `settings.corporate_domains` use the same list. |
 | `snapshot_file` | absent | A complete directory snapshot file for `provider = "snapshot"`. |
 
-Only a completed directory read advances directory freshness. Ordinary commits
-and `writer directory --snapshot` imports do not. With `provider = "none"`,
-imported snapshots remain usable without a directory freshness timestamp.
+The reader holds no directory clock: a published directory read is served
+until a newer publication replaces it. A manual `writer directory --snapshot`
+import is accepted under any provider. It must be built after the last
+published directory read (its `built_at` not older than that read's): an older
+one is refused as stale (`directory_snapshot_stale`). An unchanged pull or
+import publishes nothing.
 
 Keycloak directory snapshots are bounded to 100,000 users, 100,000 groups
 and 1,000,000 combined user/group membership edges. Each user needs two
@@ -63,7 +86,7 @@ lifetime must exceed the read duration; increasing `--timeout` does not
 extend that lifetime. With `client_id`, configure the service-account
 client's token lifespan in Keycloak for the expected read duration. The
 short-lived admin-token example suits small realms. Partial or failed
-pulls publish no directory snapshot or freshness proof.
+pulls publish no directory snapshot.
 
 ### Other directory providers
 

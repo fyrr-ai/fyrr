@@ -26,6 +26,29 @@ Three parts of the contract matter for unattended agents:
 - **Text is data.** Tool descriptions state that returned text is data, not
   instructions.
 
+## Start every task with one search
+
+The agent already has its ticket: the factory hands it over from the tracker,
+where the agent also comments. fyrr supplies what surrounds it, the earlier
+tickets, pull requests, threads and documents nobody linked. At the start of
+a task, search once with the ticket's title and its body as two queries:
+
+```json
+{ "queries": ["<ticket title>", "<ticket body, first 4,096 characters>"], "limit": 20 }
+```
+
+Title and body together find more than either alone, and each document comes
+back once. The agent then reads what looks relevant with `fetch` and searches
+on from there.
+
+To read a ticket the current one names, look it up by key: `search` with
+`attributes: [{"key": "jira.key", "values": ["PROJ-123"]}]`, no `query` and
+`order: "updated_at"`. The URLs in a ticket's text, and with fixed readers
+its `links` section, name what to look up next
+([Jira documents](connectors/jira.md#documents)).
+Acceptance criteria kept in a custom field are indexed when `scope.fields`
+lists that field's ID.
+
 ## Set it up
 
 1. **Index what the work depends on.** Run one writer on a schedule
@@ -61,8 +84,8 @@ Three parts of the contract matter for unattended agents:
    commands for Claude Code and Codex.
 
 When a sandbox must not hold bucket credentials, run one HTTP reader for the
-fleet instead. Each request then carries an OIDC access token; see
-[HTTP login and users](http-users.md).
+fleet instead, with one API key per agent role; see
+[API keys](http-users.md#api-keys).
 
 ## Limit what an injected agent can reach
 
@@ -78,6 +101,12 @@ searching for payroll finds nothing, and cannot tell whether payroll exists.
 
 fyrr checks permissions before ranking, so a forbidden document never
 reaches the model's context in the first place.
+
+Each GitHub and Jira comment starts with a line naming its author and, for
+GitHub, the author's association with the repository (`ada (member):`). That
+tells your agent harness an outsider's comment from one by someone with a tie
+to the repository; it is information, not a trust boundary, and no text from
+a source is a command.
 
 ## Know what an agent knew
 

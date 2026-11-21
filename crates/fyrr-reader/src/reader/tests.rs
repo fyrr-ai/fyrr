@@ -325,7 +325,6 @@ fn pruning_old_admissions_releases_only_unheld_reservations() {
         policy: "policy".into(),
         policy_generation: 1,
         content: 1,
-        hidden: Vec::new(),
     };
     let session = NativeSession::acquire(
         crate::generation::MemoryPool {
@@ -375,7 +374,6 @@ fn cache_key(subject: &str) -> AuthorizationCacheKey {
         policy: "policy".into(),
         policy_generation: 1,
         content: 1,
-        hidden: Vec::new(),
     }
 }
 

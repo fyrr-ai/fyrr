@@ -8,6 +8,7 @@ impl LoadedConfig {
         let mut error = |path: &str, message: String| issues.push(Issue::error(path, message));
         rerank(config, &mut error);
         identity_keys(config, &mut error);
+        api_key::validate(config, &mut error);
         identity_urls_and_http(config, &mut error);
         patterns(config, &mut error);
         dense_weight(config, &mut error);
@@ -24,8 +25,7 @@ impl LoadedConfig {
         administration(config, &mut error);
         directory(config, &mut error);
         writer_credentials(config, &mut error);
-        let longest_identity_interval = sources(config, &mut error);
-        identity_deadline(config, &mut error, longest_identity_interval);
+        sources(config, &mut error);
         for (index, source) in config.sources.iter().enumerate() {
             if source.permissions == PermissionsMode::Fixed {
                 issues.push(Issue::warning(
@@ -157,9 +157,6 @@ fn identity_urls_and_http(config: &Config, error: &mut impl FnMut(&str, String))
                 "reader.http.public_url",
                 "requires a secure /mcp URL".into(),
             );
-        }
-        if config.identity.oidc.is_none() {
-            error("identity.oidc", "required for HTTP MCP".into());
         }
         if http.listen.parse::<std::net::SocketAddr>().is_err()
             || http.public_url.is_empty()
@@ -744,13 +741,9 @@ fn writer_credentials(config: &Config, error: &mut impl FnMut(&str, String)) {
     }
 }
 
-fn sources(config: &Config, error: &mut impl FnMut(&str, String)) -> (ConfigDuration, String) {
+fn sources(config: &Config, error: &mut impl FnMut(&str, String)) {
     let writer = &config.writer;
     let mut ids = BTreeSet::new();
-    let mut longest_identity_interval = (
-        config.identity.directory.sync_interval,
-        "identity.directory.sync_interval".to_owned(),
-    );
     for (index, source) in config.sources.iter().enumerate() {
         let at = |field: &str| format!("sources[{index}].{field}");
         if !ids.insert(source.id.as_str()) {
@@ -808,10 +801,6 @@ fn sources(config: &Config, error: &mut impl FnMut(&str, String)) -> (ConfigDura
             if interval.as_millis() == 0 {
                 error(&at(field), "must be greater than zero".into());
             }
-            let identity_input = field == "intervals.permissions" || field == "intervals.members";
-            if identity_input && interval > longest_identity_interval.0 {
-                longest_identity_interval = (interval, at(field));
-            }
         }
         if let Some(limit) = source.document_max_bytes
             && writer.envelope_max_bytes <= limit
@@ -837,33 +826,16 @@ fn sources(config: &Config, error: &mut impl FnMut(&str, String)) -> (ConfigDura
             for (path, message) in inline {
                 error(&path, message);
             }
+            // A stored credential reaches the provider host's environment.
+            let mut references = Vec::new();
+            env_references(&at(table), &Value::Object(value.clone()), &mut references);
+            for (path, name) in references {
+                if writer.credentials.contains_key(&name)
+                    && let Some(message) = host_env_refusal(&name)
+                {
+                    error(&path, message.into());
+                }
+            }
         }
-    }
-
-    longest_identity_interval
-}
-
-fn identity_deadline(
-    config: &Config,
-    error: &mut impl FnMut(&str, String),
-    longest_identity_interval: (ConfigDuration, String),
-) {
-    let writer = &config.writer;
-    // The deadline must exceed the longest visible sync interval
-    // plus the commit timer, the version check and a margin.
-    let version_check = config.reader.version_check_interval;
-    let needed = longest_identity_interval
-        .0
-        .saturating_add(writer.commit.coalescing_timer)
-        .saturating_add(version_check)
-        .saturating_add(IDENTITY_DEADLINE_MARGIN);
-    if config.identity.validity_deadline < needed {
-        error(
-            "identity.validity_deadline",
-            format!(
-                "must be at least {needed}: {} ({}) + writer.commit.coalescing_timer + reader version check + {IDENTITY_DEADLINE_MARGIN} margin",
-                longest_identity_interval.1, longest_identity_interval.0
-            ),
-        );
     }
 }

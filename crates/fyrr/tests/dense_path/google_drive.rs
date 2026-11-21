@@ -2,7 +2,7 @@
 //! real delegated sign-in and the owned RustFS, against the fake Drive served
 //! over HTTP (`connectors/tests/google_drive/fake_drive.py`). Path S of
 //! docs/connectors/google-drive.md §6.
-use super::coordination::{command, committer_host, publication, worker_command, worker_sync};
+use super::coordination::{command, committer_host, earlier_release, worker_command, worker_sync};
 use super::incremental::{envelopes, publish, roots, row_readers, source_rows};
 use super::tools::Mcp;
 use super::*;
@@ -23,6 +23,8 @@ const SYNC: &str = "permissions='sync'\nintervals={ permissions='5m', members='5
 struct Drive {
     server: super::synthetic::Server,
     key: String,
+    /// `(file, text)` of the files put since the embedding service last learned them.
+    texts: std::sync::Mutex<Vec<(String, String)>>,
 }
 impl Drive {
     fn start() -> Self {
@@ -31,9 +33,28 @@ impl Drive {
             .as_str()
             .unwrap()
             .into();
-        Self { server, key }
+        Self {
+            server,
+            key,
+            texts: Default::default(),
+        }
     }
+    /// A Doc that is indexed as its name (the file ID unless `place` names it)
+    /// above `text`; call `embed` before the next sync.
     async fn put(&self, file: &str, text: &str, place: Value) {
+        let name = place["name"].as_str().unwrap_or(file).to_owned();
+        self.texts.lock().unwrap().push((name, text.to_owned()));
+        self.put_unindexed(file, text, place).await;
+    }
+    /// The embedding service learns the files put so far, by the vector of their text.
+    fn embed(&self, root: &FixtureRoot) {
+        for (file, text) in self.texts.lock().unwrap().drain(..) {
+            root.embedding
+                .insert_both(&format!("{file}\n\n{text}"), root.embedding.vector(&text));
+        }
+    }
+    /// A file the worker never embeds: its text is over the source's limit.
+    async fn put_unindexed(&self, file: &str, text: &str, place: Value) {
         let mut arguments = json!({"file_id":file,"content":text});
         for (key, value) in place.as_object().unwrap() {
             arguments[key] = value.clone();
@@ -100,6 +121,7 @@ fn fixture(drive: &Drive, keys: &str) -> (PathBuf, PathBuf, FixtureRoot) {
         ),
     )
     .unwrap();
+    drive.embed(&root);
     super::coordination::command(&config, &["writer", "namespace", "create"]);
     worker_sync(&config, &["allowed", "denied", "--full"]);
     let commit = committer_host(&config, &root);
@@ -240,7 +262,7 @@ async fn google_drive_sync_source_grants_and_revokes_in_every_lane_on_storage() 
     drive
         .put("shared", text, json!({"drive":"drive-eng"}))
         .await;
-    let (worker, commit, _root) = fixture(&drive, SYNC);
+    let (worker, commit, root) = fixture(&drive, SYNC);
 
     let every_kind = [
         "--kind",
@@ -278,6 +300,7 @@ async fn google_drive_sync_source_grants_and_revokes_in_every_lane_on_storage() 
 
     // A content edit carries no readers: the applied permissions stay.
     drive.put("direct", text, json!({})).await;
+    drive.embed(&root);
     drive.synced(&worker, &["--kind", "content"]);
     publish(&commit);
     assert_eq!(drive.exports("direct").await, 2);
@@ -326,6 +349,71 @@ async fn google_drive_sync_source_grants_and_revokes_in_every_lane_on_storage() 
     );
 }
 
+/// A word only in a file's name finds the file by full-text search alone (the
+/// query has no vector, so the dense lane is degraded), also when the file was
+/// published before names were indexed: a full sync republishes it with its
+/// name although the file did not change.
+#[tokio::test]
+#[ignore = "real CLI, fake Drive and local storage; scripts/ci"]
+async fn google_drive_full_sync_indexes_the_name_of_a_file_published_without_it_on_storage() {
+    let drive = Drive::start();
+    drive
+        .server
+        .call_async("user", json!({"email":OWNER}))
+        .await;
+    drive
+        .put(
+            "plan",
+            "fixture document 9",
+            json!({"owner":OWNER,"name":"Rename the quokka marshaller"}),
+        )
+        .await;
+    let (worker, commit, root) = fixture(&drive, FIXED);
+    root.embedding.insert_both(
+        "fixture document 9",
+        root.embedding.vector("fixture document 9"),
+    );
+    let search = || {
+        let result = Mcp::open(&worker).call(
+            "search",
+            json!({"sources":["drive"],"query":"quokka","limit":10,"output":"metadata"}),
+        );
+        assert_eq!(result["isError"], false, "{result}");
+        let body = &result["structuredContent"];
+        assert_eq!(body["metadata"]["degraded"], json!(["dense"]));
+        body["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    // The release before: its export format and order, and no name in the text.
+    let before_names = earlier_release(
+        &worker,
+        r#"from fyrr_connectors.google_drive import connector
+connector.EXPORT_FORMAT = 1
+connector._order = lambda file: int(file["version"])
+for kind, (export, parse, source, path) in list(connector.FORMATS.items()):
+    connector.FORMATS[kind] = (export, lambda data, limit, name, parse=parse: parse(data, limit, None), source, path)
+"#,
+    );
+    let mut before = drive.sync_command(&worker);
+    before
+        .env("PYTHONPATH", before_names)
+        .args(["--kind", "content"]);
+    assert!(before.output().unwrap().status.success());
+    publish(&commit);
+    assert_eq!(published(&worker).await, ["plan"]);
+    assert!(search().is_empty(), "the name was not indexed yet");
+
+    drive.synced(&worker, &["--kind", "content", "--full"]);
+    publish(&commit);
+    assert_eq!(drive.exports("plan").await, 2);
+    assert_eq!(search(), ["plan"]);
+}
+
 /// The cursor moves only past acknowledged batches: a worker killed between
 /// batches resumes without exporting what was delivered, and a reset cursor
 /// re-scans without exporting anything published and without losing a delete.
@@ -346,7 +434,7 @@ async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_s
             )
             .await;
     }
-    let (worker, commit, _root) = fixture(&drive, FIXED);
+    let (worker, commit, root) = fixture(&drive, FIXED);
     // Two documents per batch, as the fake's pages. Only the worker that is
     // killed gets a short cursor lease: a live sync must not lose its lease
     // to a busy host.
@@ -441,6 +529,7 @@ async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_s
     drive
         .put("doc-8", "fixture document 8", json!({"owner":OWNER}))
         .await;
+    drive.embed(&root);
     drive.synced(
         &worker,
         &["--kind", "content", "--kind", "reconcile", "--full"],
@@ -457,11 +546,10 @@ async fn google_drive_killed_worker_resumes_and_a_full_rescan_keeps_deletes_on_s
 }
 
 /// A file that cannot be exported is quarantined while the sync goes on, and
-/// a failed permission read keeps the last rights until the default validity
-/// deadline, then hides only this source until a read succeeds.
+/// a failed permission read leaves the last rights in place.
 #[tokio::test]
 #[ignore = "real CLI, fake Drive and local storage; scripts/ci"]
-async fn google_drive_quarantine_and_permission_read_failure_deadline_on_storage() {
+async fn google_drive_quarantine_and_permission_read_failure_keeps_rights_on_storage() {
     let drive = Drive::start();
     let place = json!({"drive":"drive-eng"});
     drive
@@ -481,7 +569,7 @@ async fn google_drive_quarantine_and_permission_read_failure_deadline_on_storage
         .await;
     drive.put("good", "fixture document 0", place.clone()).await;
     let oversized = "fixture document 1 ".repeat(4);
-    drive.put("big", &oversized, place.clone()).await;
+    drive.put_unindexed("big", &oversized, place.clone()).await;
     drive.put("refused", "fixture document 2", place).await;
     drive.server
         .call_async(
@@ -510,27 +598,18 @@ async fn google_drive_quarantine_and_permission_read_failure_deadline_on_storage
     );
     assert!(readable(&worker, "good"));
     // A quarantined edit keeps the last good revision.
-    drive.put("good", &oversized, json!({})).await;
+    drive.put_unindexed("good", &oversized, json!({})).await;
     drive.synced(&worker, &["--kind", "content"]);
     publish(&commit);
     let kept = fetch(&worker, "good")["structuredContent"]["documents"][0].clone();
-    assert_eq!(kept["records"][0]["text"], "fixture document 0");
+    assert_eq!(kept["records"][0]["text"], "good\n\nfixture document 0");
     assert_eq!(
         command(&commit, &["writer", "status"])["quarantine"]["document_invalid"],
         3
     );
 
     // The shared drive's members cannot be read: nothing is derived from the
-    // failed read, and the source's permission clock stands still.
-    let read_at = |head: ServingHead| {
-        head.freshness
-            .sources
-            .into_iter()
-            .find(|fresh| fresh.source_id == "drive")
-            .unwrap()
-            .permissions_read_at
-    };
-    let before = read_at(publication(&worker).await.0);
+    // failed read, and the last rights stand.
     drive.server
         .call_async(
             "fail",
@@ -539,68 +618,20 @@ async fn google_drive_quarantine_and_permission_read_failure_deadline_on_storage
         .await;
     drive.refused(&worker, &["--kind", "permissions"]);
     publish(&commit);
-    assert_eq!(read_at(publication(&worker).await.0), before);
     assert!(readable(&worker, "good"));
 
-    let loaded = fyrr_core::config::load(&worker).unwrap();
-    let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let search = || {
-        command(
-            &worker,
-            &["reader", "search", "fixture query", "--limit", "2"],
-        )
-    };
-    let sources = |search: &Value| {
-        search["hits"]
+    // A later successful read changes nothing visible, and the writer still
+    // reports when each source's permissions were last read.
+    drive.synced(&worker, &["--kind", "permissions"]);
+    publish(&commit);
+    assert!(readable(&worker, "good"));
+    let status = command(&commit, &["writer", "status"]);
+    assert!(
+        status["source_reads"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|hit| hit["source_id"].as_str().unwrap().to_owned())
-            .collect::<BTreeSet<_>>()
-    };
-    let drive_hits = || {
-        let result = Mcp::open(&worker).call(
-            "search",
-            json!({"query":"fixture query","sources":["drive"],"limit":5}),
-        );
-        assert!(!result["isError"].as_bool().unwrap_or(false), "{result}");
-        result["structuredContent"]["hits"]
-            .as_array()
-            .unwrap()
-            .len()
-    };
-    // The deadline is the default one hour: no `validity_deadline` is configured.
-    for (minutes, hidden) in [(59, false), (61, true)] {
-        let mut head = publication(&worker).await.0;
-        head.freshness
-            .sources
-            .iter_mut()
-            .find(|fresh| fresh.source_id == "drive")
-            .unwrap()
-            .permissions_read_at = fyrr_core::clock::now() - chrono::Duration::minutes(minutes);
-        write_head(store.as_ref(), &namespace, &head).await;
-        let found = search();
-        let expected = if hidden { json!(["drive"]) } else { json!([]) };
-        assert_eq!(
-            found["metadata"]["hidden_sources"], expected,
-            "{minutes} min"
-        );
-        assert!(
-            sources(&found).contains("allowed"),
-            "the namespace keeps serving"
-        );
-        assert!(
-            !hidden || !sources(&found).contains("drive"),
-            "{minutes} min"
-        );
-        assert_eq!(drive_hits(), usize::from(!hidden), "{minutes} min");
-        assert_eq!(readable(&worker, "good"), !hidden, "{minutes} min");
-    }
-
-    // A successful read restarts the clock.
-    drive.synced(&worker, &["--kind", "permissions"]);
-    publish(&commit);
-    assert!(read_at(publication(&worker).await.0) > before);
-    assert_eq!(search()["metadata"]["hidden_sources"], json!([]));
-    assert!(readable(&worker, "good"));
+            .any(|read| read["source_id"] == "drive" && read["kind"] == "permissions"),
+        "{status}"
+    );
 }

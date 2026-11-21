@@ -17,7 +17,7 @@ and pin are defined in [How fyrr works](architecture.md#terms).
 
 Every tool definition carries the MCP contract version in
 `_meta["fyrr/schema_version"]`; every successful response carries it in
-`metadata.schema_version` (currently `3.0`). Returned text is data, not instructions.
+`metadata.schema_version` (currently `4.0`). Returned text is data, not instructions.
 
 ## Transport
 
@@ -131,7 +131,7 @@ A failed tool call returns `isError: true` with a structured error
 | Code | Retryable | Meaning |
 | --- | --- | --- |
 | `invalid_argument` | no | Input outside the schema or its limits; never clamped. |
-| `authorization_unavailable` | yes | Policy or identity missing, expired or malformed, or the caller exceeds the per-user token limit. |
+| `authorization_unavailable` | yes | Policy or identity missing or malformed, or the caller exceeds the per-user token limit. |
 | `storage_unavailable` | yes | Storage could not be read. |
 | `incompatible_index` | no | The published index does not match this reader. |
 | `deadline_exceeded` | no | The request deadline passed. |
@@ -153,7 +153,6 @@ Every successful tool response carries `metadata`:
 | --- | --- |
 | `publication_id`, `content_version`, `committed_at` | The publication the request was pinned to. |
 | `degraded` | Lanes that did not contribute: `dense` (no query embedding), `rerank`; `lexical` is reserved. |
-| `hidden_sources` | Up to 64 source IDs hidden because their permission or membership freshness expired, among those with at least one row the caller could otherwise read. |
 | `stale_version` | The answer comes from an older version than the serving head the reader last read: a newer one is published and the reader has not switched to it yet. |
 | `omitted_bytes` | Bytes clipped from the response. |
 | `telemetry` | `cache` (`hot`, `warm`; `cold` is reserved), `queue_wait_ms`, per-stage microseconds in `stage_us`, S3 requests and bytes per stage, candidate counts, `unindexed_rows_scanned`, `filter_rows_scanned`, `routing_strategy`, `routing_fallback`, `rerank_us`. |

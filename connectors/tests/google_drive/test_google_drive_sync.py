@@ -252,3 +252,31 @@ def test_a_transient_ancestor_failure_during_the_listing_yields_no_complete_part
         for part in Index().run("reconcile", owners=[ALICE], folders=["in"]):
             parts.append(part)
     assert caught.value.transient and not any(part.complete or part.last for part in parts)
+
+
+def test_a_rename_republishes_the_file_with_its_new_name(drive: FakeDrive, index: Index) -> None:
+    _world(drive)
+    index.sync()
+    drive.touch("doc-plan", name="Quokka marshaller")
+    seen = index.sync()
+    assert seen["doc-plan"]["sections"][0]["text"] == "Quokka marshaller\n\nDraft."
+
+
+def test_a_long_name_is_indexed_whole_and_only_the_title_metadata_is_capped(
+    drive: FakeDrive, index: Index
+) -> None:
+    drive.put("doc-long", b"Body.", owner=ALICE, name="q" * 1500)
+    seen = index.sync()
+    assert seen["doc-long"]["sections"][0]["text"] == "q" * 1500 + "\n\nBody."
+    assert len(seen["doc-long"]["metadata"]["title"]) == 1024
+
+
+def test_a_name_that_pushes_a_file_over_the_limit_quarantines_it(
+    drive: FakeDrive, index: Index
+) -> None:
+    index.limits = {**index.limits, "document_max_bytes": 20}
+    drive.put("doc-fits", b"b" * 11, owner=ALICE, name="t" * 7)
+    drive.put("doc-over", b"b" * 11, owner=ALICE, name="t" * 8)
+    seen = index.sync()
+    assert seen["doc-fits"]["sections"][0]["text"] == "t" * 7 + "\n\n" + "b" * 11
+    assert seen["doc-over"]["sections"] == [{"text": "\0"}]

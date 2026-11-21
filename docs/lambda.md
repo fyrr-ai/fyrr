@@ -58,6 +58,10 @@ listen = "127.0.0.1:8081"
 public_url = "FUNCTION_URL"
 ```
 
+This file sets no `[identity.directory]`. The reader needs none: it has no
+clock and serves the last published directory until a newer publication
+replaces it, so the external writer's directory sync decides how fresh it is.
+
 ## Container and secret bootstrap
 
 Save this as `Dockerfile`. The matching full image supplies Python's standard

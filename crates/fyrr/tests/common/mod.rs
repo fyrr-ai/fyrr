@@ -93,6 +93,12 @@ impl Sentinels {
         marker
     }
 
+    /// Plants a value made elsewhere (a secret's tail, a hash computed from it)
+    /// as a marker of `category`.
+    pub fn plant(&mut self, value: &str, category: &str) {
+        self.planted.insert(value.to_owned(), category.to_owned());
+    }
+
     /// Every marker that appears in `text`, with its category.
     pub fn found_in(&self, text: &str) -> Vec<String> {
         self.planted

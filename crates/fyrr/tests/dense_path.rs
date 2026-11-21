@@ -4,6 +4,8 @@
 
 mod common;
 
+#[path = "dense_path/api_keys.rs"]
+mod api_keys;
 #[path = "dense_path/coordination.rs"]
 mod coordination;
 #[path = "dense_path/corrections.rs"]
@@ -459,61 +461,19 @@ async fn dense_path_and_namespace_contracts(backend: Backend) {
         fyrr_reader::storage::read_contract(store.as_ref(), &path.clone().join("head.json"))
             .await
             .expect("current head");
-    let original_head = write_contract(&head);
-    assert!(head.freshness.directory.is_none());
-    let directory_file = root.join("unread-directory.json");
-    let mut directory = identity::snapshot(&loaded.config, "snapshot");
-    directory.users.push(identity::user(
-        &loaded.config,
-        loaded.config.identity.stdio_user.as_deref().unwrap(),
-    ));
-    std::fs::write(&directory_file, write_contract(&directory)).unwrap();
-    let directory_checks = root.join("directory-required.toml");
-    std::fs::write(
-        &directory_checks,
-        format!(
-            "{config_text}\n[identity.directory]\nprovider='snapshot'\nsnapshot_file='{}'\n",
-            directory_file.display()
-        ),
-    )
-    .unwrap();
-    let unread = run(&directory_checks, &["reader", "check"]);
-    assert!(!unread.status.success());
-    assert!(String::from_utf8_lossy(&unread.stderr).contains("authorization_unavailable"));
-    let mut expired = head.clone();
-    expired.freshness.directory = Some(fyrr_core::clock::now() - chrono::Duration::days(2));
-    write_head(store.as_ref(), &path, &expired).await;
-    let static_result = success(&config, &["reader", "search", "fixture query"]);
-    assert!(!static_result["hits"].as_array().unwrap().is_empty());
-    let output = run(&directory_checks, &["reader", "search", "fixture query"]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("authorization_unavailable"));
-    store
-        .put(
-            &path.clone().join("head.json"),
-            original_head.clone().into(),
-        )
-        .await
-        .expect("restore own head");
     let identity_path = object_store::path::Path::from(format!("{path}/{}", head.identity.object));
     let identity: fyrr_core::identity::IdentityArtifact =
         fyrr_reader::storage::read_contract(store.as_ref(), &identity_path)
             .await
             .expect("identity");
-    let mut expired_identity = identity.clone();
-    expired_identity.built_at = fyrr_core::clock::now() + chrono::Duration::days(2);
-    let mut expired_head = head.clone();
-    expired_head.identity.digest = digest(&write_contract(&expired_identity));
+    let mut altered_identity = identity.clone();
+    altered_identity.generation += 1;
     store
-        .put(&identity_path, write_contract(&expired_identity).into())
+        .put(&identity_path, write_contract(&altered_identity).into())
         .await
-        .expect("expired identity injection");
+        .expect("altered identity injection");
     // A valid artifact with altered bytes must also fail closed in the writer.
     let output = run(&config, &["writer", "status"]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("authorization_unavailable"));
-    write_head(store.as_ref(), &path, &expired_head).await;
-    let output = run(&config, &["reader", "search", "fixture query"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("authorization_unavailable"));
     store
@@ -604,46 +564,6 @@ async fn dense_path_and_namespace_contracts(backend: Backend) {
         assert!(!line.contains("embedding_unavailable"));
     }
     success(&config, &["writer", "commit"]);
-    let head: ServingHead =
-        fyrr_reader::storage::read_contract(store.as_ref(), &path.clone().join("head.json"))
-            .await
-            .unwrap();
-    let mut expired = head.clone();
-    expired.freshness.directory = Some(fyrr_core::clock::now() - chrono::Duration::hours(2));
-    store
-        .put(
-            &path.clone().join("head.json"),
-            write_contract(&expired).into(),
-        )
-        .await
-        .unwrap();
-    writeln!(stdin, "{request}").unwrap();
-    line.clear();
-    stdout.read_line(&mut line).unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&line).unwrap()["result"]["isError"],
-        false,
-        "a disabled directory has no live freshness deadline"
-    );
-    let expired_directory = run(&directory_checks, &["reader", "search", "fixture query"]);
-    assert!(!expired_directory.status.success());
-    assert!(
-        String::from_utf8_lossy(&expired_directory.stderr).contains("authorization_unavailable")
-    );
-    // Static identity remains authorized; a commit cannot invent a directory read.
-    success(&config, &["writer", "commit"]);
-    let static_head: ServingHead =
-        fyrr_reader::storage::read_contract(store.as_ref(), &path.clone().join("head.json"))
-            .await
-            .unwrap();
-    assert!(static_head.freshness.directory.is_none());
-    writeln!(stdin, "{request}").unwrap();
-    line.clear();
-    stdout.read_line(&mut line).unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&line).unwrap()["result"]["isError"],
-        false
-    );
     // Valid policy-generation replacement is adopted by this live reader too.
     let mut head: ServingHead =
         fyrr_reader::storage::read_contract(store.as_ref(), &path.clone().join("head.json"))

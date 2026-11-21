@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verifies the prerequisites for building and testing fyrr and prepares the
 # pinned local tools (protoc into target/tools, the uv-managed Python and the
-# locked connectors venv that PyO3 links against, the RustFS image).
+# locked connectors venv that the tests run providers in, the RustFS image).
 # Idempotent; run it before the first work in a worktree.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT"
@@ -57,8 +57,7 @@ if uv python find "$python_version" >/dev/null 2>&1 || uv python install "$pytho
 else
   bad "uv cannot provide Python $python_version"
 fi
-# The full build's PyO3 links this venv's interpreter (.cargo/config.toml
-# PYO3_PYTHON); the CLI tests run providers in it (VIRTUAL_ENV).
+# The CLI tests run providers in this venv (VIRTUAL_ENV).
 if (cd connectors && uv sync --locked --quiet); then
   ok "connectors venv (uv.lock): connectors/.venv"
 else
