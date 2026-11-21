@@ -164,8 +164,11 @@ What the worker checks about what the host sends:
 - A malformed, oversized or out-of-order frame, a host that exits early and
   a host that hangs all end in fixed diagnostic codes, never Python
   exception text, and none carries a value the host chose except a version
-  built from numbers and a few fixed suffixes. A crash, hang or exhausted
-  memory limit of the host (`the provider failed`) fails only that source.
+  built from numbers and a few fixed suffixes and, in `fyrr config check`,
+  the name of a field a provider's schema requires when it is a plain
+  identifier. A crash or exhausted memory limit
+  of the host (`the provider failed`) and a hang (the worker's timeout)
+  fail only that source.
 
 When a host's conversation ends, the worker shuts its side of the socket
 down. The host then closes the provider's generator, so its `finally` blocks

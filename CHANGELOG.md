@@ -48,7 +48,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   - SDK 0.1.2 or newer is needed; 0.1.0 and 0.1.1 do not work.
   - A provider that aborts fails its source with `the provider failed`.
   - `PATH`, `VIRTUAL_ENV` and names starting with `PYTHON` or `LD_` are
-    reserved credential names; `fyrr config check` refuses them.
+    reserved names for stored credentials a source references;
+    `fyrr config check` refuses them.
   See [how a provider runs](docs/connectors/authoring.md#how-a-provider-runs).
 - **Revocation latency.** A request no longer reads the serving head from
   storage for its authorization checks. It checks its grants against the

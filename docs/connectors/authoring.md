@@ -254,8 +254,9 @@ what a provider author can observe:
   `lookup_revisions` and `next_revisions` answer while the generator runs
   towards its next `yield`; called from another thread that outlives that
   step, or after the generator has finished, they raise
-  `RuntimeError("host_callback_failed")`. Catching it and carrying on never
-  lets the run count as a complete read.
+  `RuntimeError("host_callback_failed")`. When the worker refuses a request
+  (more than 256 roots, a storage failure), catching the error and carrying
+  on never lets the run count as a complete read.
 - **Credentials are in `os.environ` before the SDK imports your provider**,
   set by the host from the stored credentials the source references, and
   never in its initial environment (`/proc/<pid>/environ`). Start-up code

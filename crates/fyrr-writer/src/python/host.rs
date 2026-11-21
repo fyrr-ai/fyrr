@@ -421,7 +421,10 @@ impl Host {
             }),
             // The host is gone before it spoke: its exit status says why.
             Err(Failure::Provider) => Err(self.exit_at_start()),
-            Ok(_) | Err(_) => Err(StartError::Failed),
+            Ok(_) | Err(_) => {
+                self.broken = true;
+                Err(StartError::Failed)
+            }
         }
     }
 
@@ -448,7 +451,10 @@ impl Host {
             .map_err(|_| StartError::Failed)?;
         match self.read_message() {
             Ok(Message::EnvironmentSet) => Ok(()),
-            _ => Err(StartError::Failed),
+            _ => {
+                self.broken = true;
+                Err(StartError::Failed)
+            }
         }
     }
 
