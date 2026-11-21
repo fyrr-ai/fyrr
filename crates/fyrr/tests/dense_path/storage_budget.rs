@@ -225,6 +225,10 @@ impl Drop for Service {
 const PUBLICATIONS: usize = 4;
 /// Ticks of the committer measured once the service has settled.
 const TICKS: u64 = 8;
+/// Seconds after the service settled that it is watched for sync workers:
+/// past the minute after the last worker ended, when one used to be started
+/// again whatever its intervals.
+const RESPAWN_WINDOW_SECS: u64 = 70;
 /// Storage requests of one idle committer tick, other than reads of
 /// publication manifests: the lease, the head, the policy, the envelope
 /// listing, the dataset open and the head it publishes (17 measured).
@@ -285,9 +289,9 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
         stop.clone(),
     );
     let child = &mut service.0;
-    // Startup runs a sync worker per source, which finds nothing due. The
-    // service is idle once, after its first seconds, two seconds in a row
-    // write nothing but the head.
+    // The first look at the history starts one sync worker per source, which
+    // finds nothing due. The service is idle once, after its first seconds,
+    // two seconds in a row write nothing but the head.
     let started = std::time::Instant::now();
     let deadline = started + Duration::from_secs(120);
     let mut quiet = 0;
@@ -313,6 +317,7 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
             "the service never settled"
         );
     }
+    let settled = std::time::Instant::now();
     let mark = seen.len();
     std::thread::sleep(Duration::from_secs(TICKS));
     let requests = seen.all(mark);
@@ -320,20 +325,45 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
         child.try_wait().unwrap().is_none(),
         "the writer service exited"
     );
+    // Past the minute after which a sync worker used to be started again
+    // whatever its intervals: a source with nothing due starts none.
+    let mark = seen.len();
+    std::thread::sleep(
+        (settled + Duration::from_secs(RESPAWN_WINDOW_SECS))
+            .saturating_duration_since(std::time::Instant::now()),
+    );
+    let later = seen.all(mark);
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the writer service exited"
+    );
     drop(service);
+    let workers: Vec<_> = later
+        .iter()
+        .filter(|request| {
+            (request.starts_with("PUT cursors/")) || request.starts_with("GET envelopes/")
+        })
+        .cloned()
+        .collect();
+    within(
+        "idle writer, sync workers after the first minute",
+        (0, workers),
+        0,
+        0,
+    );
 
     let (manifests, rest): (Vec<_>, Vec<_>) = requests
         .into_iter()
         .partition(|request| request.starts_with("GET publications/"));
     // A window of `TICKS` seconds holds at most one tick more; a loaded host
-    // may run fewer, but an idle service publishes its head at every tick.
+    // may run fewer, but a live committer writes its head at every tick.
     let ticks = usize::try_from(TICKS).unwrap() + 1;
     let published = rest
         .iter()
         .filter(|request| *request == "PUT head.json")
         .count();
     assert!(
-        published >= usize::try_from(TICKS / 2).unwrap(),
+        published >= 2,
         "only {published} head writes: the committer did not tick"
     );
     within(

@@ -59,6 +59,16 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   every configuration. `metadata.stale_version` is now set in every reader whenever
   the answer comes from an older version than the head the reader last
   read.
+- `writer serve` no longer starts a sync worker for a source whose cursors
+  say nothing is due. It used to start one per source at least once a
+  minute, which took the cursor lease, listed and read the retained
+  envelopes and walked the publication history before finding nothing to
+  do. The service now reads the source's cursors and starts the worker
+  when its first kind falls due. Once a minute it reads the head, and the
+  publications since its last look: a rejected envelope or a change of the
+  cursor rewinds makes every source due at once, as before. A kind whose
+  runs write no envelope, and so never advance its cursor, still starts a
+  worker every minute.
 - An idle `writer serve` no longer reads the whole publication history at
   every committer tick. The committer remembers the evidence of the
   publications it has read and reads only newer ones, and it lists and
