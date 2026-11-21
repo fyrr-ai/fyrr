@@ -75,9 +75,11 @@ key changes, project renames and moves keep their identity.
 - Each custom field listed in `scope.fields` that holds text becomes one
   `field` section labelled with its ID (for example `customfield_10042`), after the
   standard fields and before the comments, in the configured order. Rich
-  text, plain strings and numbers are rendered; other values (options,
-  lists, users, dates) and empty fields are skipped. A field's text has the
-  issue's audience, like the description. Find a field's ID in its URL in
+  text, plain strings (dates and URLs among them) and numbers are rendered;
+  other values (options, lists, users) and empty fields are skipped. A field's text has the
+  issue's audience, like the description, so list only fields every reader
+  of the issue may see (not, for example, the Development field, which Jira
+  shows only with the development-tools permission). Find a field's ID in its URL in
   Jira administration (**Issue fields**) or with `GET /rest/api/3/field`.
   Changing `scope.fields` makes the next content sync reread every issue; to
   apply it at once run `fyrr writer sync <source> --kind content --full`,
