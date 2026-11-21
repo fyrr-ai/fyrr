@@ -282,6 +282,7 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
     let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), seen.hook());
     let service = root.join("service.toml");
     std::fs::write(&service, text.replace(&endpoint, &observed)).unwrap();
+    let log = root.join("service.log");
     let mut service = Service(
         Command::new(crate::common::binary())
             .arg("--config")
@@ -292,7 +293,7 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("../../connectors/.venv"),
             )
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
             .spawn()
             .unwrap(),
         stop.clone(),
@@ -326,9 +327,16 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
             "the service never settled"
         );
     }
-    let mark = seen.len();
+    let published = || {
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .matches("writer_service event=published")
+            .count()
+    };
+    let (mark, before) = (seen.len(), published());
     std::thread::sleep(Duration::from_secs(TICKS));
     let requests = seen.all(mark);
+    let published = published() - before;
     assert!(
         child.try_wait().unwrap().is_none(),
         "the writer service exited"
@@ -339,15 +347,13 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
         .into_iter()
         .partition(|request| request.starts_with("GET publications/"));
     // A window of `TICKS` seconds holds at most one tick more; a loaded host
-    // may run fewer, but an idle service publishes its head at every tick.
+    // may run fewer, but an idle service publishes at every tick. Only the
+    // service's own events tell a tick from a failed commit: the lease writes
+    // the head too.
     let ticks = usize::try_from(TICKS).unwrap() + 1;
-    let published = rest
-        .iter()
-        .filter(|request| *request == "PUT head.json")
-        .count();
     assert!(
         published >= usize::try_from(TICKS / 2).unwrap(),
-        "only {published} head writes: the committer did not tick"
+        "only {published} publications: the committer did not tick"
     );
     within(
         "idle writer, manifest reads",
