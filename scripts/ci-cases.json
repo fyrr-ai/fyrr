@@ -23,6 +23,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/auth::time_tests::token_times_have_no_leeway": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/error::tests::every_reader_error_preserves_legacy_mcp_mapping": {
         "tier": "quick",
         "seconds": 0.0
