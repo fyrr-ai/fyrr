@@ -73,7 +73,10 @@ key changes, project renames and moves keep their identity.
   text starts with a line naming its author (`Ada Lovelace:`, `Ada Lovelace
   (customer):` for a service-desk customer, `unknown:` when Jira names
   none); the line has the comment's audience and counts toward
-  `document_max_bytes`. A display name is chosen by its owner.
+  `document_max_bytes`. The name is the one Jira shows the connector's
+  account, chosen by its owner: a person who shows their full name only to
+  their organization is named in full to every reader of the comment, as the
+  issue's `author` already is.
 - The issue key is the document attribute `jira.key`, exactly as Jira
   returns it. `search` with `attributes: [{"key": "jira.key", "values":
   ["PROJ-123"]}]` returns that issue if the caller may read it, also without

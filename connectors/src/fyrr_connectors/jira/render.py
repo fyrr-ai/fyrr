@@ -28,7 +28,8 @@ def date(value):
 def byline(comment):
     """`displayName:` for a comment, `displayName (customer):` for a service-desk customer."""
     author = comment.body.get("author")
-    name = text(author.get("displayName")) if isinstance(author, dict) else ""
+    # A display name is free text; it stays on the one line.
+    name = " ".join(text(author.get("displayName")).split()) if isinstance(author, dict) else ""
     if not name:
         return "unknown:"
     return f"{name} (customer):" if author.get("accountType") == "customer" else f"{name}:"
