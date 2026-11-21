@@ -72,7 +72,8 @@ export RUST_TEST_THREADS="${RUST_TEST_THREADS:-1}"
 unset FYRR_UPDATE_GOLDEN
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-LOGS="${FYRR_CI_LOG_DIR:-$ROOT/target/ci-logs/$STAMP}"
+# Test processes run from their crate directories and need absolute clock paths.
+LOGS="$(realpath -m -- "${FYRR_CI_LOG_DIR:-$ROOT/target/ci-logs/$STAMP}")"
 mkdir -p "$LOGS" "$ROOT/target/tmp"
 exec > >(tee "$LOGS/ci.log") 2>&1
 

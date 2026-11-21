@@ -87,6 +87,8 @@ provider, the quickstart on local storage, local-storage scenarios,
 and a small external-services set against owned RustFS and Keycloak fixtures.
 It keeps going after a failure and writes
 `target/ci-logs/<UTC stamp>/` with one log per step and `summary.txt`.
+Set `FYRR_CI_LOG_DIR` to choose a different directory. Relative paths are
+resolved from the checkout root.
 
 Build helpers use pinned mr-boxington (`mbx`) with rustup's Cargo first on
 `PATH`. Each test feature set is built once; cases execute preserved full
