@@ -427,20 +427,19 @@ pub async fn commit_until_stopped(
     Ok((receipt, true))
 }
 
+/// The receipt of the served publication; it fails as a commit does when the
+/// configuration no longer matches the namespace that publication built.
 async fn served_receipt(config: &Config, head: &ServingHead) -> Result<CommitReceipt> {
-    let Some(pointer) = &head.content else {
+    let (store, root) = namespace_store(config)?;
+    let Some(manifest) =
+        publication::previous_manifest(config, store.as_ref(), &root, head).await?
+    else {
         return Ok(CommitReceipt {
             lance_version: 0,
             publication_id: None,
             envelope_ids: Vec::new(),
         });
     };
-    let (store, root) = namespace_store(config)?;
-    let manifest: ContentManifest = fyrr_reader::storage::read_contract(
-        store.as_ref(),
-        &Path::from(format!("{root}/{}", pointer.manifest)),
-    )
-    .await?;
     Ok(CommitReceipt {
         lance_version: manifest.lance_version,
         publication_id: Some(manifest.publication_id),
