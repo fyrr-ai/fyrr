@@ -1178,6 +1178,9 @@ async fn identity_http_authentication_isolation_rate_limits_drain_and_refresh_on
         (json!({}), json!({"kid":"unknown"})),
         (json!({"sub":""}), json!({})),
         (json!({"exp":null}), json!({})),
+        (json!({"exp":"9999999999"}), json!({})),
+        (json!({"exp":-1}), json!({})),
+        (json!({"nbf":"x"}), json!({})),
     ] {
         let token = issuer.token("subject-0", claims, header);
         assert_eq!(

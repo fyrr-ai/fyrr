@@ -43,6 +43,7 @@ struct Claims {
     aud: Audience,
     sub: String,
     exp: i64,
+    nbf: Option<i64>,
     scope: String,
     typ: Option<String>,
 }
@@ -198,14 +199,19 @@ impl Authenticator {
         }
         let key = DecodingKey::from_jwk(key).map_err(|_| Unauthorized)?;
         let mut validation = Validation::new(Algorithm::RS256);
-        validation.leeway = 0;
-        validation.validate_nbf = true;
+        // The times are checked below on the clock every other expiry of the
+        // reader uses; the library would read the system clock.
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
         validation.set_issuer(&[self.oidc.issuer.as_str()]);
         validation.set_audience(&[self.oidc.audience.as_str()]);
         validation.set_required_spec_claims(&["exp", "sub", "iss", "aud"]);
         let claims = decode::<Claims>(token, &key, &validation)
             .map_err(|_| Unauthorized)?
             .claims;
+        if !times_valid(claims.exp, claims.nbf, fyrr_core::clock::now().timestamp()) {
+            return Err(Unauthorized);
+        }
         if claims.iss != self.oidc.issuer
             || !claims.aud.contains(&self.oidc.audience)
             || claims.sub.is_empty()
@@ -264,5 +270,23 @@ impl Authenticator {
             }
         }
         Ok(keys)
+    }
+}
+
+/// The token times at `now`, without leeway: valid up to and including
+/// `exp`, and from `nbf` on.
+fn times_valid(exp: i64, nbf: Option<i64>, now: i64) -> bool {
+    exp >= now && nbf.is_none_or(|nbf| nbf <= now)
+}
+
+#[cfg(test)]
+mod time_tests {
+    #[test]
+    fn token_times_have_no_leeway() {
+        let now = 1_000;
+        assert!(super::times_valid(now, None, now));
+        assert!(!super::times_valid(now - 1, None, now));
+        assert!(super::times_valid(now + 600, Some(now), now));
+        assert!(!super::times_valid(now + 600, Some(now + 1), now));
     }
 }
