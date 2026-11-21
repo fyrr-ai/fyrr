@@ -1598,7 +1598,7 @@
         "tier": "full",
         "seconds": 32.14
       },
-      "full:fyrr:test:dense_path/google_drive::google_drive_name_only_word_is_found_by_lexical_search_on_storage": {
+      "full:fyrr:test:dense_path/google_drive::google_drive_full_sync_indexes_the_name_of_a_file_published_without_it_on_storage": {
         "tier": "full",
         "seconds": 51.0
       },
@@ -1765,7 +1765,7 @@
         "tier": "full",
         "seconds": 96.859
       },
-      "full:fyrr:test:dense_path/notion::notion_title_only_word_is_found_by_lexical_search_on_storage": {
+      "full:fyrr:test:dense_path/notion::notion_full_sync_indexes_the_title_of_a_page_published_without_it_on_storage": {
         "tier": "full",
         "seconds": 114.0
       }
@@ -4266,10 +4266,6 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/notion/test_notion_render.py::test_a_missing_title_or_an_empty_body_changes_nothing": {
-        "tier": "quick",
-        "seconds": null
-      },
       "python:connectors/tests/notion/test_notion_render.py::test_the_title_counts_toward_the_limit_in_bytes": {
         "tier": "quick",
         "seconds": null
@@ -4286,11 +4282,7 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/google_drive/test_google_drive_export.py::test_a_missing_title_changes_nothing[None]": {
-        "tier": "quick",
-        "seconds": null
-      },
-      "python:connectors/tests/google_drive/test_google_drive_export.py::test_a_missing_title_changes_nothing[]": {
+      "python:connectors/tests/google_drive/test_google_drive_export.py::test_a_missing_title_changes_nothing": {
         "tier": "quick",
         "seconds": null
       },
@@ -4306,11 +4298,11 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/google_drive/test_google_drive_sync.py::test_the_file_name_is_indexed_for_docs_sheets_and_slides": {
+      "python:connectors/tests/google_drive/test_google_drive_sync.py::test_a_rename_republishes_the_file_with_its_new_name": {
         "tier": "quick",
         "seconds": null
       },
-      "python:connectors/tests/google_drive/test_google_drive_sync.py::test_a_rename_republishes_the_file_with_its_new_name": {
+      "python:connectors/tests/google_drive/test_google_drive_sync.py::test_a_long_name_is_indexed_whole_and_only_the_title_metadata_is_capped": {
         "tier": "quick",
         "seconds": null
       },

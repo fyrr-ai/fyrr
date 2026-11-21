@@ -226,11 +226,14 @@ def test_a_standalone_page_title_is_indexed_and_a_row_title_is_not_repeated(
     notion.page("quokka", "root", title="Quokka marshaller", blocks=[block("paragraph", "Body.")])
     notion.page("same", "root", title="Same", blocks=[block("paragraph", "Same")])
     notion.page("bare", "root", title="Bare title", blocks=[])
+    notion.page("long", "root", title="q" * 1500, blocks=[block("paragraph", "Body.")])
     notion.database("tasks", "root", title="Tasks")
     notion.row("task", "tasks", title="Row title", blocks=[block("paragraph", "Row body.")])
     changes = index.sync()
     assert text(changes["quokka"]) == "Quokka marshaller\n\nBody."
     assert changes["quokka"]["metadata"]["title"] == "Quokka marshaller"
+    assert text(changes["long"]) == "q" * 1500 + "\n\nBody."
+    assert len(changes["long"]["metadata"]["title"]) == 1024
     assert text(changes["same"]) == "Same"
     assert "bare" not in changes, "a page without text is not published"
     assert text(changes["task"]) == "Name: Row title\n---\nRow body."

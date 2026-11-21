@@ -90,7 +90,7 @@ def document(data: bytes, limit: int, title: str | None = None) -> list[Section]
         nonlocal title
         body = "\n".join(lines).strip()
         if body:
-            if title and body.partition("\n")[0].strip().lstrip("#").strip() != title:
+            if title and title not in (body.partition("\n")[0].strip(), label):
                 body = f"{title}\n\n{body}"
             title = None
             location = Location(kind="heading", label=label, index=len(sections))

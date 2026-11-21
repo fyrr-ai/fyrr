@@ -50,8 +50,9 @@ from .feeds import (
 )
 from .permissions import PERMISSION_FIELDS, principals, readers, revision
 
-#: Bumped when the exported text of an unchanged file would differ.
-EXPORT_FORMAT = "2"
+#: Bumped when the exported text of an unchanged file would differ; below 100,
+#: as it orders the republished file after its earlier export (`_order`).
+EXPORT_FORMAT = 2
 EXPORT_WORKERS = 8
 #: The worker's revision lookup takes at most this many documents.
 LOOKUP_ROWS = 256
@@ -80,6 +81,12 @@ def _revision(file: dict[str, Any]) -> str:
     parts = [EXPORT_FORMAT, file.get("modifiedTime"), file.get("name"), file.get("mimeType")]
     parts += file.get("parents") or []
     return hashlib.sha256(repr(parts).encode()).hexdigest()[:32]
+
+
+def _order(file: dict[str, Any]) -> int:
+    """Drive's version, then the export format: a file exported again by a newer
+    format is newer than the one published, though Drive did not change it."""
+    return int(file["version"]) * 100 + EXPORT_FORMAT
 
 
 def _instant(value: str | None) -> datetime | None:
@@ -176,7 +183,8 @@ class GoogleDrive(Connector[Settings, Scope]):
         export_type, parse, _, _ = FORMATS[file["mimeType"]]
         try:
             data = self._client.export(feed.subject, file["id"], export_type)
-            return parse(data, self.context.limits.document_max_bytes, clean(file.get("name", "")))
+            limit = self.context.limits.document_max_bytes
+            return parse(data, limit, clean(file.get("name", ""), limit))
         except Unexportable:
             return QUARANTINE
         except ApiError as error:
@@ -192,7 +200,7 @@ class GoogleDrive(Connector[Settings, Scope]):
         return Upsert(
             root_id=file["id"],
             source_revision=_revision(file),
-            revision_order=int(file["version"]),
+            revision_order=_order(file),
             metadata=Metadata(
                 source_uri=f"https://docs.google.com/{path}/d/{file['id']}/edit",
                 source_type=source_type,
@@ -210,9 +218,7 @@ class GoogleDrive(Connector[Settings, Scope]):
     @staticmethod
     def _delete(file: dict[str, Any], revision: str) -> Delete:
         # Its own revision, so a restored file never looks already published.
-        return Delete(
-            root_id=file["id"], source_revision=revision, revision_order=int(file["version"])
-        )
+        return Delete(root_id=file["id"], source_revision=revision, revision_order=_order(file))
 
     def _changes(
         self, feed: Feed, files: list[dict[str, Any]], pending: dict[str, Upsert | Delete]

@@ -2,7 +2,9 @@
 //! real delegated sign-in and the owned RustFS, against the fake Drive served
 //! over HTTP (`connectors/tests/google_drive/fake_drive.py`). Path S of
 //! docs/connectors/google-drive.md §6.
-use super::coordination::{command, committer_host, publication, worker_command, worker_sync};
+use super::coordination::{
+    command, committer_host, earlier_release, publication, worker_command, worker_sync,
+};
 use super::incremental::{envelopes, publish, roots, row_readers, source_rows};
 use super::tools::Mcp;
 use super::*;
@@ -349,11 +351,13 @@ async fn google_drive_sync_source_grants_and_revokes_in_every_lane_on_storage() 
     );
 }
 
-/// A word only in a file's name finds the file by full-text search alone: the
-/// query has no vector, so the dense lane is degraded.
+/// A word only in a file's name finds the file by full-text search alone (the
+/// query has no vector, so the dense lane is degraded), also when the file was
+/// published before names were indexed: a full sync republishes it with its
+/// name although the file did not change.
 #[tokio::test]
 #[ignore = "real CLI, fake Drive and local storage; scripts/ci"]
-async fn google_drive_name_only_word_is_found_by_lexical_search_on_storage() {
+async fn google_drive_full_sync_indexes_the_name_of_a_file_published_without_it_on_storage() {
     let drive = Drive::start();
     drive
         .server
@@ -366,23 +370,50 @@ async fn google_drive_name_only_word_is_found_by_lexical_search_on_storage() {
             json!({"owner":OWNER,"name":"Rename the quokka marshaller"}),
         )
         .await;
-    let (worker, commit, _root) = fixture(&drive, FIXED);
-    drive.synced(&worker, &["--kind", "content"]);
-    publish(&commit);
-    let result = Mcp::open(&worker).call(
-        "search",
-        json!({"sources":["drive"],"query":"quokka","limit":10,"output":"metadata"}),
+    let (worker, commit, root) = fixture(&drive, FIXED);
+    root.embedding.insert_both(
+        "fixture document 9",
+        root.embedding.vector("fixture document 9"),
     );
-    assert_eq!(result["isError"], false, "{result}");
-    let body = &result["structuredContent"];
-    assert_eq!(body["metadata"]["degraded"], json!(["dense"]));
-    let roots: Vec<_> = body["hits"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|hit| hit["root_id"].as_str().unwrap())
-        .collect();
-    assert_eq!(roots, ["plan"]);
+    let search = || {
+        let result = Mcp::open(&worker).call(
+            "search",
+            json!({"sources":["drive"],"query":"quokka","limit":10,"output":"metadata"}),
+        );
+        assert_eq!(result["isError"], false, "{result}");
+        let body = &result["structuredContent"];
+        assert_eq!(body["metadata"]["degraded"], json!(["dense"]));
+        body["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    // The release before: its export format and order, and no name in the text.
+    let before_names = earlier_release(
+        &worker,
+        r#"from fyrr_connectors.google_drive import connector
+connector.EXPORT_FORMAT = 1
+connector._order = lambda file: int(file["version"])
+for kind, (export, parse, source, path) in list(connector.FORMATS.items()):
+    connector.FORMATS[kind] = (export, lambda data, limit, name, parse=parse: parse(data, limit, None), source, path)
+"#,
+    );
+    let mut before = drive.sync_command(&worker);
+    before
+        .env("PYTHONPATH", before_names)
+        .args(["--kind", "content"]);
+    assert!(before.output().unwrap().status.success());
+    publish(&commit);
+    assert_eq!(published(&worker).await, ["plan"]);
+    assert!(search().is_empty(), "the name was not indexed yet");
+
+    drive.synced(&worker, &["--kind", "content", "--full"]);
+    publish(&commit);
+    assert_eq!(drive.exports("plan").await, 2);
+    assert_eq!(search(), ["plan"]);
 }
 
 /// The cursor moves only past acknowledged batches: a worker killed between

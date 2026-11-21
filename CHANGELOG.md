@@ -100,14 +100,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   full-text search. The title counts toward `document_max_bytes`: a page or
   file that was just under the limit is quarantined when it is read again
   and keeps its last good revision until the limit is raised.
-- This changes the revision of every Notion page and Drive file, but only
-  those edited since the last sync (Notion: down to one hour before its
-  watermark; Drive: reported by the changes feed) are read again. The rest
-  keep their old text until edited. `fyrr writer sync notion --kind content
-  --full` and `fyrr writer sync drive --kind content --full`, each followed
-  by a commit, republish all of them in one pass. See
-  [Notion documents](docs/connectors/notion.md#documents) and
-  [Google Drive documents](docs/connectors/google-drive.md#documents).
+- Existing pages and files get their title when next edited; `fyrr writer sync
+  <source> --kind content --full` followed by a commit republishes all.
 
 ### Security
 

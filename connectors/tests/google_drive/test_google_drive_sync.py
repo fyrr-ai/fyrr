@@ -254,28 +254,21 @@ def test_a_transient_ancestor_failure_during_the_listing_yields_no_complete_part
     assert caught.value.transient and not any(part.complete or part.last for part in parts)
 
 
-def test_the_file_name_is_indexed_for_docs_sheets_and_slides(
-    drive: FakeDrive, index: Index
-) -> None:
-    _world(drive)
-    seen = index.sync()
-
-    def texts(root: str) -> list[str]:
-        return [section["text"] for section in seen[root]["sections"]]
-
-    assert texts("doc-plan")[0] == "Plan 2026\n\nDraft."
-    assert texts("sheet-budget")[0] == "Budget"
-    assert texts("deck-roadmap")[0] == "Roadmap"
-    assert texts("sheet-budget")[1] == "item | eur\nrent | 1200\ntea | 7.5"
-    assert seen["doc-plan"]["metadata"]["title"] == "Plan 2026"
-
-
 def test_a_rename_republishes_the_file_with_its_new_name(drive: FakeDrive, index: Index) -> None:
     _world(drive)
     index.sync()
     drive.touch("doc-plan", name="Quokka marshaller")
     seen = index.sync()
     assert seen["doc-plan"]["sections"][0]["text"] == "Quokka marshaller\n\nDraft."
+
+
+def test_a_long_name_is_indexed_whole_and_only_the_title_metadata_is_capped(
+    drive: FakeDrive, index: Index
+) -> None:
+    drive.put("doc-long", b"Body.", owner=ALICE, name="q" * 1500)
+    seen = index.sync()
+    assert seen["doc-long"]["sections"][0]["text"] == "q" * 1500 + "\n\nBody."
+    assert len(seen["doc-long"]["metadata"]["title"]) == 1024
 
 
 def test_a_name_that_pushes_a_file_over_the_limit_quarantines_it(

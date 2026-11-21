@@ -157,13 +157,12 @@ class Notion(Connector[Settings, Scope]):
         current = known == revision
         if current and not descend:
             return None, []
-        text = None if current else Text(self.context.limits.document_max_bytes)
-        if text is not None:
-            if _parent_type(page) in _ROW_PARENTS:
-                # A row's properties open with its title.
-                text.properties(page.get("properties"))
-            else:
-                text.title(title(page))
+        limit = self.context.limits.document_max_bytes
+        row = _parent_type(page) in _ROW_PARENTS
+        text = None if current else Text(limit, None if row else title(page, limit))
+        if text is not None and row:
+            # A row's properties open with its title.
+            text.properties(page.get("properties"))
         try:
             children = self._tree.body(ref.id, text)
         except ApiError as error:

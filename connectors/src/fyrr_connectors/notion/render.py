@@ -55,12 +55,12 @@ def plain(rich_text: object) -> str:
     )
 
 
-def title(page: Mapping[str, Any]) -> str | None:
+def title(page: Mapping[str, Any], max_bytes: int = MAX_METADATA_VALUE_BYTES) -> str | None:
     properties = page.get("properties")
     if isinstance(properties, Mapping):
         for value in properties.values():
             if isinstance(value, Mapping) and value.get("type") == "title":
-                return clean(plain(value.get("title")))
+                return clean(plain(value.get("title")), max_bytes)
     return None
 
 
@@ -167,14 +167,15 @@ def _line(block: Mapping[str, Any], number: int) -> str:
 class Text:
     """One page's text, taken block by block and kept within `limit` bytes."""
 
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, title: str | None = None) -> None:
         self._left = limit
         self.oversized = False
         self.invalid = False
         self._sections: list[Section] = []
         self._label: str | None = None
-        #: The page's title until it has opened the first section.
-        self._title: str | None = None
+        #: A standalone page's title, searchable as the first line of its first
+        #: section; None once placed.
+        self._title = title
         #: Each line with how it joins the one before: 0 after a blank line,
         #: 1 directly after another list or table line, 2 directly (nested).
         self._lines: list[tuple[int, str]] = []
@@ -217,16 +218,13 @@ class Text:
 
     def _opening(self, body: str) -> str:
         """The first section's text with the title as its opening line, unless
-        that line already is the title. The title counts toward the limit."""
+        that line (or the heading that opens the section) already is the title.
+        The title counts toward the limit."""
         title, self._title = self._title, None
-        if not title or body.partition("\n")[0].strip().lstrip("#").strip() == title:
+        if not title or title in (body.partition("\n")[0].strip(), self._label):
             return body
         self._left -= len(title.encode()) + 2
         return f"{title}\n\n{body}"
-
-    def title(self, title: str | None) -> None:
-        """A standalone page's title, searchable as the first line of its first section."""
-        self._title = title
 
     def properties(self, properties: object) -> None:
         """A database row's properties, as the first section."""

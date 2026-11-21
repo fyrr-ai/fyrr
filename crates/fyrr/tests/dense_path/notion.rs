@@ -5,7 +5,7 @@
 //! Page texts are `fixture document N`. A standalone page is indexed as its
 //! title above that text, which the fixture's embedding service knows by the
 //! vector of the text itself. The source's `document_max_bytes` is 64 bytes.
-use super::coordination::{committer_host, worker_command, worker_sync};
+use super::coordination::{committer_host, earlier_release, worker_command, worker_sync};
 use super::incremental::{publish, source_roots};
 use super::*;
 
@@ -120,10 +120,12 @@ fn sorted(mut ids: Vec<String>) -> Vec<String> {
 }
 
 /// A word only in a standalone page's title finds the page by full-text
-/// search alone: the query has no vector, so the dense lane is degraded.
+/// search alone (the query has no vector, so the dense lane is degraded), also
+/// when the page was published before titles were indexed: a full sync
+/// republishes it with its title although the page did not change.
 #[tokio::test]
 #[ignore = "real CLI and local storage; scripts/ci"]
-async fn notion_title_only_word_is_found_by_lexical_search_on_storage() {
+async fn notion_full_sync_indexes_the_title_of_a_page_published_without_it_on_storage() {
     let fake = Fake::start();
     let (worker, commit, root) = fixture(&fake);
     let blocks = json!([{"kind": "paragraph", "text": "fixture document 9"}]);
@@ -132,26 +134,49 @@ async fn notion_title_only_word_is_found_by_lexical_search_on_storage() {
         json!({"name": "quokka", "parent": "root", "title": "Rename the quokka marshaller",
                "blocks": blocks}),
     );
-    root.embedding.insert_both(
-        "Rename the quokka marshaller\n\nfixture document 9",
-        root.embedding.vector("fixture document 9"),
+    let vector = root.embedding.vector("fixture document 9");
+    root.embedding
+        .insert_both("fixture document 9", vector.clone());
+    root.embedding
+        .insert_both("Rename the quokka marshaller\n\nfixture document 9", vector);
+    let search = || {
+        let result = super::tools::Mcp::open(&worker).call(
+            "search",
+            json!({"sources": ["notion"], "query": "quokka", "limit": 10, "output": "metadata"}),
+        );
+        assert_eq!(result["isError"], false, "{result}");
+        let body = &result["structuredContent"];
+        assert_eq!(body["metadata"]["degraded"], json!(["dense"]));
+        body["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    // The release before: its render format, and no title in the text.
+    let before_titles = earlier_release(
+        &worker,
+        r#"from fyrr_connectors.notion import connector
+connector.RENDER_FORMAT = "2"
+text = connector.Text
+connector.Text = lambda limit, title=None: text(limit)
+"#,
     );
-    synced(&worker, &fake, &["--kind", "content"]);
+    let mut before = worker_command(&worker);
+    before
+        .env("FYRR_TEST_NOTION_TOKEN", &fake.token)
+        .env("PYTHONPATH", before_titles)
+        .args(["writer", "sync", "notion", "--kind", "content"]);
+    assert!(before.output().unwrap().status.success());
     publish(&commit);
-    let result = super::tools::Mcp::open(&worker).call(
-        "search",
-        json!({"sources": ["notion"], "query": "quokka", "limit": 10, "output": "metadata"}),
-    );
-    assert_eq!(result["isError"], false, "{result}");
-    let body = &result["structuredContent"];
-    assert_eq!(body["metadata"]["degraded"], json!(["dense"]));
-    let roots: Vec<_> = body["hits"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|hit| hit["root_id"].as_str().unwrap())
-        .collect();
-    assert_eq!(roots, [page.as_str().unwrap()]);
+    assert!(search().is_empty(), "the title was not indexed yet");
+
+    synced(&worker, &fake, &["--kind", "content", "--full"]);
+    publish(&commit);
+    assert_eq!(fake.reads(page.as_str().unwrap()), 2);
+    assert_eq!(search(), [page.as_str().unwrap()]);
 }
 
 #[tokio::test]

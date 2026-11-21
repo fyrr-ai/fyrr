@@ -13,8 +13,8 @@
         {
           "op": "upsert",
           "root_id": "doc-plan",
-          "source_revision": "6f63ec09325452d33d6a48f91e3fe39e",
-          "revision_order": 1,
+          "source_revision": "3dd070a0cc5bb09b226063082b014a95",
+          "revision_order": 102,
           "readers": [
             "grp:staff"
           ],
@@ -62,8 +62,8 @@
         {
           "op": "upsert",
           "root_id": "sheet-budget",
-          "source_revision": "a97bdc7aebee3f48c40251edecc71528",
-          "revision_order": 1,
+          "source_revision": "495333af0f8f1b400dfb27ba07a334eb",
+          "revision_order": 102,
           "readers": [
             "grp:staff"
           ],
@@ -110,8 +110,8 @@
         {
           "op": "upsert",
           "root_id": "deck-roadmap",
-          "source_revision": "77c36da559026dd7dae55fe52d22462f",
-          "revision_order": 1,
+          "source_revision": "767d29626111f0e17c4dcc98005c6900",
+          "revision_order": 102,
           "readers": [
             "grp:staff"
           ],

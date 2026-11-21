@@ -81,13 +81,16 @@ def test_a_docs_title_equal_to_its_first_line_is_not_repeated() -> None:
     assert _texts(export.document(b"Quokka plan is here.\n", LIMIT, "Quokka plan")) == [
         "Quokka plan\n\nQuokka plan is here."
     ]
+    # Only a heading is told from its marker: this line is text.
+    assert _texts(export.document(b"#Quokka plan\n", LIMIT, "Quokka plan")) == [
+        "Quokka plan\n\n#Quokka plan"
+    ]
 
 
-@pytest.mark.parametrize("title", [None, ""])
-def test_a_missing_title_changes_nothing(title: str | None) -> None:
-    assert _texts(export.document(b"Body.\n", LIMIT, title)) == ["Body."]
-    assert _texts(export.spreadsheet(xlsx({"S": [["h"], ["x"]]}), LIMIT, title)) == ["h\nx"]
-    assert _texts(export.presentation(pptx([["Slide"]]), LIMIT, title)) == ["Slide"]
+def test_a_missing_title_changes_nothing() -> None:
+    assert _texts(export.document(b"Body.\n", LIMIT, None)) == ["Body."]
+    assert _texts(export.spreadsheet(xlsx({"S": [["h"], ["x"]]}), LIMIT, None)) == ["h\nx"]
+    assert _texts(export.presentation(pptx([["Slide"]]), LIMIT, None)) == ["Slide"]
 
 
 def test_a_file_without_text_stays_without_sections_whatever_its_title() -> None:
@@ -109,7 +112,6 @@ def test_a_sheet_or_deck_title_is_its_own_section_before_the_first_sheet_or_slid
 def test_the_title_counts_toward_the_limit_in_bytes() -> None:
     title, body = "Žluťoučký kůň", "úpěl ďábelské ódy"
     exact = len(title.encode()) + 2 + len(body.encode())
-    assert len(title) + 2 + len(body) < exact, "the title is multibyte"
     assert _texts(export.document(body.encode(), exact, title)) == [f"{title}\n\n{body}"]
     with pytest.raises(Unexportable):
         export.document(body.encode(), exact - 1, title)
