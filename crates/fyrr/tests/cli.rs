@@ -256,6 +256,39 @@ fn writer_sync_rejects_dry_run_with_due_before_loading_config() {
 
 #[cfg(feature = "writer")]
 #[test]
+fn writer_directory_sync_rejects_connector_only_options() {
+    let missing = config_arg(&Path::new(env!("CARGO_TARGET_TMPDIR")).join("does-not-exist.toml"));
+    for flags in [&["--full"][..], &["--jobs", "2"], &["--jobs", "4"]] {
+        let mut command = vec!["--config", &missing, "writer", "sync", "--directory"];
+        command.extend_from_slice(flags);
+        let output = fyrr(&command, false);
+        let (stdout, stderr) = text(&output);
+        assert_eq!(output.status.code(), Some(2), "{flags:?}: {stderr}");
+        assert!(stdout.is_empty(), "{flags:?}: {stdout}");
+        assert!(
+            stderr.contains("cannot be used with"),
+            "{flags:?}: {stderr}"
+        );
+    }
+
+    let output = fyrr(
+        &[
+            "--config",
+            &missing,
+            "writer",
+            "sync",
+            "--directory",
+            "--timeout",
+            "5s",
+        ],
+        false,
+    );
+    let (_, stderr) = text(&output);
+    assert_eq!(output.status.code(), Some(EXIT_CONFIG), "{stderr}");
+}
+
+#[cfg(feature = "writer")]
+#[test]
 fn writer_service_requires_configuration() {
     let output = fyrr(&["writer", "serve"], false);
     let (_, stderr) = text(&output);

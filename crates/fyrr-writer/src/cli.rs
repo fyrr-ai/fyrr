@@ -19,7 +19,7 @@ pub enum WriterCommand {
     /// Sync all configured sources, or the named ones, into prepared envelopes.
     Sync {
         /// Pull the configured canonical directory instead of connector sources.
-        #[arg(long, conflicts_with_all = ["sources", "kinds", "dry_run", "due"])]
+        #[arg(long, conflicts_with_all = ["sources", "kinds", "full", "dry_run", "due", "jobs"])]
         directory: bool,
         /// Source IDs; all configured sources when omitted.
         sources: Vec<String>,

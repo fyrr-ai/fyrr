@@ -1328,6 +1328,10 @@
         "tier": "quick",
         "seconds": 0.03
       },
+      "full:fyrr:test:cli/writer_directory_sync_rejects_connector_only_options": {
+        "tier": "quick",
+        "seconds": 0.03
+      },
       "full:fyrr:test:cli/providers::python_runs_only_under_a_worker_and_a_host_that_cannot_start_is_named": {
         "tier": "quick",
         "seconds": 10.0
