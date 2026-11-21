@@ -1,13 +1,12 @@
 [project]
 name = "fyrr-connectors"
-version = "0.1.1"
+version = "0.1.2"
 description = "fyrr connector SDK and bundled connector providers"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = "==3.13.*"
-# The SDK hands document batches to the Rust worker as Arrow;
-# pyarrow 17 is the supported minimum for the Arrow PyCapsule interface.
+requires-python = ">=3.13"
+# The SDK hands document batches to the Rust worker as Arrow IPC streams.
 dependencies = ["pyarrow>=17,<100"]
 
 [project.optional-dependencies]

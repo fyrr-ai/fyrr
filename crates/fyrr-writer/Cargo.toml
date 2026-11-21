@@ -9,13 +9,14 @@ license.workspace = true
 
 [dependencies]
 arrow-array.workspace = true
-arrow-pyarrow.workspace = true
+arrow-buffer.workspace = true
+arrow-data.workspace = true
+arrow-ipc.workspace = true
 arrow-schema.workspace = true
 chrono.workspace = true
 clap.workspace = true
 fyrr-core.workspace = true
 jsonschema.workspace = true
-pyo3.workspace = true
 regex.workspace = true
 rustix.workspace = true
 rusqlite.workspace = true
@@ -39,11 +40,7 @@ ring.workspace = true
 fyrr-core = { workspace = true, features = ["test-clock"] }
 syn = { version = "=3.0.6", features = ["full", "visit"] }
 proc-macro2 = "1"
-arrow-buffer.workspace = true
 async-trait.workspace = true
-
-[build-dependencies]
-pyo3-build-config.workspace = true
 
 [lints]
 workspace = true

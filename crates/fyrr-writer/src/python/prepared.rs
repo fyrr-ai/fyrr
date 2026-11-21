@@ -1,9 +1,11 @@
 //! Source preparation under the cursor lease.
-use super::driver::{ErrMap, RowPolicy, drive_provider};
+use super::driver::{ErrMap, Request, RowPolicy, drive_provider};
+use super::host::Host;
 use super::*;
 use crate::batch::KindStats;
 use crate::embedding::WriterEmbedding;
 use arrow_array::RecordBatch;
+use callbacks::RevisionCallbacks;
 use futures::StreamExt;
 use fyrr_core::connector::{ConnectorBatch, CursorState};
 use fyrr_core::envelope::{
@@ -11,8 +13,9 @@ use fyrr_core::envelope::{
 };
 use fyrr_core::publication::ServingHead;
 use object_store::{ObjectStore, path::Path};
-use pyo3::{exceptions::PyRuntimeError, types::PyCFunction};
-use revisions::{PendingRevisions, RevisionView, lookup_revisions, revision_views, source_counts};
+use revisions::{
+    PendingRevisions, RevisionStream, RevisionView, lookup_revisions, revision_views, source_counts,
+};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -28,9 +31,10 @@ struct Preparation<'a> {
     kind: SyncKind,
     rt: &'a std::sync::Arc<tokio::runtime::Runtime>,
     lease: &'a std::sync::Arc<crate::sync_lease::CursorLease>,
+    credentials: &'a Credentials,
 }
 
-#[allow(clippy::print_stdout)]
+#[allow(clippy::print_stdout, clippy::too_many_arguments)]
 pub(super) fn prepared_kind(
     loaded: &fyrr_core::config::LoadedConfig,
     source_id: &str,
@@ -39,6 +43,7 @@ pub(super) fn prepared_kind(
     due: bool,
     permission_stream: bool,
     evidence: &mut CommandEvidence,
+    credentials: &Credentials,
 ) -> Result<serde_json::Value> {
     let config = loaded.config.clone();
     let source = config
@@ -61,6 +66,7 @@ pub(super) fn prepared_kind(
             kind,
             rt: &rt,
             lease,
+            credentials,
         };
         let head = rt
             .block_on(fyrr_reader::storage::optional_head(&config))?
@@ -122,7 +128,7 @@ pub(super) fn prepared_kind(
             RevisionView {
                 dataset: &dataset,
                 pending: revisions,
-                revisions: Arc::new(Mutex::new(revision_batches)),
+                revisions: revision_batches,
                 failure: &callback_failure,
             },
             &mut embedding,
@@ -184,111 +190,109 @@ impl Preparation<'_> {
         };
         let revisions = view.pending.clone();
         let callback_failure = view.failure;
-        let outcome = with_runtime_error::<_, WriterError>(
-            |py, runtime| {
-                let callbacks = self.callbacks(py, view)?;
-                let limits = crate::batch::Limits::for_source(self.config, self.source);
-                let source_json = crate::sync::source_json(self.source, limits);
-                let mut checker =
-                    BatchChecker::new(&self.source.id, self.kind, limits, state.cursor.clone());
-                let mut generator = drive_provider(
-                    runtime,
-                    (
-                        &mut checker,
-                        (
-                            source_json,
-                            self.kind.as_str(),
-                            state.cursor.clone(),
-                            callbacks,
-                        ),
-                    ),
-                    policy,
-                    errors,
-                    |header, rows, stats| {
-                        let batch: ConnectorBatch = fyrr_core::parse_contract(header.as_bytes())
-                            .map_err(|_| WriterError::BatchInvalid)?;
-                        if let Some((cache, budget)) = &mut content {
-                            let rows = rows.ok_or(WriterError::BatchInvalid)?;
-                            self.prepare_batch(
-                                &batch,
-                                rows,
-                                stats,
-                                state,
-                                base,
-                                dataset,
-                                &revisions,
-                                cache,
-                                permission_stream,
-                                budget,
-                            )
-                        } else {
-                            self.rt.block_on(crate::prepare::non_content(
-                                self.config,
-                                &self.source.id,
-                                &batch,
-                                state,
-                                self.lease,
-                                base.clone(),
-                                false,
-                            ))
-                        }
+        let outcome = (|| -> Result<KindStats> {
+            let mut host =
+                Host::start(self.credentials).map_err(|_| WriterError::ProviderFailure)?;
+            let mut callbacks = RevisionCallbacks::new(self.config, self.rt, view);
+            let limits = crate::batch::Limits::for_source(self.config, self.source);
+            let source_json = crate::sync::source_json(self.source, limits);
+            let mut checker =
+                BatchChecker::new(&self.source.id, self.kind, limits, state.cursor.clone());
+            let cursor = state.cursor.clone();
+            let request = Request {
+                source_json: &source_json,
+                kind: self.kind,
+                cursor: cursor.as_deref(),
+            };
+            drive_provider(
+                &mut host,
+                &request,
+                Some(&mut callbacks),
+                &mut checker,
+                policy,
+                errors,
+                |header, rows, stats| {
+                    let batch: ConnectorBatch = fyrr_core::parse_contract(header.as_bytes())
+                        .map_err(|_| WriterError::BatchInvalid)?;
+                    if let Some((cache, budget)) = &mut content {
+                        let rows = rows.ok_or(WriterError::BatchInvalid)?;
+                        self.prepare_batch(
+                            &batch,
+                            rows,
+                            stats,
+                            state,
+                            base,
+                            dataset,
+                            &revisions,
+                            cache,
+                            permission_stream,
+                            budget,
+                        )
+                    } else {
+                        self.rt.block_on(crate::prepare::non_content(
+                            self.config,
+                            &self.source.id,
+                            &batch,
+                            state,
+                            self.lease,
+                            base.clone(),
+                            false,
+                        ))
+                    }
+                },
+            )?;
+            // A caught callback failure still forbids a complete-read attestation.
+            if let Some(code) = *callback_failure
+                .lock()
+                .map_err(|_| WriterError::RevisionViewInvalid)?
+            {
+                return Err(code);
+            }
+            if self.kind == SyncKind::Members
+                && ((checker.stats.batches > 0 && !checker.stats.members_complete)
+                    || (checker.stats.batches == 0
+                        && pending.members_tail.is_some_and(|(_, last)| !last)))
+            {
+                return Err(WriterError::MembershipSnapshotIncomplete);
+            }
+            if self.kind == SyncKind::Permissions || self.kind == SyncKind::Members {
+                let batch = ConnectorBatch {
+                    schema_version: fyrr_core::connector::CONNECTOR_CONTRACT_VERSION,
+                    source_id: self.source.id.clone(),
+                    kind: self.kind,
+                    cursor: fyrr_core::connector::CursorStep {
+                        start: state.cursor.clone(),
+                        end: state.cursor.clone().unwrap_or_else(|| "attestation".into()),
                     },
-                )?;
-                // A caught callback failure still forbids a complete-read attestation.
-                if let Some(code) = *callback_failure
-                    .lock()
-                    .map_err(|_| WriterError::RevisionViewInvalid)?
-                {
-                    return Err(code);
-                }
-                if self.kind == SyncKind::Members
-                    && ((checker.stats.batches > 0 && !checker.stats.members_complete)
-                        || (checker.stats.batches == 0
-                            && pending.members_tail.is_some_and(|(_, last)| !last)))
-                {
-                    return Err(WriterError::MembershipSnapshotIncomplete);
-                }
-                if self.kind == SyncKind::Permissions || self.kind == SyncKind::Members {
-                    let batch = ConnectorBatch {
-                        schema_version: fyrr_core::connector::CONNECTOR_CONTRACT_VERSION,
-                        source_id: self.source.id.clone(),
-                        kind: self.kind,
-                        cursor: fyrr_core::connector::CursorStep {
-                            start: state.cursor.clone(),
-                            end: state.cursor.clone().unwrap_or_else(|| "attestation".into()),
-                        },
-                        body: if self.kind == SyncKind::Permissions {
-                            fyrr_core::connector::BatchBody::PermissionChanges {
-                                documents: Vec::new(),
-                                container_grants: Vec::new(),
-                            }
-                        } else {
-                            fyrr_core::connector::BatchBody::PrincipalSnapshot(
-                                fyrr_core::connector::PrincipalSnapshotPart {
-                                    snapshot_id: format!("attest-{}", state.sequence),
-                                    part: 0,
-                                    last: false,
-                                    users: Vec::new(),
-                                    groups: Vec::new(),
-                                },
-                            )
-                        },
-                    };
-                    self.rt.block_on(crate::prepare::non_content(
-                        self.config,
-                        &self.source.id,
-                        &batch,
-                        state,
-                        self.lease,
-                        base.clone(),
-                        true,
-                    ))?;
-                }
-                generator.finish();
-                Ok(checker.stats)
-            },
-            WriterError::from_provider,
-        );
+                    body: if self.kind == SyncKind::Permissions {
+                        fyrr_core::connector::BatchBody::PermissionChanges {
+                            documents: Vec::new(),
+                            container_grants: Vec::new(),
+                        }
+                    } else {
+                        fyrr_core::connector::BatchBody::PrincipalSnapshot(
+                            fyrr_core::connector::PrincipalSnapshotPart {
+                                snapshot_id: format!("attest-{}", state.sequence),
+                                part: 0,
+                                last: false,
+                                users: Vec::new(),
+                                groups: Vec::new(),
+                            },
+                        )
+                    },
+                };
+                self.rt.block_on(crate::prepare::non_content(
+                    self.config,
+                    &self.source.id,
+                    &batch,
+                    state,
+                    self.lease,
+                    base.clone(),
+                    true,
+                ))?;
+            }
+            Ok(checker.stats)
+        })();
         if let Some(code) = *callback_failure
             .lock()
             .map_err(|_| WriterError::RevisionViewInvalid)?

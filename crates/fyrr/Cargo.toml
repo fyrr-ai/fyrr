@@ -10,8 +10,8 @@ license.workspace = true
 [features]
 default = ["writer"]
 # The full build. The reader-only build (`--no-default-features`) must not link
-# fyrr-writer, Python or PyO3; scripts/check-reader-only proves it.
-writer = ["dep:fyrr-writer", "dep:pyo3-build-config"]
+# fyrr-writer; scripts/check-reader-only proves it.
+writer = ["dep:fyrr-writer"]
 
 [dependencies]
 clap.workspace = true
@@ -19,9 +19,6 @@ fyrr-core.workspace = true
 fyrr-reader.workspace = true
 fyrr-writer = { workspace = true, optional = true }
 serde_json.workspace = true
-
-[build-dependencies]
-pyo3-build-config = { workspace = true, optional = true }
 
 [dev-dependencies]
 fyrr-core = { workspace = true, features = ["test-clock"] }

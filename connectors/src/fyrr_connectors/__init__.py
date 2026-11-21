@@ -5,7 +5,8 @@ the `fyrr.connectors` entry point group; the callable returns
 `provider_info(...)` for a `Connector` subclass. fyrr's full build discovers
 installed providers, validates their metadata against the published provider
 schema, refuses another SDK series, and runs one sync kind of one source per
-worker process, receiving content as Arrow through the C Data Interface.
+worker process, in the Python provider host (`fyrr_connectors.host`) that the
+worker starts, receiving content as Arrow IPC streams.
 
 The SDK is semantically versioned (`SDK_VERSION`): its series (`SDK_SERIES`,
 `0.y` for `0.y.z`, `x` for `x.y.z`) is the compatibility promise.

@@ -129,7 +129,6 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
         ("restore_authorization_changed", false),
         ("restore_commit_failed", false),
         ("restore_horizon_expired", false),
-        ("revision_page_invalid", false),
         ("transaction_invalid", false),
         ("verification_failed", false),
         ("version_cleanup_failed", false),

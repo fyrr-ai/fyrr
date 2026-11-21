@@ -69,7 +69,7 @@ Pin `concurrency = 2` to retain the previous request and queue limits.
 | `envelope_max_bytes` | `256MiB` | Must exceed every document size limit. |
 | `threads` | absent | At least 1. Bounds the CPU threads of each writer process: its async runtime, [Lance](architecture.md#terms)'s compute runtime, the parallel-iterator pool used by vector index builds, and the full-text build (`threads / 2` workers, at least 1, each holding up to 2 GiB while building). Absent uses every CPU. `fyrr writer sync` and `serve` run up to `--jobs` provider workers, each with the same bound. On a small host start with half its cores, for example `threads = 2` on 4 CPUs and 8 GiB. |
 | `fts_partition_memory_mb` | absent (2048, Lance's default) | 1–1048576 MiB of full-text builder memory per worker at which the build closes a partition, and to which an index merge repacks. Smaller values build a full-text index of several [partitions](tuning.md#full-text-partitions) that `reader.fts_search_chunk` lets one query score concurrently; scores do not change. Not part of the publication's identity: a changed value applies to the next full-text build or merge. Each partition adds a token dictionary and document table to the index. |
-| `worker_memory_max_bytes` | `2GiB` | Committed-memory ceiling of one [provider](architecture.md#terms) worker (`RLIMIT_DATA`). |
+| `worker_memory_max_bytes` | `2GiB` | Committed-memory ceiling (`RLIMIT_DATA`) of one [provider](architecture.md#terms) worker and, separately, of the Python host that worker starts: each process may commit this much, so a worker with its host may use up to twice it. |
 | `credentials` | `{}` | Maps a provider's environment reference to a stored credential name (`fyrr writer credential`). |
 
 ### `[writer.commit]`
