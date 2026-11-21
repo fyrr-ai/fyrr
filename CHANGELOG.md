@@ -59,7 +59,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 ### Changed
 
 - To use connectors, install this release's `fyrr-connectors`
-  wheel with your provider extras in a Python 3.13+ virtual environment. Set
+  wheel with your provider extras in a Python 3.11+ virtual environment (tested
+  on 3.11, 3.12, 3.13 and 3.14). Set
   `VIRTUAL_ENV` to its absolute path and run `fyrr writer providers` to verify
   the installation. The full image includes the SDK and bundled providers.
   Commands that run no connector need no Python. Each sync kind runs in a

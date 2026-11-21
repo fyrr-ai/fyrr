@@ -43,9 +43,10 @@ To run the bundled providers from a development build, point the writer at
 the venv: `VIRTUAL_ENV=$PWD/connectors/.venv target/debug/fyrr writer
 providers` (the full tests set it themselves). The Python SDK has its own
 tests: `cd connectors && uv sync --locked --all-extras && uv run pytest`. It
-supports Python 3.13 and later; to try another interpreter without touching
-`connectors/.venv`, give `uv` its own environment, for example
-`UV_PROJECT_ENVIRONMENT=/tmp/venv314 uv run --python 3.14 --all-extras pytest`.
+supports Python 3.11 or newer (tested on 3.11, 3.12, 3.13 and 3.14); to try
+another interpreter without touching `connectors/.venv`, give `uv` its own
+environment, for example
+`UV_PROJECT_ENVIRONMENT=/tmp/venv311 uv run --python 3.11 --all-extras pytest`.
 
 `cd connectors && uv run --locked --all-extras mypy` checks the SDK, bundled
 providers and example provider. Bodies are checked with partial signature
