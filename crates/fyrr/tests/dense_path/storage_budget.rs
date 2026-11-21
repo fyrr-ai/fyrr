@@ -57,7 +57,7 @@ impl Seen {
         let (heads, others): (Vec<_>, Vec<_>) = seen[from..]
             .iter()
             .cloned()
-            .partition(|request| request.ends_with(" head.json"));
+            .partition(|request| *request == "GET head.json");
         (heads.len(), others)
     }
     /// Waits until only the version check still reads, for two quiet
@@ -127,14 +127,14 @@ const WARM_DELAY_SECS: u64 = 30;
 /// warms the generation: each control artifact, index file and data file
 /// once. They grow with the files of a publication. Raise a budget only on
 /// purpose: every request is paid for on an object store.
-// shortcut: a data file is read twice when a search reaches it in pages
-// before warming downloads it whole (open 28 or 29, switch 26 or 27); lower
-// both budgets by one once small data files are downloaded whole on their
-// first read.
-const OPEN_BUDGET: usize = 29;
+// shortcut: a data file is read twice or three times when searches reach it
+// in pages before warming downloads it whole (open 28 to 30 on a loaded host,
+// switch 26 to 28); lower both budgets once small data files are downloaded
+// whole on their first read.
+const OPEN_BUDGET: usize = 30;
 /// The same for switching to a publication that adds one document, warming
 /// of the new generation included.
-const SWITCH_BUDGET: usize = 27;
+const SWITCH_BUDGET: usize = 28;
 
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
@@ -166,7 +166,15 @@ async fn a_running_reader_stays_within_its_storage_request_budget() {
     let first = served(&mut client).unwrap().0;
     seen.settle();
     let allowed = head_reads_allowed(started.elapsed(), 1);
-    within("open", seen.since(0), OPEN_BUDGET, allowed);
+    // The budgets are upper bounds: a detached observer would pass them.
+    let opened = seen.since(0);
+    assert!(
+        opened.0 >= 1 && !opened.1.is_empty(),
+        "the observer saw {} head reads and {} other requests while the reader opened",
+        opened.0,
+        opened.1.len()
+    );
+    within("open", opened, OPEN_BUDGET, allowed);
 
     // A warm reader: searches cost nothing, an idle reader only checks.
     let (mark, started) = (seen.len(), std::time::Instant::now());
@@ -182,8 +190,13 @@ async fn a_running_reader_stays_within_its_storage_request_budget() {
     let (mark, started) = (seen.len(), std::time::Instant::now());
     sync_texts(&config, &root, &[("kept.txt", KEPT), ("extra.txt", EXTRA)]);
     success(&config, &["writer", "commit"]);
+    let second = super::coordination::publication(&config)
+        .await
+        .1
+        .publication_id;
+    assert_ne!(second, first);
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    while served(&mut client).is_ok_and(|(publication, _)| publication == first) {
+    while served(&mut client).map(|(publication, _)| publication) != Ok(second.clone()) {
         assert!(std::time::Instant::now() < deadline, "never switched");
         std::thread::sleep(Duration::from_millis(250));
     }
