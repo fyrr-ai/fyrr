@@ -157,7 +157,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   began, so a revocation published meanwhile could be missed for longer than
   the documented two intervals. Such a read now fails the checks that waited
   for it with `authorization_unavailable`, and the next check reads again.
-  Its age counts from when it started.
+  If the reader answers so persistently, storage takes longer than two
+  intervals to return the head: raise `reader.version_check_interval`.
 - Prepared sync timeout errors name the elapsed worker limit and `--timeout`,
   including deadline exhaustion during cleanup. Deployment guidance covers
   larger initial loads, durable envelopes, source leases and vector-cache reuse.

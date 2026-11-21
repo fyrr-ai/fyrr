@@ -41,9 +41,10 @@ pub(crate) type ArtifactCache<T> = Arc<tokio::sync::Mutex<Option<(GenerationPoin
 /// across the request, and a failure is given to the checks that waited for
 /// it and then forgotten. A read that is itself older than two intervals when
 /// it ends, because storage answered late, fails the checks that waited for it
-/// the same way: its head is as old as the read is. The held head is always the one whose read started
-/// last, so a slower, older read never replaces a newer one, and a generation
-/// opened from a fresh read never meets an older head here.
+/// the same way: its head is as old as the read is. The held head is always
+/// the one whose read started last, so a slower, older read never replaces a
+/// newer one, and a generation opened from a fresh read never meets an older
+/// head here.
 #[derive(Debug, Clone)]
 pub(crate) struct HeadCache {
     max_age: std::time::Duration,
@@ -156,7 +157,7 @@ impl HeadCache {
             // A read that outlasted the age limit answers with a head older
             // than a check may use, whatever its own age on arrival: its age
             // counts from when it started. The next check reads again.
-            Some(held) if held.started == read_started && !self.young(held) => {
+            Some(held) if held.started == read_started => {
                 Err(StorageError::AuthorizationUnavailable)
             }
             _ => outcome,
