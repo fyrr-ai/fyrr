@@ -36,6 +36,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: never
+  # mbx moves build-script OUT_DIRs to ~/.cache/mbx/out-dirs by default, but the
+  # mbx action's target cache saves only target/ and the registry. Without this,
+  # every restored crate that include!()s a generated file (serde_core, crunchy,
+  # ...) is stale and the whole Arrow/DataFusion/Lance graph above it rebuilds.
+  MBX_SHARE_OUT_DIR: "0"
 
 jobs:
   ci:
