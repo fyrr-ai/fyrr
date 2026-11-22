@@ -38,6 +38,10 @@ pub async fn content(
         .filter(|s| s.permissions == fyrr_core::config::PermissionsMode::Fixed)
         .map(|s| permission_readers(config, &s.id, &s.readers, &[]))
         .transpose()?;
+    // An API envelope is one request: it is applied whole or refused whole,
+    // and a change that would not advance a document is a refusal, not a skip.
+    let api = envelope.source_id == fyrr_core::connector::API_SOURCE_ID;
+    let refused = (Vec::new(), Vec::new(), false);
     let mut acl_changed = false;
     let mut changed = Vec::new();
     let mut output = Vec::new();
@@ -55,6 +59,9 @@ pub async fn content(
                     .is_none_or(|b| b.content_sequence < old.publication_sequence)
             {
                 reject(config, envelope, "revision_conflict").await?;
+                if api {
+                    return Ok(refused);
+                }
                 continue;
             }
             if document.intent == DocumentIntent::Replace
@@ -62,10 +69,18 @@ pub async fn content(
                 && !old.content_purged
                 && document.source_revision == old.revision
             {
+                if api {
+                    reject(config, envelope, "revision_conflict").await?;
+                    return Ok(refused);
+                }
                 continue;
             }
             if let (Some(incoming), Some(applied)) = (document.revision_order, old.revision_order) {
                 if incoming < applied || (incoming == applied && !old.content_purged) {
+                    if api {
+                        reject(config, envelope, "revision_conflict").await?;
+                        return Ok(refused);
+                    }
                     continue;
                 }
             } else if document.expected_prior_revision
@@ -76,10 +91,16 @@ pub async fn content(
                 }
             {
                 reject(config, envelope, "revision_conflict").await?;
+                if api {
+                    return Ok(refused);
+                }
                 continue;
             }
         } else if document.expected_prior_revision.is_some() {
             reject(config, envelope, "revision_conflict").await?;
+            if api {
+                return Ok(refused);
+            }
             continue;
         }
         changed.push(keys_filter(
@@ -122,6 +143,10 @@ pub async fn content(
             )?);
             continue;
         }
+        if api {
+            // The request states the document's readers whole; it narrows nothing.
+            next.permission = None;
+        }
         for row in 0..staged.num_rows() {
             if strings(&staged, "root_id")?.value(row) != document.root_id {
                 continue;
@@ -135,7 +160,11 @@ pub async fn content(
                 &mut readers,
             )?;
             acl_changed |= narrowed;
-            output.push(batch);
+            output.push(if api {
+                with_attributes(&batch, &config.namespace.attributes)?
+            } else {
+                batch
+            });
         }
     }
     acl_changed |= readers.iter().any(|((root, _), readers)| {

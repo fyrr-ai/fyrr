@@ -27,8 +27,13 @@ use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, path::Path}
 use std::sync::Arc;
 
 pub fn schema(dimensions: u32) -> Arc<Schema> {
+    schema_with(dimensions, Vec::new())
+}
+
+/// The built-in columns and then `extra`: a namespace's attribute columns.
+pub fn schema_with(dimensions: u32, extra: Vec<Field>) -> Arc<Schema> {
     let strings = DataType::List(Arc::new(Field::new("item", DataType::Utf8, false)));
-    Arc::new(Schema::new(vec![
+    let mut fields = vec![
         Field::new("source_id", DataType::Utf8, false),
         Field::new("root_id", DataType::Utf8, false),
         Field::new("record_id", DataType::Utf8, false),
@@ -56,7 +61,9 @@ pub fn schema(dimensions: u32) -> Arc<Schema> {
             true,
         ),
         Field::new("attributes", strings, true),
-    ]))
+    ];
+    fields.extend(extra);
+    Arc::new(Schema::new(fields))
 }
 
 pub fn store_params(config: &Config) -> Result<ObjectStoreParams> {
@@ -224,6 +231,58 @@ impl std::fmt::Debug for ContentChange {
     }
 }
 
+/// The records one change writes and its estimated size, the unit of an envelope's bounds.
+fn weigh(config: &Config, change: &ContentChange) -> Result<(u64, u64)> {
+    let work = match change {
+        ContentChange::Present(_) => 1,
+        ContentChange::Write(change) if change.op == ChangeOp::Delete => 1,
+        ContentChange::Write(change) => change
+            .sections
+            .iter()
+            .map(|s| crate::chunk::chunks(&s.text).len() as u64)
+            .sum::<u64>(),
+    };
+    let encoded = match change {
+        ContentChange::Write(change) => serde_json::to_vec(change),
+        ContentChange::Present(document) => serde_json::to_vec(document),
+    };
+    let estimate = encoded.map_err(|_| WriterError::DocumentInvalid)?.len() as u64
+        + work.saturating_mul(2048 + u64::from(config.embedding.dimensions) * 2);
+    Ok((work, estimate))
+}
+
+/// One envelope for all of `changes`, which must fit the bounds of a single
+/// page: a request that does not is refused, never split, so that it stays
+/// atomic. The cursor does not advance; the source has none.
+#[allow(clippy::too_many_arguments)]
+pub async fn atomic(
+    config: &Config,
+    source: &fyrr_core::config::SourceConfig,
+    batch: &ConnectorBatch,
+    changes: Vec<ContentChange>,
+    state: &mut CursorState,
+    lease: &crate::sync_lease::CursorLease,
+    base_head: Option<BaseHead>,
+    cache: &mut WriterEmbedding,
+) -> Result<()> {
+    let (mut rows, mut bytes) = (0u64, 16384u64);
+    for change in &changes {
+        let (work, estimate) = weigh(config, change)?;
+        rows = rows.saturating_add(work);
+        bytes = bytes.saturating_add(estimate);
+    }
+    if rows > config.writer.commit.group_max_rows
+        || bytes > config.writer.commit.group_max_bytes.as_u64()
+    {
+        return Err(WriterError::EnvelopeBoundsInvalid);
+    }
+    content_page(
+        config, source, batch, changes, state, lease, base_head, cache, false, false,
+    )
+    .await
+    .map(|_| ())
+}
+
 /// Split provider batches by actual inserted-record/delete-intent work, without
 /// advancing the opaque provider cursor until the final durable sub-envelope.
 #[allow(clippy::too_many_arguments)]
@@ -243,21 +302,7 @@ pub async fn content(
     let mut rows = 0u64;
     let mut bytes = 16384u64;
     for change in changes {
-        let work = match &change {
-            ContentChange::Present(_) => 1,
-            ContentChange::Write(change) if change.op == ChangeOp::Delete => 1,
-            ContentChange::Write(change) => change
-                .sections
-                .iter()
-                .map(|s| crate::chunk::chunks(&s.text).len() as u64)
-                .sum::<u64>(),
-        };
-        let encoded = match &change {
-            ContentChange::Write(change) => serde_json::to_vec(change),
-            ContentChange::Present(document) => serde_json::to_vec(document),
-        };
-        let estimate = encoded.map_err(|_| WriterError::DocumentInvalid)?.len() as u64
-            + work.saturating_mul(2048 + u64::from(config.embedding.dimensions) * 2);
+        let (work, estimate) = weigh(config, &change)?;
         if !page.is_empty()
             && (rows.saturating_add(work) > config.writer.commit.group_max_rows
                 || bytes.saturating_add(estimate) > config.writer.commit.group_max_bytes.as_u64())

@@ -58,6 +58,8 @@ mod storage_budget;
 mod synthetic;
 #[path = "dense_path/tools.rs"]
 mod tools;
+#[path = "dense_path/write_api.rs"]
+mod write_api;
 
 use common::embedding::{FixtureRoot, configure as configure_embedding};
 use fyrr_core::publication::{ContentManifest, PolicyArtifact, ServingHead};

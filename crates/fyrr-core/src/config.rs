@@ -169,6 +169,31 @@ pub struct NamespaceConfig {
     /// index.
     #[serde(default)]
     pub attributes: crate::attributes::AttributeSchema,
+    /// Present: the writer serves `POST /v1/namespaces/{namespace}/documents`,
+    /// and a namespace created from this file or through that route takes its
+    /// documents only from the API (no `[[sources]]`). The keys are the
+    /// defaults of a new namespace; an existing one keeps its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_api: Option<WriteApiSettings>,
+}
+
+/// How a namespace written through the HTTP API stores and shows its rows. Fixed
+/// for the life of the namespace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WriteApiSettings {
+    /// The key of a row that holds its text: embedded, full-text indexed and
+    /// returned as the content of the record. It is not a typed attribute and
+    /// not one of `attributes`.
+    #[serde(default = "default_text_attribute")]
+    pub text_attribute: String,
+    /// `false`: a row is readable by the reader tokens it names, and a row
+    /// that names none by nobody. `true`: every authenticated subject of the
+    /// deployment reads every row.
+    #[serde(default)]
+    pub open: bool,
+}
+fn default_text_attribute() -> String {
+    "text".into()
 }
 
 /// Optional reranking after fusion; absent configuration makes no provider calls.
@@ -1482,6 +1507,7 @@ impl Config {
         namespace.dense_rq_bits = settings.dense_rq_bits;
         namespace.dense_partition_rows = settings.dense_partition_rows;
         namespace.attributes.clone_from(&settings.attributes);
+        namespace.write_api.clone_from(&settings.write_api);
         namespace.retrieval = (&settings.retrieval).into();
         namespace.composition = (&settings.composition).into();
         namespace.rerank = match (&settings.rerank, &self.namespace.rerank) {

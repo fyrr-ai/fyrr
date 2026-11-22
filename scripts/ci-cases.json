@@ -1832,6 +1832,22 @@
       "full:fyrr:test:dense_path/api_keys::deployment_keys_carry_roles_and_a_namespace_prefix": {
         "tier": "quick",
         "seconds": 15.0
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_refuses_whole_and_keeps_connector_namespaces_apart_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_open_namespace_is_read_by_every_subject_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_largest_body_stays_under_the_worker_memory_limit_on_storage": {
+        "tier": "full",
+        "seconds": 300
       }
     }
   },

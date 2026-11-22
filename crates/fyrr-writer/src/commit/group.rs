@@ -244,6 +244,16 @@ async fn accept_envelopes(
             .contains_key(&envelope.source_id)
         {
             Some(WriterError::SourceRetired.as_str())
+        } else if current_policy.settings.write_api.is_some()
+            != (envelope.source_id == fyrr_core::connector::API_SOURCE_ID)
+        {
+            // A namespace takes documents from its connectors or from the API,
+            // as it was created; the policy under the lease decides.
+            Some(if current_policy.settings.write_api.is_some() {
+                "namespace_takes_api"
+            } else {
+                "namespace_takes_connectors"
+            })
         } else if let Some(reason) = markers.refusal(&envelope) {
             Some(reason)
         } else if (fyrr_core::clock::now() - envelope.created_at)
@@ -550,15 +560,17 @@ async fn add_attribute_columns(
     dataset: &mut Dataset,
     lineage: &mut CommitLineage,
 ) -> Result<()> {
-    if config.namespace.attributes.is_empty() {
-        return Ok(());
-    }
+    // A namespace written through the API created them with its table.
     let fields: Vec<_> = config
         .namespace
         .attributes
         .iter()
+        .filter(|(name, _)| dataset.schema().field(name).is_none())
         .map(|(name, kind)| arrow_schema::Field::new(name, kind.arrow_type(), true))
         .collect();
+    if fields.is_empty() {
+        return Ok(());
+    }
     let before = dataset.version().version;
     native_step(
         lease,

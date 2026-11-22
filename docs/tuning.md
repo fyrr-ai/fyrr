@@ -29,6 +29,7 @@ and the other `[reader]` and `[writer]` keys in
 | `retrieval` | see below | Candidate depths, fusion weight and output bounds. |
 | `rerank` | absent | Optional hosted reranker; absent makes no reranker calls. |
 | `attributes` | `{}` | Typed attributes of the namespace: name to type, see below. |
+| `write_api` | absent | Serves the [document write API](http-api.md#write-documents) and creates API namespaces, see below. |
 
 ### `[namespace.attributes]`
 
@@ -52,13 +53,32 @@ most 128 bytes; a built-in column name or a name starting with `_` is refused.
 The schema is recorded in the namespace and in every content manifest, and like
 the other settings it is fixed for the life of the namespace.
 
-The check that the document write API applies to a value infers the type of an
-undeclared attribute from its first value (`string`, `int`, `float` or `bool`;
-a `datetime` is only declared) and refuses a value that does not fit with a
-named error: `attribute_type_mismatch`, `attribute_value_invalid`,
-`attribute_value_too_large` (a `string` over 4096 bytes),
-`attribute_limit_exceeded` (a 129th attribute), `attribute_name_invalid` or
-`attribute_name_reserved`.
+The document write API refuses an undeclared attribute with
+`attribute_undeclared`, and a value that does not fit its type with a named
+error: `attribute_type_mismatch`, `attribute_value_invalid` or
+`attribute_value_too_large` (a `string` over 4096 bytes). A schema is refused
+with `attribute_limit_exceeded` (a 129th attribute), `attribute_name_invalid` or
+`attribute_name_reserved` (`id` is reserved too).
+
+### `[namespace.write_api]`
+
+```toml
+[namespace.write_api]
+text_attribute = "text"
+open = false
+```
+
+Present, it makes this process serve the
+[document write API](http-api.md#write-documents) (which needs
+`[writer.serve.admin]` and the committer) and gives a namespace created from
+this file or through the API its documents from the API alone: no
+`[[sources]]`, and a connector namespace refuses an API write. The keys are the
+defaults of a new namespace, recorded in it and fixed for its life.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `text_attribute` | `"text"` | The key of a row that holds its text, which is embedded, full-text indexed and returned as the content of its record. Not one of `attributes`. |
+| `open` | `false` | `false`: a row is readable by the reader tokens it names and a row without any by nobody. `true`: every authenticated subject of the deployment reads every row. |
 
 ### `[namespace.composition]`
 

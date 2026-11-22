@@ -29,6 +29,64 @@ pub struct PermissionState {
 /// itself. A row without it takes its document's readers.
 pub(crate) const OWN_READERS: &str = "_fyrr_own_readers";
 
+/// Staging key in metadata_json: the typed attribute values of an API row, name
+/// to JSON value. The committer moves them into their columns and drops the key.
+pub(crate) const STAGED_ATTRIBUTES: &str = "_fyrr_attributes";
+
+/// A one-row batch with the staged typed values in the attribute columns, which
+/// take the schema's order after the built-in columns, and without the staging key.
+pub(crate) fn with_attributes(
+    batch: &RecordBatch,
+    attributes: &fyrr_core::attributes::AttributeSchema,
+) -> Result<RecordBatch> {
+    use arrow_array::{BooleanArray, Float64Array, Int64Array, TimestampMicrosecondArray};
+    use fyrr_core::attributes::AttributeValue;
+    let mut metadata: serde_json::Value =
+        serde_json::from_str(strings(batch, "metadata_json")?.value(0))
+            .map_err(|_| WriterError::ChangedRowsInvalid)?;
+    let staged = metadata
+        .as_object_mut()
+        .and_then(|fields| fields.remove(STAGED_ATTRIBUTES))
+        .and_then(|values| match values {
+            serde_json::Value::Object(values) => Some(values),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let batch = replace(
+        batch,
+        "metadata_json",
+        Arc::new(StringArray::from(vec![metadata.to_string()])),
+    )?;
+    let mut fields = Vec::new();
+    let mut columns = Vec::new();
+    for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
+        if !attributes.contains_key(field.name()) {
+            fields.push(field.as_ref().clone());
+            columns.push(column.clone());
+        }
+    }
+    let mut schema = attributes.clone();
+    for (name, kind) in attributes {
+        let value = staged.get(name).unwrap_or(&serde_json::Value::Null);
+        let typed = fyrr_core::attributes::resolve(&mut schema, name, value)
+            .map_err(|_| WriterError::DocumentInvalid)?;
+        let column: ArrayRef = match typed {
+            AttributeValue::Null => arrow_array::new_null_array(&kind.arrow_type(), 1),
+            AttributeValue::String(text) => Arc::new(StringArray::from(vec![text])),
+            AttributeValue::Int(number) => Arc::new(Int64Array::from(vec![number])),
+            AttributeValue::Float(number) => Arc::new(Float64Array::from(vec![number])),
+            AttributeValue::Bool(flag) => Arc::new(BooleanArray::from(vec![flag])),
+            AttributeValue::Datetime(micros) => {
+                Arc::new(TimestampMicrosecondArray::from(vec![micros]).with_timezone("UTC"))
+            }
+        };
+        fields.push(arrow_schema::Field::new(name, kind.arrow_type(), true));
+        columns.push(column);
+    }
+    RecordBatch::try_new(Arc::new(arrow_schema::Schema::new(fields)), columns)
+        .map_err(|_| WriterError::ChangedRowsInvalid)
+}
+
 pub(crate) fn own_readers(batch: &RecordBatch, row: usize) -> Result<Option<Vec<String>>> {
     let metadata: serde_json::Value =
         serde_json::from_str(strings(batch, "metadata_json")?.value(row))

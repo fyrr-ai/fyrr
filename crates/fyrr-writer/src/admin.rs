@@ -21,6 +21,8 @@ struct AdminState {
     operator: hmac::Tag,
     scim: Option<hmac::Tag>,
     capacity: Arc<Semaphore>,
+    /// Present when the namespace is written through the API.
+    write: Option<crate::write_api::WriteApi>,
 }
 impl std::fmt::Debug for AdminState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -94,6 +96,17 @@ fn reply(status: u16, value: Value) -> Response {
 }
 async fn handle(State(state): State<Arc<AdminState>>, request: Request) -> Response {
     let path = request.uri().path().to_owned();
+    if path.starts_with("/v1/") {
+        // Its own authentication: an API key with the `write` role.
+        let (Some(api), Ok(permit)) = (&state.write, state.capacity.clone().try_acquire_owned())
+        else {
+            return error(ScimError::new(
+                if state.write.is_some() { 503 } else { 404 },
+                "notFound",
+            ));
+        };
+        return crate::write_api::handle(api, &state.config, request, permit).await;
+    }
     let expected = if path.starts_with("/scim/v2/") {
         state.scim.as_ref()
     } else if path.starts_with("/admin/") {
@@ -238,7 +251,11 @@ async fn process_request(
 pub(crate) async fn start(
     config: &Config,
     stop: Arc<AtomicBool>,
+    commits: Arc<crate::write_api::Commits>,
 ) -> Result<Option<tokio::task::JoinHandle<Result<(), WriterError>>>> {
+    if config.namespace.write_api.is_some() && !config.writer.serve.committer {
+        return Err(WriterError::WriteApiNeedsCommitter);
+    }
     let Some(admin) = &config.writer.serve.admin else {
         return Ok(None);
     };
@@ -278,6 +295,11 @@ pub(crate) async fn start(
         operator,
         scim,
         capacity: Arc::new(Semaphore::new(8)),
+        write: config
+            .namespace
+            .write_api
+            .is_some()
+            .then(|| crate::write_api::WriteApi::new(commits)),
     });
     let listener = tokio::net::TcpListener::bind(address)
         .await

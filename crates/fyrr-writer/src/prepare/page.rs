@@ -343,6 +343,10 @@ impl<'a> DocumentRows<'a> {
         )
         .into();
         value["_fyrr_text_utf8_bytes"] = (text.len() as u64).into();
+        if !change.typed_attributes.is_empty() {
+            // Staging only: the committer moves the values into their columns.
+            value[crate::apply::STAGED_ATTRIBUTES] = change.typed_attributes.clone().into();
+        }
         if source.permissions != PermissionsMode::Fixed && own {
             // The section's own statement, kept so that its row stays
             // within it whenever the document's readers change.
