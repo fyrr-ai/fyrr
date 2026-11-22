@@ -324,10 +324,8 @@ fn laid_over(
     }
     let settings: NamespaceSettings =
         serde_json::from_value(value).map_err(|_| ApiError(400, "settings_invalid"))?;
-    // A request cannot make a namespace that the API does not write, and its
-    // settings are held to the bounds of a configuration before anything is
-    // built from them.
-    if settings.write_api.is_none() || settings.validate().is_err() {
+    // A request cannot make a namespace that the API does not write.
+    if settings.write_api.is_none() {
         return Err(ApiError(400, "settings_invalid"));
     }
     Ok(settings)
@@ -541,8 +539,11 @@ async fn execute(
                 &crate::commit::namespace_settings(config),
                 requested.as_ref(),
             )?;
-            // `id` is the key of a row in the request.
-            if settings.attributes.contains_key("id")
+            // The settings of a new namespace are held to the bounds of a
+            // configuration before anything is built from them; `id` is the key
+            // of a row in the request.
+            if settings.validate().is_err()
+                || settings.attributes.contains_key("id")
                 || settings
                     .write_api
                     .as_ref()
