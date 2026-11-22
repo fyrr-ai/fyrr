@@ -415,7 +415,7 @@
       },
       "QueryRequest": {
         "type": "object",
-        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and four members that are no tool arguments.",
+        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and five members that are no tool arguments.",
         "properties": {
           "query": {
             "type": [
@@ -699,6 +699,16 @@
               }
             ],
             "description": "Switches the configured reranker off, or names what it scores."
+          },
+          "sub_queries": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/SubQuery"
+            },
+            "description": "1-16 searches of their own, each with its filter, ranking and limit, instead of `query`, `queries` and `vector`."
           }
         }
       },
@@ -961,7 +971,7 @@
         "required": [
           "method"
         ],
-        "description": "The `fusion` member of a JSON `query` request with `queries`: one ranking\nof the documents of all sub-queries, in place of their round-robin merge.\nA document scores the sum of `weight / (rank_constant + rank)` over the\nsub-queries that return it, rank counted from 1."
+        "description": "The `fusion` member of a JSON `query` request with `queries` or\n`sub_queries`: one ranking of the documents of all sub-queries, in place of\ntheir round-robin merge or their answers one after the other.\nA document scores the sum of `weight / (rank_constant + rank)` over the\nsub-queries that return it, rank counted from 1."
       },
       "FusionMethod": {
         "oneOf": [
@@ -1005,6 +1015,55 @@
           }
         },
         "description": "The `rerank` member of a JSON `query` request: it applies to the namespace's\nconfigured reranker, within that reranker's candidate count, deadline and\nspend limit. A namespace without a reranker refuses it."
+      },
+      "SubQuery": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Query text, 1-4096 UTF-8 bytes.",
+            "minLength": 1,
+            "maxLength": 4096,
+            "x-maxUtf8Bytes": 4096
+          },
+          "vector": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Query vector of the namespace's dimensions, instead of an embedding of query."
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Filter"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Filter tree of this sub-query, joined by `and` with the request's filters."
+          },
+          "limit": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 1,
+            "description": "Hits of this sub-query. Without `fusion` the limits add up to at most the namespace's `max_documents`.",
+            "maximum": 75
+          }
+        },
+        "required": [
+          "limit"
+        ],
+        "description": "One member of `sub_queries` in a JSON `query` request: a search of its own\nby text, by vector, or by both as in the `search` tool, with its own\nfilter and limit. The filter arguments and `filter` of the request apply to\nevery sub-query as well."
       },
       "FetchRequest": {
         "type": "object",
@@ -2054,7 +2113,7 @@
             ],
             "format": "uint32",
             "minimum": 0,
-            "description": "Winning query's zero-based index, present only for multi-query search.",
+            "description": "Winning query's zero-based index, present only for multi-query search and sub-queries.",
             "maximum": 15
           },
           "source_id": {

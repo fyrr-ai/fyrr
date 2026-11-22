@@ -316,8 +316,11 @@ impl PreparedReader {
             }
         }
         let cfg = &self.config.namespace.retrieval;
-        let (dense_candidates, lexical_candidates, max_documents) =
-            (cfg.dense_candidates, cfg.lexical_candidates, cfg.max_documents);
+        let (dense_candidates, lexical_candidates, max_documents) = (
+            cfg.dense_candidates,
+            cfg.lexical_candidates,
+            cfg.max_documents,
+        );
         // The answer holds the hits of every sub-query, or the fused documents.
         let documents = if args.fusion.is_some() {
             args.effective_limit() as usize
@@ -336,11 +339,8 @@ impl PreparedReader {
             return Ok(self.nothing_admitted());
         }
         let deepest = subs.iter().map(|sub| sub.limit as usize).max().unwrap_or(0);
-        self.response_claim = Some(self.batch_claim(
-            subs.len(),
-            dense_candidates.max(deepest),
-            documents,
-        )?);
+        self.response_claim =
+            Some(self.batch_claim(subs.len(), dense_candidates.max(deepest), documents)?);
         // The vectors of the sub-queries that bring none, embedded together.
         // shortcut: a missing embedding is awaited with the execution slot
         // held, where a single query releases it; release it too if parked
@@ -353,7 +353,9 @@ impl PreparedReader {
             .filter_map(|sub| sub.query.as_deref())
             .collect();
         let mut work = runtime.prepare(&texts)?;
-        runtime.complete(&mut work, &texts, true, embedding_deadline).await;
+        runtime
+            .complete(&mut work, &texts, true, embedding_deadline)
+            .await;
         telemetry
             .stage_us
             .insert("embedding".into(), micros(start.elapsed()));
@@ -363,11 +365,9 @@ impl PreparedReader {
         for sub in subs {
             let vector = match &sub.vector {
                 Some(vector) => Ok(vector.clone()),
-                None => embedded
-                    .next()
-                    .map_or(Err(EmbeddingUnavailable), |vector| {
-                        std::mem::replace(vector, Err(EmbeddingUnavailable))
-                    }),
+                None => embedded.next().map_or(Err(EmbeddingUnavailable), |vector| {
+                    std::mem::replace(vector, Err(EmbeddingUnavailable))
+                }),
             };
             embedding_failed |= vector.is_err();
             let stage = Instant::now();
@@ -451,6 +451,10 @@ impl PreparedReader {
         }
         for (index, rows) in unscored {
             ranked[index] = rows;
+        }
+        // Rows past a sub-query's limit, kept for the reranker, never reach the fusion.
+        for (sub, rows) in subs.iter().zip(&mut ranked) {
+            rows.truncate(sub.limit as usize);
         }
         let queries: Vec<&str> = subs
             .iter()

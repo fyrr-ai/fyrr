@@ -3521,7 +3521,10 @@ async fn identity_write_api_answers_sub_queries_with_their_own_filters_limits_an
         assert_eq!(roots(&ask(&reader, body).await).len(), 2);
     }
     // Their limits may add up to more than `max_documents` once fused.
-    let mut body = search(vec![sub("alpha", Value::Null, 3), sub("bravo", Value::Null, 3)]);
+    let mut body = search(vec![
+        sub("alpha", Value::Null, 3),
+        sub("bravo", Value::Null, 3),
+    ]);
     body["fusion"] = json!({"method": "rrf"});
     assert_eq!(roots(&ask(&reader, body).await).len(), 3);
 
@@ -3541,8 +3544,15 @@ async fn identity_write_api_answers_sub_queries_with_their_own_filters_limits_an
         search(vec![json!({"query": "alpha", "limit": 1, "exact": true})]),
         search(vec![json!({"query": " ", "limit": 1})]),
         search(vec![json!({"vector": [1.0], "limit": 1})]),
-        search(vec![sub("alpha", json!({"field": "nope", "op": "eq", "value": 1}), 1)]),
-        search(vec![sub("alpha", Value::Null, 3), sub("bravo", Value::Null, 2)]),
+        search(vec![sub(
+            "alpha",
+            json!({"field": "nope", "op": "eq", "value": 1}),
+            1,
+        )]),
+        search(vec![
+            sub("alpha", Value::Null, 3),
+            sub("bravo", Value::Null, 2),
+        ]),
         {
             let mut body = search(vec![one()]);
             body["query"] = json!("alpha");

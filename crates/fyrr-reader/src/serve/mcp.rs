@@ -50,8 +50,12 @@ impl ToolCall {
         sub_queries: Option<Vec<fyrr_core::mcp::SubQuery>>,
     ) -> Result<Self> {
         let mut search: SearchInput = serde_json::from_value(args).map_err(|_| InvalidArgument)?;
-        (search.fields, search.fusion, search.rerank, search.sub_queries) =
-            (fields, fusion, rerank, sub_queries);
+        (
+            search.fields,
+            search.fusion,
+            search.rerank,
+            search.sub_queries,
+        ) = (fields, fusion, rerank, sub_queries);
         search.validate().map_err(|_| InvalidArgument)?;
         if let Some(fields) = &search.fields {
             fields.validate().map_err(|_| InvalidArgument)?;

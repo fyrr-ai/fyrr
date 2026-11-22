@@ -286,7 +286,8 @@ one number per sub-query.
 
 `output`, `text_hits`, `excerpt_chars`, `fields`, `rerank`, `deadline_ms` and
 `consistency` apply to the whole request, and the deadline to the sum of
-the sub-queries. `text_hits` counts per sub-query. A sub-query without text is
+the sub-queries. `text_hits` counts per sub-query, or with `fusion` over the
+fused ranking. A sub-query without text is
 reranked only when `rerank.query` names the text. `query`, `queries`,
 `vector`, `exact`, `order`, `order_by` and `offset` are refused with
 `sub_queries`, and so is a request `limit` without `fusion`.

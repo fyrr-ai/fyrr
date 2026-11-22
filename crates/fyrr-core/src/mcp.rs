@@ -1157,11 +1157,12 @@ impl SearchInput {
         }
     }
     pub fn effective_limit(&self) -> u32 {
-        self.limit.unwrap_or(if self.queries.is_some() || self.sub_queries.is_some() {
-            MULTI_QUERY_LIMIT
-        } else {
-            DEFAULT_SEARCH_LIMIT
-        })
+        self.limit
+            .unwrap_or(if self.queries.is_some() || self.sub_queries.is_some() {
+                MULTI_QUERY_LIMIT
+            } else {
+                DEFAULT_SEARCH_LIMIT
+            })
     }
     pub fn validate(&self) -> Result<(), &'static str> {
         let listing = !self.has_text() && self.vector.is_none();
