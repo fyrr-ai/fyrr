@@ -2006,6 +2006,10 @@
     "kind": "rust",
     "backend": "local",
     "cases": {
+      "full:fyrr:test:dense_path/maintenance::maintenance_repartitions_the_vector_index_of_a_growing_namespace_on_storage": {
+        "tier": "full",
+        "seconds": 240.0
+      },
       "full:fyrr:test:dense_path/maintenance::restore_and_rollback_preserve_current_section_revocation": {
         "tier": "full",
         "seconds": 86.188

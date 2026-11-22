@@ -1725,3 +1725,149 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
     assert_eq!(command(&commit, &["writer", "verify"])["verified"], true);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// Clustered unit-scale test vectors: 64 centers, each row a small
+/// deterministic offset from its cluster's center.
+fn clustered(cluster: usize, noise: usize) -> Vec<f32> {
+    (0..1024)
+        .map(|d| {
+            (((cluster + 1) * (d + 3)) as f32 * 0.37).sin()
+                + 0.15 * (((noise + 1) * (d + 11)) as f32 * 0.73).sin()
+        })
+        .collect()
+}
+
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let norm = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    dot / (norm(a) * norm(b))
+}
+
+/// A namespace published at 64 rows and grown to 6,400 gets a vector index of
+/// partitions near the target size once `writer maintain` has merged the
+/// segments its commits appended, and a probe of eight still finds the
+/// neighbors. Index builds are held to two threads.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn maintenance_repartitions_the_vector_index_of_a_growing_namespace_on_storage() {
+    use lance::index::DatasetIndexExt;
+    const PARTITION_ROWS: usize = 32;
+    const FINAL_ROWS: usize = 6400;
+    const PROBES: usize = 8;
+    let (config, root) = setup_on(Backend::Local);
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .split("[[sources]]")
+        .next()
+        .unwrap()
+        .replace("nprobes = 1", &format!("nprobes = {PROBES}"))
+        .replace(
+            "[namespace]\n",
+            &format!("[namespace]\ndense_partition_rows = {PARTITION_ROWS}\n"),
+        );
+    let sources = root.join("sources");
+    std::fs::remove_dir_all(&sources).unwrap();
+    std::fs::create_dir_all(&sources).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "{text}\n[writer]\nthreads = 2\n\n[[sources]]\nid = \"docs\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:allow\"]\n[sources.scope]\npaths = [\"{}\"]\n",
+            sources.display()
+        ),
+    )
+    .unwrap();
+    success(&config, &["writer", "namespace", "create"]);
+    let mut vectors = Vec::new();
+    for (from, to) in [(0, 64), (64, 1000), (1000, 3000), (3000, FINAL_ROWS)] {
+        for row in from..to {
+            let text = format!("vec doc {row}");
+            std::fs::write(sources.join(format!("{row}.txt")), &text).unwrap();
+            let vector = clustered(row % 64, row);
+            root.embedding.insert_both(&text, vector.clone());
+            vectors.push(vector);
+        }
+        success(&config, &["writer", "sync"]);
+        success(&config, &["writer", "commit"]);
+    }
+    let stats = || async {
+        let loaded = fyrr_core::config::load(&config).unwrap();
+        let (head, _) = publication(&config).await;
+        let dataset = fyrr_reader::storage::pinned(&loaded.config, &head)
+            .await
+            .unwrap();
+        assert_eq!(dataset.count_rows(None).await.unwrap(), FINAL_ROWS);
+        serde_json::from_str::<Value>(&dataset.index_statistics("vector_idx").await.unwrap())
+            .unwrap()
+    };
+    // Appended commits keep the partitions of the first publication.
+    let before = stats().await;
+    assert_eq!(before["indices"][0]["num_partitions"], 2, "{before}");
+
+    success(&config, &["writer", "maintain"]);
+    let after = stats().await;
+    let segments = after["indices"].as_array().unwrap();
+    assert_eq!(segments.len(), 1, "one segment is published: {after}");
+    let sizes: Vec<usize> = segments[0]["partitions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["size"].as_u64().unwrap() as usize)
+        .collect();
+    let centroids: Vec<Vec<f32>> = segments[0]["centroids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            c.as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_f64().unwrap() as f32)
+                .collect()
+        })
+        .collect();
+    assert_eq!(sizes.iter().sum::<usize>(), FINAL_ROWS);
+    assert!(
+        sizes.len() >= FINAL_ROWS.div_ceil(4 * PARTITION_ROWS),
+        "{} partitions: {sizes:?}",
+        sizes.len()
+    );
+
+    let mut client = tools::Mcp::open(&config);
+    let (mut recall, mut read) = (0.0, 0);
+    let queries = 20;
+    for k in 0..queries {
+        let query = clustered(k * 3 % 64, 100_000 + k);
+        let text = format!("zzprobe {k}");
+        root.embedding.insert_both(&text, query.clone());
+        let mut exact: Vec<_> = (0..FINAL_ROWS).collect();
+        exact.sort_by(|&a, &b| cosine(&query, &vectors[b]).total_cmp(&cosine(&query, &vectors[a])));
+        let result = tools::body(client.call("search", json!({"query": text, "limit": 10})));
+        let found: Vec<usize> = result["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| {
+                let hit = hit.to_string();
+                let rest = hit.split("vec doc ").nth(1).expect(&hit);
+                rest.chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse()
+                    .unwrap()
+            })
+            .collect();
+        recall += found.iter().filter(|row| exact[..10].contains(row)).count() as f64 / 10.0;
+        // Rows in the partitions the probe visits: the nearest centroids.
+        let mut nearest: Vec<_> = (0..sizes.len()).collect();
+        nearest.sort_by(|&a, &b| {
+            cosine(&query, &centroids[b]).total_cmp(&cosine(&query, &centroids[a]))
+        });
+        read += nearest[..PROBES].iter().map(|&p| sizes[p]).sum::<usize>();
+    }
+    let recall = recall / queries as f64;
+    let read = read as f64 / (queries * FINAL_ROWS) as f64;
+    assert!(recall >= 0.90, "recall@10 {recall}, partitions {sizes:?}");
+    assert!(read <= 0.10, "rows read {read}, partitions {sizes:?}");
+    drop(client);
+    std::fs::remove_dir_all(root).unwrap();
+}

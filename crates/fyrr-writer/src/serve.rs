@@ -203,7 +203,7 @@ pub async fn run(
                     // The tick judged this from the manifest it read anyway. A signal
                     // waits for the maintenance in progress, as it does for a commit group.
                     if let Some(config) = maintenance.filter(|_| loaded.config.writer.serve.maintenance) {
-                        match crate::maintenance::maintain(&config).await {
+                        match crate::maintenance::maintain(&config, false).await {
                             Ok(_) => eprintln!("writer_service event=maintained"),
                             Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
                             Err(_) => eprintln!("writer_service event=maintenance_failed"),

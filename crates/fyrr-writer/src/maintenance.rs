@@ -85,10 +85,13 @@ async fn boundary(
     lease.head().await
 }
 
-pub async fn maintain(config: &Config) -> Result<serde_json::Value> {
+/// `rebalance` also re-partitions the vector index. Splitting a partition
+/// trains on up to 262,144 vectors in memory and cannot be interrupted, so
+/// only the operator command asks for it; `writer serve` merges segments only.
+pub async fn maintain(config: &Config, rebalance: bool) -> Result<serde_json::Value> {
     crate::lease::LeaseGuard::with(config, |lease| async move {
         let mut history = commit::RestoreHistory::new(config)?;
-        let mut result = maintain_held(config, &lease, &mut history).await;
+        let mut result = maintain_held(config, &lease, &mut history, rebalance).await;
         // Every expired native step yields to authorization, including storage
         // reads during purge/compaction/index planning before cleanup begins.
         if result
@@ -107,6 +110,7 @@ async fn maintain_held(
     config: &Config,
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
+    rebalance: bool,
 ) -> Result<serde_json::Value> {
     // Obsolete applied objects must not exhaust history's resident allowance
     // before the cleanup that can remove them becomes reachable.
@@ -138,7 +142,17 @@ async fn maintain_held(
         .await
         .map_err(|_| WriterError::MaintenanceStepDeadline)??;
         if let Some(name) = oversized {
-            if !merge_index(config, lease, dataset, head, name, INDEX_SEGMENT_LIMIT / 2).await? {
+            if !merge_index(
+                config,
+                lease,
+                dataset,
+                head,
+                name,
+                INDEX_SEGMENT_LIMIT / 2,
+                rebalance,
+            )
+            .await?
+            {
                 return Err(WriterError::IndexMergeNoProgress);
             }
             merged += 1;
@@ -155,7 +169,9 @@ async fn maintain_held(
         }
         compacted += 1;
     }
-    // One index name per interruptible step. Merge existing centroids, never retrain.
+    // One index name per interruptible step. Merge the segments, never retrain;
+    // with `rebalance` Lance also splits and joins partitions toward the index's
+    // target size.
     let head = boundary(config, lease, history).await?;
     if head.content.is_some() {
         let dataset = pinned(config, &head).await?;
@@ -175,7 +191,7 @@ async fn maintain_held(
             if same.len() <= 1 {
                 continue;
             }
-            if merge_index(config, lease, dataset, head, name, usize::MAX).await? {
+            if merge_index(config, lease, dataset, head, name, usize::MAX, rebalance).await? {
                 merged += 1;
             }
         }
@@ -229,47 +245,60 @@ async fn maintain_held(
 async fn merge_index(
     config: &Config,
     lease: &LeaseGuard,
+    dataset: Dataset,
+    head: ServingHead,
+    name: String,
+    segments: usize,
+    rebalance: bool,
+) -> Result<bool> {
+    tokio::time::timeout(
+        config.writer.maintenance.step_max_duration.as_duration(),
+        merge_step(config, lease, dataset, head, name, segments, rebalance),
+    )
+    .await
+    .map_err(|_| WriterError::MaintenanceStepDeadline)?
+}
+
+async fn merge_step(
+    config: &Config,
+    lease: &LeaseGuard,
     mut dataset: Dataset,
     head: ServingHead,
     name: String,
     segments: usize,
+    rebalance: bool,
 ) -> Result<bool> {
-    let step = async {
-        let before = dataset.version().version;
-        let mut work = lineage(lease, &head);
-        let mut options = OptimizeOptions::merge(segments);
-        options.index_names = Some(vec![name]);
-        options.retrain = false;
-        commit::native_step(
-            lease,
-            dataset.optimize_indices(&options),
-            WriterError::IndexMergeFailed,
-        )
-        .await?;
-        commit::record_transaction(&dataset, &mut work, before).await?;
-        if dataset.version().version == before {
-            return Ok(false);
-        }
-        commit::publish(
-            config,
-            lease,
-            &dataset,
-            head,
-            work,
-            Vec::new(),
-            false,
-            Vec::new(),
-            false,
-        )
-        .await?;
-        Ok(true)
-    };
-    tokio::time::timeout(
-        config.writer.maintenance.step_max_duration.as_duration(),
-        step,
+    let before = dataset.version().version;
+    let mut work = lineage(lease, &head);
+    let mut options = OptimizeOptions::merge(segments);
+    if rebalance {
+        options = options.with_partition_rebalancing();
+    }
+    options.index_names = Some(vec![name]);
+    options.retrain = false;
+    commit::native_step(
+        lease,
+        dataset.optimize_indices(&options),
+        WriterError::IndexMergeFailed,
     )
-    .await
-    .map_err(|_| WriterError::MaintenanceStepDeadline)?
+    .await?;
+    commit::record_transaction(&dataset, &mut work, before).await?;
+    if dataset.version().version == before {
+        return Ok(false);
+    }
+    commit::publish(
+        config,
+        lease,
+        &dataset,
+        head,
+        work,
+        Vec::new(),
+        false,
+        Vec::new(),
+        false,
+    )
+    .await?;
+    Ok(true)
 }
 
 /// Remove unreadable chunks; wholly unreadable content becomes a row-local state marker.

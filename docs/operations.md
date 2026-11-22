@@ -55,7 +55,11 @@ per `writer.version_grace`, has fragments with deletions or has gone
 if shorter) without it; `writer.serve.maintenance =
 false` turns that off. That cadence does not bound how long deleted content
 stays in retained old versions: run `writer maintain` often enough that it
-physically leaves namespace storage within the purge window. Physical purge
+physically leaves namespace storage within the purge window. Only `writer maintain`
+re-partitions the vector index of a grown namespace (see
+[`dense_partition_rows`](tuning.md)); `writer serve` merges segments only,
+because splitting a partition trains in memory for as long as a first build of
+it and cannot be interrupted. Physical purge
 removes one revoked document root per bounded step and publishes that step
 before continuing. A large revoke
 therefore needs multiple publications; permission changes are drained
