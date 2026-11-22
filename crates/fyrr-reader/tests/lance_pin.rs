@@ -16,7 +16,7 @@
 #![allow(clippy::unwrap_used)] // Fixture setup failures are assertions.
 #![allow(clippy::print_stdout)]
 use arrow_array::{
-    ArrayRef, BooleanArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int64Array,
+    Array, ArrayRef, BooleanArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int64Array,
     ListArray, RecordBatch, RecordBatchIterator, StringArray, TimestampMicrosecondArray,
     UInt32Array, UInt64Array,
 };
@@ -489,7 +489,10 @@ async fn every_offered_attribute_type_has_an_index_that_answers_its_filters() {
         (
             ElementType::Uint,
             Arc::new(UInt64Array::from(vec![1, u64::MAX])),
-            literals("1", &u64::MAX.to_string()),
+            literals(
+                "CAST(1 AS BIGINT UNSIGNED)",
+                &format!("CAST({} AS BIGINT UNSIGNED)", u64::MAX),
+            ),
         ),
         (
             ElementType::Float,
@@ -517,8 +520,8 @@ async fn every_offered_attribute_type_has_an_index_that_answers_its_filters() {
                 FixedSizeBinaryArray::try_from_iter([[1_u8; 16], [2; 16]].into_iter()).unwrap(),
             ),
             [
-                format!("X'{}'", "01".repeat(16)),
-                format!("X'{}'", "02".repeat(16)),
+                format!("arrow_cast(X'{}', 'FixedSizeBinary(16)')", "01".repeat(16)),
+                format!("arrow_cast(X'{}', 'FixedSizeBinary(16)')", "02".repeat(16)),
             ],
         ),
     ];
@@ -580,16 +583,8 @@ async fn every_offered_attribute_type_has_an_index_that_answers_its_filters() {
                 .unwrap_or_else(|error| panic!("{column}: {error}"));
         }
     }
-    let count = |filter: String| {
-        let dataset = &dataset;
-        async move {
-            let mut scan = dataset.scan();
-            scan.filter(&filter).unwrap();
-            let plan = scan.explain_plan(true).await.unwrap();
-            let rows = scan.count_rows().await.unwrap();
-            (rows, plan.contains("ScalarIndexQuery"), filter, plan)
-        }
-    };
+    // Every filter of every type runs; the failures are reported together.
+    let mut failures = Vec::new();
     for (element, _, [a, b]) in &samples {
         let name = format!("{element:?}").to_lowercase();
         let (one, many) = (format!("one_{name}"), format!("many_{name}"));
@@ -603,13 +598,25 @@ async fn every_offered_attribute_type_has_an_index_that_answers_its_filters() {
             (format!("array_has_all({many},[{a},{b}])"), 1, true),
             (format!("NOT array_has_any({many},[{b}])"), 2, false),
         ] {
-            let (found, used, filter, plan) = count(filter).await;
-            assert_eq!(found, rows, "{filter}");
-            assert!(
-                used || !indexed,
-                "{filter} is not answered by its index: {plan}"
-            );
+            let mut scan = dataset.scan();
+            let outcome = async {
+                scan.filter(&filter).map_err(|e| e.to_string())?;
+                let plan = scan.explain_plan(true).await.map_err(|e| e.to_string())?;
+                let found = scan.count_rows().await.map_err(|e| e.to_string())?;
+                if found != rows {
+                    return Err(format!("{found} rows, not {rows}"));
+                }
+                if indexed && !plan.contains("ScalarIndexQuery") {
+                    return Err(format!("not answered by its index: {plan}"));
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(error) = outcome {
+                failures.push(format!("{filter}: {error}"));
+            }
         }
     }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
     std::fs::remove_dir_all(root).unwrap();
 }

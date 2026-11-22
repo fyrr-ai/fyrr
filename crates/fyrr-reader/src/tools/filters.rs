@@ -101,14 +101,19 @@ fn literal(kind: AttributeType, value: &Value) -> Result<String> {
             .as_f64()
             .map(|number| format!("{number:?}"))
             .ok_or(InvalidArgument),
+        // The casts keep the literal of the column's type, which an array
+        // function needs and Lance's indexes answer (see `lance_pin`).
         (AttributeType::Uint, Value::Number(number)) => number
             .as_u64()
-            .map(|number| number.to_string())
+            .map(|number| format!("CAST({number} AS BIGINT UNSIGNED)"))
             .ok_or(InvalidArgument),
         (AttributeType::Bool, Value::Bool(flag)) => Ok(flag.to_string()),
         (AttributeType::Uuid, Value::String(text)) => {
             let bytes = parse_uuid(text).ok_or(InvalidArgument)?;
-            Ok(format!("X'{}'", hex::encode(bytes)))
+            Ok(format!(
+                "arrow_cast(X'{}', 'FixedSizeBinary(16)')",
+                hex::encode(bytes)
+            ))
         }
         (AttributeType::Datetime, Value::String(text)) => {
             let time = DateTime::parse_from_rfc3339(text).map_err(|_| InvalidArgument)?;
