@@ -103,6 +103,7 @@ pub mod directory_pull;
 
 mod admin;
 mod scim;
+mod write_api;
 
 /// Callback failure state cannot be recovered after a panic while updating it.
 #[allow(clippy::expect_used)]

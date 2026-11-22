@@ -25,6 +25,19 @@ pub async fn content(
             return Ok((Vec::new(), Vec::new(), false));
         }
     };
+    // The one-row slices of an API envelope leave out the attribute columns,
+    // which are taken whole at the end.
+    let typed = staged.clone();
+    let staged = if envelope.source_id == fyrr_core::connector::API_SOURCE_ID {
+        let built_in = crate::prepare::schema(config.embedding.dimensions)
+            .fields()
+            .len();
+        staged
+            .project(&(0..built_in).collect::<Vec<_>>())
+            .map_err(|_| WriterError::ChangedRowsInvalid)?
+    } else {
+        staged
+    };
     let roots = payload
         .documents
         .iter()
@@ -38,9 +51,15 @@ pub async fn content(
         .filter(|s| s.permissions == fyrr_core::config::PermissionsMode::Fixed)
         .map(|s| permission_readers(config, &s.id, &s.readers, &[]))
         .transpose()?;
+    // An API envelope is one request: it is applied whole or refused whole,
+    // and a change that would not advance a document is a refusal, not a skip.
+    let api = envelope.source_id == fyrr_core::connector::API_SOURCE_ID;
+    let refused = (Vec::new(), Vec::new(), false);
     let mut acl_changed = false;
     let mut changed = Vec::new();
     let mut output = Vec::new();
+    let mut rows = Vec::new();
+    let mut taken = Vec::new();
     for document in &payload.documents {
         let old = previous.get(&document.root_id);
         if let Some(old) = old {
@@ -55,6 +74,9 @@ pub async fn content(
                     .is_none_or(|b| b.content_sequence < old.publication_sequence)
             {
                 reject(config, envelope, "revision_conflict").await?;
+                if api {
+                    return Ok(refused);
+                }
                 continue;
             }
             if document.intent == DocumentIntent::Replace
@@ -62,10 +84,18 @@ pub async fn content(
                 && !old.content_purged
                 && document.source_revision == old.revision
             {
+                if api {
+                    reject(config, envelope, "revision_conflict").await?;
+                    return Ok(refused);
+                }
                 continue;
             }
             if let (Some(incoming), Some(applied)) = (document.revision_order, old.revision_order) {
                 if incoming < applied || (incoming == applied && !old.content_purged) {
+                    if api {
+                        reject(config, envelope, "revision_conflict").await?;
+                        return Ok(refused);
+                    }
                     continue;
                 }
             } else if document.expected_prior_revision
@@ -76,10 +106,16 @@ pub async fn content(
                 }
             {
                 reject(config, envelope, "revision_conflict").await?;
+                if api {
+                    return Ok(refused);
+                }
                 continue;
             }
         } else if document.expected_prior_revision.is_some() {
             reject(config, envelope, "revision_conflict").await?;
+            if api {
+                return Ok(refused);
+            }
             continue;
         }
         changed.push(keys_filter(
@@ -122,6 +158,10 @@ pub async fn content(
             )?);
             continue;
         }
+        if api {
+            // The request states the document's readers whole; it narrows nothing.
+            next.permission = None;
+        }
         for row in 0..staged.num_rows() {
             if strings(&staged, "root_id")?.value(row) != document.root_id {
                 continue;
@@ -135,8 +175,21 @@ pub async fn content(
                 &mut readers,
             )?;
             acl_changed |= narrowed;
-            output.push(batch);
+            if api {
+                rows.push(batch);
+                taken.push(crate::narrow_u32(row as u64));
+            } else {
+                output.push(batch);
+            }
         }
+    }
+    if !rows.is_empty() {
+        output.push(with_typed(
+            &rows,
+            &taken,
+            &typed,
+            &config.namespace.attributes,
+        )?);
     }
     acl_changed |= readers.iter().any(|((root, _), readers)| {
         !readers.is_empty()

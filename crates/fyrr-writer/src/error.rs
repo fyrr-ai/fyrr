@@ -62,6 +62,8 @@ writer_errors! {
     AdminListenUnavailable => ("admin_listen_unavailable", false),
     AdminServiceFailed => ("admin_service_failed", false),
     AdminTlsRequired => ("admin_tls_required", false),
+    ApiNamespaceHasSources => ("api_namespace_has_sources", false),
+    WriteApiNeedsCommitter => ("write_api_needs_committer", false),
     AuthorizationUnavailable => ("authorization_unavailable", false),
     BatchHeaderExceedsLimit => ("batch_header_exceeds_limit", false),
     BatchRowsExceedLimit => ("batch_rows_exceed_limit", false),

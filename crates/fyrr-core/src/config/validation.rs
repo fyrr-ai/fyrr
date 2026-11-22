@@ -24,6 +24,12 @@ impl LoadedConfig {
         directory(config, &mut error);
         writer_credentials(config, &mut error);
         sources(config, &mut error);
+        if config.namespace.write_api.is_some() && !config.sources.is_empty() {
+            error(
+                "namespace.write_api",
+                "a namespace written through the API takes no [[sources]]".into(),
+            );
+        }
         for (index, source) in config.sources.iter().enumerate() {
             if source.permissions == PermissionsMode::Fixed {
                 issues.push(Issue::warning(
@@ -243,6 +249,16 @@ pub(crate) fn namespace_settings(
     namespace_ranges(namespace, error);
     if let Err(code) = crate::attributes::check_schema(&namespace.attributes) {
         error("namespace.attributes", code.to_string());
+    }
+    if let Some(api) = &namespace.write_api {
+        if let Err(code) = crate::attributes::check_name(&api.text_attribute) {
+            error("namespace.write_api.text_attribute", code.to_string());
+        } else if namespace.attributes.contains_key(&api.text_attribute) {
+            error(
+                "namespace.write_api.text_attribute",
+                "is also declared in namespace.attributes".into(),
+            );
+        }
     }
 }
 

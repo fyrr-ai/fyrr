@@ -53,7 +53,8 @@ pub async fn run(
             }
         })
     };
-    let admin = crate::admin::start(&loaded.config, stop.clone()).await?;
+    let commits = Arc::new(crate::write_api::Commits::new());
+    let admin = crate::admin::start(&loaded.config, stop.clone(), commits.clone()).await?;
     let stopped = stop.clone();
     let config = loaded.config.clone();
     let path = path.to_owned();
@@ -175,13 +176,15 @@ pub async fn run(
                     eprintln!("writer_service event=directory_pull_failed");
                 }
             },
-            _ = timer.tick(), if loaded.config.writer.serve.committer => {
+            // The timer, or a request of the write API that wants its envelope published now.
+            () = round(&mut timer, &commits), if loaded.config.writer.serve.committer => {
                 match crate::commit::commit_until_stopped(&loaded.config, false, Some(&stop)).await {
                     Ok((_, true)) => eprintln!("writer_service event=published"),
                     Ok((_, false)) => eprintln!("writer_service event=idle"),
                     Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
                     Err(_) => eprintln!("writer_service event=commit_failed"),
                 }
+                commits.done.send_modify(|rounds| *rounds += 1);
                 if stop.load(Ordering::Acquire) {
                     break;
                 }
@@ -200,6 +203,14 @@ pub async fn run(
         task.await.map_err(|_| WriterError::AdminServiceFailed)??;
     }
     Ok(serde_json::json!({"stopped":true}))
+}
+
+/// The next commit round: at the coalescing timer, or when a write request asks.
+async fn round(timer: &mut tokio::time::Interval, commits: &crate::write_api::Commits) {
+    tokio::select! {
+        _ = timer.tick() => {},
+        () = commits.requested.notified() => {},
+    }
 }
 
 /// The served head, as far as it matters to a worker; `None` when unreadable.

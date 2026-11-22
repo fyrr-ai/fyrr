@@ -11,6 +11,7 @@ pub use row_state::{
 };
 pub(crate) use row_state::{
     OWN_READERS, effective_readers, marker_row, own_readers, with_own_readers, with_state,
+    with_typed,
 };
 
 use arrow_array::types::Float16Type;
@@ -128,16 +129,43 @@ pub(crate) async fn write_rows(
         return Ok(Vec::new());
     }
     check_row_bounds(config, &rows)?;
-    let schema = crate::prepare::schema(config.embedding.dimensions);
     let params = WriteParams {
         store_params: Some(crate::prepare::store_params(config)?),
         ..Default::default()
     };
-    FragmentCreateBuilder::new(&fyrr_reader::storage::dataset_uri(config))
-        .write_params(&params)
-        .write_fragments(RecordBatchIterator::new(rows.into_iter().map(Ok), schema))
-        .await
-        .map_err(|_| WriterError::FragmentWriteFailed)?
+    // Rows with attribute columns and rows without (a document's marker) are
+    // written apart: a fragment has one schema.
+    let dimensions = config.embedding.dimensions;
+    let built_in = crate::prepare::schema(dimensions).fields().len();
+    let mut groups: Vec<(arrow_schema::SchemaRef, Vec<RecordBatch>)> = Vec::new();
+    for row in rows {
+        let extra: Vec<_> = row
+            .schema()
+            .fields()
+            .iter()
+            .skip(built_in)
+            .map(|f| arrow_schema::Field::new(f.name(), f.data_type().clone(), true))
+            .collect();
+        let schema = crate::prepare::schema_with(dimensions, extra);
+        match groups.iter_mut().find(|(known, _)| *known == schema) {
+            Some((_, batches)) => batches.push(row),
+            None => groups.push((schema, vec![row])),
+        }
+    }
+    let mut fragments = Vec::new();
+    for (schema, batches) in groups {
+        fragments.extend(
+            FragmentCreateBuilder::new(&fyrr_reader::storage::dataset_uri(config))
+                .write_params(&params)
+                .write_fragments(RecordBatchIterator::new(
+                    batches.into_iter().map(Ok),
+                    schema,
+                ))
+                .await
+                .map_err(|_| WriterError::FragmentWriteFailed)?,
+        );
+    }
+    fragments
         .into_iter()
         .map(|f| serde_json::to_value(f).map_err(|_| WriterError::PreparedFragmentInvalid))
         .collect()

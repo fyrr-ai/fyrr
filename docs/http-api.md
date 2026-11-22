@@ -124,3 +124,61 @@ The listener bounds every route, `/mcp` included:
 When the HTTP parser rejects a request for exceeding a header limit, it
 returns `431` with an empty body. If the API detects oversized headers
 after parsing, it returns `431` with `{"error":"invalid_argument"}`.
+
+## Write documents
+
+> **In short**
+>
+> - `fyrr writer serve` with `[namespace.write_api]`, `[writer.serve.admin]`
+>   and the committer serves `POST /v1/namespaces/{namespace}/documents` on
+>   the writer listener.
+> - A request upserts rows and deletes ids, all or none. It is answered when
+>   the head that readers serve holds it, or has refused it.
+> - It needs an [API key](identity.md#identityapi_keys) with the `write` role,
+>   published with `fyrr writer keys`.
+
+```sh
+curl https://writer.example.com/v1/namespaces/main/documents \
+  -H "Authorization: Bearer $FYRR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"settings":{"attributes":{"price":"float"}},
+       "upserts":[{"id":"a1","text":"Blue shirt","price":12.5,"readers":["usr:ann"]}],
+       "deletes":["a0"]}'
+```
+
+The body is one JSON object (`application/json`, no `Content-Encoding`):
+
+| Key | Meaning |
+| --- | --- |
+| `upserts` | Rows. A row is an object with an `id` (string, its key in the namespace), its text under the key `text_attribute`, `readers` (`usr:<id>` or `grp:<id>`; ignored by an open namespace) and a value for any declared [attribute](tuning.md#namespaceattributes). A row replaces the document with that `id`, readers included. |
+| `deletes` | IDs to delete. An ID that does not exist is a delete of nothing. |
+| `settings` | The [settings](tuning.md#namespace) of a namespace that does not exist yet, laid over the process defaults. For an existing namespace it must not change any: `409 namespace_settings_fixed`. |
+
+The namespace is created by the first request, with its settings, and a
+request with only `settings` creates it. A row is one record: its text is at
+most 16 KiB, and it is not chunked. The same `id` twice in one request is
+`400 duplicate_id`. The answer is `{"upserted":n,"deleted":m}`, the rows of the
+request. A body over `writer.envelope_max_bytes` or with more rows than
+`writer.envelope_max_rows` is `413`; the body is counted as it arrives. A
+request holds one envelope: more than `writer.commit.group_max_rows` records
+or `group_max_bytes` is `413 request_too_large`.
+
+A request is published whole or refused whole. The answer comes after the
+publication that holds it is the served head. An answer `503 outcome_unknown`
+or `503 unavailable` says nothing about the outcome: the request may still be
+published, and repeating it upserts and deletes the same documents again. Requests
+are applied in the order they are published, the last one wins: a repeat can
+overwrite a later change to the same IDs. A
+request that was answered `200` is never refused later. A key revoked after a
+request was accepted does not cancel it.
+
+| Code | Status | When |
+| --- | --- | --- |
+| `unauthorized` | `401` | No API key, or a key that is not among the published keys. |
+| `forbidden` | `403` | The key lacks the `write` role or its `namespace_prefix` excludes the namespace. |
+| `not_found` | `404` | Another namespace, or the process has no `[namespace.write_api]`. |
+| `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
+| `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
+| `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `document_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
+| `namespace_settings_fixed`, `namespace_not_writable`, `namespace_not_empty`, `namespace_changed`, `rejected` | `409` | The namespace has other settings, takes its documents from connectors, is to be created over envelopes that a deleted namespace left, was replaced by another while the request was prepared, or the committer refused the request (nothing of it is applied). |
+| `busy`, `unavailable`, `outcome_unknown` | `503` | The writer is busy, storage or the published keys cannot be read, or the answer did not come within 10 minutes; `Retry-After` is 1. |
