@@ -147,6 +147,7 @@ async fn delete_blocks_source_workers_during_verification_on_local_storage() {
     }
     let (_, commit, root) = incremental::fixture_host_at(8, true, "dense-fixture", setup);
     let config = fyrr_core::config::load(&commit).unwrap().config;
+    let commit = quick_lease(&commit);
     let (store, namespace) = fyrr_reader::storage::namespace_store(&config).unwrap();
     let export = root.join("export");
     export_namespace(store.as_ref(), &namespace, &export).await;
@@ -239,7 +240,7 @@ async fn stale_delete_fence_advances_head_before_source_write_on_local_storage()
         .unwrap();
     assert!(after.lease.unwrap().epoch > before.lease.unwrap().epoch);
     assert!(matches!(
-        fyrr_reader::storage::delete_head_if_match(&config, &old_version).await,
+        fyrr_reader::storage::delete_if_match(&config, "head.json", &old_version).await,
         Err(object_store::Error::Precondition { .. })
     ));
     assert!(
@@ -271,7 +272,7 @@ async fn delete_refuses_active_source_worker_on_local_storage() {
     .await
     .unwrap();
     assert!(matches!(
-        fyrr_writer::commit::delete(&config, Some(&export)).await,
+        fyrr_writer::commit::delete(&config, Some(&export), None).await,
         Err(fyrr_writer::WriterError::SyncBusy)
     ));
     assert!(
@@ -359,4 +360,310 @@ async fn delete_refuses_envelope_arriving_after_export_listing() {
         == Some(format!("{}.json", envelope.envelope_id).as_str())));
     drop(gate);
     drop(proxy);
+}
+
+/// A copy of `config` whose leases expire after 3 s: a deletion waits for the
+/// leases that may still write, by default a minute.
+pub(super) fn quick_lease(config: &Path) -> PathBuf {
+    let text = std::fs::read_to_string(config).unwrap();
+    let text = if text.contains("[writer.commit]\n") {
+        text.replace("[writer.commit]\n", "[writer.commit]\nlease_ttl='3s'\n")
+    } else {
+        format!("{text}\n[writer.commit]\nlease_ttl='3s'\n")
+    };
+    let copy = config.with_file_name("quick-lease.toml");
+    std::fs::write(&copy, text).unwrap();
+    copy
+}
+
+fn without_sources(setup: (PathBuf, FixtureRoot)) -> (PathBuf, PathBuf, FixtureRoot) {
+    for row in 8..768 {
+        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
+    }
+    incremental::fixture_host_at(8, true, "dense-fixture", setup)
+}
+
+/// A running `writer serve`, stopped on drop, also when an assertion fails.
+struct Service(std::process::Child);
+impl Drop for Service {
+    fn drop(&mut self) {
+        let _ = Command::new("kill")
+            .args(["-TERM", &self.0.id().to_string()])
+            .status();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while std::time::Instant::now() < until {
+            if self.0.try_wait().unwrap().is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn delete_command(commit: &Path, args: &[&str]) -> Output {
+    coordination::host_command(commit)
+        .args(["writer", "namespace"])
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "real CLI namespace deletion removes the data on local storage"]
+async fn delete_data_removes_every_object_and_the_name_is_created_again_on_local_storage() {
+    use futures::TryStreamExt;
+    let (_, commit, _root) = without_sources(setup_on(Backend::Local));
+    let config = fyrr_core::config::load(&commit).unwrap().config;
+    let commit = quick_lease(&commit);
+    let name = config.namespace.name.clone();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&config).unwrap();
+    let before = fyrr_reader::storage::optional_head(&config)
+        .await
+        .unwrap()
+        .unwrap()
+        .incarnation;
+    // Another name than the namespace's confirms nothing.
+    let wrong = delete_command(&commit, &["delete", "--delete-data", "not-this-one"]);
+    assert!(!wrong.status.success());
+    assert!(
+        String::from_utf8_lossy(&wrong.stderr).contains("delete_confirmation_invalid"),
+        "{}",
+        report(&wrong)
+    );
+    assert!(
+        fyrr_reader::storage::optional_head(&config)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let deleted = delete_command(&commit, &["delete", "--delete-data", &name]);
+    assert!(deleted.status.success(), "{}", report(&deleted));
+    assert!(
+        fyrr_reader::storage::optional_head(&config)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let left: Vec<_> = store.list(Some(&namespace)).try_collect().await.unwrap();
+    assert!(left.is_empty(), "{left:?}");
+    // No source writes a cursor into the deleted namespace.
+    let source = fyrr_writer::sync_lease::CursorLease::acquire(
+        &config,
+        "incremental",
+        fyrr_core::connector::SyncKind::Content,
+    )
+    .await;
+    assert!(matches!(
+        source,
+        Err(fyrr_writer::WriterError::NamespaceUnavailable)
+    ));
+    let left: Vec<_> = store.list(Some(&namespace)).try_collect().await.unwrap();
+    assert!(left.is_empty(), "{left:?}");
+    // An object a late writer left under the prefix refuses the creation.
+    let stray = namespace.clone().join("stray");
+    store.put(&stray, "late".into()).await.unwrap();
+    let refused = delete_command(&commit, &["create"]);
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("namespace_deleting"),
+        "{}",
+        report(&refused)
+    );
+    // With no head and no fence, the deletion still removes what remains.
+    let cleaned = delete_command(&commit, &["delete", "--delete-data", &name]);
+    assert!(cleaned.status.success(), "{}", report(&cleaned));
+    let left: Vec<_> = store.list(Some(&namespace)).try_collect().await.unwrap();
+    assert!(left.is_empty(), "{left:?}");
+    let created = delete_command(&commit, &["create"]);
+    assert!(created.status.success(), "{}", report(&created));
+    let after = fyrr_reader::storage::optional_head(&config)
+        .await
+        .unwrap()
+        .unwrap()
+        .incarnation;
+    assert_ne!(before, after);
+    // A creation interrupted before its head leaves only identity and policy:
+    // repeating it succeeds.
+    store
+        .delete(&namespace.clone().join("head.json"))
+        .await
+        .unwrap();
+    let repeated = delete_command(&commit, &["create"]);
+    assert!(repeated.status.success(), "{}", report(&repeated));
+    assert!(
+        fyrr_reader::storage::optional_head(&config)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+#[ignore = "real CLI interrupted namespace deletion resumes on local storage"]
+async fn interrupted_delete_finishes_when_run_again_on_local_storage() {
+    use futures::TryStreamExt;
+    let (_, commit, root) = without_sources(setup_on(Backend::Local));
+    let config = fyrr_core::config::load(&commit).unwrap().config;
+    let commit = quick_lease(&commit);
+    let name = config.namespace.name.clone();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&config).unwrap();
+    // A refused export leaves the fence behind; removing the head by hand is a
+    // deletion that stopped right after unpublishing the namespace.
+    let missing = root.join("missing-export");
+    let refused = delete_command(&commit, &["delete", "--export", missing.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    store
+        .delete(&namespace.clone().join("head.json"))
+        .await
+        .unwrap();
+    // A new head would be removed with the objects of the deletion.
+    let created = delete_command(&commit, &["create"]);
+    assert!(!created.status.success());
+    assert!(
+        String::from_utf8_lossy(&created.stderr).contains("namespace_deleting"),
+        "{}",
+        report(&created)
+    );
+    // Without a confirmation the command only prints its plan.
+    let plan = delete_command(&commit, &["delete"]);
+    assert!(plan.status.success(), "{}", report(&plan));
+    assert!(String::from_utf8_lossy(&plan.stdout).contains("\"dry_run\":true"));
+    let left: Vec<_> = store.list(Some(&namespace)).try_collect().await.unwrap();
+    assert!(left.len() > 1);
+    // The resumed deletion asks for the confirmation of a new one: an export
+    // that does not hold the remaining objects deletes nothing.
+    let refused = delete_command(&commit, &["delete", "--export", missing.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("export_invalid"),
+        "{}",
+        report(&refused)
+    );
+    let kept: Vec<_> = store.list(Some(&namespace)).try_collect().await.unwrap();
+    assert_eq!(kept.len(), left.len());
+    for _ in 0..2 {
+        let resumed = delete_command(&commit, &["delete", "--delete-data", &name]);
+        assert!(resumed.status.success(), "{}", report(&resumed));
+        let left: Vec<_> = store.list(Some(&namespace)).try_collect().await.unwrap();
+        assert!(left.is_empty(), "{left:?}");
+    }
+    let created = delete_command(&commit, &["create"]);
+    assert!(created.status.success(), "{}", report(&created));
+}
+
+#[tokio::test]
+#[ignore = "real writer HTTP namespace deletion on local storage"]
+async fn http_delete_needs_an_admin_key_and_the_repeated_name_on_local_storage() {
+    use futures::TryStreamExt;
+    use std::time::{Duration, Instant};
+    let (_, commit, root) = without_sources(setup_on(Backend::Local));
+    let config = fyrr_core::config::load(&commit).unwrap().config;
+    let name = config.namespace.name.clone();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&config).unwrap();
+    let admin = format!("fyrr_key_{:064}", 1);
+    let reader = format!("fyrr_key_{:064}", 2);
+    let address = free_address();
+    let text = std::fs::read_to_string(&commit).unwrap();
+    std::fs::write(
+        &commit,
+        format!(
+            "{text}\n[[identity.api_keys]]\nname='delete-admin-q7x'\nkey={{env='FYRR_TEST_DELETE_ADMIN'}}\nroles=['admin']\n\
+             [[identity.api_keys]]\nname='delete-read-q7x'\nkey={{env='FYRR_TEST_DELETE_READ'}}\nreaders=['usr:u0']\n\
+             [writer.commit]\ncoalescing_timer='10m'\nlease_ttl='3s'\n[writer.serve.admin]\nlisten='{address}'\n\
+             operator_token={{env='FYRR_TEST_DELETE_OPERATOR'}}\n"
+        ),
+    )
+    .unwrap();
+    let keys = |command: &mut Command| {
+        command
+            .env("FYRR_TEST_DELETE_ADMIN", &admin)
+            .env("FYRR_TEST_DELETE_READ", &reader)
+            .env(
+                "FYRR_TEST_DELETE_OPERATOR",
+                "owned-fixture-operator-token-only",
+            )
+            .output()
+            .unwrap()
+    };
+    let published = keys(coordination::host_command(&commit).args(["writer", "keys"]));
+    assert!(published.status.success(), "{}", report(&published));
+    let stderr = root.join("service.stderr");
+    let mut service = Service(
+        coordination::worker_command(&commit)
+            .args(["writer", "serve", "--jobs", "1"])
+            .env("FYRR_TEST_DELETE_ADMIN", &admin)
+            .env("FYRR_TEST_DELETE_READ", &reader)
+            .env(
+                "FYRR_TEST_DELETE_OPERATOR",
+                "owned-fixture-operator-token-only",
+            )
+            .stdout(std::fs::File::create(root.join("service.stdout")).unwrap())
+            .stderr(std::fs::File::create(&stderr).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(40))
+        .build()
+        .unwrap();
+    let url = format!("http://{address}/v1/namespaces/{name}");
+    let mut ready = false;
+    for _ in 0..100 {
+        let probe = client
+            .get(format!("http://{address}/admin/status"))
+            .bearer_auth("owned-fixture-operator-token-only");
+        if ready_request(&mut service.0, &stderr, probe)
+            .await
+            .is_some_and(|status| status.is_success())
+        {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(ready, "writer HTTP startup deadline");
+    let body = json!({"namespace": name});
+    let status = |request: reqwest::RequestBuilder| async move {
+        request.send().await.unwrap().status().as_u16()
+    };
+    assert_eq!(status(client.delete(&url).json(&body)).await, 401);
+    assert_eq!(
+        status(client.delete(&url).bearer_auth(&reader).json(&body)).await,
+        403
+    );
+    assert_eq!(
+        status(client.delete(&url).bearer_auth(&admin)).await,
+        400,
+        "no name in the body"
+    );
+    assert_eq!(
+        status(
+            client
+                .delete(&url)
+                .bearer_auth(&admin)
+                .json(&json!({"namespace": "another"}))
+        )
+        .await,
+        400
+    );
+    assert!(
+        fyrr_reader::storage::optional_head(&config)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    // A source worker of the service may hold its cursor for a moment.
+    let until = Instant::now() + Duration::from_secs(60);
+    loop {
+        let code = status(client.delete(&url).bearer_auth(&admin).json(&body)).await;
+        if code == 200 {
+            break;
+        }
+        assert!(code == 503 && Instant::now() < until, "answered {code}");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let left: Vec<_> = store.list(Some(&namespace)).try_collect().await.unwrap();
+    assert!(left.is_empty(), "{left:?}");
 }

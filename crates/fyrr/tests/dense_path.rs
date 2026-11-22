@@ -657,7 +657,7 @@ async fn dense_path_and_namespace_contracts(backend: Backend) {
         std::fs::write(file, bytes).expect("export file");
     }
     let deleted = success(
-        &config,
+        &namespace_delete::quick_lease(&config),
         &[
             "writer",
             "namespace",
@@ -667,7 +667,15 @@ async fn dense_path_and_namespace_contracts(backend: Backend) {
         ],
     );
     assert_eq!(deleted["deleted"], true);
-    assert_eq!(deleted["retained_data"], true);
+    assert!(
+        store
+            .list(Some(&path))
+            .try_next()
+            .await
+            .expect("namespace inventory")
+            .is_none(),
+        "objects remain after the deletion"
+    );
     assert!(!run(&config, &["reader", "check"]).status.success());
     assert_eq!(
         success(&config, &["writer", "namespace", "delete"])["deleted"],

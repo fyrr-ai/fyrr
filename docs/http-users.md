@@ -302,7 +302,8 @@ Use a [SCIM or snapshot directory](identity.md#other-directory-providers) to
 bind subjects when not using Keycloak.
 
 The writer's administration listener serves `/admin/status` and the SCIM
-endpoints with two separate credentials; a non-loopback listener requires
+endpoints with two separate credentials, and `DELETE /v1/namespaces/{namespace}`
+to an API key with the `admin` role; a non-loopback listener requires
 TLS termination in front of it, declared with `tls_terminated = true`. All
 keys are in [identity](identity.md) and
 [reader settings](reader-writer.md#readerhttp).

@@ -80,11 +80,11 @@ async fn delete(
     .await
 }
 
-pub(super) async fn delete_head(
+/// Proves that the server honors `If-Match` on DELETE.
+pub(super) async fn probe(
     store: &AmazonS3,
     client: &HttpClient,
     root: &Path,
-    tag: &str,
 ) -> object_store::Result<()> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nonce = format!(
@@ -123,7 +123,18 @@ pub(super) async fn delete_head(
             source: "S3 conditional DELETE capability probe must return HTTP 412".into(),
         });
     }
-    let path = root.clone().join("head.json");
+    Ok(())
+}
+
+pub(super) async fn delete_file(
+    store: &AmazonS3,
+    client: &HttpClient,
+    root: &Path,
+    file: &str,
+    tag: &str,
+) -> object_store::Result<()> {
+    probe(store, client, root).await?;
+    let path = file.split('/').fold(root.clone(), Path::join);
     match delete(store, client, &path, tag).await? {
         200..=299 => Ok(()),
         409 | 412 => Err(object_store::Error::Precondition {
@@ -198,10 +209,11 @@ mod tests {
                 .with_http_connector(transport.clone())
                 .build()
                 .unwrap();
-            let result = delete_head(
+            let result = delete_file(
                 &store,
                 &transport.client().unwrap(),
                 &Path::from("namespace"),
+                "head.json",
                 "\"head-version\"",
             )
             .await;

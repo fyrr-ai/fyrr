@@ -1554,6 +1554,18 @@
         "tier": "full",
         "seconds": 10.0
       },
+      "full:fyrr:test:dense_path/namespace_delete::delete_data_removes_every_object_and_the_name_is_created_again_on_local_storage": {
+        "tier": "full",
+        "seconds": 10.0
+      },
+      "full:fyrr:test:dense_path/namespace_delete::interrupted_delete_finishes_when_run_again_on_local_storage": {
+        "tier": "full",
+        "seconds": 10.0
+      },
+      "full:fyrr:test:dense_path/namespace_delete::http_delete_needs_an_admin_key_and_the_repeated_name_on_local_storage": {
+        "tier": "full",
+        "seconds": 10.0
+      },
       "full:fyrr:test:dense_path/preparation_evidence::preparation_reuses_bodies_but_discovers_new_envelopes_on_local_storage": {
         "tier": "full",
         "seconds": 10.0
