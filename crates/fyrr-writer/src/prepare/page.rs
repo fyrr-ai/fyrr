@@ -204,10 +204,15 @@ struct RowColumns {
     authors: Vec<Option<String>>,
     updated: Vec<Option<i64>>,
     attributes: Vec<Vec<String>>,
+    /// The typed columns of a connector's rows; an API request brings its own.
+    typed: Option<AttributeColumns>,
 }
 struct DocumentRows<'a> {
     change: &'a DocumentChange,
     common: Option<fyrr_core::connector::DocumentMetadata>,
+    /// A connector document's metadata fields that are typed columns, which
+    /// its stored metadata no longer holds.
+    typed: serde_json::Map<String, serde_json::Value>,
     map_ref: Option<String>,
     section_ids: Vec<String>,
     silent: bool,
@@ -267,6 +272,23 @@ impl<'a> DocumentRows<'a> {
         let permission_stream = page.permission_stream;
         let mut common = change.metadata.clone();
         let map = common.as_mut().and_then(|m| m.connector_map.take());
+        let mut typed = serde_json::Map::new();
+        if page.config.namespace.typed_connector_fields()
+            && let Some(metadata) = &mut common
+        {
+            typed.insert("title".into(), metadata.title.take().into());
+            typed.insert("team".into(), metadata.team.take().into());
+            typed.insert("status".into(), metadata.status.take().into());
+            typed.insert("labels".into(), std::mem::take(&mut metadata.labels).into());
+            typed.insert(
+                "created_at".into(),
+                metadata
+                    .created_at
+                    .take()
+                    .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
+                    .into(),
+            );
+        }
         let map_ref = if let Some(map) = map {
             let bytes = serde_json::to_vec(&map).map_err(|_| WriterError::DocumentInvalid)?;
             let reference = digest(&bytes);
@@ -316,6 +338,7 @@ impl<'a> DocumentRows<'a> {
         Ok(Self {
             change,
             common,
+            typed,
             map_ref,
             section_ids,
             silent,
@@ -452,6 +475,17 @@ impl RowColumns {
                 self.updated
                     .push(common.updated_at.map(|t| t.timestamp_micros()));
                 self.attributes.push(change.attributes.clone());
+                if config.namespace.typed_connector_fields() {
+                    // Connector namespaces never change their schema: the table's
+                    // columns are in name order.
+                    self.typed
+                        .get_or_insert_with(|| {
+                            let schema = &config.namespace.attributes;
+                            AttributeColumns::new(schema, schema.keys().cloned().collect())
+                        })
+                        .push(&rows.typed)
+                        .map_err(|_| WriterError::DocumentInvalid)?;
+                }
                 count += 1;
             }
         }
@@ -471,6 +505,11 @@ impl RowColumns {
                 config.embedding.dimensions as i32,
             );
             let attribute_array = string_lists(self.attributes.iter().map(Vec::as_slice));
+            // An API request brings its attribute columns; a connector's rows
+            // take theirs from the metadata of their documents.
+            let typed = self
+                .typed
+                .map_or_else(|| page.attributes.to_vec(), AttributeColumns::finish);
             let mut columns: Vec<ArrayRef> = vec![
                 Arc::new(StringArray::from(self.sources)),
                 Arc::new(StringArray::from(self.roots)),
@@ -489,10 +528,10 @@ impl RowColumns {
                 Arc::new(TimestampMicrosecondArray::from(self.updated).with_timezone("UTC")),
                 Arc::new(attribute_array),
             ];
-            columns.extend(page.attributes.iter().map(|(_, column)| column.clone()));
+            columns.extend(typed.iter().map(|(_, column)| column.clone()));
             let schema = schema_with(
                 config.embedding.dimensions,
-                page.attributes
+                typed
                     .iter()
                     .map(|(name, column)| Field::new(name, column.data_type().clone(), true))
                     .collect(),

@@ -1351,6 +1351,10 @@
       "full:fyrr-core:test:contracts/attribute_index_options_need_the_version_an_older_build_refuses": {
         "tier": "quick",
         "seconds": 0.002
+      },
+      "full:fyrr-core:test:contracts/connector_columns_need_the_version_an_older_build_refuses": {
+        "tier": "quick",
+        "seconds": 0.002
       }
     }
   },
@@ -2281,6 +2285,14 @@
         "seconds": 60.0
       },
       "full:fyrr:test:dense_path/incremental::incremental_idle_member_reread_publishes_nothing_on_storage": {
+        "tier": "full",
+        "seconds": 20.0
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_connector_fields_are_typed_columns_on_storage": {
+        "tier": "full",
+        "seconds": 20.0
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_namespace_created_before_the_connector_columns_keeps_its_layout_on_storage": {
         "tier": "full",
         "seconds": 20.0
       },

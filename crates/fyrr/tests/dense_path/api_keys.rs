@@ -882,7 +882,12 @@ async fn a_namespace_report_needs_the_admin_or_list_role() {
             assert!(body["logical_bytes"].as_u64().unwrap() > 0, "{body}");
             assert!(body["first_published_at"].is_string(), "{body}");
             assert!(body["last_write_at"].is_string(), "{body}");
-            assert_eq!(body["schema"], json!({}));
+            // A connector namespace declares the columns of its metadata fields.
+            assert_eq!(
+                body["schema"],
+                json!({"title":"string","team":"string","status":"string",
+                    "labels":{"array":"string"},"created_at":"datetime"})
+            );
             assert_eq!(body["read_only"], false);
             assert!(body["settings"]["embedding"]["model"].is_string(), "{body}");
             assert_eq!(body["unindexed"], json!({"rows":0,"logical_bytes":0}));

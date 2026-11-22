@@ -60,6 +60,15 @@ returns no hits on those rows. Use the `attributes` argument to match the
 `key=value` string labels supplied by
 [connector documents](connectors/authoring.md#documents).
 
+A namespace created for connectors also declares five attributes itself:
+`title`, `team` and `status` (`string`), `labels` (an array of `string`) and
+`created_at` (`datetime`), the fields of a connector document's metadata. They
+count toward the 128, are filtered and sorted by like any other attribute, and
+are not stored in the document's metadata. A file cannot declare them with
+another type. A namespace written through the API has none of them, and a
+namespace created before them keeps the fields in its documents' metadata, as
+it was written, and cannot be filtered by them.
+
 A `string`, number, `datetime` or `uuid` attribute gets a B-tree index, a
 `bool` a bitmap index and an array a label-list index. A `bytes` attribute has
 no index: it is stored, and cannot be filtered or sorted by. A reader opens each index: about two storage requests per

@@ -39,7 +39,7 @@ pub(crate) fn configured_identity(config: &Config, generation: u64) -> Result<Id
 
 /// The settings `config` asks for: what a new namespace is created with, and
 /// what an existing one must already have for a request to repeat its creation.
-pub(crate) fn namespace_settings(config: &Config) -> NamespaceSettings {
+pub fn namespace_settings(config: &Config) -> NamespaceSettings {
     let namespace = &config.namespace;
     NamespaceSettings {
         embedding: identity(&config.embedding),
@@ -67,7 +67,19 @@ async fn repeat_create(
     settings: &NamespaceSettings,
 ) -> Result<()> {
     let policy: PolicyArtifact = fyrr_reader::storage::artifact(store, root, &head.policy).await?;
-    if policy.settings == *settings {
+    let mut asked = settings.clone();
+    // A namespace created before the connector columns has none of them, and
+    // a file that asks for them again still repeats its creation.
+    if policy.settings.write_api.is_none()
+        && !fyrr_core::attributes::has_connector_columns(&policy.settings.attributes)
+    {
+        for (name, _) in fyrr_core::attributes::CONNECTOR_COLUMNS {
+            if !policy.settings.attributes.contains_key(name) {
+                asked.attributes.remove(name);
+            }
+        }
+    }
+    if policy.settings == asked {
         Ok(())
     } else {
         Err(WriterError::NamespaceSettingsFixed)

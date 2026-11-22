@@ -254,6 +254,20 @@ pub(crate) fn namespace_settings(
     {
         error("namespace.attribute_indexes", code.to_string());
     }
+    if namespace.write_api.is_none() {
+        for (name, kind) in crate::attributes::CONNECTOR_COLUMNS {
+            if namespace
+                .attributes
+                .get(name)
+                .is_some_and(|got| *got != kind)
+            {
+                error(
+                    "namespace.attributes",
+                    format!("{name} is a connector column and has no other type"),
+                );
+            }
+        }
+    }
     if let Some(api) = &namespace.write_api {
         if let Err(code) = crate::attributes::check_name(&api.text_attribute) {
             error("namespace.write_api.text_attribute", code.to_string());

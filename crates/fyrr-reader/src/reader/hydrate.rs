@@ -5,7 +5,7 @@ use arrow_array::{
     UInt64Array,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use fyrr_core::attributes::{AttributeType, format_uuid};
+use fyrr_core::attributes::{AttributeType, CONNECTOR_COLUMNS, format_uuid};
 use serde_json::Value;
 
 /// Common metadata with the record revision and its text length in bytes.
@@ -100,6 +100,45 @@ impl PreparedReader {
                 .collect()),
             _ => Ok(Vec::new()),
         }
+    }
+
+    /// The columns that hold the metadata fields of a connector document: none
+    /// in a namespace written through the API or created before them, which
+    /// keeps the fields in the metadata of its rows.
+    pub(crate) fn connector_columns(&self) -> Vec<&'static str> {
+        if !self.config.namespace.typed_connector_fields() {
+            return Vec::new();
+        }
+        CONNECTOR_COLUMNS.iter().map(|(name, _)| *name).collect()
+    }
+
+    /// `metadata` with the fields that its namespace stores as typed columns
+    /// taken from `row` of `batch`, which holds [`Self::connector_columns`].
+    pub(crate) fn with_connector_columns(
+        &self,
+        batch: &RecordBatch,
+        row: usize,
+        mut metadata: fyrr_core::connector::DocumentMetadata,
+    ) -> Result<fyrr_core::connector::DocumentMetadata> {
+        let names: Vec<String> = self
+            .connector_columns()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        if names.is_empty() {
+            return Ok(metadata);
+        }
+        let mut values = self.row_attributes(batch, row, &names)?;
+        let mut take = |name: &str| values.remove(name).unwrap_or(Value::Null);
+        let invalid = |_| PublicationRowsInvalid;
+        metadata.title = serde_json::from_value(take("title")).map_err(invalid)?;
+        metadata.team = serde_json::from_value(take("team")).map_err(invalid)?;
+        metadata.status = serde_json::from_value(take("status")).map_err(invalid)?;
+        metadata.labels = serde_json::from_value::<Option<_>>(take("labels"))
+            .map_err(invalid)?
+            .unwrap_or_default();
+        metadata.created_at = serde_json::from_value(take("created_at")).map_err(invalid)?;
+        Ok(metadata)
     }
 
     /// One row's values of the returned columns; a missing value is `null`.
@@ -250,6 +289,11 @@ impl PreparedReader {
             columns.push("searchable_text");
         }
         columns.extend(returned.iter().map(String::as_str));
+        columns.extend(
+            self.connector_columns()
+                .into_iter()
+                .filter(|name| !returned.iter().any(|r| r == name)),
+        );
         let batch = self
             .rows_by_id(&row_ids, &columns, PublicationInvalid)
             .await?;
@@ -274,10 +318,9 @@ impl PreparedReader {
             let private = (stored.revision, stored.bytes);
             let common: Option<fyrr_core::connector::DocumentMetadata> =
                 serde_json::from_str(raw).map_err(|_| PublicationRowsInvalid)?;
-            metadata.insert(
-                candidate.row_id,
-                (common.ok_or(PublicationRowsInvalid)?, private),
-            );
+            let common =
+                self.with_connector_columns(&batch, row, common.ok_or(PublicationRowsInvalid)?)?;
+            metadata.insert(candidate.row_id, (common, private));
             if !returned.is_empty() {
                 attributes.insert(
                     candidate.row_id,

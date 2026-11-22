@@ -1322,13 +1322,33 @@ fn namespace_attributes_are_declared_by_name_and_type() {
     assert_eq!(attributes["created"], AttributeType::Datetime);
     assert_eq!(attributes["priority"], AttributeType::Int);
     assert_eq!(attributes["done"], AttributeType::Bool);
+    // A namespace fed by connectors always has their metadata columns; one
+    // written through the API has none but its own.
+    let connector = parse(MINIMAL).unwrap();
+    assert_eq!(
+        connector
+            .config
+            .namespace
+            .attributes
+            .keys()
+            .collect::<Vec<_>>(),
+        ["created_at", "labels", "status", "team", "title"]
+    );
+    assert!(errors(&connector).is_empty());
     assert!(
-        parse(MINIMAL)
+        parse(&format!("{MINIMAL}\n[namespace.write_api]"))
             .unwrap()
             .config
             .namespace
             .attributes
             .is_empty()
+    );
+    let retyped = parse(&format!("{MINIMAL}\n[namespace.attributes]\ntitle='int'")).unwrap();
+    assert!(
+        errors(&retyped)
+            .iter()
+            .any(|error| error.contains("namespace.attributes")),
+        "a connector column has no other type"
     );
     for name in ["_hidden", "source_id", "Bad-Name"] {
         let rejected = parse(&format!(

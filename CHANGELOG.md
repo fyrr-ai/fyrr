@@ -7,6 +7,25 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## [Unreleased]
 
+### Changed
+
+- A namespace created for connectors stores `title`, `team`, `status`,
+  `labels` (an array of `string`) and `created_at` (`datetime`) of its
+  documents as typed columns, declared with the namespace like the attributes
+  of the file, so a filter or `order_by` can use them. `search`, `fetch` and
+  `list_filters` return the same fields as before. A namespace created before
+  keeps its layout and works as it did. A manifest of the new layout is
+  content-manifest 5.0 and its policy artifact 4.0, the versions of attribute
+  index options and of the read-only switch, so an older build refuses it
+  instead of reading nulls. The
+  `key=value` attributes of a connector document stay in the `attributes`
+  column. A namespace or a configuration made by an unreleased build between
+  typed attributes (#225) and this change can be refused: one that declares the
+  five connector names with exactly their types, one at the limit of declared
+  attributes (the five count), or one that sets one of the five to another type.
+  Released v0.1.x has no custom attributes and is unaffected. See
+  [tuning](docs/tuning.md#namespaceattributes).
+
 ### Added
 
 - `POST /v1/namespaces/{namespace}/aggregate` on the reader computes `count`,
