@@ -13,6 +13,9 @@ pub(crate) enum ToolCall {
     Search(Box<SearchInput>),
     Fetch(FetchInput),
     ListFilters(ListFiltersInput),
+    /// `POST /v1/namespaces/{namespace}/aggregate`: no MCP tool, so `parse`
+    /// never makes it; `aggregate` does.
+    Aggregate(Box<AggregateInput>),
     /// `GET /v1/namespaces/{namespace}`: no MCP tool, so `parse` never makes it.
     Report,
 }
@@ -32,15 +35,23 @@ impl ToolCall {
             Self::Search(args) => args.validate().map_err(|_| InvalidArgument)?,
             Self::Fetch(args) => args.validate().map_err(|_| InvalidArgument)?,
             Self::ListFilters(args) => args.validate().map_err(|_| InvalidArgument)?,
-            Self::Report => {}
+            // `aggregate` validated its own arguments.
+            Self::Aggregate(_) | Self::Report => {}
         }
         Ok(call)
+    }
+    /// The call of the JSON `aggregate` route.
+    pub(crate) fn aggregate(args: Value) -> Result<Self> {
+        let args: AggregateInput = serde_json::from_value(args).map_err(|_| InvalidArgument)?;
+        args.validate().map_err(|_| InvalidArgument)?;
+        Ok(Self::Aggregate(Box::new(args)))
     }
     pub(crate) fn deadline_ms(&self) -> u32 {
         match self {
             Self::Search(args) => args.deadline_ms,
             Self::Fetch(args) => args.deadline_ms,
             Self::ListFilters(args) => args.deadline_ms,
+            Self::Aggregate(args) => args.deadline_ms,
             Self::Report => None,
         }
         .unwrap_or(fyrr_core::limits::mcp::DEFAULT_DEADLINE_MS)
@@ -83,6 +94,10 @@ pub(super) async fn execute(
                     .and_then(|r| serde_json::to_value(r).map_err(|_| StorageUnavailable)),
                 ToolCall::ListFilters(args) => reader
                     .list_filters(args)
+                    .await
+                    .and_then(|r| serde_json::to_value(r).map_err(|_| StorageUnavailable)),
+                ToolCall::Aggregate(args) => reader
+                    .aggregate(args)
                     .await
                     .and_then(|r| serde_json::to_value(r).map_err(|_| StorageUnavailable)),
                 ToolCall::Report => reader.report().await,

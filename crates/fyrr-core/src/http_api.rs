@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::attributes::AttributeSchema;
-use crate::mcp::{FetchInput, Filter, ReturnFields, SearchInput};
+use crate::mcp::{AggregateInput, FetchInput, Filter, ReturnFields, SearchInput};
 use crate::publication::NamespaceSettings;
 
 /// How current the version is that a `query` or `fetch` answer is read from.
@@ -42,6 +42,16 @@ pub struct QueryRequest {
 pub struct FetchRequest {
     #[schemars(flatten)]
     pub fetch: FetchInput,
+    /// Defaults to `cached`.
+    pub consistency: Option<Consistency>,
+}
+
+/// The body of `POST /v1/namespaces/{namespace}/aggregate`: the aggregate
+/// arguments and `consistency`.
+#[derive(Debug, Clone, PartialEq, JsonSchema)]
+pub struct AggregateRequest {
+    #[schemars(flatten)]
+    pub aggregate: AggregateInput,
     /// Defaults to `cached`.
     pub consistency: Option<Consistency>,
 }

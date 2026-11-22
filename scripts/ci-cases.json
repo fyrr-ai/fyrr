@@ -323,6 +323,18 @@
         "tier": "quick",
         "seconds": 0.1
       },
+      "full:fyrr-reader:lib:fyrr_reader/tools::aggregate::tests::the_average_of_large_finite_floats_is_finite": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-reader:lib:fyrr_reader/tools::aggregate::tests::a_sum_of_whole_numbers_is_exact_in_the_64_bit_range": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-reader:lib:fyrr_reader/tools::aggregate::tests::negative_zero_is_zero_in_a_key_and_a_minimum": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-reader:lib:fyrr_reader/tools::cursor_tests::list_cursor_maximum_identifiers_and_windows_fit_and_roundtrip": {
         "tier": "quick",
         "seconds": 0.001
@@ -1339,6 +1351,10 @@
       "full:fyrr-core:test:contracts/attribute_index_options_need_the_version_an_older_build_refuses": {
         "tier": "quick",
         "seconds": 0.002
+      },
+      "full:fyrr-core:test:contracts/connector_columns_need_the_version_an_older_build_refuses": {
+        "tier": "quick",
+        "seconds": 0.002
       }
     }
   },
@@ -2052,6 +2068,10 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_orders_a_listing_by_attributes_on_storage": {
         "tier": "full",
         "seconds": 1
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_aggregates_the_documents_a_caller_reads_on_storage": {
+        "tier": "full",
+        "seconds": 4
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_changes_the_schema_of_a_live_namespace_on_storage": {
         "tier": "full",

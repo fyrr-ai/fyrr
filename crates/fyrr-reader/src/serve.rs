@@ -3,7 +3,7 @@ use crate::error::*;
 use crate::search::PreparedReader;
 use crate::telemetry::{emit, micros};
 use futures::{StreamExt, stream::FuturesUnordered};
-use fyrr_core::mcp::{FetchInput, ListFiltersInput, SearchInput, ToolError};
+use fyrr_core::mcp::{AggregateInput, FetchInput, ListFiltersInput, SearchInput, ToolError};
 use lance_io::object_store::WrappingObjectStore;
 use rmcp::{RoleServer, ServerHandler, ServiceExt, model::*, service::RequestContext};
 use serde_json::{Value, json};

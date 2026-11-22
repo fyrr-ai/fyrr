@@ -530,6 +530,57 @@ pub struct ServedWindow {
     pub end: u32,
 }
 
+/// The arguments of the JSON `aggregate` route; it is no MCP tool.
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AggregateInput {
+    /// The aggregates to compute, in the order of every group's `values`.
+    #[schemars(length(min = 1, max = 16))]
+    pub aggregations: Vec<Aggregation>,
+    /// Scalar fields to group by; without any, the whole selection is one group.
+    #[schemars(length(min = 1, max = 4), inner(length(min = 1, max = 128)))]
+    pub group_by: Option<Vec<String>>,
+    /// The documents to aggregate, as in `search`.
+    pub filter: Option<Filter>,
+    /// Deadline in milliseconds; default 10000.
+    #[schemars(range(min = 1, max = 300_000))]
+    pub deadline_ms: Option<u32>,
+}
+
+/// One aggregate: `count` takes an optional field, the others need one.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Aggregation {
+    pub op: AggregateOp,
+    #[schemars(length(min = 1, max = 128))]
+    pub field: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AggregateOp {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+/// The `aggregate` result: groups in key order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct AggregateOutput {
+    pub groups: Vec<AggregateGroup>,
+    pub metadata: ResponseMetadata,
+}
+
+/// One group: its values of the `group_by` fields and its aggregates, both in
+/// request order. A `null` aggregate is one over no value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct AggregateGroup {
+    pub key: Vec<Value>,
+    pub values: Vec<Value>,
+}
+
 /// `list_filters` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ListFiltersOutput {
@@ -1149,6 +1200,31 @@ impl FetchWindow {
 impl ListFiltersInput {
     pub fn validate(&self) -> Result<(), &'static str> {
         if valid_deadline(self.deadline_ms) {
+            Ok(())
+        } else {
+            Err("invalid_argument")
+        }
+    }
+}
+impl AggregateInput {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let group_by = self.group_by.as_deref().unwrap_or_default();
+        if (1..=MAX_AGGREGATIONS).contains(&self.aggregations.len())
+            && group_by.len() <= MAX_GROUP_BY_FIELDS
+            && self
+                .group_by
+                .as_ref()
+                .is_none_or(|fields| !fields.is_empty())
+            && group_by.iter().all(|field| bounded_text(field, 128))
+            && self.aggregations.iter().all(|aggregation| {
+                aggregation
+                    .field
+                    .as_ref()
+                    .is_some_and(|field| bounded_text(field, 128))
+                    || (aggregation.field.is_none() && aggregation.op == AggregateOp::Count)
+            })
+            && valid_deadline(self.deadline_ms)
+        {
             Ok(())
         } else {
             Err("invalid_argument")

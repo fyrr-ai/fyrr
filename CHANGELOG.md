@@ -28,6 +28,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `POST /v1/namespaces/{namespace}/aggregate` on the reader computes `count`,
+  `sum`, `avg`, `min` and `max` over the documents a caller may read and a
+  `filter` selects, optionally grouped by up to four scalar fields, in key
+  order. It has no MCP tool. `list_filters` now runs the same scan. See
+  [Aggregate](docs/http-api.md#aggregate).
 - `fyrr writer namespace read-only true|false` and `PATCH /v1/namespaces/{namespace}`
   with `{"read_only": …}` (an API key with the `admin` role) freeze a namespace or
   thaw it. While it is frozen API writes and connector syncs are refused with

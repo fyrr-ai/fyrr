@@ -27,6 +27,7 @@
 | --- | --- | --- |
 | `POST /v1/namespaces/{namespace}/query` | The arguments of [`search`](mcp-tools.md#search) | The `search` result |
 | `POST /v1/namespaces/{namespace}/fetch` | The arguments of [`fetch`](mcp-tools.md#fetch) | The `fetch` result |
+| `POST /v1/namespaces/{namespace}/aggregate` | The [aggregate request](#aggregate) | The [aggregate result](#aggregate) |
 | `GET /v1/namespaces/{namespace}` | None | The [namespace report](#namespace-report) |
 | `GET /v1/namespaces?prefix=` | None | The [namespace list](#listing-namespaces) |
 
@@ -58,7 +59,7 @@ spend limits are per process: every namespace charges the same counters.
 `/mcp`, `/readyz` and `/admin/refresh` keep serving the configured namespace
 alone. `list_filters` has no JSON route.
 
-`query` and `fetch`, like `/mcp`, need the `read` role of an
+`query`, `fetch` and `aggregate`, like `/mcp`, need the `read` role of an
 [API key](identity.md#identityapi_keys); users signed in through OIDC hold
 `read` only. Other namespaces than the configured one are for API keys: an OIDC
 user reads the configured namespace through the path and answers `503
@@ -200,7 +201,7 @@ curl -H "Authorization: Bearer $FYRR_KEY" \
 
 ## Consistency
 
-Both routes take one more member besides the arguments of the tool,
+`query`, `fetch` and `aggregate` take one more member besides the arguments of the tool,
 `consistency`. It is no argument of the tool and `/mcp` has no such member.
 
 | Value | Answer |
@@ -250,6 +251,44 @@ curl https://fyrr.example.com/v1/namespaces/main/query \
   -H "Content-Type: application/json" \
   -d '{"query":"backup","fields":{"include":["price","vector"],"scores":true}}'
 ```
+
+## Aggregate
+
+`POST /v1/namespaces/{namespace}/aggregate` computes aggregates over the
+documents the caller may read and `filter` selects, optionally per group. It is
+a JSON route only: no MCP tool takes it.
+
+| Member | Meaning |
+| --- | --- |
+| `aggregations` | 1–16 aggregates `{ "op": ..., "field": ... }`. `op` is `count`, `sum`, `avg`, `min` or `max`. `count` without `field` counts documents; with one it counts the documents that have a value. The others need a `field`: `sum` and `avg` of an `int`, `uint` or `float`, `min` and `max` of any scalar. |
+| `group_by` | 1–4 scalar fields (built-in or declared attributes, not the labels, an array or `bytes`). Without it the whole selection is one group, present even over no document. |
+| `filter` | A [filter](mcp-tools.md#filters) tree, as for `search`. |
+| `deadline_ms` | 1–300000; default 10 s. |
+
+```sh
+curl https://fyrr.example.com/v1/namespaces/main/aggregate \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"group_by":["status"],"aggregations":[{"op":"count"},{"op":"avg","field":"price"}]}'
+```
+
+The answer is `{"groups": [{"key": [...], "values": [...]}], "metadata": {...}}`.
+A group's `key` holds its value of each `group_by` field and `values` its
+aggregates, both in request order; the groups come in key order, numbers as
+numbers, text bytewise and `datetime` by time. A document with no value in a
+`group_by` field is in no group. Every count is of documents, not rows: a
+document that has several records counts once and gives one value, the one of
+its first row. A `null` value is skipped, so the `sum`, `avg`, `min` or `max`
+of no value is `null`. A `sum` of whole numbers is exact while it fits 64 bits
+(a signed integer, or an unsigned one when it is above the signed range) and an
+approximate float beyond; an `avg` is a float, and so is the `sum` of floats
+(`null` when not finite). `-0.0` is `0.0`.
+`datetime` and `uuid` values are written as in a hit's attributes.
+
+Only documents the caller may read are counted. More than
+`reader.filter_count_max_rows` readable rows answers `503 busy`, as
+[`list_filters`](mcp-tools.md#list_filters) does, which runs the same scan. More than 1000
+groups is `400 invalid_argument`: narrow the filter or group by fewer fields.
 
 ## Errors
 
