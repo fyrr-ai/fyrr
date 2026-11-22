@@ -28,6 +28,16 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `filter` tests the text of a `string` with `starts_with`, `contains`,
+  `matches` (a regular expression) and the negations `not_starts_with`,
+  `not_contains` and `not_matches`. A prefix is answered from the B-tree of a
+  `string` attribute and a substring or an expression from its n-gram index
+  (`ngram = true`); the negations and the patterns without a literal of three
+  alphanumeric characters are scans bounded by the request deadline. A value is
+  never empty, and an expression is bounded to 512 bytes and a compiled size of
+  256 KiB. No case-insensitive test is offered. The write conditions and the
+  filters of `delete_where` and `patch_where` take the same tests. See
+  [Text tests](docs/mcp-tools.md#text-tests).
 - The `query` route of the HTTP API takes `fusion` and `rerank`. `fusion`
   (`{"method":"rrf","rank_constant":60,"weights":[…]}`, with `queries`) ranks the
   documents of all sub-queries by reciprocal rank fusion instead of merging

@@ -331,8 +331,10 @@ pub struct Comparison {
     pub value: Value,
 }
 
-/// How a field is compared with a value. The last five test the elements of an
-/// array attribute and apply to nothing else.
+/// How a field is compared with a value. `starts_with`, `matches` and their
+/// negations test the text of a `string`; `contains` and `not_contains` test
+/// the text of a `string` or one element of an array. The last three test the
+/// elements of an array attribute and apply to nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Op {
@@ -346,6 +348,10 @@ pub enum Op {
     Gte,
     Contains,
     NotContains,
+    StartsWith,
+    NotStartsWith,
+    Matches,
+    NotMatches,
     ContainsAny,
     ContainsAll,
     ContainsNone,

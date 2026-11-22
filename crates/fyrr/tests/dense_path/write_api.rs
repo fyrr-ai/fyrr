@@ -1947,6 +1947,119 @@ async fn identity_write_api_aggregates_the_documents_a_caller_reads_on_storage()
     );
 }
 
+/// A `string` is filtered by prefix, substring and regular expression, and by
+/// their negations: case-sensitively, a missing value matches none of them, a
+/// document the caller may not read matches none however it is asked for, and
+/// a pattern the engine cannot bound is `invalid_argument`.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_filters_strings_by_prefix_substring_and_expression_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let texts = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+    embed(&root, &texts);
+    let writer = Writer::start(&config, &root, address).await;
+    // The values hold what a pattern must not take for syntax: `%`, `_`, a
+    // quote and a backslash. Row e is unreadable and row d has no value.
+    let notes = [
+        json!("Alpha_one"),
+        json!("alpha%two'"),
+        json!("back\\slash"),
+        Value::Null,
+        json!("Alpha secret"),
+        json!("release-2026-11-22"),
+    ];
+    let upserts: Vec<Value> = ["a", "b", "c", "d", "e", "f"]
+        .iter()
+        .enumerate()
+        .map(|(n, id)| {
+            let readers = if *id == "e" {
+                json!(["usr:nobody"])
+            } else {
+                json!(["grp:allow", "usr:x"])
+            };
+            json!({"id": id, "text": texts[n], "readers": readers, "note": notes[n], "price": 1.5})
+        })
+        .collect();
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({
+                    "settings": {
+                        "attributes": {"note": "string", "price": "float"},
+                        "attribute_indexes": {"note": {"ngram": true}},
+                    },
+                    "upserts": upserts,
+                })
+            )
+            .await,
+        (200, json!({"upserted": 6, "deleted": 0}))
+    );
+    let on = |op: &str, value: Value| json!({"field": "note", "op": op, "value": value});
+    for (op, value, expected) in [
+        ("starts_with", json!("Alpha"), vec!["a"]),
+        ("starts_with", json!("alpha%"), vec!["b"]),
+        ("starts_with", json!("alpha_"), vec![]),
+        ("starts_with", json!("back\\"), vec!["c"]),
+        ("matches", json!(".*"), vec!["a", "b", "c", "f"]),
+        ("not_matches", json!(".*"), vec![]),
+        ("not_starts_with", json!("Alpha"), vec!["b", "c", "f"]),
+        ("contains", json!("lpha"), vec!["a", "b"]),
+        ("contains", json!("'"), vec!["b"]),
+        ("contains", json!("\\"), vec!["c"]),
+        ("contains", json!("ALPHA"), vec![]),
+        ("contains", json!("secret"), vec![]),
+        ("not_contains", json!("lpha"), vec!["c", "f"]),
+        ("matches", json!("^Alpha_\\w+$"), vec!["a"]),
+        ("matches", json!("\\\\"), vec!["c"]),
+        ("matches", json!("\\d{4}-\\d{2}-\\d{2}$"), vec!["f"]),
+        ("matches", json!("e"), vec!["a", "f"]),
+        ("matches", json!("(?i)ALPHA"), vec!["a", "b"]),
+        ("not_matches", json!("\\d"), vec!["a", "b", "c"]),
+    ] {
+        assert_eq!(
+            listing(&config, on(op, value.clone())),
+            expected,
+            "{op} {value}"
+        );
+    }
+    // `not` of a test keeps a missing value out, as `not_*` does.
+    assert_eq!(
+        listing(&config, json!({"not": on("starts_with", json!("Alpha"))})),
+        ["b", "c", "f"]
+    );
+    assert_eq!(
+        listing(
+            &config,
+            json!({"and": [on("contains", json!("lpha")), on("not_matches", json!("^Alpha"))]})
+        ),
+        ["b"]
+    );
+
+    let mut client = Mcp::open(&config);
+    let on_field = |field: &str, op: &str, value: Value| json!({"filter": {"field": field, "op": op, "value": value}});
+    for arguments in [
+        // An expression over the bound, one that does not parse, and one whose
+        // compiled form is too large.
+        on_field("note", "matches", json!("a".repeat(513))),
+        on_field("note", "matches", json!("(")),
+        on_field("note", "matches", json!("((a{100}){100}){100}")),
+        // Text tests take text and a `string` only.
+        on_field("note", "starts_with", json!(1)),
+        on_field("note", "contains", Value::Null),
+        on_field("note", "matches", json!(["a"])),
+        on_field("note", "starts_with", json!("")),
+        on_field("price", "starts_with", json!("1")),
+        on_field("price", "matches", json!("1")),
+        on_field("price", "contains", json!("1")),
+    ] {
+        error(client.call("search", arguments.clone()), "invalid_argument");
+    }
+}
+
 /// Unsigned, UUID, bytes and array attributes are written over HTTP and stored
 /// in their own columns. A listing filters and orders by the ones that can be,
 /// and refuses `bytes` and the arrays where they cannot be.

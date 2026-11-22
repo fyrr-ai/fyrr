@@ -96,8 +96,10 @@ An attribute without an index is still filtered and sorted by: the reader
 scans its column, fragment by fragment, and the request deadline (`deadline_ms`,
 10 s by default) bounds the scan like any other work of the request. That is
 cheap on a small namespace and costs the time of reading the column on a large
-one, so leave `index = false` to attributes that are rarely filtered. The full-text and n-gram indexes are
-built and kept; no filter operator reads them yet.
+one, so leave `index = false` to attributes that are rarely filtered. The n-gram
+index answers the `contains` and `matches` filters on a `string`
+([text tests](mcp-tools.md#text-tests)); the full-text index is built and kept,
+and no filter operator reads it yet.
 
 A new namespace's first publication builds every index its schema asks for.
 After that the attributes and their indexes change by a
