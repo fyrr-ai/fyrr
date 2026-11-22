@@ -155,6 +155,62 @@ impl McpService {
             token.cancel();
         }
     }
+    /// Queues one parsed call on the scheduler and waits for its result. MCP
+    /// tools and the JSON routes share this path.
+    async fn run(
+        &self,
+        call: ToolCall,
+        subject: Option<crate::auth::AuthenticatedSubject>,
+        arrived: Instant,
+        response_claims: Arc<ResponseClaims>,
+        cancelled: CancellationToken,
+        permit: Arc<tokio::sync::OwnedSemaphorePermit>,
+    ) -> CallToolResult {
+        let (reply, response) = oneshot::channel();
+        let deadline = arrived + Duration::from_millis(u64::from(call.deadline_ms()));
+        let job = Job {
+            request: call,
+            reply,
+            timing: RequestTiming {
+                arrived,
+                deadline,
+                cancelled,
+                authorization_build_us: 0,
+            },
+            subject,
+            _permit: permit,
+            response_claims,
+            recall_query_index: 0,
+        };
+        if self.sender.try_send(job).is_err() {
+            return tool_error(Busy);
+        }
+        response
+            .await
+            .unwrap_or_else(|_| tool_error(StorageUnavailable))
+    }
+    /// An authenticated HTTP call without an MCP request ID: the caller's
+    /// disconnect, which drops `cancelled`'s guard, cancels it.
+    pub(crate) async fn call_json(
+        &self,
+        call: ToolCall,
+        subject: Option<crate::auth::AuthenticatedSubject>,
+        arrived: Instant,
+        response_claims: Arc<ResponseClaims>,
+    ) -> CallToolResult {
+        if subject.is_none() {
+            return tool_error(AuthorizationUnavailable);
+        }
+        let Ok(permit) = self.slots.clone().try_acquire_owned() else {
+            return tool_error(Busy);
+        };
+        let permit = Arc::new(permit);
+        *crate::sync::lock(&response_claims.admission) = Some(permit.clone());
+        let cancelled = CancellationToken::new();
+        let _cancel_on_drop = cancelled.clone().drop_guard();
+        self.run(call, subject, arrived, response_claims, cancelled, permit)
+            .await
+    }
     pub(crate) async fn publication(&self) -> Value {
         let mut readiness = self.publication.read().await.clone();
         if self.sender.is_closed() {
@@ -245,7 +301,6 @@ impl ServerHandler for McpService {
             Ok(call) => call,
             Err(code) => return tool_response(tool_error(code)),
         };
-        let ms = call.deadline_ms();
         let permit = if let Some(slot) = context.extensions.get::<StdioAdmissionSlot>() {
             match &slot.permit {
                 Some(p) => p.clone(),
@@ -292,28 +347,16 @@ impl ServerHandler for McpService {
             registry: self.cancellations.clone(),
             token: cancellation.clone(),
         };
-        let (reply, response) = oneshot::channel();
-        let job = Job {
-            request: call,
-            reply,
-            timing: RequestTiming {
-                arrived,
-                deadline: arrived + Duration::from_millis(u64::from(ms)),
-                cancelled: cancellation,
-                authorization_build_us: 0,
-            },
-            subject,
-            _permit: permit,
-            response_claims: response_claims.clone(),
-            recall_query_index: 0,
-        };
-        if self.sender.try_send(job).is_err() {
-            return tool_response(tool_error(Busy));
-        }
         tool_response(
-            response
-                .await
-                .unwrap_or_else(|_| tool_error(StorageUnavailable)),
+            self.run(
+                call,
+                subject,
+                arrived,
+                response_claims,
+                cancellation,
+                permit,
+            )
+            .await,
         )
     }
 }

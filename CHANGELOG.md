@@ -9,6 +9,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The reader serves `search` and `fetch` as plain JSON at
+  `POST /v1/namespaces/{namespace}/query` and `.../fetch`, next to MCP, with
+  the same authentication, scheduler, deadline and rate limits. Errors map to
+  HTTP statuses, and 429 and 503 answers carry `Retry-After`. See
+  [HTTP JSON API](docs/http-api.md).
 - The Jira connector indexes the custom fields listed in the new
   `scope.fields` (rich text, string or number values) as `field` sections
   labelled with the field ID, for example acceptance criteria. See

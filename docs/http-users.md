@@ -286,6 +286,9 @@ requests get `503 authorization_unavailable`.
   `Authorization: Bearer` and the value of `reader.http.operator_credential`;
   without that key the route does not exist (404). Readers pick up new
   versions on their own every `reader.version_check_interval`.
+- `POST /v1/namespaces/{namespace}/query` and `.../fetch` are the
+  [HTTP JSON API](http-api.md) for `search` and `fetch`; they pass the same
+  checks as `/mcp`.
 
 ### Other directories
 
