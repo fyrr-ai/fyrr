@@ -12,6 +12,7 @@
 | --- | --- |
 | `GET`, `HEAD` | $0.0004 |
 | `PUT`, `COPY`, `POST`, `LIST` | $0.005 |
+| `DELETE`, multipart upload cancel | free |
 
 ## Reader
 
@@ -23,17 +24,18 @@ publication, so a running reader asks storage nothing else.
 | --- | --- |
 | Searching, mirror warm | none (0 measured) |
 | Idle or busy, nothing published | one `GET` of the serving head per `reader.version_check_interval` (30 s by default) |
-| Start on an empty mirror | 27 for a one-document namespace: the control artifacts, then each index and data file once |
-| Switch to a new publication | 25 for a one-document change: the new manifest and each file the publication adds or rewrites, plus three more reads of the head |
+| Start on an empty mirror | at most 27 for a one-document namespace (CI bound, head reads not counted): the control artifacts, then each index and data file once |
+| Switch to a new publication | at most 25 for a one-document change (CI bound): the new manifest and each file the publication adds or rewrites, plus three more reads of the head |
 | Restart on a warm mirror | the control artifacts; files in the mirror are verified locally (from the code, not measured) |
-| HTTP readiness probe | one `GET` of the serving head per `/readyz` request |
+| HTTP readiness probe | one `GET` of the serving head per `/readyz` request, plus one `GET` of the identity artifact on the first request and when the identity changes |
 
-A data file of up to 2 MiB is downloaded whole on its first read, so a file
-is read once, not once in pages and again when the mirror warms. Open and
+A data file of up to 2 MiB is downloaded whole on its first read when it
+fits the mirror, so it is read once. A larger file, or one that does not fit,
+is read in pages first and copied whole while the mirror warms. Open and
 switch counts grow with the files of a publication.
 
 The version check is what a reader costs while it runs: 86,400 `GET` a month
-at the default interval, about $0.035 per reader process, however many
+at the default interval, about $0.03 per reader process, however many
 searches it answers. A longer interval does not cost less, because the
 reader checks at least every 30 s:
 
@@ -41,7 +43,7 @@ reader checks at least every 30 s:
 | --- | --- | --- |
 | `1s` | 2,592,000 | $1.04 |
 | `10s` | 259,200 | $0.10 |
-| `30s` (default) | 86,400 | $0.035 |
+| `30s` (default) | 86,400 | $0.03 |
 
 A mirror smaller than the publication (`reader.mirror_max_bytes`) cannot keep
 every file, and searches that reach a file it does not hold read it from
@@ -65,22 +67,24 @@ nothing:
 | `GET` publication manifest | 1 |
 | `HEAD` and `GET` of the dataset | 7 |
 | `LIST` envelopes | 1 |
+| `LIST` of the dataset's `_versions/` on S3 | 1 (estimate: the local store of the tests does not show it) |
 | `PUT` | 0 |
 
-That is 13 `GET` or `HEAD` and 1 `LIST` per tick. It does not grow with the
-number of publications; the `LIST` grows by one per 1,000 envelopes kept
+That is 13 `GET` or `HEAD` and at least 2 `LIST` per tick on S3 Standard
+(the measured run saw 13 and 1). It does not grow with the number of
+publications; the envelope `LIST` grows by one per 1,000 envelopes kept
 (`writer maintenance` removes applied ones). Both parts scale with the
 timer:
 
 | `coalescing_timer` | Ticks per month | Cost per month |
 | --- | --- | --- |
-| `10s` | 259,200 | $2.64 |
-| `60s` (default) | 43,200 | $0.44 |
-| `5m` | 8,640 | $0.09 |
+| `10s` | 259,200 | $3.94 |
+| `60s` (default) | 43,200 | $0.66 |
+| `5m` | 8,640 | $0.13 |
 
-At the default timer the 561,600 `GET` or `HEAD` cost $0.22 and the 43,200
-`LIST` $0.22. With `writer.serve.committer = false` only the watch task
-remains: one head `GET` per timer, 43,200 a month, $0.017.
+At the default timer the 561,600 `GET` or `HEAD` cost $0.22 and the 86,400
+`LIST` at least $0.43. With `writer.serve.committer = false` only the watch
+task remains: one head `GET` per timer, 43,200 a month, $0.017.
 
 **The head watch** is a task that reads the head once per timer (the second
 head read above). A changed head, which carries rejections and rewinds,
@@ -88,26 +92,33 @@ wakes every source.
 
 **Sync workers** are started per source, and each source sleeps until a
 kind of it is due (`sources.intervals`: content 15 min and reconcile 1 day
-by default, plus permissions and members for a source with
-`permissions = "sync"`). A worker also runs at the start of the service and
-whenever the head changes. It reads the head and the cursor of each kind
-first; a kind that is not due costs no lease and no listing.
+by default; a source with `permissions = "sync"` also runs the permissions
+and members kinds its provider supports, members only when
+`intervals.members` is set). A worker also runs at the start of the service
+and whenever the head changes. A kind that is not due costs no lease and no
+envelope listing.
 
 | Per worker, estimated from the code | Requests |
 | --- | --- |
-| Each kind not due | 2 `GET`: head, cursor |
-| Each kind due, nothing changed | 2 `PUT` (cursor lease, cursor), 1 `LIST`, about 9 `GET` |
-| History, once per worker | 1 `GET` per publication of the namespace |
+| Each kind not due | 4 `GET` outside the history: head and policy (retirement check), head and cursor (scheduler) |
+| Each kind due, nothing changed | at least 3 `PUT` (lease take, cursor write, lease release), 1 `LIST`, about 9 `GET` |
+| History, once per worker | 1 `GET` per publication of the namespace, plus the rejection and rewind records they carry |
+| First due pass of a worker | also 1 `GET` per retained envelope, applied ones included |
 | Each kind with changes | the above, plus the envelopes it writes |
 
-A due kind costs about $0.0000186 per pass. A due pass writes cursor
+After an earlier rejection, a permissions or members kind may take the lease
+and list the envelopes before it decides it is not due. The envelope reads
+depend on retention: `writer maintenance` removes applied envelopes, and
+kept ones add a `GET` each to every worker.
+
+A due kind costs about $0.0000236 per pass. A due pass writes cursor
 objects, so the "no writes" rule holds while no kind is due:
 
 | Kind interval | Passes per month | Cost per month |
 | --- | --- | --- |
-| `15m` (default content) | 2,880 | $0.05 |
-| `5m` | 8,640 | $0.16 |
-| `1m` | 43,200 | $0.80 |
+| `15m` (default content) | 2,880 | $0.07 |
+| `5m` | 8,640 | $0.20 |
+| `1m` | 43,200 | $1.02 |
 
 The history part grows with the namespace: a worker reads each publication
 once, and a new process reads them all again. A worker costs $0.0004 per
@@ -127,7 +138,7 @@ once in every reader that switches to it.
 | Side | Requests per publication |
 | --- | --- |
 | Writer | the envelopes the syncs wrote, the Lance data and index files of the change, the manifest and the head: mostly `PUT`, growing with the changed documents |
-| Each reader | the new head, manifest and policy, then each file the publication adds or rewrites, once (25 measured for a one-document change) |
+| Each reader | the new head, manifest and policy, then each file the publication adds or rewrites, once (at most 25 for a one-document change, the CI bound) |
 
 Changes that rewrite more index files cost more. The estimates below assume
 100 requests per publication on each side; that is an assumption, not a
@@ -147,11 +158,12 @@ changes writes no envelope, and an idle commit publishes nothing.
 
 A month of a deployment adds up from four parts:
 
-1. **Readers:** `R` × $0.035 for the version check at 30 s.
-2. **Writer service:** $0.44 for the idle committer at 60 s.
+1. **Readers:** `R` × $0.03 for the version check at 30 s.
+2. **Writer service:** about $0.66 for the idle committer at 60 s.
 3. **New versions:** the table above, for the writer and for each reader.
 4. **Sync workers:** the due passes of each kind of each source, plus the
-   history walk: $0.0004 per 1,000 publications per worker.
+   history walk: $0.0004 per 1,000 publications per worker. The examples
+   assume that maintenance removes applied envelopes.
 
 Examples for the first month of a new namespace, whose history grows from
 nothing over the month (on average half the month's publications); all
@@ -160,8 +172,8 @@ sources have `permissions = "fixed"`, so two kinds each, content every
 
 | Deployment | Readers | Writer idle | New versions | Sync workers | First month |
 | --- | --- | --- | --- | --- | --- |
-| Quiet: 1 reader, 1 source, one change a day | $0.04 | $0.44 | $0.02 | about $0.07 | about $0.57 |
-| Team: 2 readers, 3 sources, changes every 15 min | $0.07 | $0.44 | $1.68 | about $10 | about $12 |
+| Quiet: 1 reader, 1 source, one change a day | $0.03 | $0.66 | $0.02 | about $0.10 | about $0.81 |
+| Team: 2 readers, 3 sources, changes every 15 min | $0.07 | $0.66 | $1.67 | about $10 | about $13 |
 
 In the team example most of the cost is the history walk of the sync
 workers. At the end of the first month it runs at about $20 a month, and it
