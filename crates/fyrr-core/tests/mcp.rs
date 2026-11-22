@@ -5,10 +5,11 @@
 
 mod common;
 
+use fyrr_core::limits::mcp::{MAX_FILTER_DEPTH, MAX_FILTER_NODES, MAX_FILTER_VALUES};
 use fyrr_core::mcp::{
-    ErrorCode, FetchInput, FetchOutput, ListFiltersInput, ListFiltersOutput, MCP_CONTRACT_VERSION,
-    META_SCHEMA_VERSION_KEY, SearchInput, SearchOutput, TOOLS_LIST_MAX_BYTES, ToolError,
-    tools_list,
+    Comparison, ErrorCode, FetchInput, FetchOutput, Filter, ListFiltersInput, ListFiltersOutput,
+    MCP_CONTRACT_VERSION, META_SCHEMA_VERSION_KEY, Op, SearchInput, SearchOutput,
+    TOOLS_LIST_MAX_BYTES, ToolError, tools_list,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -155,6 +156,18 @@ fn inputs_reject_unknown_fields() {
     let parse = |value: Value| serde_json::from_value::<SearchInput>(value);
     assert!(parse(json!({ "query": "x" })).is_ok());
     assert!(parse(json!({ "query": "x", "top_k": 5 })).is_err());
+    let leaf = json!({"field":"project","op":"eq","value":"p"});
+    assert!(parse(json!({ "query": "x", "filter": leaf })).is_ok());
+    for filter in [
+        json!({"field":"project","op":"eq","value":"p","extra":1}),
+        json!({"field":"project","op":"like","value":"p"}),
+        json!({"field":"project","op":"eq"}),
+        json!({"and":[leaf],"extra":1}),
+        json!({"and":[leaf],"or":[leaf]}),
+        json!({"not":[leaf]}),
+    ] {
+        assert!(parse(json!({ "query": "x", "filter": filter })).is_err());
+    }
     assert!(serde_json::from_value::<FetchInput>(json!({ "url": "x" })).is_err());
     assert!(serde_json::from_value::<ListFiltersInput>(json!({ "limit": 1 })).is_err());
 }
@@ -270,6 +283,40 @@ fn validation_enforces_bytes_relations_and_bounds() {
     ] {
         assert!(search(value).is_err());
     }
+    // A filter is read within its bounds or the request does not parse.
+    let filter = |value: Value| {
+        serde_json::from_value::<SearchInput>(json!({"query":"a","filter":value})).is_ok()
+    };
+    let leaf = json!({"field":"project","op":"eq","value":"p"});
+    // The node bound: every `and`, `or`, `not` and comparison counts.
+    assert!(filter(
+        json!({"and": vec![leaf.clone(); MAX_FILTER_NODES - 1]})
+    ));
+    assert!(!filter(
+        json!({"and": vec![leaf.clone(); MAX_FILTER_NODES]})
+    ));
+    // The depth bound.
+    let nested = |levels: usize| (1..levels).fold(leaf.clone(), |inner, _| json!({"not": inner}));
+    assert!(filter(nested(MAX_FILTER_DEPTH)));
+    assert!(!filter(nested(MAX_FILTER_DEPTH + 1)));
+    // Group, field and value bounds.
+    let compare = |field: &str, value: Value| json!({"field":field,"op":"in","value":value});
+    assert!(filter(compare("f", json!(vec!["v"; MAX_FILTER_VALUES]))));
+    assert!(filter(compare(&"f".repeat(128), json!("é".repeat(2048)))));
+    for bad in [
+        json!({"and":[]}),
+        json!({"or":[leaf.clone(), {"and":[]}]}),
+        json!({"and":leaf.clone()}),
+        compare("", json!(["v"])),
+        compare(&"f".repeat(129), json!(["v"])),
+        compare("f", json!(vec!["v"; MAX_FILTER_VALUES + 1])),
+        compare("f", json!([])),
+        compare("f", json!([["v"]])),
+        compare("f", json!({"v": 1})),
+        compare("f", json!("é".repeat(2049))),
+    ] {
+        assert!(!filter(bad.clone()), "{bad}");
+    }
     let fetch = |value: Value| {
         serde_json::from_value::<FetchInput>(value)
             .unwrap()
@@ -284,6 +331,77 @@ fn validation_enforces_bytes_relations_and_bounds() {
     ] {
         assert!(fetch(value).is_err());
     }
+}
+
+#[test]
+fn the_filter_arguments_compile_to_one_tree() {
+    let tree = |value: Value| {
+        serde_json::from_value::<SearchInput>(value)
+            .unwrap()
+            .filter_tree()
+    };
+    let compare = |field: &str, op, value: Value| {
+        Filter::Compare(Comparison {
+            field: field.into(),
+            op,
+            value,
+        })
+    };
+    assert_eq!(tree(json!({"query":"x"})), None);
+    // One argument is the tree itself.
+    assert_eq!(
+        tree(json!({"query":"x","projects":["a","b"]})),
+        Some(compare("project", Op::In, json!(["a", "b"])))
+    );
+    let filter = json!({"or":[{"field":"rank","op":"gte","value":3},{"field":"rank","op":"eq","value":null}]});
+    let expected = Filter::Or {
+        or: vec![
+            compare("rank", Op::Gte, json!(3)),
+            compare("rank", Op::Eq, Value::Null),
+        ],
+    };
+    assert_eq!(
+        tree(json!({"query":"x","filter":filter})),
+        Some(expected.clone())
+    );
+    // Every argument is a term; the terms and `filter` are joined by `and`.
+    let all = tree(json!({
+        "query":"x",
+        "sources":["s"],
+        "source_types":["t"],
+        "projects":["p"],
+        "authors":["a"],
+        "updated_after":"2026-01-01T00:00:00Z",
+        "updated_before":"2026-02-01T00:00:00Z",
+        "attributes":[{"key":"k","values":["1","2"]}],
+        "exclude":[{"source_id":"s","root_id":"r"}],
+        "filter":filter
+    }));
+    assert_eq!(
+        all,
+        Some(Filter::And {
+            and: vec![
+                compare("source_id", Op::In, json!(["s"])),
+                compare("source_type", Op::In, json!(["t"])),
+                compare("project", Op::In, json!(["p"])),
+                compare("author", Op::In, json!(["a"])),
+                compare("updated_at", Op::Gt, json!("2026-01-01T00:00:00Z")),
+                compare("updated_at", Op::Lt, json!("2026-02-01T00:00:00Z")),
+                compare("attributes", Op::In, json!(["k=1", "k=2"])),
+                Filter::Not {
+                    not: Box::new(Filter::Or {
+                        or: vec![Filter::And {
+                            and: vec![
+                                compare("source_id", Op::Eq, json!("s")),
+                                compare("root_id", Op::Eq, json!("r")),
+                            ],
+                        }]
+                    })
+                },
+                expected,
+            ]
+        })
+    );
 }
 
 #[test]

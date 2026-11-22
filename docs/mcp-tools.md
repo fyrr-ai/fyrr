@@ -73,6 +73,7 @@ empty result is not an error. Scores only order results.
 | `updated_after`, `updated_before` | RFC 3339 instants; exclusive bounds. |
 | `attributes` | 1–16 connector attributes as `{ key, values }` (a key of 1–128 characters, 1–64 values of 1–384 characters each): equality or IN within one key, AND across keys. |
 | `exclude` | 1–100 `{ source_id, root_id }` pairs to leave out. |
+| `filter` | A tree of `and`, `or`, `not` and comparisons with at most 64 nodes; a hit must also match every argument above. See [Filters](#filters). |
 | `deadline_ms` | 1–300000; default 10 s. |
 
 Each hit has `source_id`, [`root_id`](architecture.md#terms), [`record_id`](architecture.md#terms), `revision`, `source_uri`,
@@ -82,6 +83,59 @@ codepoints of that record) or `content`, and with `queries` a
 `query_index`. An excerpt is a passage of up to 1200 codepoints whose
 `record_id`, `revision` and offsets can be passed to `fetch` as a window.
 `truncated` reports hits and text dropped by `reader.max_response_bytes`.
+
+### Filters
+
+`filter` holds one node: `{ "and": [node, ...] }` or `{ "or": [node, ...] }`
+with at least one node, `{ "not": node }`, or a comparison
+`{ "field": ..., "op": ..., "value": ... }`. The nodes nest freely, up to 64
+in all (every `and`, `or`, `not` and comparison counts) and 16 levels deep; a
+larger tree is `invalid_argument`. The arguments `sources`, `source_types`, `projects`,
+`authors`, `updated_after`, `updated_before`, `attributes` and `exclude` are
+compiled to the same tree and joined with `filter` by `and`.
+
+```json
+{"query": "backup", "filter": {"and": [
+  {"field": "priority", "op": "gte", "value": 3},
+  {"or": [{"field": "project", "op": "eq", "value": "ops"},
+          {"not": {"field": "reviewed", "op": "eq", "value": null}}]}
+]}}
+```
+
+A field is a built-in field (`source_id`, `root_id`, `source_type`, `project`,
+`author`, text; `updated_at`, a datetime) or an attribute the namespace
+declares ([typed attributes](tuning.md#namespaceattributes)). The operators are
+`eq`, `ne`, `in`, `not_in`, `lt`, `lte`, `gt` and `gte`; `in` and `not_in`
+take an array of 1 to 64 values. A value has the type of its field: text, a
+whole number (`int`), a number (`float`), `true` or `false` (`bool`), or an
+RFC 3339 string (`datetime` and `updated_at`). Any other field, value or
+operator is `invalid_argument`. The field `attributes` takes `in` only, with
+connector labels written `key=value`; it is what the `attributes` argument
+compiles to.
+
+A comparison with `null` as its value tests for a missing value: `eq` matches
+a document without the attribute and `ne` one with it. Every other comparison
+is false for a missing value: `ne`, `not_in`, `lt` and the rest match only
+documents that have the attribute, and `not` of a comparison matches none of
+the documents without it either. This is SQL's three-valued logic: a document
+matches only when the whole tree is true, so `not` of an `and` still matches a
+document that fails one part even if another part is missing.
+
+A filter never widens what the caller may read: the reader intersects it with
+the caller's permissions before it selects a row.
+
+How a filter runs depends on its shape:
+
+- A comparison on `source_id`, `source_type`, `project`, `author`,
+  `updated_at`, `attributes` or a typed attribute is answered from that
+  field's index. `root_id` has no index.
+- `and` is answered from indexes when every part is; otherwise the indexes
+  narrow the rows and the rest is checked on the rows left.
+- `or` is answered from indexes only when every branch is. One unindexed
+  branch makes it a scan that reads the filter columns of every row the caller
+  may read.
+- `not` is answered from the index of the comparison inside it, and is a scan
+  when that is not indexed.
 
 ## `fetch`
 

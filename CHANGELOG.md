@@ -9,6 +9,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `search` takes one `filter` argument, a tree of `and`, `or`, `not` and
+  comparisons (`eq`, `ne`, `in`, `not_in`, `lt`, `lte`, `gt`, `gte`) of
+  at most 64 nodes and 16 levels over the built-in fields and the namespace's typed
+  attributes, over MCP and the JSON HTTP API. Values are checked against the
+  attribute types; the other filter arguments compile to the same tree. See
+  [Filters](docs/mcp-tools.md#filters).
 - The reader serves `search` and `fetch` as plain JSON at
   `POST /v1/namespaces/{namespace}/query` and `.../fetch`, next to MCP, with
   the same authentication, scheduler, deadline and rate limits. Errors map to
