@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Composition, RerankSettings, RetrievalConfig};
+use crate::config::{CompositionSettings, RerankSettings, RetrievalSettings};
 use crate::envelope::{ChunkProfileIdentity, EmbeddingIdentity, FileRef};
 use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
@@ -35,8 +35,8 @@ pub struct NamespaceSettings {
     pub dense_rq_bits: u8,
     /// Target rows per partition of the vector index.
     pub dense_partition_rows: u32,
-    pub retrieval: RetrievalConfig,
-    pub composition: Composition,
+    pub retrieval: RetrievalSettings,
+    pub composition: CompositionSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerank: Option<RerankSettings>,
 }

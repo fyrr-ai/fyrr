@@ -166,8 +166,14 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
                     },
                     "dense_rq_bits": 1,
                     "dense_partition_rows": 550,
-                    "retrieval": {},
-                    "composition": {}
+                    "retrieval": {
+                        "dense_weight": 0.5,
+                        "dense_candidates": 75,
+                        "lexical_candidates": 200,
+                        "source_cap": 2,
+                        "max_documents": 75
+                    },
+                    "composition": {"fusion": 50, "dense": 0, "lexical": 0}
                 }))
                 .unwrap_or_else(|error| unreachable!("fixture settings parse: {error}")),
                 fixed_grants: Default::default(),

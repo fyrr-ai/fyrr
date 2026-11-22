@@ -189,7 +189,15 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
         _ => {}
     }
     // Creating or deleting a namespace starts from the file's own settings.
-    let existing = !matches!(command, WriterCommand::Namespace { .. });
+    // A connector sync only starts workers, which take the settings themselves.
+    let existing = !matches!(
+        command,
+        WriterCommand::Namespace { .. }
+            | WriterCommand::Sync {
+                directory: false,
+                ..
+            }
+    );
     with_config(path, existing, |loaded| {
         let config = &loaded.config;
         match command {
@@ -362,7 +370,9 @@ fn with_config(
 fn take_namespace_settings(loaded: &mut LoadedConfig) -> Result<()> {
     let runtime = tokio::runtime::Runtime::new().map_err(|_| WriterError::RuntimeUnavailable)?;
     loaded.config = runtime
-        .block_on(fyrr_reader::storage::with_namespace_settings(&loaded.config))?
+        .block_on(fyrr_reader::storage::with_namespace_settings(
+            &loaded.config,
+        ))?
         // The namespace has a reranker and the file has no `[namespace.rerank]`.
         .ok_or(WriterError::ConfigurationInvalid)?;
     Ok(())
@@ -418,7 +428,7 @@ fn worker(job: &WorkerJob, config: &Path) -> ExitCode {
             prepare,
             full,
             due,
-        } => with_config(config, *prepare, |loaded| {
+        } => with_config(config, false, |loaded| {
             let Ok(credentials) = crate::secrets::worker_credentials(&loaded.config, source) else {
                 return ExitCode::from(exit::FAILURE);
             };

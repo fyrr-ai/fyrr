@@ -46,14 +46,19 @@ pub(super) fn prepared_kind(
     evidence: &mut CommandEvidence,
     credentials: &Credentials,
 ) -> Result<serde_json::Value> {
-    let config = loaded.config.clone();
+    let rt = Arc::new(tokio::runtime::Runtime::new().map_err(|_| WriterError::RuntimeUnavailable)?);
+    // The namespace's own settings, not this file's, define what is prepared.
+    let config = rt
+        .block_on(fyrr_reader::storage::with_namespace_settings(
+            &loaded.config,
+        ))?
+        .ok_or(WriterError::ConfigurationInvalid)?;
     let source = config
         .sources
         .iter()
         .find(|s| s.id == source_id)
         .ok_or(WriterError::SourceInvalid)?
         .clone();
-    let rt = Arc::new(tokio::runtime::Runtime::new().map_err(|_| WriterError::RuntimeUnavailable)?);
     // A retired source takes no cursor lease and prepares nothing;
     // the committer rejects what a worker that raced the retirement wrote.
     if rt.block_on(crate::source::retired(&config, &source.id))? {

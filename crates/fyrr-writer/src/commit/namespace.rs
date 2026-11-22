@@ -46,8 +46,8 @@ pub(crate) fn namespace_settings(config: &Config) -> NamespaceSettings {
         fts: namespace.fts_settings(),
         dense_rq_bits: namespace.dense_rq_bits,
         dense_partition_rows: namespace.dense_partition_rows,
-        retrieval: namespace.retrieval.clone(),
-        composition: namespace.composition.clone(),
+        retrieval: namespace.retrieval.settings(),
+        composition: namespace.composition.settings(),
         rerank: namespace
             .rerank
             .as_ref()

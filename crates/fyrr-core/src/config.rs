@@ -200,9 +200,9 @@ pub struct RerankConfig {
 
 /// What of a reranker decides results: recorded in the namespace when it is
 /// created. The endpoint, credential, spend caps and deadline stay process
-/// configuration ([`RerankConfig`]).
+/// configuration ([`RerankConfig`]). Persisted types accept the fields a newer
+/// minor version adds, unlike their configuration counterparts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct RerankSettings {
     pub model: String,
     /// Authorized composed documents to rerank before the request limit.
@@ -233,6 +233,68 @@ impl RerankConfig {
             weight: settings.weight,
             text_chars: settings.text_chars,
             ..self.clone()
+        }
+    }
+}
+
+/// The persisted copy of [`RetrievalConfig`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RetrievalSettings {
+    #[serde(default, skip_serializing_if = "RescoreDepth::is_legacy")]
+    pub rescore_depth: RescoreDepth,
+    pub dense_weight: f64,
+    pub dense_candidates: usize,
+    pub lexical_candidates: usize,
+    pub source_cap: usize,
+    pub max_documents: usize,
+}
+impl RetrievalConfig {
+    pub fn settings(&self) -> RetrievalSettings {
+        RetrievalSettings {
+            rescore_depth: self.rescore_depth.clone(),
+            dense_weight: self.dense_weight,
+            dense_candidates: self.dense_candidates,
+            lexical_candidates: self.lexical_candidates,
+            source_cap: self.source_cap,
+            max_documents: self.max_documents,
+        }
+    }
+}
+impl From<&RetrievalSettings> for RetrievalConfig {
+    fn from(settings: &RetrievalSettings) -> Self {
+        Self {
+            rescore_depth: settings.rescore_depth.clone(),
+            dense_weight: settings.dense_weight,
+            dense_candidates: settings.dense_candidates,
+            lexical_candidates: settings.lexical_candidates,
+            source_cap: settings.source_cap,
+            max_documents: settings.max_documents,
+        }
+    }
+}
+
+/// The persisted copy of [`Composition`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CompositionSettings {
+    pub fusion: usize,
+    pub dense: usize,
+    pub lexical: usize,
+}
+impl Composition {
+    pub fn settings(&self) -> CompositionSettings {
+        CompositionSettings {
+            fusion: self.fusion,
+            dense: self.dense,
+            lexical: self.lexical,
+        }
+    }
+}
+impl From<&CompositionSettings> for Composition {
+    fn from(settings: &CompositionSettings) -> Self {
+        Self {
+            fusion: settings.fusion,
+            dense: settings.dense,
+            lexical: settings.lexical,
         }
     }
 }
@@ -1353,8 +1415,8 @@ impl Config {
         namespace.fts_ascii_folding = settings.fts.ascii_folding;
         namespace.dense_rq_bits = settings.dense_rq_bits;
         namespace.dense_partition_rows = settings.dense_partition_rows;
-        namespace.retrieval.clone_from(&settings.retrieval);
-        namespace.composition.clone_from(&settings.composition);
+        namespace.retrieval = (&settings.retrieval).into();
+        namespace.composition = (&settings.composition).into();
         namespace.rerank = match (&settings.rerank, &self.namespace.rerank) {
             (Some(settings), Some(process)) => Some(process.with_settings(settings)),
             (Some(_), None) => return None,

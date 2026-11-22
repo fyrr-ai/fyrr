@@ -766,40 +766,24 @@ async fn tools_agent_multiquery_text_and_fetch_list_on_storage() {
         denied, unknown,
         "same fields and absence for denied and unknown documents"
     );
-    let stale = root.join("stale-batch.toml");
+    // A reader whose file asks for another retrieval policy serves the
+    // namespace with the policy it was created with.
+    let other = root.join("other-retrieval.toml");
     std::fs::write(
-        &stale,
+        &other,
         text.replace(
             "name = \"dense-fixture\"",
             "name = \"dense-fixture\"\nretrieval = { dense_weight = 0.25, lexical_candidates = 50 }",
         ),
     )
     .unwrap();
-    let mut rejected = Command::new(crate::common::binary())
-        .arg("--config")
-        .arg(&stale)
-        .args(["reader", "serve"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let requests = [
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"stale-batch","version":"1"}}}),
-        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search","arguments":{"queries":queries,"limit":4}}}),
-    ].iter().map(|request| format!("{request}\n")).collect::<String>();
-    let mut input = rejected.stdin.take().unwrap();
-    // Startup may close stdin before the queued batch is consumed.
-    let _ = input.write_all(requests.as_bytes());
-    drop(input);
-    let refusal = rejected.wait_with_output().unwrap();
-    assert!(!refusal.status.success());
-    assert!(String::from_utf8_lossy(&refusal.stderr).contains("incompatible_index"));
-    assert!(
-        refusal.stdout.is_empty(),
-        "stale policy cannot serve a batched request"
-    );
+    let mut other_reader = Mcp::open(&other);
+    let same = body(other_reader.call(
+        "search",
+        json!({"queries":queries,"limit":4,"text_hits":1,"excerpt_chars":20}),
+    ));
+    assert_eq!(same["hits"], batch["hits"]);
+    drop(other_reader);
     for args in [
         json!({"query":"x","queries":["a","b"]}),
         json!({"queries":["a","b"],"limit":21}),

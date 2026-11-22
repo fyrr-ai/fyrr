@@ -12,8 +12,9 @@
       "format": "uint64",
       "minimum": 0
     },
-    "retrieval_policy_digest": {
-      "type": "string"
+    "settings": {
+      "$ref": "#/$defs/NamespaceSettings",
+      "description": "Fixed for the life of the namespace: every generation repeats the\nsettings the namespace was created with."
     },
     "fixed_grants": {
       "type": "object",
@@ -46,7 +47,7 @@
     "schema_version",
     "namespace",
     "generation",
-    "retrieval_policy_digest",
+    "settings",
     "fixed_grants"
   ],
   "description": "Immutable policy generation used by the reader's admission path.",
@@ -57,6 +58,363 @@
       "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
       "type": "string",
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "NamespaceSettings": {
+      "type": "object",
+      "properties": {
+        "embedding": {
+          "$ref": "#/$defs/EmbeddingIdentity"
+        },
+        "fts": {
+          "$ref": "#/$defs/FtsSettings"
+        },
+        "dense_rq_bits": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255,
+          "description": "RaBitQ bits per dimension of the vector index."
+        },
+        "dense_partition_rows": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Target rows per partition of the vector index."
+        },
+        "retrieval": {
+          "$ref": "#/$defs/RetrievalSettings"
+        },
+        "composition": {
+          "$ref": "#/$defs/CompositionSettings"
+        },
+        "rerank": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RerankSettings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "embedding",
+        "fts",
+        "dense_rq_bits",
+        "dense_partition_rows",
+        "retrieval",
+        "composition"
+      ],
+      "description": "The index and retrieval settings a namespace is created with and keeps for\nits life. The process configuration only supplies them when the namespace is\ncreated; every reader and writer afterwards takes them from the namespace's\npolicy artifact, which each content manifest pins."
+    },
+    "EmbeddingIdentity": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "dimensions": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "fingerprint": {
+          "type": "string",
+          "description": "Digest of the model settings and text transformation (prefix,\nnormalization) that keys the embedding cache."
+        },
+        "settings": {
+          "$ref": "#/$defs/EmbeddingSettings"
+        }
+      },
+      "required": [
+        "model",
+        "dimensions",
+        "fingerprint",
+        "settings"
+      ],
+      "description": "The embedding identity bound into envelopes and publications."
+    },
+    "EmbeddingSettings": {
+      "type": "object",
+      "properties": {
+        "api_style": {
+          "$ref": "#/$defs/EmbeddingApiStyle"
+        },
+        "prefix": {
+          "type": "string",
+          "maxLength": 4096,
+          "x-maxUtf8Bytes": 4096
+        },
+        "roles": {
+          "$ref": "#/$defs/EmbeddingRoles"
+        },
+        "send_dimensions": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "api_style",
+        "prefix",
+        "roles",
+        "send_dimensions"
+      ],
+      "description": "Vector-affecting settings recorded with a publication's model/dimensions."
+    },
+    "EmbeddingApiStyle": {
+      "type": "string",
+      "enum": [
+        "openai-compatible"
+      ],
+      "description": "Fixed protocol identity recorded in persisted embedding settings."
+    },
+    "EmbeddingRoles": {
+      "type": "object",
+      "properties": {
+        "document": {
+          "$ref": "#/$defs/EmbeddingRole"
+        },
+        "query": {
+          "$ref": "#/$defs/EmbeddingRole"
+        }
+      },
+      "required": [
+        "document",
+        "query"
+      ],
+      "description": "Persisted role transformations accept future minor-version additions.\nConfiguration uses strict types at its TOML boundary."
+    },
+    "EmbeddingRole": {
+      "type": "object",
+      "properties": {
+        "prefix": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096,
+          "x-maxUtf8Bytes": 4096
+        },
+        "input_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 128,
+          "x-maxUtf8Bytes": 128
+        }
+      }
+    },
+    "FtsSettings": {
+      "type": "object",
+      "properties": {
+        "tokenizer": {
+          "type": "string"
+        },
+        "max_token_length": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "lowercase": {
+          "type": "boolean"
+        },
+        "stem": {
+          "type": "boolean"
+        },
+        "remove_stop_words": {
+          "type": "boolean"
+        },
+        "ascii_folding": {
+          "type": "boolean"
+        },
+        "with_position": {
+          "type": "boolean",
+          "description": "Positional postings; false while there is no phrase scoring."
+        }
+      },
+      "required": [
+        "tokenizer",
+        "max_token_length",
+        "lowercase",
+        "stem",
+        "remove_stop_words",
+        "ascii_folding",
+        "with_position"
+      ],
+      "description": "FTS analyzer settings, part of the publication identity."
+    },
+    "RetrievalSettings": {
+      "type": "object",
+      "properties": {
+        "rescore_depth": {
+          "$ref": "#/$defs/RescoreDepth"
+        },
+        "dense_weight": {
+          "type": "number",
+          "format": "double"
+        },
+        "dense_candidates": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "lexical_candidates": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "source_cap": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "max_documents": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "dense_weight",
+        "dense_candidates",
+        "lexical_candidates",
+        "source_cap",
+        "max_documents"
+      ],
+      "description": "The persisted copy of [`RetrievalConfig`]."
+    },
+    "RescoreDepth": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "legacy"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "fixed"
+            },
+            "candidates": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "mode",
+            "candidates"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "adaptive"
+            },
+            "min_candidates": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "max_candidates": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "min_gap": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "required": [
+            "mode",
+            "min_candidates",
+            "max_candidates",
+            "min_gap"
+          ],
+          "description": "Expand when the exact cosine gap at the retained boundary is small."
+        }
+      ]
+    },
+    "CompositionSettings": {
+      "type": "object",
+      "properties": {
+        "fusion": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "dense": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "lexical": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "fusion",
+        "dense",
+        "lexical"
+      ],
+      "description": "The persisted copy of [`Composition`]."
+    },
+    "RerankSettings": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "candidates": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "description": "Authorized composed documents to rerank before the request limit.",
+          "maximum": 75
+        },
+        "weight": {
+          "type": "number",
+          "format": "double",
+          "description": "Logistic population-z score blend; 1 uses raw reranker order, 0 fusion order.",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "text_chars": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 200,
+          "description": "Per-candidate text bound in characters; absent sends the whole record.",
+          "maximum": 32768
+        }
+      },
+      "required": [
+        "model",
+        "candidates",
+        "weight"
+      ],
+      "description": "What of a reranker decides results: recorded in the namespace when it is\ncreated. The endpoint, credential, spend caps and deadline stay process\nconfiguration ([`RerankConfig`]). Persisted types accept the fields a newer\nminor version adds, unlike their configuration counterparts."
     },
     "RetiredSource": {
       "type": "object",
@@ -80,5 +438,5 @@
     }
   },
   "x-fyrr-contract": "policy-artifact",
-  "x-fyrr-schema-version": "2.2"
+  "x-fyrr-schema-version": "3.0"
 }
