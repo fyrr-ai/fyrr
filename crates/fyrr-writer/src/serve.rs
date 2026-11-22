@@ -168,7 +168,7 @@ pub async fn run(
     let mut directory_timer =
         tokio::time::interval(loaded.config.identity.directory.sync_interval.as_duration());
     directory_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
+    'serving: loop {
         tokio::select! {
             _ = &mut shutdown => break,
             _ = directory_timer.tick(), if matches!(loaded.config.identity.directory.provider, DirectoryProvider::Keycloak|DirectoryProvider::Snapshot) => {
@@ -178,29 +178,39 @@ pub async fn run(
             },
             // The timer, or a request of the write API that wants its envelope published now.
             () = round(&mut timer, &commits), if loaded.config.writer.serve.committer => {
-                let mut maintenance = None;
-                match crate::commit::commit_until_stopped(&loaded.config, false, Some(&stop)).await {
-                    Ok((_, tick)) => {
-                        eprintln!("writer_service event={}", if tick.published { "published" } else { "idle" });
-                        maintenance = tick.maintenance;
-                    }
-                    Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
-                    Err(_) => eprintln!("writer_service event=commit_failed"),
-                }
-                commits.done.send_modify(|rounds| *rounds += 1);
-                if stop.load(Ordering::Acquire) {
-                    break;
-                }
-                // The tick judged this from the manifest it read anyway. A signal
-                // waits for the maintenance in progress, as it does for a commit group.
-                if let Some(config) = maintenance.filter(|_| loaded.config.writer.serve.maintenance) {
-                    match crate::maintenance::maintain(&config).await {
-                        Ok(_) => eprintln!("writer_service event=maintained"),
+                // The configured namespace, then those with a request that waits.
+                let waiting = commits.waiting();
+                let namespaces = std::iter::once(loaded.config.clone()).chain(
+                    waiting
+                        .iter()
+                        .filter(|name| **name != loaded.config.namespace.name)
+                        .map(|name| crate::write_api::named(&loaded.config, name)),
+                );
+                for config in namespaces {
+                    let mut maintenance = None;
+                    match crate::commit::commit_until_stopped(&config, false, Some(&stop)).await {
+                        Ok((_, tick)) => {
+                            eprintln!("writer_service event={}", if tick.published { "published" } else { "idle" });
+                            maintenance = tick.maintenance;
+                        }
                         Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
-                        Err(_) => eprintln!("writer_service event=maintenance_failed"),
+                        Err(_) => eprintln!("writer_service event=commit_failed"),
                     }
+                    commits.done.send_modify(|rounds| *rounds += 1);
                     if stop.load(Ordering::Acquire) {
-                        break;
+                        break 'serving;
+                    }
+                    // The tick judged this from the manifest it read anyway. A signal
+                    // waits for the maintenance in progress, as it does for a commit group.
+                    if let Some(config) = maintenance.filter(|_| loaded.config.writer.serve.maintenance) {
+                        match crate::maintenance::maintain(&config).await {
+                            Ok(_) => eprintln!("writer_service event=maintained"),
+                            Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
+                            Err(_) => eprintln!("writer_service event=maintenance_failed"),
+                        }
+                        if stop.load(Ordering::Acquire) {
+                            break 'serving;
+                        }
                     }
                 }
             }

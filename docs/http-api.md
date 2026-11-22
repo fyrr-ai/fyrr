@@ -138,6 +138,8 @@ after parsing, it returns `431` with `{"error":"invalid_argument"}`.
 > - `fyrr writer serve` with `[namespace.write_api]`, `[writer.serve.admin]`
 >   and the committer serves `POST /v1/namespaces/{namespace}/documents` on
 >   the writer listener.
+> - `{namespace}` is any namespace name: the first request for a name creates
+>   the namespace, and each namespace has its own lease and its own head.
 > - A request upserts rows and deletes ids, all or none. It is answered when
 >   the head that readers serve holds it, or has refused it.
 > - It needs an [API key](identity.md#identityapi_keys) with the `write` role,
@@ -169,6 +171,17 @@ declares the vectors of the namespace in `settings.embedding` (`model` and
 `dimensions`, which default to the process's); a request whose rows all carry
 vectors makes 0 embedding calls and needs no `[embedding]` table. The profile `settings.embedding.fingerprint` is derived from them unless the request sends it; a fingerprint that does not match is `400 settings_invalid` for a new namespace and `409 namespace_settings_fixed` for an existing one.
 
+`{namespace}` names the namespace to write: any namespace under
+`<storage root>/namespaces/` that the key may write, not only
+`namespace.name`. The settings of the file are the defaults of a namespace
+that is created. The committer looks at a namespace besides the configured one
+only while a request for it waits for its publication, so the namespaces that a
+process has written cost an idle process nothing; the configured namespace is
+looked at on every coalescing period as before. The writer keeps the history
+evidence of the 16 namespaces it published to most recently. A restart forgets
+which namespaces had an envelope waiting: an envelope whose request ended
+without an answer is published with the next request for its namespace.
+
 The namespace is created by the first request, with its settings, and a
 request with only `settings` creates it. A row is one record: its text is at
 most 16 KiB, and it is not chunked. The same `id` twice in one request is
@@ -191,7 +204,7 @@ request was accepted does not cancel it.
 | --- | --- | --- |
 | `unauthorized` | `401` | No API key, or a key that is not among the published keys. |
 | `forbidden` | `403` | The key lacks the `write` role or its `namespace_prefix` excludes the namespace. |
-| `not_found` | `404` | Another namespace, or the process has no `[namespace.write_api]`. |
+| `not_found` | `404` | `{namespace}` is not a namespace name, or the process has no `[namespace.write_api]`. |
 | `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
 | `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
 | `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `embedding_not_configured`, `document_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |

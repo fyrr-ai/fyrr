@@ -99,14 +99,14 @@ struct ChainEvidence {
 }
 
 /// The chain evidence of the newest head this process walked, by namespace
-/// root and incarnation. A long-running committer reads every publication
-/// once instead of walking the whole history at each tick.
-// shortcut: entries are never evicted, and each holds every envelope id the
-// namespace has applied; a process keeps one per namespace and incarnation
-// it served. Bound it like `RestoreHistory` if a process serves many
-// namespaces or a history outgrows memory.
-static CHAIN_EVIDENCE: std::sync::Mutex<BTreeMap<(String, String), ChainEvidence>> =
-    std::sync::Mutex::new(BTreeMap::new());
+/// root and incarnation, least recently used first. A long-running committer
+/// reads every publication once instead of walking the whole history at each
+/// tick. Each entry holds every envelope id the namespace has applied, so a
+/// process that serves many namespaces keeps the newest `CHAIN_EVIDENCE_MAX`
+/// of them; the next tick of an evicted one walks its history again.
+static CHAIN_EVIDENCE: std::sync::Mutex<Vec<((String, String), ChainEvidence)>> =
+    std::sync::Mutex::new(Vec::new());
+const CHAIN_EVIDENCE_MAX: usize = 16;
 
 pub(crate) async fn published_evidence(
     config: &Config,
@@ -122,11 +122,17 @@ pub(crate) async fn published_evidence(
         });
     };
     let key = (root.to_string(), head.incarnation.clone());
-    let known = CHAIN_EVIDENCE
-        .lock()
-        .map_err(|_| WriterError::RuntimeUnavailable)?
-        .get(&key)
-        .cloned();
+    let known = {
+        let mut cache = CHAIN_EVIDENCE
+            .lock()
+            .map_err(|_| WriterError::RuntimeUnavailable)?;
+        cache.iter().position(|(held, _)| *held == key).map(|at| {
+            let entry = cache.remove(at);
+            let known = entry.1.clone();
+            cache.push(entry);
+            known
+        })
+    };
     // An idle tick: the head serves the manifest walked last.
     if let Some(known) = known.as_ref().filter(|known| known.manifest == newest) {
         rejected.extend(known.rejected.iter().cloned());
@@ -184,19 +190,23 @@ pub(crate) async fn published_evidence(
     }
     let rewinds = rewinds.unwrap_or_default();
     if let Some(sequence) = newest_sequence {
-        CHAIN_EVIDENCE
+        let mut cache = CHAIN_EVIDENCE
             .lock()
-            .map_err(|_| WriterError::RuntimeUnavailable)?
-            .insert(
-                key,
-                ChainEvidence {
-                    manifest: newest,
-                    sequence,
-                    applied: Arc::new(applied.clone()),
-                    rejected: Arc::new(chain_rejected.clone()),
-                    rewinds: Arc::new(rewinds.clone()),
-                },
-            );
+            .map_err(|_| WriterError::RuntimeUnavailable)?;
+        cache.retain(|(held, _)| *held != key);
+        if cache.len() >= CHAIN_EVIDENCE_MAX {
+            cache.remove(0);
+        }
+        cache.push((
+            key,
+            ChainEvidence {
+                manifest: newest,
+                sequence,
+                applied: Arc::new(applied.clone()),
+                rejected: Arc::new(chain_rejected.clone()),
+                rewinds: Arc::new(rewinds.clone()),
+            },
+        ));
     }
     rejected.extend(chain_rejected);
     Ok(PublishedEvidence {

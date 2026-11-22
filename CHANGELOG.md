@@ -14,7 +14,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   attributes) and deletes by id, one request published whole or refused whole.
   The answer is sent when the served head holds the request. An API key with
   the `write` role authenticates it. A namespace takes its documents from
-  connectors or from the API, as it was created. See
+  connectors or from the API, as it was created. The path names any namespace
+  the key may write, and the first request for a name creates it. See
   [HTTP write API](docs/http-api.md#write-documents).
 - A row of the write API may carry its own `vector`, and so may a section of a
   connector document (the optional `vector` column of the document-change
