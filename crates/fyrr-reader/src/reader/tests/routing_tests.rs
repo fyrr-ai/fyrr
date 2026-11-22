@@ -144,7 +144,7 @@ async fn filtered_dense(
     }))
     .unwrap();
     let (_, _, mut telemetry, _pin) = reader.request_prologue().await.unwrap();
-    reader.apply_filters(&args).await.unwrap();
+    reader.apply_filters(args.filter_tree().as_ref()).await.unwrap();
     // The fixture's query vector is its first document's vector.
     let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
     let rows = reader

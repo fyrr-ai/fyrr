@@ -9,6 +9,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `POST /v1/namespaces/{namespace}/aggregate` on the reader computes `count`,
+  `sum`, `avg`, `min` and `max` over the documents a caller may read and a
+  `filter` selects, optionally grouped by up to four scalar fields, in key
+  order. It has no MCP tool. `list_filters` now runs the same scan. See
+  [Aggregate](docs/http-api.md#aggregate).
 - `fyrr writer namespace list [--prefix P]` and `GET /v1/namespaces?prefix=P` on
   the reader list the namespaces of the storage root, in name order, that start
   with `P` and with the `namespace_prefix` of the caller's key. A namespace is

@@ -1601,6 +1601,195 @@ async fn identity_write_api_orders_a_listing_by_attributes_on_storage() {
     }
 }
 
+/// The JSON `aggregate` route counts, sums and groups the documents a caller
+/// may read: a document it may not read changes no count, minimum or group,
+/// and a selection over the row bound is `busy`.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_aggregates_the_documents_a_caller_reads_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let texts = ["alpha", "bravo", "charlie", "delta", "echo"];
+    embed(&root, &texts);
+    let writer = Writer::start(&config, &root, address).await;
+    let upserts = [
+        json!({"id": "a", "text": texts[0], "readers": ["usr:x"],
+               "price": 3.0, "stock": 2, "tag": "red", "seen": "2026-01-02T03:04:05Z"}),
+        json!({"id": "b", "text": texts[1], "readers": ["usr:x"],
+               "price": 1.0, "stock": 2, "tag": "red"}),
+        json!({"id": "c", "text": texts[2], "readers": ["usr:x"], "price": 2.0, "tag": "blue"}),
+        json!({"id": "d", "text": texts[3], "readers": ["usr:x"], "stock": 5}),
+        // The cheapest, the largest and in a group of its own, but nobody may read it.
+        json!({"id": "hidden", "text": texts[4], "readers": ["usr:nobody"],
+               "price": 0.5, "stock": 9, "tag": "secret", "seen": "2025-01-01T00:00:00Z"}),
+    ];
+    let settings = json!({"attributes": {
+        "price": "float", "stock": "int", "tag": "string", "seen": "datetime"}});
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"settings": settings, "upserts": upserts})
+            )
+            .await,
+        (200, json!({"upserted": 5, "deleted": 0}))
+    );
+    let reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let ask = async |reader: &super::http_mcp::Reader, body: Value| -> (u16, Value) {
+        let response = reader
+            .client
+            .post(format!("{}/v1/namespaces/dense-fixture/aggregate", reader.base))
+            .bearer_auth(secret(READ_KEY))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        (
+            response.status().as_u16(),
+            response.json::<Value>().await.unwrap(),
+        )
+    };
+    let groups = |answer: (u16, Value)| -> Value {
+        assert_eq!(answer.0, 200, "{}", answer.1);
+        answer.1["groups"].clone()
+    };
+    let op = |op: &str, field: &str| json!({"op": op, "field": field});
+    let count = json!({"op": "count"});
+
+    // One group over every readable document: nulls are skipped, and the
+    // hidden document is in no count, sum, minimum or maximum.
+    assert_eq!(
+        groups(
+            ask(
+                &reader,
+                json!({"aggregations": [
+                    count, op("count", "price"), op("sum", "price"), op("avg", "price"),
+                    op("min", "price"), op("max", "price"), op("sum", "stock"),
+                    op("min", "tag"), op("max", "seen"),
+                ]})
+            )
+            .await
+        ),
+        json!([{"key": [], "values": [
+            4, 3, 6.0, 2.0, 1.0, 3.0, 9, "blue", "2026-01-02T03:04:05Z"
+        ]}])
+    );
+
+    // Groups come in key order, by a string or by a number; a document with no
+    // value of a key is in no group.
+    assert_eq!(
+        groups(
+            ask(
+                &reader,
+                json!({"group_by": ["tag"], "aggregations": [count, op("sum", "price")]})
+            )
+            .await
+        ),
+        json!([
+            {"key": ["blue"], "values": [1, 2.0]},
+            {"key": ["red"], "values": [2, 4.0]},
+        ])
+    );
+    assert_eq!(
+        groups(
+            ask(
+                &reader,
+                json!({"group_by": ["stock", "tag"], "aggregations": [count]})
+            )
+            .await
+        ),
+        json!([{"key": [2, "red"], "values": [2]}])
+    );
+    assert_eq!(
+        groups(ask(&reader, json!({"group_by": ["root_id"], "aggregations": [count]})).await),
+        json!([
+            {"key": ["a"], "values": [1]},
+            {"key": ["b"], "values": [1]},
+            {"key": ["c"], "values": [1]},
+            {"key": ["d"], "values": [1]},
+        ])
+    );
+
+    // The filter selects the documents to aggregate, as in `search`.
+    assert_eq!(
+        groups(
+            ask(
+                &reader,
+                json!({"filter": {"field": "stock", "op": "gte", "value": 2},
+                       "aggregations": [count]})
+            )
+            .await
+        ),
+        json!([{"key": [], "values": [3]}])
+    );
+    // A document the caller may not read is not counted, however it is asked for.
+    assert_eq!(
+        groups(
+            ask(
+                &reader,
+                json!({"filter": {"field": "tag", "op": "eq", "value": "secret"},
+                       "aggregations": [count, op("max", "stock")]})
+            )
+            .await
+        ),
+        json!([{"key": [], "values": [0, null]}])
+    );
+    assert_eq!(
+        groups(
+            ask(
+                &reader,
+                json!({"filter": {"field": "tag", "op": "eq", "value": "secret"},
+                       "group_by": ["tag"], "aggregations": [count]})
+            )
+            .await
+        ),
+        json!([])
+    );
+
+    // Arguments the schema does not take.
+    for body in [
+        json!({"aggregations": []}),
+        json!({"aggregations": vec![count.clone(); 17]}),
+        json!({"aggregations": [{"op": "sum"}]}),
+        json!({"aggregations": [op("sum", "tag")]}),
+        json!({"aggregations": [op("avg", "seen")]}),
+        json!({"aggregations": [op("max", "nope")]}),
+        json!({"aggregations": [count], "group_by": []}),
+        json!({"aggregations": [count], "group_by": ["attributes"]}),
+        json!({"aggregations": [count], "group_by": ["nope"]}),
+        json!({"aggregations": [count], "group_by": ["tag", "stock", "price", "seen", "root_id"]}),
+        json!({"aggregations": [count], "unknown": true}),
+    ] {
+        assert_eq!(
+            ask(&reader, body.clone()).await,
+            (400, json!({"error": "invalid_argument"})),
+            "{body}"
+        );
+    }
+
+    // More readable rows than `reader.filter_count_max_rows` is `busy`.
+    let text = std::fs::read_to_string(&config).unwrap();
+    let bounded = root.join("bounded.toml");
+    std::fs::write(
+        &bounded,
+        text.replace("nprobes = 1", "nprobes = 1\nfilter_count_max_rows = 1"),
+    )
+    .unwrap();
+    let narrow = super::http_mcp::Reader::start_appended(&bounded, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    assert_eq!(
+        ask(&narrow, json!({"aggregations": [count]})).await,
+        (503, json!({"error": "busy"}))
+    );
+}
+
 /// Unsigned, UUID, bytes and array attributes are written over HTTP and stored
 /// in their own columns. A listing filters and orders by the ones that can be,
 /// and refuses `bytes` and the arrays where they cannot be.

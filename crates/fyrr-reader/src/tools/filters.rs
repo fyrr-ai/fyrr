@@ -7,11 +7,20 @@ use serde_json::Value;
 /// The scalar type of a built-in field or of an attribute the namespace
 /// declares. An attribute name is a plain column name, and only a declared one
 /// gets here.
-fn field_type(field: &str, attributes: &AttributeSchema) -> Result<AttributeType> {
+pub(super) fn field_type(field: &str, attributes: &AttributeSchema) -> Result<AttributeType> {
     match field {
         "source_id" | "root_id" | "source_type" | "project" | "author" => Ok(AttributeType::String),
         "updated_at" => Ok(AttributeType::Datetime),
         name => attributes.get(name).copied().ok_or(InvalidArgument),
+    }
+}
+
+/// The type of a field that holds one ordered scalar: not the labels, an array
+/// or a `bytes` attribute. `order_by` and `aggregate` take these only.
+pub(super) fn scalar_type(field: &str, attributes: &AttributeSchema) -> Result<AttributeType> {
+    match field_type(field, attributes)? {
+        AttributeType::Array(_) | AttributeType::Bytes => Err(InvalidArgument),
+        kind => Ok(kind),
     }
 }
 
@@ -231,11 +240,11 @@ impl PreparedReader {
             Filter::Compare(comparison) => comparison_sql(comparison, attributes),
         }
     }
-    pub(crate) async fn apply_filters(&mut self, args: &SearchInput) -> Result<()> {
-        let Some(tree) = args.filter_tree() else {
+    pub(crate) async fn apply_filters(&mut self, tree: Option<&Filter>) -> Result<()> {
+        let Some(tree) = tree else {
             return Ok(());
         };
-        let filter = Self::filter_sql(&tree, &self.manifest.attributes)?;
+        let filter = Self::filter_sql(tree, &self.manifest.attributes)?;
         let predicate = format!("({}) AND ({filter})", self.admission_predicate()?);
         #[cfg(test)]
         self.test_hooks.filter_scan.wait_once().await;
@@ -267,12 +276,7 @@ impl PreparedReader {
             Some(keys) => keys
                 .iter()
                 .map(|key| {
-                    if matches!(
-                        field_type(&key.field, &self.manifest.attributes)?,
-                        AttributeType::Array(_) | AttributeType::Bytes
-                    ) {
-                        return Err(InvalidArgument);
-                    }
+                    scalar_type(&key.field, &self.manifest.attributes)?;
                     Ok(ordering(&key.field, key.direction == SortDirection::Asc))
                 })
                 .collect::<Result<Vec<_>>>()?,
@@ -343,14 +347,29 @@ impl PreparedReader {
         )
         .await
     }
-    pub async fn list_filters(&mut self, args: &ListFiltersInput) -> Result<ListFiltersOutput> {
-        args.validate().map_err(|_| InvalidArgument)?;
+    /// Scans once the documents the caller may read and `filter` selects, and
+    /// calls `visit` with the first row of each, which holds `columns`. A
+    /// document has several rows; the document key is `source_id` and
+    /// `root_id`. Counts are of documents, and the scan stops at `busy` when
+    /// more than `reader.filter_count_max_rows` readable rows match. Every row
+    /// is checked against the selection, so `visit` never sees a hidden one.
+    pub(crate) async fn scan_documents(
+        &mut self,
+        filter: Option<&Filter>,
+        columns: &[&str],
+        mut visit: impl FnMut(&RecordBatch, usize) -> Result<()>,
+    ) -> Result<ResponseMetadata> {
         let (start, before, mut telemetry, _pin) = self.request_prologue().await?;
         let outcome = async {
             let stage = Instant::now();
             let counters = self.mirror.counters();
+            self.apply_filters(filter).await?;
+            let projection: BTreeSet<&str> = ["source_id", "root_id"]
+                .into_iter()
+                .chain(columns.iter().copied())
+                .collect();
             let mut scan = self.dataset.scan();
-            scan.project(&["source_id", "root_id", "project", "source_type", "author"])
+            scan.project(&projection.into_iter().collect::<Vec<_>>())
                 .map_err(|_| IncompatibleIndex)?;
             // No row mask, as in `listing`; rows are checked below.
             scan.filter(&self.request_predicate()?)
@@ -365,7 +384,6 @@ impl PreparedReader {
                 .try_into_stream()
                 .await
                 .map_err(|_| StorageUnavailable)?;
-            let mut counts: [BTreeMap<String, u64>; 3] = Default::default();
             let mut seen = BTreeSet::new();
             let mut cost = 0;
             while let Some(batch) = stream.try_next().await.map_err(|_| StorageUnavailable)? {
@@ -381,43 +399,14 @@ impl PreparedReader {
                         strings(&batch, "source_id")?.value(row).to_owned(),
                         strings(&batch, "root_id")?.value(row).to_owned(),
                     );
-                    if !seen.insert(key) {
-                        continue;
-                    }
-                    for (map, column) in counts.iter_mut().zip(["project", "source_type", "author"])
-                    {
-                        let values = strings(&batch, column)?;
-                        if !values.is_null(row) && map.len() <= 64 {
-                            *map.entry(values.value(row).into()).or_default() += 1;
-                        }
+                    if seen.insert(key) {
+                        visit(&batch, row)?;
                     }
                 }
             }
-            let values = |map: BTreeMap<String, u64>| {
-                if map.len() > 64 {
-                    FilterValues {
-                        status: FilterStatus::TooMany,
-                        values: vec![],
-                    }
-                } else {
-                    FilterValues {
-                        status: FilterStatus::Values,
-                        values: map
-                            .into_iter()
-                            .map(|(value, count)| FilterValue { value, count })
-                            .collect(),
-                    }
-                }
-            };
-            let [projects, source_types, authors] = counts;
             telemetry.filter_rows_scanned = cost as u64;
             self.stage(&mut telemetry, "filter_counts", stage, counters);
-            Ok(ListFiltersOutput {
-                projects: values(projects),
-                source_types: values(source_types),
-                authors: values(authors),
-                metadata: self.metadata(telemetry),
-            })
+            Ok(self.metadata(telemetry))
         }
         .await;
         let stage = Instant::now();
@@ -425,14 +414,53 @@ impl PreparedReader {
         if self.interrupted().await? {
             return Err(AuthorizationUnavailable);
         }
-        let mut result = outcome?;
+        let mut metadata = outcome?;
         self.stage(
-            &mut result.metadata.telemetry,
+            &mut metadata.telemetry,
             "output_authorization",
             stage,
             counters,
         );
-        self.finish_metadata(&mut result.metadata, start, before);
-        Ok(result)
+        self.finish_metadata(&mut metadata, start, before);
+        Ok(metadata)
+    }
+    pub async fn list_filters(&mut self, args: &ListFiltersInput) -> Result<ListFiltersOutput> {
+        args.validate().map_err(|_| InvalidArgument)?;
+        let mut counts: [BTreeMap<String, u64>; 3] = Default::default();
+        let columns = ["project", "source_type", "author"];
+        let metadata = self
+            .scan_documents(None, &columns, |batch, row| {
+                for (map, column) in counts.iter_mut().zip(columns) {
+                    let values = strings(batch, column)?;
+                    if !values.is_null(row) && map.len() <= LIST_FILTERS_MAX_VALUES {
+                        *map.entry(values.value(row).into()).or_default() += 1;
+                    }
+                }
+                Ok(())
+            })
+            .await?;
+        let values = |map: BTreeMap<String, u64>| {
+            if map.len() > LIST_FILTERS_MAX_VALUES {
+                FilterValues {
+                    status: FilterStatus::TooMany,
+                    values: vec![],
+                }
+            } else {
+                FilterValues {
+                    status: FilterStatus::Values,
+                    values: map
+                        .into_iter()
+                        .map(|(value, count)| FilterValue { value, count })
+                        .collect(),
+                }
+            }
+        };
+        let [projects, source_types, authors] = counts;
+        Ok(ListFiltersOutput {
+            projects: values(projects),
+            source_types: values(source_types),
+            authors: values(authors),
+            metadata,
+        })
     }
 }
