@@ -10,9 +10,12 @@ mod restore_fragments;
 mod restore_index;
 use chrono::Utc;
 use futures::TryStreamExt;
+use fyrr_core::Contract;
 use fyrr_core::config::Config;
 use fyrr_core::envelope::{EnvelopePayload, RejectionMarker};
-use fyrr_core::publication::{CommitLineage, ContentManifest, PolicyArtifact, ServingHead};
+use fyrr_core::publication::{
+    CommitLineage, ContentManifest, HISTORY_CUT_OBJECT, HistoryCut, PolicyArtifact, ServingHead,
+};
 use fyrr_reader::storage::{dataset_uri, namespace_store, pinned, read_contract};
 use lance::Dataset;
 use lance::dataset::cleanup::CleanupPolicy;
@@ -330,7 +333,6 @@ async fn retained(config: &Config, head: &ServingHead) -> Result<Vec<ContentMani
     );
     let mut retired: Option<chrono::DateTime<Utc>> = None;
     let mut keep = Vec::new();
-    let mut ended = true;
     while let Some(manifest) = chain.try_next().await? {
         if retired.is_some_and(|at| {
             (fyrr_core::clock::now() - at)
@@ -340,34 +342,23 @@ async fn retained(config: &Config, head: &ServingHead) -> Result<Vec<ContentMani
                     .to_std()
                     .is_ok_and(|age| age >= config.writer.purge_window.as_duration())
         }) {
-            ended = false;
             break;
         }
         retired = Some(manifest.committed_at);
         keep.push(manifest);
     }
-    // Maintenance keeps the manifest where the window ends, so a walk always
-    // finds it: a chain that runs out before that lost a manifest.
-    if ended
-        && keep
-            .last()
-            .is_some_and(|oldest| oldest.previous_publication_id.is_some())
-    {
-        return Err(WriterError::PublicationInvalid);
-    }
     Ok(keep)
 }
 
 /// Delete the publication manifests and envelope checkpoints that no retained
-/// manifest names, except the manifest where the window ends and its
-/// checkpoint: the walk of `retained` ends there, so a manifest missing before
-/// it is a lost one. Other walks of the chain end at the deleted manifest
-/// after it, and a walk that starts at a manifest older than the window finds
-/// its checkpoint gone and reads the manifests instead, so what is deleted is
-/// history no restore or receipt reaches. Like the other steps, the pass is bounded by
-/// `step_max_duration`, listing included, meets the revocation boundary every
-/// 64 deletes and ends when the head publishes; what it leaves, the next
-/// `writer maintain` removes.
+/// manifest names. The oldest retained manifest is recorded as the cut first:
+/// the walks of the chain end there, and a manifest missing anywhere else is a
+/// lost one. A walk that starts at a manifest older than the window finds its
+/// checkpoint gone and reads the manifests instead, so what is deleted is
+/// history no restore or receipt reaches. Like the other steps, the pass is
+/// bounded by `step_max_duration`, listing included, meets the revocation
+/// boundary every 64 deletes and ends when the head publishes; what it leaves,
+/// the next `writer maintain` removes.
 async fn superseded_history(
     config: &Config,
     lease: &LeaseGuard,
@@ -387,8 +378,7 @@ async fn superseded_history(
         {
             return Ok(0);
         }
-        let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
-        let mut named: BTreeSet<_> = kept
+        let named: BTreeSet<_> = kept
             .iter()
             .flat_map(|manifest| {
                 [format!("publications/{}.json", manifest.publication_id)]
@@ -401,20 +391,30 @@ async fn superseded_history(
                     )
             })
             .collect();
-        if let Some(id) = kept
-            .last()
-            .and_then(|oldest| oldest.previous_publication_id.as_ref())
-        {
-            let path = format!("publications/{id}.json");
-            let boundary =
-                fyrr_reader::storage::read_manifest(store.as_ref(), &root, &path).await?;
-            named.extend(
-                boundary
-                    .envelope_evidence
-                    .map(|evidence| evidence.checkpoint.object),
-            );
-            named.insert(path);
+        // Record the cut before anything goes: a crash leaves older manifests
+        // that the next pass deletes, never a chain with a hole.
+        if let Some(oldest) = kept.last() {
+            let (store, root) = namespace_store(config)?;
+            let current = fyrr_reader::storage::history_cut(store.as_ref(), &root).await?;
+            if oldest.previous_publication_id.is_some()
+                && current.as_ref() != Some(&oldest.publication_id)
+            {
+                let cut = HistoryCut {
+                    schema_version: <HistoryCut as Contract>::VERSION,
+                    namespace: config.namespace.name.as_str().to_owned(),
+                    publication_id: oldest.publication_id.clone(),
+                };
+                lease.head().await?;
+                store
+                    .put(
+                        &root.join(HISTORY_CUT_OBJECT),
+                        fyrr_core::write_contract(&cut).into(),
+                    )
+                    .await
+                    .map_err(|_| WriterError::StorageUnavailable)?;
+            }
         }
+        let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
         let served = head.content.as_ref().map(|p| p.publication_id.clone());
         let mut deleted = 0;
         for prefix in ["publications", "evidence"] {
@@ -763,21 +763,22 @@ pub(crate) async fn purge_warnings(
             .collect::<Result<_, _>>()?;
         let mut probes = 0;
         let files: BTreeSet<_> = current.files.iter().map(|f| f.path.clone()).collect();
-        let mut previous = current.previous_publication_id;
+        let cut = fyrr_reader::storage::history_cut(store.as_ref(), &root).await?;
+        let mut previous = if cut.as_ref() == Some(&current.publication_id) {
+            None
+        } else {
+            current.previous_publication_id
+        };
         for _ in 0..64 {
             let Some(id) = previous else {
                 return Ok(false);
             };
-            // Maintenance deleted the history outside the purge window.
-            let Some(manifest) = fyrr_reader::storage::read_older_manifest(
+            let manifest = fyrr_reader::storage::read_older_manifest(
                 store.as_ref(),
                 &root,
                 &format!("publications/{id}.json"),
             )
-            .await?
-            else {
-                return Ok(false);
-            };
+            .await?;
             if old(manifest.committed_at) {
                 if revoked_at.contains(&manifest.sequence) {
                     return Ok(true);
@@ -799,7 +800,12 @@ pub(crate) async fn purge_warnings(
                     }
                 }
             }
-            previous = manifest.previous_publication_id;
+            // Maintenance deleted the history before the cut.
+            previous = if cut.as_ref() == Some(&manifest.publication_id) {
+                None
+            } else {
+                manifest.previous_publication_id
+            };
         }
         // More history than the bounded probe can certify is conservatively warned.
         Ok::<_, WriterError>(previous.is_some())

@@ -1618,6 +1618,13 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
         .unwrap();
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("publication_invalid"));
+    // So does every other reader of the chain, `writer status` among them.
+    let status = host_command(&commit)
+        .args(["writer", "status"])
+        .output()
+        .unwrap();
+    assert!(!status.status.success());
+    assert!(String::from_utf8_lossy(&status.stderr).contains("publication_invalid"));
     for manifest in chain.iter().filter(|m| m.publication_id != lost) {
         store.head(&path(&manifest.publication_id)).await.unwrap();
     }
@@ -1645,16 +1652,16 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
     .unwrap();
     let publications = control_objects(&commit, "publications").await;
     assert_eq!(kept.len(), publications, "unreachable manifests remain");
-    // Of the manifests past the window, one is kept for the grace after its
-    // retirement and one is the boundary where the walk ends: the history
-    // before them, the original publications included, is gone.
+    // Past the window only the cut stays, kept for the grace after its
+    // retirement: the history before it, the original publications
+    // included, is gone.
     let window = chrono::Duration::hours(24);
     let outside: Vec<_> = kept
         .iter()
         .filter(|m| fyrr_core::clock::now() - m.committed_at >= window)
         .map(|m| m.publication_id.clone())
         .collect();
-    assert_eq!(outside.len(), 2, "{outside:?}");
+    assert_eq!(outside.len(), 1, "{outside:?}");
     for old in &chain {
         assert!(
             !kept.iter().any(|m| m.publication_id == old.publication_id),
@@ -1693,15 +1700,21 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
         pending
     );
 
-    // The window moved on: the grace one is the boundary now, the old boundary
-    // goes, and the history ends at a manifest younger than the window.
+    // The window moved on: the cut moves to the oldest manifest it keeps.
     fyrr_core::clock::advance(Duration::from_secs(2 * 3600)).unwrap();
     command(&commit, &["writer", "maintain"]);
-    store.head(&path(&outside[0])).await.unwrap();
     assert!(matches!(
-        store.head(&path(&outside[1])).await,
+        store.head(&path(&outside[0])).await,
         Err(object_store::Error::NotFound { .. })
     ));
+    // A longer window than the history left is no lost manifest: the walks end
+    // at the cut.
+    let mut text = std::fs::read_to_string(&commit).unwrap();
+    text.push_str("\n[writer]\npurge_window='7d'\n");
+    text.parse::<toml::Table>().expect("one [writer] table");
+    std::fs::write(&commit, text).unwrap();
+    command(&commit, &["writer", "maintain"]);
+    command(&commit, &["writer", "status"]);
 
     // A fresh writer, restore and rollback work from what is left.
     history_round(&worker, &root, 11);

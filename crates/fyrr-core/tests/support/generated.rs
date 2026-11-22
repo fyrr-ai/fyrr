@@ -10,7 +10,9 @@ use fyrr_core::envelope::{PreparedEnvelope, RejectionMarker};
 use fyrr_core::identity::{ApiKeysArtifact, IdentityArtifact};
 use fyrr_core::mcp::{ToolError, error_codes, tools_list};
 use fyrr_core::provider::{ProviderInfo, SDK_SERIES};
-use fyrr_core::publication::{ContentManifest, EnvelopeCheckpoint, PolicyArtifact, ServingHead};
+use fyrr_core::publication::{
+    ContentManifest, EnvelopeCheckpoint, HistoryCut, PolicyArtifact, ServingHead,
+};
 use fyrr_core::schemas::config_schema;
 use fyrr_core::version::Contract;
 
@@ -194,6 +196,19 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
                 namespace: "acme".into(),
                 applied_envelope_ids: vec!["env-ab0dc87cb67ccdbb62a36a806c0cd6c5".into()],
                 rejected_envelope_ids: vec!["env-c0ffee00c0ffee00c0ffee00c0ffee00".into()],
+            }))
+            .unwrap_or_else(|_| unreachable!("JSON serialization is UTF-8")),
+        },
+        GeneratedFile {
+            path: "schemas/history-cut.schema.json",
+            contents: pretty(&contract_schema::<HistoryCut>()),
+        },
+        GeneratedFile {
+            path: "fixtures/contracts/history-cut/valid.json",
+            contents: String::from_utf8(fyrr_core::write_contract(&HistoryCut {
+                schema_version: <HistoryCut as Contract>::VERSION,
+                namespace: "acme".into(),
+                publication_id: "pub-00000000000000000000000000000041".into(),
             }))
             .unwrap_or_else(|_| unreachable!("JSON serialization is UTF-8")),
         },

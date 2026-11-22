@@ -757,24 +757,46 @@ pub async fn read_manifest(
 ) -> Result<fyrr_core::publication::ContentManifest, StorageError> {
     read_contract(store, &Path::from(format!("{root}/{relative}"))).await
 }
-/// An older publication of a walk. `None` once maintenance deleted it with the
-/// rest of the history outside the purge window: the walk ends there.
+/// An older publication of a walk. Only the recorded cut may be missing
+/// before it, so a manifest that is gone is `PublicationInvalid`.
 pub async fn read_older_manifest(
     store: &dyn ObjectStore,
     root: &Path,
     relative: &str,
-) -> Result<Option<fyrr_core::publication::ContentManifest>, StorageError> {
+) -> Result<fyrr_core::publication::ContentManifest, StorageError> {
     let bytes = match store.get(&Path::from(format!("{root}/{relative}"))).await {
         Ok(object) => object
             .bytes()
             .await
             .map_err(|_| StorageError::StorageUnavailable)?,
-        Err(object_store::Error::NotFound { .. }) => return Ok(None),
+        Err(object_store::Error::NotFound { .. }) => return Err(StorageError::PublicationInvalid),
         Err(_) => return Err(StorageError::StorageUnavailable),
     };
-    parse_contract(&bytes)
-        .map(Some)
-        .map_err(|_| StorageError::PublicationInvalid)
+    parse_contract(&bytes).map_err(|_| StorageError::PublicationInvalid)
+}
+
+/// The oldest publication the namespace keeps, once maintenance cut the
+/// history there; a walk of the chain ends at it.
+pub async fn history_cut(
+    store: &dyn ObjectStore,
+    root: &Path,
+) -> Result<Option<String>, StorageError> {
+    let path = root
+        .clone()
+        .join(fyrr_core::publication::HISTORY_CUT_OBJECT);
+    match store.get(&path).await {
+        Ok(object) => {
+            let bytes = object
+                .bytes()
+                .await
+                .map_err(|_| StorageError::StorageUnavailable)?;
+            parse_contract::<fyrr_core::publication::HistoryCut>(&bytes)
+                .map(|cut| Some(cut.publication_id))
+                .map_err(|_| StorageError::PublicationInvalid)
+        }
+        Err(object_store::Error::NotFound { .. }) => Ok(None),
+        Err(_) => Err(StorageError::StorageUnavailable),
+    }
 }
 pub fn manifest_chain(
     store: Arc<dyn ObjectStore>,
@@ -785,19 +807,21 @@ pub fn manifest_chain(
     Result<fyrr_core::publication::ContentManifest, StorageError>,
 > {
     use futures::StreamExt;
-    futures::stream::try_unfold((first, None), move |(path, newer_sequence)| {
+    // The state: the next path, the sequence of the manifest before it, and
+    // the cut, read when the walk starts.
+    futures::stream::try_unfold((first, None, None), move |(path, newer_sequence, cut)| {
         let store = store.clone();
         let root = root.clone();
         async move {
             let Some(path) = path else {
                 return Ok(None);
             };
+            let cut = match cut {
+                Some(cut) => cut,
+                None => history_cut(store.as_ref(), &root).await?,
+            };
             let manifest = if newer_sequence.is_some() {
-                let Some(manifest) = read_older_manifest(store.as_ref(), &root, &path).await?
-                else {
-                    return Ok(None);
-                };
-                manifest
+                read_older_manifest(store.as_ref(), &root, &path).await?
             } else {
                 read_manifest(store.as_ref(), &root, &path).await?
             };
@@ -807,11 +831,15 @@ pub fn manifest_chain(
                 return Err(StorageError::PublicationInvalid);
             }
             let sequence = manifest.sequence;
-            let previous = manifest
-                .previous_publication_id
-                .as_ref()
-                .map(|id| format!("publications/{id}.json"));
-            Ok(Some((manifest, (previous, Some(sequence)))))
+            let previous = if cut.as_ref() == Some(&manifest.publication_id) {
+                None
+            } else {
+                manifest
+                    .previous_publication_id
+                    .as_ref()
+                    .map(|id| format!("publications/{id}.json"))
+            };
+            Ok(Some((manifest, (previous, Some(sequence), Some(cut)))))
         }
     })
     .boxed()
