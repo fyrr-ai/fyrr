@@ -102,7 +102,7 @@ a connector section's `vector`).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `endpoint` | absent | Base URL of the embeddings API (`…/v1`). Absent, a document without a vector is refused. |
+| `endpoint` | `""` | Base URL of the embeddings API (`…/v1`). Empty, a document without a vector is refused. |
 | `model` | `BAAI/bge-m3` | 1–512 UTF-8 bytes. |
 | `dimensions` | `1024` | 1–8192; must match the model. |
 | `send_dimensions` | `false` | Send `dimensions` in the request. |

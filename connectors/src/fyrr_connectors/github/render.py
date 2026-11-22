@@ -54,7 +54,9 @@ class Rendered:
 def finish(metadata: Metadata, sections: list[Section], facts: object, limit: int) -> Rendered:
     if sum(len(section.text.encode()) for section in sections) > limit:
         raise InvalidDocument
-    body = [FORMAT, asdict(metadata), [asdict(section) for section in sections], facts]
+    # The revision covers what a section was before it could carry a vector.
+    parts = [{k: v for k, v in asdict(s).items() if k != "vector"} for s in sections]
+    body = [FORMAT, asdict(metadata), parts, facts]
     revision = hashlib.sha256(
         json.dumps(body, sort_keys=True, default=str, separators=(",", ":")).encode()
     ).hexdigest()

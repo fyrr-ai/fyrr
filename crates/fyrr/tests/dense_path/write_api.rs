@@ -344,7 +344,11 @@ async fn identity_write_api_stores_the_vectors_a_caller_supplies_on_storage() {
         json!(vec![0.0; 1024]),
         json!(["x"]),
         json!("x"),
-        json!(std::iter::once(1e39).chain(std::iter::repeat_n(1.0, 1023)).collect::<Vec<_>>()),
+        json!(
+            std::iter::once(1e39)
+                .chain(std::iter::repeat_n(1.0, 1023))
+                .collect::<Vec<_>>()
+        ),
     ] {
         assert_eq!(
             writer
@@ -364,7 +368,10 @@ async fn identity_write_api_stores_the_vectors_a_caller_supplies_on_storage() {
 async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_storage() {
     let (config, root) = setup_on(Backend::Local);
     let text = std::fs::read_to_string(&config).unwrap();
-    let (from, to) = (text.find("[embedding]").unwrap(), text.find("[identity]").unwrap());
+    let (from, to) = (
+        text.find("[embedding]").unwrap(),
+        text.find("[identity]").unwrap(),
+    );
     std::fs::write(&config, format!("{}{}", &text[..from], &text[to..])).unwrap();
     let address = free_address();
     configure(&config, &address, "open = true");
@@ -388,7 +395,10 @@ async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_sto
 
     // Nothing embeds the text of a row without a vector, and the dimension is the namespace's.
     for (row, code) in [
-        (json!({"id": "x", "text": "alpha"}), "embedding_not_configured"),
+        (
+            json!({"id": "x", "text": "alpha"}),
+            "embedding_not_configured",
+        ),
         (
             json!({"id": "x", "text": "alpha", "vector": vector(2, 1024)}),
             "vector_invalid",

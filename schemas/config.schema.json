@@ -9,7 +9,24 @@
       "$ref": "#/$defs/StorageConfig"
     },
     "embedding": {
-      "$ref": "#/$defs/EmbeddingConfig"
+      "$ref": "#/$defs/EmbeddingConfig",
+      "description": "Absent: no embedding provider, and every document carries its own vector.",
+      "default": {
+        "endpoint": "",
+        "model": "BAAI/bge-m3",
+        "dimensions": 1024,
+        "prefix": "",
+        "roles": {
+          "document": {},
+          "query": {}
+        },
+        "send_dimensions": false,
+        "reader_live": false,
+        "query_cache_max_bytes": 16777216,
+        "batch_size": 32,
+        "timeout": "30s",
+        "max_retries": 3
+      }
     },
     "identity": {
       "$ref": "#/$defs/IdentityConfig",
@@ -79,8 +96,7 @@
   },
   "required": [
     "namespace",
-    "storage",
-    "embedding"
+    "storage"
   ],
   "title": "fyrr configuration",
   "description": "The whole configuration file.",
@@ -541,7 +557,8 @@
       "properties": {
         "endpoint": {
           "type": "string",
-          "description": "Base URL of the OpenAI-compatible embeddings API."
+          "description": "Base URL of the OpenAI-compatible embeddings API. Empty: no provider,\nand a document without a vector is refused.",
+          "default": ""
         },
         "model": {
           "type": "string",
@@ -637,9 +654,6 @@
           "default": 3
         }
       },
-      "required": [
-        "endpoint"
-      ],
       "description": "Embedding identity, role transformations and bounded provider access."
     },
     "EmbeddingRoles": {
