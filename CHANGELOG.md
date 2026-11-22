@@ -9,6 +9,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `fyrr writer namespace list [--prefix P]` and `GET /v1/namespaces?prefix=P` on
+  the reader list the namespaces of the storage root, in name order, that start
+  with `P` and with the `namespace_prefix` of the caller's key. A namespace is
+  listed while any object exists under it. One call is one delimited listing of
+  `namespaces/`, and more than 10,000 matching names fail with
+  `too_many_namespaces`. The route needs an API key with the `admin` or `list`
+  role. See [Listing namespaces](docs/http-api.md#listing-namespaces).
 - `GET /v1/namespaces/{namespace}` on the reader reports the namespace's
   schema, settings, approximate row count and logical bytes, the time of the
   namespace's first publication, last write time, and the rows and bytes no

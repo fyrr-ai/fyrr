@@ -82,6 +82,8 @@ errors! {
     StaleCursor => ("stale_cursor", StaleCursor),
     StorageConfigurationInvalid => ("storage_configuration_invalid", StorageUnavailable),
     StorageUnavailable => ("storage_unavailable", StorageUnavailable),
+    // The listing of namespaces matches more names than it returns.
+    TooManyNamespaces => ("too_many_namespaces", StorageUnavailable),
     TransportUnavailable => ("transport_unavailable", StorageUnavailable),
     Unauthorized => ("unauthorized", StorageUnavailable),
 }
@@ -116,6 +118,7 @@ impl From<crate::storage::StorageError> for ReaderError {
             S::AuthorizationUnavailable => Self::AuthorizationUnavailable,
             S::StaleCursor => Self::StaleCursor,
             S::PublicationUnavailable => Self::PublicationUnavailable,
+            S::TooManyNamespaces => Self::TooManyNamespaces,
         }
     }
 }

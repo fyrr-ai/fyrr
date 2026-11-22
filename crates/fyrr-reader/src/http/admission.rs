@@ -93,18 +93,49 @@ impl Admission {
         roles: &[ApiKeyRole],
         name: &str,
     ) -> Result<(), ReaderError> {
-        let allowed = if let Some(hash) = &subject.api_key {
+        let prefix = self.scope(subject, roles).await?;
+        if prefix_allows(prefix.as_deref(), name) {
+            Ok(())
+        } else {
+            Err(Forbidden)
+        }
+    }
+    /// The `namespace_prefix` that limits `subject` (none: no limit), when it
+    /// holds one of `roles`; otherwise as [`Self::grant`].
+    pub(super) async fn scope(
+        &self,
+        subject: &crate::auth::AuthenticatedSubject,
+        roles: &[ApiKeyRole],
+    ) -> Result<Option<String>, ReaderError> {
+        let (allowed, prefix) = if let Some(hash) = &subject.api_key {
             let keys = self
                 .api_keys
                 .held(self.store.as_ref(), &self.keys_root)
                 .await?;
             let grant = keys.grant(hash).ok_or(Unauthorized)?;
-            roles.iter().any(|role| grant.roles.contains(role))
-                && prefix_allows(grant.namespace_prefix.as_deref(), name)
+            (
+                roles.iter().any(|role| grant.roles.contains(role)),
+                grant.namespace_prefix.clone(),
+            )
         } else {
-            roles.contains(&ApiKeyRole::Read)
+            (roles.contains(&ApiKeyRole::Read), None)
         };
-        if allowed { Ok(()) } else { Err(Forbidden) }
+        if allowed { Ok(prefix) } else { Err(Forbidden) }
+    }
+    /// The namespaces `subject` may list: those of the deployment that start
+    /// with `prefix` and with the `namespace_prefix` of its key, from one
+    /// delimited listing, which is all the storage this reads.
+    pub(super) async fn namespaces(
+        &self,
+        subject: &crate::auth::AuthenticatedSubject,
+        prefix: Option<&str>,
+    ) -> Result<Vec<String>, ReaderError> {
+        let scope = self.scope(subject, LIST_ROLES).await?;
+        let prefixes: Vec<&str> = prefix.into_iter().chain(scope.as_deref()).collect();
+        Ok(
+            crate::storage::list_namespaces(self.store.as_ref(), &self.keys_root, &prefixes)
+                .await?,
+        )
     }
     /// Admits `subject` to a route that needs one of `roles` in the namespace
     /// this admission serves (see [`Self::grant`]).

@@ -264,6 +264,7 @@ pub enum StorageError {
     AuthorizationUnavailable,
     StaleCursor,
     PublicationUnavailable,
+    TooManyNamespaces,
 }
 impl StorageError {
     pub const fn as_str(self) -> &'static str {
@@ -274,6 +275,7 @@ impl StorageError {
             Self::AuthorizationUnavailable => "authorization_unavailable",
             Self::StaleCursor => "stale_cursor",
             Self::PublicationUnavailable => "publication_unavailable",
+            Self::TooManyNamespaces => "too_many_namespaces",
         }
     }
 }
@@ -567,6 +569,37 @@ pub async fn read_contract<T: Contract>(
 
 /// The object that holds a deployment's API keys, under [`deployment_root`].
 pub const API_KEYS_FILE: &str = "api-keys.json";
+
+/// The namespaces of the deployment stored under `root`, in name order, whose
+/// names start with every one of `prefixes`: one delimited listing of
+/// `namespaces/`, which an object store pages at 1,000 names per request. A name
+/// is listed while any object exists under it, so a namespace whose deletion
+/// has not finished is listed. More names than
+/// [`MAX_NAMESPACES`](fyrr_core::limits::listing::MAX_NAMESPACES) fail.
+// shortcut: the object-store library has no start-after or page size for a
+// delimited listing and matches a prefix by whole path segment, so the names
+// are all read and filtered here. Upgrade when it pages the delimited listing.
+pub async fn list_namespaces(
+    store: &dyn ObjectStore,
+    root: &Path,
+    prefixes: &[&str],
+) -> Result<Vec<String>, StorageError> {
+    let listing = store
+        .list_with_delimiter(Some(&root.clone().join("namespaces")))
+        .await
+        .map_err(|_| StorageError::StorageUnavailable)?;
+    let names: Vec<String> = listing
+        .common_prefixes
+        .iter()
+        .filter_map(Path::filename)
+        .filter(|name| prefixes.iter().all(|prefix| name.starts_with(prefix)))
+        .map(str::to_owned)
+        .collect();
+    if names.len() > fyrr_core::limits::listing::MAX_NAMESPACES {
+        return Err(StorageError::TooManyNamespaces);
+    }
+    Ok(names)
+}
 
 /// The storage root above `namespaces/`: what the namespaces of a deployment
 /// share, so every reader and writer of it finds the same keys.

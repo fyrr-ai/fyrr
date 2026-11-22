@@ -134,6 +134,14 @@ pub enum NamespaceAction {
         #[arg(long)]
         delete_data: Option<String>,
     },
+    /// List the namespaces of the storage root, in name order: a name is listed
+    /// while any object exists under it, so a namespace whose deletion has not
+    /// finished is listed.
+    List {
+        /// Only the namespaces whose name starts with this prefix.
+        #[arg(long, value_parser = namespace_prefix)]
+        prefix: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -177,6 +185,12 @@ pub enum WorkerJob {
         #[arg(long)]
         due: bool,
     },
+}
+
+fn namespace_prefix(text: &str) -> Result<String, String> {
+    fyrr_core::config::is_namespace_prefix(text)
+        .then(|| text.to_owned())
+        .ok_or_else(|| "expected 1 to 63 lowercase letters, digits or `-`".to_owned())
 }
 
 fn parse_kind(text: &str) -> Result<SyncKind, String> {
@@ -300,6 +314,17 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
                 export.as_deref(),
                 delete_data.as_deref(),
             )),
+            WriterCommand::Namespace {
+                action: NamespaceAction::List { prefix },
+            } => runtime_command(async {
+                let (store, root) = fyrr_reader::storage::namespace_store(config)?;
+                let root = fyrr_reader::storage::deployment_root(&root);
+                let prefixes: Vec<&str> = prefix.as_deref().into_iter().collect();
+                fyrr_reader::storage::list_namespaces(store.as_ref(), &root, &prefixes)
+                    .await
+                    .map(|namespaces| serde_json::json!({"namespaces":namespaces}))
+                    .map_err(Into::into)
+            }),
             WriterCommand::Maintain => runtime_command(crate::maintenance::maintain(config, true)),
             WriterCommand::Serve { jobs, timeout } => {
                 // Source jobs need the providers' Python: say so once, up

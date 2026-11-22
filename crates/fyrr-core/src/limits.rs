@@ -64,6 +64,12 @@ pub mod mcp {
     pub const RESPONSE_MIN_HITS_PER_QUERY: usize = 4;
 }
 
+/// Bounds of the namespace listing (not of connector documents).
+pub mod listing {
+    /// Namespaces one listing returns: more names than this match, and it fails.
+    pub const MAX_NAMESPACES: usize = 10_000;
+}
+
 /// Bounds of a namespace's typed attribute schema (not of connector documents).
 pub mod schema {
     /// Typed attributes a namespace can declare, each its own column and index.

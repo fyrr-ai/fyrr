@@ -948,6 +948,99 @@ async fn a_namespace_report_needs_the_admin_or_list_role() {
     reader.stop().await;
 }
 
+/// What a caller is told with `token` on the listing route, for `query`.
+async fn listed_by(reader: &Reader, token: &str, query: &str) -> (u16, Value) {
+    let response = reader
+        .client
+        .get(format!("{}/v1/namespaces{query}", reader.base))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    (
+        response.status().as_u16(),
+        response.json().await.unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+#[ignore = "real writer, HTTP reader executable and local storage; scripts/ci"]
+async fn namespaces_are_listed_within_the_prefix_of_the_key() {
+    let mut deployment = Deployment::new().await;
+    deployment.without_directory();
+    let main = deployment.namespace.clone();
+    let reads = Key::new("ls-reads-r5k", "FYRR_TEST_API_KEY_READS", 81, "usr:u1");
+    let lists = Key {
+        extra: "roles=['list']".into(),
+        ..Key::new("ls-lists-r5k", "FYRR_TEST_API_KEY_LISTS", 82, "")
+    };
+    let scoped = Key {
+        extra: format!("roles=['admin']\nnamespace_prefix='{main}-b'"),
+        ..Key::new("ls-scope-r5k", "FYRR_TEST_API_KEY_SCOPE", 83, "")
+    };
+    let all = [&reads, &lists, &scoped];
+    let published = deployment.publish(&all, &all, "");
+    assert!(published.status.success(), "{}", report(&published));
+    let alpha = deployment.sibling("alpha", &all);
+    let beta = deployment.sibling("beta", &all);
+    let mut reader = Reader::start_appended(&deployment.worker, &deployment.root, key_http).await;
+
+    let names = |names: &[&str]| (200, json!({"namespaces":names}));
+    // A key with `list` sees every namespace, in name order, and filters them.
+    let every = [main.as_str(), alpha.as_str(), beta.as_str()];
+    assert_eq!(listed_by(&reader, &lists.secret, "").await, names(&every));
+    assert_eq!(
+        listed_by(&reader, &lists.secret, &format!("?prefix={main}-")).await,
+        names(&[&alpha, &beta])
+    );
+    assert_eq!(
+        listed_by(&reader, &lists.secret, &format!("?prefix={main}-a")).await,
+        names(&[&alpha])
+    );
+    assert_eq!(
+        listed_by(&reader, &lists.secret, "?prefix=zz").await,
+        names(&[])
+    );
+    // A key limited to a prefix sees the namespaces under it alone, whatever
+    // the query asks: the configured namespace and the others are not listed.
+    assert_eq!(
+        listed_by(&reader, &scoped.secret, "").await,
+        names(&[&beta])
+    );
+    assert_eq!(
+        listed_by(&reader, &scoped.secret, &format!("?prefix={main}")).await,
+        names(&[&beta])
+    );
+    assert_eq!(
+        listed_by(&reader, &scoped.secret, &format!("?prefix={main}-a")).await,
+        names(&[])
+    );
+    // A key that only reads, a secret nobody published and a caller without
+    // one are refused, and so is a query the route does not take.
+    assert_eq!(
+        listed_by(&reader, &reads.secret, "").await,
+        (403, json!({"error":"forbidden"}))
+    );
+    assert_eq!(
+        listed_by(&reader, &secret(99), "").await,
+        (401, json!({"error":"unauthorized"}))
+    );
+    let url = format!("{}/v1/namespaces", reader.base);
+    assert_eq!(reader.client.get(&url).send().await.unwrap().status(), 401);
+    let head = reader.client.head(&url).bearer_auth(&lists.secret);
+    assert_eq!(head.send().await.unwrap().status(), 200);
+    for query in ["?prefix=", "?prefix=A", "?other=1", "?prefix=a&prefix=b"] {
+        assert_eq!(
+            listed_by(&reader, &lists.secret, query).await,
+            (400, json!({"error":"invalid_argument"})),
+            "{query}"
+        );
+    }
+    let post = reader.client.post(&url).bearer_auth(&lists.secret);
+    assert_eq!(post.send().await.unwrap().status(), 405);
+    reader.stop().await;
+}
+
 /// The root IDs a JSON route answered with.
 fn hits_of(body: &Value) -> Vec<String> {
     body["hits"]

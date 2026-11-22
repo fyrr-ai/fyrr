@@ -8,7 +8,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use fyrr_core::config::{ApiKeyRole, Config, ProcessEnvironment, is_namespace_name};
+use fyrr_core::config::{
+    ApiKeyRole, Config, ProcessEnvironment, is_namespace_name, is_namespace_prefix,
+};
 use fyrr_core::mcp::ErrorCode;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -440,30 +442,39 @@ fn retry_after(mut response: Response) -> Response {
         .insert(header::RETRY_AFTER, seconds.into());
     response
 }
+/// The roles of the routes that list namespaces and report one: their answers
+/// are not filtered by row permissions.
+const LIST_ROLES: &[ApiKeyRole] = &[ApiKeyRole::Admin, ApiKeyRole::List];
+
 /// The tool a JSON route runs, the roles an API key needs one of for it and the
 /// namespace the path names: `POST /v1/namespaces/{namespace}/query` and
-/// `.../fetch` need `read`, `GET` and `HEAD /v1/namespaces/{namespace}` need `admin` or
-/// `list`, because its numbers are not filtered by row permissions. `/mcp`
-/// needs `read` as well. A key without a role of a route gets 403 `forbidden`;
-/// `/readyz` and `/admin/refresh` take no API key.
-fn json_tool(request: &Request) -> Option<(&'static str, &'static [ApiKeyRole], String)> {
-    let path = request.uri().path().strip_prefix("/v1/namespaces/")?;
+/// `.../fetch` need `read`, `GET` and `HEAD /v1/namespaces/{namespace}` and
+/// `/v1/namespaces` need `admin` or `list`. `/mcp` needs `read` as well. A key
+/// without a role of a route gets 403 `forbidden`; `/readyz` and
+/// `/admin/refresh` take no API key.
+fn json_tool(request: &Request) -> Option<(&'static str, &'static [ApiKeyRole], Option<String>)> {
+    let path = request.uri().path();
     // axum answers HEAD from the GET route: it needs the same admission.
-    if matches!(*request.method(), Method::GET | Method::HEAD) {
-        return (!path.contains('/')).then(|| {
-            (
-                "report",
-                &[ApiKeyRole::Admin, ApiKeyRole::List][..],
-                path.to_owned(),
-            )
-        });
+    let read = matches!(*request.method(), Method::GET | Method::HEAD);
+    if path == "/v1/namespaces" {
+        return read.then_some(("list", LIST_ROLES, None));
+    }
+    let path = path.strip_prefix("/v1/namespaces/")?;
+    if read {
+        return (!path.contains('/')).then(|| ("report", LIST_ROLES, Some(path.to_owned())));
     }
     if request.method() != Method::POST {
         return None;
     }
     match path.split_once('/')? {
-        (namespace, "query") => Some(("search", &[ApiKeyRole::Read][..], namespace.to_owned())),
-        (namespace, "fetch") => Some(("fetch", &[ApiKeyRole::Read][..], namespace.to_owned())),
+        (namespace, "query") => Some((
+            "search",
+            &[ApiKeyRole::Read][..],
+            Some(namespace.to_owned()),
+        )),
+        (namespace, "fetch") => {
+            Some(("fetch", &[ApiKeyRole::Read][..], Some(namespace.to_owned())))
+        }
         _ => None,
     }
 }
@@ -568,8 +579,10 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
         roles: route
             .as_ref()
             .map_or(&[ApiKeyRole::Read][..], |(_, roles, _)| *roles),
-        principal: tool != Some("report"),
-        namespace: route.as_ref().map(|(_, _, namespace)| namespace.as_str()),
+        principal: !matches!(tool, Some("report" | "list")),
+        namespace: route
+            .as_ref()
+            .and_then(|(_, _, namespace)| namespace.as_deref()),
     };
     let _permit = if request.uri().path() != "/mcp" && tool.is_none() {
         match state.permits.clone().try_acquire_owned() {
@@ -603,7 +616,9 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                     return error(StatusCode::REQUEST_TIMEOUT, DeadlineExceeded);
                 }
             };
-        let (message, parsed) = if tool == Some("report") {
+        let (message, parsed) = if tool == Some("list") {
+            (None, None)
+        } else if tool == Some("report") {
             (None, Some(Ok(crate::serve::ToolCall::Report)))
         } else if let Some(name) = tool {
             let call = serde_json::from_slice(&bytes)
@@ -801,6 +816,16 @@ async fn authenticate_mcp(
         })?;
         Some(found)
     } else {
+        // The listing names no namespace and reads no rows: the published keys
+        // alone admit it, and the handler filters its names by the key's prefix.
+        if !needs.principal {
+            timeout_at(deadline, async {
+                state.admission.scope(&subject, needs.roles).await?;
+                spend(state, subject.api_key.as_deref().unwrap_or(&subject.key)).await
+            })
+            .await?
+            .map_err(refuse)?;
+        }
         None
     };
     let (config, admission) = served
@@ -1046,6 +1071,33 @@ async fn tool_json(request: Request) -> Response {
     };
     retry_after((status, axum::Json(json!({"error":code.as_str()}))).into_response())
 }
+/// `GET /v1/namespaces[?prefix=P]`: the names of the namespaces that start with
+/// `P` and with the `namespace_prefix` of the caller's key, in name order. The
+/// boundary has admitted the caller; the only query member is `prefix`.
+async fn list_namespaces(State(state): State<HttpState>, request: Request) -> Response {
+    let Some(subject) = request
+        .extensions()
+        .get::<crate::auth::AuthenticatedSubject>()
+    else {
+        unreachable!("the HTTP boundary authenticates a listing before routing it");
+    };
+    let prefix = match request
+        .uri()
+        .query()
+        .map(|query| query.strip_prefix("prefix="))
+    {
+        None => None,
+        Some(Some(prefix)) if is_namespace_prefix(prefix) => Some(prefix),
+        Some(_) => return error(StatusCode::BAD_REQUEST, InvalidArgument),
+    };
+    match state.admission.namespaces(subject, prefix).await {
+        Ok(names) => axum::Json(json!({"namespaces":names})).into_response(),
+        Err(TooManyNamespaces) => error(StatusCode::BAD_REQUEST, TooManyNamespaces),
+        Err(StorageUnavailable) => error(StatusCode::SERVICE_UNAVAILABLE, StorageUnavailable),
+        // A key removed since the boundary admitted it.
+        Err(_) => error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable),
+    }
+}
 async fn refresh(State(state): State<HttpState>, request: Request) -> Response {
     let Some(credential) = &state.http().operator_credential else {
         unreachable!("the refresh route is registered only with an operator credential");
@@ -1170,7 +1222,8 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     router = router
         .route("/v1/namespaces/{namespace}/query", post(tool_json))
         .route("/v1/namespaces/{namespace}/fetch", post(tool_json))
-        .route("/v1/namespaces/{namespace}", get(tool_json));
+        .route("/v1/namespaces/{namespace}", get(tool_json))
+        .route("/v1/namespaces", get(list_namespaces));
     if h.operator_credential.is_some() {
         router = router.route("/admin/refresh", post(refresh));
     }
