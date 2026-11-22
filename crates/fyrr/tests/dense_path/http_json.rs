@@ -46,7 +46,12 @@ async fn identity_http_json_routes_share_the_mcp_gates_on_storage() {
     let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
 
     // Authentication comes first: a wrong namespace does not show to a stranger.
-    for path in [&query, "/v1/namespaces/other/query"] {
+    for path in [
+        &query,
+        "/v1/namespaces/other/query",
+        "/v1/namespaces//query",
+        "/v1/namespaces//fetch",
+    ] {
         let response = reader
             .client
             .post(format!("{}{path}", reader.base))
@@ -87,7 +92,13 @@ async fn identity_http_json_routes_share_the_mcp_gates_on_storage() {
         405
     );
 
-    // Only the configured namespace exists.
+    // Only the configured namespace exists; an empty one is just another.
+    refusal(
+        post(&reader, &tokens[0], "/v1/namespaces//query", &search).await,
+        404,
+        "invalid_argument",
+    )
+    .await;
     refusal(
         post(&reader, &tokens[0], "/v1/namespaces/other/query", &search).await,
         404,
@@ -133,15 +144,12 @@ async fn identity_http_json_routes_share_the_mcp_gates_on_storage() {
         fetched["documents"][0]["root_id"],
         format!("{namespace}-http-1")
     );
-    let denied: Value = post(&reader, &tokens[0], &fetch, &own)
-        .await
-        .json()
-        .await
-        .unwrap();
+    let denied = post(&reader, &tokens[0], &fetch, &own).await;
+    assert_eq!(denied.status(), 200, "a denied document is not an error");
     assert_eq!(
-        denied["documents"].as_array().map_or(0, Vec::len),
-        0,
-        "a denied document is an empty result, not an error"
+        denied.json::<Value>().await.unwrap()["documents"],
+        json!([]),
+        "a denied document is an empty result"
     );
 
     // Tool errors keep their code, each at its status.

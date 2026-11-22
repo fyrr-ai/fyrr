@@ -144,8 +144,8 @@ fn json_tool(request: &Request) -> Option<&'static str> {
         .strip_prefix("/v1/namespaces/")?
         .split_once('/')?
     {
-        (namespace, "query") if !namespace.is_empty() => Some("search"),
-        (namespace, "fetch") if !namespace.is_empty() => Some("fetch"),
+        (_, "query") => Some("search"),
+        (_, "fetch") => Some("fetch"),
         _ => None,
     }
 }
