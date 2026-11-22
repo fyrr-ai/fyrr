@@ -1363,6 +1363,15 @@ impl ObjectStore for LocalStore {
         result
             .common_prefixes
             .retain(|prefix| !self.is_internal(prefix));
+        // A directory that deletions emptied holds no object, so it is no
+        // prefix, as on S3.
+        let mut occupied = Vec::with_capacity(result.common_prefixes.len());
+        for prefix in result.common_prefixes {
+            if self.inner.list(Some(&prefix)).next().await.is_some() {
+                occupied.push(prefix);
+            }
+        }
+        result.common_prefixes = occupied;
         for prefix in &result.common_prefixes {
             let names = self.names(prefix)?;
             match self.chain(&names, false) {

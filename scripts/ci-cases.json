@@ -875,6 +875,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::namespaces_are_listed_in_name_order_within_every_prefix_up_to_the_limit": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
       "full:fyrr-reader:lib:fyrr_reader/storage::tests::authorization_checks_share_one_head_read_per_interval": {
         "tier": "quick",
         "seconds": 0.05
