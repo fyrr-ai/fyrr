@@ -920,6 +920,37 @@ pub fn data_paths(dataset: &Dataset) -> std::collections::BTreeSet<String> {
     }
     paths
 }
+/// The size of each file of a manifest's inventory, by its path.
+pub fn file_sizes(files: &[fyrr_core::envelope::FileRef]) -> std::collections::HashMap<&str, u64> {
+    files
+        .iter()
+        .map(|file| (file.path.as_str(), file.size_bytes))
+        .collect()
+}
+
+/// The live rows of a fragment and the bytes of its data files, whose sizes
+/// `sizes` holds; deletion files and indexes count no bytes.
+// shortcut: a fragment whose row count its Lance manifest does not state counts
+// no rows; Lance states it for every fragment it writes. Upgrade when a
+// dataset written by another tool is served.
+pub fn fragment_extent(
+    fragment: &lance_table::format::Fragment,
+    sizes: &std::collections::HashMap<&str, u64>,
+) -> (u64, u64) {
+    let rows = fragment.num_rows().unwrap_or(0) as u64;
+    let bytes = fragment
+        .files
+        .iter()
+        .map(|file| {
+            sizes
+                .get(format!("data/{}", file.path).as_str())
+                .copied()
+                .unwrap_or(0)
+        })
+        .sum();
+    (rows, bytes)
+}
+
 pub fn relative_path(path: &Path, root: &Path) -> String {
     path.prefix_match(root).map_or_else(
         || path.to_string(),

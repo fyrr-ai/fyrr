@@ -62,6 +62,27 @@ pub(crate) async fn publish(
         &indexes,
     )
     .await?;
+    let sizes = fyrr_reader::storage::file_sizes(&files);
+    let (rows, logical_bytes) = dataset
+        .manifest()
+        .fragments
+        .iter()
+        .map(|fragment| fyrr_reader::storage::fragment_extent(fragment, &sizes))
+        .fold((0, 0), |(rows, bytes), (r, b)| (rows + r, bytes + b));
+    let stats = PublicationStats {
+        rows,
+        logical_bytes,
+        // A chain published before 4.1 has no first publication time to carry.
+        first_published_at: previous_manifest.as_ref().map_or_else(
+            || Some(fyrr_core::clock::now()),
+            |previous| {
+                previous
+                    .stats
+                    .as_ref()
+                    .and_then(|stats| stats.first_published_at)
+            },
+        ),
+    };
     let durable: BTreeSet<_> = previous_manifest
         .iter()
         .flat_map(|manifest| manifest.files.iter())
@@ -156,6 +177,7 @@ pub(crate) async fn publish(
         cursor_rewinds,
         incarnation: head.incarnation.clone(),
         envelope_evidence: Some(evidence),
+        stats: Some(stats),
     };
     let manifest_path = format!("publications/{publication_id}.json");
     put_immutable(

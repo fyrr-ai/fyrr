@@ -13,6 +13,8 @@ pub(crate) enum ToolCall {
     Search(Box<SearchInput>),
     Fetch(FetchInput),
     ListFilters(ListFiltersInput),
+    /// `GET /v1/namespaces/{namespace}`: no MCP tool, so `parse` never makes it.
+    Report,
 }
 impl ToolCall {
     pub(crate) fn parse(name: &str, args: Value) -> Result<Self> {
@@ -30,6 +32,7 @@ impl ToolCall {
             Self::Search(args) => args.validate().map_err(|_| InvalidArgument)?,
             Self::Fetch(args) => args.validate().map_err(|_| InvalidArgument)?,
             Self::ListFilters(args) => args.validate().map_err(|_| InvalidArgument)?,
+            Self::Report => {}
         }
         Ok(call)
     }
@@ -38,6 +41,7 @@ impl ToolCall {
             Self::Search(args) => args.deadline_ms,
             Self::Fetch(args) => args.deadline_ms,
             Self::ListFilters(args) => args.deadline_ms,
+            Self::Report => None,
         }
         .unwrap_or(fyrr_core::limits::mcp::DEFAULT_DEADLINE_MS)
     }
@@ -81,6 +85,7 @@ pub(super) async fn execute(
                     .list_filters(args)
                     .await
                     .and_then(|r| serde_json::to_value(r).map_err(|_| StorageUnavailable)),
+                ToolCall::Report => reader.report(),
             }
         };
         let result = bounded(&context, work).await;
@@ -102,11 +107,12 @@ pub(super) async fn execute(
     *crate::sync::lock(&job.response_claims.scratch) = reader.response_claim.take();
     let result = match outcome {
         Ok(mut value) => {
-            if !matches!(request, ToolCall::Search(_)) && job.subject.is_some() {
+            let with_telemetry = !matches!(request, ToolCall::Search(_) | ToolCall::Report);
+            if with_telemetry && job.subject.is_some() {
                 value["metadata"]["telemetry"]["stage_us"]["authorization_cache_build"] =
                     json!(context.authorization_build_us);
             }
-            if !matches!(request, ToolCall::Search(_)) {
+            if with_telemetry {
                 value["metadata"]["telemetry"]["queue_wait_ms"] = json!(wait);
                 value["metadata"]["telemetry"]["stage_us"]["total"] =
                     json!(micros(context.arrived.elapsed()));
