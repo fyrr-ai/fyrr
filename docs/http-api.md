@@ -286,6 +286,7 @@ The body is one JSON object (`application/json`, no `Content-Encoding`):
 | `upserts` | Rows. A row is an object with an `id` (string, its key in the namespace), its text under the key `text_attribute`, `readers` (`usr:<id>` or `grp:<id>`; ignored by an open namespace), optionally its `vector` (a list of numbers) and a value for any declared [attribute](tuning.md#namespaceattributes). A row replaces the document with that `id`, readers included. |
 | `patches` | Rows that change a document without replacing it. A row is an object with an `id`, and the attributes to write: a declared [attribute](tuning.md#namespaceattributes) (`null` clears it), `readers`, or the text under the key `text_attribute` with its `vector`. Everything a patch does not name stays as stored, the vector included, and nothing is embedded. A patch of an `id` that does not exist when the request is published is skipped and never creates a document. |
 | `deletes` | IDs to delete. An ID that does not exist is a delete of nothing. |
+| `conditions` | An object from an `id` of the request, in `upserts`, `patches` or `deletes`, to a [filter](mcp-tools.md#filters) that the stored document with that `id` must meet for the change to apply. A comparison's `value` may be `{"row": "<attribute>"}`, which is what the change's own row holds of that declared attribute (`null` when it holds none); a delete has no row. See [Conditions](#conditions). |
 | `settings` | The [settings](tuning.md#namespace) of a namespace that does not exist yet, laid over the process defaults. For an existing namespace it must not change any: `409 namespace_settings_fixed`. |
 
 A row that carries a `vector` is stored with it, and its text is not
@@ -314,8 +315,38 @@ most 16 KiB, and it is not chunked. The same `id` twice in one request is
 `400 duplicate_id`, across `upserts`, `patches` and `deletes`. The answer is
 `{"upserted":n,"deleted":m}`, the rows of the request. A request with `patches`
 adds `"patched":p`, the patches of documents that exist, and `"skipped":q`, the
-patches of those that do not, as the committer applied the request in the order
-of publication. A patch is weighed against `writer.commit.group_max_bytes` by the largest record it can write, capped at what is left of that limit, so no request is refused for the estimate alone; the committer refuses (`409 rejected`) a request whose rewritten records really exceed it. The counts are best effort: a patch of a document that a later
+patches of those that do not (and the changes whose [condition](#conditions) is
+not met), as the committer applied the request in the order of publication. A patch is weighed against `writer.commit.group_max_bytes` by the largest record it can write, capped at what is left of that limit, so no request is refused for the estimate alone; the committer refuses (`409 rejected`) a request whose rewritten records really exceed it. The counts are best effort: a patch of a document that a later
+request of the same publication replaces or deletes counts as skipped.
+
+### Conditions
+
+The committer tests a condition against the stored document with that `id` when
+it applies the change, in the order of publication, so it sees what every
+request published before it left, also those it publishes in the same round.
+Nothing is decided when the request is accepted. A condition that is not met
+skips the change: it writes nothing, and the other changes of the request apply
+as they would have. A document that is not there (never written, or deleted)
+meets the condition of an upsert, which creates it; a patch or a delete of it is
+skipped. A document meets a condition when one of its records does, which for a
+row of this API is the row. A stored attribute that is missing is `null`, and
+every comparison but `eq` with `null` is false for it
+([how](mcp-tools.md#filters)).
+
+An upsert that writes only when the stored `modified` is older than its own:
+
+```json
+{"upserts": [{"id": "a1", "text": "Blue shirt", "modified": "2026-02-01T00:00:00Z"}],
+ "conditions": {"a1": {"field": "modified", "op": "lt", "value": {"row": "modified"}}}}
+```
+
+The answer of a request with a patch or a condition adds `"skipped":q`, the
+changes that were skipped, and `upserted`, `deleted` and `patched` count the
+changes that applied. The filter is checked as the request arrives: a field,
+operator or value it does not allow, a reference to an attribute the namespace
+does not declare, a condition for an `id` that is not in the request or a
+reference to a row in the condition of a delete is `400 condition_invalid`.
+Like the counts of patches, these are best effort: a change that a later
 request of the same publication replaces or deletes counts as skipped.
 
 A patch changes the text only together with the `vector` of the new text, which
@@ -344,6 +375,6 @@ request was accepted does not cancel it.
 | `not_found` | `404` | `{namespace}` is not a namespace name, or the process has no `[namespace.write_api]`. |
 | `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
 | `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
-| `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `vector_not_patchable`, `text_not_patchable`, `embedding_not_configured`, `document_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
+| `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `vector_not_patchable`, `text_not_patchable`, `embedding_not_configured`, `document_invalid`, `condition_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
 | `namespace_settings_fixed`, `namespace_not_writable`, `namespace_not_empty`, `namespace_changed`, `rejected` | `409` | The namespace has other settings, takes its documents from connectors, is to be created over envelopes that a deleted namespace left, was replaced by another while the request was prepared, or the committer refused the request (nothing of it is applied). |
 | `busy`, `unavailable`, `outcome_unknown` | `503` | The writer is busy, storage or the published keys cannot be read, or the answer did not come within 10 minutes; `Retry-After` is 1. |

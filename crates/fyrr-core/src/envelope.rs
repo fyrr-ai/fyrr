@@ -93,6 +93,11 @@ pub struct EnvelopeDocument {
     /// What a `Patch` writes; present for that intent only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<Box<DocumentPatch>>,
+    /// A condition the stored document must meet when the committer applies
+    /// this intent, else it is skipped and writes nothing. A document that is
+    /// not there skips a `Patch` or a `Delete` and meets it for a `Replace`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<crate::mcp::Filter>,
 }
 
 /// The values a patch writes into the stored records of a document. Every

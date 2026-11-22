@@ -214,13 +214,14 @@ pub fn quarantine_reason(
 /// An unchanged observation carries no text or fragments, but keeps the same
 /// pending presence of a replacement without rewriting the same revision.
 pub enum ContentChange {
-    Write(Box<DocumentChange>),
+    /// A replacement or a delete, with the condition the stored document must meet.
+    Write(Box<DocumentChange>, Option<fyrr_core::mcp::Filter>),
     Present(EnvelopeDocument),
 }
 impl std::fmt::Debug for ContentChange {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
-            Self::Write(_) => "ContentChange::Write",
+            Self::Write(..) => "ContentChange::Write",
             Self::Present(_) => "ContentChange::Present",
         })
     }
@@ -229,7 +230,16 @@ impl std::fmt::Debug for ContentChange {
 /// The records one change writes and its estimated size, the unit of an envelope's bounds.
 fn weigh(config: &Config, change: &ContentChange) -> Result<(u64, u64)> {
     match change {
-        ContentChange::Write(change) => weigh_change(config, change),
+        ContentChange::Write(change, condition) => {
+            let (work, estimate) = weigh_change(config, change)?;
+            let condition = match condition {
+                Some(condition) => serde_json::to_vec(condition)
+                    .map_err(|_| WriterError::DocumentInvalid)?
+                    .len() as u64,
+                None => 0,
+            };
+            Ok((work, estimate + condition))
+        }
         ContentChange::Present(document) => {
             let encoded = serde_json::to_vec(document).map_err(|_| WriterError::DocumentInvalid)?;
             // The records a patch writes are weighed once for all patches of

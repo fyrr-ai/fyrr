@@ -68,6 +68,31 @@ pub async fn content(
         {
             continue;
         }
+        // A condition is tested against the document as the envelopes before this
+        // one left it. A document that is not there meets it for a replacement
+        // only; a delete of it is skipped, as a patch is.
+        if let Some(condition) = &document.condition {
+            let live = old.is_some_and(|old| !old.deleted && !old.content_purged);
+            let met = if live {
+                let Some(sql) = fyrr_reader::filter_sql(condition, &config.namespace.attributes)
+                else {
+                    reject(config, envelope, "document_invalid").await?;
+                    return Ok(refused);
+                };
+                dataset
+                    .count_rows(Some(format!(
+                        "{} AND ({sql})",
+                        rows_filter(&envelope.source_id, std::slice::from_ref(&document.root_id))
+                    )))
+                    .await?
+                    > 0
+            } else {
+                document.intent == DocumentIntent::Replace
+            };
+            if !met {
+                continue;
+            }
+        }
         if let Some(old) = old {
             if document.intent == DocumentIntent::Replace
                 && old.deleted

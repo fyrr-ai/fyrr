@@ -128,6 +128,12 @@ fn literal(kind: AttributeType, value: &Value) -> Result<String> {
     }
 }
 
+/// The SQL of a filter tree as a stored document is tested against it, or
+/// `None` when it does not hold for the schema: the check of a write condition.
+pub fn filter_sql(filter: &Filter, attributes: &AttributeSchema) -> Option<String> {
+    PreparedReader::filter_sql(filter, attributes).ok()
+}
+
 impl PreparedReader {
     pub(crate) fn metadata(&self, telemetry: Telemetry) -> ResponseMetadata {
         ResponseMetadata {

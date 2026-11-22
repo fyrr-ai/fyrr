@@ -30,7 +30,7 @@ pub(super) async fn content_page(
     let envelope_path = root.clone().join("envelopes").join(format!("{id}.json"));
     lease.state().await?;
     for change in &changes {
-        let ContentChange::Write(change) = change else {
+        let ContentChange::Write(change, _) = change else {
             continue;
         };
         if source.provider == "local-files"
@@ -48,7 +48,7 @@ pub(super) async fn content_page(
     let embedding_texts = changes
         .iter()
         .filter_map(|change| match change {
-            ContentChange::Write(change) => Some(change),
+            ContentChange::Write(change, _) => Some(change),
             ContentChange::Present(_) => None,
         })
         .filter(|change| {
@@ -61,7 +61,7 @@ pub(super) async fn content_page(
     let mut embedded = cache.embed(&embedding_texts).await?.into_iter();
     let mut maps = std::collections::BTreeMap::new();
     for change in &changes {
-        if let ContentChange::Write(change) = change
+        if let ContentChange::Write(change, _) = change
             && quarantine_reason(config, source, change).is_none()
             && let Some(map) = change
                 .metadata
@@ -209,8 +209,8 @@ impl PageRows {
     ) -> Result<()> {
         let config = page.config;
         let source = page.source;
-        let change = match change {
-            ContentChange::Write(change) => *change,
+        let (change, condition) = match change {
+            ContentChange::Write(change, condition) => (*change, condition),
             ContentChange::Present(document) => {
                 self.documents.push(document);
                 return Ok(());
@@ -239,6 +239,7 @@ impl PageRows {
             permission_revision: change.permission_revision,
             records: count,
             patch: None,
+            condition,
         });
         Ok(())
     }

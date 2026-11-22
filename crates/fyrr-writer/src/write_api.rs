@@ -24,6 +24,7 @@ use fyrr_core::connector::{
 };
 use fyrr_core::envelope::{BaseHead, DocumentIntent, DocumentPatch, EnvelopeDocument, envelope_id};
 use fyrr_core::identity::ApiKeysArtifact;
+use fyrr_core::mcp::Filter;
 use fyrr_core::publication::{NamespaceSettings, PolicyArtifact};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -215,6 +216,70 @@ struct Payload {
     /// Rows that write some attributes of a document that exists.
     #[serde(default)]
     patches: Rows<Box<serde_json::value::RawValue>>,
+    /// A filter by the `id` of an upsert, a patch or a delete of the request,
+    /// which the stored document with that id must meet for the change to apply.
+    #[serde(default)]
+    conditions: BTreeMap<String, Value>,
+}
+
+/// The conditions of a request: as given, and as bound to the row of their id.
+struct Conditions {
+    given: BTreeMap<String, Value>,
+    bound: BTreeMap<String, Filter>,
+}
+impl Conditions {
+    /// Binds the condition of the document `id`, if it has one, to its incoming
+    /// `row` (a delete has none): a comparison's value `{"row": "<attribute>"}`
+    /// is what the row holds of that attribute. The filter is checked as the
+    /// reader checks one.
+    fn bind(
+        &mut self,
+        id: &str,
+        row: Option<&Map<String, Value>>,
+        attributes: &fyrr_core::attributes::AttributeSchema,
+    ) -> Result<(), ApiError> {
+        let Some(mut condition) = self.given.remove(id) else {
+            return Ok(());
+        };
+        let invalid = || ApiError(400, "condition_invalid");
+        bind_row(&mut condition, row, attributes).ok_or_else(invalid)?;
+        let filter: Filter = serde_json::from_value(condition).map_err(|_| invalid())?;
+        fyrr_reader::filter_sql(&filter, attributes).ok_or_else(invalid)?;
+        self.bound.insert(id.to_owned(), filter);
+        Ok(())
+    }
+}
+
+/// Puts the value of the incoming row where a comparison names its attribute.
+/// `None` for a node that is no object, or a reference to an attribute the
+/// namespace does not declare, or to a row there is none of.
+fn bind_row(
+    node: &mut Value,
+    row: Option<&Map<String, Value>>,
+    attributes: &fyrr_core::attributes::AttributeSchema,
+) -> Option<()> {
+    let node = node.as_object_mut()?;
+    for key in ["and", "or"] {
+        if let Some(nodes) = node.get_mut(key) {
+            return nodes
+                .as_array_mut()?
+                .iter_mut()
+                .try_for_each(|node| bind_row(node, row, attributes));
+        }
+    }
+    if let Some(inner) = node.get_mut("not") {
+        return bind_row(inner, row, attributes);
+    }
+    if let Some(value) = node.get_mut("value")
+        && let Some(reference) = value.as_object()
+    {
+        let name = reference
+            .get("row")
+            .and_then(Value::as_str)
+            .filter(|name| reference.len() == 1 && attributes.contains_key(*name))?;
+        *value = row?.get(name).cloned().unwrap_or(Value::Null);
+    }
+    Some(())
 }
 
 /// What each patched document is given, by its id.
@@ -448,6 +513,7 @@ fn checked_patches(
     config: &Config,
     text_key: &str,
     ids: &mut std::collections::HashSet<String>,
+    conditions: &mut Conditions,
 ) -> Result<Patches, ApiError> {
     let open = config
         .namespace
@@ -523,6 +589,7 @@ fn checked_patches(
             fyrr_core::attributes::resolve(&mut schema, name, value)
                 .map_err(|error| ApiError(400, error.code()))?;
         }
+        conditions.bind(&id, Some(&row), &config.namespace.attributes)?;
         patches.push((
             id,
             DocumentPatch {
@@ -536,22 +603,22 @@ fn checked_patches(
     Ok(patches)
 }
 
-/// How many of the `patches` the committer applied, which it does for each
-/// whose document existed in the order of publication: their records carry the
-/// revision of the envelope.
-async fn applied_patches(
-    config: &Config,
-    head: &fyrr_core::publication::ServingHead,
-    patches: &[String],
+/// How many of the documents `ids` the committer applied a change to: their
+/// rows of `source` carry the revision of the envelope. A patch or a condition
+/// the stored document did not meet leaves them as they were; a delete leaves
+/// the marker of the document in the source of its state.
+async fn committed(
+    dataset: &lance::Dataset,
+    source: &str,
+    ids: &[String],
     revision: &str,
 ) -> Result<u64, ApiError> {
-    let dataset = fyrr_reader::storage::pinned(config, head).await?;
     let mut found = 0;
-    for page in patches.chunks(256) {
+    for page in ids.chunks(256) {
         found += dataset
             .count_rows(Some(format!(
                 "{} AND source_revision = {}",
-                crate::apply::rows_filter(API_SOURCE_ID, page),
+                crate::apply::rows_filter(source, page),
                 fyrr_reader::storage::sql(revision)
             )))
             .await
@@ -560,15 +627,24 @@ async fn applied_patches(
     Ok(found)
 }
 
+/// The checked rows of the request: its upserts, their attribute columns, its
+/// patches and the filters of its conditions by the id they test.
+type Checked = (
+    Vec<Upsert>,
+    Vec<ArrayRef>,
+    Patches,
+    BTreeMap<String, Filter>,
+);
+
 /// The checked rows of the request, against the schema, the text key and the
 /// vector dimension the namespace was created with. The rows are taken from
 /// `body`, not copied.
-fn checked(
-    body: &mut Payload,
-    config: &Config,
-    text_key: &str,
-) -> Result<(Vec<Upsert>, Vec<ArrayRef>, Patches), ApiError> {
+fn checked(body: &mut Payload, config: &Config, text_key: &str) -> Result<Checked, ApiError> {
     let attributes = &config.namespace.attributes;
+    let mut conditions = Conditions {
+        given: std::mem::take(&mut body.conditions),
+        bound: BTreeMap::new(),
+    };
     let mut ids = std::collections::HashSet::new();
     for id in &body.deletes.0 {
         if !ids.insert(id.clone()) {
@@ -616,6 +692,7 @@ fn checked(
         if row.keys().any(|name| !attributes.contains_key(name)) {
             return Err(ApiError(400, "attribute_undeclared"));
         }
+        conditions.bind(&id, Some(&row), attributes)?;
         columns
             .push(&row)
             .map_err(|error| ApiError(400, error.code()))?;
@@ -626,8 +703,15 @@ fn checked(
             vector,
         });
     }
-    let patches = checked_patches(body, config, text_key, &mut ids)?;
-    Ok((rows, columns.finish(), patches))
+    let patches = checked_patches(body, config, text_key, &mut ids, &mut conditions)?;
+    // A delete has no row to refer to, and a condition names an id of the request.
+    for id in &body.deletes.0 {
+        conditions.bind(id, None, attributes)?;
+    }
+    if !conditions.given.is_empty() {
+        return Err(ApiError(400, "condition_invalid"));
+    }
+    Ok((rows, columns.finish(), patches, conditions.bound))
 }
 
 /// The request's documents as the changes of one envelope, checked as the
@@ -637,6 +721,7 @@ fn changes(
     rows: Vec<Upsert>,
     deletes: Vec<String>,
     patches: Patches,
+    mut conditions: BTreeMap<String, Filter>,
 ) -> Result<Vec<ContentChange>, ApiError> {
     let open = config
         .namespace
@@ -696,9 +781,13 @@ fn changes(
     }
     let mut changes: Vec<_> = changes
         .into_iter()
-        .map(|change| ContentChange::Write(Box::new(change)))
+        .map(|change| {
+            let condition = conditions.remove(&change.root_id);
+            ContentChange::Write(Box::new(change), condition)
+        })
         .collect();
     changes.extend(patches.into_iter().map(|(root_id, patch)| {
+        let condition = conditions.remove(&root_id);
         ContentChange::Present(EnvelopeDocument {
             root_id,
             intent: DocumentIntent::Patch,
@@ -709,6 +798,7 @@ fn changes(
             permission_revision: None,
             records: 0,
             patch: Some(Box::new(patch)),
+            condition,
         })
     }));
     crate::prepare::check_atomic(config, &changes)?;
@@ -807,7 +897,7 @@ async fn execute(
         .write_api
         .as_ref()
         .map_or("text", |api| api.text_attribute.as_str());
-    let (rows, attributes, patches) = checked(&mut body, &config, text_key)?;
+    let (rows, attributes, patches, conditions) = checked(&mut body, &config, text_key)?;
     let (upserted, deleted) = (rows.len() as u64, body.deletes.0.len() as u64);
     if upserted + deleted + patches.len() as u64 == 0 && requested.is_none() {
         return Err(ApiError(400, "empty_request"));
@@ -815,7 +905,18 @@ async fn execute(
     // Every patch is in the envelope: the committer applies it, in the order
     // of publication, to a document that exists then, and skips it otherwise.
     let patch_ids: Vec<_> = patches.iter().map(|(id, _)| id.clone()).collect();
-    let changes = changes(&config, rows, body.deletes.0, patches)?;
+    // So is every change with a condition, which the committer tests against the
+    // document as it is then.
+    let ids_with_condition = |ids: Vec<&String>| -> Vec<String> {
+        ids.into_iter()
+            .filter(|id| conditions.contains_key(*id))
+            .cloned()
+            .collect()
+    };
+    let guarded_upserts = ids_with_condition(rows.iter().map(|row| &row.id).collect());
+    let guarded_deletes = ids_with_condition(body.deletes.0.iter().collect());
+    let guarded = patch_ids.len() + guarded_upserts.len() + guarded_deletes.len();
+    let changes = changes(&config, rows, body.deletes.0, patches, conditions)?;
     let mut answer = json!({"upserted": upserted, "deleted": deleted});
     let (head, served) = match existing {
         Some(existing) => existing,
@@ -837,18 +938,23 @@ async fn execute(
     if served.settings != settings {
         return Err(ApiError(409, "namespace_settings_fixed"));
     }
-    // Patches alone, with no document published and no envelope waiting that
-    // could create one, patch nothing: there is nothing to publish.
-    let only_patches = !patch_ids.is_empty() && patch_ids.len() == changes.len();
+    // Patches and deletes with a condition alone, with no document published
+    // and no envelope waiting that could create one, change nothing: there is
+    // nothing to publish.
+    let only_skipped = guarded > 0 && patch_ids.len() + guarded_deletes.len() == changes.len();
     if changes.is_empty()
-        || (only_patches
+        || (only_skipped
             && head.content.is_none()
             && crate::commit::pending(&config, &head).await?.is_empty())
     {
         durable(&config).await?;
-        if only_patches {
-            answer["patched"] = 0.into();
-            answer["skipped"] = patch_ids.len().into();
+        if only_skipped {
+            answer["upserted"] = 0.into();
+            answer["deleted"] = 0.into();
+            if !patch_ids.is_empty() {
+                answer["patched"] = 0.into();
+            }
+            answer["skipped"] = guarded.into();
         }
         return Ok(answer);
     }
@@ -869,11 +975,20 @@ async fn execute(
             }
             if applied.contains(&id) {
                 durable(&config).await?;
-                if !patch_ids.is_empty() {
+                if guarded > 0 {
                     // What the committer did, counted in what it published.
-                    let patched = applied_patches(&config, &current, &patch_ids, &revision).await?;
-                    answer["patched"] = patched.into();
-                    answer["skipped"] = (patch_ids.len() as u64 - patched).into();
+                    let dataset = fyrr_reader::storage::pinned(&config, &current).await?;
+                    let patched = committed(&dataset, API_SOURCE_ID, &patch_ids, &revision).await?;
+                    let upserts =
+                        committed(&dataset, API_SOURCE_ID, &guarded_upserts, &revision).await?;
+                    let state = crate::apply::state_source(API_SOURCE_ID);
+                    let deletes = committed(&dataset, &state, &guarded_deletes, &revision).await?;
+                    answer["upserted"] = (upserted - guarded_upserts.len() as u64 + upserts).into();
+                    answer["deleted"] = (deleted - guarded_deletes.len() as u64 + deletes).into();
+                    if !patch_ids.is_empty() {
+                        answer["patched"] = patched.into();
+                    }
+                    answer["skipped"] = (guarded as u64 - patched - upserts - deletes).into();
                 }
                 return Ok(answer);
             }
@@ -977,11 +1092,10 @@ async fn write_envelope(
     let revision = i64::try_from(sequence).map_err(|_| WriterError::CursorSequenceOverflow)?;
     for change in &mut changes {
         match change {
-            ContentChange::Write(change) => {
+            ContentChange::Write(change, _) => {
                 change.revision_order = Some(revision);
-                if change.op == ChangeOp::Upsert {
-                    change.source_revision = Some(format!("rev-{sequence}"));
-                }
+                // A delete states it too: its marker tells that this request wrote it.
+                change.source_revision = Some(format!("rev-{sequence}"));
             }
             // The only unchanged observations of this source are its patches.
             ContentChange::Present(document) => {
