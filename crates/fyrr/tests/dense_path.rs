@@ -22,6 +22,8 @@ mod google_drive;
 mod head_diagnostics;
 #[path = "dense_path/history_integrity.rs"]
 mod history_integrity;
+#[path = "dense_path/http_json.rs"]
+mod http_json;
 #[path = "dense_path/http_mcp.rs"]
 mod http_mcp;
 #[path = "dense_path/identity.rs"]

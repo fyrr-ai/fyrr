@@ -2,13 +2,14 @@
 use crate::error::*;
 use axum::{
     Router,
-    extract::{Request, State},
-    http::{StatusCode, header},
+    extract::{Path, Request, State},
+    http::{Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use fyrr_core::config::{Config, ProcessEnvironment};
+use fyrr_core::mcp::ErrorCode;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
@@ -40,6 +41,11 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(301);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(302);
+/// The caller went away before its answer; no standard status says so.
+const CLIENT_CLOSED_REQUEST: StatusCode = match StatusCode::from_u16(499) {
+    Ok(status) => status,
+    Err(_) => unreachable!(),
+};
 
 #[derive(Clone)]
 struct HttpState {
@@ -113,7 +119,35 @@ impl ControlLimits {
     }
 }
 fn error(status: StatusCode, code: ReaderError) -> Response {
-    (status, axum::Json(json!({"error":code.as_str()}))).into_response()
+    retry_after((status, axum::Json(json!({"error":code.as_str()}))).into_response())
+}
+/// Names a delay on every 429 (the rate window) and 503 (a short pause).
+fn retry_after(mut response: Response) -> Response {
+    let seconds = match response.status() {
+        StatusCode::TOO_MANY_REQUESTS => RATE_WINDOW.as_secs(),
+        StatusCode::SERVICE_UNAVAILABLE => 1,
+        _ => return response,
+    };
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, seconds.into());
+    response
+}
+/// The tool a `POST /v1/namespaces/{namespace}/query` or `.../fetch` runs.
+fn json_tool(request: &Request) -> Option<&'static str> {
+    if request.method() != Method::POST {
+        return None;
+    }
+    match request
+        .uri()
+        .path()
+        .strip_prefix("/v1/namespaces/")?
+        .split_once('/')?
+    {
+        (namespace, "query") if !namespace.is_empty() => Some("search"),
+        (namespace, "fetch") if !namespace.is_empty() => Some("fetch"),
+        _ => None,
+    }
 }
 fn bearer(request: &Request) -> Result<&str, ()> {
     let mut values = request.headers().get_all(header::AUTHORIZATION).iter();
@@ -163,7 +197,8 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
         crate::telemetry::emit(format_args!("http refused code={}", HostMismatch));
         return error(StatusCode::FORBIDDEN, HostMismatch);
     }
-    let _permit = if request.uri().path() != "/mcp" {
+    let tool = json_tool(&request);
+    let _permit = if request.uri().path() != "/mcp" && tool.is_none() {
         match state.permits.clone().try_acquire_owned() {
             Ok(p) => Some(p),
             Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, Busy),
@@ -180,7 +215,7 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
     {
         return error(StatusCode::PAYLOAD_TOO_LARGE, InvalidArgument);
     }
-    if request.uri().path() == "/mcp" {
+    if request.uri().path() == "/mcp" || tool.is_some() {
         let token = bearer(&request).map(str::to_owned);
         let (mut parts, body) = request.into_parts();
         let bytes =
@@ -195,20 +230,28 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                     return error(StatusCode::REQUEST_TIMEOUT, DeadlineExceeded);
                 }
             };
-        let message = serde_json::from_slice::<rmcp::model::ClientJsonRpcMessage>(&bytes).ok();
-        let parsed = match &message {
-            Some(rmcp::model::ClientJsonRpcMessage::Request(rpc)) => match &rpc.request {
-                rmcp::model::ClientRequest::CallToolRequest(call) => {
-                    Some(crate::serve::ToolCall::parse(
-                        &call.params.name,
-                        serde_json::Value::Object(
-                            call.params.arguments.clone().unwrap_or_default(),
-                        ),
-                    ))
-                }
+        let (message, parsed) = if let Some(name) = tool {
+            let call = serde_json::from_slice(&bytes)
+                .map_err(|_| InvalidArgument)
+                .and_then(|arguments| crate::serve::ToolCall::parse(name, arguments));
+            (None, Some(call))
+        } else {
+            let message = serde_json::from_slice::<rmcp::model::ClientJsonRpcMessage>(&bytes).ok();
+            let parsed = match &message {
+                Some(rmcp::model::ClientJsonRpcMessage::Request(rpc)) => match &rpc.request {
+                    rmcp::model::ClientRequest::CallToolRequest(call) => {
+                        Some(crate::serve::ToolCall::parse(
+                            &call.params.name,
+                            serde_json::Value::Object(
+                                call.params.arguments.clone().unwrap_or_default(),
+                            ),
+                        ))
+                    }
+                    _ => None,
+                },
                 _ => None,
-            },
-            _ => None,
+            };
+            (message, parsed)
         };
         let ms = parsed
             .as_ref()
@@ -481,7 +524,58 @@ async fn readiness(State(state): State<HttpState>) -> Response {
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
-    (status, axum::Json(serde_json::Value::Object(readiness))).into_response()
+    retry_after((status, axum::Json(serde_json::Value::Object(readiness))).into_response())
+}
+/// Runs the parsed call the boundary authenticated through the scheduler that
+/// serves MCP and answers its output as plain JSON.
+async fn tool_json(
+    State(state): State<HttpState>,
+    Path(namespace): Path<String>,
+    request: Request,
+) -> Response {
+    let extensions = request.extensions();
+    let (Some(arrived), Some(parsed), Some(claims)) = (
+        extensions.get::<tokio::time::Instant>().copied(),
+        extensions.get::<Result<crate::serve::ToolCall>>().cloned(),
+        extensions
+            .get::<Arc<crate::serve::ResponseClaims>>()
+            .cloned(),
+    ) else {
+        unreachable!("the HTTP boundary parses and accounts a JSON call before routing it");
+    };
+    let subject = extensions
+        .get::<crate::auth::AuthenticatedSubject>()
+        .cloned();
+    if namespace != state.config.namespace.name {
+        return error(StatusCode::NOT_FOUND, InvalidArgument);
+    }
+    let call = match parsed {
+        Ok(call) => call,
+        Err(code) => return error(StatusCode::BAD_REQUEST, code),
+    };
+    let result = state
+        .service
+        .call_json(call, subject, arrived, claims)
+        .await;
+    if result.is_error != Some(true) {
+        return axum::Json(result.structured_content).into_response();
+    }
+    let code = result
+        .structured_content
+        .and_then(|value| serde_json::from_value::<fyrr_core::mcp::ToolError>(value).ok())
+        .map_or(ErrorCode::StorageUnavailable, |error| error.code);
+    let status = match code {
+        ErrorCode::InvalidArgument => StatusCode::BAD_REQUEST,
+        ErrorCode::StaleCursor => StatusCode::CONFLICT,
+        ErrorCode::DeadlineExceeded => StatusCode::REQUEST_TIMEOUT,
+        ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        ErrorCode::Cancelled => CLIENT_CLOSED_REQUEST,
+        ErrorCode::AuthorizationUnavailable
+        | ErrorCode::StorageUnavailable
+        | ErrorCode::IncompatibleIndex
+        | ErrorCode::Busy => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    retry_after((status, axum::Json(json!({"error":code.as_str()}))).into_response())
 }
 async fn refresh(State(state): State<HttpState>, request: Request) -> Response {
     let Some(credential) = &state.http().operator_credential else {
@@ -572,6 +666,9 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
             .route("/.well-known/oauth-protected-resource", get(metadata))
             .route("/.well-known/oauth-protected-resource/mcp", get(metadata));
     }
+    router = router
+        .route("/v1/namespaces/{namespace}/query", post(tool_json))
+        .route("/v1/namespaces/{namespace}/fetch", post(tool_json));
     if h.operator_credential.is_some() {
         router = router.route("/admin/refresh", post(refresh));
     }
