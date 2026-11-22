@@ -515,7 +515,6 @@ async fn identity_write_api_pages_a_listing_and_scans_by_the_document_key_on_sto
     // The scan: the key after the last one seen, until a page is empty.
     let mut seen = Vec::new();
     let mut last: Option<(String, String)> = None;
-    let mut slowest = Duration::ZERO;
     loop {
         let mut arguments = json!({"order_by": by_key, "limit": window});
         if let Some((source, root)) = &last {
@@ -527,9 +526,7 @@ async fn identity_write_api_pages_a_listing_and_scans_by_the_document_key_on_sto
                 ]},
             ]});
         }
-        let start = Instant::now();
         let hits = page(&mut client, arguments);
-        slowest = slowest.max(start.elapsed());
         let Some(end) = hits.last().cloned() else {
             break;
         };
@@ -537,7 +534,18 @@ async fn identity_write_api_pages_a_listing_and_scans_by_the_document_key_on_sto
         last = Some(end);
     }
     assert_eq!(seen, readable);
-    eprintln!("slowest metadata page of {window} documents: {slowest:?}");
+    // The measurement behind the window: the response size and the latency of
+    // a full page of metadata.
+    let start = Instant::now();
+    let full = client.call(
+        "search",
+        json!({"order_by": by_key, "limit": window, "output": "metadata"}),
+    );
+    eprintln!(
+        "page of {window} documents: {} bytes in {:?}",
+        full.to_string().len(),
+        start.elapsed()
+    );
 
     // The response budget truncates a page from its end, and the scan goes on
     // from the last document it kept.
