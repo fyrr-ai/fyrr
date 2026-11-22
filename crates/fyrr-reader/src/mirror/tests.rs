@@ -1217,6 +1217,26 @@ async fn index_ranges_fetch_only_the_pages_they_lack() {
     assert_eq!(f.mirror.totals().requests, requests);
 }
 
+/// An index file that fits the mirror but not together with its page map is
+/// downloaded whole by one request, not read past the mirror range by range.
+#[tokio::test]
+async fn an_index_file_that_fits_only_without_its_map_is_downloaded_whole() {
+    let size = PAGED_SIZE as u64;
+    let f = PagedFixture::at("pages-no-map-room", size, "_indices/u/index.idx").await;
+    assert!(!f.mirror.pages_fit(size));
+    let expected = PagedFixture::bytes(0);
+    for range in [90_000..100_000_usize, 0..4096] {
+        let bytes = range.start as u64..range.end as u64;
+        assert_eq!(f.read(bytes).await.unwrap(), expected[range]);
+    }
+    assert_eq!(
+        (f.mirror.totals().requests, f.mirror.totals().bytes),
+        (1, size),
+        "one whole download serves every range"
+    );
+    assert!(f.exists("blob") && !f.exists("sparse"));
+}
+
 #[tokio::test]
 async fn a_damaged_or_unrecorded_page_is_fetched_again() {
     let f = PagedFixture::new("pages-damaged", 1 << 20).await;
@@ -1461,11 +1481,11 @@ async fn heads_of_other_files_are_not_answered_from_the_manifest() {
     let directory = temporary_directory("pages-index-head");
     let mirror = bound_mirror(&directory, 1 << 20);
     let source = Arc::new(object_store::memory::InMemory::new());
-    let path = Path::from("dataset.lance/_indices/i/part.idx");
+    let path = Path::from("dataset.lance/_deletions/i/part.arrow");
     source.put(&path, vec![7; 100].into()).await.unwrap();
     let _lease = mirror
         .pin(&[fyrr_core::envelope::FileRef {
-            path: "_indices/i/part.idx".into(),
+            path: "_deletions/i/part.arrow".into(),
             size_bytes: 100,
         }])
         .await

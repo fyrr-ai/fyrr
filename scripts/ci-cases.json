@@ -927,6 +927,10 @@
         "tier": "quick",
         "seconds": 0.05
       },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::an_index_file_that_fits_only_without_its_map_is_downloaded_whole": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_damaged_or_unrecorded_page_is_fetched_again": {
         "tier": "quick",
         "seconds": 0.05
