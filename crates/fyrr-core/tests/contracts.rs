@@ -202,11 +202,16 @@ fn add_future_fields(value: &mut Value) {
     }
 }
 
+/// A version whose major this build does not read.
+fn unread_major<T: Contract>() -> String {
+    format!("{}.0", T::VERSION.major + 1 + T::ALSO_READS.len() as u16)
+}
+
 fn unknown_major_rejected<T: Contract + std::fmt::Debug>(name: &str) -> usize {
     let files = fixture_files(name);
     for file in &files {
         let fixture = common::read_json(file);
-        let next_major = format!("{}.0", T::VERSION.major + 1);
+        let next_major = unread_major::<T>();
         for version in [next_major.as_str(), "0.9", "65535.0"] {
             let error = parse::<T>(&with_version(&fixture, version)).expect_err(file);
             let found: SchemaVersion = version.parse().expect("version");
@@ -224,8 +229,7 @@ fn unknown_major_rejected<T: Contract + std::fmt::Debug>(name: &str) -> usize {
     // The major is checked before the body: an unreadable body with an
     // unknown major still reports the version, never a body error.
     let error =
-        parse::<T>(&json!({ "schema_version": format!("{}.0", T::VERSION.major + 1), "body": 17 }))
-            .expect_err(name);
+        parse::<T>(&json!({ "schema_version": unread_major::<T>(), "body": 17 })).expect_err(name);
     assert!(
         matches!(error, ContractError::UnsupportedMajor { .. }),
         "{name}: {error}"
@@ -607,6 +611,14 @@ fn semantic_violations_are_refused_without_echoing_values() {
         parse::<PreparedEnvelope>(&envelope).is_err(),
         "envelope ID must follow its derivation"
     );
+
+    // A condition is read only from the version an older committer refuses.
+    let mut conditional = common::read_json("fixtures/contracts/prepared-envelope/content.json");
+    conditional["payload"]["documents"][0]["condition"] =
+        json!({"field": "price", "op": "lt", "value": 1});
+    assert!(parse::<PreparedEnvelope>(&conditional).is_err());
+    conditional["schema_version"] = json!("6.0");
+    assert!(parse::<PreparedEnvelope>(&conditional).is_ok());
 
     let base_artifact = common::read_json("fixtures/contracts/identity-artifact/artifact.json");
     let mut artifact = base_artifact.clone();

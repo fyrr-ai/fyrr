@@ -1993,6 +1993,14 @@
         "tier": "full",
         "seconds": 40
       },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_applies_a_change_only_when_its_condition_holds_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_lets_one_of_many_unpublished_requests_win_its_condition_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
       "full:fyrr:test:dense_path/write_api::identity_write_api_open_namespace_is_read_by_every_subject_on_storage": {
         "tier": "full",
         "seconds": 40

@@ -169,6 +169,7 @@ fn clip(text: &str, max: usize) -> &str {
 }
 mod fetch;
 mod filters;
+pub use filters::filter_sql;
 mod page;
 
 #[cfg(test)]
