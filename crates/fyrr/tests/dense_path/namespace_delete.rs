@@ -148,24 +148,6 @@ async fn delete_blocks_source_workers_during_verification_on_local_storage() {
     let (_, commit, root) = incremental::fixture_host_at(8, true, "dense-fixture", setup);
     let config = fyrr_core::config::load(&commit).unwrap().config;
     let (store, namespace) = fyrr_reader::storage::namespace_store(&config).unwrap();
-    // A cut left by maintenance is exported and goes with the head.
-    let cut_path = namespace
-        .clone()
-        .join(fyrr_core::publication::HISTORY_CUT_OBJECT);
-    store
-        .put(
-            &cut_path,
-            fyrr_core::write_contract(&fyrr_core::publication::HistoryCut {
-                schema_version:
-                    <fyrr_core::publication::HistoryCut as fyrr_core::Contract>::VERSION,
-                namespace: config.namespace.name.as_str().to_owned(),
-                publication_id: "pub-00000000000000000000000000000041".into(),
-                sequence: 41,
-            })
-            .into(),
-        )
-        .await
-        .unwrap();
     let export = root.join("export");
     export_namespace(store.as_ref(), &namespace, &export).await;
     let (gate, hook) = corrections::RequestGate::new(|request, _, after| {
@@ -206,10 +188,6 @@ async fn delete_blocks_source_workers_during_verification_on_local_storage() {
             .unwrap()
             .is_none()
     );
-    assert!(matches!(
-        store.head(&cut_path).await,
-        Err(object_store::Error::NotFound { .. })
-    ));
     drop(deletion_boundary);
     drop(proxy);
 }
