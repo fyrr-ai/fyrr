@@ -9,6 +9,15 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The `query` route of the HTTP API takes `fusion` and `rerank`. `fusion`
+  (`{"method":"rrf","rank_constant":60,"weights":[…]}`, with `queries`) ranks the
+  documents of all sub-queries by reciprocal rank fusion instead of merging
+  them round-robin. `rerank` (`{"enabled":false}`, or `attribute` and `query`)
+  switches the namespace's reranker off for a request or names what it scores;
+  the reranker's candidate count, deadline and spend limit still apply.
+  Neither is a tool argument, so the MCP contract is unchanged. A request
+  without them is answered as before. See
+  [Fusion and reranking](docs/http-api.md#fusion-and-reranking).
 - `fyrr writer namespace read-only true|false` and `PATCH /v1/namespaces/{namespace}`
   with `{"read_only": …}` (an API key with the `admin` role) freeze a namespace or
   thaw it. While it is frozen API writes and connector syncs are refused with
