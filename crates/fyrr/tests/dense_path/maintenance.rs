@@ -1602,7 +1602,8 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
     // A manifest lost inside the window is not where the history ends:
     // maintenance refuses and deletes nothing.
     let lost = chain[3].publication_id.clone();
-    let path = |id: &str| namespace.clone().join(format!("publications/{id}.json"));
+    let path =
+        |id: &str| object_store::path::Path::from(format!("{namespace}/publications/{id}.json"));
     let bytes = store
         .get(&path(&lost))
         .await
