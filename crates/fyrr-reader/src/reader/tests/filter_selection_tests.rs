@@ -15,6 +15,9 @@ const TAIL_ROWS: usize = 40;
 const HOUR: i64 = 3_600_000_000;
 const EPOCH: i64 = 1_700_000_000_000_000;
 
+/// A filter case: its label, its tree, and the rows it must select.
+type Case = (&'static str, serde_json::Value, Box<dyn Fn(usize) -> bool>);
+
 fn strings_list(items: &[Vec<String>]) -> arrow_array::ListArray {
     let mut builder = ListBuilder::new(StringBuilder::new());
     for values in items {
@@ -68,15 +71,15 @@ fn attributes() -> AttributeSchema {
 
 /// Null for every fourth row, so that a missing value is common.
 fn rank(row: usize) -> Option<i64> {
-    (row % 4 != 0).then_some((row % 7) as i64)
+    (!row.is_multiple_of(4)).then_some((row % 7) as i64)
 }
 
 fn flag(row: usize) -> Option<bool> {
-    (row % 3 != 0).then_some(row % 2 == 0)
+    (!row.is_multiple_of(3)).then_some(row.is_multiple_of(2))
 }
 
 fn seen(row: usize) -> Option<i64> {
-    (row % 5 != 0).then_some(EPOCH + row as i64 * HOUR)
+    (!row.is_multiple_of(5)).then_some(EPOCH + row as i64 * HOUR)
 }
 
 /// The SQL the reader compiles a filter tree to, for the fixture's attributes.
@@ -632,7 +635,7 @@ async fn a_missing_attribute_matches_only_a_null_test() {
     let after_text = chrono::DateTime::from_timestamp_micros(after)
         .unwrap()
         .to_rfc3339();
-    let cases: Vec<(&str, serde_json::Value, Box<dyn Fn(usize) -> bool>)> = vec![
+    let cases: Vec<Case> = vec![
         (
             "eq null",
             on_rank("eq", json!(null)),
