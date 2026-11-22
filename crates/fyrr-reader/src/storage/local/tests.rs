@@ -1605,3 +1605,30 @@ fn local_store_processes_stress_the_same_and_different_objects() {
     assert!(staged(&root).is_empty());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// Deleting the last object of a directory removes the directory, up to the
+/// root and not above it, as an object store has no empty prefix; a directory
+/// that still holds an object stays, and a later write makes the path again.
+#[test]
+fn deleting_the_last_object_removes_the_directories_it_empties() {
+    let root = scratch("prune");
+    let store = LocalStore::open(&root).unwrap();
+    let put = |name: &str| {
+        let path = at(&store, name);
+        store
+            .put_blocking(&path, name.as_bytes().to_vec().into(), PutMode::Create)
+            .unwrap();
+        path
+    };
+    let kept = put("namespaces/ns/a/kept");
+    let last = put("namespaces/ns/a/b/c/last");
+    store.delete_blocking(&last).unwrap();
+    assert!(root.join("namespaces/ns/a").is_dir());
+    assert!(!root.join("namespaces/ns/a/b").exists());
+    store.delete_blocking(&kept).unwrap();
+    assert!(!root.join("namespaces").exists());
+    assert!(root.is_dir() && root.join(LOCK).is_file());
+    put("namespaces/ns/a/b/c/last");
+    assert!(root.join("namespaces/ns/a/b/c/last").is_file());
+    std::fs::remove_dir_all(root).unwrap();
+}

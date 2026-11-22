@@ -139,7 +139,7 @@ pub enum NamespaceAction {
     /// finished is listed.
     List {
         /// Only the namespaces whose name starts with this prefix.
-        #[arg(long)]
+        #[arg(long, value_parser = namespace_prefix)]
         prefix: Option<String>,
     },
 }
@@ -185,6 +185,12 @@ pub enum WorkerJob {
         #[arg(long)]
         due: bool,
     },
+}
+
+fn namespace_prefix(text: &str) -> Result<String, String> {
+    fyrr_core::config::is_namespace_prefix(text)
+        .then(|| text.to_owned())
+        .ok_or_else(|| "expected 1 to 63 lowercase letters, digits or `-`".to_owned())
 }
 
 fn parse_kind(text: &str) -> Result<SyncKind, String> {

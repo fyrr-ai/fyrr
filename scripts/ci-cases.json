@@ -711,6 +711,10 @@
         "tier": "quick",
         "seconds": 11.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::deleting_the_last_object_removes_the_directories_it_empties": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
       "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_reaps_only_unlocked_staging_files": {
         "tier": "quick",
         "seconds": 0.02

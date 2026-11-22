@@ -551,6 +551,11 @@ async fn interrupted_delete_finishes_when_run_again_on_local_storage() {
     };
     assert_eq!(listed(&name), json!({"namespaces":[name]}));
     assert_eq!(listed(&format!("{name}-")), json!({"namespaces":[]}));
+    assert!(
+        !delete_command(&commit, &["list", "--prefix", ""])
+            .status
+            .success()
+    );
     for _ in 0..2 {
         let resumed = delete_command(&commit, &["delete", "--delete-data", &name]);
         assert!(resumed.status.success(), "{}", report(&resumed));
