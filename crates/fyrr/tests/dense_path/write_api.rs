@@ -1974,8 +1974,12 @@ async fn identity_write_api_filters_strings_by_prefix_substring_and_expression_o
         .iter()
         .enumerate()
         .map(|(n, id)| {
-            let readers = if *id == "e" { "usr:nobody" } else { "usr:x" };
-            json!({"id": id, "text": texts[n], "readers": [readers], "note": notes[n], "price": 1.5})
+            let readers = if *id == "e" {
+                json!(["usr:nobody"])
+            } else {
+                json!(["grp:allow", "usr:x"])
+            };
+            json!({"id": id, "text": texts[n], "readers": readers, "note": notes[n], "price": 1.5})
         })
         .collect();
     assert_eq!(

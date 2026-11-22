@@ -351,6 +351,10 @@
                       "gte",
                       "contains",
                       "not_contains",
+                      "starts_with",
+                      "not_starts_with",
+                      "matches",
+                      "not_matches",
                       "contains_any",
                       "contains_all",
                       "contains_none"

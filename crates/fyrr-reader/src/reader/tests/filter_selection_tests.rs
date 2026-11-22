@@ -161,7 +161,9 @@ fn rows(range: std::ops::Range<usize>) -> RecordBatch {
                 TimestampMicrosecondArray::from(range.clone().map(seen).collect::<Vec<_>>())
                     .with_timezone("UTC"),
             ),
-            Arc::new(StringArray::from(range.clone().map(note).collect::<Vec<_>>())),
+            Arc::new(StringArray::from(
+                range.clone().map(note).collect::<Vec<_>>(),
+            )),
         ],
     )
     .unwrap()
@@ -323,7 +325,10 @@ fn filters() -> Vec<(&'static str, String)> {
         ("text_short_contains", on_note("contains", "a")),
         ("text_matches", on_note("matches", r"^Alpha_\d+$")),
         ("text_not_matches", on_note("not_matches", r"\d{2}")),
-        ("text_on_a_label", json!({"field":"author","op":"starts_with","value":"a1"})),
+        (
+            "text_on_a_label",
+            json!({"field":"author","op":"starts_with","value":"a1"}),
+        ),
         (
             "text_or",
             json!({"or": [on_note("contains", "lpha"), on_rank("eq", json!(1))]}),
@@ -789,9 +794,24 @@ fn a_text_test_compiles_to_one_call_and_refuses_what_it_cannot_bound() {
         PreparedReader::filter_sql(&serde_json::from_value(tree).unwrap(), &attributes())
     };
     for (field, op, value, sql) in [
-        ("note", "starts_with", json!("it's"), "starts_with(`note`,'it''s')"),
-        ("note", "matches", json!("a"), "regexp_like(`note`,'(?-m)a','m')"),
-        ("note", "not_starts_with", json!(r"a\b"), r"NOT starts_with(`note`,'a\b')"),
+        (
+            "note",
+            "starts_with",
+            json!("it's"),
+            "starts_with(`note`,'it''s')",
+        ),
+        (
+            "note",
+            "matches",
+            json!("a"),
+            "regexp_like(`note`,'(?-m)a','m')",
+        ),
+        (
+            "note",
+            "not_starts_with",
+            json!(r"a\b"),
+            r"NOT starts_with(`note`,'a\b')",
+        ),
         ("note", "contains", json!("50%_"), "contains(`note`,'50%_')"),
         (
             "note",
@@ -805,10 +825,24 @@ fn a_text_test_compiles_to_one_call_and_refuses_what_it_cannot_bound() {
             json!("x|y"),
             "NOT regexp_like(`note`,'(?-m)x|y','m')",
         ),
-        ("author", "starts_with", json!("a"), "starts_with(`author`,'a')"),
-        ("source_id", "contains", json!("s"), "contains(`source_id`,'s')"),
+        (
+            "author",
+            "starts_with",
+            json!("a"),
+            "starts_with(`author`,'a')",
+        ),
+        (
+            "source_id",
+            "contains",
+            json!("s"),
+            "contains(`source_id`,'s')",
+        ),
     ] {
-        assert_eq!(compile(field, op, value).as_deref(), Ok(sql), "{field} {op}");
+        assert_eq!(
+            compile(field, op, value).as_deref(),
+            Ok(sql),
+            "{field} {op}"
+        );
     }
     let near = "a".repeat(MAX_REGEX_BYTES);
     assert!(compile("note", "matches", json!(near)).is_ok());

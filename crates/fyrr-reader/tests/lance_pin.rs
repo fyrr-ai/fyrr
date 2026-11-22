@@ -642,8 +642,7 @@ async fn string_filters_use_the_btree_and_the_ngram_index_where_they_can() {
         Field::new("both", DataType::Utf8, true),
     ]));
     let column = || Arc::new(StringArray::from(names.clone())) as ArrayRef;
-    let batch =
-        RecordBatch::try_new(schema.clone(), vec![column(), column(), column()]).unwrap();
+    let batch = RecordBatch::try_new(schema.clone(), vec![column(), column(), column()]).unwrap();
     let root = directory("string-filters");
     let mut dataset = Dataset::write(
         RecordBatchIterator::new(vec![Ok(batch)], schema),
@@ -677,7 +676,11 @@ async fn string_filters_use_the_btree_and_the_ngram_index_where_they_can() {
         ("starts_with(name,'item-00')", 100, Some(true)),
         ("starts_with(name,'item-001')", 10, Some(true)),
         ("contains(text,'bravo')", 67, Some(true)),
-        (r"regexp_like(text,'(?-m)^item-001\d-alpha$','m')", 3, Some(true)),
+        (
+            r"regexp_like(text,'(?-m)^item-001\d-alpha$','m')",
+            3,
+            Some(true),
+        ),
         ("regexp_like(text,'(?-m)r.vo','m')", 67, Some(false)),
         ("contains(text,'ra')", 67, Some(false)),
         ("NOT starts_with(name,'item-00')", 100, Some(false)),
