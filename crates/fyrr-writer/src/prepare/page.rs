@@ -172,7 +172,7 @@ struct Page<'a> {
 struct PageRows {
     documents: Vec<EnvelopeDocument>,
     quarantined: Vec<QuarantineEntry>,
-    filter_writes: Option<fyrr_core::envelope::FilterWrites>,
+    filter_writes: Option<Box<fyrr_core::envelope::FilterWrites>>,
     columns: RowColumns,
 }
 #[derive(Default)]
@@ -218,7 +218,7 @@ impl PageRows {
                 return Ok(());
             }
             ContentChange::Where(writes) => {
-                self.filter_writes = Some(*writes);
+                self.filter_writes = Some(writes);
                 return Ok(());
             }
         };

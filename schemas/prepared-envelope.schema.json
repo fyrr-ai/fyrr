@@ -512,6 +512,150 @@
       ],
       "description": "Value-free diagnostic carried by an immutable envelope, never mutable state."
     },
+    "FilterWrites": {
+      "type": "object",
+      "properties": {
+        "source_revision": {
+          "type": "string",
+          "description": "The revision and its order of the documents the filters match."
+        },
+        "revision_order": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "delete": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Filter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The documents to delete."
+        },
+        "patch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FilterPatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The documents to patch."
+        }
+      },
+      "required": [
+        "source_revision",
+        "revision_order"
+      ],
+      "description": "What an envelope does to the documents that match a filter. Deletes apply\nfirst, then patches, then the documents of the envelope itself, which win\nover a filter for the documents they name, except that a patch by id of a\ndocument the filter deletes finds it deleted."
+    },
+    "Filter": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "and": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Filter"
+              }
+            }
+          },
+          "required": [
+            "and"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "or": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Filter"
+              }
+            }
+          },
+          "required": [
+            "or"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "not": {
+              "$ref": "#/$defs/Filter"
+            }
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "$ref": "#/$defs/Comparison"
+        }
+      ],
+      "description": "A filter tree: `and` and `or` of one or more filters, `not` of one, or a\ncomparison of a field with a value. At most [`MAX_FILTER_NODES`] nodes in\n[`MAX_FILTER_DEPTH`] levels. It is read from the request in one pass that\nstops at the first bound it exceeds."
+    },
+    "Comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/$defs/Op"
+        },
+        "value": true
+      },
+      "required": [
+        "field",
+        "op",
+        "value"
+      ],
+      "description": "A field compared with a value; `in` and `not_in` take an array of values.\nThe reader checks the field and the value against the namespace's schema."
+    },
+    "Op": {
+      "type": "string",
+      "enum": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "lt",
+        "lte",
+        "gt",
+        "gte",
+        "contains",
+        "not_contains",
+        "contains_any",
+        "contains_all",
+        "contains_none"
+      ],
+      "description": "How a field is compared with a value. The last five test the elements of an\narray attribute and apply to nothing else."
+    },
+    "FilterPatch": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "$ref": "#/$defs/Filter"
+        },
+        "values": {
+          "$ref": "#/$defs/DocumentPatch"
+        }
+      },
+      "required": [
+        "filter",
+        "values"
+      ],
+      "description": "A patch of every document that matches `filter`. It writes attributes or\nreaders, never a text, which would need a vector of its own per document."
+    },
     "ContentPayload": {
       "type": "object",
       "properties": {
@@ -544,6 +688,17 @@
           "items": {
             "$ref": "#/$defs/QuarantineEntry"
           }
+        },
+        "filter_writes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FilterWrites"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Deletes and patches of every document that matches a filter, which the\ncommitter evaluates once against the state the envelope is applied to;\nwritten by the write API only."
         }
       },
       "required": [

@@ -723,21 +723,28 @@ async fn identity_write_api_refuses_a_filter_that_matches_too_many_documents_on_
     configure(&config, &address, "open = true");
     let writer = Writer::start(&config, &root, address).await;
     let namespace = "dense-fixture";
-    // Vectors of 4 numbers keep the thousands of rows small.
+    // Vectors of 16 numbers keep the thousands of rows small. The namespace is
+    // created by a small request; the many documents come after its indexes.
     let row = |n: usize, team: &str| {
         json!({"id": format!("d{n}"), "text": format!("text {n}"), "team": team,
-            "vector": [1.0, 0.0, 0.0, 0.0]})
+            "vector": vector(0, 16)})
     };
-    let mut rows: Vec<_> = (0..MAX).map(|n| row(n, "big")).collect();
-    rows.push(row(MAX, "extra"));
     assert_eq!(
         writer
             .post(
                 WRITE_KEY,
                 namespace,
-                &json!({"settings": {"embedding": {"dimensions": 4}, "attributes": {"team": "string"}},
-                    "upserts": rows})
+                &json!({"settings": {"embedding": {"dimensions": 16}, "attributes": {"team": "string"}},
+                    "upserts": [row(0, "keep")]})
             )
+            .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    let mut rows: Vec<_> = (1..=MAX).map(|n| row(n, "big")).collect();
+    rows.push(row(MAX + 1, "extra"));
+    assert_eq!(
+        writer
+            .post(WRITE_KEY, namespace, &json!({"upserts": rows}))
             .await,
         (200, json!({"upserted": MAX + 1, "deleted": 0}))
     );
@@ -770,7 +777,13 @@ async fn identity_write_api_refuses_a_filter_that_matches_too_many_documents_on_
             .await,
         (200, json!({"upserted": 0, "deleted": 0}))
     );
-    assert_eq!(stored(&config, "true").await.num_rows(), 1);
+    assert_eq!(
+        stored(&config, "team IN ('keep', 'extra')")
+            .await
+            .num_rows(),
+        2
+    );
+    assert_eq!(stored(&config, "team = 'big'").await.num_rows(), 0);
 }
 
 /// A patch that changes the text brings the vector of the new text, and a

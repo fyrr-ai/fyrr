@@ -78,7 +78,7 @@ pub struct ContentPayload {
     /// committer evaluates once against the state the envelope is applied to;
     /// written by the write API only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub filter_writes: Option<FilterWrites>,
+    pub filter_writes: Option<Box<FilterWrites>>,
 }
 
 /// What an envelope does to the documents that match a filter. Deletes apply
