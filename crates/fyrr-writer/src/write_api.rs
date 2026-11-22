@@ -207,7 +207,11 @@ async fn accept(
     if !headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.split(';').next().is_some_and(|t| t.trim() == "application/json"))
+        .is_some_and(|v| {
+            v.split(';')
+                .next()
+                .is_some_and(|t| t.trim() == "application/json")
+        })
         || headers.contains_key(header::CONTENT_ENCODING)
     {
         return Err(ApiError(415, "unsupported_media_type"));
@@ -304,7 +308,10 @@ fn merge(into: &mut Value, patch: &Value) {
 }
 
 /// `base` with the request's settings laid over it.
-fn laid_over(base: &NamespaceSettings, request: Option<&Value>) -> Result<NamespaceSettings, ApiError> {
+fn laid_over(
+    base: &NamespaceSettings,
+    request: Option<&Value>,
+) -> Result<NamespaceSettings, ApiError> {
     let mut value = serde_json::to_value(base).map_err(|_| ApiError(400, "settings_invalid"))?;
     if let Some(request) = request {
         merge(&mut value, request);
@@ -382,8 +389,7 @@ fn checked(
             if !attributes.contains_key(name) {
                 return Err(ApiError(400, "attribute_undeclared"));
             }
-            resolve(&mut working, name, value)
-                .map_err(|error| ApiError(400, error.code()))?;
+            resolve(&mut working, name, value).map_err(|error| ApiError(400, error.code()))?;
             typed.insert(name.clone(), value.clone());
         }
         rows.push(Upsert {
@@ -407,7 +413,10 @@ async fn execute(
     let head = match fyrr_reader::storage::optional_head(config).await? {
         Some(head) => head,
         None => {
-            let settings = laid_over(&crate::commit::namespace_settings(config), body.settings.as_ref())?;
+            let settings = laid_over(
+                &crate::commit::namespace_settings(config),
+                body.settings.as_ref(),
+            )?;
             crate::commit::create_with(config, settings).await?;
             fyrr_reader::storage::optional_head(config)
                 .await?
@@ -542,7 +551,10 @@ async fn write_envelope(
         let next = sequence
             .checked_add(1)
             .ok_or(WriterError::CursorSequenceOverflow)?;
-        let path = root.join("envelopes").join(format!("{}.json", id_of(next)));
+        let path = root
+            .clone()
+            .join("envelopes")
+            .join(format!("{}.json", id_of(next)));
         match object_store::ObjectStoreExt::head(store.as_ref(), &path).await {
             Ok(_) => sequence = next,
             Err(object_store::Error::NotFound { .. }) => break,
@@ -577,7 +589,12 @@ async fn write_envelope(
     let mut changes = Vec::new();
     for row in rows {
         let mut change = change(ChangeOp::Upsert, row.id.clone());
-        change.readers = if config.namespace.write_api.as_ref().is_some_and(|api| api.open) {
+        change.readers = if config
+            .namespace
+            .write_api
+            .as_ref()
+            .is_some_and(|api| api.open)
+        {
             Vec::new()
         } else {
             row.readers

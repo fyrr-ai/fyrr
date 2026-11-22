@@ -306,7 +306,15 @@ mod tests {
 
     #[test]
     fn reserved_and_malformed_names_are_refused() {
-        for name in ["_x", "_", "id", "source_id", "updated_at", "attributes", "vector"] {
+        for name in [
+            "_x",
+            "_",
+            "id",
+            "source_id",
+            "updated_at",
+            "attributes",
+            "vector",
+        ] {
             assert_eq!(
                 check_name(name),
                 Err(AttributeError::NameReserved),

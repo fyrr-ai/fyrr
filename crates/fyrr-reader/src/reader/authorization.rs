@@ -430,7 +430,12 @@ impl PreparedReader {
         };
         // A namespace written open lets every admitted subject read every row of
         // the API's source; the principal and its checks above stay.
-        if policy.settings.write_api.as_ref().is_some_and(|api| api.open) {
+        if policy
+            .settings
+            .write_api
+            .as_ref()
+            .is_some_and(|api| api.open)
+        {
             return Ok(format!(
                 "source_id = {}",
                 sql(fyrr_core::connector::API_SOURCE_ID)

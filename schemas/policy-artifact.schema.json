@@ -103,6 +103,17 @@
             "$ref": "#/$defs/AttributeType"
           },
           "description": "The typed attributes the namespace declares when it is created. Each is\na nullable column with its own index from the first publication."
+        },
+        "write_api": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WriteApiSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present: the namespace is written through the HTTP API and takes no\nconnector source. Fixed with the rest of the settings."
         }
       },
       "required": [
@@ -447,6 +458,22 @@
       ],
       "description": "The type of an attribute."
     },
+    "WriteApiSettings": {
+      "type": "object",
+      "properties": {
+        "text_attribute": {
+          "type": "string",
+          "description": "The key of a row that holds its text: embedded, full-text indexed and\nreturned as the content of the record. It is not a typed attribute and\nnot one of `attributes`.",
+          "default": "text"
+        },
+        "open": {
+          "type": "boolean",
+          "description": "`false`: a row is readable by the reader tokens it names, and a row\nthat names none by nobody. `true`: every authenticated subject of the\ndeployment reads every row.",
+          "default": false
+        }
+      },
+      "description": "How a namespace written through the HTTP API stores and shows its rows. Fixed\nfor the life of the namespace."
+    },
     "RetiredSource": {
       "type": "object",
       "properties": {
@@ -469,5 +496,5 @@
     }
   },
   "x-fyrr-contract": "policy-artifact",
-  "x-fyrr-schema-version": "3.0"
+  "x-fyrr-schema-version": "3.1"
 }

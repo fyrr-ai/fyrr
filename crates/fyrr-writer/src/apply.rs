@@ -157,7 +157,10 @@ pub(crate) async fn write_rows(
         fragments.extend(
             FragmentCreateBuilder::new(&fyrr_reader::storage::dataset_uri(config))
                 .write_params(&params)
-                .write_fragments(RecordBatchIterator::new(batches.into_iter().map(Ok), schema))
+                .write_fragments(RecordBatchIterator::new(
+                    batches.into_iter().map(Ok),
+                    schema,
+                ))
                 .await
                 .map_err(|_| WriterError::FragmentWriteFailed)?,
         );

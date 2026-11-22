@@ -154,7 +154,10 @@ async fn identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_stor
     // Authentication and the shape of a request come before anything is written.
     let unkeyed = writer
         .client
-        .post(format!("{}/v1/namespaces/{namespace}/documents", writer.base))
+        .post(format!(
+            "{}/v1/namespaces/{namespace}/documents",
+            writer.base
+        ))
         .json(&create)
         .send()
         .await
@@ -168,7 +171,10 @@ async fn identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_stor
     );
     let gzip = writer
         .client
-        .post(format!("{}/v1/namespaces/{namespace}/documents", writer.base))
+        .post(format!(
+            "{}/v1/namespaces/{namespace}/documents",
+            writer.base
+        ))
         .bearer_auth(secret(WRITE_KEY))
         .header("Content-Encoding", "gzip")
         .json(&create)
@@ -231,24 +237,37 @@ async fn identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_stor
     assert_eq!(hits(&config, "blue shirt"), ["a1"]);
     assert!(!hits(&config, "red hat").contains(&"a2".to_owned()));
     assert!(!hits(&config, "green coat").contains(&"a3".to_owned()));
-    let fetched = body(Mcp::open(&config).call("fetch", json!({"source_id":"_api","root_id":"a1"})));
+    let fetched =
+        body(Mcp::open(&config).call("fetch", json!({"source_id":"_api","root_id":"a1"})));
     assert!(fetched.to_string().contains("blue shirt"));
 
     // The namespace's settings and schema are fixed; a row refers to what it declared.
     assert_eq!(
         writer
-            .post(WRITE_KEY, namespace, &json!({"settings": {"dense_rq_bits": 3}}))
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"settings": {"dense_rq_bits": 3}})
+            )
             .await,
         (409, json!({"error": "namespace_settings_fixed"}))
     );
     for (row, code) in [
-        (json!({"id": "x", "text": "red hat", "colour": "red"}), "attribute_undeclared"),
-        (json!({"id": "x", "text": "red hat", "price": "cheap"}), "attribute_type_mismatch"),
+        (
+            json!({"id": "x", "text": "red hat", "colour": "red"}),
+            "attribute_undeclared",
+        ),
+        (
+            json!({"id": "x", "text": "red hat", "price": "cheap"}),
+            "attribute_type_mismatch",
+        ),
         (json!({"id": "x"}), "text_missing"),
         (json!({"text": "red hat"}), "id_missing"),
     ] {
         assert_eq!(
-            writer.post(WRITE_KEY, namespace, &json!({"upserts": [row]})).await,
+            writer
+                .post(WRITE_KEY, namespace, &json!({"upserts": [row]}))
+                .await,
             (400, json!({"error": code}))
         );
     }
@@ -292,7 +311,11 @@ async fn identity_write_api_refuses_whole_and_keeps_connector_namespaces_apart_o
     embed(&root, &["blue shirt"]);
     assert_eq!(
         writer
-            .post(WRITE_KEY, "dense-fixture", &json!({"upserts": [{"id": "a", "text": "blue shirt"}]}))
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"upserts": [{"id": "a", "text": "blue shirt"}]})
+            )
             .await,
         (409, json!({"error": "namespace_not_writable"}))
     );
@@ -334,6 +357,7 @@ fn peak_memory(pid: u32) -> u64 {
 
 #[tokio::test]
 #[ignore = "real writer executable on local storage, 240 MiB body; scripts/ci"]
+#[allow(clippy::print_stderr)]
 async fn identity_write_api_largest_body_stays_under_the_worker_memory_limit_on_storage() {
     let (config, root) = setup_on(Backend::Local);
     let address = free_address();
