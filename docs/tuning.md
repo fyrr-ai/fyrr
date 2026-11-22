@@ -41,10 +41,12 @@ priority = "int"
 A namespace can declare up to 128 typed attributes when it is created. The
 types are `string`, `int` (64-bit signed), `float` (64-bit), `bool` and
 `datetime` (UTC microseconds, like `updated_at`). The first content publication
-creates a nullable column for each declaration. These columns currently contain
-only nulls. Search's `attributes` filter matches the `key=value` string labels
-supplied by connectors. See [connector documents](connectors/authoring.md#documents)
-and [search](mcp-tools.md#search).
+creates a nullable column for each declaration. The
+[`filter` argument](mcp-tools.md#filters) can compare those columns. Connector
+publications currently leave them null, so a range comparison such as
+`priority >= 3` returns no hits on those publications. Use the `attributes`
+argument to match the `key=value` string labels supplied by
+[connector documents](connectors/authoring.md#documents).
 
 A `string`, number or `datetime` attribute gets a B-tree index and a `bool` a
 bitmap index. A reader opens each index: about two storage requests per
