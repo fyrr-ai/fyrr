@@ -781,7 +781,6 @@ async fn a_writer_service_maintains_the_namespace_it_serves() {
     .await
     .unwrap();
     let fragments = dataset.manifest().fragments.len();
-    eprintln!("segments {segments:?}, fragments {fragments}");
     // Each commit adds a fragment per source; unmaintained they would all remain.
     let commits = SEGMENT_CAP + 2;
     assert!(
