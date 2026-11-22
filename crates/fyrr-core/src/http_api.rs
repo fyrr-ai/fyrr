@@ -56,6 +56,8 @@ pub struct NamespaceReport {
     pub schema: AttributeSchema,
     /// The namespace's settings, as its policy records them.
     pub settings: NamespaceSettings,
+    /// Whether the namespace is frozen: writes are refused while it stays readable.
+    pub read_only: bool,
     /// Approximate live rows; `null` for a version published before contract 4.1.
     pub rows: Option<u64>,
     /// Approximate bytes of the data files of those rows, without indexes; `null` as `rows`.
@@ -164,6 +166,23 @@ pub struct WriteResponse {
 #[serde(deny_unknown_fields)]
 pub struct DeleteNamespaceRequest {
     pub namespace: String,
+}
+
+/// The body of `PATCH /v1/namespaces/{namespace}`: freezes the namespace or thaws it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PatchNamespaceRequest {
+    /// `true` refuses writes and connector syncs; `false` allows them again.
+    pub read_only: bool,
+}
+
+/// What a namespace switch answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PatchNamespaceResponse {
+    pub namespace: String,
+    pub read_only: bool,
+    /// `false` when the namespace was already so.
+    pub changed: bool,
 }
 
 /// What a namespace deletion answers.

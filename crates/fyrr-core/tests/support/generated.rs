@@ -9,7 +9,8 @@ use fyrr_core::directory::DirectorySnapshot;
 use fyrr_core::envelope::{PreparedEnvelope, RejectionMarker};
 use fyrr_core::http_api::{
     DeleteNamespaceRequest, DeleteNamespaceResponse, ErrorBody, FetchRequest, NamespaceList,
-    NamespaceReport, QueryRequest, WriteRequest, WriteResponse,
+    NamespaceReport, PatchNamespaceRequest, PatchNamespaceResponse, QueryRequest, WriteRequest,
+    WriteResponse,
 };
 use fyrr_core::identity::{ApiKeysArtifact, IdentityArtifact};
 use fyrr_core::mcp::{
@@ -126,6 +127,14 @@ fn openapi() -> Value {
                 "Error",
                 None,
                 answers.subschema_for::<NamespaceReport>(),
+            ),
+            "patch": operation(
+                "writer",
+                "Freeze a namespace or thaw it",
+                "an API key with the `admin` role",
+                "ScimError",
+                Some(requests.subschema_for::<PatchNamespaceRequest>()),
+                answers.subschema_for::<PatchNamespaceResponse>(),
             ),
             "delete": operation(
                 "writer",
@@ -367,6 +376,7 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
                 fixed_grants: Default::default(),
                 row_acl_sequence: None,
                 retired_sources: Default::default(),
+                read_only: false,
             }))
             .unwrap_or_else(|_| unreachable!("JSON serialization is UTF-8")),
         },

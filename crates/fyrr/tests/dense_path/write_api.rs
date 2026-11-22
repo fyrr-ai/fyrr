@@ -113,6 +113,27 @@ impl Writer {
         panic!("writer HTTP startup deadline");
     }
 
+    /// `PATCH /v1/namespaces/{namespace}` with `read_only`, repeated while the
+    /// committer holds the namespace lease.
+    async fn freeze(&self, key: usize, namespace: &str, read_only: bool) -> (u16, Value) {
+        for _ in 0..100 {
+            let response = self
+                .client
+                .patch(format!("{}/v1/namespaces/{namespace}", self.base))
+                .bearer_auth(secret(key))
+                .json(&json!({ "read_only": read_only }))
+                .send()
+                .await
+                .unwrap();
+            let status = response.status().as_u16();
+            if status != 503 {
+                return (status, response.json().await.unwrap_or(Value::Null));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("the namespace lease stayed taken");
+    }
+
     pub(super) async fn post(&self, key: usize, namespace: &str, body: &Value) -> (u16, Value) {
         let response = self
             .client
@@ -1132,6 +1153,133 @@ async fn identity_write_api_lets_one_of_many_unpublished_requests_win_its_condit
         .num_rows(),
         1
     );
+}
+
+/// A frozen namespace refuses writes and stays readable. A request that was
+/// accepted before the switch, with its envelope durable but not published, is
+/// committed after it; a request that comes after it is refused.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_freezes_a_namespace_and_commits_what_it_accepted_before_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    embed(&root, &["blue shirt", "red hat", "green coat"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let namespace = "dense-fixture";
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"upserts": [{"id": "d1", "text": "blue shirt"}]})
+            )
+            .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    // Only a key with the `admin` role switches it, and only for a namespace it names.
+    assert_eq!(writer.freeze(WRITE_KEY, namespace, true).await.0, 403);
+    assert_eq!(writer.freeze(READ_KEY, namespace, true).await.0, 403);
+    assert_eq!(writer.freeze(ADMIN_KEY, "Not_a_name", true).await.0, 404);
+    assert_eq!(writer.freeze(ADMIN_KEY, "no-such-one", true).await.0, 404);
+
+    // The committer finds the lease taken and publishes nothing until it is
+    // released: the request below is accepted, its envelope durable, and the
+    // switch is published under the lease before the envelope is.
+    let loaded = fyrr_core::config::load(&config).unwrap();
+    let lease = loop {
+        match fyrr_writer::lease::LeaseGuard::acquire(&loaded.config).await {
+            Ok(lease) => break lease,
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    };
+    let switch = async {
+        loop {
+            let head = fyrr_reader::storage::optional_head(&loaded.config)
+                .await
+                .unwrap()
+                .unwrap();
+            if !fyrr_writer::commit::pending(&loaded.config, &head)
+                .await
+                .unwrap()
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            fyrr_writer::commit::set_read_only_held(&loaded.config, &lease, true)
+                .await
+                .unwrap()
+        );
+        lease.release().await.unwrap();
+    };
+    let request = json!({"upserts": [{"id": "d2", "text": "red hat"}]});
+    let (accepted, ()) = tokio::join!(writer.post(WRITE_KEY, namespace, &request), switch);
+    assert_eq!(accepted, (200, json!({"upserted": 1, "deleted": 0})));
+    assert_eq!(stored(&config, "root_id = 'd2'").await.num_rows(), 1);
+
+    // From now on the namespace is frozen: a write, with or without settings,
+    // is refused with one error, and nothing is written for it.
+    let refused = (409, json!({"error": "namespace_read_only"}));
+    for request in [
+        json!({"upserts": [{"id": "d3", "text": "green coat"}]}),
+        json!({"deletes": ["d1"]}),
+        json!({"patches": [{"id": "d1", "price": 1}]}),
+        json!({"settings": {}}),
+        json!({"settings": {"attributes": {"price": "float"}}}),
+    ] {
+        assert_eq!(writer.post(WRITE_KEY, namespace, &request).await, refused);
+    }
+    assert_eq!(stored(&config, "root_id = 'd3'").await.num_rows(), 0);
+    assert_eq!(stored(&config, "root_id = 'd1'").await.num_rows(), 1);
+    // It stays readable.
+    assert_eq!(hits(&config, "red hat")[0], "d2");
+    let policy = {
+        let (store, namespace_root) =
+            fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+        let head = fyrr_reader::storage::optional_head(&loaded.config)
+            .await
+            .unwrap()
+            .unwrap();
+        fyrr_reader::storage::artifact::<fyrr_core::publication::PolicyArtifact>(
+            store.as_ref(),
+            &namespace_root,
+            &head.policy,
+        )
+        .await
+        .unwrap()
+    };
+    assert!(policy.read_only);
+    assert_eq!(policy.schema_version.to_string(), "4.0");
+
+    // The switch is repeatable and reversible, by the key with `admin`.
+    assert_eq!(
+        writer.freeze(ADMIN_KEY, namespace, true).await,
+        (
+            200,
+            json!({"namespace": namespace, "read_only": true, "changed": false})
+        )
+    );
+    assert_eq!(
+        writer.freeze(ADMIN_KEY, namespace, false).await,
+        (
+            200,
+            json!({"namespace": namespace, "read_only": false, "changed": true})
+        )
+    );
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"upserts": [{"id": "d3", "text": "green coat"}]})
+            )
+            .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    assert_eq!(stored(&config, "root_id = 'd3'").await.num_rows(), 1);
 }
 
 /// A patch that changes the text brings the vector of the new text, and a

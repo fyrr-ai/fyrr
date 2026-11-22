@@ -120,6 +120,15 @@ pub enum WriterCommand {
 pub enum NamespaceAction {
     /// Create the namespace.
     Create,
+    /// Freeze the namespace (`true`) or thaw it (`false`): API writes and
+    /// connector syncs are refused while it stays readable, and envelopes that
+    /// were prepared before the switch are still committed. Maintenance and
+    /// the switch itself still work. Readers older than this switch refuse the
+    /// policy of a frozen namespace, so upgrade them first.
+    ReadOnly {
+        #[arg(action = clap::ArgAction::Set)]
+        enabled: bool,
+    },
     /// Delete the namespace and every object of it after a dry-run plan, with
     /// a verified export or the namespace name repeated. Stop every writer of
     /// the namespace first: the command waits `writer.commit.lease_ttl`, twice.
@@ -302,6 +311,13 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
                 crate::commit::create(config)
                     .await
                     .map(|()| serde_json::json!({"created":true}))
+            }),
+            WriterCommand::Namespace {
+                action: NamespaceAction::ReadOnly { enabled },
+            } => runtime_command(async {
+                crate::commit::set_read_only(config, *enabled)
+                    .await
+                    .map(|changed| serde_json::json!({"read_only":enabled,"changed":changed}))
             }),
             WriterCommand::Namespace {
                 action:

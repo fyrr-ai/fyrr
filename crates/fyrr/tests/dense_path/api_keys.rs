@@ -888,9 +888,31 @@ async fn a_namespace_report_needs_the_admin_or_list_role() {
                 json!({"title":"string","team":"string","status":"string",
                     "labels":{"array":"string"},"created_at":"datetime"})
             );
+            assert_eq!(body["read_only"], false);
             assert!(body["settings"]["embedding"]["model"].is_string(), "{body}");
             assert_eq!(body["unindexed"], json!({"rows":0,"logical_bytes":0}));
         }
+    }
+
+    // A frozen namespace reports it once the reader's head is current.
+    let mut freeze = worker_command(&deployment.root.join("report.toml"));
+    for key in all {
+        freeze.env(key.variable, &key.secret);
+    }
+    let frozen = freeze
+        .args(["writer", "namespace", "read-only", "true"])
+        .output()
+        .unwrap();
+    assert!(frozen.status.success(), "{}", report(&frozen));
+    let until = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let (status, body) = report_of(&reader, &admins.secret, &second).await;
+        assert_eq!(status, 200, "{body}");
+        if body["read_only"] == true {
+            break;
+        }
+        assert!(std::time::Instant::now() < until, "{body}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
     // A key that reads, or acts in other namespaces only, is refused; so is a

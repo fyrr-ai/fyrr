@@ -26,11 +26,12 @@ use crate::version::{Contract, SchemaVersion};
 /// The publication contract version (manifest and head) written by this build.
 pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 1);
 /// The version of a manifest that records something an older build would
-/// ignore, and of a policy artifact whose settings do: attribute index options,
-/// or the typed columns of the metadata fields of connector documents (a build
-/// without them would read nulls). An older build refuses them: it reads only
-/// its own major, and this build reads both. A document without either keeps
-/// its version.
+/// ignore, and of a policy artifact that does: attribute index options, the
+/// typed columns of the metadata fields of connector documents (a build without
+/// them would read nulls), or, for a policy, the `read_only` switch (a build
+/// without it would write). An older build refuses them: it reads only its own
+/// major, and this build reads both. A document with none of them keeps its
+/// version.
 pub const INDEXED_PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
 /// The policy artifact's counterpart of [`INDEXED_PUBLICATION_CONTRACT_VERSION`].
 pub const INDEXED_POLICY_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
@@ -124,6 +125,13 @@ pub struct PolicyArtifact {
     /// entry is never removed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub retired_sources: BTreeMap<String, RetiredSource>,
+    /// The namespace is frozen: API writes and connector syncs are refused
+    /// while it stays readable. An envelope that was prepared before the
+    /// switch is still committed. A policy that sets it is written as version
+    /// 4.0, which a build that does not know the switch refuses instead of
+    /// writing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
 }
 
 /// At most this many sources of a namespace can ever be retired.
@@ -138,11 +146,16 @@ pub struct RetiredSource {
 }
 
 impl PolicyArtifact {
-    /// The version to write: the one an older build refuses when the settings
-    /// hold index options it would ignore or the connector columns it would
-    /// read as null.
+    /// Whether an older build would misread this policy.
+    fn needs_newer_build(&self) -> bool {
+        self.settings.needs_newer_build() || self.read_only
+    }
+
+    /// The version to write: the one an older build refuses when the policy
+    /// holds index options, connector columns or the read-only switch, which it
+    /// would ignore.
     pub fn current_version(&self) -> SchemaVersion {
-        if !self.settings.needs_newer_build() {
+        if !self.needs_newer_build() {
             <Self as Contract>::VERSION
         } else {
             INDEXED_POLICY_CONTRACT_VERSION
@@ -156,11 +169,11 @@ impl Contract for PolicyArtifact {
     const ALSO_READS: &'static [u16] = &[INDEXED_POLICY_CONTRACT_VERSION.major];
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
-        if self.settings.needs_newer_build()
+        if self.needs_newer_build()
             && self.schema_version.major != INDEXED_POLICY_CONTRACT_VERSION.major
         {
             return Err(
-                "attribute index options and connector columns need the indexed policy version"
+                "attribute index options, connector columns and read_only need the indexed policy version"
                     .into(),
             );
         }

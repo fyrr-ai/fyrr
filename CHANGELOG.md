@@ -15,13 +15,26 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   of the file, so a filter or `order_by` can use them. `search`, `fetch` and
   `list_filters` return the same fields as before. A namespace created before
   keeps its layout and works as it did. A manifest of the new layout is
-  content-manifest 5.0 and its policy artifact 4.0, as for attribute index
-  options, so an older build refuses it instead of reading nulls. The
+  content-manifest 5.0 and its policy artifact 4.0, the versions of attribute
+  index options and of the read-only switch, so an older build refuses it
+  instead of reading nulls. The
   `key=value` attributes of a connector document stay in the `attributes`
   column. See [tuning](docs/tuning.md#namespaceattributes).
 
 ### Added
 
+- `fyrr writer namespace read-only true|false` and `PATCH /v1/namespaces/{namespace}`
+  with `{"read_only": …}` (an API key with the `admin` role) freeze a namespace or
+  thaw it. While it is frozen API writes and connector syncs are refused with
+  `namespace_read_only`, judged against the published head as each envelope
+  becomes durable; envelopes prepared before the switch are still committed, and
+  maintenance and the switch itself still work. The namespace report shows
+  `read_only`. A policy that sets `read_only` is `policy-artifact` 4.0, the same
+  unreleased 4.0 as a policy with index options: both enter it together, so a
+  build with index options but without the switch must not be released alone,
+  and this change ships in the release of the index options. A build without
+  the switch refuses the policy, readers included. See
+  [Freezing a namespace](docs/http-api.md#freezing-a-namespace).
 - `fyrr writer namespace list [--prefix P]` and `GET /v1/namespaces?prefix=P` on
   the reader list the namespaces of the storage root, in name order, that start
   with `P` and with the `namespace_prefix` of the caller's key. A namespace is
