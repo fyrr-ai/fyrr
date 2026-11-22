@@ -113,6 +113,17 @@
     "incarnation": {
       "type": "string",
       "description": "The incarnation of the namespace that published this version, copied\nfrom the serving head."
+    },
+    "envelope_evidence": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EnvelopeEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Which envelopes this publication and every older one committed or\nrejected, so that the newest manifest is enough to tell. Absent from\nmanifests written before it existed: a reader then walks the chain."
     }
   },
   "required": [
@@ -433,6 +444,35 @@
         "digest"
       ],
       "description": "Points at one immutable generation of a policy or identity artifact."
+    },
+    "EnvelopeEvidence": {
+      "type": "object",
+      "properties": {
+        "checkpoint": {
+          "$ref": "#/$defs/GenerationPointer",
+          "description": "The [`EnvelopeCheckpoint`] of an older publication."
+        },
+        "applied_since": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Envelopes committed after the checkpoint, this publication's included."
+        },
+        "rejected_since": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Envelopes rejected after the checkpoint, this publication's included."
+        }
+      },
+      "required": [
+        "checkpoint",
+        "applied_since",
+        "rejected_since"
+      ],
+      "description": "The envelope outcomes of a publication chain up to one manifest: an\nimmutable checkpoint of the older ones, and the few since."
     }
   },
   "x-fyrr-contract": "content-manifest",

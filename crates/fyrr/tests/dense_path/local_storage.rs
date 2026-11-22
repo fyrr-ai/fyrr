@@ -309,6 +309,8 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
         manifest.publication_id = format!("pub-{:032x}", 1_000_000 + offset);
         manifest.previous_publication_id = Some(previous);
         manifest.envelope_ids.clear();
+        // A chain written before manifests carried their envelope evidence.
+        manifest.envelope_evidence = None;
         for id in 0..RECEIPTS_PER_PUBLICATION {
             let mut envelope = member.clone();
             envelope.sequence = 1_000_000 + offset * RECEIPTS_PER_PUBLICATION + id;

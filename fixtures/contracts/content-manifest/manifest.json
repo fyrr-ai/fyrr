@@ -93,5 +93,18 @@
     "object": "policy/generation-9.json",
     "digest": "sha256:117d7833628e2a22ebb3c36afaab0ecebc20d3383b3c3ff33109605c1436d0f7"
   },
-  "incarnation": "5f0e3a9c2b7d4e1f8a6c0d3b9e2f7a41"
+  "incarnation": "5f0e3a9c2b7d4e1f8a6c0d3b9e2f7a41",
+  "envelope_evidence": {
+    "checkpoint": {
+      "generation": 40,
+      "object": "evidence/generation-40.json",
+      "digest": "sha256:5c3a1f0e9d7b2a64f81e0c93d5b7a2e8f4c61d09b3a7e5f2c8d41a96b07e3f5c"
+    },
+    "applied_since": [
+      "env-ab0dc87cb67ccdbb62a36a806c0cd6c5"
+    ],
+    "rejected_since": [
+      "env-c0ffee00c0ffee00c0ffee00c0ffee00"
+    ]
+  }
 }

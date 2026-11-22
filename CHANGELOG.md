@@ -242,6 +242,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   quarantined, and the sync continues. Valid documents keep their revision.
 - `fyrr reader search` accepts a query that starts with `-`, such as an issue
   title; put `--` before a query that is exactly an option name.
+- A sync worker no longer reads every publication manifest the namespace ever
+  wrote. Each publication now records which envelopes the chain committed or
+  rejected (`envelope_evidence` in the content manifest, an additive field), so
+  one manifest read is enough. The first publication after the upgrade still
+  walks the older chain once.
 
 ### Security
 

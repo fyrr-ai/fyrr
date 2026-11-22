@@ -105,6 +105,16 @@ pub(crate) async fn publish(
         )
         .await?;
     }
+    let evidence = envelope_evidence(
+        config,
+        store.as_ref(),
+        &root,
+        &head,
+        previous_manifest.as_ref(),
+        &receipts,
+        sequence,
+    )
+    .await?;
     let manifest = ContentManifest {
         schema_version: PUBLICATION_CONTRACT_VERSION,
         namespace: config.namespace.name.clone(),
@@ -135,6 +145,7 @@ pub(crate) async fn publish(
         rejected_envelope_ids: head.rejected_envelope_ids.clone(),
         cursor_rewinds,
         incarnation: head.incarnation.clone(),
+        envelope_evidence: Some(evidence),
     };
     let manifest_path = format!("publications/{publication_id}.json");
     put_immutable(
@@ -306,4 +317,57 @@ async fn file_inventory(
         .map(|(path, size_bytes)| FileRef { path, size_bytes })
         .collect();
     Ok(files)
+}
+
+/// A checkpoint is rewritten when this many ids have gathered in the manifests.
+pub(super) const CHECKPOINT_IDS: usize = 256;
+
+/// What the chain ending at this publication records: the checkpoint of its
+/// older part and the few ids since. Receipts live as long as the namespace, so
+/// the checkpoint grows with it; the manifests, which readers fetch, stay small.
+// shortcut: every checkpoint is kept; their size summed grows with the square
+// of the history over CHECKPOINT_IDS. Delete the superseded ones when that costs.
+pub(super) async fn envelope_evidence(
+    config: &Config,
+    store: &dyn ObjectStore,
+    root: &Path,
+    head: &ServingHead,
+    previous: Option<&ContentManifest>,
+    receipts: &[String],
+    sequence: u64,
+) -> Result<EnvelopeEvidence> {
+    if let Some(old) = previous.and_then(|manifest| manifest.envelope_evidence.as_ref()) {
+        let mut applied_since = old.applied_since.clone();
+        applied_since.extend(receipts.iter().cloned());
+        let mut rejected_since = old.rejected_since.clone();
+        rejected_since.extend(head.rejected_envelope_ids.iter().cloned());
+        if applied_since.len() + rejected_since.len() < CHECKPOINT_IDS {
+            return Ok(EnvelopeEvidence {
+                checkpoint: old.checkpoint.clone(),
+                applied_since,
+                rejected_since,
+            });
+        }
+    }
+    // The chain up to the previous publication, whose manifest may already
+    // carry evidence, or may be the first that does.
+    let chain = published_evidence(config, head).await?;
+    let checkpoint = EnvelopeCheckpoint {
+        schema_version: <EnvelopeCheckpoint as fyrr_core::Contract>::VERSION,
+        namespace: config.namespace.name.clone(),
+        applied_envelope_ids: chain
+            .applied
+            .into_iter()
+            .chain(receipts.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        rejected_envelope_ids: chain.rejected.into_iter().collect(),
+    };
+    Ok(EnvelopeEvidence {
+        checkpoint: crate::prepare::put_generation(store, root, "evidence", sequence, &checkpoint)
+            .await?,
+        applied_since: Vec::new(),
+        rejected_since: Vec::new(),
+    })
 }
