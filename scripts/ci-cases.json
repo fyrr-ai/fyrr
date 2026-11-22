@@ -1670,6 +1670,10 @@
         "tier": "full",
         "seconds": 40.0
       },
+      "full:fyrr:test:dense_path/storage_budget::listing_namespaces_is_one_delimited_listing": {
+        "tier": "full",
+        "seconds": 40.0
+      },
       "full:fyrr:test:dense_path/mirror_identity::reader_paused_past_its_version_check_answers_from_the_new_publication": {
         "tier": "full",
         "seconds": 15.0
@@ -1685,6 +1689,10 @@
       "full:fyrr:test:dense_path/api_keys::a_namespace_report_needs_the_admin_or_list_role": {
         "tier": "quick",
         "seconds": 30.0
+      },
+      "full:fyrr:test:dense_path/api_keys::namespaces_are_listed_within_the_prefix_of_the_key": {
+        "tier": "quick",
+        "seconds": 40.0
       },
       "full:fyrr:test:dense_path/api_keys::namespaces_opened_by_path_stay_inside_the_memory_budget": {
         "tier": "full",

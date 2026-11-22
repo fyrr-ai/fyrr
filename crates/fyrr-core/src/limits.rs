@@ -16,6 +16,8 @@ pub const MAX_CONNECTOR_MAP_BYTES: usize = 16 * 1024;
 pub const MAX_ATTRIBUTES: usize = 64;
 pub const MAX_ATTRIBUTE_KEY_BYTES: usize = 128;
 pub const MAX_ATTRIBUTE_BYTES: usize = 512;
+/// Namespaces one listing returns: more names than this match, and it fails.
+pub const MAX_LISTED_NAMESPACES: usize = 10_000;
 /// Reader references per document, section, grant or group.
 pub const MAX_READERS: usize = 16_384;
 /// Opaque connector cursors (e.g. Drive page tokens).

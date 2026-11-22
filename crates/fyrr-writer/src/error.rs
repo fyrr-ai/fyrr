@@ -119,6 +119,7 @@ writer_errors! {
     SourceUnavailable => ("source_unavailable", false),
     SourceUnknown => ("source_unknown", false),
     StaleCursor => ("stale_cursor", false),
+    TooManyNamespaces => ("too_many_namespaces", false),
     TombstoneInvalid => ("tombstone_invalid", false),
     WorkerFailure => ("worker_failure", false),
     CleanupBranchUnavailable => ("cleanup_branch_unavailable", false),
@@ -215,6 +216,7 @@ impl From<fyrr_reader::storage::StorageError> for WriterError {
             S::AuthorizationUnavailable => Self::AuthorizationUnavailable,
             S::StaleCursor => Self::StaleCursor,
             S::PublicationUnavailable => Self::PublicationUnavailable,
+            S::TooManyNamespaces => Self::TooManyNamespaces,
         }
     }
 }

@@ -11,6 +11,8 @@
 > - `GET /v1/namespaces/{namespace}` [reports](#namespace-report) a
 >   namespace's schema, settings, size and index state to an API key with the
 >   `admin` or `list` role.
+> - `GET /v1/namespaces` [lists](#listing-namespaces) the namespaces the key
+>   may act in, to the same roles.
 > - [API errors](#errors) carry an HTTP status and `{"error":"<code>"}`.
 >   `429` and `503` carry `Retry-After`. The HTTP parser can return `431`
 >   with an empty body.
@@ -22,6 +24,7 @@
 | `POST /v1/namespaces/{namespace}/query` | The arguments of [`search`](mcp-tools.md#search) | The `search` result |
 | `POST /v1/namespaces/{namespace}/fetch` | The arguments of [`fetch`](mcp-tools.md#fetch) | The `fetch` result |
 | `GET /v1/namespaces/{namespace}` | None | The [namespace report](#namespace-report) |
+| `GET /v1/namespaces?prefix=` | None | The [namespace list](#listing-namespaces) |
 
 `{namespace}` names the namespace to read: any namespace under
 `<storage root>/namespaces/`, not only `namespace.name`. The reader opens it
@@ -126,6 +129,31 @@ curl -H "Authorization: Bearer $FYRR_KEY" \
   https://fyrr.example.com/v1/namespaces/acme
 ```
 
+## Listing namespaces
+
+`GET /v1/namespaces` answers `{"namespaces":["acme","acme-eu"]}`: the names
+under `<storage root>/namespaces/`, in name order. `prefix` (lowercase letters,
+digits and `-`, at most 63 characters) keeps the names that start with it. It
+is the only query member; anything else answers `400 invalid_argument`. The
+route needs an API key with the `admin` or `list` role. A key limited by
+`namespace_prefix` lists the names that start with that prefix and no others,
+whatever `prefix` asks for. It reads no rows and opens no namespace, and it is
+the same list as `fyrr writer namespace list [--prefix P]`, which has no key
+and lists every name.
+
+A name is listed while any object exists under it, so a namespace whose
+[deletion](cli.md#namespace-deletion-failures) has not finished is listed, and
+so is one that was never created but holds a stray object. One call is one
+delimited listing of `namespaces/`: 1 LIST request per 1,000 names in the
+storage root, and no other request. More than 10,000 matching names answer
+`400 too_many_namespaces` (`error: too_many_namespaces` on the command line);
+narrow `prefix`.
+
+```sh
+curl -H "Authorization: Bearer $FYRR_KEY" \
+  "https://fyrr.example.com/v1/namespaces?prefix=acme"
+```
+
 ## Consistency
 
 Both routes take one more member besides the arguments of the tool,
@@ -196,6 +224,7 @@ statuses, and the boundary adds `forbidden`. The body is `{"error":"<code>"}` an
 | `busy` | `503` | The in-flight limit, the concurrency cap or the queue is exhausted. |
 | `rate_limited` | `429` | A per-user or per-group request limit was reached. |
 | `forbidden` | `403` | An API key lacks the role the route needs or may not act in this namespace. This code is not a tool error: only the HTTP boundary answers it. |
+| `too_many_namespaces` | `400` | The [namespace list](#listing-namespaces) matches more than 10,000 names. Only the HTTP boundary answers it. |
 
 `429` and `503` answers carry `Retry-After` in seconds: 60 for `429` (the
 rate window) and 1 for `503`. These routes also answer the refusals of the
