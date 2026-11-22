@@ -64,7 +64,8 @@
           "max_pending_content_bytes": "16GiB"
         },
         "serve": {
-          "committer": true
+          "committer": true,
+          "maintenance": true
         }
       }
     },
@@ -1139,7 +1140,8 @@
         "serve": {
           "$ref": "#/$defs/WriterServeConfig",
           "default": {
-            "committer": true
+            "committer": true,
+            "maintenance": true
           }
         }
       },
@@ -1211,6 +1213,11 @@
         "committer": {
           "type": "boolean",
           "description": "Run the committer role; switch off to keep batch `commit` jobs.",
+          "default": true
+        },
+        "maintenance": {
+          "type": "boolean",
+          "description": "Run `fyrr writer maintain` when the served version has work for it\n(needs the committer role); switch off to schedule it yourself.",
           "default": true
         },
         "admin": {

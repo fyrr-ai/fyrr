@@ -1486,6 +1486,10 @@
         "tier": "full",
         "seconds": 40.0
       },
+      "full:fyrr:test:dense_path/storage_budget::a_writer_service_maintains_the_namespace_it_serves": {
+        "tier": "full",
+        "seconds": 240.0
+      },
       "full:fyrr:test:dense_path/storage_budget::a_sync_worker_reads_no_more_manifests_as_the_history_grows": {
         "tier": "full",
         "seconds": 60.0

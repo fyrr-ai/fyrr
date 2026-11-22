@@ -427,6 +427,130 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// Index segments `writer maintain` allows an index before it merges them.
+const SEGMENT_CAP: usize = 64;
+
+/// A service that only serves keeps its namespace bounded: it compacts a
+/// fragment with deletions, and two more commits than the cap leave at most
+/// the cap of segments per index and few fragments, with no `writer maintain`
+/// run after the service started.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn a_writer_service_maintains_the_namespace_it_serves() {
+    let (config, root) = setup_on(Backend::Local);
+    assert_eq!(
+        std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap(),
+        "local-storage",
+        "owned by the local CI row"
+    );
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("# fyrr-test-head-check = every", "")
+        .replacen(
+            "[[sources]]",
+            "[writer.commit]\ncoalescing_timer = \"1s\"\n[[sources]]",
+            1,
+        );
+    std::fs::write(&config, &text).unwrap();
+    success(&config, &["writer", "namespace", "create"]);
+    let mut texts = vec![("0.txt".to_owned(), "ledger entry 0".to_owned())];
+    let sync = |texts: &[(String, String)]| {
+        let borrowed: Vec<_> = texts
+            .iter()
+            .map(|(n, t)| (n.as_str(), t.as_str()))
+            .collect();
+        sync_texts(&config, &root, &borrowed);
+    };
+    sync(&texts);
+    success(&config, &["writer", "commit"]);
+    // The command keeps working, and the service starts from a maintained namespace.
+    success(&config, &["writer", "maintain"]);
+
+    let log = root.join("service.log");
+    let service = Service(
+        Command::new(crate::common::binary())
+            .arg("--config")
+            .arg(&config)
+            .args(["writer", "serve", "--jobs", "1"])
+            .env(
+                "VIRTUAL_ENV",
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../connectors/.venv"),
+            )
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap(),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let events = |event: &str| {
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .matches(&format!("writer_service event={event}"))
+            .count()
+    };
+    let wait = |what: &str, done: &dyn Fn() -> bool| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(180);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
+    // A replaced document leaves a deletion in its fragment: the service compacts it.
+    texts[0].1 = "ledger entry zero, revised".to_owned();
+    sync(&texts);
+    wait("maintenance of a deletion", &|| events("maintained") >= 1);
+    let (_, manifest) = super::coordination::publication(&config).await;
+    assert!(
+        manifest
+            .files
+            .iter()
+            .all(|file| !file.path.starts_with("_deletions/")),
+        "{:?}",
+        manifest.files
+    );
+    for i in 1..=SEGMENT_CAP + 2 {
+        let before = events("published");
+        texts.push((format!("{i}.txt"), format!("ledger entry {i}")));
+        sync(&texts);
+        wait("a publication", &|| events("published") > before);
+    }
+    wait("maintenance of the segments", &|| events("maintained") >= 2);
+    drop(service);
+    assert_eq!(events("maintenance_failed"), 0);
+
+    let (_, manifest) = super::coordination::publication(&config).await;
+    let mut segments = std::collections::BTreeMap::<String, usize>::new();
+    for index in &manifest.indexes {
+        *segments.entry(index.name.clone()).or_default() += 1;
+    }
+    assert!(
+        segments.values().all(|count| *count <= SEGMENT_CAP),
+        "{segments:?}"
+    );
+    let loaded = fyrr_core::config::load(&config).unwrap();
+    let dataset = fyrr_reader::storage::open_version(
+        &fyrr_reader::storage::dataset_uri(&loaded.config),
+        loaded
+            .config
+            .storage
+            .object_store_options(&fyrr_core::config::ProcessEnvironment)
+            .unwrap(),
+        manifest.lance_version,
+        None,
+    )
+    .await
+    .unwrap();
+    let fragments = dataset.manifest().fragments.len();
+    eprintln!("segments {segments:?}, fragments {fragments}");
+    assert!(
+        fragments < SEGMENT_CAP,
+        "{fragments} fragments after {} commits",
+        SEGMENT_CAP + 2
+    );
+    success(&config, &["writer", "verify"]);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// Publications a namespace has when a sync worker is first measured, and
 /// when it is measured again after its history has grown.
 const HISTORY: [usize; 2] = [4, 12];

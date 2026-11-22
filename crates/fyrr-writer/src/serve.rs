@@ -176,14 +176,29 @@ pub async fn run(
                 }
             },
             _ = timer.tick(), if loaded.config.writer.serve.committer => {
+                let mut maintenance_due = false;
                 match crate::commit::commit_until_stopped(&loaded.config, false, Some(&stop)).await {
-                    Ok((_, true)) => eprintln!("writer_service event=published"),
-                    Ok((_, false)) => eprintln!("writer_service event=idle"),
+                    Ok((_, tick)) => {
+                        eprintln!("writer_service event={}", if tick.published { "published" } else { "idle" });
+                        maintenance_due = tick.maintenance_due;
+                    }
                     Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
                     Err(_) => eprintln!("writer_service event=commit_failed"),
                 }
                 if stop.load(Ordering::Acquire) {
                     break;
+                }
+                // The tick judged this from the manifest it read anyway. A signal
+                // waits for the maintenance in progress, as it does for a commit group.
+                if maintenance_due && loaded.config.writer.serve.maintenance {
+                    match crate::maintenance::maintain(&loaded.config).await {
+                        Ok(_) => eprintln!("writer_service event=maintained"),
+                        Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
+                        Err(_) => eprintln!("writer_service event=maintenance_failed"),
+                    }
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
                 }
             }
         }
