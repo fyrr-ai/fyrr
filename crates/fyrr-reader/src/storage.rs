@@ -575,7 +575,7 @@ pub const API_KEYS_FILE: &str = "api-keys.json";
 /// `namespaces/`, which an object store pages at 1,000 names per request. A name
 /// is listed while any object exists under it, so a namespace whose deletion
 /// has not finished is listed. More names than
-/// [`MAX_LISTED_NAMESPACES`](fyrr_core::limits::MAX_LISTED_NAMESPACES) fail.
+/// [`MAX_NAMESPACES`](fyrr_core::limits::listing::MAX_NAMESPACES) fail.
 // shortcut: the object-store library has no start-after or page size for a
 // delimited listing and matches a prefix by whole path segment, so the names
 // are all read and filtered here. Upgrade when it pages the delimited listing.
@@ -595,7 +595,7 @@ pub async fn list_namespaces(
         .filter(|name| prefixes.iter().all(|prefix| name.starts_with(prefix)))
         .map(str::to_owned)
         .collect();
-    if names.len() > fyrr_core::limits::MAX_LISTED_NAMESPACES {
+    if names.len() > fyrr_core::limits::listing::MAX_NAMESPACES {
         return Err(StorageError::TooManyNamespaces);
     }
     Ok(names)

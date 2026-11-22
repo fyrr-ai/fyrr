@@ -475,7 +475,7 @@ async fn namespaces_are_listed_in_name_order_within_every_prefix_up_to_the_limit
     assert_eq!(list(&["alpha", "alpha-2"]).await.unwrap(), ["alpha-2"]);
     assert!(list(&["alpha", "b"]).await.unwrap().is_empty());
     // The limit counts the names that match, not those a prefix leaves out.
-    let limit = fyrr_core::limits::MAX_LISTED_NAMESPACES;
+    let limit = fyrr_core::limits::listing::MAX_NAMESPACES;
     for i in 0..limit {
         store
             .put(
