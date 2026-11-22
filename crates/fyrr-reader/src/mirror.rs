@@ -45,7 +45,7 @@ pub struct MirrorStore {
     dataset_cache_key: Arc<std::sync::Mutex<Option<(String, String)>>>,
     /// Object sizes stated by the pinned manifests, by blob name.
     manifest_sizes: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
-    /// Pages of `data/` files verified in this process, by blob path.
+    /// Pages of `data/` and `_indices/` files verified in this process, by blob path.
     verified_pages: Arc<std::sync::Mutex<BTreeMap<PathBuf, range::VerifiedPages>>>,
     /// The content publication that version manifest entries are bound to.
     publication: Option<String>,
