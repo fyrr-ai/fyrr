@@ -1342,7 +1342,7 @@ fn namespace_attributes_are_declared_by_name_and_type() {
             "{name}"
         );
     }
-    assert!(parse(&format!("{MINIMAL}\n[namespace.attributes]\na='uuid'")).is_err());
+    assert!(parse(&format!("{MINIMAL}\n[namespace.attributes]\na='decimal'")).is_err());
 }
 #[test]
 fn rescore_depth_keeps_legacy_digest_and_expands_only_at_small_gaps() {

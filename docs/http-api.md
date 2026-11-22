@@ -167,7 +167,8 @@ returns what it returned before.
 
 `include` and `exclude` are exclusive. The attributes of a hit are the
 object `attributes`, with the JSON type of each attribute (`datetime` as an
-RFC 3339 string); an attribute the document does not set is `null`. Only the
+RFC 3339 string, `uint` as a number, `uuid` as 8-4-4-4-12 hexadecimal digits,
+`bytes` as base64 and an array as a JSON array of its elements); an attribute the document does not set is `null`. Only the
 columns asked for are read, in the same read as the hit's other fields, and
 only for rows the caller may read.
 

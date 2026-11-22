@@ -387,9 +387,50 @@
           "type": "string",
           "const": "datetime",
           "description": "An RFC 3339 string in requests, stored as UTC microseconds."
+        },
+        {
+          "type": "string",
+          "const": "uint",
+          "description": "64-bit unsigned integer."
+        },
+        {
+          "type": "string",
+          "const": "uuid",
+          "description": "A UUID as 8-4-4-4-12 hexadecimal digits in requests, stored in 16 bytes."
+        },
+        {
+          "type": "string",
+          "const": "bytes",
+          "description": "Base64 in requests. Stored, never filtered, sorted or indexed."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "array": {
+              "$ref": "#/$defs/ElementType"
+            }
+          },
+          "required": [
+            "array"
+          ],
+          "additionalProperties": false,
+          "description": "A list of values of one scalar type, written `{\"array\": \"string\"}`."
         }
       ],
       "description": "The type of an attribute."
+    },
+    "ElementType": {
+      "type": "string",
+      "enum": [
+        "string",
+        "int",
+        "float",
+        "bool",
+        "datetime",
+        "uint",
+        "uuid"
+      ],
+      "description": "The type of the elements of an array: every scalar type but `bytes`."
     },
     "FileRef": {
       "type": "object",

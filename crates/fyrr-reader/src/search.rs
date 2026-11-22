@@ -499,16 +499,18 @@ const INDEX_KINDS: [(&str, &str, IndexType); 8] = [
 ];
 
 /// The index of each attribute, as column, name and kind: a bitmap for `bool`,
-/// a B-tree for every other type.
+/// a label list for an array, a B-tree for every other type but `bytes`, which
+/// has no index.
 pub fn attribute_indexes(
     attributes: &AttributeSchema,
 ) -> impl Iterator<Item = (String, String, IndexType)> {
-    attributes.iter().map(|(name, kind)| {
-        let index = match kind.index_kind() {
+    attributes.iter().filter_map(|(name, kind)| {
+        let index = match kind.index_kind()? {
             "bitmap" => IndexType::Bitmap,
+            "label_list" => IndexType::LabelList,
             _ => IndexType::BTree,
         };
-        (name.clone(), fyrr_core::attributes::index_name(name), index)
+        Some((name.clone(), fyrr_core::attributes::index_name(name), index))
     })
 }
 

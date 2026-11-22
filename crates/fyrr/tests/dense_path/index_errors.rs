@@ -156,7 +156,7 @@ async fn declared_attributes_are_nullable_columns_with_an_index_each_on_storage(
     let kinds: Vec<_> = manifest
         .attributes
         .iter()
-        .map(|(name, kind)| (name.as_str(), kind.index_kind()))
+        .map(|(name, kind)| (name.as_str(), kind.index_kind().unwrap()))
         .collect();
     assert_eq!(
         kinds,
@@ -176,7 +176,7 @@ async fn declared_attributes_are_nullable_columns_with_an_index_each_on_storage(
             .unwrap_or_else(|| panic!("no index for {name}"));
         assert_eq!(
             (index.column.as_str(), index.kind.as_str()),
-            (name.as_str(), kind.index_kind())
+            (name.as_str(), kind.index_kind().unwrap())
         );
     }
 

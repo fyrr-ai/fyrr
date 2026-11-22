@@ -115,7 +115,26 @@ declares ([typed attributes](tuning.md#namespaceattributes)). The operators are
 take an array of 1 to 64 values. A value has the type of its field: text, a
 whole number (`int`), a number (`float`), `true` or `false` (`bool`), or an
 RFC 3339 string (`datetime` and `updated_at`). Any other field, value or
-operator is `invalid_argument`. The field `attributes` takes `in` only, with
+operator is `invalid_argument`. A `uint` is a non-negative whole number and a
+`uuid` a string of 8-4-4-4-12 hexadecimal digits. A `bytes` attribute cannot be
+filtered: any comparison, even with `null`, is `invalid_argument`.
+
+An array attribute takes `eq` or `ne` with `null` and the five operators below,
+and a scalar attribute takes none of the five. `contains` and `not_contains`
+take one value of the element type, and `contains_any`, `contains_all` and
+`contains_none` a non-empty array of them.
+
+| Operator | Matches the documents whose array |
+| --- | --- |
+| `contains` | holds the value |
+| `not_contains` | does not hold the value |
+| `contains_any` | holds at least one of the values |
+| `contains_all` | holds every one of the values |
+| `contains_none` | holds none of the values |
+
+An empty array holds nothing, so it matches `not_contains` and
+`contains_none`; a document without the attribute (`null`) matches none of the
+five. The field `attributes` takes `in` only, with
 connector labels written `key=value`; it is what the `attributes` argument
 compiles to.
 
@@ -147,11 +166,13 @@ How a filter runs depends on its shape:
 
 `order_by` sorts a listing by built-in fields (`source_id`, `root_id`,
 `source_type`, `project`, `author`, `updated_at`) and by the typed attributes
-the namespace declares, each ascending or descending. Missing values sort first
+the namespace declares, each ascending or descending. A `uuid` sorts by its
+16 bytes, which is the order of its digits. Missing values sort first
 ascending and last descending. Documents that tie on every key are ordered by
 `source_id` and `root_id`, so the order is total. A field the namespace does not
-declare, the connector labels (`attributes`) and any other field that is not a
-single scalar are `invalid_argument`. The listing is still limited to what the
+declare, the connector labels (`attributes`), an array attribute, a `bytes`
+attribute and any other field that is not a single orderable scalar are
+`invalid_argument`. The listing is still limited to what the
 caller may read and to the documents that pass the filters.
 
 ```json
