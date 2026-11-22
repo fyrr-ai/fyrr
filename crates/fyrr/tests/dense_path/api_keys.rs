@@ -928,10 +928,11 @@ async fn namespaces_opened_by_path_stay_inside_the_memory_budget() {
     probe.stop().await;
     let held = accounting(&log, "reserved_bytes");
     // The pool is the budget less the headroom (128 MiB by default), the
-    // subject cache (128 MiB) and the resident memory at start.
+    // subject cache (128 MiB), the caches of the namespaces opened by path
+    // (128 MiB) and the resident memory at start.
     let resident =
-        accounting(&log, "budget_bytes") - accounting(&log, "capacity_bytes") - 256 * MIB;
-    let budget = (resident + 256 * MIB + held * 7 / 2).div_ceil(MIB);
+        accounting(&log, "budget_bytes") - accounting(&log, "capacity_bytes") - 384 * MIB;
+    let budget = (resident + 384 * MIB + held * 7 / 2).div_ceil(MIB);
     let tight = deployment.root.join("tight-reader.toml");
     std::fs::write(
         &tight,

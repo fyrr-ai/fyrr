@@ -186,7 +186,7 @@ struct Scheduler {
     sleeps: bool,
     /// No check runs, and no request is answered before one has read the head.
     dormant: bool,
-    /// The last request that arrived or finished.
+    /// The last request that arrived or finished; the only measure of idleness.
     last_request: Instant,
     preparation: Option<VersionPreparation>,
     warming: Option<(Arc<()>, VersionPreparation)>,
@@ -236,10 +236,11 @@ impl Scheduler {
                 && self.running.is_empty()
                 && sampling_idle
                 && self.preparation.is_none()
-                && self.warming.is_none()
                 && !self.handover
             {
                 self.dormant = true;
+                // A fill that goes on would ask storage for files while asleep.
+                self.warm_cancel.cancel();
             }
             let reserved = self.context.budget.cap.saturating_sub(
                 self.context.budget.permits.available_permits() as u64
@@ -712,7 +713,9 @@ impl Scheduler {
         };
         self.last_request = Instant::now();
         if self.dormant {
+            // A check that began before this request does not answer it.
             self.next_check = self.last_request;
+            self.stalled = Some(self.last_request);
         }
         #[cfg(feature = "test-store")]
         if crate::storage::test_store::version_check()
