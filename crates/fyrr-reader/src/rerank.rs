@@ -4,6 +4,7 @@ use crate::provider::BodyError;
 use crate::retrieval::Candidate;
 use crate::search::{PreparedReader, ids, strings};
 use futures::{StreamExt, TryStreamExt, stream};
+use arrow_array::Array;
 use fyrr_core::attributes::AttributeType;
 use fyrr_core::config::{Environment, ProcessEnvironment, RerankConfig};
 use fyrr_core::mcp::{RerankChoice, Telemetry};
