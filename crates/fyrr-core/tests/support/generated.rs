@@ -8,13 +8,14 @@ use fyrr_core::connector::{ConnectorBatch, CursorState, document_changes_arrow_s
 use fyrr_core::directory::DirectorySnapshot;
 use fyrr_core::envelope::{PreparedEnvelope, RejectionMarker};
 use fyrr_core::http_api::{
-    DeleteNamespaceRequest, DeleteNamespaceResponse, ErrorBody, FetchRequest, NamespaceList,
-    NamespaceReport, PatchNamespaceRequest, PatchNamespaceResponse, QueryRequest, WriteRequest,
-    WriteResponse,
+    AggregateRequest, DeleteNamespaceRequest, DeleteNamespaceResponse, ErrorBody, FetchRequest,
+    NamespaceList, NamespaceReport, PatchNamespaceRequest, PatchNamespaceResponse, QueryRequest,
+    WriteRequest, WriteResponse,
 };
 use fyrr_core::identity::{ApiKeysArtifact, IdentityArtifact};
 use fyrr_core::mcp::{
-    FetchOutput, MCP_CONTRACT_VERSION, SearchOutput, ToolError, error_codes, tools_list,
+    AggregateOutput, FetchOutput, MCP_CONTRACT_VERSION, SearchOutput, ToolError, error_codes,
+    tools_list,
 };
 use fyrr_core::provider::{ProviderInfo, SDK_SERIES};
 use fyrr_core::publication::{
@@ -161,6 +162,14 @@ fn openapi() -> Value {
             Some(requests.subschema_for::<FetchRequest>()),
             answers.subschema_for::<FetchOutput>(),
         )},
+        "/v1/namespaces/{namespace}/aggregate": {"post": operation(
+            "reader",
+            "Aggregate the documents the key may read: count, sum, average, minimum and maximum, optionally per group",
+            "an API key with the `read` role, or an OIDC user",
+            "Error",
+            Some(requests.subschema_for::<AggregateRequest>()),
+            answers.subschema_for::<AggregateOutput>(),
+        )},
         "/v1/namespaces/{namespace}/documents": {"post": operation(
             "writer",
             "Upsert, patch and delete documents, all or none; or change the schema",
@@ -204,7 +213,7 @@ fn openapi() -> Value {
         "info": {
             "title": "fyrr HTTP API",
             "version": MCP_CONTRACT_VERSION.to_string(),
-            "description": "The /v1/ routes of the reader (query, fetch, report, list) and of \
+            "description": "The /v1/ routes of the reader (query, fetch, aggregate, report, list) and of \
                 the writer (documents, delete). The version is that of the MCP contract the \
                 query and fetch bodies follow.",
         },

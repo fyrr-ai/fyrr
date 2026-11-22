@@ -130,7 +130,7 @@ impl PreparedReader {
 
         let stage = Instant::now();
         let filter_counters = self.mirror.counters();
-        self.apply_filters(args).await?;
+        self.apply_filters(args.filter_tree().as_ref()).await?;
         let predicate = self.request_predicate()?;
         let lexical_predicate = Self::fts_requires_sql_prefilter(&self.dataset, &self.indexes)
             .then_some(predicate.as_str());

@@ -62,6 +62,12 @@ pub mod mcp {
     pub const MAX_CURSOR_BYTES: usize = 16 * 1024;
     pub const MAX_WINDOW_CONTEXT_CODEPOINTS: u32 = 65_536;
     pub const LIST_FILTERS_MAX_VALUES: usize = 64;
+    /// Aggregates one `aggregate` request computes.
+    pub const MAX_AGGREGATIONS: usize = 16;
+    /// Fields one `aggregate` request groups by.
+    pub const MAX_GROUP_BY_FIELDS: usize = 4;
+    /// Groups one `aggregate` answer holds: more, and the request fails.
+    pub const MAX_AGGREGATE_GROUPS: usize = 1_000;
     /// Hits each query keeps while the response budget still has tail hits to drop.
     pub const RESPONSE_MIN_HITS_PER_QUERY: usize = 4;
 }

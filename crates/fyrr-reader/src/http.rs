@@ -447,8 +447,8 @@ fn retry_after(mut response: Response) -> Response {
 const LIST_ROLES: &[ApiKeyRole] = &[ApiKeyRole::Admin, ApiKeyRole::List];
 
 /// The tool a JSON route runs, the roles an API key needs one of for it and the
-/// namespace the path names: `POST /v1/namespaces/{namespace}/query` and
-/// `.../fetch` need `read`, `GET` and `HEAD /v1/namespaces/{namespace}` and
+/// namespace the path names: `POST /v1/namespaces/{namespace}/query`,
+/// `.../fetch` and `.../aggregate` need `read`, `GET` and `HEAD /v1/namespaces/{namespace}` and
 /// `/v1/namespaces` need `admin` or `list`. `/mcp` needs `read` as well. A key
 /// without a role of a route gets 403 `forbidden`; `/readyz` and
 /// `/admin/refresh` take no API key.
@@ -475,6 +475,11 @@ fn json_tool(request: &Request) -> Option<(&'static str, &'static [ApiKeyRole], 
         (namespace, "fetch") => {
             Some(("fetch", &[ApiKeyRole::Read][..], Some(namespace.to_owned())))
         }
+        (namespace, "aggregate") => Some((
+            "aggregate",
+            &[ApiKeyRole::Read][..],
+            Some(namespace.to_owned()),
+        )),
         _ => None,
     }
 }
@@ -632,7 +637,11 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                     } else {
                         (None, None, None)
                     };
-                    let mut call = crate::serve::ToolCall::parse(name, arguments)?;
+                    let mut call = if name == "aggregate" {
+                        crate::serve::ToolCall::aggregate(arguments)?
+                    } else {
+                        crate::serve::ToolCall::parse(name, arguments)?
+                    };
                     if let crate::serve::ToolCall::Search(search) = &mut call {
                         (search.fields, search.fusion, search.rerank) = members;
                         if let Some(fields) = &search.fields {
@@ -1227,6 +1236,7 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     router = router
         .route("/v1/namespaces/{namespace}/query", post(tool_json))
         .route("/v1/namespaces/{namespace}/fetch", post(tool_json))
+        .route("/v1/namespaces/{namespace}/aggregate", post(tool_json))
         .route("/v1/namespaces/{namespace}", get(tool_json))
         .route("/v1/namespaces", get(list_namespaces));
     if h.operator_credential.is_some() {
