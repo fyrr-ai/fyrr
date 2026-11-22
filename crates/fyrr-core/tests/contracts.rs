@@ -82,7 +82,7 @@ fn a_manifest_and_a_policy_hold_only_valid_attribute_schemas() {
         ("_hidden", "int"),
         ("source_id", "int"),
         ("Bad", "int"),
-        ("a", "uuid"),
+        ("a", "decimal"),
     ] {
         let mut invalid = manifest.clone();
         invalid["attributes"] = json!({ name: kind });

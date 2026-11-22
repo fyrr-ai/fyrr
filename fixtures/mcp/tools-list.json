@@ -339,40 +339,21 @@
                     "type": "string"
                   },
                   "op": {
-                    "oneOf": [
-                      {
-                        "type": "string",
-                        "enum": [
-                          "eq",
-                          "ne",
-                          "in",
-                          "not_in",
-                          "lt",
-                          "lte",
-                          "gt",
-                          "gte"
-                        ]
-                      },
-                      {
-                        "type": "string",
-                        "const": "contains"
-                      },
-                      {
-                        "type": "string",
-                        "const": "not_contains"
-                      },
-                      {
-                        "type": "string",
-                        "const": "contains_any"
-                      },
-                      {
-                        "type": "string",
-                        "const": "contains_all"
-                      },
-                      {
-                        "type": "string",
-                        "const": "contains_none"
-                      }
+                    "type": "string",
+                    "enum": [
+                      "eq",
+                      "ne",
+                      "in",
+                      "not_in",
+                      "lt",
+                      "lte",
+                      "gt",
+                      "gte",
+                      "contains",
+                      "not_contains",
+                      "contains_any",
+                      "contains_all",
+                      "contains_none"
                     ]
                   },
                   "value": true
