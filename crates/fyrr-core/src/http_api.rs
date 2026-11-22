@@ -99,6 +99,9 @@ pub struct WriteRow {
 }
 
 /// The body of `POST /v1/namespaces/{namespace}/documents`.
+// shortcut: `WriteRequest` and `WriteRow` mirror the writer's streaming
+// `Payload`, and its test checks one direction only (what these types write,
+// `Payload` parses); share the types if `Payload` stops needing its row limit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WriteRequest {
@@ -146,7 +149,8 @@ pub struct DeleteNamespaceResponse {
     pub deleted: bool,
 }
 
-/// The body of every error answer.
+/// The body of an error answer of the reader and of the write route. The
+/// namespace deletion answers a SCIM error instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ErrorBody {
     /// A code that [`docs/http-api.md`](../docs/http-api.md) lists.

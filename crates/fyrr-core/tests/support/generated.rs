@@ -69,11 +69,13 @@ fn json_body(schema: impl serde::Serialize, description: &str) -> Value {
 }
 
 /// One operation of the HTTP API: a request body schema (if it has one) and
-/// the schema of its `200` answer. Every other answer is an error.
+/// the schema of its `200` answer. Every other answer is the error response
+/// `error`, a name in `components.responses`.
 fn operation(
     tag: &str,
     summary: &str,
     role: &str,
+    error: &str,
     request: Option<Schema>,
     answer: Schema,
 ) -> Value {
@@ -84,7 +86,7 @@ fn operation(
         "parameters": [{"$ref": "#/components/parameters/namespace"}],
         "responses": {
             "200": json_body(answer, "The answer."),
-            "default": {"$ref": "#/components/responses/Error"},
+            "default": {"$ref": format!("#/components/responses/{error}")},
         },
     });
     if let Some(schema) = request {
@@ -105,6 +107,7 @@ fn openapi() -> Value {
         "reader",
         "List the namespaces the key may act in",
         "an API key with the `admin` or `list` role",
+        "Error",
         None,
         answers.subschema_for::<NamespaceList>(),
     );
@@ -120,6 +123,7 @@ fn openapi() -> Value {
                 "reader",
                 "Report a namespace's schema, settings, size and index state",
                 "an API key with the `admin` or `list` role",
+                "Error",
                 None,
                 answers.subschema_for::<NamespaceReport>(),
             ),
@@ -127,6 +131,7 @@ fn openapi() -> Value {
                 "writer",
                 "Delete a namespace and its data",
                 "an API key with the `admin` role",
+                "ScimError",
                 Some(requests.subschema_for::<DeleteNamespaceRequest>()),
                 answers.subschema_for::<DeleteNamespaceResponse>(),
             ),
@@ -135,6 +140,7 @@ fn openapi() -> Value {
             "reader",
             "Search the namespace: the `search` tool as JSON",
             "an API key with the `read` role, or an OIDC user",
+            "Error",
             Some(requests.subschema_for::<QueryRequest>()),
             answers.subschema_for::<SearchOutput>(),
         )},
@@ -142,6 +148,7 @@ fn openapi() -> Value {
             "reader",
             "Fetch documents of the namespace: the `fetch` tool as JSON",
             "an API key with the `read` role, or an OIDC user",
+            "Error",
             Some(requests.subschema_for::<FetchRequest>()),
             answers.subschema_for::<FetchOutput>(),
         )},
@@ -149,6 +156,7 @@ fn openapi() -> Value {
             "writer",
             "Upsert, patch and delete documents, all or none",
             "an API key with the `write` role",
+            "Error",
             Some(requests.subschema_for::<WriteRequest>()),
             answers.subschema_for::<WriteResponse>(),
         )},
@@ -174,10 +182,28 @@ fn openapi() -> Value {
                 "name": "namespace", "in": "path", "required": true,
                 "schema": {"type": "string", "maxLength": 63, "pattern": "^[a-z0-9][a-z0-9-]*$"},
             }},
-            "responses": {"Error": json_body(
-                error,
-                "An error: an HTTP status and `{\"error\":\"<code>\"}`; docs/http-api.md lists the codes.",
-            )},
+            "responses": {
+                "Error": json_body(
+                    error,
+                    "An error: an HTTP status and `{\"error\":\"<code>\"}`; docs/http-api.md lists the codes.",
+                ),
+                // The writer's admin listener answers the namespace deletion
+                // with a SCIM error (RFC 7644, section 3.12), as it does its
+                // SCIM routes.
+                "ScimError": json_body(
+                    json!({
+                        "type": "object",
+                        "required": ["schemas", "status", "detail"],
+                        "properties": {
+                            "schemas": {"const": ["urn:ietf:params:scim:api:messages:2.0:Error"]},
+                            "status": {"type": "string", "description": "The HTTP status."},
+                            "detail": {"type": "string"},
+                            "scimType": {"type": "string"},
+                        },
+                    }),
+                    "A SCIM error (`application/scim+json`).",
+                ),
+            },
             "schemas": schemas,
         },
     })
