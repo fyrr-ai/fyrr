@@ -1644,7 +1644,8 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
     let identities = control_objects(&commit, "identity").await;
     assert!(identities >= 10, "{identities} identity generations");
     let grants = control_objects(&commit, "grants").await;
-    assert!(grants >= 10, "{grants} permission snapshots");
+    // Every round after the first carries a container grant.
+    assert!(grants >= 9, "{grants} permission snapshots");
     command(&commit, &["writer", "maintain"]);
     assert!(control_objects(&commit, "publications").await >= 10);
     // Only what precedes the first publication may go: every generation a
