@@ -246,7 +246,7 @@ The body is one JSON object (`application/json`, no `Content-Encoding`):
 | Key | Meaning |
 | --- | --- |
 | `upserts` | Rows. A row is an object with an `id` (string, its key in the namespace), its text under the key `text_attribute`, `readers` (`usr:<id>` or `grp:<id>`; ignored by an open namespace), optionally its `vector` (a list of numbers) and a value for any declared [attribute](tuning.md#namespaceattributes). A row replaces the document with that `id`, readers included. |
-| `patches` | Rows that change a document without replacing it. A row is an object with an `id`, and the attributes to write: a declared [attribute](tuning.md#namespaceattributes) (`null` clears it), `readers`, or the text under the key `text_attribute`. Everything a patch does not name stays as stored, the vector included, and nothing is embedded. A patch of an `id` that does not exist is skipped and never creates a document. |
+| `patches` | Rows that change a document without replacing it. A row is an object with an `id`, and the attributes to write: a declared [attribute](tuning.md#namespaceattributes) (`null` clears it), `readers`, or the text under the key `text_attribute` with its `vector`. Everything a patch does not name stays as stored, the vector included, and nothing is embedded. A patch of an `id` that does not exist when the request is published is skipped and never creates a document. |
 | `deletes` | IDs to delete. An ID that does not exist is a delete of nothing. |
 | `settings` | The [settings](tuning.md#namespace) of a namespace that does not exist yet, laid over the process defaults. For an existing namespace it must not change any: `409 namespace_settings_fixed`. |
 
@@ -276,14 +276,15 @@ most 16 KiB, and it is not chunked. The same `id` twice in one request is
 `400 duplicate_id`, across `upserts`, `patches` and `deletes`. The answer is
 `{"upserted":n,"deleted":m}`, the rows of the request. A request with `patches`
 adds `"patched":p`, the patches of documents that exist, and `"skipped":q`, the
-patches of those that do not; a document is counted as it is published when the
-request is prepared.
+patches of those that do not, as the committer applied the request in the order
+of publication.
 
-A patch of a vector (`vector`) is `400 vector_not_patchable`. A patch of the text is
-`400 text_not_patchable` while the namespace has an
-[`[embedding]`](configuration.md#embedding) provider, because the stored vector
-would no longer match it; a namespace without one takes the text and keeps its
-vector. A body over `writer.envelope_max_bytes` or with more rows than
+A patch changes the text only together with the `vector` of the new text, which
+replaces the stored one; nothing is embedded. A `vector` without the text is
+`400 vector_not_patchable`. A text without a `vector` would keep the embedding of
+the old text: it is `400 text_not_patchable` where an
+[`[embedding]`](configuration.md#embedding) provider is configured and
+`400 embedding_not_configured` where none is. A body over `writer.envelope_max_bytes` or with more rows than
 `writer.envelope_max_rows` is `413`; the body is counted as it arrives. A
 request holds one envelope: more than `writer.commit.group_max_rows` records
 or `group_max_bytes` is `413 request_too_large`.

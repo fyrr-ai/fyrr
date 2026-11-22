@@ -407,6 +407,23 @@ fn api_source() -> SourceConfig {
     }
 }
 
+/// The vector of a row, of the namespace's dimension.
+// A vector is stored as float32: the numbers of a JSON body narrow to it.
+#[allow(clippy::cast_possible_truncation)]
+fn vector_of(value: Value, config: &Config) -> Result<Vec<f32>, ApiError> {
+    match value {
+        Value::Array(list) => list
+            .iter()
+            .map(|n| n.as_f64().map(|n| n as f32))
+            .collect::<Option<Vec<_>>>()
+            .filter(|vector| {
+                fyrr_reader::embedding::validate(vector, config.embedding.dimensions).is_ok()
+            })
+            .ok_or(ApiError(400, "vector_invalid")),
+        _ => Err(ApiError(400, "vector_invalid")),
+    }
+}
+
 /// The readers of a row: a list of strings.
 fn reader_list(value: Value) -> Result<Vec<String>, ApiError> {
     match value {
@@ -423,8 +440,9 @@ fn reader_list(value: Value) -> Result<Vec<String>, ApiError> {
 }
 
 /// The checked patches of the request: what each row writes, by the id of its
-/// document. A patch keeps the vector, so it states none, and it states the
-/// text only where nothing embeds it. The ids join the ones `ids` holds.
+/// document. A patch keeps the stored vector. It may change the text only
+/// with the vector of that text, which it then replaces, so that the two never
+/// disagree. The ids join the ones `ids` holds.
 fn checked_patches(
     body: &mut Payload,
     config: &Config,
@@ -457,24 +475,45 @@ fn checked_patches(
             .map(reader_list)
             .transpose()?
             .filter(|_| !open)
-            .map(|raw| crate::apply::permission_readers(config, API_SOURCE_ID, &raw, &[]))
+            .map(|raw| -> Result<_, ApiError> {
+                // The check an upsert's readers get in its change.
+                fyrr_core::connector::check_readers("readers", &raw)
+                    .map_err(|_| ApiError(400, "document_invalid"))?;
+                Ok(crate::apply::permission_readers(
+                    config,
+                    API_SOURCE_ID,
+                    &raw,
+                    &[],
+                )?)
+            })
             .transpose()?;
-        if row.contains_key("vector") {
-            return Err(ApiError(400, "vector_not_patchable"));
-        }
+        let vector = row
+            .remove("vector")
+            .map(|value| vector_of(value, config))
+            .transpose()?;
         let text = match row.remove(text_key) {
             None => None,
-            Some(_) if !config.embedding.endpoint.is_empty() => {
-                return Err(ApiError(400, "text_not_patchable"));
-            }
             Some(Value::String(text)) if !text.is_empty() => Some(text),
             Some(_) => return Err(ApiError(400, "text_missing")),
         };
+        if text.as_ref().is_some_and(|t| t.contains('\0')) {
+            return Err(ApiError(400, "document_invalid"));
+        }
         if text
             .as_ref()
             .is_some_and(|t| t.len() > crate::chunk::MAX_BYTES)
         {
             return Err(ApiError(413, "text_too_large"));
+        }
+        // The vector goes with the text it stands for; a text without one would
+        // need embedding, which a patch does not do.
+        match (&text, &vector) {
+            (None, Some(_)) => return Err(ApiError(400, "vector_not_patchable")),
+            (Some(_), None) if config.embedding.endpoint.is_empty() => {
+                return Err(ApiError(400, "embedding_not_configured"));
+            }
+            (Some(_), None) => return Err(ApiError(400, "text_not_patchable")),
+            _ => {}
         }
         let mut schema = config.namespace.attributes.clone();
         for (name, value) in &row {
@@ -489,6 +528,7 @@ fn checked_patches(
             DocumentPatch {
                 readers,
                 text,
+                vector,
                 attributes: row,
             },
         ));
@@ -496,33 +536,26 @@ fn checked_patches(
     Ok(patches)
 }
 
-/// The patched ids whose document is published now.
-async fn existing_ids(
+/// How many of the `patches` the committer applied, which it does for each
+/// whose document existed in the order of publication: their records carry the
+/// revision of the envelope.
+async fn applied_patches(
     config: &Config,
     head: &fyrr_core::publication::ServingHead,
-    patches: &[(String, DocumentPatch)],
-) -> Result<std::collections::HashSet<String>, ApiError> {
-    let mut found = std::collections::HashSet::new();
-    if head.content.is_none() {
-        return Ok(found);
-    }
+    patches: &[String],
+    revision: &str,
+) -> Result<u64, ApiError> {
     let dataset = fyrr_reader::storage::pinned(config, head).await?;
-    let ids: Vec<_> = patches.iter().map(|(id, _)| id.clone()).collect();
-    for page in ids.chunks(256) {
-        let batch = dataset
-            .scan()
-            .project(&["root_id"])
-            .and_then(|scan| scan.filter(&crate::apply::rows_filter(API_SOURCE_ID, page)))
-            .map_err(|_| ApiError(503, "unavailable"))?
-            .try_into_batch()
+    let mut found = 0;
+    for page in patches.chunks(256) {
+        found += dataset
+            .count_rows(Some(format!(
+                "{} AND source_revision = {}",
+                crate::apply::rows_filter(API_SOURCE_ID, page),
+                fyrr_reader::storage::sql(revision)
+            )))
             .await
-            .map_err(|_| ApiError(503, "unavailable"))?;
-        found.extend(
-            crate::apply::strings(&batch, "root_id")?
-                .iter()
-                .flatten()
-                .map(str::to_owned),
-        );
+            .map_err(|_| ApiError(503, "unavailable"))? as u64;
     }
     Ok(found)
 }
@@ -530,8 +563,6 @@ async fn existing_ids(
 /// The checked rows of the request, against the schema, the text key and the
 /// vector dimension the namespace was created with. The rows are taken from
 /// `body`, not copied.
-// A vector is stored as float32: the numbers of a JSON body narrow to it.
-#[allow(clippy::cast_possible_truncation)]
 fn checked(
     body: &mut Payload,
     config: &Config,
@@ -575,20 +606,10 @@ fn checked(
             return Err(ApiError(413, "text_too_large"));
         }
         // The row's own vector, or the provider's embedding of its text.
-        let vector = match row.remove("vector") {
-            None => None,
-            Some(Value::Array(list)) => Some(
-                list.iter()
-                    .map(|n| n.as_f64().map(|n| n as f32))
-                    .collect::<Option<Vec<_>>>()
-                    .filter(|vector| {
-                        fyrr_reader::embedding::validate(vector, config.embedding.dimensions)
-                            .is_ok()
-                    })
-                    .ok_or(ApiError(400, "vector_invalid"))?,
-            ),
-            Some(_) => return Err(ApiError(400, "vector_invalid")),
-        };
+        let vector = row
+            .remove("vector")
+            .map(|value| vector_of(value, config))
+            .transpose()?;
         if vector.is_none() && config.embedding.endpoint.is_empty() {
             return Err(ApiError(400, "embedding_not_configured"));
         }
@@ -791,29 +812,11 @@ async fn execute(
     if upserted + deleted + patches.len() as u64 == 0 && requested.is_none() {
         return Err(ApiError(400, "empty_request"));
     }
-    // A patch of a document that is not published now is skipped and counted.
-    // shortcut: a document that only an unpublished request of another caller
-    // creates counts as missing; the committer skips a patch whose document is
-    // gone by then, so none is ever created. Count in the committer's answer
-    // if callers must know.
-    let mut answer = json!({"upserted": upserted, "deleted": deleted});
-    let patches = if !patches.is_empty() {
-        let found = match &existing {
-            Some((head, _)) => existing_ids(&config, head, &patches).await?,
-            None => std::collections::HashSet::new(),
-        };
-        let asked = patches.len() as u64;
-        let patches: Vec<_> = patches
-            .into_iter()
-            .filter(|(id, _)| found.contains(id))
-            .collect();
-        answer["patched"] = patches.len().into();
-        answer["skipped"] = (asked - patches.len() as u64).into();
-        patches
-    } else {
-        patches
-    };
+    // Every patch is in the envelope: the committer applies it, in the order
+    // of publication, to a document that exists then, and skips it otherwise.
+    let patch_ids: Vec<_> = patches.iter().map(|(id, _)| id.clone()).collect();
     let changes = changes(&config, rows, body.deletes.0, patches)?;
+    let mut answer = json!({"upserted": upserted, "deleted": deleted});
     let (head, served) = match existing {
         Some(existing) => existing,
         None => {
@@ -839,7 +842,7 @@ async fn execute(
         return Ok(answer);
     }
     let mut done = commits.done.subscribe();
-    let id = prepare(&config, &head, changes, attributes, slot).await?;
+    let (id, revision) = prepare(&config, &head, changes, attributes, slot).await?;
     let _waiting = commits.wait(&config.namespace.name);
     commits.requested.notify_one();
     let deadline = tokio::time::Instant::now() + ANSWER_DEADLINE;
@@ -855,6 +858,12 @@ async fn execute(
             }
             if applied.contains(&id) {
                 durable(&config).await?;
+                if !patch_ids.is_empty() {
+                    // What the committer did, counted in what it published.
+                    let patched = applied_patches(&config, &current, &patch_ids, &revision).await?;
+                    answer["patched"] = patched.into();
+                    answer["skipped"] = (patch_ids.len() as u64 - patched).into();
+                }
                 return Ok(answer);
             }
         }
@@ -869,24 +878,25 @@ async fn execute(
 }
 
 /// Writes the request's envelope under the source's cursor lease and returns
-/// its ID. The slot is released when the envelope is durable.
+/// its ID and the revision of its documents. The slot is released when the
+/// envelope is durable.
 async fn prepare(
     config: &Config,
     head: &fyrr_core::publication::ServingHead,
     changes: Vec<ContentChange>,
     attributes: Vec<ArrayRef>,
     slot: OwnedMutexGuard<()>,
-) -> Result<String, ApiError> {
+) -> Result<(String, String), ApiError> {
     let lease = CursorLease::acquire(config, API_SOURCE_ID, SyncKind::Content).await?;
     let renewal = lease.keepalive();
     let result = write_envelope(config, head, &lease, changes, attributes).await;
     let stopped = renewal.stop().await;
     let released = lease.release().await;
     drop(slot);
-    let id = result?;
+    let written = result?;
     stopped?;
     released?;
-    Ok(id)
+    Ok(written)
 }
 
 async fn write_envelope(
@@ -895,7 +905,7 @@ async fn write_envelope(
     lease: &CursorLease,
     mut changes: Vec<ContentChange>,
     attributes: Vec<ArrayRef>,
-) -> Result<String, ApiError> {
+) -> Result<(String, String), ApiError> {
     let (store, root) = fyrr_reader::storage::namespace_store(config)?;
     let mut state = lease.state().await?;
     // The namespace the request was checked against is the one it is written
@@ -999,5 +1009,5 @@ async fn write_envelope(
         attributes,
     )
     .await?;
-    Ok(id)
+    Ok((id, format!("rev-{sequence}")))
 }

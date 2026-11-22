@@ -1957,7 +1957,7 @@
         "tier": "full",
         "seconds": 40
       },
-      "full:fyrr:test:dense_path/write_api::identity_write_api_patches_the_text_where_nothing_embeds_it_on_storage": {
+      "full:fyrr:test:dense_path/write_api::identity_write_api_patches_the_text_with_its_vector_on_storage": {
         "tier": "full",
         "seconds": 40
       },

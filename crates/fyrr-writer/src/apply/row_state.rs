@@ -248,8 +248,8 @@ pub(crate) fn with_state(
     replace(&result, "readers", readers(permissions))
 }
 /// A one-row batch with the values of `patch` written over it: its revision,
-/// the text and the typed attributes the patch names. The vector and every
-/// other column stay as they are.
+/// the text with its vector, and the typed attributes the patch names. Every
+/// other column stays as it is.
 pub(crate) fn with_patch(
     batch: &RecordBatch,
     patch: &fyrr_core::envelope::DocumentPatch,
@@ -278,6 +278,18 @@ pub(crate) fn with_patch(
             "searchable_text",
             Arc::new(StringArray::from(vec![text.as_str()])),
         )?;
+        if let Some(vector) = &patch.vector {
+            batch = replace(
+                &batch,
+                "vector",
+                Arc::new(
+                    FixedSizeListArray::from_iter_primitive::<Float16Type, _, _>(
+                        [Some(vector.iter().map(|v| Some(half::f16::from_f32(*v))))],
+                        i32::try_from(vector.len()).map_err(|_| WriterError::ChangedRowsInvalid)?,
+                    ),
+                ),
+            )?;
+        }
         batch = replace(
             &batch,
             "metadata_json",

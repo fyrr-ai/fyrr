@@ -77,7 +77,7 @@ pub struct ContentPayload {
 }
 
 /// Replacement or delete intent for one document.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct EnvelopeDocument {
     pub root_id: String,
     pub intent: DocumentIntent,
@@ -96,8 +96,9 @@ pub struct EnvelopeDocument {
 }
 
 /// The values a patch writes into the stored records of a document. Every
-/// column it does not name stays as stored, the vector included.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// column it does not name stays as stored, the vector unless the patch brings
+/// one with the new text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct DocumentPatch {
     /// Hashed readers that replace the document's; `null` keeps them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,6 +106,10 @@ pub struct DocumentPatch {
     /// The new text of the record; `null` keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// The vector of the new text, which replaces the stored one; present
+    /// with `text` only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector: Option<Vec<f32>>,
     /// Attribute values by name; a `null` clears the attribute.
     pub attributes: serde_json::Map<String, serde_json::Value>,
 }
@@ -351,6 +356,13 @@ impl Contract for PreparedEnvelope {
                     }
                     if (document.intent == DocumentIntent::Patch) != document.patch.is_some() {
                         return Err("a patch, and only a patch, carries patch values".into());
+                    }
+                    if document
+                        .patch
+                        .as_ref()
+                        .is_some_and(|patch| patch.vector.is_some() != patch.text.is_some())
+                    {
+                        return Err("a patch carries a vector with its text, and only so".into());
                     }
                 }
                 SyncKind::Content

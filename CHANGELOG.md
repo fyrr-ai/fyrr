@@ -18,11 +18,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   the key may write, and the first request for a name creates it. See
   [HTTP write API](docs/http-api.md#write-documents).
 - The write API takes `patches`: rows that write some attributes, the readers
-  or, where nothing embeds the text, the text of an existing document. What a
-  patch does not name stays as stored, the vector included, and nothing is
-  embedded. A patch of a document that does not exist is skipped and counted in
-  the answer (`patched`, `skipped`). A patch of a `vector`, or of the text of a
-  namespace that embeds it, is refused. See
+  or the text, with its vector, of an existing document. What a patch does not
+  name stays as stored, the vector included, and nothing is embedded. A patch of
+  a document that does not exist is skipped and counted in the answer
+  (`patched`, `skipped`). A `vector` without the text, or a text without its
+  vector, is refused. See
   [HTTP write API](docs/http-api.md#write-documents).
 - A row of the write API may carry its own `vector`, and so may a section of a
   connector document (the optional `vector` column of the document-change

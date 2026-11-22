@@ -462,6 +462,11 @@ async fn identity_write_api_patches_a_document_and_keeps_what_it_does_not_name_o
             "attribute_type_mismatch",
         ),
         (json!({"id": "a1", "readers": "grp:x"}), "readers_invalid"),
+        (json!({"id": "a1", "readers": ["bob"]}), "document_invalid"),
+        (
+            json!({"id": "a1", "text": "red\0hat", "vector": vector(5, 1024)}),
+            "document_invalid",
+        ),
         (json!({"price": 1.0}), "id_missing"),
     ] {
         assert_eq!(
@@ -471,10 +476,11 @@ async fn identity_write_api_patches_a_document_and_keeps_what_it_does_not_name_o
     }
 }
 
-/// Where nothing embeds the text, a patch may write it, and the vector stays.
+/// A patch that changes the text brings the vector of the new text, and a
+/// process without an embedding provider cannot embed it for the patch.
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
-async fn identity_write_api_patches_the_text_where_nothing_embeds_it_on_storage() {
+async fn identity_write_api_patches_the_text_with_its_vector_on_storage() {
     use arrow_array::Array;
     let (config, root) = setup_on(Backend::Local);
     let text = std::fs::read_to_string(&config).unwrap();
@@ -507,12 +513,29 @@ async fn identity_write_api_patches_the_text_where_nothing_embeds_it_on_storage(
         (200, json!({"upserted": 1, "deleted": 0}))
     );
     let vector_before = stored(&config, "root_id = 'a'").await["vector"].to_data();
+    // A text without its vector would keep the embedding of the old text.
     assert_eq!(
         writer
             .post(
                 WRITE_KEY,
                 "dense-fixture",
                 &json!({"patches": [{"id": "a", "text": "alpha two"}]})
+            )
+            .await,
+        (400, json!({"error": "embedding_not_configured"}))
+    );
+    assert_eq!(
+        stored(&config, "root_id = 'a' AND searchable_text = 'alpha'")
+            .await
+            .num_rows(),
+        1
+    );
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"patches": [{"id": "a", "text": "alpha two", "vector": vector(1, 16)}]})
             )
             .await,
         (
@@ -522,7 +545,11 @@ async fn identity_write_api_patches_the_text_where_nothing_embeds_it_on_storage(
     );
     let one = stored(&config, "root_id = 'a' AND searchable_text = 'alpha two'").await;
     assert_eq!(one.num_rows(), 1);
-    assert_eq!(one["vector"].to_data(), vector_before);
+    assert_ne!(
+        one["vector"].to_data(),
+        vector_before,
+        "the vector went with the text"
+    );
 }
 
 /// One process writes to many namespaces at once: each is created by its

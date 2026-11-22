@@ -421,6 +421,17 @@
           ],
           "description": "The new text of the record; `null` keeps it."
         },
+        "vector": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number",
+            "format": "float"
+          },
+          "description": "The vector of the new text, which replaces the stored one; present\nwith `text` only."
+        },
         "attributes": {
           "type": "object",
           "additionalProperties": true,
@@ -430,7 +441,7 @@
       "required": [
         "attributes"
       ],
-      "description": "The values a patch writes into the stored records of a document. Every\ncolumn it does not name stays as stored, the vector included."
+      "description": "The values a patch writes into the stored records of a document. Every\ncolumn it does not name stays as stored, the vector unless the patch brings\none with the new text."
     },
     "PreparedFragment": {
       "type": "object",
