@@ -206,8 +206,11 @@ pub struct PublicationStats {
     pub rows: u64,
     /// Bytes of the data files of those rows, indexes and deletion files not counted.
     pub logical_bytes: u64,
-    /// The first content publication of the namespace, carried forward by every later one.
-    pub created_at: DateTime<Utc>,
+    /// When the namespace's first content publication was committed, carried
+    /// forward by every later one. Absent when the namespace was published
+    /// before 4.1: that time is not known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_published_at: Option<DateTime<Utc>>,
 }
 
 /// The envelope outcomes of a publication chain up to one manifest: an

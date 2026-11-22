@@ -534,16 +534,18 @@
           "minimum": 0,
           "description": "Bytes of the data files of those rows, indexes and deletion files not counted."
         },
-        "created_at": {
-          "type": "string",
+        "first_published_at": {
+          "type": [
+            "string",
+            "null"
+          ],
           "format": "date-time",
-          "description": "The first content publication of the namespace, carried forward by every later one."
+          "description": "When the namespace's first content publication was committed, carried\nforward by every later one. Absent when the namespace was published\nbefore 4.1: that time is not known."
         }
       },
       "required": [
         "rows",
-        "logical_bytes",
-        "created_at"
+        "logical_bytes"
       ],
       "description": "The size of a published version and when its namespace was first published."
     }

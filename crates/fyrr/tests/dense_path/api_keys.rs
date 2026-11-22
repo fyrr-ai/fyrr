@@ -880,7 +880,7 @@ async fn a_namespace_report_needs_the_admin_or_list_role() {
             assert_eq!(body["namespace"], *namespace);
             assert!(body["rows"].as_u64().unwrap() >= 4, "{body}");
             assert!(body["logical_bytes"].as_u64().unwrap() > 0, "{body}");
-            assert!(body["created_at"].is_string(), "{body}");
+            assert!(body["first_published_at"].is_string(), "{body}");
             assert!(body["last_write_at"].is_string(), "{body}");
             assert_eq!(body["schema"], json!({}));
             assert!(body["settings"]["embedding"]["model"].is_string(), "{body}");
@@ -913,6 +913,21 @@ async fn a_namespace_report_needs_the_admin_or_list_role() {
         .await
         .unwrap();
     assert_eq!(anonymous.status(), 401);
+    // HEAD is answered from the GET route and needs the same key.
+    let head = |token: Option<&str>| {
+        let request = reader.client.head(format!(
+            "{}/v1/namespaces/{}",
+            reader.base, deployment.namespace
+        ));
+        match token {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        }
+        .send()
+    };
+    assert_eq!(head(None).await.unwrap().status(), 401);
+    assert_eq!(head(Some(&reads.secret)).await.unwrap().status(), 403);
+    assert_eq!(head(Some(&admins.secret)).await.unwrap().status(), 200);
     let post = reader
         .client
         .post(format!(

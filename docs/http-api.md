@@ -103,11 +103,15 @@ namespace's published version, with no storage request of its own:
 | `namespace`, `publication_id` | The namespace and the content publication the answer describes. |
 | `schema` | The typed attributes of the version, name to type; `{}` when it has none. |
 | `settings` | The namespace's [settings](configuration.md), as its policy records them. |
-| `rows` | Live rows (a document is one or more rows). `null` for a version published before contract 4.1. |
-| `logical_bytes` | Bytes of the data files of those rows, without indexes. `null` as `rows`. |
-| `created_at` | When the namespace was first published. `null` as `rows`. |
+| `rows` | Approximate live rows (a document is one or more rows). `null` for a version published before contract 4.1. |
+| `logical_bytes` | Approximate bytes of the data files of those rows, without indexes. `null` as `rows`. |
+| `first_published_at` | When the namespace's first content publication was committed. `null` for a namespace published before contract 4.1: that time is not known. |
 | `last_write_at` | When the version was published. |
-| `unindexed` | `rows` and `logical_bytes` of the data that an index of the version does not cover yet; `0` and `0` when every index covers it. |
+| `unindexed` | `rows` and `logical_bytes` of the data that an index of the version does not cover yet. A reader serves a version only when every index covers all its data, so both are `0` for now. |
+
+The reader holds all of it for the namespace it has open, so the report reads
+nothing from storage; a request for a namespace that is not open yet pays its
+open first, like any first request (see above).
 
 `rows` and `logical_bytes` are as of the publication the reader serves, so
 they follow a write when the reader checks its version. The numbers are not

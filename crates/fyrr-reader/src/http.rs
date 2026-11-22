@@ -442,13 +442,14 @@ fn retry_after(mut response: Response) -> Response {
 }
 /// The tool a JSON route runs, the roles an API key needs one of for it and the
 /// namespace the path names: `POST /v1/namespaces/{namespace}/query` and
-/// `.../fetch` need `read`, `GET /v1/namespaces/{namespace}` needs `admin` or
+/// `.../fetch` need `read`, `GET` and `HEAD /v1/namespaces/{namespace}` need `admin` or
 /// `list`, because its numbers are not filtered by row permissions. `/mcp`
 /// needs `read` as well. A key without a role of a route gets 403 `forbidden`;
 /// `/readyz` and `/admin/refresh` take no API key.
 fn json_tool(request: &Request) -> Option<(&'static str, &'static [ApiKeyRole], String)> {
     let path = request.uri().path().strip_prefix("/v1/namespaces/")?;
-    if request.method() == Method::GET {
+    // axum answers HEAD from the GET route: it needs the same admission.
+    if matches!(*request.method(), Method::GET | Method::HEAD) {
         return (!path.contains('/')).then(|| {
             (
                 "report",
