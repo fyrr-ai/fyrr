@@ -53,6 +53,7 @@ pub(crate) fn namespace_settings(config: &Config) -> NamespaceSettings {
             .as_ref()
             .map(fyrr_core::config::RerankConfig::settings),
         attributes: namespace.attributes.clone(),
+        write_api: namespace.write_api.clone(),
     }
 }
 
@@ -73,8 +74,13 @@ async fn repeat_create(
 }
 
 pub async fn create(config: &Config) -> Result<()> {
+    create_with(config, namespace_settings(config)).await
+}
+
+/// `create` with the settings the caller chose, which a configuration file
+/// only supplies the defaults of.
+pub async fn create_with(config: &Config, settings: NamespaceSettings) -> Result<()> {
     let (store, root) = namespace_store(config)?;
-    let settings = namespace_settings(config);
     if let Some(head) = fyrr_reader::storage::optional_head(config).await? {
         return repeat_create(store.as_ref(), &root, &head, &settings).await;
     }

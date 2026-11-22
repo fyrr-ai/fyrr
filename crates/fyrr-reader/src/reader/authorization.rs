@@ -428,6 +428,19 @@ impl PreparedReader {
         let Some(principal) = identity.principals.iter().find(|p| p.key == key) else {
             return Err(AuthorizationUnavailable);
         };
+        // A namespace written open lets every admitted subject read every row of
+        // the API's source; the principal and its checks above stay.
+        if policy
+            .settings
+            .write_api
+            .as_ref()
+            .is_some_and(|api| api.open)
+        {
+            return Ok(format!(
+                "source_id = {}",
+                sql(fyrr_core::connector::API_SOURCE_ID)
+            ));
+        }
         if principal.tokens.len() > config.identity.max_tokens_per_user as usize {
             return Err(AuthorizationUnavailable);
         }

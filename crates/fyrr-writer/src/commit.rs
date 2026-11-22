@@ -34,7 +34,7 @@ pub(crate) use history::RestoreHistory;
 pub(crate) use namespace::configured_identity;
 pub(crate) use namespace::namespace_settings;
 pub(crate) use namespace::sources_allowed;
-pub use namespace::{create, delete};
+pub use namespace::{create, create_with, delete};
 pub(crate) use publication::publish;
 
 pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<PreparedEnvelope>> {
@@ -469,6 +469,17 @@ pub async fn receipt(config: &Config, envelope_id: &str) -> Result<CommitReceipt
     Err(WriterError::ReceiptUnpublished)
 }
 
+/// What one committer tick did.
+#[derive(Debug)]
+pub struct Tick {
+    /// It took the lease and published, rather than finding nothing to commit.
+    pub published: bool,
+    /// Set when the served version has work for `writer maintain`: the
+    /// configuration carrying the namespace's settings, as this tick judged
+    /// commits by, since maintenance fails on a configuration that differs.
+    pub maintenance: Option<Config>,
+}
+
 /// A service stops only between fully published groups, then releases its lease.
 /// The lease costs two writes of the head, so a namespace with nothing to
 /// commit is looked at by reads alone: the answer says whether the lease was
@@ -477,7 +488,7 @@ pub async fn commit_until_stopped(
     config: &Config,
     stage_timings: bool,
     stop: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<(CommitReceipt, bool)> {
+) -> Result<(CommitReceipt, Tick)> {
     let head = crate::lease::LeaseGuard::peek(config).await?;
     // Every tick takes the namespace's current settings: a long-running service
     // must not judge batches by the settings of a namespace it served before.
@@ -487,32 +498,49 @@ pub async fn commit_until_stopped(
     let config = &config
         .with_settings(&policy.settings)
         .ok_or(WriterError::ConfigurationInvalid)?;
-    if group::idle(config, &head, &policy).await? {
-        return Ok((served_receipt(config, &head).await?, false));
+    if config.namespace.write_api.is_some() && !config.sources.is_empty() {
+        return Err(WriterError::ApiNamespaceHasSources);
     }
-    let receipt = crate::lease::LeaseGuard::with(config, |lease| async move {
+    if group::idle(config, &head, &policy).await? {
+        let (receipt, maintenance_due) = served_receipt(config, &head).await?;
+        let tick = Tick {
+            published: false,
+            maintenance: maintenance_due.then(|| config.clone()),
+        };
+        return Ok((receipt, tick));
+    }
+    let (receipt, maintenance_due) = crate::lease::LeaseGuard::with(config, |lease| async move {
         drain(config, stage_timings, &lease, stop).await
     })
     .await?;
-    Ok((receipt, true))
+    let tick = Tick {
+        published: true,
+        maintenance: maintenance_due.then(|| config.clone()),
+    };
+    Ok((receipt, tick))
 }
 
-/// The receipt of the served publication; it fails as a commit does when the
-/// configuration no longer matches the namespace that publication built.
-async fn served_receipt(config: &Config, head: &ServingHead) -> Result<CommitReceipt> {
+/// The receipt of the served publication, and whether that manifest, which
+/// the receipt reads anyway, shows maintenance due. It fails as a commit does
+/// when the configuration no longer matches the namespace that publication
+/// built.
+async fn served_receipt(config: &Config, head: &ServingHead) -> Result<(CommitReceipt, bool)> {
     let (store, root) = namespace_store(config)?;
     let Some(manifest) = publication::previous_manifest(store.as_ref(), &root, head).await? else {
-        return Ok(CommitReceipt {
+        let receipt = CommitReceipt {
             lance_version: 0,
             publication_id: None,
             envelope_ids: Vec::new(),
-        });
+        };
+        return Ok((receipt, false));
     };
-    Ok(CommitReceipt {
+    let due = crate::maintenance::due(config, &manifest);
+    let receipt = CommitReceipt {
         lance_version: manifest.lance_version,
         publication_id: Some(manifest.publication_id),
         envelope_ids: manifest.envelope_ids,
-    })
+    };
+    Ok((receipt, due))
 }
 
 /// Maintenance services authorization at every boundary without draining content backlog.
@@ -601,7 +629,7 @@ async fn drain(
     stage_timings: bool,
     lease: &LeaseGuard,
     stop: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<CommitReceipt> {
+) -> Result<(CommitReceipt, bool)> {
     let mut next = None;
     loop {
         crate::envelopes::discard_purged(config, lease).await?;

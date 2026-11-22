@@ -92,9 +92,16 @@ impl<'a> ContentWork<'a> {
                 }
             }
         }
+        let mut created = false;
         for group in groups {
             if group.is_empty() {
                 continue;
+            }
+            if self.dataset.is_none() && config.namespace.write_api.is_some() {
+                // Rows of the API reach their typed columns through the commit
+                // path of any later publication: start from the empty table.
+                self.overwrite(Vec::new()).await?;
+                created = true;
             }
             if let Some(ds) = &mut self.dataset {
                 for envelope in group {
@@ -106,7 +113,6 @@ impl<'a> ContentWork<'a> {
                 continue;
             }
 
-            let uri = dataset_uri(config);
             let mut fragments = Vec::new();
             for envelope in group {
                 let EnvelopePayload::Content(payload) = &envelope.payload else {
@@ -126,59 +132,90 @@ impl<'a> ContentWork<'a> {
                 }
             }
             if !fragments.is_empty() {
-                lease.head().await?;
-                // A failed first bulk has no serving version to Restore. Overwrite
-                // from its latest version explicitly discards all unpublished rows.
-                let before = {
-                    match lance::dataset::builder::DatasetBuilder::from_uri(&uri)
-                        .with_storage_options(
-                            config
-                                .storage
-                                .object_store_options(&ProcessEnvironment)
-                                .map_err(|_| WriterError::StorageConfigurationInvalid)?
-                                .into_map()
-                                .into_iter()
-                                .collect(),
-                        )
-                        .load()
-                        .await
-                    {
-                        Ok(orphan) => orphan.latest_version_id().await?,
-                        Err(lance::Error::DatasetNotFound { .. }) => 0,
-                        Err(_) => return Err(WriterError::StorageUnavailable),
-                    }
-                };
-                self.lineage.base_version = before;
-                let operation = {
-                    Operation::Overwrite {
-                        fragments,
-                        schema: lance::datatypes::Schema::try_from(
-                            crate::prepare::schema(config.embedding.dimensions).as_ref(),
-                        )
-                        .map_err(|_| WriterError::PreparedSchemaInvalid)?,
-                        config_upsert_values: Some(HashMap::new()),
-                        initial_bases: None,
-                    }
-                };
-                let dataset = self.dataset.insert(
-                    native_step(
-                        lease,
-                        Dataset::commit(
-                            uri.as_str(),
-                            operation,
-                            Some(before),
-                            Some(store_params(config)?),
-                            None,
-                            Arc::new(lance::session::Session::default()),
-                            false,
-                        ),
-                        WriterError::StorageUnavailable,
-                    )
-                    .await?,
-                );
-                record_transaction(dataset, &mut self.lineage, before).await?;
+                self.overwrite(fragments).await?;
             }
         }
+        // Every request of a first publication was refused: nothing exists to
+        // publish, as when a first bulk is rejected.
+        if created
+            && let Some(ds) = &self.dataset
+            && ds.count_rows(None).await? == 0
+        {
+            self.dataset = None;
+        }
+        Ok(())
+    }
+
+    /// The table as a first publication creates it: `fragments` over the
+    /// built-in columns and, for a namespace written through the API, its
+    /// attribute columns.
+    async fn overwrite(&mut self, fragments: Vec<lance::table::format::Fragment>) -> Result<()> {
+        let config = self.config;
+        let lease = self.lease;
+        let uri = dataset_uri(config);
+        lease.head().await?;
+        // A failed first bulk has no serving version to Restore. Overwrite
+        // from its latest version explicitly discards all unpublished rows.
+        let before = {
+            match lance::dataset::builder::DatasetBuilder::from_uri(&uri)
+                .with_storage_options(
+                    config
+                        .storage
+                        .object_store_options(&ProcessEnvironment)
+                        .map_err(|_| WriterError::StorageConfigurationInvalid)?
+                        .into_map()
+                        .into_iter()
+                        .collect(),
+                )
+                .load()
+                .await
+            {
+                Ok(orphan) => orphan.latest_version_id().await?,
+                Err(lance::Error::DatasetNotFound { .. }) => 0,
+                Err(_) => return Err(WriterError::StorageUnavailable),
+            }
+        };
+        self.lineage.base_version = before;
+        let operation = {
+            Operation::Overwrite {
+                fragments,
+                schema: lance::datatypes::Schema::try_from(
+                    crate::prepare::schema_with(
+                        config.embedding.dimensions,
+                        config
+                            .namespace
+                            .write_api
+                            .iter()
+                            .flat_map(|_| &config.namespace.attributes)
+                            .map(|(name, kind)| {
+                                arrow_schema::Field::new(name, kind.arrow_type(), true)
+                            })
+                            .collect(),
+                    )
+                    .as_ref(),
+                )
+                .map_err(|_| WriterError::PreparedSchemaInvalid)?,
+                config_upsert_values: Some(HashMap::new()),
+                initial_bases: None,
+            }
+        };
+        let dataset = self.dataset.insert(
+            native_step(
+                lease,
+                Dataset::commit(
+                    uri.as_str(),
+                    operation,
+                    Some(before),
+                    Some(store_params(config)?),
+                    None,
+                    Arc::new(lance::session::Session::default()),
+                    false,
+                ),
+                WriterError::StorageUnavailable,
+            )
+            .await?,
+        );
+        record_transaction(dataset, &mut self.lineage, before).await?;
         Ok(())
     }
 

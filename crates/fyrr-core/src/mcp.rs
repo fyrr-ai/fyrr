@@ -76,7 +76,7 @@ impl JsonSchema for McpTime {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchInput {
-    /// Query text, 1-4096 UTF-8 bytes. Omit only for a filter-only listing with order=updated_at.
+    /// Query text, 1-4096 UTF-8 bytes. Omit only for a filter-only listing with order=updated_at or order_by.
     #[schemars(length(min = 1, max = 4096), extend("x-maxUtf8Bytes" = 4096))]
     pub query: Option<String>,
     /// Alternative to query: 2–16 queries, sharing filters and deadline.
@@ -98,6 +98,11 @@ pub struct SearchInput {
     pub output: Option<OutputMode>,
     /// Default relevance; updated_at sorts newest first, null dates last.
     pub order: Option<SearchOrder>,
+    /// Listing order without query or queries, instead of order: 1-4 keys, the first most significant.
+    /// Nulls sort first ascending and last descending; ties are broken by the document key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = MAX_ORDER_KEYS))]
+    pub order_by: Option<Vec<OrderKey>>,
     /// Source IDs.
     #[schemars(length(min = 1, max = 64), inner(length(min = 1, max = 512)))]
     pub sources: Option<Vec<String>>,
@@ -144,6 +149,24 @@ pub enum OutputMode {
 pub enum SearchOrder {
     Relevance,
     UpdatedAt,
+}
+
+/// A built-in field or a typed attribute of the namespace to sort by. The
+/// reader refuses a field it does not know or whose values are not a single
+/// scalar, such as the connector labels.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OrderKey {
+    #[schemars(length(min = 1, max = 128))]
+    pub field: String,
+    pub direction: SortDirection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SortDirection {
+    Asc,
+    Desc,
 }
 
 /// Equality (one value) or IN (several values) on one connector attribute.
@@ -913,6 +936,7 @@ impl SearchInput {
             && self.queries.as_ref().is_none_or(|queries| {
                 self.query.is_none()
                     && self.order != Some(SearchOrder::UpdatedAt)
+                    && self.order_by.is_none()
                     && (2..=MAX_QUERIES).contains(&queries.len())
                     && queries
                         .iter()
@@ -920,7 +944,14 @@ impl SearchInput {
             })
             && (self.query.is_some()
                 || self.queries.is_some()
-                || self.order == Some(SearchOrder::UpdatedAt))
+                || self.order == Some(SearchOrder::UpdatedAt)
+                || self.order_by.is_some())
+            && self.order_by.as_ref().is_none_or(|keys| {
+                self.query.is_none()
+                    && self.order.is_none()
+                    && (1..=MAX_ORDER_KEYS).contains(&keys.len())
+                    && keys.iter().all(|key| bounded_text(&key.field, 128))
+            })
             && (self.queries.is_none() || self.limit.is_none_or(|v| v <= MULTI_QUERY_LIMIT))
             && self.text_hits.is_none_or(|v| {
                 self.output != Some(OutputMode::Metadata) && v <= self.effective_limit()

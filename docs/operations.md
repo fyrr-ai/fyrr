@@ -48,10 +48,16 @@ Published versions are kept for `writer.purge_window` (one day) and at least
 maintain` runs in lease-held steps: it publishes pending permission changes,
 removes unreadable rows, compacts fragments, updates indexes and deletes
 retired versions, applied envelopes and the publication manifests and
-checkpoints that only older versions named. Run it often enough that deleted
-content physically leaves namespace storage within the purge window; until then it remains
-in retained old versions. Physical purge removes one revoked document root
-per bounded step and publishes that step before continuing. A large revoke
+checkpoints that only older versions named. `fyrr writer serve` runs it when
+the served version has an index with more than 64 segments, or, at most once
+per `writer.version_grace`, has fragments with deletions or has gone
+`writer.purge_window` minus `writer.version_grace` (or `writer.max_envelope_age`,
+if shorter) without it; `writer.serve.maintenance =
+false` turns that off. That cadence does not bound how long deleted content
+stays in retained old versions: run `writer maintain` often enough that it
+physically leaves namespace storage within the purge window. Physical purge
+removes one revoked document root per bounded step and publishes that step
+before continuing. A large revoke
 therefore needs multiple publications; permission changes are drained
 between steps.
 

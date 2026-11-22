@@ -44,12 +44,16 @@ pub struct NamespaceSettings {
     /// a nullable column with its own index from the first publication.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: AttributeSchema,
+    /// Present: the namespace is written through the HTTP API and takes no
+    /// connector source. Fixed with the rest of the settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_api: Option<crate::config::WriteApiSettings>,
 }
 
 impl NamespaceSettings {
     /// The bounds a configuration file is held to, so that no stored settings
     /// can fail a build or a search later.
-    fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         self.embedding.validate_profile()?;
         let namespace = NamespaceConfig {
             rerank: None,
@@ -63,6 +67,7 @@ impl NamespaceSettings {
             dense_rq_bits: self.dense_rq_bits,
             dense_partition_rows: self.dense_partition_rows,
             attributes: self.attributes.clone(),
+            write_api: self.write_api.clone(),
         };
         let mut issues = Vec::new();
         let mut issue = |path: &str, message: String| issues.push(format!("{path}: {message}"));
@@ -109,7 +114,7 @@ pub struct RetiredSource {
 
 impl Contract for PolicyArtifact {
     const NAME: &'static str = "policy-artifact";
-    const VERSION: SchemaVersion = SchemaVersion::new(3, 0);
+    const VERSION: SchemaVersion = SchemaVersion::new(3, 1);
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
         if self.retired_sources.len() > MAX_RETIRED_SOURCES {

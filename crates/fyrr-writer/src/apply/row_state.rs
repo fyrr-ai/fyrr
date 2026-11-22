@@ -29,6 +29,37 @@ pub struct PermissionState {
 /// itself. A row without it takes its document's readers.
 pub(crate) const OWN_READERS: &str = "_fyrr_own_readers";
 
+/// `rows`, one-row batches of the built-in columns, as one batch followed by the
+/// attribute columns of the staged rows (`taken`) that they were made from.
+pub(crate) fn with_typed(
+    rows: &[RecordBatch],
+    taken: &[u32],
+    staged: &RecordBatch,
+    attributes: &fyrr_core::attributes::AttributeSchema,
+) -> Result<RecordBatch> {
+    let all = arrow_select::concat::concat_batches(&rows[0].schema(), rows)
+        .map_err(|_| WriterError::ChangedRowsInvalid)?;
+    let indices = arrow_array::UInt32Array::from(taken.to_vec());
+    let mut fields = all.schema().fields().iter().cloned().collect::<Vec<_>>();
+    let mut arrays = all.columns().to_vec();
+    for (name, kind) in attributes {
+        let column = staged
+            .column_by_name(name)
+            .ok_or(WriterError::ChangedRowsInvalid)?;
+        arrays.push(
+            arrow_select::take::take(column.as_ref(), &indices, None)
+                .map_err(|_| WriterError::ChangedRowsInvalid)?,
+        );
+        fields.push(Arc::new(arrow_schema::Field::new(
+            name,
+            kind.arrow_type(),
+            true,
+        )));
+    }
+    RecordBatch::try_new(Arc::new(arrow_schema::Schema::new(fields)), arrays)
+        .map_err(|_| WriterError::ChangedRowsInvalid)
+}
+
 pub(crate) fn own_readers(batch: &RecordBatch, row: usize) -> Result<Option<Vec<String>>> {
     let metadata: serde_json::Value =
         serde_json::from_str(strings(batch, "metadata_json")?.value(row))

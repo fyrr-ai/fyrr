@@ -9,12 +9,23 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `fyrr writer serve` serves `POST /v1/namespaces/{namespace}/documents` when
+  `[namespace.write_api]` is set: upserts (rows with an `id`, a text and typed
+  attributes) and deletes by id, one request published whole or refused whole.
+  The answer is sent when the served head holds the request. An API key with
+  the `write` role authenticates it. A namespace takes its documents from
+  connectors or from the API, as it was created. See
+  [HTTP write API](docs/http-api.md#write-documents).
 - `search` takes one `filter` argument, a tree of `and`, `or`, `not` and
   comparisons (`eq`, `ne`, `in`, `not_in`, `lt`, `lte`, `gt`, `gte`) of
   at most 64 nodes and 16 levels over the built-in fields and the namespace's typed
   attributes, over MCP and the JSON HTTP API. Values are checked against the
   attribute types; the other filter arguments compile to the same tree. See
   [Filters](docs/mcp-tools.md#filters).
+- `search` without `query` takes `order_by`: up to 4 sort keys, each a built-in
+  field or a typed attribute, ascending or descending. Missing values sort
+  first ascending and last descending, and ties are broken by the document key.
+  See [Ordering a listing](docs/mcp-tools.md#ordering-a-listing).
 - The reader serves `search` and `fetch` as plain JSON at
   `POST /v1/namespaces/{namespace}/query` and `.../fetch`, next to MCP, with
   the same authentication, scheduler, deadline and rate limits. Errors map to

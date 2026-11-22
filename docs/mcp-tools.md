@@ -62,11 +62,12 @@ empty result is not an error. Scores only order results.
 
 | Argument | Meaning |
 | --- | --- |
-| `query` | 1–4096 characters. Omit it to list by `updated_at` (then `order` must be `updated_at`). |
+| `query` | 1–4096 characters. Omit it to list by `updated_at` (then `order` must be `updated_at`) or by `order_by`. |
 | `queries` | 2–16 query texts of 1–4096 characters each instead of `query`. `limit` is then per query; hits are interleaved by rank and query index and deduplicated across queries, up to `namespace.retrieval.max_documents`. |
 | `limit` | 1–75 documents, default 50. With `queries`, per query, default and maximum 20. |
 | `output` | `metadata`, `excerpt` (default) or `content`: what text each hit carries. |
 | `order` | `relevance` (default) or `updated_at`. |
+| `order_by` | 1–4 sort keys `{ field, direction }`, `direction` being `asc` or `desc`, the first key most significant. Only without `query` and `queries`, and not with `order`: it lists the documents that pass the filters. See [Ordering a listing](#ordering-a-listing). |
 | `text_hits` | 0–75, and at most the effective `limit`; a larger value, or any value with `output: "metadata"`, is `invalid_argument`. Only the top `text_hits` hits carry text, the rest metadata only. With `queries`, per query before deduplication. |
 | `excerpt_chars` | 1–1200: caps the excerpt length. |
 | `sources`, `source_types`, `projects`, `authors` | Exact-match filters, 1–64 values of 1–512 characters each. An unknown value gives an empty result. |
@@ -94,11 +95,13 @@ larger tree is `invalid_argument`. The arguments `sources`, `source_types`, `pro
 `authors`, `updated_after`, `updated_before`, `attributes` and `exclude` are
 compiled to the same tree and joined with `filter` by `and`.
 
+After publishing the [quickstart handbook](quickstart.md), this search returns
+`notes/backup.md`:
+
 ```json
 {"query": "backup", "filter": {"and": [
-  {"field": "priority", "op": "gte", "value": 3},
-  {"or": [{"field": "project", "op": "eq", "value": "ops"},
-          {"not": {"field": "reviewed", "op": "eq", "value": null}}]}
+  {"field": "source_id", "op": "eq", "value": "notes"},
+  {"not": {"field": "root_id", "op": "eq", "value": "deploys.md"}}
 ]}}
 ```
 
@@ -136,6 +139,21 @@ How a filter runs depends on its shape:
   may read.
 - `not` is answered from the index of the comparison inside it, and is a scan
   when that is not indexed.
+
+### Ordering a listing
+
+`order_by` sorts a listing by built-in fields (`source_id`, `root_id`,
+`source_type`, `project`, `author`, `updated_at`) and by the typed attributes
+the namespace declares, each ascending or descending. Missing values sort first
+ascending and last descending. Documents that tie on every key are ordered by
+`source_id` and `root_id`, so the order is total. A field the namespace does not
+declare, the connector labels (`attributes`) and any other field that is not a
+single scalar are `invalid_argument`. The listing is still limited to what the
+caller may read and to the documents that pass the filters.
+
+```json
+{"order_by": [{"field": "priority", "direction": "desc"}, {"field": "updated_at", "direction": "desc"}], "limit": 10}
+```
 
 ## `fetch`
 

@@ -29,6 +29,41 @@ use std::collections::{BTreeMap, BTreeSet};
 // Bound catalog-wide index opens; merge half the budget to amortize each consolidation.
 const INDEX_SEGMENT_LIMIT: usize = 64;
 
+/// Whether `maintain` has work, judged from the served manifest alone, so that
+/// an idle `writer serve` tick asks storage for nothing more. An index with
+/// more segments than the limit is due at once. Everything else waits for
+/// `writer.version_grace` since the last maintenance, so that steady upserts,
+/// which leave a deletion in a fragment each, or a short `max_envelope_age` do
+/// not run it on every publication: then a fragment with deletions is due, and
+/// so is the span reaching the window after which a version is purgeable or an
+/// applied envelope is old. A namespace never maintained is due. `maintain`
+/// ends by recording its completion, which restarts both spans.
+pub(crate) fn due(config: &Config, manifest: &ContentManifest) -> bool {
+    let writer = &config.writer;
+    let grace = writer.version_grace.as_duration();
+    let window = writer
+        .purge_window
+        .as_duration()
+        .saturating_sub(grace)
+        .min(writer.max_envelope_age.as_duration());
+    let mut segments = BTreeMap::new();
+    for index in &manifest.indexes {
+        *segments.entry(&index.name).or_insert(0usize) += 1;
+    }
+    if segments.values().any(|&count| count > INDEX_SEGMENT_LIMIT) {
+        return true;
+    }
+    let deletions = manifest
+        .files
+        .iter()
+        .any(|file| file.path.starts_with("_deletions/"));
+    manifest.maintenance_completed_at.is_none_or(|at| {
+        (fyrr_core::clock::now() - at)
+            .to_std()
+            .is_ok_and(|age| age >= grace && (deletions || age >= window))
+    })
+}
+
 pub(crate) fn lineage(lease: &LeaseGuard, head: &ServingHead) -> CommitLineage {
     CommitLineage {
         holder: lease.holder().holder.clone(),
