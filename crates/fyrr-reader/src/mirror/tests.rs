@@ -1187,7 +1187,11 @@ async fn index_ranges_fetch_only_the_pages_they_lack() {
     let f = PagedFixture::at("pages-index", 1 << 20, "_indices/u/index.idx").await;
     let expected = PagedFixture::bytes(0);
     assert_eq!(f.store.head(&f.path).await.unwrap().size, PAGED_SIZE as u64);
-    assert_eq!(f.mirror.totals().requests, 0, "a pinned head needs no request");
+    assert_eq!(
+        f.mirror.totals().requests,
+        0,
+        "a pinned head needs no request"
+    );
     assert_eq!(
         f.read(10_000..10_100).await.unwrap(),
         expected[10_000..10_100]
