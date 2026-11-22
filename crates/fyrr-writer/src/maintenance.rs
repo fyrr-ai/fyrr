@@ -31,13 +31,13 @@ const INDEX_SEGMENT_LIMIT: usize = 64;
 
 /// Whether `maintain` has work, judged from the served manifest alone, so that
 /// an idle `writer serve` tick asks storage for nothing more. An index with
-/// more segments than the limit is due at once. A fragment with deletions,
-/// which every replaced document leaves, is due once `writer.version_grace` has
-/// passed since the last maintenance, so steady upserts do not run it on every
-/// publication. The span since the last maintenance reaching the window after
-/// which a version is purgeable or an applied envelope is old is due too. A
-/// namespace never maintained is due. `maintain` ends by recording its
-/// completion, which restarts both spans.
+/// more segments than the limit is due at once. Everything else waits for
+/// `writer.version_grace` since the last maintenance, so that steady upserts,
+/// which leave a deletion in a fragment each, or a short `max_envelope_age` do
+/// not run it on every publication: then a fragment with deletions is due, and
+/// so is the span reaching the window after which a version is purgeable or an
+/// applied envelope is old. A namespace never maintained is due. `maintain`
+/// ends by recording its completion, which restarts both spans.
 pub(crate) fn due(config: &Config, manifest: &ContentManifest) -> bool {
     let writer = &config.writer;
     let grace = writer.version_grace.as_duration();
@@ -58,9 +58,9 @@ pub(crate) fn due(config: &Config, manifest: &ContentManifest) -> bool {
         .iter()
         .any(|file| file.path.starts_with("_deletions/"));
     manifest.maintenance_completed_at.is_none_or(|at| {
-        (fyrr_core::clock::now() - at).to_std().is_ok_and(|age| {
-            age >= window || (deletions && age >= grace)
-        })
+        (fyrr_core::clock::now() - at)
+            .to_std()
+            .is_ok_and(|age| age >= grace && (deletions || age >= window))
     })
 }
 

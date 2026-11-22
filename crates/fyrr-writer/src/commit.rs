@@ -474,8 +474,10 @@ pub async fn receipt(config: &Config, envelope_id: &str) -> Result<CommitReceipt
 pub struct Tick {
     /// It took the lease and published, rather than finding nothing to commit.
     pub published: bool,
-    /// The served version has work for `writer maintain`.
-    pub maintenance_due: bool,
+    /// Set when the served version has work for `writer maintain`: the
+    /// configuration carrying the namespace's settings, as this tick judged
+    /// commits by, since maintenance fails on a configuration that differs.
+    pub maintenance: Option<Config>,
 }
 
 /// A service stops only between fully published groups, then releases its lease.
@@ -500,7 +502,7 @@ pub async fn commit_until_stopped(
         let (receipt, maintenance_due) = served_receipt(config, &head).await?;
         let tick = Tick {
             published: false,
-            maintenance_due,
+            maintenance: maintenance_due.then(|| config.clone()),
         };
         return Ok((receipt, tick));
     }
@@ -510,7 +512,7 @@ pub async fn commit_until_stopped(
     .await?;
     let tick = Tick {
         published: true,
-        maintenance_due,
+        maintenance: maintenance_due.then(|| config.clone()),
     };
     Ok((receipt, tick))
 }
