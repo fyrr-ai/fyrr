@@ -83,6 +83,11 @@ export const navigation = [
         "A controlled check of reader memory and retrieval behavior."
       ],
       [
+        "investigations/write-latency.md",
+        "Write latency investigation",
+        "How long a write takes to be answered and to be found by a strong read."
+      ],
+      [
         "reader-writer.md",
         "Reader and writer",
         "Two crews, two sets of limits."
