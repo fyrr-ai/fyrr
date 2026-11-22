@@ -454,6 +454,7 @@ pub async fn receipt(config: &Config, envelope_id: &str) -> Result<CommitReceipt
 }
 
 /// What one committer tick did.
+#[derive(Debug)]
 pub struct Tick {
     /// It took the lease and published, rather than finding nothing to commit.
     pub published: bool,

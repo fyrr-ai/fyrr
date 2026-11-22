@@ -230,7 +230,8 @@ impl Drop for Service {
 
 /// Publications made before the writer service starts. Work that grows with
 /// the history shows as storage requests that grow with this number.
-/// They and the namespace's first publication form a history of five.
+/// They, the namespace's first publication and the one `writer maintain`
+/// makes form a history of six.
 const PUBLICATIONS: usize = 4;
 /// Seconds after the service settled that it is watched for sync workers:
 /// past the minute after the last worker ended, when one used to be started
@@ -285,6 +286,9 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
         sync_texts(&config, &root, &shown);
         success(&config, &["writer", "commit"]);
     }
+    // The service maintains a namespace that was never maintained, which is not
+    // idle; it is measured once that is done.
+    success(&config, &["writer", "maintain"]);
 
     // Only the service runs behind the observer.
     let seen = Seen::default();
@@ -453,7 +457,11 @@ async fn a_writer_service_maintains_the_namespace_it_serves() {
         );
     std::fs::write(&config, &text).unwrap();
     success(&config, &["writer", "namespace", "create"]);
-    let mut texts = vec![("0.txt".to_owned(), "ledger entry 0".to_owned())];
+    // Two documents in one fragment: replacing one leaves a deletion in it.
+    let mut texts = vec![
+        ("0.txt".to_owned(), "ledger entry 0".to_owned()),
+        ("1.txt".to_owned(), "ledger entry 1".to_owned()),
+    ];
     let sync = |texts: &[(String, String)]| {
         let borrowed: Vec<_> = texts
             .iter()
@@ -508,7 +516,7 @@ async fn a_writer_service_maintains_the_namespace_it_serves() {
         "{:?}",
         manifest.files
     );
-    for i in 1..=SEGMENT_CAP + 2 {
+    for i in 2..SEGMENT_CAP + 4 {
         let before = events("published");
         texts.push((format!("{i}.txt"), format!("ledger entry {i}")));
         sync(&texts);
@@ -542,10 +550,11 @@ async fn a_writer_service_maintains_the_namespace_it_serves() {
     .unwrap();
     let fragments = dataset.manifest().fragments.len();
     eprintln!("segments {segments:?}, fragments {fragments}");
+    // Each commit adds a fragment per source; unmaintained they would all remain.
+    let commits = SEGMENT_CAP + 2;
     assert!(
-        fragments < SEGMENT_CAP,
-        "{fragments} fragments after {} commits",
-        SEGMENT_CAP + 2
+        fragments < 2 * commits,
+        "{fragments} fragments after {commits} commits"
     );
     success(&config, &["writer", "verify"]);
     std::fs::remove_dir_all(root).unwrap();
