@@ -140,6 +140,12 @@ fn own_mirrors(configured: std::path::PathBuf) -> Result<(std::path::PathBuf, st
     let mut root = configured.into_os_string();
     root.push(".paths");
     let root = std::path::PathBuf::from(root);
+    MirrorStore::private_directory(&root).map_err(|_| StorageUnavailable)?;
+    // Held while a directory is made and locked, so that no sweep finds it
+    // between the two. It is released when `sweep` goes.
+    let sweep = MirrorStore::private_file(&root.join("sweep.lock"), true)
+        .map_err(|_| StorageUnavailable)?;
+    sweep.lock().map_err(|_| StorageUnavailable)?;
     let nanos = fyrr_core::clock::now().timestamp_nanos_opt().unwrap_or(0);
     let own = root.join(format!("{}-{nanos}", std::process::id()));
     MirrorStore::private_directory(&own).map_err(|_| StorageUnavailable)?;
@@ -151,13 +157,23 @@ fn own_mirrors(configured: std::path::PathBuf) -> Result<(std::path::PathBuf, st
         .flatten()
         .filter_map(std::result::Result::ok)
     {
-        // A directory without a lock may be one that a process is creating.
-        if let Ok(other) = MirrorStore::private_file(&entry.path().join("owner.lock"), false)
+        let name = entry.file_name();
+        let is_owner_directory = name.to_str().is_some_and(|name| {
+            name.split_once('-').is_some_and(|(pid, nanos)| {
+                [pid, nanos]
+                    .iter()
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+            })
+        }) && std::fs::symlink_metadata(entry.path())
+            .is_ok_and(|meta| meta.is_dir());
+        if is_owner_directory
+            && let Ok(other) = MirrorStore::private_file(&entry.path().join("owner.lock"), false)
             && other.try_lock().is_ok()
         {
             let _ = std::fs::remove_dir_all(entry.path());
         }
     }
+    drop(sweep);
     Ok((own, lock))
 }
 /// Open namespaces, least recently used first. Each has one place that

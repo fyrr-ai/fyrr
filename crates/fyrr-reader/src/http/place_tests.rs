@@ -62,9 +62,16 @@ fn a_process_owns_a_directory_for_the_mirrors_of_path_namespaces() {
     std::fs::create_dir_all(second.join("path-0")).unwrap();
     // A new owner removes the directory of one that ended, not of a live one.
     drop(first_lock);
-    let (_, third_lock) = own_mirrors(configured).unwrap();
+    let (_, third_lock) = own_mirrors(configured.clone()).unwrap();
     assert!(!first.exists());
     assert!(second.join("path-0").exists());
-    drop((second_lock, third_lock));
+    // Only directories of owners are swept: not a symlink, not other files.
+    let target = root.join("target");
+    std::fs::create_dir_all(target.join("path-0")).unwrap();
+    crate::mirror::MirrorStore::private_file(&target.join("owner.lock"), true).unwrap();
+    std::os::unix::fs::symlink(&target, root.join("1-2")).unwrap();
+    let (_, fourth_lock) = own_mirrors(configured).unwrap();
+    assert!(target.join("path-0").exists());
+    drop((second_lock, third_lock, fourth_lock));
     std::fs::remove_dir_all(&root).unwrap();
 }
