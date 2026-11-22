@@ -288,16 +288,21 @@ impl CachedAdmission {
 pub(crate) struct AuthorizationCache {
     entries: std::collections::VecDeque<(AuthorizationCacheKey, Arc<CachedAdmission>)>,
     budget: Arc<tokio::sync::Semaphore>,
+    max_bytes: usize,
 }
 impl Default for AuthorizationCache {
     fn default() -> Self {
-        Self {
-            entries: Default::default(),
-            budget: Arc::new(tokio::sync::Semaphore::new(AUTHORIZATION_CACHE_MAX_BYTES)),
-        }
+        Self::with_max_bytes(AUTHORIZATION_CACHE_MAX_BYTES)
     }
 }
 impl AuthorizationCache {
+    pub(crate) fn with_max_bytes(max_bytes: usize) -> Self {
+        Self {
+            entries: Default::default(),
+            budget: Arc::new(tokio::sync::Semaphore::new(max_bytes)),
+            max_bytes,
+        }
+    }
     pub(crate) fn retain_content(&mut self, version: u64) {
         self.entries.retain(|(key, _)| key.content == version);
         self.entries.shrink_to_fit();
@@ -317,7 +322,7 @@ impl AuthorizationCache {
         incoming: usize,
         cap: usize,
     ) -> Option<Arc<tokio::sync::OwnedSemaphorePermit>> {
-        if cap == 0 || incoming > AUTHORIZATION_CACHE_MAX_BYTES {
+        if cap == 0 || incoming > self.max_bytes {
             return None;
         }
         self.entries.retain(|(k, _)| k != key);
@@ -342,13 +347,13 @@ impl AuthorizationCache {
             .iter()
             .map(|(k, e)| k.memory_bound() + e.estimated_private_bytes())
             .sum::<usize>();
-        let accounted = AUTHORIZATION_CACHE_MAX_BYTES - self.budget.available_permits();
+        let accounted = self.max_bytes - self.budget.available_permits();
         // Fixed numeric operator metrics; no identity labels.
         crate::telemetry::emit(format_args!(
             "authorization_cache subjects={} estimated_private_bytes={estimated} \
                 accounted_bytes={accounted} capacity_subjects={cap} capacity_bytes={}",
             self.entries.len(),
-            AUTHORIZATION_CACHE_MAX_BYTES
+            self.max_bytes
         ));
     }
 }

@@ -23,17 +23,23 @@
 `<storage root>/namespaces/`, not only `namespace.name`. The reader opens it
 on the first request, with the settings it is published with, and keeps it
 open for later ones. It keeps at most 8 namespaces open besides the
-configured one and closes the one used least recently when another needs the
-place; a request for a closed one opens it again. All of them share the
-reader's `reader.memory_max_bytes`. `/mcp`, `/readyz` and `/admin/refresh`
-keep serving the configured namespace alone. `list_filters` has no JSON route.
+configured one. When another needs the place it closes the one used least
+recently that is serving no request; if every one is, the request answers
+`503 busy`. A request for a closed one opens it again. The 8 share the
+reader's `reader.memory_max_bytes` with the configured namespace, and each gets
+an eighth of `reader.mirror_max_bytes` and of the 128 MiB subject cache the
+configured namespace has, so together they add one more mirror and cache
+budget of the configured size. `/mcp`, `/readyz` and `/admin/refresh` keep
+serving the configured namespace alone. `list_filters` has no JSON route.
 
 Both routes, like `/mcp`, need the `read` role of an
 [API key](identity.md#identityapi_keys); users signed in through OIDC hold
-`read` only. Callers are admitted per namespace: an API key reads where its
-`namespace_prefix` allows and where the identity of that namespace binds it
-(declare the key in the configuration of every namespace where it reads), and
-an OIDC user where that identity binds the user. A key without the role, or
+`read` only. Other namespaces than the configured one are for API keys: an OIDC
+user reads the configured namespace through the path and answers `503
+authorization_unavailable` for any other. An API key opens a namespace where
+its role and `namespace_prefix` in the published keys allow it, and reads there
+what that namespace's identity binds it to (declare the key in the
+configuration of every namespace where it reads). A key without the role, or
 limited by `namespace_prefix` to other namespaces, answers `403 forbidden`.
 
 ```sh
@@ -52,17 +58,19 @@ is cancelled like a cancelled MCP call.
 
 A request is checked in this order: `Host` and `Origin`, the
 [limits](#limits), the bearer token, the role and `namespace_prefix` of an
-API key, the shape of the namespace name, the namespace, the caller's rate,
-the arguments, then the scheduler and the permission checks that every
+API key, the caller's rate (counted by the key's or the user's own ID, not per
+namespace), the shape of the namespace name, the namespace, the arguments, then the scheduler and the permission checks that every
 tool call passes ([how](architecture.md#authorization)). Nothing of the
-namespace is read before the key's role and prefix have admitted the
-caller, so a caller that may not read it is answered alike whether it exists
-or not. `deadline_ms` counts from arrival, as for MCP.
+namespace is read, and none is opened, before the key's role and prefix and
+the caller's rate have admitted the caller, so a caller that may not read it
+is answered alike whether it exists or not. `deadline_ms` counts from arrival,
+as for MCP.
 
-A namespace that does not exist is answered as one that does not bind the
-caller: `401 unauthorized` to an API key and `503 authorization_unavailable`
-to an OIDC user. Finding that out costs one read of `head.json`; nothing is
-kept for the name. A name that is not a namespace name (lowercase letters,
+A namespace that does not exist, or has no content yet, is answered as one
+whose identity does not bind the caller: `401 unauthorized` to an API key and
+`503 authorization_unavailable` to an OIDC user. Finding that out costs one
+read of `head.json`; nothing is kept for the name. A key whose prefix allows a
+namespace can tell by the time the answer takes whether it exists. A name that is not a namespace name (lowercase letters,
 digits and `-`, at most 63 characters, not starting with `-`) answers `404
 invalid_argument`.
 

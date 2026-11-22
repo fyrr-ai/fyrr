@@ -186,6 +186,26 @@ impl<T: Contract + Clone + Send + Sync + 'static> HeadCache<T> {
             _ => outcome,
         }
     }
+    /// The held copy while it is younger than two intervals, and never a read
+    /// of storage: the version check's loop is what keeps it, so a request with
+    /// no young copy is refused, as a failed read would. Test suites that ask
+    /// for a read at every check get one.
+    pub(crate) async fn held(
+        &self,
+        store: &dyn ObjectStore,
+        root: &Path,
+    ) -> Result<T, StorageError> {
+        if self.max_age.is_zero() {
+            return read_contract(store, &root.clone().join(self.file)).await;
+        }
+        let state = crate::sync::lock(&self.state);
+        state
+            .held
+            .as_ref()
+            .filter(|held| self.young(held))
+            .map(|held| held.head.clone())
+            .ok_or(StorageError::StorageUnavailable)
+    }
     /// Reads the head from storage and holds it for the checks of requests.
     /// A version check, a refresh, SIGHUP and the opening of a generation
     /// read here, so requests never see an older head than they did. A

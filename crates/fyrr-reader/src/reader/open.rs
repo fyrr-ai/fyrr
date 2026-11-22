@@ -2,11 +2,21 @@ use super::*;
 
 impl PreparedReader {
     pub async fn open(config: &Config) -> Result<Self> {
-        Self::open_in(config, PreparationReservation::pool(config)?).await
+        let budget = PreparationReservation::pool(config)?;
+        Self::open_in(config, budget, AUTHORIZATION_CACHE_MAX_BYTES).await
     }
-    /// Opens a namespace inside the memory envelope of a reader that is already running.
-    pub(crate) async fn open_in(config: &Config, budget: MemoryPool) -> Result<Self> {
-        let reader = Self::open_shared(config, None, budget).await?;
+    /// Opens a namespace inside the memory envelope of a reader that is already
+    /// running, with `authorization_bytes` for its subject cache.
+    pub(crate) async fn open_in(
+        config: &Config,
+        budget: MemoryPool,
+        authorization_bytes: usize,
+    ) -> Result<Self> {
+        let mut reader = Self::open_shared(config, None, budget).await?;
+        // Nothing has used the cache yet: an HTTP reader builds no admission at open.
+        reader.admission_cache = Arc::new(std::sync::Mutex::new(
+            AuthorizationCache::with_max_bytes(authorization_bytes),
+        ));
         reader.report_cache_degradation(false);
         Ok(reader)
     }

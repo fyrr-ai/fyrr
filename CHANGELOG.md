@@ -17,9 +17,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 - The JSON routes serve the namespace the request path names, not only
   `namespace.name`: the reader opens it on its first request, after the
   caller's API key role and `namespace_prefix` have admitted it, and keeps up
-  to 8 such namespaces open. A namespace that does not exist costs one read of
-  its head and is answered as one that does not bind the caller (previously
-  `404`). `/mcp` still serves the configured namespace. See
+  to 8 such namespaces open. OIDC users read the configured namespace only. A
+  namespace that does not exist costs one read of its head and is answered as
+  one that does not bind the caller (previously `404`). `/mcp` still serves the
+  configured namespace. See
   [HTTP JSON API](docs/http-api.md).
 - The Jira connector indexes the custom fields listed in the new
   `scope.fields` (rich text, string or number values) as `field` sections

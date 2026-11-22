@@ -229,7 +229,8 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
         .replace("# fyrr-test-head-check = every", "")
         .replace("[reader]", "[reader]\nversion_check_interval = '1s'");
     let text = format!(
-        "{text}\n[[identity.api_keys]]\nname='budget'\nkey={{env='FYRR_BUDGET_KEY'}}\nreaders=['usr:budget']\n"
+        "{text}\n[[identity.api_keys]]\nname='budget'\nkey={{env='FYRR_BUDGET_KEY'}}\nreaders=['usr:budget']\n\
+         [[identity.api_keys]]\nname='outside'\nkey={{env='FYRR_BUDGET_OUTSIDE'}}\nreaders=['usr:out']\nnamespace_prefix='zz'\n"
     );
     std::fs::write(&config, &text).unwrap();
     let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
@@ -240,6 +241,7 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
     let keys = super::coordination::host_command(&config)
         .args(["writer", "keys"])
         .env("FYRR_BUDGET_KEY", format!("fyrr_key_{:064}", 6))
+        .env("FYRR_BUDGET_OUTSIDE", format!("fyrr_key_{:064}", 8))
         .output()
         .unwrap();
     assert!(keys.status.success(), "{}", report(&keys));
@@ -300,11 +302,11 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
     // A namespace that does not exist costs one read of its head and nothing
     // else; one that does opens within the budget of any namespace. Reads of
     // the published keys belong to the version checks, so they are set apart.
-    let post = |namespace: String| {
+    let post_as = |key: usize, namespace: String| {
         reader
             .client
             .post(format!("{}/v1/namespaces/{namespace}/query", reader.base))
-            .bearer_auth(format!("fyrr_key_{:064}", 6))
+            .bearer_auth(format!("fyrr_key_{key:064}"))
             .json(&json!({"query":"ledger"}))
             .send()
     };
@@ -317,6 +319,16 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
             .collect();
         (heads, others)
     };
+    let post = |namespace: String| post_as(6, namespace);
+    // A key outside its prefix reads no head: nothing of a namespace is read
+    // before the published keys admit the caller.
+    let (mark, started) = (seen.len(), std::time::Instant::now());
+    for i in 0..20 {
+        let response = post_as(8, format!("missing-{i}")).await.unwrap();
+        assert_eq!(response.status(), 403);
+    }
+    let intervals = usize::try_from(started.elapsed().as_millis() / INTERVAL.as_millis()).unwrap();
+    within("a key outside its prefix", phase(mark), 0, intervals + 2);
     let (mark, started) = (seen.len(), std::time::Instant::now());
     for i in 0..20 {
         let response = post(format!("missing-{i}")).await.unwrap();

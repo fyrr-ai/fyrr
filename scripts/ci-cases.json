@@ -95,6 +95,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/http::place_tests::a_place_is_made_by_closing_an_idle_namespace_only": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/http::response_memory_tests::response_frame_keeps_claim_after_body_drop": {
         "tier": "quick",
         "seconds": 0.0

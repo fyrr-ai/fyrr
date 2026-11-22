@@ -67,8 +67,9 @@ published by `writer commit` (a key is bound only where it holds `read` and
 its prefix matches the namespace name), so declare the key in the
 configuration of every namespace where it reads. A reader reads the object
 when it starts and at every version check interval (`POST /admin/refresh`
-too), one more `GET` each, and again when its copy is older than two
-intervals; it refuses every key while it cannot read it.
+too), one more `GET` each, and only then: a request never reads it. It
+refuses every key (`503`) while its copy is older than two intervals or
+missing.
 
 `reader serve` over HTTP needs `[identity.oidc]`, an API key or both, and
 refuses to start without them; `config check` warns about it. The writer does

@@ -100,15 +100,57 @@ impl Served {
 }
 
 /// The namespaces a request path can name: the configured one, always, and
-/// others opened on their first request. The open ones are bounded, least
-/// recently used first, and share the configured reader's memory envelope.
+/// others opened on their first request. At most `MAX_OPEN_NAMESPACES` others
+/// are open, each with an eighth of the reader's mirror and subject-cache
+/// budgets, inside the configured reader's memory envelope.
 struct Namespaces {
     /// The configuration the file holds, to which a namespace's name is added.
     process: Arc<Config>,
     budget: crate::generation::MemoryPool,
     api_keys: crate::storage::HeadCache<fyrr_core::identity::ApiKeysArtifact>,
     configured: Arc<Served>,
-    open: std::sync::Mutex<VecDeque<(String, Arc<tokio::sync::OnceCell<Arc<Served>>>)>>,
+    open: std::sync::Mutex<Open<Served>>,
+}
+/// Open namespaces, least recently used first. Each has one place that
+/// concurrent requests share, so a namespace is opened once.
+type Open<T> = VecDeque<(String, Arc<tokio::sync::OnceCell<Arc<T>>>)>;
+
+/// The place of `name` in `open`, made most recent. A name without one gets it
+/// only with `create`, by closing the least recently used namespace that
+/// nothing but `open` holds: not one that is opening or serving a request.
+/// `Busy` when there is none.
+fn place<T>(
+    open: &mut Open<T>,
+    name: &str,
+    create: bool,
+    capacity: usize,
+) -> Result<Option<Arc<tokio::sync::OnceCell<Arc<T>>>>> {
+    let held = open
+        .iter()
+        .position(|(held, _)| held == name)
+        .and_then(|index| open.remove(index));
+    let entry = match held {
+        Some(entry) => entry,
+        None if create => {
+            if open.len() >= capacity {
+                let idle = open
+                    .iter()
+                    .position(|(_, cell)| {
+                        Arc::strong_count(cell) == 1
+                            && cell
+                                .get()
+                                .is_none_or(|served| Arc::strong_count(served) == 1)
+                    })
+                    .ok_or(Busy)?;
+                open.remove(idle);
+            }
+            (name.to_owned(), Arc::default())
+        }
+        None => return Ok(None),
+    };
+    let cell = entry.1.clone();
+    open.push_back(entry);
+    Ok(Some(cell))
 }
 impl Namespaces {
     /// The configuration of the namespace `name`.
@@ -117,51 +159,50 @@ impl Namespaces {
         config.namespace.name = name.to_owned();
         config
     }
-    /// The place of `name` among the open namespaces, made most recent. A
-    /// namespace without one gets it only with `create`.
-    fn cell(&self, name: &str, create: bool) -> Option<Arc<tokio::sync::OnceCell<Arc<Served>>>> {
-        let mut open = crate::sync::lock(&self.open);
-        let held = open
-            .iter()
-            .position(|(held, _)| held == name)
-            .and_then(|index| open.remove(index));
-        let entry = match held {
-            Some(entry) => entry,
-            None if create => (name.to_owned(), Arc::default()),
-            None => return None,
-        };
-        let cell = entry.1.clone();
-        open.push_back(entry);
-        while open.len() > MAX_OPEN_NAMESPACES {
-            open.pop_front();
-        }
-        Some(cell)
+    fn cell(
+        &self,
+        name: &str,
+        create: bool,
+    ) -> Result<Option<Arc<tokio::sync::OnceCell<Arc<Served>>>>> {
+        place(
+            &mut crate::sync::lock(&self.open),
+            name,
+            create,
+            MAX_OPEN_NAMESPACES,
+        )
     }
-    /// The namespace `name`, opened if it is not; `None` when it has no head.
-    /// A namespace that does not exist costs one read of its head and nothing
-    /// is kept for it. The open outlives a request that gives up on it.
+    /// The namespace `name`, opened if it is not; `None` when it has no head
+    /// or no content. A namespace that cannot be served costs one read of its
+    /// head and nothing is kept for it. The open outlives a request that gives
+    /// up on it.
     async fn get(self: &Arc<Self>, name: &str) -> Result<Option<Arc<Served>>> {
         if name == self.configured.config.namespace.name {
             return Ok(Some(self.configured.clone()));
         }
-        if let Some(served) = self.cell(name, false).and_then(|cell| cell.get().cloned()) {
+        if let Some(served) = self.cell(name, false)?.and_then(|cell| cell.get().cloned()) {
             return Ok(Some(served));
         }
         if crate::storage::optional_head(&self.config(name))
             .await?
-            .is_none()
+            .is_none_or(|head| head.content.is_none())
         {
             return Ok(None);
         }
-        let Some(cell) = self.cell(name, true) else {
+        let Some(cell) = self.cell(name, true)? else {
             unreachable!("a place is made on request");
         };
         let (this, name) = (self.clone(), name.to_owned());
         tokio::spawn(async move {
             cell.get_or_try_init(|| async move {
-                let config = this.config(&name);
-                let reader =
-                    crate::search::PreparedReader::open_in(&config, this.budget.clone()).await?;
+                let mut config = this.config(&name);
+                let places = u64::try_from(MAX_OPEN_NAMESPACES).unwrap_or(u64::MAX);
+                config.reader.mirror_max_bytes /= places;
+                let reader = crate::search::PreparedReader::open_in(
+                    &config,
+                    this.budget.clone(),
+                    crate::search::AUTHORIZATION_CACHE_MAX_BYTES / MAX_OPEN_NAMESPACES,
+                )
+                .await?;
                 let config = reader.config.clone();
                 let admission = Served::admission_of(&reader, this.api_keys.clone());
                 let service = crate::serve::start(reader).await?;
@@ -460,7 +501,7 @@ async fn authenticate_mcp(
             return Err(error(StatusCode::TOO_MANY_REQUESTS, RateLimited));
         }
     }
-    // A subject is hashed in the namespace it acts in, as that identity binds it.
+    // An API key is hashed in the namespace it acts in, as that identity binds it.
     let scoped;
     let config = match needs.namespace {
         Some(name) if name != state.config.namespace.name => {
@@ -479,7 +520,7 @@ async fn authenticate_mcp(
             {
                 crate::auth::api_key(config, &token)
             }
-            (Ok(token), Some(auth)) => auth.authenticate(config, &token).await,
+            (Ok(token), Some(auth)) => auth.authenticate(&token).await,
             _ => Err(Unauthorized),
         }
     })
@@ -492,27 +533,33 @@ async fn authenticate_mcp(
         Unauthorized => authentication_failure(state, code, expected),
         Forbidden => error(StatusCode::FORBIDDEN, Forbidden),
         InvalidArgument => error(StatusCode::NOT_FOUND, InvalidArgument),
+        RateLimited => error(StatusCode::TOO_MANY_REQUESTS, RateLimited),
+        Busy => error(StatusCode::SERVICE_UNAVAILABLE, Busy),
         _ => error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable),
     };
-    // A route that names a namespace reads nothing of it before the published
-    // keys have admitted the caller there. A namespace that does not exist is
-    // refused as it is to a caller that its identity does not bind, so no
-    // caller that may not read a namespace learns whether it exists.
+    // A route that names a namespace reads nothing of it, and opens none,
+    // before what the deployment holds has admitted the caller: the role and
+    // prefix of an API key in the published keys, and the caller's request
+    // counted. OIDC users read the configured namespace only: no identity of
+    // another is consulted for them. Whatever then keeps a caller out of a
+    // namespace, including that it does not exist or has no content, is
+    // answered as a caller its identity does not bind.
     let served = if let Some(name) = needs.namespace {
         let found = timeout_at(deadline, async {
             state.admission.grant(&subject, needs.role, name).await?;
+            spend(state, subject.api_key.as_deref().unwrap_or(&subject.key)).await?;
+            let unbound = if subject.api_key.is_some() {
+                Unauthorized
+            } else {
+                AuthorizationUnavailable
+            };
             if !is_namespace_name(name) {
                 return Err(InvalidArgument);
             }
-            state
-                .namespaces
-                .get(name)
-                .await?
-                .ok_or(if subject.api_key.is_some() {
-                    Unauthorized
-                } else {
-                    AuthorizationUnavailable
-                })
+            if subject.api_key.is_none() && name != state.config.namespace.name {
+                return Err(unbound);
+            }
+            state.namespaces.get(name).await?.ok_or(unbound)
         })
         .await?
         .map_err(refuse)?;
@@ -577,6 +624,23 @@ async fn authenticate_mcp(
     }
     drop(limits);
     Ok((subject, served))
+}
+
+/// Counts a request of the caller `id`, a deployment-wide hash of an API key or
+/// an OIDC subject, against the per-user limit.
+async fn spend(state: &HttpState, id: &str) -> Result<(), ReaderError> {
+    let mut limits = state.limits.lock().await;
+    limits.retain(|_, (t, _)| t.elapsed() < RATE_WINDOW);
+    let key = format!("subject:{id}");
+    if !limits.contains_key(&key) && limits.len() >= MAX_TRACKED_RATE_KEYS {
+        return Err(AuthorizationUnavailable);
+    }
+    let count = limits.entry(key).or_insert((Instant::now(), 0));
+    if count.1 >= state.http().user_requests_per_minute {
+        return Err(RateLimited);
+    }
+    count.1 += 1;
+    Ok(())
 }
 
 /// 401 for an unauthenticated caller and 503 when authentication cannot be
@@ -946,6 +1010,10 @@ mod response_memory_tests;
 #[cfg(test)]
 #[path = "http/scheduler_tests.rs"]
 mod scheduler_tests;
+
+#[cfg(test)]
+#[path = "http/place_tests.rs"]
+mod place_tests;
 
 #[path = "http/admission.rs"]
 mod admission;
