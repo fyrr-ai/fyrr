@@ -454,8 +454,8 @@ fn s3_namespace_store(
     Ok((store, root, client))
 }
 
-/// Delete only the current object `file` of the namespace (`head.json` or the
-/// deletion fence) matching the holder's CAS token. S3 deletes the current key
+/// Delete only the current object `file` of the namespace (a path below its
+/// root: `head.json`, the deletion fence or a cursor) matching the holder's CAS token. S3 deletes the current key
 /// without versionId so an older object cannot revive.
 pub async fn delete_if_match(
     config: &Config,
@@ -474,8 +474,8 @@ pub async fn delete_if_match(
                 .root()
                 .clone()
                 .join("namespaces")
-                .join(config.namespace.name.as_str())
-                .join(file);
+                .join(config.namespace.name.as_str());
+            let path = file.split('/').fold(path, Path::join);
             let deletion = diagnostics::observe(
                 "DELETE_CONDITIONAL",
                 &path,

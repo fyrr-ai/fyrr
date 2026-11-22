@@ -141,14 +141,16 @@ impl CursorLease {
             observed: fyrr_reader::storage::observed_durability(config)?,
             store: store.clone(),
             path,
-            held: Mutex::new((state, result, Instant::now())),
+            held: Mutex::new((state, result.clone(), Instant::now())),
             ttl,
         });
         if let Err(error) = crate::commit::sources_allowed(config, store.as_ref(), &root).await {
             // A cursor created in a namespace that was deleted meanwhile would
-            // outlive it and be taken for the state of a new one.
+            // outlive it and be taken for the state of a new one. Only this
+            // cursor goes: a new incarnation may have written its own.
             if created && error == WriterError::NamespaceUnavailable {
-                let _ = store.delete(&lease.path).await;
+                let file = fyrr_reader::storage::relative_path(&lease.path, &root);
+                let _ = fyrr_reader::storage::delete_if_match(config, &file, &result).await;
             } else {
                 let _ = lease.release().await;
             }

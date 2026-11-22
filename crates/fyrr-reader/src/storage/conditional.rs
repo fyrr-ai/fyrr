@@ -124,7 +124,7 @@ pub(super) async fn delete_file(
             source: "S3 conditional DELETE capability probe must return HTTP 412".into(),
         });
     }
-    let path = root.clone().join(file);
+    let path = file.split('/').fold(root.clone(), Path::join);
     match delete(store, client, &path, tag).await? {
         200..=299 => Ok(()),
         409 | 412 => Err(object_store::Error::Precondition {

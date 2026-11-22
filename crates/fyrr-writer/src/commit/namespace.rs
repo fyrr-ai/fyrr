@@ -79,11 +79,9 @@ pub async fn create(config: &Config) -> Result<()> {
         return repeat_create(store.as_ref(), &root, &head, &settings).await;
     }
     // A deletion that removed the head may still be removing objects, and a
-    // new head would be removed with them: run the deletion again first.
-    if deletion_fence(config, store.as_ref(), &root)
-        .await?
-        .is_some()
-    {
+    // new head would be removed with them: run the deletion again first. Any
+    // object left under the prefix, the fence included, refuses the creation.
+    if store.list(Some(&root)).try_next().await?.is_some() {
         return Err(WriterError::NamespaceDeleting);
     }
     match create_new(config, store.as_ref(), &root, settings.clone()).await {
@@ -298,38 +296,44 @@ pub async fn delete(
             serde_json::json!({"dry_run":true,"objects":objects.len(),"bytes":objects.iter().map(|object|object.size).sum::<u64>()}),
         );
     }
-    if published {
-        unpublish(config, store.clone(), &root, export).await?;
+    let verified = if published {
+        unpublish(config, store.clone(), &root, export).await?
     } else if let Some(export) = export {
-        verify_export(store.as_ref(), &root, None, export).await?;
-    }
-    purge(config, store.as_ref(), &root).await?;
+        Some(verify_export(store.as_ref(), &root, None, export).await?)
+    } else {
+        None
+    };
+    purge(config, store.as_ref(), &root, verified.as_ref()).await?;
     Ok(serde_json::json!({"deleted":true}))
 }
 
-/// Fences the sources, checks the export when there is one and removes the head.
+/// Fences the sources, checks the export when there is one and removes the
+/// head. Returns the keys the export verified.
 async fn unpublish(
     config: &Config,
     store: Arc<dyn ObjectStore>,
     root: &Path,
     export: Option<&std::path::Path>,
-) -> Result<()> {
+) -> Result<Option<BTreeSet<Path>>> {
     LeaseGuard::with(config, |lease| async move {
         fence_sources(config, store.as_ref(), root, &lease).await?;
-        if let Some(export) = export {
-            verify_export(store.as_ref(), root, Some(&lease), export).await?;
-        }
-        lease.delete_head(config).await
+        let verified = match export {
+            Some(export) => Some(verify_export(store.as_ref(), root, Some(&lease), export).await?),
+            None => None,
+        };
+        lease.delete_head(config).await?;
+        Ok(verified)
     })
     .await
 }
 
+/// Checks the export against storage and returns the keys it verified.
 async fn verify_export(
     store: &dyn ObjectStore,
     root: &Path,
     lease: Option<&LeaseGuard>,
     export: &std::path::Path,
-) -> Result<()> {
+) -> Result<BTreeSet<Path>> {
     let objects: Vec<_> = store.list(Some(root)).try_collect().await?;
     let verified: BTreeMap<_, _> = objects
         .iter()
@@ -399,29 +403,51 @@ async fn verify_export(
     if current != verified {
         return Err(WriterError::ExportInvalid);
     }
-    Ok(())
+    Ok(verified.into_keys().collect())
+}
+
+/// Whether `held` is still the fence in storage: another run that finished
+/// leaves none, or a new one, and the name may belong to a new namespace.
+async fn fence_held(
+    config: &Config,
+    store: &dyn ObjectStore,
+    root: &Path,
+    held: &object_store::UpdateVersion,
+) -> Result<bool> {
+    Ok(matches!(
+        deletion_fence(config, store, root).await?,
+        Some((_, now, _)) if now.e_tag == held.e_tag && now.version == held.version
+    ))
 }
 
 /// Removes every object under the root, the fence last, so that a deletion
 /// stopped part way still has its fence and is run again. It first waits out
 /// the leases that may still be writing: a worker whose lease expired just
-/// before the fence can finish a request admitted earlier. It stops at once,
-/// with nothing more removed, when the fence is no longer the one it read:
-/// another run finished, and the name may belong to a new namespace.
-async fn purge(config: &Config, store: &dyn ObjectStore, root: &Path) -> Result<()> {
+/// before the fence can finish a request admitted earlier. Writers of the
+/// namespace must be stopped first: after the last pass it waits once more and
+/// lists again, and what has appeared is removed, or with an export (`verified`)
+/// is an error. With an export only the verified keys are removed; any other
+/// key stops the deletion with nothing more removed. It also stops at once,
+/// before every batch, when the fence is no longer the one it read.
+async fn purge(
+    config: &Config,
+    store: &dyn ObjectStore,
+    root: &Path,
+    verified: Option<&BTreeSet<Path>>,
+) -> Result<()> {
     let Some((_, held, written)) = deletion_fence(config, store, root).await? else {
         return Ok(());
     };
-    let ttl = chrono::Duration::from_std(config.writer.commit.lease_ttl.as_duration())
-        .map_err(|_| WriterError::LeaseInvalid)?;
-    if let Ok(wait) = (written + ttl - fyrr_core::clock::now()).to_std() {
+    let ttl = config.writer.commit.lease_ttl.as_duration();
+    let first = chrono::Duration::from_std(ttl).map_err(|_| WriterError::LeaseInvalid)?;
+    if let Ok(wait) = (written + first - fyrr_core::clock::now()).to_std() {
         tokio::time::sleep(wait).await;
     }
     let fence = root.clone().join(DELETE_FENCE);
+    let mut settled = false;
     loop {
-        match deletion_fence(config, store, root).await? {
-            Some((_, now, _)) if now.e_tag == held.e_tag && now.version == held.version => {}
-            _ => return Ok(()),
+        if !fence_held(config, store, root, &held).await? {
+            return Ok(());
         }
         let objects: Vec<_> = store.list(Some(root)).try_collect().await?;
         let rest: Vec<_> = objects
@@ -429,10 +455,23 @@ async fn purge(config: &Config, store: &dyn ObjectStore, root: &Path) -> Result<
             .map(|object| object.location)
             .filter(|location| *location != fence)
             .collect();
-        if rest.is_empty() {
-            break;
+        if verified.is_some_and(|keys| rest.iter().any(|key| settled || !keys.contains(key))) {
+            return Err(WriterError::ExportInvalid);
         }
-        crate::io::bounded(rest, |path| async move { remove(store, &path).await }).await?;
+        if rest.is_empty() {
+            if settled {
+                break;
+            }
+            settled = true;
+            tokio::time::sleep(ttl).await;
+            continue;
+        }
+        for batch in rest.chunks(crate::io::CONCURRENCY) {
+            if !fence_held(config, store, root, &held).await? {
+                return Ok(());
+            }
+            crate::io::bounded(batch, |path| async move { remove(store, path).await }).await?;
+        }
     }
     match fyrr_reader::storage::delete_if_match(config, DELETE_FENCE, &held).await {
         Ok(())

@@ -121,7 +121,9 @@ pub enum NamespaceAction {
     /// Create the namespace.
     Create,
     /// Delete the namespace and every object of it after a dry-run plan, with
-    /// a verified export or the namespace name repeated.
+    /// a verified export or the namespace name repeated. Stop every writer of
+    /// the namespace first: the command waits `writer.commit.lease_ttl`, twice.
+    /// Noncurrent versions on a versioned S3 bucket remain.
     Delete {
         /// Verified namespace export directory; checked against storage before
         /// the deletion. Without it and without `--delete-data`, the dry-run

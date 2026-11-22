@@ -461,6 +461,17 @@ async fn delete_data_removes_every_object_and_the_name_is_created_again_on_local
     ));
     let left: Vec<_> = store.list(Some(&namespace)).try_collect().await.unwrap();
     assert!(left.is_empty(), "{left:?}");
+    // An object a late writer left under the prefix refuses the creation.
+    let stray = namespace.clone().join("stray");
+    store.put(&stray, "late".into()).await.unwrap();
+    let refused = delete_command(&commit, &["create"]);
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("namespace_deleting"),
+        "{}",
+        report(&refused)
+    );
+    store.delete(&stray).await.unwrap();
     let created = delete_command(&commit, &["create"]);
     assert!(created.status.success(), "{}", report(&created));
     let after = fyrr_reader::storage::optional_head(&config)
