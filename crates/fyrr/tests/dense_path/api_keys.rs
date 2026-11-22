@@ -905,14 +905,20 @@ async fn a_namespace_report_needs_the_admin_or_list_role() {
     );
     let anonymous = reader
         .client
-        .get(format!("{}/v1/namespaces/{}", reader.base, deployment.namespace))
+        .get(format!(
+            "{}/v1/namespaces/{}",
+            reader.base, deployment.namespace
+        ))
         .send()
         .await
         .unwrap();
     assert_eq!(anonymous.status(), 401);
     let post = reader
         .client
-        .post(format!("{}/v1/namespaces/{}", reader.base, deployment.namespace))
+        .post(format!(
+            "{}/v1/namespaces/{}",
+            reader.base, deployment.namespace
+        ))
         .bearer_auth(&admins.secret)
         .send()
         .await

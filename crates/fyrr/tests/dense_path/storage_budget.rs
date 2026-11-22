@@ -539,7 +539,12 @@ async fn a_namespace_report_reads_at_most_the_head_and_one_manifest() {
         heads + others.len() <= REPORT_READS,
         "5 reports read {heads} heads and {others:?}"
     );
-    within("a namespace report", (heads, others), REPORT_READS, REPORT_READS);
+    within(
+        "a namespace report",
+        (heads, others),
+        REPORT_READS,
+        REPORT_READS,
+    );
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     reader.stop().await;
     std::fs::remove_dir_all(root).unwrap();

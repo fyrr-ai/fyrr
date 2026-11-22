@@ -74,15 +74,14 @@ pub(crate) async fn publish(
         logical_bytes,
         // shortcut: a chain published before 4.1 has no creation time; its newest
         // manifest's commit time stands for it, a later bound than the real one.
-        created_at: previous_manifest.as_ref().map_or_else(
-            fyrr_core::clock::now,
-            |previous| {
+        created_at: previous_manifest
+            .as_ref()
+            .map_or_else(fyrr_core::clock::now, |previous| {
                 previous
                     .stats
                     .as_ref()
                     .map_or(previous.committed_at, |stats| stats.created_at)
-            },
-        ),
+            }),
     };
     let durable: BTreeSet<_> = previous_manifest
         .iter()
