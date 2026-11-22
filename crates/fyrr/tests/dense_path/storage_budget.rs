@@ -490,8 +490,7 @@ async fn a_strong_read_checks_the_head_and_never_answers_from_a_held_view() {
     let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
     root.embedding.insert_both("ledger", vector);
     success(&config, &["writer", "namespace", "create"]);
-    sync_texts(&config, &root, &[("kept.txt", KEPT)]);
-    success(&config, &["writer", "commit"]);
+    // The commit binds the declared key to the namespace, so it reads the key.
     let writer = |args: &[&str]| {
         let output = super::coordination::host_command(&config)
             .args(args)
@@ -500,6 +499,8 @@ async fn a_strong_read_checks_the_head_and_never_answers_from_a_held_view() {
             .unwrap();
         assert!(output.status.success(), "{}", report(&output));
     };
+    sync_texts(&config, &root, &[("kept.txt", KEPT)]);
+    writer(&["writer", "commit"]);
     writer(&["writer", "keys"]);
 
     let seen = Seen::default();

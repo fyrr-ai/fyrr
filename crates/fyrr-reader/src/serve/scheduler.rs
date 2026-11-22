@@ -590,7 +590,9 @@ impl Scheduler {
                     "retry",
                     self.template.as_ref().map_or(0, |r| r.manifest.sequence),
                 );
-                if !outdated && !behind {
+                if behind {
+                    self.next_check = Instant::now();
+                } else if !outdated {
                     self.next_check = Instant::now() + Duration::from_secs(1);
                 }
                 if let Some(reply) = self.reload_reply.take() {
