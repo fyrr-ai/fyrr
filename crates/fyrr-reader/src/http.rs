@@ -114,10 +114,9 @@ struct Namespaces {
     slots: Arc<Semaphore>,
     /// How many namespaces have been opened: each has a mirror of its own.
     opened: std::sync::atomic::AtomicU64,
-    /// Where those mirrors are: the directory of this process, whose lock
-    /// `_lock` it holds until it ends.
-    mirrors: std::path::PathBuf,
-    _lock: std::fs::File,
+    /// Where those mirrors are: the directory of this process, made on the
+    /// first request for one, whose lock the process holds until it ends.
+    mirrors: tokio::sync::OnceCell<(std::path::PathBuf, std::fs::File)>,
 }
 /// A place among the live namespaces. It goes with the scheduler of the
 /// namespace, which has stopped by then, and takes the mirror that namespace
@@ -223,14 +222,8 @@ impl Namespaces {
         budget: crate::generation::MemoryPool,
         api_keys: crate::storage::HeadCache<fyrr_core::identity::ApiKeysArtifact>,
         configured: Arc<Served>,
-    ) -> Result<Self> {
-        let (mirrors, _lock) = own_mirrors(
-            configured
-                .config
-                .mirror_directory(&ProcessEnvironment)
-                .ok_or(StorageConfigurationInvalid)?,
-        )?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             process,
             budget,
             api_keys,
@@ -238,9 +231,8 @@ impl Namespaces {
             open: std::sync::Mutex::default(),
             slots: Arc::new(Semaphore::new(MAX_OPEN_NAMESPACES)),
             opened: std::sync::atomic::AtomicU64::new(0),
-            mirrors,
-            _lock,
-        })
+            mirrors: tokio::sync::OnceCell::new(),
+        }
     }
     /// The configuration of the namespace `name`.
     fn config(&self, name: &str) -> Config {
@@ -291,7 +283,18 @@ impl Namespaces {
                 let mut config = this.config(&name);
                 let places = u64::try_from(MAX_OPEN_NAMESPACES).unwrap_or(u64::MAX);
                 config.reader.mirror_max_bytes /= places;
-                let mirror = this.mirrors.join(format!(
+                let (mirrors, _) = this
+                    .mirrors
+                    .get_or_try_init(|| async {
+                        own_mirrors(
+                            this.configured
+                                .config
+                                .mirror_directory(&ProcessEnvironment)
+                                .ok_or(StorageConfigurationInvalid)?,
+                        )
+                    })
+                    .await?;
+                let mirror = mirrors.join(format!(
                     "path-{}",
                     this.opened
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -992,7 +995,7 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
             admission: admission.clone(),
             service: service.clone(),
         }),
-    )?);
+    ));
     let state = HttpState {
         admission,
         service: service.clone(),

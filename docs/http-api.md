@@ -29,7 +29,11 @@ another namespace needs a place, the one used least recently that is serving no
 request is closed, and if every one is serving, the request answers `503 busy`.
 A request for a closed one opens it again, with a mirror
 filled anew: closing deletes the mirror of that namespace, so only the open
-ones have one. The 8 share the reader's `reader.memory_max_bytes` with the
+ones have one. The mirrors are kept in a directory of the process next to the
+configured mirror, `<reader.mirror_path>.paths`, so opening a namespace needs
+write access to the parent of `reader.mirror_path`; without it such a request
+answers `503 storage_unavailable` and the configured namespace is served as
+before. The 8 share the reader's `reader.memory_max_bytes` with the
 configured namespace, and each gets an eighth of `reader.mirror_max_bytes` and
 of the 128 MiB subject cache the configured namespace has, so together they add
 one more mirror and cache budget of the configured size. Embedding and rerank
