@@ -147,11 +147,13 @@ through `writer serve` with its administration listener before
 Then point writers and readers at the new file. Keep the old file for
 cleanup: first copy every namespace object byte-for-byte into an export
 directory, preserving paths relative to the namespace root. The delete
-command checks each saved object against storage before unpublishing:
+command checks each saved object against storage before it deletes anything:
 
 `fyrr --config fyrr-old.toml writer namespace delete --export EXPORT_DIR`
-unpublishes the old namespace; its objects stay in storage until you remove
-that namespace's objects ([CLI](cli.md)).
+unpublishes the old namespace and then deletes every object under its prefix.
+Without an export, `--delete-data NAME` with the namespace name does the same.
+Deletion cannot be undone. If it stops part way, run the same command again
+([CLI](cli.md)).
 
 On S3, deletion first probes whether the server honors `If-Match` on DELETE.
 If it does not, `conditional_delete_unsupported` leaves the serving head

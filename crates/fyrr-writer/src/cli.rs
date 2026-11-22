@@ -120,11 +120,17 @@ pub enum WriterCommand {
 pub enum NamespaceAction {
     /// Create the namespace.
     Create,
-    /// Delete the namespace after a dry-run plan and a verified export.
+    /// Delete the namespace and every object of it after a dry-run plan, with
+    /// a verified export or the namespace name repeated.
     Delete {
-        /// Verified namespace export directory; omit to print the dry-run plan.
+        /// Verified namespace export directory; checked against storage before
+        /// the deletion. Without it and without `--delete-data`, the dry-run
+        /// plan is printed and nothing is deleted.
         #[arg(long)]
         export: Option<std::path::PathBuf>,
+        /// The namespace name, repeated: deletes without an export.
+        #[arg(long)]
+        delete_data: Option<String>,
     },
 }
 
@@ -282,8 +288,16 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
                     .map(|()| serde_json::json!({"created":true}))
             }),
             WriterCommand::Namespace {
-                action: NamespaceAction::Delete { export },
-            } => runtime_command(crate::commit::delete(config, export.as_deref())),
+                action:
+                    NamespaceAction::Delete {
+                        export,
+                        delete_data,
+                    },
+            } => runtime_command(crate::commit::delete(
+                config,
+                export.as_deref(),
+                delete_data.as_deref(),
+            )),
             WriterCommand::Maintain => runtime_command(crate::maintenance::maintain(config)),
             WriterCommand::Serve { jobs, timeout } => {
                 // Source jobs need the providers' Python: say so once, up
