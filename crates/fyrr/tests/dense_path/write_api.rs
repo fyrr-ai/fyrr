@@ -31,7 +31,7 @@ pub(super) fn configure(config: &Path, address: &std::net::SocketAddr, extra: &s
              [[identity.api_keys]]\nname='reader'\nkey={{env='FYRR_TEST_READ_KEY'}}\nreaders=['usr:x']\n\
              [[identity.api_keys]]\nname='admin-writer'\nkey={{env='FYRR_TEST_ADMIN_KEY'}}\nroles=['write','admin']\n\
              [[identity.api_keys]]\nname='scoped'\nkey={{env='FYRR_TEST_SCOPED_KEY'}}\nroles=['write']\nnamespace_prefix='shop-'\n\
-             [writer.commit]\ncoalescing_timer='10m'\n\
+             [writer]\nthreads=2\n[writer.commit]\ncoalescing_timer='10m'\n\
              [writer.serve.admin]\nlisten='{address}'\noperator_token={{env='FYRR_TEST_OPERATOR'}}\n"
         ),
     )
@@ -1035,6 +1035,18 @@ async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_sto
             .await,
         (400, json!({"error": "settings_invalid"}))
     );
+    // A dimension the dense index cannot be built over is refused before the
+    // namespace exists; the 16-dimension creation below is accepted.
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"settings": {"embedding": {"dimensions": 4}}, "upserts": [{"id": "a", "text": "alpha", "vector": vector(0, 4)}]})
+            )
+            .await,
+        (400, json!({"error": "settings_invalid"}))
+    );
     let fingerprint = fyrr_core::envelope::EmbeddingSettings {
         api_style: fyrr_core::envelope::EmbeddingApiStyle::OpenaiCompatible,
         prefix: String::new(),
@@ -1085,6 +1097,40 @@ async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_sto
             (400, json!({"error": code}))
         );
     }
+}
+
+/// A first publication of more rows than one index partition holds, all with the
+/// same vector, publishes: index training does not fail on identical vectors.
+#[tokio::test]
+#[ignore = "real writer executable on local storage; scripts/ci"]
+async fn identity_write_api_ends_a_first_publication_of_identical_vectors_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let writer = Writer::start(&config, &root, address).await;
+    let rows: Vec<Value> = (0..600)
+        .map(
+            |n| json!({"id": format!("r{n}"), "text": format!("row {n}"), "vector": vec![0.5; 16]}),
+        )
+        .collect();
+    let answer = tokio::time::timeout(
+        Duration::from_secs(180),
+        writer.post(
+            WRITE_KEY,
+            "dense-fixture",
+            &json!({"settings": {"embedding": {"dimensions": 16}}, "upserts": rows}),
+        ),
+    )
+    .await;
+    let stderr = std::fs::read_to_string(root.join("service.stderr")).unwrap();
+    assert!(
+        answer.is_ok(),
+        "the publication did not end in 180s; writer stderr: {stderr}"
+    );
+    assert_eq!(
+        answer.unwrap(),
+        (200, json!({"upserted": 600, "deleted": 0}))
+    );
 }
 
 #[tokio::test]

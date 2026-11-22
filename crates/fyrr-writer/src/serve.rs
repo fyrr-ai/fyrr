@@ -194,7 +194,7 @@ pub async fn run(
                             maintenance = tick.maintenance;
                         }
                         Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
-                        Err(_) => eprintln!("writer_service event=commit_failed"),
+                        Err(error) => eprintln!("writer_service event=commit_failed code={}", error.as_str()),
                     }
                     commits.done.send_modify(|rounds| *rounds += 1);
                     if stop.load(Ordering::Acquire) {

@@ -1981,6 +1981,10 @@
         "tier": "full",
         "seconds": 40
       },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_ends_a_first_publication_of_identical_vectors_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
       "full:fyrr:test:dense_path/write_api::identity_write_api_without_embedding_settings_takes_only_vectors_on_storage": {
         "tier": "full",
         "seconds": 40
