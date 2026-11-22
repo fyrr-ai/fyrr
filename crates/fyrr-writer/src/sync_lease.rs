@@ -284,6 +284,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cursor_renewal_finishes_before_release_on_local_storage() {
         let (config, root) = crate::lease::tests::local_config("cursor-renewal");
+        crate::lease::tests::put_head(&config).await;
         renewal_finishes_before_release(&config).await;
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -301,6 +302,7 @@ pub(crate) mod tests {
             fyrr_core::clock::now().timestamp_nanos_opt().unwrap(),
         ));
         config.storage.uri = format!("file://{}", root.display());
+        rt.block_on(crate::lease::tests::put_head(&config));
         for (index, (operation_failed, release_failed)) in
             [(false, false), (true, false), (false, true), (true, true)]
                 .into_iter()

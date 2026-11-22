@@ -512,10 +512,7 @@ pub(crate) fn generation_object<T: Contract>(
     value: &T,
 ) -> (String, String) {
     let digest = digest(&write_contract(value));
-    (
-        format!("{kind}/{generation}-{}.json", &digest[7..]),
-        digest,
-    )
+    (format!("{kind}/{generation}-{}.json", &digest[7..]), digest)
 }
 
 pub(crate) async fn put_generation<T: Contract>(
