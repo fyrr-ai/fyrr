@@ -42,6 +42,120 @@ async fn incremental_unchanged_upsert_still_protects_pending_reconciliation_on_s
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A connector document's title, team, status, labels and creation time are
+/// typed columns of its namespace, not part of its stored metadata. The tools
+/// filter by them and return them as before.
+#[tokio::test]
+#[ignore = "real worker and local storage; scripts/ci"]
+async fn incremental_connector_fields_are_typed_columns_on_storage() {
+    use arrow_array::{ListArray, TimestampMicrosecondArray};
+    let setup = setup();
+    for row in 8..768 {
+        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
+    }
+    let (worker, commit, root) = fixture_host_at(8, true, "typed-fixture", setup);
+    input(
+        &root,
+        json!({"epoch":1,
+            "content":[[
+                {"id":"a","revision":"r1","texts":["fixture document 0"],"title":"Alpha",
+                    "team":"core","status":"open","labels":["bug","ui"],
+                    "created_at":"2026-01-02T03:04:05.123456+00:00"},
+                {"id":"b","revision":"r1","texts":["fixture document 1"],"team":"infra"},
+            ]],
+            "permissions":[[
+                {"id":"a","revision":"p1","readers":["grp:group"]},
+                {"id":"b","revision":"p1","readers":["grp:group"]},
+            ]],
+            "members":[{"users":[{"id":"u","email":"fixture@example.test",
+                    "email_verification":"verified_corporate","active":true}],
+                "groups":[{"id":"child","members":["usr:u"]},{"id":"group","members":["grp:child"]}]}]}),
+    );
+    worker_sync(
+        &worker,
+        &[
+            "incremental",
+            "--kind",
+            "content",
+            "--kind",
+            "permissions",
+            "--kind",
+            "members",
+        ],
+    );
+    publish(&commit);
+
+    // The stored rows hold the fields in their own columns and no longer in
+    // their metadata.
+    let batch = rows(&worker).await;
+    let row_of = |root: &str| roots(&batch).iter().position(|r| r == root).unwrap();
+    let text = |column: &str, root: &str| {
+        let array = fyrr_writer::apply::strings(&batch, column).unwrap();
+        let row = row_of(root);
+        (!array.is_null(row)).then(|| array.value(row).to_owned())
+    };
+    assert_eq!(text("title", "a").as_deref(), Some("Alpha"));
+    assert_eq!(text("team", "a").as_deref(), Some("core"));
+    assert_eq!(text("status", "a").as_deref(), Some("open"));
+    assert_eq!(text("title", "b"), None);
+    assert_eq!(text("team", "b").as_deref(), Some("infra"));
+    let labels = batch
+        .column_by_name("labels")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .unwrap();
+    let labels_of = |root: &str| {
+        let items = labels.value(row_of(root));
+        let items = items.as_any().downcast_ref::<StringArray>().unwrap();
+        items.iter().map(|v| v.unwrap().to_owned()).collect::<Vec<_>>()
+    };
+    assert_eq!(labels_of("a"), ["bug", "ui"]);
+    assert!(labels_of("b").is_empty());
+    let created = batch
+        .column_by_name("created_at")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<TimestampMicrosecondArray>()
+        .unwrap();
+    assert_eq!(created.value(row_of("a")), 1_767_323_045_123_456);
+    assert!(created.is_null(row_of("b")));
+    let metadata = fyrr_writer::apply::strings(&batch, "metadata_json").unwrap();
+    assert!(
+        !metadata.value(row_of("a")).contains("Alpha"),
+        "the title is stored once, in its column"
+    );
+
+    // The tools filter by the columns and return the same fields.
+    let mut client = super::tools::Mcp::open(&worker);
+    let found = client.call(
+        "search",
+        json!({"order":"updated_at","output":"metadata","filter":{"and":[
+            {"field":"team","op":"eq","value":"core"},
+            {"field":"labels","op":"contains","value":"bug"},
+            {"field":"created_at","op":"gte","value":"2026-01-01T00:00:00Z"}]}}),
+    );
+    let hits = found["structuredContent"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1, "{found}");
+    let hit = &hits[0];
+    assert_eq!(hit["root_id"], "a");
+    assert_eq!(hit["title"], "Alpha");
+    assert_eq!(hit["team"], "core");
+    assert_eq!(hit["status"], "open");
+    assert_eq!(hit["labels"], json!(["bug", "ui"]));
+    assert_eq!(hit["created_at"], "2026-01-02T03:04:05.123456Z");
+    let fetched = client.call("fetch", json!({"source_id":"incremental","root_id":"a"}));
+    let document = &fetched["structuredContent"]["documents"][0];
+    for field in ["title", "team", "status", "labels", "created_at"] {
+        assert_eq!(document[field], hit[field], "{field}");
+    }
+    let other = client.call("fetch", json!({"source_id":"incremental","root_id":"b"}));
+    let other = &other["structuredContent"]["documents"][0];
+    assert!(other["title"].is_null() && other["created_at"].is_null(), "{other}");
+    assert_eq!(other["labels"], json!([]));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 pub(super) fn fixture() -> (PathBuf, PathBuf, FixtureRoot) {
     fixture_size(768)
 }

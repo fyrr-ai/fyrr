@@ -1,5 +1,5 @@
 {
-  "schema_version": "4.1",
+  "schema_version": "5.0",
   "namespace": "acme",
   "content": {
     "publication_id": "pub-000042",

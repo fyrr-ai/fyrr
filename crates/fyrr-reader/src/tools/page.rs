@@ -127,12 +127,10 @@ impl PreparedReader {
         }
         let stage = Instant::now();
         let counters = self.mirror.counters();
+        let mut columns = vec!["searchable_text", "metadata_json", "connector_map_ref"];
+        columns.extend(self.connector_columns());
         let batch = self
-            .rows_by_id(
-                &row_ids,
-                &["searchable_text", "metadata_json", "connector_map_ref"],
-                IncompatibleIndex,
-            )
+            .rows_by_id(&row_ids, &columns, IncompatibleIndex)
             .await?;
         self.stage(
             &mut result.metadata.telemetry,
@@ -352,7 +350,7 @@ impl PreparedReader {
         let common: Option<DocumentMetadata> =
             serde_json::from_str(strings(batch, "metadata_json")?.value(row))
                 .map_err(|_| StorageUnavailable)?;
-        let common = common.ok_or(StorageUnavailable)?;
+        let common = self.with_connector_columns(batch, row, common.ok_or(StorageUnavailable)?)?;
         if result
             .documents
             .last()

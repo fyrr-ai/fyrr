@@ -1,6 +1,5 @@
 use super::publication::previous_manifest;
 use super::*;
-use lance::dataset::NewColumnTransform;
 
 mod native;
 
@@ -491,10 +490,6 @@ async fn build_indexes(
     } else {
         0
     };
-    if first {
-        // Boxed: the build's future is already at the compiler's depth limit.
-        Box::pin(add_attribute_columns(config, lease, dataset, lineage)).await?;
-    }
     let vector = vector_index_params(
         count,
         config.namespace.dense_rq_bits,
@@ -549,40 +544,6 @@ async fn build_indexes(
         stage(stage_timings, "fts_merge", start);
     }
     Ok(())
-}
-
-/// Adds a nullable column for each declared attribute. Lance records it in the
-/// table's metadata: no data file is written, and rows read as null until a
-/// value is written.
-async fn add_attribute_columns(
-    config: &Config,
-    lease: &LeaseGuard,
-    dataset: &mut Dataset,
-    lineage: &mut CommitLineage,
-) -> Result<()> {
-    // A namespace written through the API created them with its table.
-    let fields: Vec<_> = config
-        .namespace
-        .attributes
-        .iter()
-        .filter(|(name, _)| dataset.schema().field(name).is_none())
-        .map(|(name, kind)| arrow_schema::Field::new(name, kind.arrow_type(), true))
-        .collect();
-    if fields.is_empty() {
-        return Ok(());
-    }
-    let before = dataset.version().version;
-    native_step(
-        lease,
-        dataset.add_columns(
-            NewColumnTransform::AllNulls(Arc::new(arrow_schema::Schema::new(fields))),
-            None,
-            None,
-        ),
-        WriterError::IndexBuildFailed,
-    )
-    .await?;
-    record_transaction(dataset, lineage, before).await
 }
 
 /// Parameters of the full-text index. The partition size

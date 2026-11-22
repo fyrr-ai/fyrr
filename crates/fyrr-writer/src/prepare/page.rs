@@ -137,7 +137,7 @@ pub(super) async fn content_page(
         payload: EnvelopePayload::Content(ContentPayload {
             embedding: identity(&config.embedding),
             chunk_profile: chunk_identity(),
-            table_schema_version: SchemaVersion::new(1, 2),
+            table_schema_version: SchemaVersion::new(2, 0),
             documents: rows.documents,
             fragments,
             quarantined: rows.quarantined,
@@ -201,10 +201,15 @@ struct RowColumns {
     authors: Vec<Option<String>>,
     updated: Vec<Option<i64>>,
     attributes: Vec<Vec<String>>,
+    /// The typed columns of a connector's rows; an API request brings its own.
+    typed: Option<AttributeColumns>,
 }
 struct DocumentRows<'a> {
     change: &'a DocumentChange,
     common: Option<fyrr_core::connector::DocumentMetadata>,
+    /// A connector document's metadata fields that are typed columns, which
+    /// its stored metadata no longer holds.
+    typed: serde_json::Map<String, serde_json::Value>,
     map_ref: Option<String>,
     section_ids: Vec<String>,
     silent: bool,
@@ -264,6 +269,23 @@ impl<'a> DocumentRows<'a> {
         let permission_stream = page.permission_stream;
         let mut common = change.metadata.clone();
         let map = common.as_mut().and_then(|m| m.connector_map.take());
+        let mut typed = serde_json::Map::new();
+        if source.id != fyrr_core::connector::API_SOURCE_ID
+            && let Some(metadata) = &mut common
+        {
+            typed.insert("title".into(), metadata.title.take().into());
+            typed.insert("team".into(), metadata.team.take().into());
+            typed.insert("status".into(), metadata.status.take().into());
+            typed.insert("labels".into(), std::mem::take(&mut metadata.labels).into());
+            typed.insert(
+                "created_at".into(),
+                metadata
+                    .created_at
+                    .take()
+                    .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
+                    .into(),
+            );
+        }
         let map_ref = if let Some(map) = map {
             let bytes = serde_json::to_vec(&map).map_err(|_| WriterError::DocumentInvalid)?;
             let reference = digest(&bytes);
@@ -313,6 +335,7 @@ impl<'a> DocumentRows<'a> {
         Ok(Self {
             change,
             common,
+            typed,
             map_ref,
             section_ids,
             silent,
@@ -449,6 +472,12 @@ impl RowColumns {
                 self.updated
                     .push(common.updated_at.map(|t| t.timestamp_micros()));
                 self.attributes.push(change.attributes.clone());
+                if source.id != fyrr_core::connector::API_SOURCE_ID {
+                    self.typed
+                        .get_or_insert_with(|| AttributeColumns::new(&config.namespace.attributes))
+                        .push(&rows.typed)
+                        .map_err(|_| WriterError::DocumentInvalid)?;
+                }
                 count += 1;
             }
         }
@@ -468,6 +497,11 @@ impl RowColumns {
                 config.embedding.dimensions as i32,
             );
             let attribute_array = string_lists(self.attributes.iter().map(Vec::as_slice));
+            // An API request brings its attribute columns; a connector's rows
+            // take theirs from the metadata of their documents.
+            let typed = self
+                .typed
+                .map_or_else(|| page.attributes.to_vec(), AttributeColumns::finish);
             let mut columns: Vec<ArrayRef> = vec![
                 Arc::new(StringArray::from(self.sources)),
                 Arc::new(StringArray::from(self.roots)),
@@ -486,14 +520,15 @@ impl RowColumns {
                 Arc::new(TimestampMicrosecondArray::from(self.updated).with_timezone("UTC")),
                 Arc::new(attribute_array),
             ];
-            columns.extend(page.attributes.iter().cloned());
+            let width = typed.len();
+            columns.extend(typed);
             let schema = schema_with(
                 config.embedding.dimensions,
                 config
                     .namespace
                     .attributes
                     .iter()
-                    .take(page.attributes.len())
+                    .take(width)
                     .map(|(name, kind)| Field::new(name, kind.arrow_type(), true))
                     .collect(),
             );

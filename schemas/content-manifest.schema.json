@@ -592,5 +592,5 @@
     }
   },
   "x-fyrr-contract": "content-manifest",
-  "x-fyrr-schema-version": "4.1"
+  "x-fyrr-schema-version": "5.0"
 }

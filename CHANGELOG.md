@@ -7,6 +7,18 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## [Unreleased]
 
+### Changed
+
+- A namespace fed by connectors stores `title`, `team`, `status`, `labels` (an
+  array of `string`) and `created_at` (`datetime`) of its documents as typed
+  columns, declared with the namespace like the attributes of the file, so a
+  filter or `order_by` can use them. `search`, `fetch` and `list_filters`
+  return the same fields as before. Publication contract 5.0 and table schema
+  2.0: a namespace published before is refused with `unsupported schema major
+  version`; republish it. The `key=value` attributes of a connector document
+  stay in the `attributes` column. See
+  [tuning](docs/tuning.md#namespaceattributes).
+
 ### Added
 
 - `fyrr writer namespace list [--prefix P]` and `GET /v1/namespaces?prefix=P` on

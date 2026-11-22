@@ -13,7 +13,7 @@ pub async fn content(
     };
     if payload.embedding != fyrr_reader::embedding::identity(&config.embedding)
         || payload.chunk_profile != crate::prepare::chunk_identity()
-        || payload.table_schema_version.major != 1
+        || payload.table_schema_version.major != 2
     {
         reject(config, envelope, "envelope_profile_mismatch").await?;
         return Ok((Vec::new(), Vec::new(), false));

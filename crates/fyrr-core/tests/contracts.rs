@@ -592,8 +592,9 @@ fn semantic_violations_are_refused_without_echoing_values() {
             assert!(!error.to_string().contains(sentinel), "{error}");
         }
         let mut old = fixture;
+        // A manifest of the table before the connector columns (4.1) is refused.
         old["schema_version"] = json!(if pointer == "/embedding" {
-            "2.2"
+            "4.1"
         } else {
             "4.0"
         });

@@ -76,6 +76,15 @@ class Incremental(Connector):
                                 source_uri="test://" + doc["id"],
                                 source_type="test.doc",
                                 author=doc.get("author"),
+                                title=doc.get("title"),
+                                team=doc.get("team"),
+                                status=doc.get("status"),
+                                labels=doc.get("labels", ()),
+                                created_at=(
+                                    datetime.fromisoformat(doc["created_at"])
+                                    if "created_at" in doc
+                                    else None
+                                ),
                                 **(
                                     {"updated_at": datetime.fromisoformat(doc["updated_at"])}
                                     if "updated_at" in doc

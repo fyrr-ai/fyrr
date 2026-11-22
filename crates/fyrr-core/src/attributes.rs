@@ -36,6 +36,18 @@ pub const BUILT_IN_COLUMNS: [&str; 16] = [
     "attributes",
 ];
 
+/// The fields of a connector document's metadata that are typed columns of its
+/// namespace. A namespace written through the API has none of them; a namespace
+/// fed by connectors declares them with the attributes of its file and takes
+/// no other type for them.
+pub const CONNECTOR_COLUMNS: [(&str, AttributeType); 5] = [
+    ("title", AttributeType::String),
+    ("team", AttributeType::String),
+    ("status", AttributeType::String),
+    ("labels", AttributeType::Array(ElementType::String)),
+    ("created_at", AttributeType::Datetime),
+];
+
 /// The type of an attribute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

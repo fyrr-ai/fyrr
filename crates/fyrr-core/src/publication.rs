@@ -22,7 +22,7 @@ use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
 
 /// The publication contract version (manifest and head) written by this build.
-pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 1);
+pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
 
 /// The index and retrieval settings a namespace is created with and keeps for
 /// its life. The process configuration only supplies them when the namespace is
