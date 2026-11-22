@@ -110,7 +110,7 @@ namespace's published version, with no storage request of its own:
 | `namespace`, `publication_id` | The namespace and the content publication the answer describes. |
 | `schema` | The typed attributes of the version, name to type; `{}` when it has none. |
 | `settings` | The namespace's [settings](configuration.md), as its policy records them. |
-| `read_only` | Whether the namespace is [frozen](#freezing-a-namespace), as of the policy the reader holds. A reader takes a changed policy at its next search or fetch, so a switch shows after one. |
+| `read_only` | Whether the namespace is [frozen](#freezing-a-namespace). Unlike the rest, it is read from the current head (the one the reader's authorization checks share), because a switch is published without a new version. |
 | `rows` | Approximate live rows (a document is one or more rows). `null` for a version published before contract 4.1. |
 | `logical_bytes` | Approximate bytes of the data files of those rows, without indexes. `null` as `rows`. |
 | `first_published_at` | When the namespace's first content publication was committed. `null` for a namespace published before contract 4.1: that time is not known. |

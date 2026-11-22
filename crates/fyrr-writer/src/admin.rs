@@ -210,7 +210,8 @@ async fn patch_namespace(state: Arc<AdminState>, request: Request, name: String)
         Ok(admitted) => admitted,
         Err(refused) => return refused,
     };
-    let Ok(body) = serde_json::from_slice::<fyrr_core::http_api::PatchNamespaceRequest>(&bytes) else {
+    let Ok(body) = serde_json::from_slice::<fyrr_core::http_api::PatchNamespaceRequest>(&bytes)
+    else {
         return error(ScimError::new(400, "invalidSyntax"));
     };
     if name != config.namespace.name {
