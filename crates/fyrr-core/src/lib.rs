@@ -18,6 +18,7 @@
     )
 )]
 
+pub mod attributes;
 pub mod clock;
 pub mod config;
 pub mod connector;

@@ -72,6 +72,13 @@
         "$ref": "#/$defs/IndexIdentity"
       }
     },
+    "attributes": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/AttributeType"
+      },
+      "description": "The typed attributes of this version: each is a nullable column with an\nindex of its own among `indexes`."
+    },
     "files": {
       "type": "array",
       "items": {
@@ -345,6 +352,33 @@
         "uuid"
       ],
       "description": "One index of the published version."
+    },
+    "AttributeType": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "string",
+            "bool"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "int",
+          "description": "64-bit signed integer."
+        },
+        {
+          "type": "string",
+          "const": "float",
+          "description": "64-bit float."
+        },
+        {
+          "type": "string",
+          "const": "datetime",
+          "description": "An RFC 3339 string in requests, stored as UTC microseconds."
+        }
+      ],
+      "description": "The type of an attribute."
     },
     "FileRef": {
       "type": "object",

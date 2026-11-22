@@ -96,6 +96,13 @@
               "type": "null"
             }
           ]
+        },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/AttributeType"
+          },
+          "description": "The typed attributes the namespace declares when it is created. Each is\na nullable column with its own index from the first publication."
         }
       },
       "required": [
@@ -412,6 +419,33 @@
         "weight"
       ],
       "description": "What of a reranker decides results: recorded in the namespace when it is\ncreated. The endpoint, credential, spend caps and deadline stay process\nconfiguration ([`RerankConfig`]). Persisted types accept the fields a newer\nminor version adds, unlike their configuration counterparts."
+    },
+    "AttributeType": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "string",
+            "bool"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "int",
+          "description": "64-bit signed integer."
+        },
+        {
+          "type": "string",
+          "const": "float",
+          "description": "64-bit float."
+        },
+        {
+          "type": "string",
+          "const": "datetime",
+          "description": "An RFC 3339 string in requests, stored as UTC microseconds."
+        }
+      ],
+      "description": "The type of an attribute."
     },
     "RetiredSource": {
       "type": "object",

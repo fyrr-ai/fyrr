@@ -68,6 +68,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   score them concurrently. Scores and rankings do not change; see
   [tuning](docs/tuning.md#full-text-partitions).
 
+- `[namespace.attributes]` declares typed attributes for a new namespace:
+  `string`, `int`, `float`, `bool` or `datetime`. Each is a nullable table
+  column of its own with a B-tree (bitmap for `bool`) index, and the schema is
+  recorded in the namespace's policy artifact and in every content manifest
+  (contracts 3.0 and 4.0, unreleased). The attribute values themselves arrive
+  with the document write API. See [tuning](docs/tuning.md#namespaceattributes).
+
 ### Changed
 
 - **Breaking: a namespace keeps its own index and retrieval settings.**

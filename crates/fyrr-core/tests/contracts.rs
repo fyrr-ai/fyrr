@@ -71,6 +71,26 @@ fn publication_lineage_refuses_gaps_and_wrong_endpoints() {
 }
 
 #[test]
+fn a_manifest_and_a_policy_hold_only_valid_attribute_schemas() {
+    let mut manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
+    manifest["attributes"] = json!({"created": "datetime", "priority": "int", "done": "bool"});
+    assert!(parse::<ContentManifest>(&manifest).is_ok());
+    let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
+    for (name, kind) in [
+        ("_hidden", "int"),
+        ("source_id", "int"),
+        ("Bad", "int"),
+        ("a", "uuid"),
+    ] {
+        let mut invalid = manifest.clone();
+        invalid["attributes"] = json!({ name: kind });
+        assert!(parse::<ContentManifest>(&invalid).is_err(), "{name} {kind}");
+        policy["settings"]["attributes"] = json!({ name: kind });
+        assert!(parse::<PolicyArtifact>(&policy).is_err(), "{name} {kind}");
+    }
+}
+
+#[test]
 fn api_keys_artifact_holds_only_distinct_hashed_keys_with_roles() {
     let base = common::read_json("fixtures/contracts/api-keys-artifact/artifact.json");
     assert!(parse::<ApiKeysArtifact>(&base).is_ok());
@@ -166,6 +186,7 @@ fn add_future_fields(value: &mut Value) {
                 "lance_fragment",
                 "config_schema",
                 "fixed_grants",
+                "attributes",
             ]
             .contains(&key.as_str())
             {

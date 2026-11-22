@@ -1311,6 +1311,40 @@ fn dense_partition_rows_defaults_to_550_and_is_bounded_without_changing_the_dige
     }
 }
 #[test]
+fn namespace_attributes_are_declared_by_name_and_type() {
+    use fyrr_core::attributes::AttributeType;
+    let declared = parse(&format!(
+        "{MINIMAL}\n[namespace.attributes]\ncreated='datetime'\npriority='int'\ndone='bool'"
+    ))
+    .unwrap();
+    assert!(errors(&declared).is_empty());
+    let attributes = &declared.config.namespace.attributes;
+    assert_eq!(attributes["created"], AttributeType::Datetime);
+    assert_eq!(attributes["priority"], AttributeType::Int);
+    assert_eq!(attributes["done"], AttributeType::Bool);
+    assert!(
+        parse(MINIMAL)
+            .unwrap()
+            .config
+            .namespace
+            .attributes
+            .is_empty()
+    );
+    for name in ["_hidden", "source_id", "Bad-Name"] {
+        let rejected = parse(&format!(
+            "{MINIMAL}\n[namespace.attributes]\n\"{name}\"='int'"
+        ))
+        .unwrap();
+        assert!(
+            errors(&rejected)
+                .iter()
+                .any(|error| error.contains("namespace.attributes")),
+            "{name}"
+        );
+    }
+    assert!(parse(&format!("{MINIMAL}\n[namespace.attributes]\na='uuid'")).is_err());
+}
+#[test]
 fn rescore_depth_keeps_legacy_digest_and_expands_only_at_small_gaps() {
     use fyrr_core::config::RescoreDepth;
     let baseline = parse(MINIMAL).unwrap().config.namespace;

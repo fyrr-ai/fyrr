@@ -241,6 +241,9 @@ pub(crate) fn namespace_settings(
     rescore_depth(namespace, error);
     composition(namespace, error);
     namespace_ranges(namespace, error);
+    if let Err(code) = crate::attributes::check_schema(&namespace.attributes) {
+        error("namespace.attributes", code.to_string());
+    }
 }
 
 fn dense_weight(namespace: &NamespaceConfig, error: &mut impl FnMut(&str, String)) {

@@ -175,9 +175,10 @@ async fn verify(
         .map(|(column, name, kind)| (*column, (*name, *kind)))
         .collect();
     let start = tokio::time::Instant::now();
-    let result = verify_loaded_indices(indexes, &[0, 1], fts_compatible, |column, _| {
+    let expected = expected_indexes(&Default::default());
+    let result = verify_loaded_indices(indexes, &[0, 1], fts_compatible, &expected, |column, _| {
         let store = store.clone();
-        let (name, kind) = by_column[column];
+        let (name, kind) = by_column[column.as_str()];
         let outcome = if fail.contains(&name) {
             Err(IndexVerificationError::StorageUnavailable)
         } else if wrong.contains(&name) {
@@ -264,4 +265,41 @@ async fn index_verification_reports_the_error_a_sequential_pass_reports() {
         verify(&partial, true, &[], &[]).await.0,
         Err(IncompatibleIndex)
     );
+}
+
+#[test]
+fn an_attribute_must_be_a_nullable_column_of_its_type_with_its_index_on_it() {
+    use arrow_schema::{DataType, Field, Schema};
+    use fyrr_core::attributes::{AttributeType, index_name};
+    let table = |priority: Field| {
+        lance::datatypes::Schema::try_from(&Schema::new(vec![
+            Field::new("other", DataType::Utf8, true),
+            priority,
+        ]))
+        .unwrap()
+    };
+    let attributes = |kind| [("priority".to_owned(), kind)].into_iter().collect();
+    let on = |field: i32| {
+        let mut index = index(&index_name("priority"), &[0]);
+        index.fields = vec![field];
+        index
+    };
+    let good = table(Field::new("priority", DataType::Int64, true));
+    let int = attributes(AttributeType::Int);
+    assert!(attribute_columns_match(&good, &int, &[on(1)]));
+    assert!(attribute_columns_match(&good, &int, &[]));
+    // The index is on another column.
+    assert!(!attribute_columns_match(&good, &int, &[on(0)]));
+    // The column holds another type, or may not be null, or is missing.
+    assert!(!attribute_columns_match(
+        &good,
+        &attributes(AttributeType::String),
+        &[on(1)]
+    ));
+    let required = table(Field::new("priority", DataType::Int64, false));
+    assert!(!attribute_columns_match(&required, &int, &[on(1)]));
+    let text = table(Field::new("priority", DataType::Utf8, true));
+    assert!(!attribute_columns_match(&text, &int, &[on(1)]));
+    let renamed = table(Field::new("rank", DataType::Int64, true));
+    assert!(!attribute_columns_match(&renamed, &int, &[on(1)]));
 }
