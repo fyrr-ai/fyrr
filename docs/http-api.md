@@ -154,14 +154,21 @@ The switch is a new policy generation published under the namespace lease. A
 writer judges it against the published head when an envelope is about to become
 durable, not only when its request arrived, so a request that was accepted
 before the switch but had not written its envelope yet is refused too. An
-envelope that was durable before the switch is still committed, also after it:
-a frozen namespace is quiet once `fyrr writer status` shows nothing pending.
+envelope that was durable before the switch is still committed, also after it.
 The committer holds the namespace lease while it publishes, so a switch made
 then answers `503` (`temporarilyUnavailable`) and is repeated.
 
-A policy with the switch set is written as contract `policy-artifact` 4.0, which
-a build that does not know the switch refuses, instead of writing into the
-namespace. The same refusal reaches its readers: upgrade every reader before
+The check and the write of an envelope are not atomic with the switch: a
+request whose check ran before the switch was published can still write its
+envelope after it, and the committer publishes it, as a request that came
+before the switch. So the answer of the switch does not mean that the namespace
+is quiet. To copy a stable namespace, freeze it, wait until `fyrr writer status`
+shows nothing pending and until `writer.commit.lease_ttl` has passed (the
+longest a writer holds its cursor lease without renewing it), then copy.
+
+A policy with the switch set is written as contract `policy-artifact` 4.0, the
+version that a policy with index options has, which a build that does not know
+the switch refuses, instead of writing into the namespace. The same refusal reaches its readers: upgrade every reader before
 freezing a namespace. Thawing writes 3.1 again.
 
 ## Listing namespaces

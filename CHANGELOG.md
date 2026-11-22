@@ -15,8 +15,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `namespace_read_only`, judged against the published head as each envelope
   becomes durable; envelopes prepared before the switch are still committed, and
   maintenance and the switch itself still work. The namespace report shows
-  `read_only`. A frozen namespace's policy is `policy-artifact` 4.0, which a build
-  without the switch refuses, readers included. See
+  `read_only`. A policy that sets `read_only` is `policy-artifact` 4.0, the same
+  unreleased 4.0 as a policy with index options: both enter it together, so a
+  build with index options but without the switch must not be released alone,
+  and this change ships in the release of the index options. A build without
+  the switch refuses the policy, readers included. See
   [Freezing a namespace](docs/http-api.md#freezing-a-namespace).
 - `fyrr writer namespace list [--prefix P]` and `GET /v1/namespaces?prefix=P` on
   the reader list the namespaces of the storage root, in name order, that start
