@@ -325,18 +325,13 @@ fn laid_over(
     let mut settings: NamespaceSettings =
         serde_json::from_value(value).map_err(|_| ApiError(400, "settings_invalid"))?;
     // A request declares the model and dimension of its vectors. The profile
-    // that binds them is derived unless the request sends it, and then it must
-    // be the one of what the request declares.
-    let embedding = &mut settings.embedding;
-    let derived = embedding
-        .settings
-        .fingerprint(&embedding.model, embedding.dimensions);
-    if request.is_some_and(|request| request.pointer("/embedding/fingerprint").is_some()) {
-        if embedding.fingerprint != derived {
-            return Err(ApiError(400, "settings_invalid"));
-        }
-    } else {
-        embedding.fingerprint = derived;
+    // that binds them is derived unless the request sends it: a wrong one is
+    // refused by the settings' validation, or differs from an existing namespace's.
+    if request.is_none_or(|request| request.pointer("/embedding/fingerprint").is_none()) {
+        let embedding = &mut settings.embedding;
+        embedding.fingerprint = embedding
+            .settings
+            .fingerprint(&embedding.model, embedding.dimensions);
     }
     // A request cannot make a namespace that the API does not write.
     if settings.write_api.is_none() {

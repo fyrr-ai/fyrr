@@ -412,6 +412,17 @@ async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_sto
     );
     let fetched = body(Mcp::open(&config).call("fetch", json!({"source_id":"_api","root_id":"b"})));
     assert!(fetched.to_string().contains("bravo"));
+    // The settings are fixed, a fingerprint that differs from the namespace's included.
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"settings": {"embedding": {"fingerprint": wrong}}, "upserts": [row]})
+            )
+            .await,
+        (409, json!({"error": "namespace_settings_fixed"}))
+    );
 
     // Nothing embeds the text of a row without a vector, and the dimension is the namespace's.
     for (row, code) in [
