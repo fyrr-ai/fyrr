@@ -114,8 +114,8 @@ struct Namespaces {
     slots: Arc<Semaphore>,
     /// How many namespaces have been opened: each has a mirror of its own.
     opened: std::sync::atomic::AtomicU64,
-    /// Where those mirrors are, owned by this process through the lock on
-    /// `_lock`, which it holds until it ends.
+    /// Where those mirrors are: the directory of this process, whose lock
+    /// `_lock` it holds until it ends.
     mirrors: std::path::PathBuf,
     _lock: std::fs::File,
 }
@@ -131,25 +131,36 @@ impl Drop for Slot {
         let _ = std::fs::remove_dir_all(&self.mirror);
     }
 }
-/// The directory for the mirrors of namespaces opened by request path, next to
-/// the configured mirror, which holds files only. The process owns it alone, so
-/// no other process removes its mirrors, and what an earlier process left there
-/// is removed.
+/// A directory of this process for the mirrors of namespaces opened by request
+/// path, among those of other processes next to the configured mirror, which
+/// holds files only. A lock on its `owner.lock` shows that the process lives.
+/// The directories of processes that ended are removed, best effort.
 fn own_mirrors(configured: std::path::PathBuf) -> Result<(std::path::PathBuf, std::fs::File)> {
-    let mut mirrors = configured.into_os_string();
-    mirrors.push(".paths");
-    let mirrors = std::path::PathBuf::from(mirrors);
-    crate::mirror::MirrorStore::private_directory(&mirrors).map_err(|_| StorageUnavailable)?;
-    let lock = crate::mirror::MirrorStore::private_file(&mirrors.join("owner.lock"), true)
-        .map_err(|_| StorageUnavailable)?;
+    use crate::mirror::MirrorStore;
+    let mut root = configured.into_os_string();
+    root.push(".paths");
+    let root = std::path::PathBuf::from(root);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let own = root.join(format!("{}-{nanos}", std::process::id()));
+    MirrorStore::private_directory(&own).map_err(|_| StorageUnavailable)?;
+    let lock =
+        MirrorStore::private_file(&own.join("owner.lock"), true).map_err(|_| StorageUnavailable)?;
     lock.try_lock().map_err(|_| StorageUnavailable)?;
-    for entry in std::fs::read_dir(&mirrors).map_err(|_| StorageUnavailable)? {
-        let entry = entry.map_err(|_| StorageUnavailable)?;
-        if entry.file_name().to_string_lossy().starts_with("path-") {
-            std::fs::remove_dir_all(entry.path()).map_err(|_| StorageUnavailable)?;
+    for entry in std::fs::read_dir(&root)
+        .into_iter()
+        .flatten()
+        .filter_map(std::result::Result::ok)
+    {
+        // A directory without a lock may be one that a process is creating.
+        if let Ok(other) = MirrorStore::private_file(&entry.path().join("owner.lock"), false)
+            && other.try_lock().is_ok()
+        {
+            let _ = std::fs::remove_dir_all(entry.path());
         }
     }
-    Ok((mirrors, lock))
+    Ok((own, lock))
 }
 /// Open namespaces, least recently used first. Each has one place that
 /// concurrent requests share, so a namespace is opened once.
