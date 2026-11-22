@@ -92,7 +92,7 @@ pub struct EnvelopeDocument {
     pub records: u32,
     /// What a `Patch` writes; present for that intent only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub patch: Option<DocumentPatch>,
+    pub patch: Option<Box<DocumentPatch>>,
 }
 
 /// The values a patch writes into the stored records of a document. Every

@@ -381,6 +381,26 @@
       ],
       "description": "Replacement or delete intent for one document."
     },
+    "DocumentIntent": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "replace",
+          "description": "Atomically replace every record of the document."
+        },
+        {
+          "type": "string",
+          "const": "delete",
+          "description": "Remove every record of the document."
+        },
+        {
+          "type": "string",
+          "const": "patch",
+          "description": "Write the values of `patch` into the records of an existing document;\na document that does not exist is skipped, never created."
+        }
+      ],
+      "description": "What the committer does with a document."
+    },
     "DocumentPatch": {
       "type": "object",
       "properties": {
@@ -411,26 +431,6 @@
         "attributes"
       ],
       "description": "The values a patch writes into the stored records of a document. Every\ncolumn it does not name stays as stored, the vector included."
-    },
-    "DocumentIntent": {
-      "oneOf": [
-        {
-          "type": "string",
-          "const": "replace",
-          "description": "Atomically replace every record of the document."
-        },
-        {
-          "type": "string",
-          "const": "delete",
-          "description": "Remove every record of the document."
-        },
-        {
-          "type": "string",
-          "const": "patch",
-          "description": "Write the values of `patch` into the records of an existing document;\na document that does not exist is skipped, never created."
-        }
-      ],
-      "description": "What the committer does with a document."
     },
     "PreparedFragment": {
       "type": "object",

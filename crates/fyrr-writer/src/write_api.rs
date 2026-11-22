@@ -687,7 +687,7 @@ fn changes(
             expected_prior_revision: None,
             permission_revision: None,
             records: 0,
-            patch: Some(patch),
+            patch: Some(Box::new(patch)),
         })
     }));
     crate::prepare::check_atomic(config, &changes)?;
