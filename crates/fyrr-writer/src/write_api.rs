@@ -22,7 +22,11 @@ use fyrr_core::connector::{
     API_SOURCE_ID, BatchBody, CONNECTOR_CONTRACT_VERSION, ChangeOp, ConnectorBatch, CursorStep,
     DocumentChange, DocumentMetadata, Section, SyncKind,
 };
-use fyrr_core::envelope::{BaseHead, DocumentIntent, DocumentPatch, EnvelopeDocument, envelope_id};
+use fyrr_core::envelope::{
+    BaseHead, DocumentIntent, DocumentPatch, EnvelopeDocument, FilterPatch, FilterWrites,
+    envelope_id,
+};
+use fyrr_core::http_api::WriteResponse;
 use fyrr_core::identity::ApiKeysArtifact;
 use fyrr_core::mcp::Filter;
 use fyrr_core::publication::{NamespaceSettings, PolicyArtifact};
@@ -229,6 +233,21 @@ struct Payload {
     /// which the stored document with that id must meet for the change to apply.
     #[serde(default)]
     conditions: BTreeMap<String, Value>,
+    /// Deletes every document that matches the filter, before the rest of the
+    /// request is applied.
+    #[serde(default)]
+    delete_where: Option<Filter>,
+    /// Writes the attributes of `set` into every document that matches the filter.
+    #[serde(default)]
+    patch_where: Option<PatchWhere>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatchWhere {
+    filter: Filter,
+    /// A patch row without its `id`.
+    set: Map<String, Value>,
 }
 
 /// The conditions of a request: as given, and as bound to the row of their id.
@@ -372,8 +391,13 @@ async fn accept(api: &WriteApi, config: &Config, request: Request) -> Result<Res
         Err(_) if exceeded => return Err(ApiError(413, "too_many_rows")),
         Err(_) => return Err(ApiError(400, "body_invalid")),
     };
-    // Whether a condition holds tells about a document the key may not read.
-    if !admin && !body.conditions.is_empty() {
+    // Whether a condition holds, and how many documents a filter matches,
+    // tells about documents the key may not read.
+    if !admin
+        && (!body.conditions.is_empty()
+            || body.delete_where.is_some()
+            || body.patch_where.is_some())
+    {
         return Err(ApiError(403, "forbidden"));
     }
     // The work outlives a caller that goes away: an envelope that was begun is
@@ -590,11 +614,6 @@ fn checked_patches(
     ids: &mut std::collections::HashSet<String>,
     conditions: &mut Conditions,
 ) -> Result<Patches, ApiError> {
-    let open = config
-        .namespace
-        .write_api
-        .as_ref()
-        .is_some_and(|api| api.open);
     let mut patches = Vec::with_capacity(body.patches.0.len());
     for raw in std::mem::take(&mut body.patches.0) {
         if raw.get().len() > ROW_MAX_BYTES {
@@ -610,72 +629,129 @@ fn checked_patches(
         if !ids.insert(id.clone()) {
             return Err(ApiError(400, "duplicate_id"));
         }
-        // An open namespace ignores readers, as an upsert does.
-        let readers = row
-            .remove("readers")
-            .map(reader_list)
-            .transpose()?
-            .filter(|_| !open)
-            .map(|raw| -> Result<_, ApiError> {
-                // The check an upsert's readers get in its change.
-                fyrr_core::connector::check_readers("readers", &raw)
-                    .map_err(|_| ApiError(400, "document_invalid"))?;
-                Ok(crate::apply::permission_readers(
-                    config,
-                    API_SOURCE_ID,
-                    &raw,
-                    &[],
-                )?)
-            })
-            .transpose()?;
-        let vector = row
-            .remove("vector")
-            .map(|value| vector_of(value, config))
-            .transpose()?;
-        let text = match row.remove(text_key) {
-            None => None,
-            Some(Value::String(text)) if !text.is_empty() => Some(text),
-            Some(_) => return Err(ApiError(400, "text_missing")),
-        };
-        if text.as_ref().is_some_and(|t| t.contains('\0')) {
-            return Err(ApiError(400, "document_invalid"));
-        }
-        if text
-            .as_ref()
-            .is_some_and(|t| t.len() > crate::chunk::MAX_BYTES)
-        {
-            return Err(ApiError(413, "text_too_large"));
-        }
-        // The vector goes with the text it stands for; a text without one would
-        // need embedding, which a patch does not do.
-        match (&text, &vector) {
-            (None, Some(_)) => return Err(ApiError(400, "vector_not_patchable")),
-            (Some(_), None) if config.embedding.endpoint.is_empty() => {
-                return Err(ApiError(400, "embedding_not_configured"));
-            }
-            (Some(_), None) => return Err(ApiError(400, "text_not_patchable")),
-            _ => {}
-        }
-        let mut schema = config.namespace.attributes.clone();
-        for (name, value) in &row {
-            if !schema.contains_key(name) {
-                return Err(ApiError(400, "attribute_undeclared"));
-            }
-            fyrr_core::attributes::resolve(&mut schema, name, value)
-                .map_err(|error| ApiError(400, error.code()))?;
-        }
-        conditions.bind(&id, Some(&row), &config.namespace.attributes)?;
-        patches.push((
-            id,
-            DocumentPatch {
-                readers,
-                text,
-                vector,
-                attributes: row,
-            },
-        ));
+        let patch = patch_values(row, config, text_key)?;
+        conditions.bind(&id, Some(&patch.attributes), &config.namespace.attributes)?;
+        patches.push((id, patch));
     }
     Ok(patches)
+}
+
+/// What a patch row writes, once its `id` is taken off: the readers, the text
+/// with the vector of that text, and the attributes it names.
+fn patch_values(
+    mut row: Map<String, Value>,
+    config: &Config,
+    text_key: &str,
+) -> Result<DocumentPatch, ApiError> {
+    let open = config
+        .namespace
+        .write_api
+        .as_ref()
+        .is_some_and(|api| api.open);
+    // An open namespace ignores readers, as an upsert does.
+    let readers = row
+        .remove("readers")
+        .map(reader_list)
+        .transpose()?
+        .filter(|_| !open)
+        .map(|raw| -> Result<_, ApiError> {
+            // The check an upsert's readers get in its change.
+            fyrr_core::connector::check_readers("readers", &raw)
+                .map_err(|_| ApiError(400, "document_invalid"))?;
+            Ok(crate::apply::permission_readers(
+                config,
+                API_SOURCE_ID,
+                &raw,
+                &[],
+            )?)
+        })
+        .transpose()?;
+    let vector = row
+        .remove("vector")
+        .map(|value| vector_of(value, config))
+        .transpose()?;
+    let text = match row.remove(text_key) {
+        None => None,
+        Some(Value::String(text)) if !text.is_empty() => Some(text),
+        Some(_) => return Err(ApiError(400, "text_missing")),
+    };
+    if text.as_ref().is_some_and(|t| t.contains('\0')) {
+        return Err(ApiError(400, "document_invalid"));
+    }
+    if text
+        .as_ref()
+        .is_some_and(|t| t.len() > crate::chunk::MAX_BYTES)
+    {
+        return Err(ApiError(413, "text_too_large"));
+    }
+    // The vector goes with the text it stands for; a text without one would
+    // need embedding, which a patch does not do.
+    match (&text, &vector) {
+        (None, Some(_)) => return Err(ApiError(400, "vector_not_patchable")),
+        (Some(_), None) if config.embedding.endpoint.is_empty() => {
+            return Err(ApiError(400, "embedding_not_configured"));
+        }
+        (Some(_), None) => return Err(ApiError(400, "text_not_patchable")),
+        _ => {}
+    }
+    let mut schema = config.namespace.attributes.clone();
+    for (name, value) in &row {
+        if !schema.contains_key(name) {
+            return Err(ApiError(400, "attribute_undeclared"));
+        }
+        fyrr_core::attributes::resolve(&mut schema, name, value)
+            .map_err(|error| ApiError(400, error.code()))?;
+    }
+    Ok(DocumentPatch {
+        readers,
+        text,
+        vector,
+        attributes: row,
+    })
+}
+
+/// The checked writes by filter of the request. The filters are compiled as
+/// the committer will compile them, so that one it cannot is refused here; the
+/// documents they match are found by the committer. The revision is set with
+/// the sequence of the envelope.
+fn checked_filter_writes(
+    body: &mut Payload,
+    config: &Config,
+    text_key: &str,
+) -> Result<Option<FilterWrites>, ApiError> {
+    let compiles = |filter: &Filter| {
+        fyrr_reader::filter_sql(filter, &config.namespace.attributes)
+            .map(drop)
+            .ok_or(ApiError(400, "filter_invalid"))
+    };
+    let delete = body.delete_where.take();
+    let patch = body.patch_where.take();
+    if delete.is_none() && patch.is_none() {
+        return Ok(None);
+    }
+    if let Some(filter) = &delete {
+        compiles(filter)?;
+    }
+    let patch = patch
+        .map(|patch| -> Result<_, ApiError> {
+            compiles(&patch.filter)?;
+            let values = patch_values(patch.set, config, text_key)?;
+            // A text needs the vector of its own for each document.
+            if values.text.is_some() {
+                return Err(ApiError(400, "text_not_patchable"));
+            }
+            Ok(FilterPatch {
+                filter: patch.filter,
+                values: Box::new(values),
+            })
+        })
+        .transpose()?;
+    Ok(Some(FilterWrites {
+        source_revision: format!("rev-{}", u64::MAX),
+        revision_order: i64::MAX,
+        delete,
+        patch,
+    }))
 }
 
 /// How many of the documents `ids` the committer applied a change to: their
@@ -802,6 +878,7 @@ fn changes(
     deletes: Vec<String>,
     patches: Patches,
     mut conditions: BTreeMap<String, Filter>,
+    filter_writes: Option<FilterWrites>,
 ) -> Result<Vec<ContentChange>, ApiError> {
     let open = config
         .namespace
@@ -881,6 +958,7 @@ fn changes(
             condition,
         })
     }));
+    changes.extend(filter_writes.map(|writes| ContentChange::Where(Box::new(writes))));
     crate::prepare::check_atomic(config, &changes)?;
     Ok(changes)
 }
@@ -919,7 +997,7 @@ async fn execute(
     commits: &Commits,
     mut body: Payload,
     slot: OwnedMutexGuard<()>,
-) -> Result<Value, ApiError> {
+) -> Result<WriteResponse, ApiError> {
     let requested = match &body.settings {
         None => None,
         Some(raw) if raw.get().len() > SETTINGS_MAX_BYTES => {
@@ -980,7 +1058,9 @@ async fn execute(
         if !(body.upserts.0.is_empty()
             && body.patches.0.is_empty()
             && body.deletes.0.is_empty()
-            && body.conditions.is_empty())
+            && body.conditions.is_empty()
+            && body.delete_where.is_none()
+            && body.patch_where.is_none())
         {
             return Err(ApiError(400, "schema_change_with_rows"));
         }
@@ -1024,8 +1104,12 @@ async fn execute(
     )
     .await?;
     let (rows, attributes, patches, conditions) = checked(&mut body, &config, text_key, order)?;
+    let filter_writes = checked_filter_writes(&mut body, &config, text_key)?;
     let (upserted, deleted) = (rows.len() as u64, body.deletes.0.len() as u64);
-    if upserted + deleted + patches.len() as u64 == 0 && requested.is_none() {
+    if upserted + deleted + patches.len() as u64 == 0
+        && filter_writes.is_none()
+        && requested.is_none()
+    {
         return Err(ApiError(400, "empty_request"));
     }
     // Every patch is in the envelope: the committer applies it, in the order
@@ -1042,8 +1126,21 @@ async fn execute(
     let guarded_upserts = ids_with_condition(rows.iter().map(|row| &row.id).collect());
     let guarded_deletes = ids_with_condition(body.deletes.0.iter().collect());
     let guarded = patch_ids.len() + guarded_upserts.len() + guarded_deletes.len();
-    let changes = changes(&config, rows, body.deletes.0, patches, conditions)?;
-    let mut answer = json!({"upserted": upserted, "deleted": deleted});
+    let filtered = usize::from(filter_writes.is_some());
+    let changes = changes(
+        &config,
+        rows,
+        body.deletes.0,
+        patches,
+        conditions,
+        filter_writes,
+    )?;
+    let mut answer = WriteResponse {
+        upserted,
+        deleted,
+        patched: None,
+        skipped: None,
+    };
     let (head, served) = match existing {
         Some(existing) => existing,
         None => {
@@ -1064,10 +1161,11 @@ async fn execute(
     if served.settings != settings {
         return Err(ApiError(409, "namespace_settings_fixed"));
     }
-    // Patches and deletes with a condition alone, with no document published
-    // and no envelope waiting that could create one, change nothing: there is
-    // nothing to publish.
-    let only_skipped = guarded > 0 && patch_ids.len() + guarded_deletes.len() == changes.len();
+    // Patches, filters and deletes with a condition alone, with no document
+    // published and no envelope waiting that could create one, change nothing:
+    // there is nothing to publish.
+    let only_skipped = (guarded > 0 || filtered > 0)
+        && patch_ids.len() + guarded_deletes.len() + filtered == changes.len();
     if changes.is_empty()
         || (only_skipped
             && head.content.is_none()
@@ -1075,12 +1173,12 @@ async fn execute(
     {
         durable(&config).await?;
         if only_skipped {
-            answer["upserted"] = 0.into();
-            answer["deleted"] = 0.into();
-            if !patch_ids.is_empty() {
-                answer["patched"] = 0.into();
+            answer.upserted = 0;
+            answer.deleted = 0;
+            answer.patched = (!patch_ids.is_empty()).then_some(0);
+            if guarded > 0 {
+                answer.skipped = Some(guarded as u64);
             }
-            answer["skipped"] = guarded.into();
         }
         return Ok(answer);
     }
@@ -1109,12 +1207,10 @@ async fn execute(
                         committed(&dataset, API_SOURCE_ID, &guarded_upserts, &revision).await?;
                     let state = crate::apply::state_source(API_SOURCE_ID);
                     let deletes = committed(&dataset, &state, &guarded_deletes, &revision).await?;
-                    answer["upserted"] = (upserted - guarded_upserts.len() as u64 + upserts).into();
-                    answer["deleted"] = (deleted - guarded_deletes.len() as u64 + deletes).into();
-                    if !patch_ids.is_empty() {
-                        answer["patched"] = patched.into();
-                    }
-                    answer["skipped"] = (guarded as u64 - patched - upserts - deletes).into();
+                    answer.upserted = upserted - guarded_upserts.len() as u64 + upserts;
+                    answer.deleted = deleted - guarded_deletes.len() as u64 + deletes;
+                    answer.patched = (!patch_ids.is_empty()).then_some(patched);
+                    answer.skipped = Some(guarded as u64 - patched - upserts - deletes);
                 }
                 return Ok(answer);
             }
@@ -1223,6 +1319,10 @@ async fn write_envelope(
                 // A delete states it too: its marker tells that this request wrote it.
                 change.source_revision = Some(format!("rev-{sequence}"));
             }
+            ContentChange::Where(writes) => {
+                writes.revision_order = revision;
+                writes.source_revision = format!("rev-{sequence}");
+            }
             // The only unchanged observations of this source are its patches.
             ContentChange::Present(document) => {
                 document.revision_order = Some(revision);
@@ -1261,4 +1361,53 @@ async fn write_envelope(
     )
     .await?;
     Ok((id, format!("rev-{sequence}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fyrr_core::http_api::{PatchWhere, WriteRequest, WriteRow};
+
+    /// The body that `schemas/openapi.json` describes is the body the route
+    /// parses: `Payload` refuses a member that `WriteRequest` has and it lacks.
+    #[test]
+    fn the_documented_request_is_the_parsed_one() {
+        let row = |id: &str| WriteRow {
+            id: id.into(),
+            readers: Some(vec!["usr:ann".into()]),
+            vector: Some(vec![1.0]),
+            values: Map::from_iter([("text".into(), json!("Blue shirt"))]),
+        };
+        let filter: Filter =
+            serde_json::from_value(json!({"field": "price", "op": "eq", "value": 1}))
+                .expect("filter");
+        let request = WriteRequest {
+            settings: Some(Map::from_iter([("attributes".into(), json!({}))])),
+            upserts: vec![row("a")],
+            deletes: vec!["b".into()],
+            patches: vec![row("c")],
+            conditions: BTreeMap::from([("a".into(), filter.clone())]),
+            delete_where: Some(filter.clone()),
+            patch_where: Some(PatchWhere {
+                filter,
+                set: Map::from_iter([("price".into(), json!(2))]),
+            }),
+        };
+        ROWS_LEFT.set(10);
+        let payload: Payload =
+            serde_json::from_value(serde_json::to_value(&request).expect("request JSON"))
+                .expect("the route parses the documented request");
+        assert_eq!(
+            (
+                payload.upserts.0.len(),
+                payload.deletes.0.len(),
+                payload.patches.0.len(),
+                payload.conditions.len(),
+                payload.settings.is_some(),
+                payload.delete_where.is_some(),
+                payload.patch_where.is_some(),
+            ),
+            (1, 1, 1, 1, true, true, true)
+        );
+    }
 }

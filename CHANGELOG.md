@@ -48,12 +48,24 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   attribute reads null for the documents written before it, an index switched
   off is dropped with it, and one switched on is built by the next
   maintenance. Another type for an attribute and the removal of one are refused
-  (`attribute_type_change_refused`, `attribute_removal_refused`). A manifest that
+  (`attribute_type_change_refused`, `attribute_removal_refused`); a schema
+  change carries nothing else and waits for the first publication of its
+  namespace (`schema_change_with_rows`, `namespace_not_published`). A manifest that
   records index options has contract version 5.0 and a policy artifact whose
   settings hold them 4.0, which an older build refuses; others keep 4.1 and 3.1,
   and this build reads both. See
   [Changing the schema](docs/http-api.md#changing-the-schema) and
   [`[namespace.attribute_indexes]`](docs/tuning.md#namespaceattribute_indexes).
+- The write API takes `delete_where` and `patch_where`: a filter whose matching
+  documents are deleted, or patched with the attributes or readers of `set`.
+  The committer evaluates it once against the state the request is applied to;
+  more than 10,000 matches refuse the request and change nothing. Deletes by
+  filter apply before the rest of the request, patches by filter next. A filter
+  write ignores row permissions and needs an API key with the `admin` role
+  besides `write`. An envelope with a filter write has contract version 6.0,
+  which enters together with conditions: every committer that reads 6.0 knows
+  both. See
+  [HTTP write API](docs/http-api.md#write-documents).
 - The write API takes `conditions`: a filter by the `id` of an upsert, a patch
   or a delete that the stored document must meet when the committer applies
   the change, which may compare it with the change's own row. A change whose

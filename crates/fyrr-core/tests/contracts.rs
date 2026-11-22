@@ -659,6 +659,17 @@ fn semantic_violations_are_refused_without_echoing_values() {
     conditional["schema_version"] = json!("6.0");
     assert!(parse::<PreparedEnvelope>(&conditional).is_ok());
 
+    // So is a write by filter.
+    let mut by_filter = common::read_json("fixtures/contracts/prepared-envelope/content.json");
+    by_filter["payload"]["filter_writes"] = json!({
+        "source_revision": "rev-1",
+        "revision_order": 1,
+        "delete": {"field": "price", "op": "lt", "value": 1},
+    });
+    assert!(parse::<PreparedEnvelope>(&by_filter).is_err());
+    by_filter["schema_version"] = json!("6.0");
+    assert!(parse::<PreparedEnvelope>(&by_filter).is_ok());
+
     let base_artifact = common::read_json("fixtures/contracts/identity-artifact/artifact.json");
     let mut artifact = base_artifact.clone();
     artifact["principals"][0]["tokens"] = json!([0, 99]);

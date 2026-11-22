@@ -49,7 +49,7 @@ pub(super) async fn content_page(
         .iter()
         .filter_map(|change| match change {
             ContentChange::Write(change, _) => Some(change),
-            ContentChange::Present(_) => None,
+            ContentChange::Present(_) | ContentChange::Where(_) => None,
         })
         .filter(|change| {
             change.op == ChangeOp::Upsert && quarantine_reason(config, source, change).is_none()
@@ -113,8 +113,10 @@ pub(super) async fn content_page(
     }
     let fragments = rows.columns.fragments(&page).await?;
     let quarantined_count = rows.quarantined.len() as u64;
-    // Only a committer that knows conditions may read an envelope with one.
-    let conditional = rows.documents.iter().any(|d| d.condition.is_some());
+    // Only a committer that knows conditions and filter writes may read an
+    // envelope with one.
+    let conditional =
+        rows.filter_writes.is_some() || rows.documents.iter().any(|d| d.condition.is_some());
     let envelope = PreparedEnvelope {
         schema_version: if conditional {
             fyrr_core::envelope::CONDITIONAL_ENVELOPE_CONTRACT_VERSION
@@ -139,6 +141,7 @@ pub(super) async fn content_page(
             documents: rows.documents,
             fragments,
             quarantined: rows.quarantined,
+            filter_writes: rows.filter_writes,
         }),
     };
     if let EnvelopePayload::Content(payload) = &envelope.payload {
@@ -179,6 +182,7 @@ struct Page<'a> {
 struct PageRows {
     documents: Vec<EnvelopeDocument>,
     quarantined: Vec<QuarantineEntry>,
+    filter_writes: Option<Box<fyrr_core::envelope::FilterWrites>>,
     columns: RowColumns,
 }
 #[derive(Default)]
@@ -221,6 +225,10 @@ impl PageRows {
             ContentChange::Write(change, condition) => (*change, condition),
             ContentChange::Present(document) => {
                 self.documents.push(document);
+                return Ok(());
+            }
+            ContentChange::Where(writes) => {
+                self.filter_writes = Some(writes);
                 return Ok(());
             }
         };

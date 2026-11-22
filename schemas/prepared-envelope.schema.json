@@ -611,6 +611,62 @@
       ],
       "description": "Value-free diagnostic carried by an immutable envelope, never mutable state."
     },
+    "FilterWrites": {
+      "type": "object",
+      "properties": {
+        "source_revision": {
+          "type": "string",
+          "description": "The revision and its order of the documents the filters match."
+        },
+        "revision_order": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "delete": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Filter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The documents to delete."
+        },
+        "patch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FilterPatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The documents to patch."
+        }
+      },
+      "required": [
+        "source_revision",
+        "revision_order"
+      ],
+      "description": "What an envelope does to the documents that match a filter. Deletes apply\nfirst, then patches, then the documents of the envelope itself, which win\nover a filter for the documents they name, except that a patch by id of a\ndocument the filter deletes finds it deleted."
+    },
+    "FilterPatch": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "$ref": "#/$defs/Filter"
+        },
+        "values": {
+          "$ref": "#/$defs/DocumentPatch"
+        }
+      },
+      "required": [
+        "filter",
+        "values"
+      ],
+      "description": "A patch of every document that matches `filter`. It writes attributes or\nreaders, never a text, which would need a vector of its own per document."
+    },
     "ContentPayload": {
       "type": "object",
       "properties": {
@@ -643,6 +699,17 @@
           "items": {
             "$ref": "#/$defs/QuarantineEntry"
           }
+        },
+        "filter_writes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FilterWrites"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Deletes and patches of every document that matches a filter, which the\ncommitter evaluates once against the state the envelope is applied to;\nwritten by the write API only."
         }
       },
       "required": [

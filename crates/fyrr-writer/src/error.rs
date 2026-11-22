@@ -135,6 +135,8 @@ writer_errors! {
     DocumentInvalid => ("document_invalid", false),
     DocumentRevisionMissing => ("document_revision_missing", false),
     ConditionalDeleteUnsupported => ("conditional_delete_unsupported", false),
+    FilterInvalid => ("filter_invalid", false),
+    FilterMatchesTooMany => ("filter_matches_too_many", false),
     ExportInvalid => ("export_invalid", false),
     DeleteConfirmationInvalid => ("delete_confirmation_invalid", false),
     NamespaceDeleting => ("namespace_deleting", false),

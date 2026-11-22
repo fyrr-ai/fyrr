@@ -19,6 +19,10 @@
 
 ## Routes
 
+[`schemas/openapi.json`](../schemas/openapi.json) describes these routes and the
+[write route](#write-documents) as OpenAPI 3.1; it ships in the release as
+`fyrr-openapi-<version>.json`.
+
 | Route | Body | Answer |
 | --- | --- | --- |
 | `POST /v1/namespaces/{namespace}/query` | The arguments of [`search`](mcp-tools.md#search) | The `search` result |
@@ -317,6 +321,8 @@ The body is one JSON object (`application/json`, no `Content-Encoding`):
 | `upserts` | Rows. A row is an object with an `id` (string, its key in the namespace), its text under the key `text_attribute`, `readers` (`usr:<id>` or `grp:<id>`; ignored by an open namespace), optionally its `vector` (a list of numbers) and a value for any declared [attribute](tuning.md#namespaceattributes). A row replaces the document with that `id`, readers included. |
 | `patches` | Rows that change a document without replacing it. A row is an object with an `id`, and the attributes to write: a declared [attribute](tuning.md#namespaceattributes) (`null` clears it), `readers`, or the text under the key `text_attribute` with its `vector`. Everything a patch does not name stays as stored, the vector included, and nothing is embedded. A patch of an `id` that does not exist when the request is published is skipped and never creates a document. |
 | `deletes` | IDs to delete. An ID that does not exist is a delete of nothing. |
+| `delete_where` | A [filter](mcp-tools.md#filters): every document that matches it is deleted. The deletes by filter apply before everything else in the request, so that one request can replace the documents of a group. |
+| `patch_where` | `{"filter": …, "set": {…}}`: every document that matches the filter is patched with `set`, a patch row without its `id` (attributes and `readers`, never a text). The patches by filter apply after `delete_where` and before the rest of the request. |
 | `conditions` | An object from an `id` of the request, in `upserts`, `patches` or `deletes`, to a [filter](mcp-tools.md#filters) that the stored document with that `id` must meet for the change to apply. A comparison's `value` may be `{"row": "<attribute>"}`, which is what the change's own row holds of that declared attribute (`null` when it holds none); a delete has no row. See [Conditions](#conditions). |
 | `settings` | The [settings](tuning.md#namespace) of a namespace that does not exist yet, laid over the process defaults. For an existing namespace they may add `attributes` and set `attribute_indexes` ([Changing the schema](#changing-the-schema)) and must change no other setting: `409 namespace_settings_fixed`. |
 
@@ -326,7 +332,7 @@ elements and a length above zero, or the request is `400 vector_invalid`. A
 row without a vector is embedded by the [`[embedding]`](configuration.md#embedding)
 provider; without one it is `400 embedding_not_configured`. A creating request
 declares the vectors of the namespace in `settings.embedding` (`model` and
-`dimensions`, which default to the process's); a request whose rows all carry
+`dimensions`, which default to the process's; the dimension is a multiple of 8 or the request is `400 settings_invalid`); a request whose rows all carry
 vectors makes 0 embedding calls and needs no `[embedding]` table. The profile `settings.embedding.fingerprint` is derived from them unless the request sends it; a fingerprint that does not match is `400 settings_invalid` for a new namespace and `409 namespace_settings_fixed` for an existing one.
 
 `{namespace}` names the namespace to write: any namespace under
@@ -429,6 +435,24 @@ reference to a row in the condition of a delete is `400 condition_invalid`.
 Like the counts of patches, these are best effort: a change that a later
 request of the same publication replaces or deletes counts as skipped.
 
+`delete_where` and `patch_where` need an [API key](identity.md#identityapi_keys)
+with the `admin` role besides `write`: how many documents a filter matches, and
+whether it matches more than the bound below, tells something about documents
+that the key may not be allowed to read. A request with either from a key
+without `admin` is `403 forbidden`. They match the documents of this namespace
+that the API wrote, whatever their `readers`: the roles are the authorization,
+not the row permissions. The committer evaluates each filter once, against the
+documents the request is applied to, that is, after every request published
+before it, so the last request wins as it does for ids. A filter that matches
+more than 10,000 documents (`MAX_FILTER_WRITE_DOCUMENTS`) refuses the request
+(`409 rejected`) and changes nothing; the same bound holds for each of the two.
+A document the request names (`upserts`, `patches`, `deletes`) is written as
+the row says: an upsert or a delete is not changed by a filter, and a patch by
+`id` is applied over the patch by filter, except that the patch by `id` of a
+document `delete_where` deletes finds it deleted. The answer does not count the
+documents a filter matched. The request is `400 filter_invalid` when a filter
+names a field or a value that the namespace's schema does not allow.
+
 A patch changes the text only together with the `vector` of the new text, which
 replaces the stored one; nothing is embedded. A `vector` without the text is
 `400 vector_not_patchable`. A text without a `vector` would keep the embedding of
@@ -451,11 +475,11 @@ request was accepted does not cancel it.
 | Code | Status | When |
 | --- | --- | --- |
 | `unauthorized` | `401` | No API key, or a key that is not among the published keys. |
-| `forbidden` | `403` | The key lacks the `write` role or its `namespace_prefix` excludes the namespace, or the request sets `conditions` and the key lacks the `admin` role. |
+| `forbidden` | `403` | The key lacks the `write` role or its `namespace_prefix` excludes the namespace, or the request sets `conditions`, `delete_where` or `patch_where` and the key lacks the `admin` role. |
 | `not_found` | `404` | `{namespace}` is not a namespace name, or the process has no `[namespace.write_api]`. |
 | `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
 | `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
-| `schema_change_with_rows`, `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `vector_not_patchable`, `text_not_patchable`, `embedding_not_configured`, `document_invalid`, `condition_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
+| `schema_change_with_rows`, `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `vector_not_patchable`, `text_not_patchable`, `embedding_not_configured`, `document_invalid`, `condition_invalid`, `filter_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
 | `namespace_settings_fixed`, `namespace_not_writable`, `namespace_not_empty`, `namespace_changed`, `rejected` | `409` | The namespace has other settings, takes its documents from connectors, is to be created over envelopes that a deleted namespace left, was replaced by another while the request was prepared, or the committer refused the request (nothing of it is applied). |
 | `attribute_type_change_refused`, `attribute_removal_refused`, `namespace_not_published` | `409` | The settings give an attribute of the namespace another type, or remove it, or change the schema of a namespace that has no publication yet. |
 | `busy`, `unavailable`, `outcome_unknown` | `503` | The writer is busy, storage or the published keys cannot be read, or the answer did not come within 10 minutes; `Retry-After` is 1. |

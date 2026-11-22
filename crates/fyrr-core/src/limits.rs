@@ -64,6 +64,16 @@ pub mod mcp {
     pub const RESPONSE_MIN_HITS_PER_QUERY: usize = 4;
 }
 
+/// Bounds of the write API (not of connector documents).
+pub mod write {
+    /// The most documents one write filter may match, `delete_where` and
+    /// `patch_where` each. A filter that matches more fails its request and
+    /// changes nothing. The committer rewrites a matched document as a record
+    /// of the envelope, so the bound keeps one envelope far below
+    /// `writer.commit`'s limits.
+    pub const MAX_FILTER_WRITE_DOCUMENTS: usize = 10_000;
+}
+
 /// Bounds of the namespace listing (not of connector documents).
 pub mod listing {
     /// Namespaces one listing returns: more names than this match, and it fails.
