@@ -240,18 +240,18 @@ async fn accept(api: &WriteApi, config: &Config, request: Request) -> Result<Res
     let Some(namespace) = namespace.filter(|_| config.namespace.write_api.is_some()) else {
         return Err(ApiError(404, "not_found"));
     };
-    let config = &named(config, namespace);
     if request.method() != axum::http::Method::POST {
         return Err(ApiError(405, "method_not_allowed"));
     }
     // The key is checked as the request arrives; a key revoked afterwards does
     // not cancel an envelope that was already accepted.
-    authorize(config, request.headers()).await?;
+    authorize(config, namespace, request.headers()).await?;
     let permit = api
         .capacity
         .clone()
         .try_acquire_owned()
         .map_err(|_| ApiError(503, "busy"))?;
+    let config = &named(config, namespace);
     let headers = request.headers();
     if !headers
         .get(header::CONTENT_TYPE)
@@ -304,7 +304,7 @@ async fn accept(api: &WriteApi, config: &Config, request: Request) -> Result<Res
     Ok(Json(json!({"upserted": done.0, "deleted": done.1})).into_response())
 }
 
-async fn authorize(config: &Config, headers: &HeaderMap) -> Result<(), ApiError> {
+async fn authorize(config: &Config, namespace: &str, headers: &HeaderMap) -> Result<(), ApiError> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -322,7 +322,7 @@ async fn authorize(config: &Config, headers: &HeaderMap) -> Result<(), ApiError>
     .await?;
     let grant = keys.grant(&hash).ok_or(ApiError(401, "unauthorized"))?;
     if grant.roles.contains(&ApiKeyRole::Write)
-        && prefix_allows(grant.namespace_prefix.as_deref(), &config.namespace.name)
+        && prefix_allows(grant.namespace_prefix.as_deref(), namespace)
     {
         Ok(())
     } else {
