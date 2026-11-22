@@ -1631,9 +1631,24 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
         store.head(&path(&manifest.publication_id)).await.unwrap();
     }
     store.put(&path(&lost), bytes.into()).await.unwrap();
-    // Inside the window nothing is deleted, and every receipt is there.
+    // Inside the window no publication is deleted, and every receipt is there.
+    let identities = control_objects(&commit, "identity").await;
+    assert!(identities >= 10, "{identities} identity generations");
     command(&commit, &["writer", "maintain"]);
     assert!(control_objects(&commit, "publications").await >= 10);
+    // Only what precedes the first publication may go: every generation a
+    // publication names is there.
+    for manifest in &chain {
+        for pointer in [&manifest.policy, &manifest.identity] {
+            store
+                .head(&object_store::path::Path::from(format!(
+                    "{namespace}/{}",
+                    pointer.object
+                )))
+                .await
+                .unwrap();
+        }
+    }
     assert!(
         command(&commit, &["writer", "commit", "--receipt", &oldest])["publication_id"].is_string()
     );
@@ -1675,6 +1690,55 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
     assert!(
         checkpoints <= publications,
         "{checkpoints} checkpoints for {publications} retained publications"
+    );
+    // The policy and identity generations the head and every retained
+    // publication name are there, as a reader holding one of them needs; the
+    // older ones are gone, and a second run deletes nothing more.
+    for pointer in kept
+        .iter()
+        .flat_map(|m| [&m.policy, &m.identity])
+        .chain([&head.policy, &head.identity])
+    {
+        store
+            .head(&object_store::path::Path::from(format!(
+                "{namespace}/{}",
+                pointer.object
+            )))
+            .await
+            .unwrap();
+    }
+    let generations = [
+        control_objects(&commit, "policy").await,
+        control_objects(&commit, "identity").await,
+    ];
+    assert!(generations[1] < identities, "{generations:?} generations");
+    assert!(
+        generations.iter().all(|count| *count <= kept.len()),
+        "{generations:?} generations for {} retained publications",
+        kept.len()
+    );
+    // A key that is not the writer's own name for a generation is never
+    // taken for one, whatever it holds.
+    let backup = object_store::path::Path::from(format!("{namespace}/identity/1-backup.json"));
+    let bytes = store
+        .get(&object_store::path::Path::from(format!(
+            "{namespace}/{}",
+            head.identity.object
+        )))
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    store.put(&backup, bytes.into()).await.unwrap();
+    command(&commit, &["writer", "maintain"]);
+    store.head(&backup).await.unwrap();
+    assert_eq!(
+        [
+            control_objects(&commit, "policy").await,
+            control_objects(&commit, "identity").await - 1
+        ],
+        generations
     );
     // Retained publications keep their receipts; the deleted part answers from
     // the evidence, without its publication; an envelope never applied does not.

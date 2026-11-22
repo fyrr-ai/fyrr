@@ -467,6 +467,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   keeps is recorded first in the `history-cut` object (additive to the
   unreleased 4.0 publication contract); a walk of the history ends there, and
   a manifest missing anywhere else is `publication_invalid`.
+- `fyrr writer maintain` also deletes the policy and identity generations
+  older than any generation the serving head or a retained publication names,
+  so `policy/` and `identity/` no longer grow with the number of commits.
 
 ### Security
 

@@ -443,7 +443,8 @@ pub(crate) async fn verify_history(config: &Config, head: &ServingHead) -> Resul
 }
 
 /// Delete the publication manifests and envelope checkpoints that no retained
-/// manifest names. The oldest retained manifest is recorded as the cut first:
+/// manifest names, and the policy and identity generations older than any a
+/// retained manifest or the head names. The oldest retained manifest is recorded as the cut first:
 /// the walks of the chain end there, and a manifest missing anywhere else is a
 /// lost one. A walk that starts at a manifest older than the window finds its
 /// checkpoint gone and reads the manifests instead, so what is deleted is
@@ -470,7 +471,7 @@ async fn superseded_history(
         {
             return Ok(0);
         }
-        let named: BTreeSet<_> = kept
+        let mut named: BTreeSet<_> = kept
             .iter()
             .flat_map(|manifest| {
                 [format!("publications/{}.json", manifest.publication_id)]
@@ -542,16 +543,56 @@ async fn superseded_history(
                 }
             }
         }
+        // A policy or identity generation is named by the head and by each
+        // retained manifest, and generations only grow along the head. Only
+        // one below the oldest generation they name is deleted; higher ones,
+        // orphans of a failed publication included, stay until the head passes
+        // them. A reader that loaded an older head-only generation (a
+        // directory pull, a retire, the read-only switch publish no manifest)
+        // can read it gone once and fails closed with `StorageUnavailable`; a
+        // fresh head fixes that.
+        let policy_floor = kept
+            .iter()
+            .map(|manifest| manifest.policy.generation)
+            .fold(head.policy.generation, u64::min);
+        let identity_floor = kept
+            .iter()
+            .map(|manifest| manifest.identity.generation)
+            .fold(head.identity.generation, u64::min);
         let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
+        // The object a pointer names is kept whatever its key says: the
+        // contract does not make the key the canonical name of the generation.
+        // The key is the one the reader resolves, `//` and all.
+        named.extend(
+            kept.iter()
+                .flat_map(|manifest| [&manifest.policy, &manifest.identity])
+                .chain([&head.policy, &head.identity])
+                .map(|pointer| {
+                    fyrr_reader::storage::relative_path(
+                        &Path::from(format!("{root}/{}", pointer.object)),
+                        &root,
+                    )
+                }),
+        );
         let served = head.content.as_ref().map(|p| p.publication_id.clone());
         let mut deleted = 0;
-        for prefix in ["publications", "evidence"] {
+        for (prefix, floor) in [
+            ("publications", None),
+            ("evidence", None),
+            ("policy", Some(policy_floor)),
+            ("identity", Some(identity_floor)),
+        ] {
             let mut listing = store.list(Some(&root.clone().join(prefix)));
             while let Some(object) = listing.try_next().await? {
-                if named.contains(&fyrr_reader::storage::relative_path(
-                    &object.location,
-                    &root,
-                )) {
+                let relative = fyrr_reader::storage::relative_path(&object.location, &root);
+                let superseded = match floor {
+                    None => !named.contains(&relative),
+                    Some(floor) => {
+                        !named.contains(&relative)
+                            && generation_of(&relative, prefix).is_some_and(|g| g < floor)
+                    }
+                };
+                if !superseded {
                     continue;
                 }
                 if start.elapsed() >= limit {
@@ -579,6 +620,46 @@ async fn superseded_history(
     })
     .await
     .map_err(|_| WriterError::MaintenanceStepDeadline)?
+}
+
+/// The generation of an object whose key is exactly what the writer gives a
+/// generation, `<prefix>/<generation>-<64 hex digits>.json`; any other key has
+/// none, and is kept.
+fn generation_of(relative: &str, prefix: &str) -> Option<u64> {
+    let name = relative.strip_prefix(prefix)?.strip_prefix('/')?;
+    let (generation, digest) = name.strip_suffix(".json")?.split_once('-')?;
+    let number: u64 = generation.parse().ok()?;
+    (number.to_string() == generation
+        && digest.len() == 64
+        && digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    .then_some(number)
+}
+
+#[cfg(test)]
+mod generation_key_tests {
+    use super::generation_of;
+
+    #[test]
+    fn only_the_writers_own_key_has_a_generation() {
+        let hex = "0123456789abcdef".repeat(4);
+        assert_eq!(
+            generation_of(&format!("policy/9-{hex}.json"), "policy"),
+            Some(9)
+        );
+        for key in [
+            "policy/1-backup.json".to_owned(),
+            format!("policy/09-{hex}.json"),
+            format!("policy/+9-{hex}.json"),
+            format!("policy/9-{}.json", hex.to_uppercase()),
+            format!("policy/9-{hex}.bak"),
+            format!("policy/inputs/9-{hex}.json"),
+            format!("identity/9-{hex}.json"),
+        ] {
+            assert_eq!(generation_of(&key, "policy"), None, "{key}");
+        }
+    }
 }
 
 async fn cleanup_versions(
