@@ -459,6 +459,14 @@
         "tier": "quick",
         "seconds": 0.1
       },
+      "full:fyrr-writer:lib:fyrr_writer/commit::evidence_tests::a_walked_predecessor_saves_reading_the_checkpoint": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::evidence_tests::a_missing_checkpoint_is_read_from_the_manifests_and_a_wrong_one_is_refused": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
       "full:fyrr-reader:lib:fyrr_reader/search::scope::tests::binding_expectation_is_not_completed_admission": {
         "tier": "quick",
         "seconds": 0.0

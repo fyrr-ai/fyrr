@@ -162,19 +162,24 @@ pub(crate) async fn published_evidence(
         rewinds.get_or_insert_with(|| publication.cursor_rewinds.clone());
         applied.extend(publication.envelope_ids);
         chain_rejected.extend(publication.rejected_envelope_ids);
-        // The evidence covers this publication and every older one.
-        if let Some(evidence) = publication.envelope_evidence {
-            let checkpoint: EnvelopeCheckpoint =
-                fyrr_reader::storage::artifact(store.as_ref(), &root, &evidence.checkpoint).await?;
+        next = publication
+            .previous_publication_id
+            .map(|id| format!("publications/{id}.json"));
+        // The evidence covers this publication and every older one. A
+        // predecessor this process holds is cheaper than its checkpoint.
+        if let Some(evidence) = publication.envelope_evidence
+            && next
+                .as_ref()
+                .is_none_or(|path| known.as_ref().is_none_or(|known| known.manifest != *path))
+            && let Some(checkpoint) =
+                read_checkpoint(store.as_ref(), &root, &evidence.checkpoint).await?
+        {
             applied.extend(checkpoint.applied_envelope_ids);
             applied.extend(evidence.applied_since);
             chain_rejected.extend(checkpoint.rejected_envelope_ids);
             chain_rejected.extend(evidence.rejected_since);
             break;
         }
-        next = publication
-            .previous_publication_id
-            .map(|id| format!("publications/{id}.json"));
     }
     let rewinds = rewinds.unwrap_or_default();
     if let Some(sequence) = newest_sequence {
@@ -198,6 +203,36 @@ pub(crate) async fn published_evidence(
         rejected,
         rewinds,
     })
+}
+
+/// The checkpoint a manifest names. `None` when maintenance removed it as
+/// superseded: the older manifests then still tell the same. A checkpoint that
+/// is not the one named is an error, never skipped.
+async fn read_checkpoint(
+    store: &dyn ObjectStore,
+    root: &Path,
+    pointer: &GenerationPointer,
+) -> Result<Option<EnvelopeCheckpoint>> {
+    if !pointer.object.starts_with("evidence/") || pointer.object.contains("..") {
+        return Err(WriterError::PublicationInvalid);
+    }
+    let bytes = match store
+        .get(&Path::from(format!("{root}/{}", pointer.object)))
+        .await
+    {
+        Ok(object) => object
+            .bytes()
+            .await
+            .map_err(|_| WriterError::StorageUnavailable)?,
+        Err(object_store::Error::NotFound { .. }) => return Ok(None),
+        Err(_) => return Err(WriterError::StorageUnavailable),
+    };
+    if digest(&bytes) != pointer.digest {
+        return Err(WriterError::PublicationInvalid);
+    }
+    fyrr_core::parse_contract(&bytes)
+        .map(Some)
+        .map_err(|_| WriterError::PublicationInvalid)
 }
 
 pub(crate) async fn rejection_markers(
@@ -1077,5 +1112,82 @@ mod evidence_tests {
             expected
         );
         assert_eq!(checkpoint.rejected_envelope_ids, ids('b', 1));
+    }
+    /// A process that walked the predecessor adds only the new manifest: the
+    /// new manifest's checkpoint, which is not stored here, is never read.
+    #[tokio::test]
+    async fn a_walked_predecessor_saves_reading_the_checkpoint() {
+        let (config, head, manifest, applied) = namespace(3, 2).await;
+        published_evidence(&config, &head).await.unwrap();
+        let (store, root) = namespace_store(&config).unwrap();
+        let mut next = manifest.clone();
+        next.publication_id = "pub-000043".into();
+        next.sequence = manifest.sequence + 1;
+        next.previous_publication_id = Some(manifest.publication_id.clone());
+        next.envelope_ids = ids('f', 1);
+        let mut evidence = next.envelope_evidence.clone().unwrap();
+        evidence.checkpoint.object = "evidence/missing.json".into();
+        next.envelope_evidence = Some(evidence);
+        store
+            .put(
+                &Path::from(format!("{root}/publications/pub-000043.json")),
+                write_contract(&next).into(),
+            )
+            .await
+            .unwrap();
+        let mut moved = head.clone();
+        let pointer = moved.content.as_mut().unwrap();
+        pointer.publication_id = next.publication_id.clone();
+        pointer.sequence = next.sequence;
+        pointer.manifest = "publications/pub-000043.json".into();
+        let evidence = published_evidence(&config, &moved).await.unwrap();
+        let expected: BTreeSet<_> = applied
+            .into_iter()
+            .chain(ids('c', 2))
+            .chain(manifest.envelope_ids)
+            .chain(ids('f', 1))
+            .collect();
+        assert_eq!(evidence.applied, expected);
+    }
+
+    /// A checkpoint maintenance removed is replaced by the older manifests; a
+    /// checkpoint that is not the one named stops the read.
+    #[tokio::test]
+    async fn a_missing_checkpoint_is_read_from_the_manifests_and_a_wrong_one_is_refused() {
+        let (config, head, manifest, _) = namespace(3, 2).await;
+        let (store, root) = namespace_store(&config).unwrap();
+        let pointer = manifest
+            .envelope_evidence
+            .as_ref()
+            .unwrap()
+            .checkpoint
+            .clone();
+        let mut older = manifest.clone();
+        older.publication_id = "pub-000041".into();
+        older.sequence = manifest.sequence - 1;
+        older.previous_publication_id = None;
+        older.envelope_ids = ids('9', 2);
+        older.envelope_evidence = None;
+        store
+            .put(
+                &Path::from(format!("{root}/publications/pub-000041.json")),
+                write_contract(&older).into(),
+            )
+            .await
+            .unwrap();
+        let object = Path::from(format!("{root}/{}", pointer.object));
+        store.put(&object, "{}".into()).await.unwrap();
+        assert_eq!(
+            published_evidence(&config, &head).await.err(),
+            Some(WriterError::PublicationInvalid)
+        );
+        store.delete(&object).await.unwrap();
+        let evidence = published_evidence(&config, &head).await.unwrap();
+        let expected: BTreeSet<_> = manifest
+            .envelope_ids
+            .into_iter()
+            .chain(ids('9', 2))
+            .collect();
+        assert_eq!(evidence.applied, expected);
     }
 }

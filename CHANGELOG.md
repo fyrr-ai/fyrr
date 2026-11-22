@@ -247,7 +247,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   rejected: an `envelope-checkpoint` object plus the few ids since
   (`envelope_evidence` in the content manifest, both additive), so the newest
   manifest and one checkpoint are enough. The first publication after the
-  upgrade still walks the older chain once.
+  upgrade still walks the older chain once. `fyrr writer maintain` deletes
+  checkpoints that no retained manifest names.
 
 ### Security
 

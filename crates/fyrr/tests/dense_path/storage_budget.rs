@@ -487,5 +487,26 @@ async fn a_sync_worker_reads_no_more_manifests_as_the_history_grows() {
         );
     }
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // Maintenance deletes the checkpoints no retained manifest names, and only
+    // those: the publication that is served keeps its own.
+    use futures::TryStreamExt;
+    let loaded = fyrr_core::config::load(&config).unwrap();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let evidence = namespace.clone().join("evidence");
+    let named: Vec<_> = store.list(Some(&evidence)).try_collect().await.unwrap();
+    assert_eq!(named.len(), 1, "one checkpoint for a history this short");
+    let stray = evidence
+        .clone()
+        .join(format!("999-{}.json", "0".repeat(64)));
+    store.put(&stray, "{}".into()).await.unwrap();
+    success(&config, &["writer", "maintain"]);
+    assert!(matches!(
+        store.head(&stray).await,
+        Err(object_store::Error::NotFound { .. })
+    ));
+    let kept: Vec<_> = store.list(Some(&evidence)).try_collect().await.unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].location, named[0].location);
     std::fs::remove_dir_all(root).unwrap();
 }

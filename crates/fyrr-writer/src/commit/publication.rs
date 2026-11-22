@@ -325,8 +325,8 @@ pub(super) const CHECKPOINT_IDS: usize = 256;
 /// What the chain ending at this publication records: the checkpoint of its
 /// older part and the few ids since. Receipts live as long as the namespace, so
 /// the checkpoint grows with it; the manifests, which readers fetch, stay small.
-// shortcut: every checkpoint is kept; their size summed grows with the square
-// of the history over CHECKPOINT_IDS. Delete the superseded ones when that costs.
+// Each rewrite leaves the older checkpoints to `writer maintain`, which deletes
+// those no retained manifest names.
 pub(super) async fn envelope_evidence(
     config: &Config,
     store: &dyn ObjectStore,
@@ -337,15 +337,19 @@ pub(super) async fn envelope_evidence(
     sequence: u64,
 ) -> Result<EnvelopeEvidence> {
     if let Some(old) = previous.and_then(|manifest| manifest.envelope_evidence.as_ref()) {
-        let mut applied_since = old.applied_since.clone();
-        applied_since.extend(receipts.iter().cloned());
-        let mut rejected_since = old.rejected_since.clone();
-        rejected_since.extend(head.rejected_envelope_ids.iter().cloned());
+        let applied_since: BTreeSet<_> =
+            old.applied_since.iter().chain(receipts).cloned().collect();
+        let rejected_since: BTreeSet<_> = old
+            .rejected_since
+            .iter()
+            .chain(&head.rejected_envelope_ids)
+            .cloned()
+            .collect();
         if applied_since.len() + rejected_since.len() < CHECKPOINT_IDS {
             return Ok(EnvelopeEvidence {
                 checkpoint: old.checkpoint.clone(),
-                applied_since,
-                rejected_since,
+                applied_since: applied_since.into_iter().collect(),
+                rejected_since: rejected_since.into_iter().collect(),
             });
         }
     }
