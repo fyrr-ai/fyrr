@@ -1883,7 +1883,7 @@
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_orders_a_listing_by_attributes_on_storage": {
         "tier": "full",
-        "seconds": 40
+        "seconds": 1
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_largest_body_stays_under_the_worker_memory_limit_on_storage": {
         "tier": "full",
