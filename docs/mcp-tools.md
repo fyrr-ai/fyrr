@@ -299,7 +299,8 @@ error leaves the process ([how](architecture.md#authorization)).
 
 `reader.concurrency` (default 8) requests execute at once, each on an
 independent prepared reader; the waiting queue has the same bound, and
-beyond it the response is `busy`. Requests may finish out of arrival order.
+beyond it the response is `busy`. Each namespace a reader serves has its own
+slots and queue, so one that is full does not make another answer `busy`. Requests may finish out of arrival order.
 
 Deadlines start when the complete input frame arrives (HTTP: at arrival,
 including authentication), default to 10 s and cannot exceed 300 s. Queue

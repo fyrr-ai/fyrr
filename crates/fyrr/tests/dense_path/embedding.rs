@@ -495,3 +495,11 @@ fn tools_default_concurrency_serves_eight_clients_on_storage() {
         "serve::tests::embedding::default_concurrency_serves_eight_simultaneous_clients_on_storage",
     );
 }
+
+#[test]
+#[ignore = "real publication and one namespace saturated by 32 MCP clients"]
+fn tools_saturated_namespace_leaves_another_every_slot_on_storage() {
+    parked_reader_test(
+        "serve::tests::embedding::saturated_namespace_leaves_another_namespace_every_slot_on_storage",
+    );
+}

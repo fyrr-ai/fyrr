@@ -5184,6 +5184,10 @@
       "full:fyrr:test:dense_path/embedding::tools_default_concurrency_serves_eight_clients_on_storage": {
         "tier": "quick",
         "seconds": 3.0
+      },
+      "full:fyrr:test:dense_path/embedding::tools_saturated_namespace_leaves_another_every_slot_on_storage": {
+        "tier": "quick",
+        "seconds": 3.0
       }
     },
     "children": {
@@ -5197,6 +5201,12 @@
         "tier": "quick",
         "parents": [
           "full:fyrr:test:dense_path/embedding::tools_default_concurrency_serves_eight_clients_on_storage"
+        ]
+      },
+      "full:fyrr-reader:lib:fyrr_reader/serve::tests::embedding::saturated_namespace_leaves_another_namespace_every_slot_on_storage": {
+        "tier": "quick",
+        "parents": [
+          "full:fyrr:test:dense_path/embedding::tools_saturated_namespace_leaves_another_every_slot_on_storage"
         ]
       }
     }
