@@ -14,7 +14,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures::StreamExt;
-use fyrr_core::attributes::AttributeSchema;
 use fyrr_core::config::{
     ApiKeyRole, Config, PermissionsMode, SourceConfig, SourceIntervals, is_api_key_secret,
     prefix_allows,
@@ -176,6 +175,7 @@ struct Upsert {
     id: String,
     readers: Vec<String>,
     text: String,
+    vector: Option<Vec<f32>>,
 }
 
 /// Serves the route.
@@ -322,8 +322,14 @@ fn laid_over(
     if let Some(request) = request {
         merge(&mut value, request);
     }
-    let settings: NamespaceSettings =
+    let mut settings: NamespaceSettings =
         serde_json::from_value(value).map_err(|_| ApiError(400, "settings_invalid"))?;
+    // A request declares the model and dimension of its vectors; the profile
+    // that binds them is derived, not sent.
+    let embedding = &mut settings.embedding;
+    embedding.fingerprint = embedding
+        .settings
+        .fingerprint(&embedding.model, embedding.dimensions);
     // A request cannot make a namespace that the API does not write.
     if settings.write_api.is_none() {
         return Err(ApiError(400, "settings_invalid"));
@@ -347,13 +353,15 @@ fn api_source() -> SourceConfig {
     }
 }
 
-/// The checked rows of the request, against the schema and the text key the
-/// namespace was created with. The rows are taken from `body`, not copied.
+/// The checked rows of the request, against the schema, the text key and the
+/// vector dimension the namespace was created with. The rows are taken from
+/// `body`, not copied.
 fn checked(
     body: &mut Payload,
-    attributes: &AttributeSchema,
+    config: &Config,
     text_key: &str,
 ) -> Result<(Vec<Upsert>, Vec<ArrayRef>), ApiError> {
+    let attributes = &config.namespace.attributes;
     let mut ids = std::collections::HashSet::new();
     for id in &body.deletes.0 {
         if !ids.insert(id.clone()) {
@@ -397,13 +405,36 @@ fn checked(
             // A row is one record: no chunking.
             return Err(ApiError(413, "text_too_large"));
         }
+        // The row's own vector, or the provider's embedding of its text.
+        let vector = match row.remove("vector") {
+            None => None,
+            Some(Value::Array(list)) => Some(
+                list.iter()
+                    .map(|n| n.as_f64().map(|n| n as f32))
+                    .collect::<Option<Vec<_>>>()
+                    .filter(|vector| {
+                        fyrr_reader::embedding::validate(vector, config.embedding.dimensions)
+                            .is_ok()
+                    })
+                    .ok_or(ApiError(400, "vector_invalid"))?,
+            ),
+            Some(_) => return Err(ApiError(400, "vector_invalid")),
+        };
+        if vector.is_none() && config.embedding.endpoint.is_empty() {
+            return Err(ApiError(400, "embedding_not_configured"));
+        }
         if row.keys().any(|name| !attributes.contains_key(name)) {
             return Err(ApiError(400, "attribute_undeclared"));
         }
         columns
             .push(&row)
             .map_err(|error| ApiError(400, error.code()))?;
-        rows.push(Upsert { id, readers, text });
+        rows.push(Upsert {
+            id,
+            readers,
+            text,
+            vector,
+        });
     }
     Ok((rows, columns.finish()))
 }
@@ -459,6 +490,7 @@ fn changes(
             text: row.text,
             location: None,
             readers: None,
+            vector: row.vector,
         }];
         changes.push(change);
     }
@@ -540,14 +572,16 @@ async fn execute(
                 requested.as_ref(),
             )?;
             // The settings of a new namespace are held to the bounds of a
-            // configuration before anything is built from them; `id` is the key
-            // of a row in the request.
+            // configuration before anything is built from them; `id` and `vector` are
+            // keys of a row in the request.
             if settings.validate().is_err()
-                || settings.attributes.contains_key("id")
-                || settings
-                    .write_api
-                    .as_ref()
-                    .is_some_and(|api| api.text_attribute == "id")
+                || ["id", "vector"].iter().any(|key| {
+                    settings.attributes.contains_key(*key)
+                        || settings
+                            .write_api
+                            .as_ref()
+                            .is_some_and(|api| api.text_attribute == *key)
+                })
             {
                 return Err(ApiError(400, "settings_invalid"));
             }
@@ -568,7 +602,7 @@ async fn execute(
         .write_api
         .as_ref()
         .map_or("text", |api| api.text_attribute.as_str());
-    let (rows, attributes) = checked(&mut body, &config.namespace.attributes, text_key)?;
+    let (rows, attributes) = checked(&mut body, &config, text_key)?;
     let counts = (rows.len() as u64, body.deletes.0.len() as u64);
     if counts == (0, 0) && requested.is_none() {
         return Err(ApiError(400, "empty_request"));

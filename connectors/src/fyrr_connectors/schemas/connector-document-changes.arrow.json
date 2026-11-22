@@ -259,6 +259,23 @@
                 "metadata": {},
                 "name": "readers",
                 "nullable": true
+              },
+              {
+                "data_type": {
+                  "List": {
+                    "data_type": "Float32",
+                    "dict_id": 0,
+                    "dict_is_ordered": false,
+                    "metadata": {},
+                    "name": "item",
+                    "nullable": false
+                  }
+                },
+                "dict_id": 0,
+                "dict_is_ordered": false,
+                "metadata": {},
+                "name": "vector",
+                "nullable": true
               }
             ]
           },
@@ -278,6 +295,6 @@
   ],
   "metadata": {
     "fyrr.contract": "connector.document_changes",
-    "fyrr.schema_version": "1.3"
+    "fyrr.schema_version": "1.4"
   }
 }

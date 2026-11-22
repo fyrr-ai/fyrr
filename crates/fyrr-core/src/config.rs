@@ -118,6 +118,8 @@ pub const DIRECTORY_DOMAIN_PROVIDERS: [&str; 2] = ["slack", "jira"];
 pub struct Config {
     pub namespace: NamespaceConfig,
     pub storage: StorageConfig,
+    /// Absent: no embedding provider, and every document carries its own vector.
+    #[serde(default)]
     pub embedding: EmbeddingConfig,
     #[serde(default)]
     pub identity: IdentityConfig,
@@ -570,7 +572,9 @@ pub struct StorageConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EmbeddingConfig {
-    /// Base URL of the OpenAI-compatible embeddings API.
+    /// Base URL of the OpenAI-compatible embeddings API. Empty: no provider,
+    /// and a document without a vector is refused.
+    #[serde(default)]
     pub endpoint: String,
     #[serde(default = "default_model")]
     #[schemars(length(min = 1, max = MODEL_MAX_BYTES), extend("x-maxUtf8Bytes" = MODEL_MAX_BYTES))]
@@ -613,6 +617,27 @@ pub struct EmbeddingConfig {
     #[serde(default = "default_embedding_retries")]
     #[schemars(range(max = MAX_RETRIES_MAX))]
     pub max_retries: u32,
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            model: default_model(),
+            dimensions: default_dimensions(),
+            prefix: String::new(),
+            roles: EmbeddingRoles::default(),
+            send_dimensions: false,
+            reader_live: false,
+            local_cache: None,
+            query_cache_max_bytes: default_query_cache_bytes(),
+            spend: None,
+            api_key: None,
+            batch_size: default_embedding_batch(),
+            timeout: default_embedding_timeout(),
+            max_retries: default_embedding_retries(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

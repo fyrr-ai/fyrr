@@ -6,7 +6,7 @@
 
 use crate::{Result, WriterError};
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Int64Type, TimestampMicrosecondType, UInt32Type};
+use arrow_array::types::{Float32Type, Int64Type, TimestampMicrosecondType, UInt32Type};
 use arrow_array::{Array, ArrayRef, ListArray, RecordBatch, StringArray, StructArray};
 use arrow_schema::DataType;
 use chrono::{DateTime, Utc};
@@ -335,6 +335,21 @@ fn string_list(
         .map(Some)
 }
 
+/// The numbers of a nullable list cell of float32, whose items are never null.
+fn float_list(array: &ListArray, row: usize, field: &str) -> Result<Option<Vec<f32>>, String> {
+    if array.is_null(row) {
+        return Ok(None);
+    }
+    let values = array.value(row);
+    let items = values
+        .as_primitive_opt::<Float32Type>()
+        .ok_or_else(|| format!("field {field} is not float32"))?;
+    if items.null_count() > 0 {
+        return Err(format!("field {field}[] is not nullable but holds a null"));
+    }
+    Ok(Some(items.values().to_vec()))
+}
+
 struct Columns<'a> {
     op: &'a StringArray,
     root_id: &'a StringArray,
@@ -482,6 +497,7 @@ impl<'a> Columns<'a> {
         )?;
         let index = field("location_index")?.as_primitive::<UInt32Type>();
         let readers = lists(field("readers")?.as_ref(), "sections[].readers")?;
+        let vectors = lists(field("vector")?.as_ref(), "sections[].vector")?;
         (0..items.len())
             .map(|at| {
                 let location = match optional(kind, at) {
@@ -501,6 +517,7 @@ impl<'a> Columns<'a> {
                     text: required(text, at, "sections[].text")?,
                     location,
                     readers: string_list(readers, at, "sections[].readers", true)?,
+                    vector: float_list(vectors, at, "sections[].vector")?,
                 })
             })
             .collect()
@@ -611,6 +628,10 @@ mod tests {
             Arc::new(StringArray::new_null(count)),
             Arc::new(UInt32Array::new_null(count)),
             Arc::new(ListArray::new_null(item(), count)),
+            Arc::new(ListArray::new_null(
+                Arc::new(Field::new("item", DataType::Float32, false)),
+                count,
+            )),
         ];
         let structs = StructArray::try_new(fields, children, None).expect("sections");
         Arc::new(ListArray::new(

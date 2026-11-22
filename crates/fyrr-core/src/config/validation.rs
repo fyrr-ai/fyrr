@@ -510,8 +510,8 @@ fn storage(config: &Config, error: &mut impl FnMut(&str, String)) {
 }
 
 fn embedding_endpoint(config: &Config, error: &mut impl FnMut(&str, String)) {
-    if !(config.embedding.endpoint.starts_with("https://")
-        || config.embedding.endpoint.starts_with("http://"))
+    let endpoint = &config.embedding.endpoint;
+    if !endpoint.is_empty() && !(endpoint.starts_with("https://") || endpoint.starts_with("http://"))
     {
         error(
             "embedding.endpoint",

@@ -65,7 +65,7 @@ The document write API refuses an undeclared attribute with
 error: `attribute_type_mismatch`, `attribute_value_invalid` or
 `attribute_value_too_large` (a `string` over 4096 bytes). A schema is refused
 with `attribute_limit_exceeded` (a 129th attribute), `attribute_name_invalid` or
-`attribute_name_reserved`. A namespace that the write API creates cannot declare `id` (the key of a row) as an attribute or as its `text_attribute`.
+`attribute_name_reserved`. A namespace that the write API creates cannot declare `id` or `vector` (keys of a row) as an attribute or as its `text_attribute`.
 
 ### `[namespace.write_api]`
 
@@ -84,7 +84,7 @@ defaults of a new namespace, recorded in it and fixed for its life.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `text_attribute` | `"text"` | The key of a row that holds its text, which is embedded, full-text indexed and returned as the content of its record. Not one of `attributes`. |
+| `text_attribute` | `"text"` | The key of a row that holds its text, which is embedded when the row carries no `vector`, full-text indexed and returned as the content of its record. Not one of `attributes`. |
 | `open` | `false` | `false`: a row is readable by the reader tokens it names and a row without any by nobody. `true`: every authenticated subject of the deployment reads every row. |
 
 ### `[namespace.composition]`

@@ -339,6 +339,17 @@
             "type": "string"
           },
           "description": "Narrower readers for a restricted part (e.g. a Jira comment under a\nsecurity level); `null` means the document's readers. Sections with\ndifferent readers never share a record."
+        },
+        "vector": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number",
+            "format": "float"
+          },
+          "description": "The section's own vector, stored as its record in place of an embedding\nof the text. It has the namespace's dimension, finite elements and a\nnonzero length, and the text is one chunk (at most 16 KiB)."
         }
       },
       "required": [
@@ -577,5 +588,5 @@
     }
   },
   "x-fyrr-contract": "connector-batch",
-  "x-fyrr-schema-version": "1.3"
+  "x-fyrr-schema-version": "1.4"
 }

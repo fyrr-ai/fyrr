@@ -41,7 +41,7 @@ use crate::limits::{
 use crate::version::{Contract, ContractError, SchemaVersion, check_compatible};
 
 /// The connector contract version written by this build.
-pub const CONNECTOR_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(1, 3);
+pub const CONNECTOR_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(1, 4);
 
 /// Arrow schema metadata key naming the contract part.
 pub const ARROW_CONTRACT_KEY: &str = "fyrr.contract";
@@ -200,6 +200,11 @@ pub struct Section {
     /// different readers never share a record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub readers: Option<Vec<String>>,
+    /// The section's own vector, stored as its record in place of an embedding
+    /// of the text. It has the namespace's dimension, finite elements and a
+    /// nonzero length, and the text is one chunk (at most 16 KiB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector: Option<Vec<f32>>,
 }
 
 /// Where a section sits in its source document.
@@ -572,6 +577,11 @@ pub fn document_changes_arrow_schema() -> Schema {
         Field::new("location_label", DataType::Utf8, true),
         Field::new("location_index", DataType::UInt32, true),
         Field::new("readers", utf8_list(false), true),
+        Field::new(
+            "vector",
+            DataType::List(Arc::new(Field::new("item", DataType::Float32, false))),
+            true,
+        ),
     ]));
     let fields = vec![
         Field::new("op", DataType::Utf8, false),

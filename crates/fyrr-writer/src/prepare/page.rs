@@ -55,6 +55,7 @@ pub(super) async fn content_page(
             change.op == ChangeOp::Upsert && quarantine_reason(config, source, change).is_none()
         })
         .flat_map(|change| change.sections.iter())
+        .filter(|section| section.vector.is_none())
         .flat_map(|section| crate::chunk::chunks(&section.text))
         .collect::<Vec<_>>();
     let mut embedded = cache.embed(&embedding_texts).await?.into_iter();
@@ -389,7 +390,11 @@ impl RowColumns {
             }
             for (chunk_number, text) in crate::chunk::chunks(&section.text).into_iter().enumerate()
             {
-                let vector = embedded.next().ok_or(WriterError::EmbeddingBatchInvalid)?;
+                let vector = section
+                    .vector
+                    .clone()
+                    .or_else(|| embedded.next())
+                    .ok_or(WriterError::EmbeddingBatchInvalid)?;
                 let vector: Vec<_> = vector.into_iter().map(half::f16::from_f32).collect();
                 self.sources.push(source.id.clone());
                 self.roots.push(change.root_id.clone());
