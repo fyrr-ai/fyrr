@@ -255,17 +255,26 @@ cases_start() {
 
 cases_finish() {
   ((POOL_PID)) || return 0
-  wait "$POOL_PID" || log "some Rust case workers failed; see their case logs"
+  local row name line pool_finished=1
+  local pool_log="${LOGS#"$ROOT"/}/case-pool.log"
+  # Test failures are recorded in the summaries. If the pool aborts, the
+  # summaries may still belong to an earlier run in the same log directory.
+  if ! wait "$POOL_PID"; then
+    pool_finished=0
+    log "Rust case pool failed (log: $pool_log)"
+  fi
   POOL_PID=0
-  local row name line
   for row in "${POOL_ROWS[@]}"; do
     name="$(row_name "$row")"
     STEP=$((STEP + 1))
     SEEN_STEPS["$name"]=1
-    line="$(awk -v name="$name" 'index($0, name) == 1 && $0 ~ / (pass|FAIL) / {print}' "$LOGS/$row/summary.txt" 2>/dev/null)" || line=
+    line=
+    if ((pool_finished)); then
+      line="$(awk -v name="$name" 'index($0, name) == 1 && $0 ~ / (pass|FAIL) / {print}' "$LOGS/$row/summary.txt" 2>/dev/null)" || line=
+    fi
     if [[ -z "$line" ]]; then
       FAILED=$((FAILED + 1))
-      ROWS+=("$(printf '%-38s %-5s %7s %7s %8s %6ss  %s' "$name" FAIL 0 0 0 0 "missing worker summary: ${LOGS#"$ROOT"/}/$row")")
+      ROWS+=("$(printf '%-38s %-5s %7s %7s %8s %6ss  %s' "$name" FAIL 0 0 0 0 "no worker summary from this run (see $pool_log)")")
     else
       ROWS+=("$line")
       [[ "$line" != *" FAIL "* ]] || FAILED=$((FAILED + 1))
@@ -365,10 +374,13 @@ else
   step "doctor" none "$ROOT/scripts/doctor"
 fi
 if ((!ONLY_STEPS)); then step "build test executables" none ensure_build; fi
-cases_start
 step "rustfmt" none cargo fmt --all --check
 step "clippy (full workspace)" none cargo clippy --locked --workspace --all-targets -- -D warnings
 step "clippy (reader-only build)" none cargo clippy --locked --workspace --no-default-features --all-targets -- -D warnings
+# Cases start after the compiler steps. The scheduler admits in arrival
+# order, so a pool that holds every core makes each clippy unit queue behind
+# the next case: clippy took 536-688 s beside the pool and 60-79 s alone.
+cases_start
 step "test-case ownership guard" none ownership_check
 step "reference docs" none reference_docs
 step "reader-only link check" none reader_link_check

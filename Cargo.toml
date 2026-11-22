@@ -64,7 +64,7 @@ lance-linalg = { version = "=14.0.3", default-features = false }
 httpdate = "=1.0.3"
 hmac = "0.13"
 constant_time_eq = "=0.6.1"
-url = "=2.5.8"
+url = "=2.5.9"
 # HTTP serving and authenticated encryption.
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
 reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls", "stream"] }

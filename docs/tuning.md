@@ -41,12 +41,17 @@ priority = "int"
 
 A namespace can declare up to 128 typed attributes when it is created. The
 types are `string`, `int` (64-bit signed), `float` (64-bit), `bool` and
-`datetime` (an RFC 3339 string in requests, stored as UTC microseconds, like
-`updated_at`). Every attribute is a nullable column of its own, null until a
-document carries a value. A `string`, number or `datetime` attribute gets a
-B-tree index and a `bool` a bitmap index. A reader opens each index: about two
-storage requests per attribute when it opens a namespace (1.8 measured with 64
-attributes; the storage request budget test holds it).
+`datetime` (UTC microseconds, like `updated_at`). The first content publication
+creates a nullable column for each declaration. Only the rows of the
+[document write API](http-api.md#write-documents) carry values in them;
+connectors' rows leave them null. Search's `attributes` filter matches the `key=value` string labels
+supplied by connectors. See [connector documents](connectors/authoring.md#documents)
+and [search](mcp-tools.md#search).
+
+A `string`, number or `datetime` attribute gets a B-tree index and a `bool` a
+bitmap index. A reader opens each index: about two storage requests per
+attribute when it opens a namespace (1.8 measured with 64 attributes; the
+storage request budget test holds it).
 
 A name is a lowercase letter followed by lowercase letters, digits and `_`, at
 most 128 bytes; a built-in column name or a name starting with `_` is refused.

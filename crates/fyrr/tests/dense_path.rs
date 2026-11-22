@@ -140,7 +140,7 @@ fn setup() -> (PathBuf, FixtureRoot) {
 }
 
 fn setup_on(backend: Backend) -> (PathBuf, FixtureRoot) {
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+    let root = common::target_tmp().join(format!(
         "dense-{}-{}-{:?}",
         std::process::id(),
         fyrr_core::clock::now().timestamp_micros(),
