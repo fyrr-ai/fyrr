@@ -101,9 +101,9 @@ pub(crate) fn abandoned(envelopes: &[&PreparedEnvelope], cursors: &Cursors) -> B
         .iter()
         .filter(|e| e.kind == SyncKind::Permissions)
         .filter(|e| {
-            cursors.get(&e.source_id).is_some_and(|read| {
-                e.sequence < read.read_start && !named(read, e)
-            })
+            cursors
+                .get(&e.source_id)
+                .is_some_and(|read| e.sequence < read.read_start && !named(read, e))
         })
         .map(|e| e.envelope_id.clone())
         .collect()
