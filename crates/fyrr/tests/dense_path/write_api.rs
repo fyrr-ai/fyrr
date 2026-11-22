@@ -809,6 +809,40 @@ async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_sto
     }
 }
 
+/// A first publication of more rows than one index partition holds, all with the
+/// same vector, publishes: index training does not fail on identical vectors.
+#[tokio::test]
+#[ignore = "real writer executable on local storage; scripts/ci"]
+async fn identity_write_api_ends_a_first_publication_of_identical_vectors_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let writer = Writer::start(&config, &root, address).await;
+    let rows: Vec<Value> = (0..600)
+        .map(
+            |n| json!({"id": format!("r{n}"), "text": format!("row {n}"), "vector": vec![0.5; 16]}),
+        )
+        .collect();
+    let answer = tokio::time::timeout(
+        Duration::from_secs(180),
+        writer.post(
+            WRITE_KEY,
+            "dense-fixture",
+            &json!({"settings": {"embedding": {"dimensions": 16}}, "upserts": rows}),
+        ),
+    )
+    .await;
+    let stderr = std::fs::read_to_string(root.join("service.stderr")).unwrap();
+    assert!(
+        answer.is_ok(),
+        "the publication did not end in 180s; writer stderr: {stderr}"
+    );
+    assert_eq!(
+        answer.unwrap(),
+        (200, json!({"upserted": 600, "deleted": 0}))
+    );
+}
+
 #[tokio::test]
 #[ignore = "real writer executable on local storage; scripts/ci"]
 async fn identity_write_api_refuses_whole_and_keeps_connector_namespaces_apart_on_storage() {
