@@ -63,34 +63,44 @@ async fn a_namespace_keeps_its_own_settings_on_storage() {
         before
     );
 
-    // A publication whose recorded analyzer differs from the namespace's
-    // settings is still an incompatible index, diagnosed by the reader and
-    // preserved by `writer verify`.
+    // A publication that differs from the namespace's recorded settings, in
+    // its analyzer or in its embedding profile of the same size, is an
+    // incompatible index: diagnosed by the reader and preserved by `writer verify`.
     let (store, path) = fyrr_reader::storage::namespace_store(&original).unwrap();
     let manifest_path = object_store::path::Path::from(format!(
         "{path}/{}",
         head.content.as_ref().unwrap().manifest
     ));
-    let mut tampered = published.clone();
-    tampered.fts.stem = !tampered.fts.stem;
-    object_store::ObjectStoreExt::put(
-        store.as_ref(),
-        &manifest_path,
-        write_contract(&tampered).into(),
-    )
-    .await
-    .unwrap();
-    assert!(matches!(
-        fyrr_reader::search::PreparedReader::open(&original).await,
-        Err(fyrr_reader::ReaderError::IncompatibleIndex)
-    ));
-    let output = super::coordination::host_command(&config)
-        .args(["writer", "verify"])
-        .output()
+    let mut other_embedding = original.embedding.clone();
+    other_embedding.prefix.push_str("other: ");
+    for embedding in [false, true] {
+        let mut tampered = published.clone();
+        if embedding {
+            tampered.embedding = fyrr_reader::embedding::identity(&other_embedding);
+        } else {
+            tampered.fts.stem = !tampered.fts.stem;
+        }
+        object_store::ObjectStoreExt::put(
+            store.as_ref(),
+            &manifest_path,
+            write_contract(&tampered).into(),
+        )
+        .await
         .unwrap();
-    assert!(!output.status.success());
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains("error: incompatible_index"), "{error}");
-    assert!(!error.contains("host_callback_failed"), "{error}");
+        let refused = fyrr_reader::search::PreparedReader::open(&original).await;
+        assert!(
+            matches!(refused, Err(fyrr_reader::ReaderError::IncompatibleIndex)),
+            "{:?}",
+            refused.map(|_| ())
+        );
+        let output = super::coordination::host_command(&config)
+            .args(["writer", "verify"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("error: incompatible_index"), "{error}");
+        assert!(!error.contains("host_callback_failed"), "{error}");
+    }
     std::fs::remove_dir_all(root).unwrap();
 }

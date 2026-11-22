@@ -12,7 +12,7 @@ use chrono::Utc;
 use futures::TryStreamExt;
 use fyrr_core::config::Config;
 use fyrr_core::envelope::{EnvelopePayload, RejectionMarker};
-use fyrr_core::publication::{CommitLineage, ContentManifest, ServingHead};
+use fyrr_core::publication::{CommitLineage, ContentManifest, PolicyArtifact, ServingHead};
 use fyrr_reader::storage::{dataset_uri, namespace_store, pinned, read_contract};
 use lance::Dataset;
 use lance::dataset::cleanup::CleanupPolicy;
@@ -471,6 +471,12 @@ pub async fn verify(config: &Config) -> Result<serde_json::Value> {
         )),
     )
     .await?;
+    // The same check as the reader's: the publication matches the namespace's settings.
+    let policy: PolicyArtifact =
+        fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+    if !manifest.built_with(&policy.settings) {
+        return Err(WriterError::IncompatibleIndex);
+    }
     let dataset = pinned(config, &head).await?;
     let mut stream = dataset
         .scan()

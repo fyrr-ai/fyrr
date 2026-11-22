@@ -176,6 +176,16 @@ pub struct ContentManifest {
     pub incarnation: String,
 }
 
+impl ContentManifest {
+    /// Whether this publication was built with the settings its namespace
+    /// records: the embedding profile and the vector index.
+    pub fn built_with(&self, settings: &NamespaceSettings) -> bool {
+        self.embedding == settings.embedding
+            && self.dense_rq_bits == settings.dense_rq_bits
+            && self.dense_partition_rows == settings.dense_partition_rows
+    }
+}
+
 /// Publication-local fencing evidence, immutable with the content manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CommitLineage {

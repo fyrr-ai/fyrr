@@ -471,6 +471,7 @@ impl Scheduler {
                 self.warm_cancel.cancel();
                 self.idle = workers;
                 let reader = self.template.insert(new);
+                self.context.adopt(reader);
                 self.handover = false;
                 *self.served.write().await = reader.readiness_state();
                 log_refresh("ready", reader.manifest.sequence);
@@ -531,6 +532,7 @@ impl Scheduler {
                     new.report_cache_degradation(self.served.read().await.cache_degraded);
                     self.idle = workers;
                     let reader = self.template.insert(new);
+                    self.context.adopt(reader);
                     *self.served.write().await = reader.readiness_state();
                     self.warm_loss = None;
                     log_refresh("ready", reader.manifest.sequence);

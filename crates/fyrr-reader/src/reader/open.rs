@@ -92,13 +92,7 @@ impl PreparedReader {
         )
         .await?;
         // The publication was built with the settings the namespace records.
-        let settings = &policy.settings;
-        if manifest.embedding != settings.embedding {
-            return Err(EmbeddingProfileMismatch);
-        }
-        if manifest.dense_rq_bits != settings.dense_rq_bits
-            || manifest.dense_partition_rows != settings.dense_partition_rows
-        {
+        if !manifest.built_with(&policy.settings) {
             return Err(IncompatibleIndex);
         }
         // The namespace's own settings, not this process's file, define how it is read.
