@@ -443,7 +443,8 @@ pub(crate) async fn verify_history(config: &Config, head: &ServingHead) -> Resul
 }
 
 /// Delete the publication manifests and envelope checkpoints that no retained
-/// manifest names. The oldest retained manifest is recorded as the cut first:
+/// manifest names, and the policy and identity generations older than any a
+/// retained manifest or the head names. The oldest retained manifest is recorded as the cut first:
 /// the walks of the chain end there, and a manifest missing anywhere else is a
 /// lost one. A walk that starts at a manifest older than the window finds its
 /// checkpoint gone and reads the manifests instead, so what is deleted is
@@ -542,16 +543,38 @@ async fn superseded_history(
                 }
             }
         }
+        // A policy or identity generation is named by the head and by each
+        // retained manifest, and generations only grow along the head: one
+        // below the oldest generation any of them names was replaced before
+        // the oldest retained manifest was published, and a reader that
+        // fetched the head within `version_grace` has a retained manifest at
+        // or before that head. Higher ones are kept, orphans of a failed
+        // publication included, until the head passes them.
+        let policy_floor = kept
+            .iter()
+            .map(|manifest| manifest.policy.generation)
+            .fold(head.policy.generation, u64::min);
+        let identity_floor = kept
+            .iter()
+            .map(|manifest| manifest.identity.generation)
+            .fold(head.identity.generation, u64::min);
         let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
         let served = head.content.as_ref().map(|p| p.publication_id.clone());
         let mut deleted = 0;
-        for prefix in ["publications", "evidence"] {
+        for (prefix, floor) in [
+            ("publications", None),
+            ("evidence", None),
+            ("policy", Some(policy_floor)),
+            ("identity", Some(identity_floor)),
+        ] {
             let mut listing = store.list(Some(&root.clone().join(prefix)));
             while let Some(object) = listing.try_next().await? {
-                if named.contains(&fyrr_reader::storage::relative_path(
-                    &object.location,
-                    &root,
-                )) {
+                let relative = fyrr_reader::storage::relative_path(&object.location, &root);
+                let superseded = match floor {
+                    None => !named.contains(&relative),
+                    Some(floor) => generation_of(&relative, prefix).is_some_and(|g| g < floor),
+                };
+                if !superseded {
                     continue;
                 }
                 if start.elapsed() >= limit {
@@ -579,6 +602,16 @@ async fn superseded_history(
     })
     .await
     .map_err(|_| WriterError::MaintenanceStepDeadline)?
+}
+
+/// The generation of `<prefix>/<generation>-<digest>.json`; any other name has none.
+fn generation_of(relative: &str, prefix: &str) -> Option<u64> {
+    let name = relative.strip_prefix(prefix)?.strip_prefix('/')?;
+    let (generation, digest) = name.strip_suffix(".json")?.split_once('-')?;
+    if digest.contains('/') {
+        return None;
+    }
+    generation.parse().ok()
 }
 
 async fn cleanup_versions(
