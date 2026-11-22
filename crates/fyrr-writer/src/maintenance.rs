@@ -13,6 +13,7 @@ use futures::TryStreamExt;
 use fyrr_core::Contract;
 use fyrr_core::config::Config;
 use fyrr_core::envelope::{EnvelopePayload, RejectionMarker};
+use fyrr_core::identity::IdentityArtifact;
 use fyrr_core::publication::{
     CommitLineage, ContentManifest, HISTORY_CUT_OBJECT, HistoryCut, PolicyArtifact, ServingHead,
 };
@@ -443,15 +444,16 @@ pub(crate) async fn verify_history(config: &Config, head: &ServingHead) -> Resul
 }
 
 /// Delete the publication manifests and envelope checkpoints that no retained
-/// manifest names, and the policy and identity generations older than any a
-/// retained manifest or the head names. The oldest retained manifest is recorded as the cut first:
-/// the walks of the chain end there, and a manifest missing anywhere else is a
-/// lost one. A walk that starts at a manifest older than the window finds its
-/// checkpoint gone and reads the manifests instead, so what is deleted is
-/// history no restore or receipt reaches. Like the other steps, the pass is
-/// bounded by `step_max_duration`, listing included, meets the revocation
-/// boundary every 64 deletes and ends when the head publishes; what it leaves,
-/// the next `writer maintain` removes.
+/// manifest names, the policy and identity generations older than any a
+/// retained manifest or the head names, and the permission snapshots under
+/// `grants/` that no identity artifact still stored names. The oldest retained
+/// manifest is recorded as the cut first: the walks of the chain end there,
+/// and a manifest missing anywhere else is a lost one. A walk that starts at a
+/// manifest older than the window finds its checkpoint gone and reads the
+/// manifests instead, so what is deleted is history no restore or receipt
+/// reaches. Like the other steps, the pass is bounded by `step_max_duration`,
+/// listing included, meets the revocation boundary every 64 deletes and ends
+/// when the head publishes; what it leaves, the next `writer maintain` removes.
 async fn superseded_history(
     config: &Config,
     lease: &LeaseGuard,
@@ -563,29 +565,52 @@ async fn superseded_history(
         // The object a pointer names is kept whatever its key says: the
         // contract does not make the key the canonical name of the generation.
         // The key is the one the reader resolves, `//` and all.
+        let key = |pointer: &fyrr_core::publication::GenerationPointer| {
+            fyrr_reader::storage::relative_path(
+                &Path::from(format!("{root}/{}", pointer.object)),
+                &root,
+            )
+        };
+        let identity_keys: BTreeSet<_> = kept
+            .iter()
+            .map(|manifest| &manifest.identity)
+            .chain([&head.identity])
+            .map(key)
+            .collect();
+        named.extend(identity_keys.iter().cloned());
         named.extend(
             kept.iter()
-                .flat_map(|manifest| [&manifest.policy, &manifest.identity])
-                .chain([&head.policy, &head.identity])
-                .map(|pointer| {
-                    fyrr_reader::storage::relative_path(
-                        &Path::from(format!("{root}/{}", pointer.object)),
-                        &root,
-                    )
-                }),
+                .map(|manifest| &manifest.policy)
+                .chain([&head.policy])
+                .map(key),
         );
         let served = head.content.as_ref().map(|p| p.publication_id.clone());
         let mut deleted = 0;
+        let mut inputs = BTreeSet::new();
         for (prefix, floor) in [
             ("publications", None),
             ("evidence", None),
             ("policy", Some(policy_floor)),
             ("identity", Some(identity_floor)),
+            ("grants", None),
         ] {
+            // The grants an identity artifact still stored names: read once
+            // the identity generations are gone, so a stored artifact that
+            // does not read keeps every grant.
+            if prefix == "grants" {
+                let Some(read) = identity_inputs(store.as_ref(), &root, &identity_keys).await?
+                else {
+                    break;
+                };
+                inputs = read;
+            }
             let mut listing = store.list(Some(&root.clone().join(prefix)));
             while let Some(object) = listing.try_next().await? {
                 let relative = fyrr_reader::storage::relative_path(&object.location, &root);
                 let superseded = match floor {
+                    None if prefix == "grants" => {
+                        grant_key(&relative) && !inputs.contains(&relative)
+                    }
                     None => !named.contains(&relative),
                     Some(floor) => {
                         !named.contains(&relative)
@@ -604,7 +629,9 @@ async fn superseded_history(
                     lease.head().await?
                 };
                 // The references above are those of the head this pass began with.
-                if current.content.as_ref().map(|p| &p.publication_id) != served.as_ref() {
+                if current.content.as_ref().map(|p| &p.publication_id) != served.as_ref()
+                    || current.identity != head.identity
+                {
                     durability.finish().await?;
                     return Ok(deleted);
                 }
@@ -620,6 +647,57 @@ async fn superseded_history(
     })
     .await
     .map_err(|_| WriterError::MaintenanceStepDeadline)?
+}
+
+/// The keys, relative to the namespace root, that the identity artifacts under
+/// `identity/` and those of `pointers` name as inputs. `None` when one of them
+/// does not read or is not an identity artifact: nothing is known to be
+/// unreferenced then.
+async fn identity_inputs(
+    store: &dyn object_store::ObjectStore,
+    root: &Path,
+    pointers: &BTreeSet<String>,
+) -> Result<Option<BTreeSet<String>>> {
+    let mut keys = pointers.clone();
+    let mut listing = store.list(Some(&root.clone().join("identity")));
+    while let Some(object) = listing.try_next().await? {
+        keys.insert(fyrr_reader::storage::relative_path(&object.location, root));
+    }
+    let mut inputs = BTreeSet::new();
+    for key in keys {
+        let bytes = match store.get(&Path::from(format!("{root}/{key}"))).await {
+            Ok(object) => object
+                .bytes()
+                .await
+                .map_err(|_| WriterError::StorageUnavailable)?,
+            Err(object_store::Error::NotFound { .. }) => return Ok(None),
+            Err(_) => return Err(WriterError::StorageUnavailable),
+        };
+        let Ok(identity) = fyrr_core::parse_contract::<IdentityArtifact>(&bytes) else {
+            return Ok(None);
+        };
+        inputs.extend(identity.inputs.iter().map(|input| {
+            fyrr_reader::storage::relative_path(
+                &Path::from(format!("{root}/{}", input.object)),
+                root,
+            )
+        }));
+    }
+    Ok(Some(inputs))
+}
+
+/// Whether `relative` is exactly the key the writer gives a permission
+/// snapshot, `grants/<64 lowercase hex digits>.json`.
+fn grant_key(relative: &str) -> bool {
+    relative
+        .strip_prefix("grants/")
+        .and_then(|name| name.strip_suffix(".json"))
+        .is_some_and(|hex| {
+            hex.len() == 64
+                && hex
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
 }
 
 /// The generation of an object whose key is exactly what the writer gives a

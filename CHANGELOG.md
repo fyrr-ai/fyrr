@@ -470,6 +470,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 - `fyrr writer maintain` also deletes the policy and identity generations
   older than any generation the serving head or a retained publication names,
   so `policy/` and `identity/` no longer grow with the number of commits.
+  It also deletes the permission snapshots under `grants/` that no stored
+  identity artifact names as an input.
 
 ### Security
 

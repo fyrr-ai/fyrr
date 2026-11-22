@@ -1563,11 +1563,20 @@ fn history_round(worker: &Path, root: &Path, round: u64) {
         root,
         json!({"epoch":round,
             "content":[[replacement("a", &format!("r{round}"), &format!("r{}", round - 1), &format!("fixture document {round}"))]],
-            "members":[{"users":users,"groups":[{"id":"child","members":["usr:u"]},{"id":"group","members":["grp:child"]}]}]}),
+            "members":[{"users":users,"groups":[{"id":"child","members":["usr:u"]},{"id":"group","members":["grp:child"]}]}],
+            "container_grants":[[{"container_id":format!("c{round}"),"container_kind":"folder","permission_revision":format!("p{round}"),"readers":["usr:u"]}]]}),
     );
     worker_sync(
         worker,
-        &["incremental", "--kind", "content", "--kind", "members"],
+        &[
+            "incremental",
+            "--kind",
+            "content",
+            "--kind",
+            "members",
+            "--kind",
+            "permissions",
+        ],
     );
 }
 
@@ -1634,6 +1643,8 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
     // Inside the window no publication is deleted, and every receipt is there.
     let identities = control_objects(&commit, "identity").await;
     assert!(identities >= 10, "{identities} identity generations");
+    let grants = control_objects(&commit, "grants").await;
+    assert!(grants >= 10, "{grants} permission snapshots");
     command(&commit, &["writer", "maintain"]);
     assert!(control_objects(&commit, "publications").await >= 10);
     // Only what precedes the first publication may go: every generation a
@@ -1717,6 +1728,30 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
         "{generations:?} generations for {} retained publications",
         kept.len()
     );
+    // The permission snapshots that a stored identity artifact names are
+    // there; the ones only the deleted generations named are gone.
+    for pointer in kept.iter().map(|m| &m.identity).chain([&head.identity]) {
+        let identity: fyrr_core::identity::IdentityArtifact =
+            fyrr_reader::storage::artifact(store.as_ref(), &namespace, pointer)
+                .await
+                .unwrap();
+        for input in &identity.inputs {
+            store
+                .head(&object_store::path::Path::from(format!(
+                    "{namespace}/{}",
+                    input.object
+                )))
+                .await
+                .unwrap();
+        }
+    }
+    let snapshots = control_objects(&commit, "grants").await;
+    assert!(snapshots < grants, "{snapshots} of {grants} snapshots");
+    assert!(
+        snapshots <= generations[1],
+        "{snapshots} snapshots for {} identity generations",
+        generations[1]
+    );
     // A key that is not the writer's own name for a generation is never
     // taken for one, whatever it holds.
     let backup = object_store::path::Path::from(format!("{namespace}/identity/1-backup.json"));
@@ -1731,8 +1766,12 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
         .await
         .unwrap();
     store.put(&backup, bytes.into()).await.unwrap();
+    let stray = object_store::path::Path::from(format!("{namespace}/grants/backup.json"));
+    store.put(&stray, "{}".into()).await.unwrap();
     command(&commit, &["writer", "maintain"]);
     store.head(&backup).await.unwrap();
+    store.head(&stray).await.unwrap();
+    assert_eq!(control_objects(&commit, "grants").await - 1, snapshots);
     assert_eq!(
         [
             control_objects(&commit, "policy").await,
