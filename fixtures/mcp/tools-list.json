@@ -348,7 +348,12 @@
                       "lt",
                       "lte",
                       "gt",
-                      "gte"
+                      "gte",
+                      "contains",
+                      "not_contains",
+                      "contains_any",
+                      "contains_all",
+                      "contains_none"
                     ]
                   },
                   "value": true

@@ -1,5 +1,5 @@
 {
-  "schema_version": "4.0",
+  "schema_version": "4.1",
   "namespace": "acme",
   "publication_id": "pub-000042",
   "sequence": 42,
@@ -106,5 +106,10 @@
     "rejected_since": [
       "env-c0ffee00c0ffee00c0ffee00c0ffee00"
     ]
+  },
+  "stats": {
+    "rows": 18402,
+    "logical_bytes": 73912041,
+    "first_published_at": "2026-09-01T08:15:00Z"
   }
 }

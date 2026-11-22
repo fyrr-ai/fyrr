@@ -2541,6 +2541,7 @@ name = "fyrr-core"
 version = "0.1.1"
 dependencies = [
  "arrow-schema",
+ "base64 0.23.1",
  "chrono",
  "clap",
  "hex",
@@ -2560,6 +2561,7 @@ name = "fyrr-reader"
 version = "0.1.1"
 dependencies = [
  "arrow-array",
+ "arrow-buffer",
  "arrow-schema",
  "arrow-select",
  "async-trait",

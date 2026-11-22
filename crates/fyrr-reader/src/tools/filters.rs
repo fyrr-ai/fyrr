@@ -1,7 +1,7 @@
 use super::*;
 use crate::search::FilterSelection;
 use chrono::{DateTime, Utc};
-use fyrr_core::attributes::{AttributeSchema, AttributeType};
+use fyrr_core::attributes::{AttributeSchema, AttributeType, parse_uuid};
 use serde_json::Value;
 
 /// The scalar type of a built-in field or of an attribute the namespace
@@ -27,6 +27,10 @@ fn comparison_sql(comparison: &Comparison, attributes: &AttributeSchema) -> Resu
         }
         name => field_type(name, attributes)?,
     };
+    // A `bytes` attribute is stored and nothing else.
+    if kind == AttributeType::Bytes {
+        return Err(InvalidArgument);
+    }
     // Backticks make the name a column whatever it spells: an attribute can be
     // called `true`, `null`, `case` or `not`.
     let column = format!("`{field}`");
@@ -38,6 +42,9 @@ fn comparison_sql(comparison: &Comparison, attributes: &AttributeSchema) -> Resu
         };
     }
     let symbol = match op {
+        Op::Contains | Op::NotContains | Op::ContainsAny | Op::ContainsAll | Op::ContainsNone => {
+            return array_sql(&column, kind, *op, value);
+        }
         Op::In => return Ok(format!("{column} IN ({})", literals(kind, value)?)),
         Op::NotIn => return Ok(format!("{column} NOT IN ({})", literals(kind, value)?)),
         Op::Eq => "=",
@@ -50,9 +57,32 @@ fn comparison_sql(comparison: &Comparison, attributes: &AttributeSchema) -> Resu
     Ok(format!("{column} {symbol} {}", literal(kind, value)?))
 }
 
+/// A test of the elements of an array attribute. A scalar attribute has none,
+/// and a value is a literal of the element type.
+fn array_sql(column: &str, kind: AttributeType, op: Op, value: &Value) -> Result<String> {
+    let AttributeType::Array(element) = kind else {
+        return Err(InvalidArgument);
+    };
+    let element = element.scalar();
+    Ok(match op {
+        Op::Contains => format!("array_has({column},{})", literal(element, value)?),
+        Op::NotContains => format!("NOT array_has({column},{})", literal(element, value)?),
+        Op::ContainsAny => format!("array_has_any({column},[{}])", literals(element, value)?),
+        Op::ContainsAll => format!("array_has_all({column},[{}])", literals(element, value)?),
+        Op::ContainsNone => format!(
+            "NOT array_has_any({column},[{}])",
+            literals(element, value)?
+        ),
+        _ => return Err(InvalidArgument),
+    })
+}
+
 /// The values of `in` and `not_in`: one or more literals of `kind`.
 fn literals(kind: AttributeType, values: &Value) -> Result<String> {
     let values = values.as_array().ok_or(InvalidArgument)?;
+    if values.is_empty() {
+        return Err(InvalidArgument);
+    }
     Ok(values
         .iter()
         .map(|value| literal(kind, value))
@@ -71,11 +101,26 @@ fn literal(kind: AttributeType, value: &Value) -> Result<String> {
             .as_f64()
             .map(|number| format!("{number:?}"))
             .ok_or(InvalidArgument),
+        // The casts keep the literal of the column's type, which an array
+        // function needs and Lance's indexes answer (see `lance_pin`).
+        (AttributeType::Uint, Value::Number(number)) => number
+            .as_u64()
+            .map(|number| format!("CAST({number} AS BIGINT UNSIGNED)"))
+            .ok_or(InvalidArgument),
         (AttributeType::Bool, Value::Bool(flag)) => Ok(flag.to_string()),
+        (AttributeType::Uuid, Value::String(text)) => {
+            let bytes = parse_uuid(text).ok_or(InvalidArgument)?;
+            Ok(format!(
+                "arrow_cast(X'{}', 'FixedSizeBinary(16)')",
+                hex::encode(bytes)
+            ))
+        }
         (AttributeType::Datetime, Value::String(text)) => {
             let time = DateTime::parse_from_rfc3339(text).map_err(|_| InvalidArgument)?;
             Ok(format!(
-                "timestamp '{}'",
+                // Microseconds, as stored: a bare literal is nanoseconds and
+                // overflows past the year 2262.
+                "timestamp(6) '{}'",
                 time.with_timezone(&Utc).format("%Y-%m-%d %H:%M:%S%.6f")
             ))
         }
@@ -209,13 +254,19 @@ impl PreparedReader {
         scan.filter(&self.request_predicate()?)
             .map_err(|_| IncompatibleIndex)?
             .with_row_id();
-        // `order_by` names scalar fields only: the labels are an array, so
-        // they are not a field here. The document key makes the order total.
+        // `order_by` names scalar fields only: the labels, an array attribute
+        // and a `bytes` attribute are not orderable here. The document key
+        // makes the order total.
         let mut order = match &args.order_by {
             Some(keys) => keys
                 .iter()
                 .map(|key| {
-                    field_type(&key.field, &self.manifest.attributes)?;
+                    if matches!(
+                        field_type(&key.field, &self.manifest.attributes)?,
+                        AttributeType::Array(_) | AttributeType::Bytes
+                    ) {
+                        return Err(InvalidArgument);
+                    }
                     Ok(ordering(&key.field, key.direction == SortDirection::Asc))
                 })
                 .collect::<Result<Vec<_>>>()?,

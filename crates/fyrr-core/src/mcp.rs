@@ -22,8 +22,9 @@ use crate::version::SchemaVersion;
 /// The MCP tool schema version, reported in tool `_meta` and every response.
 pub const MCP_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
 
-/// `tools/list` must stay within this many bytes of compact JSON.
-pub const TOOLS_LIST_MAX_BYTES: usize = 16 * 1024;
+/// `tools/list` must stay within this many bytes of compact JSON. The five
+/// array operators of `filter` took it from 16 KiB to 17 KiB.
+pub const TOOLS_LIST_MAX_BYTES: usize = 17 * 1024;
 
 /// `_meta` key holding the tool schema version.
 pub const META_SCHEMA_VERSION_KEY: &str = "fyrr/schema_version";
@@ -202,8 +203,8 @@ pub enum SearchOrder {
 }
 
 /// A built-in field or a typed attribute of the namespace to sort by. The
-/// reader refuses a field it does not know or whose values are not a single
-/// scalar, such as the connector labels.
+/// reader refuses a field it does not know or whose values are not an orderable
+/// scalar: the connector labels, an array or `bytes`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OrderKey {
@@ -252,7 +253,8 @@ pub struct Comparison {
     pub value: Value,
 }
 
-/// How a field is compared with a value.
+/// How a field is compared with a value. The last five test the elements of an
+/// array attribute and apply to nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Op {
@@ -264,6 +266,11 @@ pub enum Op {
     Lte,
     Gt,
     Gte,
+    Contains,
+    NotContains,
+    ContainsAny,
+    ContainsAll,
+    ContainsNone,
 }
 
 impl<'de> Deserialize<'de> for Filter {

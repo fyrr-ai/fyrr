@@ -9,6 +9,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `GET /v1/namespaces/{namespace}` on the reader reports the namespace's
+  schema, settings, approximate row count and logical bytes, the time of the
+  namespace's first publication, last write time, and the rows and bytes no
+  index covers yet. It is answered
+  from the manifest the reader holds, and needs an API key with the `admin` or
+  `list` role, because its numbers are not filtered by row permissions. The
+  content manifest gains `stats` (publication contract 4.1). See
+  [Namespace report](docs/http-api.md#namespace-report).
 - `fyrr writer serve` serves `POST /v1/namespaces/{namespace}/documents` when
   `[namespace.write_api]` is set: upserts (rows with an `id`, a text and typed
   attributes) and deletes by id, one request published whole or refused whole.
@@ -133,6 +141,16 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   recorded in the namespace's policy artifact and in every content manifest
   (contracts 3.0 and 4.0, unreleased). The columns currently contain only nulls.
   See [tuning](docs/tuning.md#namespaceattributes).
+- Typed attributes take three more scalar types, `uint` (64-bit unsigned),
+  `uuid` (stored in 16 bytes) and `bytes` (base64 in requests; stored, never
+  filtered, sorted or indexed), and arrays of every scalar type but `bytes`,
+  declared as `{ array = "string" }`. An array has a label-list index. `filter`
+  tests an array with `contains`, `not_contains`, `contains_any`,
+  `contains_all` and `contains_none`; `order_by` refuses an array and `bytes`. A query's `fields` returns
+  them as a number, a UUID string, base64 and a JSON array. Existing schemas
+  are unchanged. See
+  [tuning](docs/tuning.md#namespaceattributes) and
+  [Filters](docs/mcp-tools.md#filters).
 
 ### Changed
 

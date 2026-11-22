@@ -48,6 +48,7 @@ jsonwebtoken.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
+arrow-buffer.workspace = true
 fyrr-core = { workspace = true, features = ["test-clock"] }
 # `tokio::time::pause` for tests of latency and dependency depth.
 tokio = { workspace = true, features = ["test-util"] }

@@ -1,7 +1,11 @@
 use super::*;
 use arrow_array::{ArrayRef, BooleanArray, FixedSizeListArray, Float16Array, Float64Array};
-use arrow_array::{Int64Array, TimestampMicrosecondArray};
-use fyrr_core::attributes::AttributeType;
+use arrow_array::{
+    BinaryArray, FixedSizeBinaryArray, Int64Array, ListArray, TimestampMicrosecondArray,
+    UInt64Array,
+};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use fyrr_core::attributes::{AttributeType, format_uuid};
 use serde_json::Value;
 
 /// Common metadata with the record revision and its text length in bytes.
@@ -518,6 +522,36 @@ fn scalar_json(array: &ArrayRef, kind: AttributeType, row: usize) -> Result<Valu
             let time =
                 chrono::DateTime::from_timestamp_micros(micros).ok_or(PublicationRowsInvalid)?;
             Value::String(McpTime(time).to_string())
+        }
+        AttributeType::Uint => any
+            .downcast_ref::<UInt64Array>()
+            .ok_or(PublicationRowsInvalid)?
+            .value(row)
+            .into(),
+        AttributeType::Uuid => Value::String(format_uuid(
+            any.downcast_ref::<FixedSizeBinaryArray>()
+                .ok_or(PublicationRowsInvalid)?
+                .value(row)
+                .try_into()
+                .map_err(|_| PublicationRowsInvalid)?,
+        )),
+        AttributeType::Bytes => Value::String(
+            STANDARD.encode(
+                any.downcast_ref::<BinaryArray>()
+                    .ok_or(PublicationRowsInvalid)?
+                    .value(row),
+            ),
+        ),
+        AttributeType::Array(element) => {
+            let items = any
+                .downcast_ref::<ListArray>()
+                .ok_or(PublicationRowsInvalid)?
+                .value(row);
+            Value::Array(
+                (0..items.len())
+                    .map(|item| scalar_json(&items, element.scalar(), item))
+                    .collect::<Result<_>>()?,
+            )
         }
     })
 }

@@ -1003,6 +1003,22 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::an_undeclared_array_takes_its_type_from_its_first_element": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::the_new_types_are_declared_and_checked": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::an_array_element_and_a_bytes_value_are_bounded": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::bytes_have_no_index_and_no_array_type": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-core:lib:fyrr_core/attributes::tests::every_error_has_a_distinct_code": {
         "tier": "quick",
         "seconds": 0.0
@@ -1378,6 +1394,10 @@
         "tier": "quick",
         "seconds": 0.022
       },
+      "full:fyrr-reader:test:lance_pin/every_offered_attribute_type_has_an_index_that_answers_its_filters": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
       "full:fyrr-reader:test:lance_pin/native_rabitq_centroid_codes_and_f32_routing_order": {
         "tier": "quick",
         "seconds": 0.01
@@ -1650,6 +1670,10 @@
         "tier": "full",
         "seconds": 60.0
       },
+      "full:fyrr:test:dense_path/storage_budget::a_namespace_report_reads_at_most_the_head_and_one_manifest": {
+        "tier": "full",
+        "seconds": 40.0
+      },
       "full:fyrr:test:dense_path/mirror_identity::reader_paused_past_its_version_check_answers_from_the_new_publication": {
         "tier": "full",
         "seconds": 15.0
@@ -1661,6 +1685,10 @@
       "full:fyrr:test:dense_path/api_keys::an_idle_namespace_answers_from_a_head_read_after_its_request": {
         "tier": "full",
         "seconds": 40.0
+      },
+      "full:fyrr:test:dense_path/api_keys::a_namespace_report_needs_the_admin_or_list_role": {
+        "tier": "quick",
+        "seconds": 30.0
       },
       "full:fyrr:test:dense_path/api_keys::namespaces_opened_by_path_stay_inside_the_memory_budget": {
         "tier": "full",
@@ -1972,6 +2000,10 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_orders_a_listing_by_attributes_on_storage": {
         "tier": "full",
         "seconds": 1
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_stores_filters_and_orders_the_other_attribute_types_on_storage": {
+        "tier": "full",
+        "seconds": 2
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_pages_a_listing_and_scans_by_the_document_key_on_storage": {
         "tier": "full",
