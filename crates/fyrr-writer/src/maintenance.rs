@@ -242,11 +242,6 @@ async fn maintain_held(
     )
 }
 
-/// Merges the segments of one index. Rebalancing partitions rereads the rows
-/// of every partition it splits, so on a large namespace it may not fit the
-/// step deadline, and a step that expires does so again on every run. Then the
-/// merge runs once more without it, as a merge alone does.
-#[allow(clippy::print_stderr)]
 async fn merge_index(
     config: &Config,
     lease: &LeaseGuard,
@@ -256,31 +251,12 @@ async fn merge_index(
     segments: usize,
     rebalance: bool,
 ) -> Result<bool> {
-    let limit = config.writer.maintenance.step_max_duration.as_duration();
-    let attempt = |rebalance| {
-        tokio::time::timeout(
-            limit,
-            merge_step(
-                config,
-                lease,
-                dataset.clone(),
-                head.clone(),
-                name.clone(),
-                segments,
-                rebalance,
-            ),
-        )
-    };
-    match attempt(rebalance).await {
-        Ok(merged) => merged,
-        Err(_) if rebalance => {
-            eprintln!("writer_maintenance event=rebalance_skipped");
-            attempt(false)
-                .await
-                .map_err(|_| WriterError::MaintenanceStepDeadline)?
-        }
-        Err(_) => Err(WriterError::MaintenanceStepDeadline),
-    }
+    tokio::time::timeout(
+        config.writer.maintenance.step_max_duration.as_duration(),
+        merge_step(config, lease, dataset, head, name, segments, rebalance),
+    )
+    .await
+    .map_err(|_| WriterError::MaintenanceStepDeadline)?
 }
 
 async fn merge_step(
