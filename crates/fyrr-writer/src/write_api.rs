@@ -837,8 +837,19 @@ async fn execute(
     if served.settings != settings {
         return Err(ApiError(409, "namespace_settings_fixed"));
     }
-    if changes.is_empty() {
+    // Patches alone, with no document published and no envelope waiting that
+    // could create one, patch nothing: there is nothing to publish.
+    let only_patches = !patch_ids.is_empty() && patch_ids.len() == changes.len();
+    if changes.is_empty()
+        || (only_patches
+            && head.content.is_none()
+            && crate::commit::pending(&config, &head).await?.is_empty())
+    {
         durable(&config).await?;
+        if only_patches {
+            answer["patched"] = 0.into();
+            answer["skipped"] = patch_ids.len().into();
+        }
         return Ok(answer);
     }
     let mut done = commits.done.subscribe();

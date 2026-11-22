@@ -449,6 +449,26 @@ async fn identity_write_api_patches_a_document_and_keeps_what_it_does_not_name_o
     );
     assert_eq!(stored(&config, "root_id = 'a2'").await.num_rows(), 0);
 
+    // Patches of a namespace that holds no document are answered at once, all
+    // skipped, and leave nothing waiting for the committer.
+    let empty = tokio::time::timeout(
+        Duration::from_secs(60),
+        writer.post(
+            WRITE_KEY,
+            "shop-empty",
+            &json!({"settings": {"attributes": {"price": "float"}}, "patches": [{"id": "x", "price": 1.0}]}),
+        ),
+    )
+    .await
+    .expect("answered without waiting for a publication");
+    assert_eq!(
+        empty,
+        (
+            200,
+            json!({"upserted": 0, "deleted": 0, "patched": 0, "skipped": 1})
+        )
+    );
+
     // The vector is never patched, nor the text that a provider embeds.
     for (patch, code) in [
         (

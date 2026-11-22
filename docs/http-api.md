@@ -277,7 +277,8 @@ most 16 KiB, and it is not chunked. The same `id` twice in one request is
 `{"upserted":n,"deleted":m}`, the rows of the request. A request with `patches`
 adds `"patched":p`, the patches of documents that exist, and `"skipped":q`, the
 patches of those that do not, as the committer applied the request in the order
-of publication.
+of publication. The counts are best effort: a patch of a document that a later
+request of the same publication replaces or deletes counts as skipped.
 
 A patch changes the text only together with the `vector` of the new text, which
 replaces the stored one; nothing is embedded. A `vector` without the text is

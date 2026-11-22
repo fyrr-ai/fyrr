@@ -230,7 +230,12 @@ fn weigh(config: &Config, change: &ContentChange) -> Result<(u64, u64)> {
         ContentChange::Write(change) => weigh_change(config, change),
         ContentChange::Present(document) => {
             let encoded = serde_json::to_vec(document).map_err(|_| WriterError::DocumentInvalid)?;
-            Ok((1, encoded.len() as u64 + record_estimate(config)))
+            let row = if document.intent == DocumentIntent::Patch {
+                patch_estimate(config)
+            } else {
+                record_estimate(config)
+            };
+            Ok((1, encoded.len() as u64 + row))
         }
     }
 }
@@ -255,6 +260,16 @@ fn weigh_change(config: &Config, change: &DocumentChange) -> Result<(u64, u64)> 
 /// What a record adds to the size of an envelope besides its change.
 fn record_estimate(config: &Config) -> u64 {
     2048 + u64::from(config.embedding.dimensions) * 2
+}
+
+/// What the committer may write for a patched document: its record with a text
+/// and every attribute at their largest, and what any record takes besides. The
+/// stored record is what the patch keeps, so this is an upper bound for all but
+/// a record with very many readers, which the committer refuses when it is written.
+pub(crate) fn patch_estimate(config: &Config) -> u64 {
+    (crate::chunk::MAX_BYTES
+        + config.namespace.attributes.len() * fyrr_core::limits::schema::MAX_VALUE_BYTES) as u64
+        + record_estimate(config)
 }
 
 /// Whether `changes` fit the bounds of a single page, which one envelope must.

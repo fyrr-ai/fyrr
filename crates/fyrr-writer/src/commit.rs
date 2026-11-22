@@ -946,16 +946,24 @@ async fn envelope_work(
                         .ok_or(WriterError::EnvelopeBoundsInvalid)
                 },
             )?;
-            // A delete and a patch each touch a record that is not in a fragment.
+            // A delete and a patch each touch a record that is not in a fragment,
+            // and a patch is written as a whole record.
             let deletes = p
                 .documents
                 .iter()
                 .filter(|d| d.intent != DocumentIntent::Replace)
                 .count() as u64;
+            let patches = p
+                .documents
+                .iter()
+                .filter(|d| d.intent == DocumentIntent::Patch)
+                .count() as u64;
             (
                 rows.checked_add(deletes)
                     .ok_or(WriterError::EnvelopeBoundsInvalid)?,
-                bytes,
+                bytes
+                    .checked_add(patches.saturating_mul(crate::prepare::patch_estimate(config)))
+                    .ok_or(WriterError::EnvelopeBoundsInvalid)?,
             )
         }
         EnvelopePayload::Permissions(p) => (

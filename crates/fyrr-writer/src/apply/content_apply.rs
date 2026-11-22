@@ -250,7 +250,21 @@ pub async fn content(
                 filter == &keys_filter(&envelope.source_id, std::slice::from_ref(root))
             })
     });
-    Ok((changed, write_rows(config, output).await?, acl_changed))
+    let fragments = match write_rows(config, output).await {
+        // A patch writes whole rows of what is stored, a size its request could
+        // not know: such an envelope is refused, not left to fail its group.
+        Err(WriterError::EnvelopeBoundsInvalid)
+            if payload
+                .documents
+                .iter()
+                .any(|d| d.intent == DocumentIntent::Patch) =>
+        {
+            reject(config, envelope, "envelope_bounds_exceeded").await?;
+            return Ok(refused);
+        }
+        written => written?,
+    };
+    Ok((changed, fragments, acl_changed))
 }
 
 type RecordReaders = BTreeMap<(String, String), Vec<String>>;
