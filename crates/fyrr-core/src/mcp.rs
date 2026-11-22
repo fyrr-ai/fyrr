@@ -98,9 +98,13 @@ pub struct SearchInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 1200))]
     pub excerpt_chars: Option<u32>,
-    /// Hits per query; default 50 for query, default/max 20 for queries.
-    #[schemars(range(min = 1, max = 75))]
+    /// Hits per query; default 50 for query, default/max 20 for queries. A listing takes up to 1000 less its offset.
+    #[schemars(range(min = 1, max = MAX_LISTING_WINDOW))]
     pub limit: Option<u32>,
+    /// Documents a listing skips: only without query or queries, and offset plus limit is at most 1000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(max = MAX_LISTING_WINDOW))]
+    pub offset: Option<u32>,
     /// Text per hit; default excerpt.
     pub output: Option<OutputMode>,
     /// Default relevance; updated_at sorts newest first, null dates last.
@@ -711,12 +715,12 @@ pub const SERVER_INSTRUCTIONS: &str = "fyrr searches this organization's indexed
 fn search_description() -> String {
     format!(
         "Search the authorized corpus (lexical and dense). Only documents the caller may \
-         read are returned; an empty result is not an error. Scores are not probabilities. \
+         read are returned; an empty result is not an error. \
          Excerpts are passages of up to {EXCERPT_CODEPOINTS} codepoints with \
          record_id, revision and offsets usable as a fetch window. Filters match exactly; \
-         an unknown value gives an empty result. queries replaces query; \
+         an unknown value gives no hits. queries replaces query; \
          limit is per query (default/max 20), interleaved by rank then query index and deduplicated. \
-         text_hits applies per query before deduplication; excerpt_chars caps passage length. \
+         text_hits applies per query before deduplication. \
          For context on a task, search with both the ticket's title and its body as two queries. \
          {DATA_NOT_INSTRUCTIONS}"
     )
@@ -940,6 +944,12 @@ impl SearchInput {
         })
     }
     pub fn validate(&self) -> Result<(), &'static str> {
+        let listing = !self.has_text() && self.vector.is_none();
+        let max_limit = if listing {
+            MAX_LISTING_WINDOW
+        } else {
+            MAX_SEARCH_LIMIT
+        };
         let valid = self
             .query
             .as_ref()
@@ -958,10 +968,9 @@ impl SearchInput {
                 || self.vector.is_some()
                 || self.order == Some(SearchOrder::UpdatedAt)
                 || self.order_by.is_some())
-            && self
-                .vector
-                .as_ref()
-                .is_none_or(|vector| (1..=DIMENSIONS_MAX as usize).contains(&vector.len()))
+            && self.vector.as_ref().is_none_or(|vector| {
+                u64::try_from(vector.len()).is_ok_and(|n| (1..=DIMENSIONS_MAX).contains(&n))
+            })
             && self
                 .exact
                 .is_none_or(|_| self.has_text() || self.vector.is_some())
@@ -980,9 +989,15 @@ impl SearchInput {
                 (1..=EXCERPT_CODEPOINTS).contains(&v)
                     && self.output.unwrap_or(OutputMode::Excerpt) == OutputMode::Excerpt
             })
-            && self
-                .limit
-                .is_none_or(|v| (1..=MAX_SEARCH_LIMIT).contains(&v))
+            && self.limit.is_none_or(|v| (1..=max_limit).contains(&v))
+            && if listing {
+                self.offset
+                    .unwrap_or(0)
+                    .saturating_add(self.effective_limit())
+                    <= MAX_LISTING_WINDOW
+            } else {
+                self.offset.is_none()
+            }
             && valid_deadline(self.deadline_ms)
             && [
                 &self.sources,

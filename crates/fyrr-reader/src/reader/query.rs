@@ -99,7 +99,9 @@ impl PreparedReader {
         result.metadata.telemetry.stage_us.clear();
         result.metadata.telemetry.rerank_us = None;
         result.metadata.telemetry.queue_wait_ms = 0;
-        if args.order == Some(SearchOrder::UpdatedAt) {
+        // A listing already comes in the order that selected its page, and sorting
+        // it again by the finer metadata time would break paging on ties.
+        if args.order == Some(SearchOrder::UpdatedAt) && args.query.is_some() {
             result.hits.sort_by(|a, b| {
                 b.updated_at.cmp(&a.updated_at).then(
                     (&a.source_id, &a.root_id, &a.record_id).cmp(&(

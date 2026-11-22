@@ -143,7 +143,7 @@ async fn export_and_delete(config: &Path, root: &FixtureRoot) {
         std::fs::write(file, bytes).unwrap();
     }
     let deleted = success(
-        config,
+        &super::namespace_delete::quick_lease(config),
         &[
             "writer",
             "namespace",
@@ -431,15 +431,13 @@ async fn running_http_replacement(backend: Backend) {
     );
     assert_eq!(documents(&granted), 1, "{granted}");
 
-    // The namespace is deleted, its prefix removed, and created again with
-    // the document granted to another subject instead.
+    // The namespace is deleted with its prefix, and created again with the
+    // document granted to another subject instead.
     export_and_delete(&commit, &root).await;
     let loaded = fyrr_core::config::load(&commit).unwrap();
     let (store, prefix) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
     let objects: Vec<_> = store.list(Some(&prefix)).try_collect().await.unwrap();
-    for object in objects {
-        store.delete(&object.location).await.unwrap();
-    }
+    assert!(objects.is_empty(), "{objects:?}");
     success(&commit, &["writer", "namespace", "create"]);
     worker_sync(&worker, &["allowed", "denied", "--full"]);
     let mut moved = doc(&root_id, "r2", "fixture document 0");

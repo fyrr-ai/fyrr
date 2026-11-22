@@ -81,12 +81,12 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let mut reply = crate::serve::cache_test_enqueue(
         &service,
-        crate::serve::ToolCall::Search(
+        crate::serve::ToolCall::Search(Box::new(
             serde_json::from_value(json!({
                 "query":"exactneedle", "limit":1, "output":"metadata"
             }))
             .unwrap(),
-        ),
+        )),
         subject,
     )
     .await;

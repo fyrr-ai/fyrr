@@ -117,6 +117,7 @@ impl CursorLease {
                     PutMode::Create,
                 ),
             };
+        let created = matches!(mode, PutMode::Create);
         let now = fyrr_core::clock::now();
         if state.lease.as_ref().is_some_and(|l| l.expires_at > now) {
             return Err(WriterError::SyncBusy);
@@ -140,11 +141,19 @@ impl CursorLease {
             observed: fyrr_reader::storage::observed_durability(config)?,
             store: store.clone(),
             path,
-            held: Mutex::new((state, result, Instant::now())),
+            held: Mutex::new((state, result.clone(), Instant::now())),
             ttl,
         });
         if let Err(error) = crate::commit::sources_allowed(config, store.as_ref(), &root).await {
-            let _ = lease.release().await;
+            // A cursor created in a namespace that was deleted meanwhile would
+            // outlive it and be taken for the state of a new one. Only this
+            // cursor goes: a new incarnation may have written its own.
+            if created && error == WriterError::NamespaceUnavailable {
+                let file = fyrr_reader::storage::relative_path(&lease.path, &root);
+                let _ = fyrr_reader::storage::delete_if_match(config, &file, &result).await;
+            } else {
+                let _ = lease.release().await;
+            }
             return Err(error);
         }
         Ok(lease)
@@ -275,6 +284,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cursor_renewal_finishes_before_release_on_local_storage() {
         let (config, root) = crate::lease::tests::local_config("cursor-renewal");
+        crate::lease::tests::put_head(&config).await;
         renewal_finishes_before_release(&config).await;
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -292,6 +302,7 @@ pub(crate) mod tests {
             fyrr_core::clock::now().timestamp_nanos_opt().unwrap(),
         ));
         config.storage.uri = format!("file://{}", root.display());
+        rt.block_on(crate::lease::tests::put_head(&config));
         for (index, (operation_failed, release_failed)) in
             [(false, false), (true, false), (false, true), (true, true)]
                 .into_iter()

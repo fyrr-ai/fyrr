@@ -66,7 +66,8 @@ empty result is not an error. Scores only order results.
 | `queries` | 2–16 query texts of 1–4096 characters each instead of `query`. `limit` is then per query; hits are interleaved by rank and query index and deduplicated across queries, up to `namespace.retrieval.max_documents`. |
 | `vector` | A query vector of the namespace's dimensions, used instead of an embedding of `query`. Alone, it searches the dense lane only; no embedding call is made. A vector of another dimension, with a non-finite number, or all zeros (at 16-bit precision) is `invalid_argument`. Not with `queries` or `order_by`. |
 | `exact` | `true` scores every document that passes the filters and the caller's permissions instead of probing the vector index. At most 100000 such rows, else `invalid_argument`; `deadline_ms` also bounds it. With `query` and no `vector`, the text must embed: if it cannot, the search fails instead of answering from the text alone. Needs `query`, `queries` or `vector`. |
-| `limit` | 1–75 documents, default 50. With `queries`, per query, default and maximum 20. |
+| `limit` | 1–1000 documents, default 50. With `query` at most 75, and with `queries` it is per query, default and maximum 20. Only a listing (without `query` and `queries`) goes beyond 75, and `offset + limit` stays within 1000. |
+| `offset` | 0–1000: documents a listing (without `query` and `queries`) skips. See [Paging and scanning](#paging-and-scanning). |
 | `output` | `metadata`, `excerpt` (default) or `content`: what text each hit carries. |
 | `order` | `relevance` (default) or `updated_at`. |
 | `order_by` | 1–4 sort keys `{ field, direction }`, `direction` being `asc` or `desc`, the first key most significant. Only without `query` and `queries`, and not with `order`: it lists the documents that pass the filters. See [Ordering a listing](#ordering-a-listing). |
@@ -156,6 +157,39 @@ caller may read and to the documents that pass the filters.
 ```json
 {"order_by": [{"field": "priority", "direction": "desc"}, {"field": "updated_at", "direction": "desc"}], "limit": 10}
 ```
+
+### Paging and scanning
+
+A listing takes `offset`, the number of documents to skip. It counts documents,
+not records: a connector document with several records counts once, so the
+next page starts at `offset` plus the number of hits returned. `offset + limit`
+is at most 1000; a request beyond it, and an `offset` with `query` or
+`queries`, is `invalid_argument`. Nothing is clamped. The reader reads every
+row that matches before it returns the first hit of an ordered listing, so a
+page costs the rows that match, not the page size.
+
+With `reader.max_response_bytes` set, a page over the budget loses hits from
+its end and says so in `truncated`. Advance by the hits returned, not by
+`limit`. If not even one hit fits, the answer is `busy`, never an empty page. Pages are not a snapshot: when a publication lands between two
+requests (`metadata.publication_id` changes), `offset` can skip or repeat a
+document.
+
+To visit every document the caller may read, order by the document key and ask
+for the key after the last one seen, until a page is empty. Each document
+appears once in a publication, and a document the caller may not read never
+appears. The cost per page falls as the scan advances, because the filter
+leaves fewer rows.
+
+```json
+{"order_by": [{"field": "source_id", "direction": "asc"}, {"field": "root_id", "direction": "asc"}],
+ "filter": {"or": [
+   {"field": "source_id", "op": "gt", "value": "_api"},
+   {"and": [{"field": "source_id", "op": "eq", "value": "_api"},
+            {"field": "root_id", "op": "gt", "value": "doc-0999"}]}]},
+ "output": "metadata", "limit": 1000}
+```
+
+The [export recipe](http-api.md#export-a-namespace) runs this over the JSON API.
 
 ## `fetch`
 

@@ -1562,6 +1562,18 @@
         "tier": "full",
         "seconds": 10.0
       },
+      "full:fyrr:test:dense_path/namespace_delete::delete_data_removes_every_object_and_the_name_is_created_again_on_local_storage": {
+        "tier": "full",
+        "seconds": 10.0
+      },
+      "full:fyrr:test:dense_path/namespace_delete::interrupted_delete_finishes_when_run_again_on_local_storage": {
+        "tier": "full",
+        "seconds": 10.0
+      },
+      "full:fyrr:test:dense_path/namespace_delete::http_delete_needs_an_admin_key_and_the_repeated_name_on_local_storage": {
+        "tier": "full",
+        "seconds": 10.0
+      },
       "full:fyrr:test:dense_path/preparation_evidence::preparation_reuses_bodies_but_discovers_new_envelopes_on_local_storage": {
         "tier": "full",
         "seconds": 10.0
@@ -1597,6 +1609,10 @@
       "full:fyrr:test:dense_path/storage_budget::an_idle_writer_service_stays_within_its_storage_request_budget": {
         "tier": "full",
         "seconds": 40.0
+      },
+      "full:fyrr:test:dense_path/storage_budget::an_idle_writer_service_that_wrote_to_many_namespaces_stays_within_the_budget_of_one": {
+        "tier": "full",
+        "seconds": 60.0
       },
       "full:fyrr:test:dense_path/storage_budget::a_writer_service_maintains_the_namespace_it_serves": {
         "tier": "full",
@@ -1897,6 +1913,10 @@
         "tier": "full",
         "seconds": 40
       },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_writes_to_many_namespaces_from_one_process_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
       "full:fyrr:test:dense_path/write_api::identity_write_api_stores_the_vectors_a_caller_supplies_on_storage": {
         "tier": "full",
         "seconds": 40
@@ -1920,6 +1940,10 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_orders_a_listing_by_attributes_on_storage": {
         "tier": "full",
         "seconds": 1
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_pages_a_listing_and_scans_by_the_document_key_on_storage": {
+        "tier": "full",
+        "seconds": 20
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_largest_body_stays_under_the_worker_memory_limit_on_storage": {
         "tier": "full",

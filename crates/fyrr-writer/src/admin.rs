@@ -7,7 +7,11 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use fyrr_core::config::{Config, DirectoryProvider};
+use fyrr_core::config::{ApiKeyRole, Config, DirectoryProvider, is_api_key_secret, prefix_allows};
+use fyrr_core::identity::ApiKeysArtifact;
+use fyrr_reader::storage::{
+    API_KEYS_FILE, api_key_deployment_hash, deployment_root, namespace_store,
+};
 use ring::hmac;
 use serde_json::{Value, json};
 use std::sync::{
@@ -94,8 +98,101 @@ fn reply(status: u16, value: Value) -> Response {
     }
     reply
 }
+/// Admits an API key of the deployment with the `admin` role in this namespace.
+/// The keys are read from storage at each request, so a key withdrawn by
+/// `writer keys` is refused at once; an unreadable set refuses every key.
+async fn admin_key(config: &Config, secret: &str) -> std::result::Result<(), ScimError> {
+    if !is_api_key_secret(secret) {
+        return Err(ScimError::new(401, "unauthorized"));
+    }
+    let (store, root) = namespace_store(config)?;
+    let keys: ApiKeysArtifact = fyrr_reader::storage::read_contract(
+        store.as_ref(),
+        &deployment_root(&root).join(API_KEYS_FILE),
+    )
+    .await?;
+    let grant = keys
+        .grant(&api_key_deployment_hash(config, secret)?)
+        .ok_or(ScimError::new(401, "unauthorized"))?;
+    if grant.roles.contains(&ApiKeyRole::Admin)
+        && prefix_allows(grant.namespace_prefix.as_deref(), &config.namespace.name)
+    {
+        Ok(())
+    } else {
+        Err(ScimError::new(403, "forbidden"))
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteNamespaceBody {
+    namespace: String,
+}
+
+/// `DELETE /v1/namespaces/{namespace}`: deletes the namespace and its data. It
+/// needs an API key with the `admin` role and the name repeated in the body.
+async fn delete_namespace(state: Arc<AdminState>, request: Request, name: String) -> Response {
+    if request.method() != axum::http::Method::DELETE {
+        return error(ScimError::new(405, "invalidSyntax"));
+    }
+    let secret = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .filter(|s| s.len() <= 8192)
+        .map(str::to_owned);
+    let Some(secret) = secret else {
+        return error(ScimError::new(401, "unauthorized"));
+    };
+    let Ok(permit) = state.capacity.clone().try_acquire_owned() else {
+        return error(ScimError::new(503, "temporarilyUnavailable"));
+    };
+    if let Err(denied) = admin_key(&state.config, &secret).await {
+        return error(denied);
+    }
+    let bytes = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        axum::body::to_bytes(request.into_body(), 4096),
+    )
+    .await
+    {
+        Ok(Ok(b)) => b,
+        Ok(Err(_)) => return error(ScimError::new(413, "tooLarge")),
+        Err(_) => return error(ScimError::new(408, "invalidSyntax")),
+    };
+    let Ok(body) = serde_json::from_slice::<DeleteNamespaceBody>(&bytes) else {
+        return error(ScimError::new(400, "invalidSyntax"));
+    };
+    if name != state.config.namespace.name {
+        return error(ScimError::new(404, "notFound"));
+    }
+    if body.namespace != name {
+        return error(ScimError::new(400, "invalidValue"));
+    }
+    // Keep the lease lifecycle, and the request's capacity, alive even if the
+    // client closes its connection.
+    let result = tokio::spawn(async move {
+        let _permit = permit;
+        crate::commit::delete(&state.config, None, Some(&name)).await
+    })
+    .await;
+    match result {
+        Ok(Ok(value)) => (StatusCode::OK, Json(value)).into_response(),
+        Ok(Err(e)) => error(e.into()),
+        Err(_) => error(ScimError::new(503, "temporarilyUnavailable")),
+    }
+}
+
 async fn handle(State(state): State<Arc<AdminState>>, request: Request) -> Response {
     let path = request.uri().path().to_owned();
+    // `/v1/namespaces/{namespace}` only: `/documents` below it is the write API.
+    if let Some(name) = path
+        .strip_prefix("/v1/namespaces/")
+        .filter(|name| !name.contains('/'))
+    {
+        return delete_namespace(state, request, name.to_owned()).await;
+    }
     if path.starts_with("/v1/") {
         // Its own authentication (an API key with the `write` role) and its own capacity.
         return match &state.write {

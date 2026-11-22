@@ -16,7 +16,7 @@ use axum::{
 use futures::StreamExt;
 use fyrr_core::config::{
     ApiKeyRole, Config, PermissionsMode, SourceConfig, SourceIntervals, is_api_key_secret,
-    prefix_allows,
+    is_namespace_name, prefix_allows,
 };
 use fyrr_core::connector::{
     API_SOURCE_ID, BatchBody, CONNECTOR_CONTRACT_VERSION, ChangeOp, ConnectorBatch, CursorStep,
@@ -28,6 +28,7 @@ use fyrr_core::publication::{NamespaceSettings, PolicyArtifact};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify, OwnedMutexGuard, Semaphore, watch};
@@ -47,19 +48,62 @@ const IN_FLIGHT: usize = 8;
 const RECHECK: Duration = Duration::from_millis(500);
 
 /// The committer's side of the API: a request wakes a round, and each round's
-/// end is counted.
+/// end is counted. The namespaces whose requests wait for their publication
+/// are the ones a round commits besides the configured one; each has a request
+/// in flight, so they are never more than `IN_FLIGHT`, and a namespace with
+/// nothing to publish is not looked at.
+// shortcut: a restart forgets which namespaces had an envelope waiting, and an
+// envelope whose request gave up waits for the next request of its namespace;
+// list the envelopes of the namespaces at startup if that must not be.
 #[derive(Debug)]
 pub(crate) struct Commits {
     pub(crate) requested: Notify,
     pub(crate) done: watch::Sender<u64>,
+    waiting: std::sync::Mutex<BTreeMap<String, usize>>,
 }
 impl Commits {
     pub(crate) fn new() -> Self {
         Self {
             requested: Notify::new(),
             done: watch::channel(0).0,
+            waiting: std::sync::Mutex::default(),
         }
     }
+    /// The namespaces with a request that waits for its publication.
+    pub(crate) fn waiting(&self) -> Vec<String> {
+        self.waiting
+            .lock()
+            .map(|waiting| waiting.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+    fn wait(&self, name: &str) -> Waiting<'_> {
+        if let Ok(mut waiting) = self.waiting.lock() {
+            *waiting.entry(name.to_owned()).or_default() += 1;
+        }
+        Waiting(self, name.to_owned())
+    }
+}
+/// A request that waits for its publication, until it is answered or gives up.
+struct Waiting<'a>(&'a Commits, String);
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut waiting) = self.0.waiting.lock()
+            && let Some(count) = waiting.get_mut(&self.1)
+        {
+            *count -= 1;
+            if *count == 0 {
+                waiting.remove(&self.1);
+            }
+        }
+    }
+}
+
+/// The configuration of the namespace `name`: the process's, which holds the
+/// defaults of a namespace that is created.
+pub(crate) fn named(config: &Config, name: &str) -> Config {
+    let mut config = config.clone();
+    name.clone_into(&mut config.namespace.name);
+    config
 }
 
 #[derive(Debug)]
@@ -192,21 +236,22 @@ async fn accept(api: &WriteApi, config: &Config, request: Request) -> Result<Res
         .path()
         .strip_prefix("/v1/namespaces/")
         .and_then(|rest| rest.strip_suffix("/documents"))
-        .filter(|name| !name.contains('/'));
-    if namespace != Some(config.namespace.name.as_str()) || config.namespace.write_api.is_none() {
+        .filter(|name| is_namespace_name(name));
+    let Some(namespace) = namespace.filter(|_| config.namespace.write_api.is_some()) else {
         return Err(ApiError(404, "not_found"));
-    }
+    };
     if request.method() != axum::http::Method::POST {
         return Err(ApiError(405, "method_not_allowed"));
     }
     // The key is checked as the request arrives; a key revoked afterwards does
     // not cancel an envelope that was already accepted.
-    authorize(config, request.headers()).await?;
+    authorize(config, namespace, request.headers()).await?;
     let permit = api
         .capacity
         .clone()
         .try_acquire_owned()
         .map_err(|_| ApiError(503, "busy"))?;
+    let config = &named(config, namespace);
     let headers = request.headers();
     if !headers
         .get(header::CONTENT_TYPE)
@@ -259,7 +304,7 @@ async fn accept(api: &WriteApi, config: &Config, request: Request) -> Result<Res
     Ok(Json(json!({"upserted": done.0, "deleted": done.1})).into_response())
 }
 
-async fn authorize(config: &Config, headers: &HeaderMap) -> Result<(), ApiError> {
+async fn authorize(config: &Config, namespace: &str, headers: &HeaderMap) -> Result<(), ApiError> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -277,7 +322,7 @@ async fn authorize(config: &Config, headers: &HeaderMap) -> Result<(), ApiError>
     .await?;
     let grant = keys.grant(&hash).ok_or(ApiError(401, "unauthorized"))?;
     if grant.roles.contains(&ApiKeyRole::Write)
-        && prefix_allows(grant.namespace_prefix.as_deref(), &config.namespace.name)
+        && prefix_allows(grant.namespace_prefix.as_deref(), namespace)
     {
         Ok(())
     } else {
@@ -637,6 +682,7 @@ async fn execute(
     }
     let mut done = commits.done.subscribe();
     let id = prepare(&config, &head, changes, attributes, slot).await?;
+    let _waiting = commits.wait(&config.namespace.name);
     commits.requested.notify_one();
     let deadline = tokio::time::Instant::now() + ANSWER_DEADLINE;
     loop {

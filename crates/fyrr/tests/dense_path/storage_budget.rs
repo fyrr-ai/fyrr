@@ -502,6 +502,102 @@ const IDLE_TICK_BUDGET: usize = 13;
 /// more.
 const IDLE_TICK_MANIFESTS: usize = 1;
 
+/// Watches a running writer service: waits until it has written nothing for
+/// two seconds in a row, after its first seconds, then follows `TICKS` seconds.
+/// Returns when it settled, where the window starts in `seen`, the window's
+/// requests, and the committer's idle and published ticks in it.
+fn watch_idle(
+    child: &mut std::process::Child,
+    seen: &Seen,
+    log: &Path,
+) -> (std::time::Instant, usize, Vec<String>, usize, usize) {
+    // Startup runs a sync worker per source, which finds nothing due. The
+    // service is idle once, after its first seconds, two seconds in a row
+    // write nothing.
+    let started = std::time::Instant::now();
+    let deadline = started + Duration::from_secs(120);
+    let mut quiet = 0;
+    while quiet < 2 || started.elapsed() < Duration::from_secs(5) {
+        let mark = seen.len();
+        std::thread::sleep(Duration::from_secs(1));
+        let writes = seen
+            .all(mark)
+            .iter()
+            .filter(|request| writes_storage(request))
+            .count();
+        quiet = if writes == 0 && seen.len() > mark {
+            quiet + 1
+        } else {
+            0
+        };
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the writer service exited"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the service never settled"
+        );
+    }
+    let events = |event: &str| {
+        std::fs::read_to_string(log)
+            .unwrap()
+            .matches(&format!("writer_service event={event}"))
+            .count()
+    };
+    let (settled, mark, idle_before, published_before) = (
+        std::time::Instant::now(),
+        seen.len(),
+        events("idle"),
+        events("published"),
+    );
+    std::thread::sleep(Duration::from_secs(TICKS));
+    let requests = seen.all(mark);
+    let (idle, published) = (
+        events("idle") - idle_before,
+        events("published") - published_before,
+    );
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the writer service exited"
+    );
+    (settled, mark, requests, idle, published)
+}
+
+/// The budget of an idle window: no write, the ticks' reads, and one manifest
+/// read per tick.
+fn assert_idle_window(requests: Vec<String>, idle: usize, published: usize) {
+    let (manifests, rest): (Vec<_>, Vec<_>) = requests
+        .into_iter()
+        .partition(|request| request.starts_with("GET publications/"));
+    // A window of `TICKS` seconds holds at most one tick more; a loaded host
+    // may run fewer. Only the service's own events tell an idle tick from a
+    // tick that had nothing to look at: the committer ticked and took no lease.
+    let ticks = usize::try_from(TICKS).unwrap() + 1;
+    assert!(
+        idle >= usize::try_from(TICKS / 2).unwrap(),
+        "only {idle} idle ticks: the committer did not tick"
+    );
+    assert_eq!(published, 0, "an idle service committed");
+    let writes: Vec<_> = rest
+        .iter()
+        .filter(|request| writes_storage(request))
+        .collect();
+    assert!(writes.is_empty(), "an idle service wrote {writes:?}");
+    within(
+        "idle writer, manifest reads",
+        (0, manifests),
+        IDLE_TICK_MANIFESTS * ticks,
+        0,
+    );
+    within(
+        "idle writer, other requests",
+        (0, rest),
+        IDLE_TICK_BUDGET * ticks,
+        0,
+    );
+}
+
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
 async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
@@ -557,56 +653,7 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
         stop.clone(),
     );
     let child = &mut service.0;
-    // Startup runs a sync worker per source, which finds nothing due. The
-    // service is idle once, after its first seconds, two seconds in a row
-    // write nothing.
-    let started = std::time::Instant::now();
-    let deadline = started + Duration::from_secs(120);
-    let mut quiet = 0;
-    while quiet < 2 || started.elapsed() < Duration::from_secs(5) {
-        let mark = seen.len();
-        std::thread::sleep(Duration::from_secs(1));
-        let writes = seen
-            .all(mark)
-            .iter()
-            .filter(|request| writes_storage(request))
-            .count();
-        quiet = if writes == 0 && seen.len() > mark {
-            quiet + 1
-        } else {
-            0
-        };
-        assert!(
-            child.try_wait().unwrap().is_none(),
-            "the writer service exited"
-        );
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the service never settled"
-        );
-    }
-    let events = |event: &str| {
-        std::fs::read_to_string(&log)
-            .unwrap()
-            .matches(&format!("writer_service event={event}"))
-            .count()
-    };
-    let (settled, mark, idle_before, published_before) = (
-        std::time::Instant::now(),
-        seen.len(),
-        events("idle"),
-        events("published"),
-    );
-    std::thread::sleep(Duration::from_secs(TICKS));
-    let requests = seen.all(mark);
-    let (idle, published) = (
-        events("idle") - idle_before,
-        events("published") - published_before,
-    );
-    assert!(
-        child.try_wait().unwrap().is_none(),
-        "the writer service exited"
-    );
+    let (settled, mark, requests, idle, published) = watch_idle(child, &seen, &log);
     // Past the minute after which a sync worker used to be started again
     // whatever its intervals: a source with nothing due starts none, and the
     // service writes nothing. A worker reads its cursors first.
@@ -643,35 +690,56 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
         0,
     );
 
-    let (manifests, rest): (Vec<_>, Vec<_>) = requests
-        .into_iter()
-        .partition(|request| request.starts_with("GET publications/"));
-    // A window of `TICKS` seconds holds at most one tick more; a loaded host
-    // may run fewer. Only the service's own events tell an idle tick from a
-    // tick that had nothing to look at: the committer ticked and took no lease.
-    let ticks = usize::try_from(TICKS).unwrap() + 1;
-    assert!(
-        idle >= usize::try_from(TICKS / 2).unwrap(),
-        "only {idle} idle ticks: the committer did not tick"
-    );
-    assert_eq!(published, 0, "an idle service committed");
-    let writes: Vec<_> = rest
-        .iter()
-        .filter(|request| writes_storage(request))
-        .collect();
-    assert!(writes.is_empty(), "an idle service wrote {writes:?}");
-    within(
-        "idle writer, manifest reads",
-        (0, manifests),
-        IDLE_TICK_MANIFESTS * ticks,
-        0,
-    );
-    within(
-        "idle writer, other requests",
-        (0, rest),
-        IDLE_TICK_BUDGET * ticks,
-        0,
-    );
+    assert_idle_window(requests, idle, published);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A writer that wrote to many namespaces costs, idle, what one namespace costs:
+/// only the configured one is looked at, and nothing is written.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn an_idle_writer_service_that_wrote_to_many_namespaces_stays_within_the_budget_of_one() {
+    use super::write_api::{WRITE_KEY, Writer, configure, embed};
+    let (config, root) = setup_on(Backend::Local);
+    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    assert_eq!(endpoint, "local-storage", "owned by the local CI row");
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("# fyrr-test-head-check = every", "")
+        .replace("coalescing_timer='10m'", "coalescing_timer='1s'");
+    let seen = Seen::default();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), seen.hook());
+    let service = root.join("service.toml");
+    std::fs::write(&service, text.replace(&endpoint, &observed)).unwrap();
+    let mut writer = Writer::start(&service, &root, address).await;
+
+    let names = ["dense-fixture", "shop-a", "shop-b", "shop-c", "shop-d"];
+    let texts = [
+        "blue shirt",
+        "red hat",
+        "green coat",
+        "black scarf",
+        "white sock",
+    ];
+    embed(&root, &texts);
+    let api = &writer;
+    let replies = futures::future::join_all(names.iter().zip(texts).map(|(name, text)| {
+        let body = json!({"upserts": [{"id": "a", "text": text}]});
+        async move { api.post(WRITE_KEY, name, &body).await }
+    }))
+    .await;
+    for reply in replies {
+        assert_eq!(reply, (200, json!({"upserted": 1, "deleted": 0})));
+    }
+
+    let log = root.join("service.stderr");
+    let (_, _, requests, idle, published) = watch_idle(&mut writer.child, &seen, &log);
+    assert_idle_window(requests, idle, published);
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    drop(writer);
     std::fs::remove_dir_all(root).unwrap();
 }
 

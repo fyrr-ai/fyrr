@@ -11,12 +11,14 @@ const OPERATOR: &str = "owned-fixture-operator-token-only";
 fn secret(n: usize) -> String {
     format!("fyrr_key_{n:064}")
 }
-const WRITE_KEY: usize = 41;
+pub(super) const WRITE_KEY: usize = 41;
 const READ_KEY: usize = 42;
+/// May write the namespaces whose names start with `shop-`.
+const SCOPED_KEY: usize = 43;
 
 /// A configuration without sources that writes through the API, with a key
 /// that may write and one that may only read.
-fn configure(config: &Path, address: &std::net::SocketAddr, extra: &str) {
+pub(super) fn configure(config: &Path, address: &std::net::SocketAddr, extra: &str) {
     let text = std::fs::read_to_string(config).unwrap();
     let base = &text[..text.find("[[sources]]").unwrap()];
     std::fs::write(
@@ -25,6 +27,7 @@ fn configure(config: &Path, address: &std::net::SocketAddr, extra: &str) {
             "{base}\n[namespace.write_api]\n{extra}\n\
              [[identity.api_keys]]\nname='writer'\nkey={{env='FYRR_TEST_WRITE_KEY'}}\nroles=['write']\n\
              [[identity.api_keys]]\nname='reader'\nkey={{env='FYRR_TEST_READ_KEY'}}\nreaders=['usr:x']\n\
+             [[identity.api_keys]]\nname='scoped'\nkey={{env='FYRR_TEST_SCOPED_KEY'}}\nroles=['write']\nnamespace_prefix='shop-'\n\
              [writer.commit]\ncoalescing_timer='10m'\n\
              [writer.serve.admin]\nlisten='{address}'\noperator_token={{env='FYRR_TEST_OPERATOR'}}\n"
         ),
@@ -32,8 +35,8 @@ fn configure(config: &Path, address: &std::net::SocketAddr, extra: &str) {
     .unwrap();
 }
 
-struct Writer {
-    child: std::process::Child,
+pub(super) struct Writer {
+    pub(super) child: std::process::Child,
     base: String,
     client: Client,
 }
@@ -55,11 +58,12 @@ impl Drop for Writer {
 }
 impl Writer {
     /// Publishes the keys, then serves.
-    async fn start(config: &Path, root: &Path, address: std::net::SocketAddr) -> Self {
+    pub(super) async fn start(config: &Path, root: &Path, address: std::net::SocketAddr) -> Self {
         let keys = host_command(config)
             .args(["writer", "keys"])
             .env("FYRR_TEST_WRITE_KEY", secret(WRITE_KEY))
             .env("FYRR_TEST_READ_KEY", secret(READ_KEY))
+            .env("FYRR_TEST_SCOPED_KEY", secret(SCOPED_KEY))
             .output()
             .unwrap();
         assert!(keys.status.success(), "{}", report(&keys));
@@ -67,6 +71,7 @@ impl Writer {
             .args(["writer", "serve", "--jobs", "1"])
             .env("FYRR_TEST_WRITE_KEY", secret(WRITE_KEY))
             .env("FYRR_TEST_READ_KEY", secret(READ_KEY))
+            .env("FYRR_TEST_SCOPED_KEY", secret(SCOPED_KEY))
             .env("FYRR_TEST_OPERATOR", OPERATOR)
             .stdout(std::fs::File::create(root.join("service.stdout")).unwrap())
             .stderr(std::fs::File::create(root.join("service.stderr")).unwrap())
@@ -103,7 +108,7 @@ impl Writer {
         panic!("writer HTTP startup deadline");
     }
 
-    async fn post(&self, key: usize, namespace: &str, body: &Value) -> (u16, Value) {
+    pub(super) async fn post(&self, key: usize, namespace: &str, body: &Value) -> (u16, Value) {
         let response = self
             .client
             .post(format!("{}/v1/namespaces/{namespace}/documents", self.base))
@@ -118,7 +123,7 @@ impl Writer {
 }
 
 /// Embeddings of the texts the fixture will be asked for.
-fn embed(root: &FixtureRoot, texts: &[&str]) {
+pub(super) fn embed(root: &FixtureRoot, texts: &[&str]) {
     for (n, text) in texts.iter().enumerate() {
         let vector: Vec<f32> = (0..1024)
             .map(|d| (((n + 2000) * (d + 7)) as f32).sin())
@@ -168,9 +173,9 @@ async fn identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_stor
     assert_eq!(unkeyed.status(), 401);
     assert_eq!(writer.post(READ_KEY, namespace, &create).await.0, 403);
     assert_eq!(
-        writer.post(WRITE_KEY, "other", &create).await.0,
+        writer.post(WRITE_KEY, "Not_a_name", &create).await.0,
         404,
-        "one namespace is served"
+        "a name that is no namespace name"
     );
     let gzip = writer
         .client
@@ -302,6 +307,69 @@ async fn identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_stor
     assert!(!hits(&config, "blue shirt").contains(&"a1".to_owned()));
     let events = std::fs::read_to_string(root.join("service.stderr")).unwrap();
     assert!(!events.contains("blue shirt"), "no text in the log");
+}
+
+/// One process writes to many namespaces at once: each is created by its
+/// first write, holds only its own documents, and is written only by a key that
+/// may write it.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_writes_to_many_namespaces_from_one_process_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let names = ["dense-fixture", "shop-a", "shop-b", "shop-c", "shop-d"];
+    let texts = [
+        "blue shirt",
+        "red hat",
+        "green coat",
+        "black scarf",
+        "white sock",
+    ];
+    embed(&root, &texts);
+    let writer = Writer::start(&config, &root, address).await;
+
+    // Requests for different namespaces wait for their publications together.
+    let api = &writer;
+    let replies = futures::future::join_all(names.iter().zip(texts).map(|(name, text)| {
+        let id = format!("doc-{name}");
+        let body = json!({"upserts": [{"id": id, "text": text}]});
+        async move { api.post(WRITE_KEY, name, &body).await }
+    }))
+    .await;
+    for reply in replies {
+        assert_eq!(reply, (200, json!({"upserted": 1, "deleted": 0})));
+    }
+
+    // Every namespace serves its own document, and only that.
+    let text = std::fs::read_to_string(&config).unwrap();
+    for (name, text_of) in names.iter().zip(texts) {
+        let own = root.join(format!("{name}.toml"));
+        std::fs::write(
+            &own,
+            text.replace("name = \"dense-fixture\"", &format!("name = \"{name}\"")),
+        )
+        .unwrap();
+        assert_eq!(hits(&own, text_of), [format!("doc-{name}")], "{name}");
+        let head =
+            fyrr_reader::storage::optional_head(&fyrr_core::config::load(&own).unwrap().config)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(head.namespace, *name);
+        assert!(
+            head.lease
+                .is_none_or(|lease| lease.expires_at <= fyrr_core::clock::now()),
+            "{name} holds no lease at rest"
+        );
+    }
+
+    // A key limited to a prefix writes the namespaces under it, and a name
+    // that is no namespace name is not one.
+    let row = json!({"upserts": [{"id": "x", "text": "red hat"}]});
+    assert_eq!(writer.post(SCOPED_KEY, "shop-e", &row).await.0, 200);
+    assert_eq!(writer.post(SCOPED_KEY, "dense-fixture", &row).await.0, 403);
+    assert_eq!(writer.post(WRITE_KEY, "Not_a_name", &row).await.0, 404);
 }
 
 /// A vector of `dimensions` numbers that no other `n` shares.
@@ -684,6 +752,129 @@ async fn identity_write_api_searches_by_a_query_vector_exact_or_approximate_on_s
     ] {
         error(client.call("search", arguments), "invalid_argument");
     }
+}
+
+/// A listing takes an offset, and a scan by the document key visits every
+/// readable document of a publication once, on twice the largest page plus one
+/// documents with unreadable ones between them.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+#[allow(clippy::print_stderr)]
+async fn identity_write_api_pages_a_listing_and_scans_by_the_document_key_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    embed(&root, &["alpha"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let window = fyrr_core::limits::mcp::MAX_LISTING_WINDOW as usize;
+    let readable: Vec<String> = (0..2 * window + 1).map(|n| format!("d{n:05}")).collect();
+    let upserts: Vec<Value> = readable
+        .iter()
+        .map(|id| json!({"id": id, "text": "alpha", "readers": ["grp:allow"]}))
+        // Nobody may read these, whatever the order.
+        .chain((0..readable.len()).step_by(333).map(
+            |n| json!({"id": format!("d{n:05}x"), "text": "alpha", "readers": ["usr:nobody"]}),
+        ))
+        .collect();
+    assert_eq!(
+        writer
+            .post(WRITE_KEY, "dense-fixture", &json!({"upserts": upserts}))
+            .await
+            .0,
+        200
+    );
+    let mut client = Mcp::open(&config);
+    let key = |field: &str, direction: &str| json!({"field": field, "direction": direction});
+    let by_key = json!([key("source_id", "asc"), key("root_id", "asc")]);
+    let page = |client: &mut Mcp, arguments: Value| -> Vec<(String, String)> {
+        let mut arguments = arguments;
+        arguments["output"] = json!("metadata");
+        body(client.call("search", arguments))["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| {
+                (
+                    hit["source_id"].as_str().unwrap().to_owned(),
+                    hit["root_id"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+
+    // The offset counts documents.
+    let offset_page = page(
+        &mut client,
+        json!({"order_by": by_key, "offset": 5, "limit": 3}),
+    );
+    assert_eq!(
+        offset_page.iter().map(|hit| &hit.1).collect::<Vec<_>>(),
+        readable[5..8].iter().collect::<Vec<_>>()
+    );
+    // A page ends within the window.
+    for arguments in [
+        json!({"order_by": by_key, "offset": 1, "limit": window}),
+        json!({"order_by": by_key, "offset": window}),
+        json!({"query": "alpha", "offset": 1}),
+    ] {
+        error(client.call("search", arguments), "invalid_argument");
+    }
+
+    // The scan: the key after the last one seen, until a page is empty.
+    let mut seen = Vec::new();
+    let mut last: Option<(String, String)> = None;
+    loop {
+        let mut arguments = json!({"order_by": by_key, "limit": window});
+        if let Some((source, root)) = &last {
+            arguments["filter"] = json!({"or": [
+                {"field": "source_id", "op": "gt", "value": source},
+                {"and": [
+                    {"field": "source_id", "op": "eq", "value": source},
+                    {"field": "root_id", "op": "gt", "value": root},
+                ]},
+            ]});
+        }
+        let hits = page(&mut client, arguments);
+        let Some(end) = hits.last().cloned() else {
+            break;
+        };
+        seen.extend(hits.iter().map(|hit| hit.1.clone()));
+        last = Some(end);
+    }
+    assert_eq!(seen, readable);
+    // The measurement behind the window: the response size and the latency of
+    // a full page of metadata.
+    let start = Instant::now();
+    let full = client.call(
+        "search",
+        json!({"order_by": by_key, "limit": window, "output": "metadata"}),
+    );
+    eprintln!(
+        "page of {window} documents: {} bytes in {:?}",
+        full.to_string().len(),
+        start.elapsed()
+    );
+
+    // The response budget truncates a page from its end, and the scan goes on
+    // from the last document it kept.
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("[reader]\n", "[reader]\nmax_response_bytes=4096\n");
+    std::fs::write(&config, text).unwrap();
+    let mut bounded = Mcp::open(&config);
+    let result = body(bounded.call(
+        "search",
+        json!({"order_by": by_key, "limit": window, "output": "metadata"}),
+    ));
+    assert!(result["truncated"]["hits_dropped"].as_u64().unwrap() > 0);
+    let kept: Vec<_> = result["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(kept.len() < window);
+    assert_eq!(kept, readable[..kept.len()]);
 }
 
 /// The peak resident memory of a process, in bytes.

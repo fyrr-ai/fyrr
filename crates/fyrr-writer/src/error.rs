@@ -131,6 +131,8 @@ writer_errors! {
     DocumentRevisionMissing => ("document_revision_missing", false),
     ConditionalDeleteUnsupported => ("conditional_delete_unsupported", false),
     ExportInvalid => ("export_invalid", false),
+    DeleteConfirmationInvalid => ("delete_confirmation_invalid", false),
+    NamespaceDeleting => ("namespace_deleting", false),
     FileInventoryUnavailable => ("file_inventory_unavailable", false),
     ForeignLineage => ("foreign_lineage", false),
     IncompatibleIndex => ("incompatible_index", false),

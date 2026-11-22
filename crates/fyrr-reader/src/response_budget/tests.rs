@@ -190,6 +190,19 @@ fn response_budget_cases() {
                 let mut none = full;
                 assert_eq!(fit_response(&mut none, 10), Err(ReaderError::Busy));
                 assert!(none.hits.is_empty());
+                // A budget that holds the envelope but not one hit is an error,
+                // not an empty page.
+                let mut one = output(&[1], 0);
+                let envelope = SearchOutput {
+                    hits: vec![],
+                    truncated: Some(Truncation {
+                        text_dropped: 0,
+                        hits_dropped: 1,
+                    }),
+                    metadata: one.metadata.clone(),
+                };
+                let max = response_len(&envelope).unwrap();
+                assert_eq!(fit_response(&mut one, max), Err(ReaderError::Busy));
             }
             Case::MaximumBatch => {}
             Case::Impossible => unreachable!(),

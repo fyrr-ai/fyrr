@@ -56,6 +56,7 @@ pub(crate) fn fit_response(output: &mut SearchOutput, max: usize) -> Result<()> 
         .iter()
         .map(hit_wire_len)
         .collect::<Result<_, _>>()?;
+    let had_hits = !output.hits.is_empty();
     let mut hit_bytes: usize = sizes.iter().sum();
     if sized_response_len(output, hit_bytes)? <= max {
         return Ok(());
@@ -107,6 +108,11 @@ pub(crate) fn fit_response(output: &mut SearchOutput, max: usize) -> Result<()> 
         };
         drop_hit(output, index)?;
         hit_bytes -= sizes.remove(index);
+    }
+    // A page that loses every hit is an error: an empty result reads as the end
+    // of a listing, and as no match for a search.
+    if had_hits && output.hits.is_empty() {
+        return Err(Busy);
     }
     Ok(())
 }

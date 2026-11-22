@@ -474,10 +474,32 @@ fn s3_namespace_store(
     Ok((store, root, client))
 }
 
-/// Delete only the current namespace head matching the holder's CAS token.
-/// S3 deletes the current key without versionId so an older head cannot revive.
-pub async fn delete_head_if_match(
+/// Whether the namespace's store honors conditional deletion, checked without
+/// deleting anything. A local store always does.
+pub async fn conditional_delete_supported(config: &Config) -> object_store::Result<()> {
+    match config.storage.backend() {
+        Some(StorageBackend::Local { .. }) => Ok(()),
+        Some(StorageBackend::S3 { .. }) => {
+            let (store, root, client) =
+                s3_namespace_store(config).map_err(|_| object_store::Error::Generic {
+                    store: "fyrr namespace head",
+                    source: "conditional head deletion failed".into(),
+                })?;
+            conditional::probe(&store, &client, &root).await
+        }
+        None => Err(object_store::Error::Generic {
+            store: "fyrr namespace head",
+            source: "conditional head deletion failed".into(),
+        }),
+    }
+}
+
+/// Delete only the current object `file` of the namespace (a path below its
+/// root: `head.json`, the deletion fence or a cursor) matching the holder's CAS token. S3 deletes the current key
+/// without versionId so an older object cannot revive.
+pub async fn delete_if_match(
     config: &Config,
+    file: &str,
     expected: &object_store::UpdateVersion,
 ) -> object_store::Result<()> {
     let failure = || object_store::Error::Generic {
@@ -492,8 +514,8 @@ pub async fn delete_head_if_match(
                 .root()
                 .clone()
                 .join("namespaces")
-                .join(config.namespace.name.as_str())
-                .join("head.json");
+                .join(config.namespace.name.as_str());
+            let path = file.split('/').fold(path, Path::join);
             let deletion = diagnostics::observe(
                 "DELETE_CONDITIONAL",
                 &path,
@@ -511,7 +533,7 @@ pub async fn delete_head_if_match(
         }
         Some(StorageBackend::S3 { .. }) => {
             let (store, root, client) = s3_namespace_store(config).map_err(|_| failure())?;
-            conditional::delete_head(&store, &client, &root, tag).await
+            conditional::delete_file(&store, &client, &root, file, tag).await
         }
         None => Err(failure()),
     }
