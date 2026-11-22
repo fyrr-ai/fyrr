@@ -213,9 +213,10 @@ impl RerankChoice {
             .attribute
             .as_ref()
             .is_none_or(|name| bounded_text(name, 128))
-            && self.query.as_ref().is_none_or(|q| {
-                bounded_text(q, MAX_QUERY_BYTES) && !q.trim().is_empty()
-            })
+            && self
+                .query
+                .as_ref()
+                .is_none_or(|q| bounded_text(q, MAX_QUERY_BYTES) && !q.trim().is_empty())
         {
             Ok(())
         } else {

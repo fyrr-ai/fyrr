@@ -3291,14 +3291,20 @@ async fn identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_stora
         assert_eq!(hit["root_id"], first);
         assert_eq!(hit["query_index"], query_index);
         let score = hit["score"].as_f64().unwrap();
-        assert!(score > 3.0 / 61.0 && score < 3.0 / 61.0 + 1.0 / 61.0, "{score}");
+        assert!(
+            score > 3.0 / 61.0 && score < 3.0 / 61.0 + 1.0 / 61.0,
+            "{score}"
+        );
         let scores: Vec<f64> = fused.1["hits"]
             .as_array()
             .unwrap()
             .iter()
             .map(|hit| hit["score"].as_f64().unwrap())
             .collect();
-        assert!(scores.windows(2).all(|pair| pair[0] >= pair[1]), "{scores:?}");
+        assert!(
+            scores.windows(2).all(|pair| pair[0] >= pair[1]),
+            "{scores:?}"
+        );
     }
     // A large rank constant flattens the parts of the ranks: the weights decide.
     let flat = ask(
@@ -3315,7 +3321,10 @@ async fn identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_stora
             json!({"query": "alpha", "output": "metadata"}),
             json!({"method": "rrf"}),
         ),
-        (search(Value::Null), json!({"method": "rrf", "weights": [1.0]})),
+        (
+            search(Value::Null),
+            json!({"method": "rrf", "weights": [1.0]}),
+        ),
         (
             search(Value::Null),
             json!({"method": "rrf", "weights": [1.0, -1.0]}),
@@ -3410,7 +3419,16 @@ async fn identity_write_api_reranks_as_a_query_asks_within_the_spend_limit_on_st
         }
         body
     };
-    let last_request = || provider.state.requests.lock().unwrap().last().unwrap().clone();
+    let last_request = || {
+        provider
+            .state
+            .requests
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone()
+    };
     let documents = |request: &Value| {
         let mut documents: Vec<String> = request["documents"]
             .as_array()
@@ -3484,10 +3502,7 @@ async fn identity_write_api_reranks_as_a_query_asks_within_the_spend_limit_on_st
         }
         body
     };
-    assert_eq!(
-        roots(&ask(&reader, by_vector(Value::Null)).await).len(),
-        4
-    );
+    assert_eq!(roots(&ask(&reader, by_vector(Value::Null)).await).len(), 4);
     assert_eq!(provider.calls(), 4);
     assert_eq!(
         roots(&ask(&reader, by_vector(json!({"query": "alpha"}))).await).len(),
