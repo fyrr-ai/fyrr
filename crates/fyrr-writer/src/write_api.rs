@@ -324,12 +324,20 @@ fn laid_over(
     }
     let mut settings: NamespaceSettings =
         serde_json::from_value(value).map_err(|_| ApiError(400, "settings_invalid"))?;
-    // A request declares the model and dimension of its vectors; the profile
-    // that binds them is derived, not sent.
+    // A request declares the model and dimension of its vectors. The profile
+    // that binds them is derived unless the request sends it, and then it must
+    // be the one of what the request declares.
     let embedding = &mut settings.embedding;
-    embedding.fingerprint = embedding
+    let derived = embedding
         .settings
         .fingerprint(&embedding.model, embedding.dimensions);
+    if request.is_some_and(|request| request.pointer("/embedding/fingerprint").is_some()) {
+        if embedding.fingerprint != derived {
+            return Err(ApiError(400, "settings_invalid"));
+        }
+    } else {
+        embedding.fingerprint = derived;
+    }
     // A request cannot make a namespace that the API does not write.
     if settings.write_api.is_none() {
         return Err(ApiError(400, "settings_invalid"));
@@ -574,16 +582,14 @@ async fn execute(
                 requested.as_ref(),
             )?;
             // The settings of a new namespace are held to the bounds of a
-            // configuration before anything is built from them; `id` and `vector` are
-            // keys of a row in the request.
+            // configuration before anything is built from them; `id` is the key
+            // of a row in the request.
             if settings.validate().is_err()
-                || ["id", "vector"].iter().any(|key| {
-                    settings.attributes.contains_key(*key)
-                        || settings
-                            .write_api
-                            .as_ref()
-                            .is_some_and(|api| api.text_attribute == *key)
-                })
+                || settings.attributes.contains_key("id")
+                || settings
+                    .write_api
+                    .as_ref()
+                    .is_some_and(|api| api.text_attribute == "id")
             {
                 return Err(ApiError(400, "settings_invalid"));
             }

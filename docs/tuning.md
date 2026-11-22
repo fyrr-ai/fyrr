@@ -65,7 +65,7 @@ The document write API refuses an undeclared attribute with
 error: `attribute_type_mismatch`, `attribute_value_invalid` or
 `attribute_value_too_large` (a `string` over 4096 bytes). A schema is refused
 with `attribute_limit_exceeded` (a 129th attribute), `attribute_name_invalid` or
-`attribute_name_reserved`. A namespace that the write API creates cannot declare `id` or `vector` (keys of a row) as an attribute or as its `text_attribute`.
+`attribute_name_reserved`. A namespace that the write API creates cannot declare `id` (the key of a row) as an attribute or as its `text_attribute`.
 
 ### `[namespace.write_api]`
 

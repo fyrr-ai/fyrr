@@ -343,6 +343,10 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-writer:lib:fyrr_writer/batch::tests::a_contract_1_3_batch_has_no_vector_column": {
+        "tier": "quick",
+        "seconds": 0.002
+      },
       "full:fyrr-writer:lib:fyrr_writer/batch::tests::contract_rows_convert_and_count": {
         "tier": "quick",
         "seconds": 0.01

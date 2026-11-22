@@ -161,7 +161,7 @@ row without a vector is embedded by the [`[embedding]`](configuration.md#embeddi
 provider; without one it is `400 embedding_not_configured`. A creating request
 declares the vectors of the namespace in `settings.embedding` (`model` and
 `dimensions`, which default to the process's); a request whose rows all carry
-vectors makes 0 embedding calls and needs no `[embedding]` table.
+vectors makes 0 embedding calls and needs no `[embedding]` table. The profile `settings.embedding.fingerprint` is derived from them; one that a request sends must match, or the request is `400 settings_invalid`.
 
 The namespace is created by the first request, with its settings, and a
 request with only `settings` creates it. A row is one record: its text is at

@@ -378,9 +378,29 @@ async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_sto
     let writer = Writer::start(&config, &root, address).await;
     let namespace = "dense-fixture";
 
-    // The creating request declares the dimension of the namespace's vectors.
+    // The creating request declares the dimension of the namespace's vectors. A
+    // fingerprint it sends must be that of what it declares.
+    let row = json!({"id": "a", "text": "alpha", "vector": vector(0, 16)});
+    let wrong = format!("sha256:{}", "0".repeat(64));
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"settings": {"embedding": {"dimensions": 16, "fingerprint": wrong}}, "upserts": [row]})
+            )
+            .await,
+        (400, json!({"error": "settings_invalid"}))
+    );
+    let fingerprint = fyrr_core::envelope::EmbeddingSettings {
+        api_style: fyrr_core::envelope::EmbeddingApiStyle::OpenaiCompatible,
+        prefix: String::new(),
+        roles: Default::default(),
+        send_dimensions: false,
+    }
+    .fingerprint("BAAI/bge-m3", 16);
     let create = json!({
-        "settings": {"embedding": {"dimensions": 16}},
+        "settings": {"embedding": {"dimensions": 16, "fingerprint": fingerprint}},
         "upserts": [
             {"id": "a", "text": "alpha", "vector": vector(0, 16)},
             {"id": "b", "text": "bravo", "vector": vector(1, 16)},
