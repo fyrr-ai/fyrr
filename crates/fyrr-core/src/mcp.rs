@@ -708,10 +708,10 @@ pub const SERVER_INSTRUCTIONS: &str = "fyrr searches this organization's indexed
 fn search_description() -> String {
     format!(
         "Search the authorized corpus (lexical and dense, fused). Only documents the caller may \
-         read are returned; an empty result is not an error. Scores only order results; they are \
-         not probabilities. Excerpts are passages of up to {EXCERPT_CODEPOINTS} codepoints with \
+         read are returned; an empty result is not an error. Scores only order results. \
+         Excerpts are passages of up to {EXCERPT_CODEPOINTS} codepoints with \
          record_id, revision and codepoint offsets usable as a fetch window. Filters match exactly; \
-         an unknown value gives an empty result. queries accepts 2–16 texts instead of query; \
+         an unknown value gives no hits. queries accepts 2–16 texts instead of query; \
          limit is per query (default/max 20), interleaved by rank then query index and deduplicated. \
          text_hits applies per query before deduplication; excerpt_chars caps passage length. \
          For context on a task, search with both the ticket's title and its body as two queries. \

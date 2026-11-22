@@ -256,11 +256,11 @@ fn examples_round_trip_and_match_tool_schemas() {
     );
 
     let mut over_limit = common::read_json("fixtures/mcp/examples/search-input.json");
-    over_limit["limit"] = json!(76);
+    over_limit["limit"] = json!(MAX_LISTING_WINDOW + 1);
     let validator = jsonschema::validator_for(&search["inputSchema"]).expect("compiles");
     assert!(
         !validator.is_valid(&over_limit),
-        "limit 76 must be outside the schema"
+        "a limit past the window must be outside the schema"
     );
 }
 

@@ -464,9 +464,9 @@ async fn identity_write_api_pages_a_listing_and_scans_by_the_document_key_on_sto
         .iter()
         .map(|id| json!({"id": id, "text": "alpha", "readers": ["grp:allow"]}))
         // Nobody may read these, whatever the order.
-        .chain((0..readable.len()).step_by(333).map(|n| {
-            json!({"id": format!("d{n:05}x"), "text": "alpha", "readers": ["usr:nobody"]})
-        }))
+        .chain((0..readable.len()).step_by(333).map(
+            |n| json!({"id": format!("d{n:05}x"), "text": "alpha", "readers": ["usr:nobody"]}),
+        ))
         .collect();
     assert_eq!(
         writer
