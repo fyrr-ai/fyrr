@@ -262,13 +262,13 @@ without them is answered as before.
 `fusion` applies to a request with `queries`. Without it, the hits of the
 sub-queries are merged round-robin and `limit` counts the hits of each
 sub-query. With it, the answer is one ranking of the documents of all
-sub-queries, at most `limit` hits long.
+sub-queries, at most `limit` hits and at most `max_documents` documents long.
 
 | Member | Effect |
 | --- | --- |
 | `method` | Required: `rrf`, reciprocal rank fusion. A document scores the sum of `weight / (rank_constant + rank)` over the sub-queries that return it, with `rank` counted from 1 in the sub-query's own order, after the reranker. |
 | `rank_constant` | A positive integer; default 60. |
-| `weights` | One non-negative number per sub-query, in request order; default 1 each. |
+| `weights` | One number from 0 to 1,000,000 per sub-query, in request order; default 1 each. |
 
 A hit's `score` is its fused score, and its `query_index` names the sub-query
 that gave it most.

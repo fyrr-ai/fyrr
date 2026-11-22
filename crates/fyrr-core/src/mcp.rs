@@ -1174,7 +1174,9 @@ impl SearchInput {
                     fusion.rank_constant != Some(0)
                         && fusion.weights.as_ref().is_none_or(|weights| {
                             weights.len() == queries.len()
-                                && weights.iter().all(|w| w.is_finite() && *w >= 0.0)
+                                && weights
+                                    .iter()
+                                    .all(|w| (0.0..=MAX_FUSION_WEIGHT).contains(w))
                         })
                 })
             })

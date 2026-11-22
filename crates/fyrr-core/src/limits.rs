@@ -37,6 +37,9 @@ pub mod mcp {
     pub const MAX_QUERIES: usize = 16;
     /// The rank constant of a reciprocal rank fusion that names none.
     pub const DEFAULT_RANK_CONSTANT: u32 = 60;
+    /// The largest weight of a fusion: with a rank constant of 1 the score of a
+    /// document in 16 sub-queries stays finite.
+    pub const MAX_FUSION_WEIGHT: f64 = 1e6;
     pub const MULTI_QUERY_LIMIT: u32 = 20;
     pub const EXCERPT_CODEPOINTS: u32 = 1200;
     pub const MAX_EXCLUSIONS: usize = 100;

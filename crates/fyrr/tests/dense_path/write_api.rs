@@ -3243,7 +3243,12 @@ fn roots(answer: &(u16, Value)) -> Vec<String> {
 async fn identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_storage() {
     let (config, root) = setup_on(Backend::Local);
     let address = free_address();
-    configure(&config, &address, "");
+    // At most three documents in an answer to `queries`, whatever the limit.
+    configure(
+        &config,
+        &address,
+        "[namespace.retrieval]\nmax_documents = 3",
+    );
     let texts = ["alpha", "bravo", "charlie", "delta"];
     embed(&root, &texts);
     let writer = Writer::start(&config, &root, address).await;
@@ -3263,7 +3268,7 @@ async fn identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_stora
     })
     .await;
     let search = |fusion: Value| {
-        let mut body = json!({"queries": ["alpha", "bravo"], "limit": 3, "output": "metadata"});
+        let mut body = json!({"queries": ["alpha", "bravo"], "limit": 4, "output": "metadata"});
         if !fusion.is_null() {
             body["fusion"] = fusion;
         }
@@ -3271,13 +3276,14 @@ async fn identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_stora
     };
 
     // Without `fusion` each sub-query keeps its own hits, merged round-robin:
-    // `limit` counts the hits of each sub-query.
+    // `limit` counts the hits of each sub-query, `max_documents` the documents.
     let merged = ask(&reader, search(Value::Null)).await;
-    assert_eq!(roots(&merged).len(), 4);
+    assert_eq!(roots(&merged).len(), 3);
     assert_eq!(merged.1["hits"][0]["query_index"], 0);
     assert_eq!(merged.1["hits"][1]["query_index"], 1);
 
-    // With it, one ranking of at most `limit` documents. The first hit is the
+    // With it, one ranking of at most `max_documents` documents, though the
+    // limit is 4. The first hit is the
     // one the heavier sub-query ranks first, and it scores its weight over the
     // rank constant plus one, plus what the other sub-query gives it.
     for (weights, first, query_index) in [([3.0, 1.0], "a", 0), ([1.0, 3.0], "b", 1)] {
@@ -3331,6 +3337,10 @@ async fn identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_stora
         ),
         (
             search(Value::Null),
+            json!({"method": "rrf", "weights": [1.0, 1.0000001e6]}),
+        ),
+        (
+            search(Value::Null),
             json!({"method": "rrf", "rank_constant": 0}),
         ),
         (search(Value::Null), json!({"method": "borda"})),
@@ -3362,7 +3372,7 @@ async fn identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_stora
     }
     let mut off = search(Value::Null);
     off["rerank"] = json!({"enabled": false});
-    assert_eq!(roots(&ask(&reader, off).await).len(), 4);
+    assert_eq!(roots(&ask(&reader, off).await).len(), 3);
 }
 
 #[tokio::test]

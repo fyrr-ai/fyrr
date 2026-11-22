@@ -128,7 +128,7 @@ fn select_hits<'q>(
     if let Some(fusion) = &args.fusion {
         return reciprocal_rank_fusion(ranked, fusion)
             .into_iter()
-            .take(k)
+            .take(k.min(max_documents))
             .enumerate()
             .map(|(rank, (query_index, candidate))| hit(query_index, rank, candidate))
             .collect();
