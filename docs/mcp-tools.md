@@ -89,8 +89,8 @@ codepoints of that record) or `content`, and with `queries` a
 `filter` holds one node: `{ "and": [node, ...] }` or `{ "or": [node, ...] }`
 with at least one node, `{ "not": node }`, or a comparison
 `{ "field": ..., "op": ..., "value": ... }`. The nodes nest freely, up to 64
-in all (every `and`, `or`, `not` and comparison counts); a larger tree is
-`invalid_argument`. The arguments `sources`, `source_types`, `projects`,
+in all (every `and`, `or`, `not` and comparison counts) and 16 levels deep; a
+larger tree is `invalid_argument`. The arguments `sources`, `source_types`, `projects`,
 `authors`, `updated_after`, `updated_before`, `attributes` and `exclude` are
 compiled to the same tree and joined with `filter` by `and`.
 
@@ -117,7 +117,9 @@ A comparison with `null` as its value tests for a missing value: `eq` matches
 a document without the attribute and `ne` one with it. Every other comparison
 is false for a missing value: `ne`, `not_in`, `lt` and the rest match only
 documents that have the attribute, and `not` of a comparison matches none of
-the documents without it either.
+the documents without it either. This is SQL's three-valued logic: a document
+matches only when the whole tree is true, so `not` of an `and` still matches a
+document that fails one part even if another part is missing.
 
 A filter never widens what the caller may read: the reader intersects it with
 the caller's permissions before it selects a row.

@@ -5,7 +5,7 @@
 
 mod common;
 
-use fyrr_core::limits::mcp::MAX_FILTER_NODES;
+use fyrr_core::limits::mcp::{MAX_FILTER_DEPTH, MAX_FILTER_NODES, MAX_FILTER_VALUES};
 use fyrr_core::mcp::{
     Comparison, ErrorCode, FetchInput, FetchOutput, Filter, ListFiltersInput, ListFiltersOutput,
     MCP_CONTRACT_VERSION, META_SCHEMA_VERSION_KEY, Op, SearchInput, SearchOutput,
@@ -283,22 +283,39 @@ fn validation_enforces_bytes_relations_and_bounds() {
     ] {
         assert!(search(value).is_err());
     }
-    // The node bound: every `and`, `or`, `not` and comparison counts.
+    // A filter is read within its bounds or the request does not parse.
+    let filter = |value: Value| {
+        serde_json::from_value::<SearchInput>(json!({"query":"a","filter":value})).is_ok()
+    };
     let leaf = json!({"field":"project","op":"eq","value":"p"});
-    let at_bound = json!({"and": vec![leaf.clone(); MAX_FILTER_NODES - 1]});
-    assert!(search(json!({"query":"a","filter":at_bound})).is_ok());
-    let past_bound = json!({"and": vec![leaf.clone(); MAX_FILTER_NODES]});
-    assert!(search(json!({"query":"a","filter":past_bound})).is_err());
-    let nested = (1..MAX_FILTER_NODES).fold(leaf.clone(), |inner, _| json!({"not": inner}));
-    assert!(search(json!({"query":"a","filter":nested.clone()})).is_ok());
-    assert!(search(json!({"query":"a","filter":{"not":nested}})).is_err());
-    for filter in [
+    // The node bound: every `and`, `or`, `not` and comparison counts.
+    assert!(filter(
+        json!({"and": vec![leaf.clone(); MAX_FILTER_NODES - 1]})
+    ));
+    assert!(!filter(
+        json!({"and": vec![leaf.clone(); MAX_FILTER_NODES]})
+    ));
+    // The depth bound.
+    let nested = |levels: usize| (1..levels).fold(leaf.clone(), |inner, _| json!({"not": inner}));
+    assert!(filter(nested(MAX_FILTER_DEPTH)));
+    assert!(!filter(nested(MAX_FILTER_DEPTH + 1)));
+    // Group, field and value bounds.
+    let compare = |field: &str, value: Value| json!({"field":field,"op":"in","value":value});
+    assert!(filter(compare("f", json!(vec!["v"; MAX_FILTER_VALUES]))));
+    assert!(filter(compare(&"f".repeat(128), json!("é".repeat(2048)))));
+    for bad in [
         json!({"and":[]}),
         json!({"or":[leaf.clone(), {"and":[]}]}),
-        json!({"field":"","op":"eq","value":1}),
-        json!({"field":"f".repeat(129),"op":"eq","value":1}),
+        json!({"and":leaf.clone()}),
+        compare("", json!(["v"])),
+        compare(&"f".repeat(129), json!(["v"])),
+        compare("f", json!(vec!["v"; MAX_FILTER_VALUES + 1])),
+        compare("f", json!([])),
+        compare("f", json!([["v"]])),
+        compare("f", json!({"v": 1})),
+        compare("f", json!("é".repeat(2049))),
     ] {
-        assert!(search(json!({"query":"a","filter":filter})).is_err());
+        assert!(!filter(bad.clone()), "{bad}");
     }
     let fetch = |value: Value| {
         serde_json::from_value::<FetchInput>(value)

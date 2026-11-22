@@ -2,7 +2,6 @@ use super::*;
 use crate::search::FilterSelection;
 use chrono::{DateTime, Utc};
 use fyrr_core::attributes::{AttributeSchema, AttributeType};
-use fyrr_core::limits::{mcp::MAX_FILTER_VALUES, schema::MAX_VALUE_BYTES};
 use serde_json::Value;
 
 fn comparison_sql(comparison: &Comparison, attributes: &AttributeSchema) -> Result<String> {
@@ -20,16 +19,19 @@ fn comparison_sql(comparison: &Comparison, attributes: &AttributeSchema) -> Resu
         // An attribute name is a plain column name, and only a declared one gets here.
         name => *attributes.get(name).ok_or(InvalidArgument)?,
     };
+    // Backticks make the name a column whatever it spells: an attribute can be
+    // called `true`, `null`, `case` or `not`.
+    let column = format!("`{field}`");
     if value.is_null() {
         return match op {
-            Op::Eq => Ok(format!("{field} IS NULL")),
-            Op::Ne => Ok(format!("{field} IS NOT NULL")),
+            Op::Eq => Ok(format!("{column} IS NULL")),
+            Op::Ne => Ok(format!("{column} IS NOT NULL")),
             _ => Err(InvalidArgument),
         };
     }
     let symbol = match op {
-        Op::In => return Ok(format!("{field} IN ({})", literals(kind, value)?)),
-        Op::NotIn => return Ok(format!("{field} NOT IN ({})", literals(kind, value)?)),
+        Op::In => return Ok(format!("{column} IN ({})", literals(kind, value)?)),
+        Op::NotIn => return Ok(format!("{column} NOT IN ({})", literals(kind, value)?)),
         Op::Eq => "=",
         Op::Ne => "<>",
         Op::Lt => "<",
@@ -37,15 +39,12 @@ fn comparison_sql(comparison: &Comparison, attributes: &AttributeSchema) -> Resu
         Op::Gt => ">",
         Op::Gte => ">=",
     };
-    Ok(format!("{field} {symbol} {}", literal(kind, value)?))
+    Ok(format!("{column} {symbol} {}", literal(kind, value)?))
 }
 
 /// The values of `in` and `not_in`: one or more literals of `kind`.
 fn literals(kind: AttributeType, values: &Value) -> Result<String> {
-    let values = values
-        .as_array()
-        .filter(|values| (1..=MAX_FILTER_VALUES).contains(&values.len()))
-        .ok_or(InvalidArgument)?;
+    let values = values.as_array().ok_or(InvalidArgument)?;
     Ok(values
         .iter()
         .map(|value| literal(kind, value))
@@ -55,9 +54,7 @@ fn literals(kind: AttributeType, values: &Value) -> Result<String> {
 
 fn literal(kind: AttributeType, value: &Value) -> Result<String> {
     match (kind, value) {
-        (AttributeType::String, Value::String(text)) if text.len() <= MAX_VALUE_BYTES => {
-            Ok(sql(text))
-        }
+        (AttributeType::String, Value::String(text)) => Ok(sql(text)),
         (AttributeType::Int, Value::Number(number)) => number
             .as_i64()
             .map(|number| number.to_string())
@@ -67,7 +64,7 @@ fn literal(kind: AttributeType, value: &Value) -> Result<String> {
             .map(|number| format!("{number:?}"))
             .ok_or(InvalidArgument),
         (AttributeType::Bool, Value::Bool(flag)) => Ok(flag.to_string()),
-        (AttributeType::Datetime, Value::String(text)) if text.len() <= MAX_VALUE_BYTES => {
+        (AttributeType::Datetime, Value::String(text)) => {
             let time = DateTime::parse_from_rfc3339(text).map_err(|_| InvalidArgument)?;
             Ok(format!(
                 "timestamp '{}'",

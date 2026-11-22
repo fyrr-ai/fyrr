@@ -157,8 +157,10 @@ pub struct AttributeFilter {
 }
 
 /// A filter tree: `and` and `or` of one or more filters, `not` of one, or a
-/// comparison of a field with a value. At most [`MAX_FILTER_NODES`] nodes.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+/// comparison of a field with a value. At most [`MAX_FILTER_NODES`] nodes in
+/// [`MAX_FILTER_DEPTH`] levels. It is read from the request in one pass that
+/// stops at the first bound it exceeds.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum Filter {
     And { and: Vec<Filter> },
@@ -172,7 +174,6 @@ pub enum Filter {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Comparison {
-    #[schemars(length(min = 1, max = 128))]
     pub field: String,
     pub op: Op,
     pub value: Value,
@@ -192,23 +193,78 @@ pub enum Op {
     Gte,
 }
 
-impl Filter {
-    fn nodes(&self) -> usize {
-        1 + match self {
-            Self::And { and: children } | Self::Or { or: children } => {
-                children.iter().map(Self::nodes).sum()
-            }
-            Self::Not { not } => not.nodes(),
-            Self::Compare(_) => 0,
-        }
+impl<'de> Deserialize<'de> for Filter {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut nodes = MAX_FILTER_NODES;
+        Self::parse(
+            Value::deserialize(deserializer)?,
+            &mut nodes,
+            MAX_FILTER_DEPTH,
+        )
+        .map_err(serde::de::Error::custom)
     }
-    fn valid(&self) -> bool {
-        match self {
-            Self::And { and: children } | Self::Or { or: children } => {
-                !children.is_empty() && children.iter().all(Self::valid)
+}
+
+impl Filter {
+    fn parse_group(
+        items: Value,
+        nodes: &mut usize,
+        depth: usize,
+    ) -> Result<Vec<Filter>, &'static str> {
+        let Value::Array(items) = items else {
+            return Err("filter group is not an array");
+        };
+        if items.is_empty() {
+            return Err("filter group is empty");
+        }
+        items
+            .into_iter()
+            .map(|item| Self::parse(item, nodes, depth))
+            .collect()
+    }
+
+    /// Takes the request's JSON apart without copying it: every node spends one
+    /// of `nodes` and one level of `depth`. Never reports a value.
+    fn parse(value: Value, nodes: &mut usize, depth: usize) -> Result<Self, &'static str> {
+        *nodes = nodes.checked_sub(1).ok_or("filter has too many nodes")?;
+        let depth = depth.checked_sub(1).ok_or("filter is nested too deeply")?;
+        let Value::Object(mut object) = value else {
+            return Err("filter node is not an object");
+        };
+        if object.len() == 1 {
+            if let Some(items) = object.remove("and") {
+                return Ok(Self::And {
+                    and: Self::parse_group(items, nodes, depth)?,
+                });
             }
-            Self::Not { not } => not.valid(),
-            Self::Compare(comparison) => bounded_text(&comparison.field, 128),
+            if let Some(items) = object.remove("or") {
+                return Ok(Self::Or {
+                    or: Self::parse_group(items, nodes, depth)?,
+                });
+            }
+            if let Some(inner) = object.remove("not") {
+                return Ok(Self::Not {
+                    not: Box::new(Self::parse(inner, nodes, depth)?),
+                });
+            }
+        }
+        let comparison: Comparison = serde_json::from_value(Value::Object(object))
+            .map_err(|_| "filter comparison is not a field, an op and a value")?;
+        let scalar = |value: &Value| match value {
+            Value::String(text) => text.len() <= crate::limits::schema::MAX_VALUE_BYTES,
+            Value::Null | Value::Bool(_) | Value::Number(_) => true,
+            _ => false,
+        };
+        let value_fits = match &comparison.value {
+            Value::Array(values) => {
+                (1..=MAX_FILTER_VALUES).contains(&values.len()) && values.iter().all(scalar)
+            }
+            value => scalar(value),
+        };
+        if bounded_text(&comparison.field, 128) && value_fits {
+            Ok(Self::Compare(comparison))
+        } else {
+            Err("filter comparison is out of bounds")
         }
     }
 }
@@ -877,11 +933,7 @@ impl SearchInput {
                             && (1..=MAX_FILTER_VALUES).contains(&a.values.len())
                             && a.values.iter().all(|s| bounded_text(s, 384))
                     })
-            })
-            && self
-                .filter
-                .as_ref()
-                .is_none_or(|f| f.nodes() <= MAX_FILTER_NODES && f.valid());
+            });
         if valid {
             Ok(())
         } else {

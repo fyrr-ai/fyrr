@@ -43,6 +43,8 @@ fn schema() -> Arc<Schema> {
         Field::new("attributes", list, true),
         // Typed attributes, as the writer declares them: nullable columns.
         Field::new("rank", DataType::Int64, true),
+        // The same values under a name that is an SQL keyword when unquoted.
+        Field::new("true", DataType::Int64, true),
         Field::new("flag", DataType::Boolean, true),
         Field::new(
             "seen",
@@ -57,6 +59,7 @@ fn schema() -> Arc<Schema> {
 fn attributes() -> AttributeSchema {
     AttributeSchema::from([
         ("rank".to_owned(), AttributeType::Int),
+        ("true".to_owned(), AttributeType::Int),
         ("flag".to_owned(), AttributeType::Bool),
         ("seen".to_owned(), AttributeType::Datetime),
         ("ratio".to_owned(), AttributeType::Float),
@@ -131,6 +134,9 @@ fn rows(range: std::ops::Range<usize>) -> RecordBatch {
             Arc::new(Int64Array::from(
                 range.clone().map(rank).collect::<Vec<_>>(),
             )),
+            Arc::new(Int64Array::from(
+                range.clone().map(rank).collect::<Vec<_>>(),
+            )),
             Arc::new(BooleanArray::from(
                 range.clone().map(flag).collect::<Vec<_>>(),
             )),
@@ -173,6 +179,7 @@ async fn fixture(name: &str, tail: bool) -> (Dataset, std::path::PathBuf) {
         ("updated_at", "updated_at_idx", IndexType::BTree),
         ("attributes", "attributes_idx", IndexType::LabelList),
         ("rank", "attr_rank_idx", IndexType::BTree),
+        ("true", "attr_true_idx", IndexType::BTree),
         ("flag", "attr_flag_idx", IndexType::Bitmap),
         ("seen", "attr_seen_idx", IndexType::BTree),
     ] {
@@ -298,6 +305,11 @@ fn filters() -> Vec<(&'static str, String)> {
         ("gte", on_rank("gte", json!(3))),
         ("null", on_rank("eq", json!(null))),
         ("not_null", on_rank("ne", json!(null))),
+        ("keyword", json!({"field":"true","op":"ne","value":3})),
+        (
+            "keyword_null",
+            json!({"field":"true","op":"eq","value":null}),
+        ),
         ("bool", on_flag("eq", true)),
         ("bool_ne", on_flag("ne", true)),
         ("not", json!({"not": on_rank("gt", json!(4))})),
@@ -667,6 +679,11 @@ async fn a_missing_attribute_matches_only_a_null_test() {
             Box::new(|r| rank(r).is_none() || rank(r) == Some(6)),
         ),
         (
+            "keyword ne",
+            json!({"field":"true","op":"ne","value":3}),
+            Box::new(|r| rank(r).is_some_and(|v| v != 3)),
+        ),
+        (
             "bool ne",
             on_flag("ne", true),
             Box::new(|r| flag(r) == Some(false)),
@@ -707,11 +724,9 @@ fn a_value_of_the_wrong_type_or_field_is_invalid_argument() {
         ("rank", "eq", json!("3")),
         ("rank", "eq", json!(3.5)),
         ("rank", "eq", json!(true)),
-        ("rank", "in", json!([])),
         ("rank", "in", json!(3)),
         ("rank", "in", json!([1, "2"])),
         ("rank", "in", json!([null])),
-        ("rank", "in", json!((0..65).collect::<Vec<_>>())),
         ("rank", "lt", json!(null)),
         ("rank", "not_in", json!(null)),
         ("flag", "eq", json!(1)),
@@ -719,7 +734,6 @@ fn a_value_of_the_wrong_type_or_field_is_invalid_argument() {
         ("seen", "eq", json!(5)),
         ("ratio", "eq", json!("1.5")),
         ("author", "eq", json!(5)),
-        ("author", "eq", json!("x".repeat(4097))),
         ("updated_at", "gt", json!("2026-13-01T00:00:00Z")),
         ("attributes", "eq", json!("team=blue")),
         ("attributes", "in", json!([1])),
@@ -738,22 +752,22 @@ fn a_value_of_the_wrong_type_or_field_is_invalid_argument() {
     );
     // Values the types accept, and the SQL they become.
     for (field, op, value, sql) in [
-        ("rank", "eq", json!(-3), "rank = -3"),
-        ("ratio", "gt", json!(2), "ratio > 2.0"),
-        ("ratio", "lte", json!(0.5), "ratio <= 0.5"),
-        ("flag", "eq", json!(false), "flag = false"),
+        ("rank", "eq", json!(-3), "`rank` = -3"),
+        ("ratio", "gt", json!(2), "`ratio` > 2.0"),
+        ("ratio", "lte", json!(0.5), "`ratio` <= 0.5"),
+        ("flag", "eq", json!(false), "`flag` = false"),
         (
             "author",
             "not_in",
             json!(["it's"]),
-            "author NOT IN ('it''s')",
+            "`author` NOT IN ('it''s')",
         ),
-        ("author", "ne", json!(null), "author IS NOT NULL"),
+        ("author", "ne", json!(null), "`author` IS NOT NULL"),
         (
             "seen",
             "gte",
             json!("2026-01-02T04:04:05.5+01:00"),
-            "seen >= timestamp '2026-01-02 03:04:05.500000'",
+            "`seen` >= timestamp '2026-01-02 03:04:05.500000'",
         ),
         (
             "attributes",

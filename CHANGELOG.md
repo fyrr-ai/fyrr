@@ -11,7 +11,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 - `search` takes one `filter` argument, a tree of `and`, `or`, `not` and
   comparisons (`eq`, `ne`, `in`, `not_in`, `lt`, `lte`, `gt`, `gte`) of
-  at most 64 nodes over the built-in fields and the namespace's typed
+  at most 64 nodes and 16 levels over the built-in fields and the namespace's typed
   attributes, over MCP and the JSON HTTP API. Values are checked against the
   attribute types; the other filter arguments compile to the same tree. See
   [Filters](docs/mcp-tools.md#filters).
