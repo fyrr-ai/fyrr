@@ -1599,6 +1599,28 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
         .find_map(|m| m.envelope_ids.first().cloned())
         .unwrap();
     let pending = command(&commit, &["writer", "status"])["pending_envelopes"].clone();
+    // A manifest lost inside the window is not where the history ends:
+    // maintenance refuses and deletes nothing.
+    let lost = chain[3].publication_id.clone();
+    let path = |id: &str| namespace.clone().join(format!("publications/{id}.json"));
+    let bytes = store
+        .get(&path(&lost))
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    store.delete(&path(&lost)).await.unwrap();
+    let refused = host_command(&commit)
+        .args(["writer", "maintain"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("publication_invalid"));
+    for manifest in chain.iter().filter(|m| m.publication_id != lost) {
+        store.head(&path(&manifest.publication_id)).await.unwrap();
+    }
+    store.put(&path(&lost), bytes.into()).await.unwrap();
     // Inside the window nothing is deleted, and every receipt is there.
     command(&commit, &["writer", "maintain"]);
     assert!(control_objects(&commit, "publications").await >= 10);

@@ -143,14 +143,18 @@ async fn maintain_held(
         }
     }
     boundary(config, lease, history).await?;
-    let (mut removed, protected, unverified_protected) =
+    let (mut removed, protected, unverified_protected, cleaned) =
         tokio::time::timeout(limit, cleanup_versions(config, lease, history))
             .await
             .map_err(|_| WriterError::MaintenanceStepDeadline)??;
     let staging = local_staging::plan(config).await?;
     removed += local_staging::remove(config, lease, staging).await?;
     envelopes += crate::envelopes::cleanup_held(config, lease).await?;
-    removed += superseded_history(config, lease, history).await?;
+    // A manifest is the proof that its version's files were removed: it goes
+    // only once the version cleanup of this run has left none behind.
+    if cleaned && protected == 0 {
+        removed += superseded_history(config, lease, history).await?;
+    }
     let head = boundary(config, lease, history).await?;
     if head.content.is_some() {
         let dataset = pinned(config, &head).await?;
@@ -315,6 +319,7 @@ async fn retained(config: &Config, head: &ServingHead) -> Result<Vec<ContentMani
     );
     let mut retired: Option<chrono::DateTime<Utc>> = None;
     let mut keep = Vec::new();
+    let mut ended = true;
     while let Some(manifest) = chain.try_next().await? {
         if retired.is_some_and(|at| {
             (fyrr_core::clock::now() - at)
@@ -324,10 +329,24 @@ async fn retained(config: &Config, head: &ServingHead) -> Result<Vec<ContentMani
                     .to_std()
                     .is_ok_and(|age| age >= config.writer.purge_window.as_duration())
         }) {
+            ended = false;
             break;
         }
         retired = Some(manifest.committed_at);
         keep.push(manifest);
+    }
+    // A chain that ends at a missing predecessor is complete only where
+    // maintenance deleted it: past the window. Anywhere else a manifest was
+    // lost, and what the window keeps is not known.
+    if ended
+        && keep.last().is_some_and(|oldest| {
+            oldest.previous_publication_id.is_some()
+                && (fyrr_core::clock::now() - oldest.committed_at)
+                    .to_std()
+                    .is_ok_and(|age| age < config.writer.purge_window.as_duration())
+        })
+    {
+        return Err(WriterError::PublicationInvalid);
     }
     Ok(keep)
 }
@@ -417,10 +436,10 @@ async fn cleanup_versions(
     config: &Config,
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
-) -> Result<(usize, usize, usize)> {
+) -> Result<(usize, usize, usize, bool)> {
     let head = boundary(config, lease, history).await?;
     if head.content.is_none() {
-        return Ok((0, 0, 0));
+        return Ok((0, 0, 0, true));
     }
     let dataset = pinned(config, &head).await?;
     let versions: BTreeSet<_> = retained(config, &head)
@@ -470,6 +489,8 @@ async fn cleanup_versions(
     }
     let dataset_root = root.join("dataset.lance");
     let start = std::time::Instant::now();
+    // The plan lists at most 100,000 files; a full list may be a cut one.
+    let listed_all = plan.candidate_files.len() < 100_000;
     let mut removed = 0;
     let mut protected_count = 0;
     let mut unverified_protected = 0;
@@ -532,7 +553,13 @@ async fn cleanup_versions(
         }
     }
     durability.finish().await?;
-    Ok((removed, protected_count, unverified_protected))
+    // Complete: nothing the plan found remains, protected files aside.
+    Ok((
+        removed,
+        protected_count,
+        unverified_protected,
+        listed_all && removed == candidates.len(),
+    ))
 }
 
 /// Explicit full-content scan; ordinary commits still verify only changed rows.
