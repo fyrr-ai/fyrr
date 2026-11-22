@@ -117,6 +117,7 @@ impl CursorLease {
                     PutMode::Create,
                 ),
             };
+        let created = matches!(mode, PutMode::Create);
         let now = fyrr_core::clock::now();
         if state.lease.as_ref().is_some_and(|l| l.expires_at > now) {
             return Err(WriterError::SyncBusy);
@@ -144,7 +145,13 @@ impl CursorLease {
             ttl,
         });
         if let Err(error) = crate::commit::sources_allowed(config, store.as_ref(), &root).await {
-            let _ = lease.release().await;
+            // A cursor created in a namespace that was deleted meanwhile would
+            // outlive it and be taken for the state of a new one.
+            if created && error == WriterError::NamespaceUnavailable {
+                let _ = store.delete(&lease.path).await;
+            } else {
+                let _ = lease.release().await;
+            }
             return Err(error);
         }
         Ok(lease)

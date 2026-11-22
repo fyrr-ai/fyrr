@@ -143,7 +143,7 @@ async fn export_and_delete(config: &Path, root: &FixtureRoot) {
         std::fs::write(file, bytes).unwrap();
     }
     let deleted = success(
-        config,
+        &super::namespace_delete::quick_lease(config),
         &[
             "writer",
             "namespace",

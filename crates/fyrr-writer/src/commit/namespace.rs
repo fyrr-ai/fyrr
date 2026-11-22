@@ -153,7 +153,13 @@ async fn deletion_fence(
     config: &Config,
     store: &dyn ObjectStore,
     root: &Path,
-) -> Result<Option<(DeleteFence, object_store::UpdateVersion)>> {
+) -> Result<
+    Option<(
+        DeleteFence,
+        object_store::UpdateVersion,
+        chrono::DateTime<chrono::Utc>,
+    )>,
+> {
     let object = match store.get(&root.clone().join(DELETE_FENCE)).await {
         Ok(object) => object,
         Err(object_store::Error::NotFound { .. }) => return Ok(None),
@@ -163,6 +169,7 @@ async fn deletion_fence(
         return Err(WriterError::LeaseInvalid);
     }
     let version = crate::lease::version_of(&object.meta);
+    let written = object.meta.last_modified;
     let fence: DeleteFence =
         serde_json::from_slice(&object.bytes().await?).map_err(|_| WriterError::LeaseInvalid)?;
     if fence.version != 1
@@ -175,7 +182,7 @@ async fn deletion_fence(
     {
         return Err(WriterError::LeaseInvalid);
     }
-    Ok(Some((fence, version)))
+    Ok(Some((fence, version, written)))
 }
 
 /// Cursor acquisition checks on both sides of its CAS, so a new source cannot
@@ -185,12 +192,15 @@ pub(crate) async fn sources_allowed(
     store: &dyn ObjectStore,
     root: &Path,
 ) -> Result<()> {
-    let Some((fence, _)) = deletion_fence(config, store, root).await? else {
-        return Ok(());
-    };
+    let fence = deletion_fence(config, store, root).await?;
+    // A source writes only into a namespace that exists: not after its head
+    // was removed, whether the deletion is still running or has finished.
     let head = fyrr_reader::storage::optional_head(config)
         .await?
         .ok_or(WriterError::NamespaceUnavailable)?;
+    let Some((fence, _, _)) = fence else {
+        return Ok(());
+    };
     if head.namespace != config.namespace.name {
         return Err(WriterError::PublicationNamespaceInvalid);
     }
@@ -229,7 +239,7 @@ async fn fence_sources(
         epoch: lease.holder().epoch,
     };
     let mode = match deletion_fence(config, store, root).await? {
-        Some((_, version)) => object_store::PutMode::Update(version),
+        Some((_, version, _)) => object_store::PutMode::Update(version),
         None => object_store::PutMode::Create,
     };
     let bytes = serde_json::to_vec(&fence).map_err(|_| WriterError::LeaseInvalid)?;
@@ -259,9 +269,11 @@ async fn fence_sources(
 }
 
 /// Deletes the namespace: unpublishes it, then removes every object under its
-/// root and the fence last. `export` is verified against storage before the
-/// head is removed; without it, `confirm` must repeat the namespace name.
-/// Every step is idempotent: an interrupted deletion is run again and finishes.
+/// root and the fence last. `export` is verified against storage before
+/// anything is removed; without it, `confirm` must repeat the namespace name.
+/// A deletion that stopped after the head went, and one that an earlier
+/// release left behind, ask for the same confirmation. Every step is
+/// idempotent: an interrupted deletion is run again and finishes.
 pub async fn delete(
     config: &Config,
     export: Option<&std::path::Path>,
@@ -283,13 +295,15 @@ pub async fn delete(
     if export.is_none() && confirm.is_none() {
         let objects: Vec<_> = store.list(Some(&root)).try_collect().await?;
         return Ok(
-            serde_json::json!({"dry_run":true,"objects":objects.len(),"bytes":objects.iter().map(|object|object.size).sum::<u64>(),"requires":"--export DIR or --delete-data NAME"}),
+            serde_json::json!({"dry_run":true,"objects":objects.len(),"bytes":objects.iter().map(|object|object.size).sum::<u64>()}),
         );
     }
     if published {
         unpublish(config, store.clone(), &root, export).await?;
+    } else if let Some(export) = export {
+        verify_export(store.as_ref(), &root, None, export).await?;
     }
-    purge(store.as_ref(), &root).await?;
+    purge(config, store.as_ref(), &root).await?;
     Ok(serde_json::json!({"deleted":true}))
 }
 
@@ -303,7 +317,7 @@ async fn unpublish(
     LeaseGuard::with(config, |lease| async move {
         fence_sources(config, store.as_ref(), root, &lease).await?;
         if let Some(export) = export {
-            verify_export(store.as_ref(), root, &lease, export).await?;
+            verify_export(store.as_ref(), root, Some(&lease), export).await?;
         }
         lease.delete_head(config).await
     })
@@ -313,7 +327,7 @@ async fn unpublish(
 async fn verify_export(
     store: &dyn ObjectStore,
     root: &Path,
-    lease: &LeaseGuard,
+    lease: Option<&LeaseGuard>,
     export: &std::path::Path,
 ) -> Result<()> {
     let objects: Vec<_> = store.list(Some(root)).try_collect().await?;
@@ -339,7 +353,9 @@ async fn verify_export(
         if object.location == root.clone().join(DELETE_FENCE) {
             continue;
         }
-        lease.head().await?;
+        if let Some(lease) = lease {
+            lease.head().await?;
+        }
         let relative = fyrr_reader::storage::relative_path(&object.location, root);
         let bytes = store.get(&object.location).await?.bytes().await?;
         let saved = std::fs::read(export.join(relative)).map_err(|_| WriterError::ExportInvalid)?;
@@ -387,11 +403,26 @@ async fn verify_export(
 }
 
 /// Removes every object under the root, the fence last, so that a deletion
-/// stopped part way still has its fence and is run again. Lists again after
-/// each pass: an object a stalled worker finished writing is removed too.
-async fn purge(store: &dyn ObjectStore, root: &Path) -> Result<()> {
+/// stopped part way still has its fence and is run again. It first waits out
+/// the leases that may still be writing: a worker whose lease expired just
+/// before the fence can finish a request admitted earlier. It stops at once,
+/// with nothing more removed, when the fence is no longer the one it read:
+/// another run finished, and the name may belong to a new namespace.
+async fn purge(config: &Config, store: &dyn ObjectStore, root: &Path) -> Result<()> {
+    let Some((_, held, written)) = deletion_fence(config, store, root).await? else {
+        return Ok(());
+    };
+    let ttl = chrono::Duration::from_std(config.writer.commit.lease_ttl.as_duration())
+        .map_err(|_| WriterError::LeaseInvalid)?;
+    if let Ok(wait) = (written + ttl - fyrr_core::clock::now()).to_std() {
+        tokio::time::sleep(wait).await;
+    }
     let fence = root.clone().join(DELETE_FENCE);
     loop {
+        match deletion_fence(config, store, root).await? {
+            Some((_, now, _)) if now.e_tag == held.e_tag && now.version == held.version => {}
+            _ => return Ok(()),
+        }
         let objects: Vec<_> = store.list(Some(root)).try_collect().await?;
         let rest: Vec<_> = objects
             .into_iter()
@@ -403,7 +434,16 @@ async fn purge(store: &dyn ObjectStore, root: &Path) -> Result<()> {
         }
         crate::io::bounded(rest, |path| async move { remove(store, &path).await }).await?;
     }
-    remove(store, &fence).await
+    match fyrr_reader::storage::delete_if_match(config, DELETE_FENCE, &held).await {
+        Ok(())
+        | Err(object_store::Error::NotFound { .. } | object_store::Error::Precondition { .. }) => {
+            Ok(())
+        }
+        Err(object_store::Error::NotSupported { .. }) => {
+            Err(WriterError::ConditionalDeleteUnsupported)
+        }
+        Err(_) => Err(WriterError::StorageUnavailable),
+    }
 }
 
 async fn remove(store: &dyn ObjectStore, path: &Path) -> Result<()> {

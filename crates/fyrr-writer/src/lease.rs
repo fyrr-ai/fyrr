@@ -284,7 +284,7 @@ impl LeaseGuard {
     pub(crate) async fn delete_head(&self, config: &Config) -> Result<()> {
         let mut state = self.state.lock().await;
         self.live(&state)?;
-        match fyrr_reader::storage::delete_head_if_match(config, &state.expected).await {
+        match fyrr_reader::storage::delete_if_match(config, "head.json", &state.expected).await {
             Ok(()) => {
                 state.status = HeadStatus::Deleted;
                 Ok(())

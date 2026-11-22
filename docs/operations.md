@@ -152,8 +152,9 @@ command checks each saved object against storage before it deletes anything:
 `fyrr --config fyrr-old.toml writer namespace delete --export EXPORT_DIR`
 unpublishes the old namespace and then deletes every object under its prefix.
 Without an export, `--delete-data NAME` with the namespace name does the same.
-Deletion cannot be undone. If it stops part way, run the same command again
-([CLI](cli.md)).
+Deletion cannot be undone and waits up to `writer.commit.lease_ttl` for
+writers that may still be running. If it stops part way, run the same command
+again ([CLI](cli.md)).
 
 On S3, deletion first probes whether the server honors `If-Match` on DELETE.
 If it does not, `conditional_delete_unsupported` leaves the serving head

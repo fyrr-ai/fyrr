@@ -655,7 +655,7 @@ async fn dense_path_and_namespace_contracts(backend: Backend) {
         std::fs::write(file, bytes).expect("export file");
     }
     let deleted = success(
-        &config,
+        &namespace_delete::quick_lease(&config),
         &[
             "writer",
             "namespace",

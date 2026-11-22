@@ -454,10 +454,12 @@ fn s3_namespace_store(
     Ok((store, root, client))
 }
 
-/// Delete only the current namespace head matching the holder's CAS token.
-/// S3 deletes the current key without versionId so an older head cannot revive.
-pub async fn delete_head_if_match(
+/// Delete only the current object `file` of the namespace (`head.json` or the
+/// deletion fence) matching the holder's CAS token. S3 deletes the current key
+/// without versionId so an older object cannot revive.
+pub async fn delete_if_match(
     config: &Config,
+    file: &str,
     expected: &object_store::UpdateVersion,
 ) -> object_store::Result<()> {
     let failure = || object_store::Error::Generic {
@@ -473,7 +475,7 @@ pub async fn delete_head_if_match(
                 .clone()
                 .join("namespaces")
                 .join(config.namespace.name.as_str())
-                .join("head.json");
+                .join(file);
             let deletion = diagnostics::observe(
                 "DELETE_CONDITIONAL",
                 &path,
@@ -491,7 +493,7 @@ pub async fn delete_head_if_match(
         }
         Some(StorageBackend::S3 { .. }) => {
             let (store, root, client) = s3_namespace_store(config).map_err(|_| failure())?;
-            conditional::delete_head(&store, &client, &root, tag).await
+            conditional::delete_file(&store, &client, &root, file, tag).await
         }
         None => Err(failure()),
     }
