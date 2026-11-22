@@ -1646,9 +1646,14 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
     .unwrap();
     let publications = control_objects(&commit, "publications").await;
     assert_eq!(kept.len(), publications, "unreachable manifests remain");
-    for old in &chain[1..] {
+    // The manifest where the window ends stays; everything before it goes.
+    // `chain[0]` is kept for the grace after its retirement, `chain[1]` is that
+    // boundary.
+    let remains = |id: &str| kept.iter().any(|m| m.publication_id == id);
+    assert!(remains(&chain[0].publication_id) && remains(&chain[1].publication_id));
+    for old in &chain[2..] {
         assert!(
-            !kept.iter().any(|m| m.publication_id == old.publication_id),
+            !remains(&old.publication_id),
             "{} remains",
             old.publication_id
         );
@@ -1684,12 +1689,12 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
         pending
     );
 
-    // The history ends at a manifest younger than the window when the one
-    // before it was deleted past its grace: that is no lost manifest.
+    // The window moved on: `chain[0]` is the boundary now, `chain[1]` goes.
     fyrr_core::clock::advance(Duration::from_secs(2 * 3600)).unwrap();
     command(&commit, &["writer", "maintain"]);
+    store.head(&path(&chain[0].publication_id)).await.unwrap();
     assert!(matches!(
-        store.head(&path(&chain[0].publication_id)).await,
+        store.head(&path(&chain[1].publication_id)).await,
         Err(object_store::Error::NotFound { .. })
     ));
 

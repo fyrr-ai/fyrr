@@ -346,16 +346,12 @@ async fn retained(config: &Config, head: &ServingHead) -> Result<Vec<ContentMani
         retired = Some(manifest.committed_at);
         keep.push(manifest);
     }
-    // Maintenance deletes a predecessor once it has been retired for the grace,
-    // and it was retired when the next manifest was committed. A chain that
-    // ends at a missing predecessor sooner lost a manifest the window keeps.
+    // Maintenance keeps the manifest where the window ends, so a walk always
+    // finds it: a chain that runs out before that lost a manifest.
     if ended
-        && keep.last().is_some_and(|oldest| {
-            oldest.previous_publication_id.is_some()
-                && (fyrr_core::clock::now() - oldest.committed_at)
-                    .to_std()
-                    .is_ok_and(|age| age < config.writer.version_grace.as_duration())
-        })
+        && keep
+            .last()
+            .is_some_and(|oldest| oldest.previous_publication_id.is_some())
     {
         return Err(WriterError::PublicationInvalid);
     }
@@ -363,10 +359,12 @@ async fn retained(config: &Config, head: &ServingHead) -> Result<Vec<ContentMani
 }
 
 /// Delete the publication manifests and envelope checkpoints that no retained
-/// manifest names. A chain walk ends at the oldest manifest left, and a walk
-/// that starts at a manifest older than the window finds its checkpoint gone
-/// and reads the manifests instead, so what is deleted is history no restore
-/// or receipt reaches. Like the other steps, the pass is bounded by
+/// manifest names, except the manifest where the window ends and its
+/// checkpoint: the walk of `retained` ends there, so a manifest missing before
+/// it is a lost one. Other walks of the chain end at the deleted manifest
+/// after it, and a walk that starts at a manifest older than the window finds
+/// its checkpoint gone and reads the manifests instead, so what is deleted is
+/// history no restore or receipt reaches. Like the other steps, the pass is bounded by
 /// `step_max_duration`, listing included, meets the revocation boundary every
 /// 64 deletes and ends when the head publishes; what it leaves, the next
 /// `writer maintain` removes.
@@ -389,7 +387,8 @@ async fn superseded_history(
         {
             return Ok(0);
         }
-        let named: BTreeSet<_> = kept
+        let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
+        let mut named: BTreeSet<_> = kept
             .iter()
             .flat_map(|manifest| {
                 [format!("publications/{}.json", manifest.publication_id)]
@@ -402,8 +401,21 @@ async fn superseded_history(
                     )
             })
             .collect();
+        if let Some(id) = kept
+            .last()
+            .and_then(|oldest| oldest.previous_publication_id.as_ref())
+        {
+            let path = format!("publications/{id}.json");
+            let boundary =
+                fyrr_reader::storage::read_manifest(store.as_ref(), &root, &path).await?;
+            named.extend(
+                boundary
+                    .envelope_evidence
+                    .map(|evidence| evidence.checkpoint.object),
+            );
+            named.insert(path);
+        }
         let served = head.content.as_ref().map(|p| p.publication_id.clone());
-        let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
         let mut deleted = 0;
         for prefix in ["publications", "evidence"] {
             let mut listing = store.list(Some(&root.clone().join(prefix)));
