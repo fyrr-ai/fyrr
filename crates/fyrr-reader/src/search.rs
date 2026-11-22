@@ -12,7 +12,7 @@ use crate::routing::{CentroidRouter, RoutingFallback, strategy, take_probes};
 use crate::storage::*;
 use arrow_array::{Array, Float32Array, RecordBatch, StringArray, UInt32Array, UInt64Array};
 use futures::TryStreamExt;
-use fyrr_core::attributes::AttributeSchema;
+use fyrr_core::attributes::{AttributeIndexes, AttributeSchema, IndexOption, possible_indexes};
 use fyrr_core::config::{Config, ProcessEnvironment, RoutingStrategy};
 use fyrr_core::identity::IdentityArtifact;
 use fyrr_core::mcp::*;
@@ -498,29 +498,40 @@ const INDEX_KINDS: [(&str, &str, IndexType); 8] = [
     ("attributes", "attributes_idx", IndexType::LabelList),
 ];
 
-/// The index of each attribute, as column, name and kind: a bitmap for `bool`,
-/// a label list for an array, a B-tree for every other type but `bytes`, which
-/// has no index.
+/// The indexes the attributes have where `options` say so, as column, name and
+/// kind: the scalar index of the attribute's type (a bitmap for `bool`, a label
+/// list for an array, a B-tree for every other type but `bytes`, which has
+/// none) unless the attribute opts out, and the text indexes it asks for.
 pub fn attribute_indexes(
     attributes: &AttributeSchema,
+    options: &AttributeIndexes,
 ) -> impl Iterator<Item = (String, String, IndexType)> {
-    attributes.iter().filter_map(|(name, kind)| {
-        let index = match kind.index_kind()? {
-            "bitmap" => IndexType::Bitmap,
-            "label_list" => IndexType::LabelList,
-            _ => IndexType::BTree,
-        };
-        Some((name.clone(), fyrr_core::attributes::index_name(name), index))
-    })
+    possible_indexes(attributes)
+        .filter(|(name, _, option, _)| options.get(*name).copied().unwrap_or_default().has(*option))
+        .map(|(name, kind, option, index)| {
+            let index_type = match option {
+                IndexOption::FullText => IndexType::Inverted,
+                IndexOption::Ngram => IndexType::NGram,
+                IndexOption::Scalar => match kind.index_kind() {
+                    Some("bitmap") => IndexType::Bitmap,
+                    Some("label_list") => IndexType::LabelList,
+                    _ => IndexType::BTree,
+                },
+            };
+            (name.to_owned(), index, index_type)
+        })
 }
 
 /// The indexes a namespace carries, as column, name and kind, in the order
-/// they are verified: the built-in ones, then one per attribute.
-pub fn expected_indexes(attributes: &AttributeSchema) -> Vec<(String, String, IndexType)> {
+/// they are verified: the built-in ones, then those of the attributes.
+pub fn expected_indexes(
+    attributes: &AttributeSchema,
+    options: &AttributeIndexes,
+) -> Vec<(String, String, IndexType)> {
     INDEX_KINDS
         .iter()
         .map(|&(column, name, kind)| (column.to_owned(), name.to_owned(), kind))
-        .chain(attribute_indexes(attributes))
+        .chain(attribute_indexes(attributes, options))
         .collect()
 }
 
@@ -549,7 +560,7 @@ pub async fn verify_indices(
         &indexes,
         &fragments,
         fts_compatible,
-        &expected_indexes(&manifest.attributes),
+        &expected_indexes(&manifest.attributes, &manifest.attribute_indexes),
         |column, index| async move {
             dataset
                 .open_generic_index(&column, &index.uuid, &NoOpMetricsCollector)
@@ -570,14 +581,16 @@ fn attribute_columns_match(
     indexes: &[lance_table::format::IndexMetadata],
 ) -> bool {
     attributes.iter().all(|(name, kind)| {
-        let index = fyrr_core::attributes::index_name(name);
         schema.field(name).is_some_and(|field| {
             field.nullable
                 && field.data_type() == kind.arrow_type()
-                && indexes
-                    .iter()
-                    .filter(|i| i.name == index)
-                    .all(|i| i.fields == [field.id])
+                && IndexOption::ALL.into_iter().all(|option| {
+                    let index = fyrr_core::attributes::attribute_index_name(name, option);
+                    indexes
+                        .iter()
+                        .filter(|i| i.name == index)
+                        .all(|i| i.fields == [field.id])
+                })
         })
     })
 }

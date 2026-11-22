@@ -367,7 +367,7 @@ pub async fn atomic(
     lease: &crate::sync_lease::CursorLease,
     base_head: Option<BaseHead>,
     cache: &mut WriterEmbedding,
-    attributes: Vec<ArrayRef>,
+    attributes: Vec<(String, ArrayRef)>,
 ) -> Result<()> {
     check_atomic(config, &changes)?;
     content_page(
@@ -720,16 +720,19 @@ pub(crate) async fn bind_files(
     Ok((files, digest(&bound)))
 }
 
-/// Typed attribute columns, built row by row from the values of a request.
+/// Typed attribute columns, built row by row from the values of a request, in
+/// the order of `order`.
 pub(crate) struct AttributeColumns {
+    order: Vec<String>,
     schema: fyrr_core::attributes::AttributeSchema,
     columns: Vec<Vec<fyrr_core::attributes::AttributeValue>>,
 }
 impl AttributeColumns {
-    pub(crate) fn new(schema: &fyrr_core::attributes::AttributeSchema) -> Self {
+    pub(crate) fn new(schema: &fyrr_core::attributes::AttributeSchema, order: Vec<String>) -> Self {
         Self {
+            columns: vec![Vec::new(); order.len()],
+            order,
             schema: schema.clone(),
-            columns: vec![Vec::new(); schema.len()],
         }
     }
 
@@ -740,7 +743,7 @@ impl AttributeColumns {
         &mut self,
         values: &serde_json::Map<String, serde_json::Value>,
     ) -> std::result::Result<(), fyrr_core::attributes::AttributeError> {
-        for (name, column) in self.schema.clone().keys().zip(&mut self.columns) {
+        for (name, column) in self.order.iter().zip(&mut self.columns) {
             column.push(fyrr_core::attributes::resolve(
                 &mut self.schema,
                 name,
@@ -750,11 +753,15 @@ impl AttributeColumns {
         Ok(())
     }
 
-    pub(crate) fn finish(self) -> Vec<ArrayRef> {
-        self.schema
-            .values()
+    pub(crate) fn finish(self) -> Vec<(String, ArrayRef)> {
+        let schema = self.schema;
+        self.order
+            .into_iter()
             .zip(self.columns)
-            .map(|(kind, values)| attribute_array(*kind, values))
+            .map(|(name, values)| {
+                let column = attribute_array(schema[&name], values);
+                (name, column)
+            })
             .collect()
     }
 }

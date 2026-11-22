@@ -53,6 +53,7 @@ pub(crate) fn namespace_settings(config: &Config) -> NamespaceSettings {
             .as_ref()
             .map(fyrr_core::config::RerankConfig::settings),
         attributes: namespace.attributes.clone(),
+        attribute_indexes: namespace.attribute_indexes.clone(),
         write_api: namespace.write_api.clone(),
     }
 }
@@ -115,7 +116,7 @@ async fn create_new(
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut incarnation)
         .map_err(|_| WriterError::RuntimeUnavailable)?;
     let identity = configured_identity(config, 1)?;
-    let policy = PolicyArtifact {
+    let mut policy = PolicyArtifact {
         fixed_grants: fixed_grants(config)?,
         row_acl_sequence: None,
         retired_sources: Default::default(),
@@ -124,6 +125,7 @@ async fn create_new(
         generation: 1,
         settings,
     };
+    policy.schema_version = policy.current_version();
     // A deletion that removed the head may still be removing objects, and a new
     // head would be removed with them: run the deletion again first. Any other
     // object under the prefix, the fence included, refuses the creation. The

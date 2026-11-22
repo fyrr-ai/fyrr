@@ -6,7 +6,6 @@
 //! Lance versions leave within the purge window like any deleted content.
 use crate::{Result, WriterError};
 use crate::{apply, commit, lease::LeaseGuard, maintenance, prepare};
-use fyrr_core::Contract;
 use fyrr_core::config::Config;
 use fyrr_core::connector::SyncKind;
 use fyrr_core::publication::{MAX_RETIRED_SOURCES, PolicyArtifact, RetiredSource, ServingHead};
@@ -116,7 +115,7 @@ async fn mark(config: &Config, lease: &LeaseGuard, source: &str, purged: bool) -
     if known && !purge {
         return Ok(false);
     }
-    policy.schema_version = <PolicyArtifact as Contract>::VERSION;
+    policy.schema_version = policy.current_version();
     policy.generation = head
         .policy
         .generation

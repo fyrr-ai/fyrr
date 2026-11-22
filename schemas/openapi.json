@@ -248,7 +248,7 @@
         "tags": [
           "writer"
         ],
-        "summary": "Upsert, patch and delete documents, all or none",
+        "summary": "Upsert, patch and delete documents, all or none; or change the schema",
         "description": "Needs an API key with the `write` role.",
         "parameters": [
           {
@@ -1121,7 +1121,7 @@
               "null"
             ],
             "additionalProperties": true,
-            "description": "Part of the settings of a namespace that does not exist yet, laid over the process defaults."
+            "description": "Part of the settings of a namespace that does not exist yet, laid over the\nprocess defaults. For a namespace that is published, a request with\n`settings` alone and only `attributes` and `attribute_indexes` in them\nchanges its schema: attributes are added and indexes set; another type\nor a removed attribute is `attribute_type_change_refused` or\n`attribute_removal_refused`, rows with it `schema_change_with_rows`, and a\nnamespace with no publication yet `namespace_not_published`."
           },
           "upserts": {
             "type": "array",
@@ -1426,7 +1426,14 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/AttributeType"
             },
-            "description": "The typed attributes the namespace declares when it is created. Each is\na nullable column with its own index from the first publication."
+            "description": "The typed attributes the namespace declares. Each is a nullable column;\na request that changes the schema adds attributes and never changes or\nremoves one."
+          },
+          "attribute_indexes": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AttributeIndex"
+            },
+            "description": "The indexes the attributes are to have where they are not the default.\nAn index switched on is built by the next maintenance; the manifest\nrecords the ones that are built."
           },
           "write_api": {
             "anyOf": [
@@ -1754,6 +1761,30 @@
           "weight"
         ],
         "description": "What of a reranker decides results: recorded in the namespace when it is\ncreated. The endpoint, credential, spend caps and deadline stay process\nconfiguration ([`RerankConfig`]). Persisted types accept the fields a newer\nminor version adds, unlike their configuration counterparts."
+      },
+      "AttributeIndex": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "type": "boolean",
+            "default": true
+          },
+          "full_text": {
+            "type": "boolean",
+            "default": false
+          },
+          "ngram": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "index",
+          "full_text",
+          "ngram"
+        ],
+        "description": "The indexes an attribute has: the scalar one unless it says otherwise, and a\nfull-text or an n-gram index when it asks for one. An attribute without an\nindex is still filtered and sorted: by a scan of the table."
       },
       "WriteApiSettings": {
         "type": "object",

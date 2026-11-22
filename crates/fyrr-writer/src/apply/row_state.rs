@@ -30,7 +30,9 @@ pub struct PermissionState {
 pub(crate) const OWN_READERS: &str = "_fyrr_own_readers";
 
 /// `rows`, one-row batches of the built-in columns, as one batch followed by the
-/// attribute columns of the staged rows (`taken`) that they were made from.
+/// attribute columns of the staged rows (`taken`) that they were made from, in
+/// the order of the staged rows' columns, which is the table's: the fragment
+/// written from the batch names its columns by position.
 pub(crate) fn with_typed(
     rows: &[RecordBatch],
     taken: &[u32],
@@ -42,19 +44,30 @@ pub(crate) fn with_typed(
     let indices = arrow_array::UInt32Array::from(taken.to_vec());
     let mut fields = all.schema().fields().iter().cloned().collect::<Vec<_>>();
     let mut arrays = all.columns().to_vec();
-    for (name, kind) in attributes {
-        let column = staged
-            .column_by_name(name)
-            .ok_or(WriterError::ChangedRowsInvalid)?;
+    let built_in = fields.len();
+    let staged_schema = staged.schema();
+    for (field, column) in staged_schema
+        .fields()
+        .iter()
+        .zip(staged.columns())
+        .skip(built_in)
+    {
+        let Some(kind) = attributes.get(field.name()) else {
+            continue;
+        };
         arrays.push(
             arrow_select::take::take(column.as_ref(), &indices, None)
                 .map_err(|_| WriterError::ChangedRowsInvalid)?,
         );
         fields.push(Arc::new(arrow_schema::Field::new(
-            name,
+            field.name(),
             kind.arrow_type(),
             true,
         )));
+    }
+    // Every attribute of the settings is a column of the staged rows.
+    if fields.len() - built_in != attributes.len() {
+        return Err(WriterError::ChangedRowsInvalid);
     }
     RecordBatch::try_new(Arc::new(arrow_schema::Schema::new(fields)), arrays)
         .map_err(|_| WriterError::ChangedRowsInvalid)
@@ -301,12 +314,13 @@ pub(crate) fn with_patch(
         .filter(|(name, _)| patch.attributes.contains_key(*name))
         .map(|(name, kind)| (name.clone(), *kind))
         .collect();
-    let mut columns = crate::prepare::AttributeColumns::new(&named);
+    let mut columns =
+        crate::prepare::AttributeColumns::new(&named, named.keys().cloned().collect());
     columns
         .push(&patch.attributes)
         .map_err(|_| WriterError::ChangedRowsInvalid)?;
-    for (name, array) in named.keys().zip(columns.finish()) {
-        batch = replace(&batch, name, array)?;
+    for (name, array) in columns.finish() {
+        batch = replace(&batch, &name, array)?;
     }
     Ok(batch)
 }

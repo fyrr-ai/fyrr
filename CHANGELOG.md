@@ -44,6 +44,23 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   (`patched`, `skipped`). A `vector` without the text, or a text without its
   vector, is refused. See
   [HTTP write API](docs/http-api.md#write-documents).
+- A schema says per attribute whether it has an index (`attribute_indexes`, the
+  default is the index of its type) and whether a `string` also has a
+  full-text or an n-gram index. A filter or sort on an attribute without an
+  index is answered by a scan of the table, bounded by the request deadline. A
+  write request that carries only `settings` adds attributes to a namespace that
+  exists and sets the indexes of its attributes, in one publication; a new
+  attribute reads null for the documents written before it, an index switched
+  off is dropped with it, and one switched on is built by the next
+  maintenance. Another type for an attribute and the removal of one are refused
+  (`attribute_type_change_refused`, `attribute_removal_refused`); a schema
+  change carries nothing else and waits for the first publication of its
+  namespace (`schema_change_with_rows`, `namespace_not_published`). A manifest that
+  records index options has contract version 5.0 and a policy artifact whose
+  settings hold them 4.0, which an older build refuses; others keep 4.1 and 3.1,
+  and this build reads both. See
+  [Changing the schema](docs/http-api.md#changing-the-schema) and
+  [`[namespace.attribute_indexes]`](docs/tuning.md#namespaceattribute_indexes).
 - The write API takes `delete_where` and `patch_where`: a filter whose matching
   documents are deleted, or patched with the attributes or readers of `set`.
   The committer evaluates it once against the state the request is applied to;

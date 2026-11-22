@@ -12,7 +12,7 @@ pub(super) async fn content_page(
     cache: &mut WriterEmbedding,
     advances_cursor: bool,
     permission_stream: bool,
-    attributes: &[ArrayRef],
+    attributes: &[(String, ArrayRef)],
 ) -> Result<u64> {
     let (store, root) = namespace_store(config)?;
     let sequence = state
@@ -173,8 +173,10 @@ struct Page<'a> {
     root: &'a Path,
     base_head: &'a Option<BaseHead>,
     permission_stream: bool,
-    /// The typed attribute columns of the rows, in the namespace's order.
-    attributes: &'a [ArrayRef],
+    /// The typed attribute columns of the rows, in the order of the table's
+    /// columns: a fragment names its columns by position, so another order
+    /// would store each value under another attribute.
+    attributes: &'a [(String, ArrayRef)],
 }
 #[derive(Default)]
 struct PageRows {
@@ -486,15 +488,12 @@ impl RowColumns {
                 Arc::new(TimestampMicrosecondArray::from(self.updated).with_timezone("UTC")),
                 Arc::new(attribute_array),
             ];
-            columns.extend(page.attributes.iter().cloned());
+            columns.extend(page.attributes.iter().map(|(_, column)| column.clone()));
             let schema = schema_with(
                 config.embedding.dimensions,
-                config
-                    .namespace
-                    .attributes
+                page.attributes
                     .iter()
-                    .take(page.attributes.len())
-                    .map(|(name, kind)| Field::new(name, kind.arrow_type(), true))
+                    .map(|(name, column)| Field::new(name, column.data_type().clone(), true))
                     .collect(),
             );
             let rows = RecordBatch::try_new(schema.clone(), columns)
