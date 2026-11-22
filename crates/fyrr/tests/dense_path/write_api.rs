@@ -2105,11 +2105,11 @@ async fn identity_write_api_changes_the_schema_of_a_live_namespace_on_storage() 
     let (config, root) = setup_on(Backend::Local);
     let address = free_address();
     configure(&config, &address, "");
-    // The maintenance of this test is the one it runs.
+    // The maintenance of this test is the one it runs; indexes build on 2 threads.
     let text = std::fs::read_to_string(&config).unwrap();
     std::fs::write(
         &config,
-        format!("{text}\n[writer.serve]\nmaintenance = false\n"),
+        format!("{text}\n[writer]\nthreads = 2\n[writer.serve]\nmaintenance = false\n"),
     )
     .unwrap();
     embed(&root, &["alpha", "bravo", "charlie"]);
@@ -2128,7 +2128,7 @@ async fn identity_write_api_changes_the_schema_of_a_live_namespace_on_storage() 
     let listed = |filter: Value| -> Vec<String> {
         let mut client = Mcp::open(&config);
         let mut hits: Vec<String> =
-            body(client.call("search", json!({"output": "metadata", "filter": filter})))["hits"]
+            body(client.call("search", json!({"output": "metadata", "filter": filter, "order_by": [{"field": "root_id", "direction": "asc"}]})))["hits"]
                 .as_array()
                 .unwrap()
                 .iter()
