@@ -27,7 +27,8 @@
 #
 # Output: DIR/fyrr-V/ with LICENSE and NOTICE, the full and reader-only
 # binaries, the SDK wheel, the generated schemas and MCP fixtures (with
-# LICENSE and NOTICE), the image archives, manifest.txt and SHA256SUMS.
+# LICENSE and NOTICE), the OpenAPI description (fyrr-openapi-V.json), the image
+# archives, manifest.txt and SHA256SUMS.
 # Binaries and image archives carry the build host's platform (linux-x86_64
 # or linux-aarch64) in their names; scripts/release-combine joins the
 # directories of several platforms into one release.
@@ -141,6 +142,7 @@ wheel="$DIR/$(basename "$wheel")"
 
 # --- license and contracts --------------------------------------------------
 cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$DIR/"
+cp "$ROOT/schemas/openapi.json" "$DIR/fyrr-openapi-$VERSION.json"
 tar -czf "$DIR/fyrr-contracts-$VERSION.tar.gz" -C "$ROOT" LICENSE NOTICE schemas fixtures/contracts fixtures/mcp
 
 # --- images (built and tested by scripts/images) ------------------------------

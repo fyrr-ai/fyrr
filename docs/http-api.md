@@ -19,6 +19,10 @@
 
 ## Routes
 
+[`schemas/openapi.json`](../schemas/openapi.json) describes these routes and the
+[write route](#write-documents) as OpenAPI 3.1; it ships in the release as
+`fyrr-openapi-<version>.json`.
+
 | Route | Body | Answer |
 | --- | --- | --- |
 | `POST /v1/namespaces/{namespace}/query` | The arguments of [`search`](mcp-tools.md#search) | The `search` result |
