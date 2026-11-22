@@ -21,7 +21,7 @@ use lance_index::{IndexType, scalar::ScalarIndexParams};
 use lance_linalg::distance::DistanceType;
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 mod group;

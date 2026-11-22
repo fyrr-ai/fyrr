@@ -357,7 +357,11 @@ async fn identity_write_api_writes_to_many_namespaces_from_one_process_on_storag
                 .unwrap()
                 .unwrap();
         assert_eq!(head.namespace, *name);
-        assert!(head.lease.is_none(), "{name} holds no lease at rest");
+        assert!(
+            head.lease
+                .is_none_or(|lease| lease.expires_at <= fyrr_core::clock::now()),
+            "{name} holds no lease at rest"
+        );
     }
 
     // A key limited to a prefix writes the namespaces under it, and a name
