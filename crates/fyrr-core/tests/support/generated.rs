@@ -209,6 +209,7 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
                 schema_version: <HistoryCut as Contract>::VERSION,
                 namespace: "acme".into(),
                 publication_id: "pub-00000000000000000000000000000041".into(),
+                sequence: 41,
             }))
             .unwrap_or_else(|_| unreachable!("JSON serialization is UTF-8")),
         },

@@ -10,12 +10,19 @@
     "publication_id": {
       "type": "string",
       "description": "The oldest publication the namespace keeps."
+    },
+    "sequence": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "description": "Its sequence: the cut only moves to a higher one."
     }
   },
   "required": [
     "schema_version",
     "namespace",
-    "publication_id"
+    "publication_id",
+    "sequence"
   ],
   "description": "Where `writer maintain` cut the publication chain: the manifests before\n`publication_id` are deleted, and a walk of the chain ends at that\nmanifest. A manifest missing anywhere else was lost.",
   "title": "HistoryCut",

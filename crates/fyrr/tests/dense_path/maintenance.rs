@@ -1612,11 +1612,13 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
         .await
         .unwrap();
     store.delete(&path(&lost)).await.unwrap();
+    let envelopes = control_objects(&commit, "envelopes").await;
     let refused = host_command(&commit)
         .args(["writer", "maintain"])
         .output()
         .unwrap();
     assert!(!refused.status.success());
+    assert_eq!(control_objects(&commit, "envelopes").await, envelopes);
     assert!(String::from_utf8_lossy(&refused.stderr).contains("publication_invalid"));
     // So does every other reader of the chain, `writer status` among them.
     let status = host_command(&commit)

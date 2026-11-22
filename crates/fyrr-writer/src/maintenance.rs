@@ -350,6 +350,19 @@ async fn retained(config: &Config, head: &ServingHead) -> Result<Vec<ContentMani
     Ok(keep)
 }
 
+/// Walk the whole chain, so a manifest missing before the cut is found before
+/// anything is deleted: cleanup reads the evidence of the head only.
+pub(crate) async fn verify_history(config: &Config, head: &ServingHead) -> Result<()> {
+    let (store, root) = namespace_store(config)?;
+    let mut chain = fyrr_reader::storage::manifest_chain(
+        store,
+        root,
+        head.content.as_ref().map(|p| p.manifest.clone()),
+    );
+    while chain.try_next().await?.is_some() {}
+    Ok(())
+}
+
 /// Delete the publication manifests and envelope checkpoints that no retained
 /// manifest names. The oldest retained manifest is recorded as the cut first:
 /// the walks of the chain end there, and a manifest missing anywhere else is a
@@ -397,6 +410,21 @@ async fn superseded_history(
             && oldest.previous_publication_id.is_some()
         {
             let (store, root) = namespace_store(config)?;
+            // The cut manifest's evidence stands for the manifests before it:
+            // an earlier pass with a shorter window may have deleted it.
+            if let Some(evidence) = &oldest.envelope_evidence {
+                match store
+                    .head(&Path::from(format!(
+                        "{root}/{}",
+                        evidence.checkpoint.object
+                    )))
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(object_store::Error::NotFound { .. }) => return Ok(0),
+                    Err(_) => return Err(WriterError::StorageUnavailable),
+                }
+            }
             let path = root.join(HISTORY_CUT_OBJECT);
             // Read with its version: the write replaces exactly this cut, so a
             // writer that lost the lease cannot move a newer one back.
@@ -409,16 +437,24 @@ async fn superseded_history(
                         .map_err(|_| WriterError::StorageUnavailable)?;
                     let cut: HistoryCut = fyrr_core::parse_contract(&bytes)
                         .map_err(|_| WriterError::PublicationInvalid)?;
-                    (Some(cut.publication_id), PutMode::Update(version))
+                    (Some(cut), PutMode::Update(version))
                 }
                 Err(object_store::Error::NotFound { .. }) => (None, PutMode::Create),
                 Err(_) => return Err(WriterError::StorageUnavailable),
             };
-            if current.as_ref() != Some(&oldest.publication_id) {
+            // The cut only moves forward; a pass that knows less deletes nothing.
+            if current
+                .as_ref()
+                .is_some_and(|cut| cut.sequence > oldest.sequence)
+            {
+                return Ok(0);
+            }
+            if current.as_ref().map(|cut| &cut.publication_id) != Some(&oldest.publication_id) {
                 let cut = HistoryCut {
                     schema_version: <HistoryCut as Contract>::VERSION,
                     namespace: config.namespace.name.as_str().to_owned(),
                     publication_id: oldest.publication_id.clone(),
+                    sequence: oldest.sequence,
                 };
                 lease.head().await?;
                 match crate::lease::cas_put(store.as_ref(), &path, &cut, mode).await {

@@ -233,6 +233,8 @@ pub struct HistoryCut {
     pub namespace: String,
     /// The oldest publication the namespace keeps.
     pub publication_id: String,
+    /// Its sequence: the cut only moves to a higher one.
+    pub sequence: u64,
 }
 
 /// The object that holds the [`HistoryCut`], in the namespace root.
@@ -243,7 +245,11 @@ impl Contract for HistoryCut {
     const VERSION: SchemaVersion = PUBLICATION_CONTRACT_VERSION;
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
-        check_id("publication_id", &self.publication_id)
+        check_id("publication_id", &self.publication_id)?;
+        if self.sequence == 0 {
+            return Err("sequence must be positive".into());
+        }
+        Ok(())
     }
 }
 

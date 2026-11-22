@@ -289,6 +289,7 @@ pub(crate) async fn cleanup_held(
     config: &Config,
     lease: &crate::lease::LeaseGuard,
 ) -> Result<usize> {
+    crate::maintenance::verify_history(config, &lease.head().await?).await?;
     discard_purged(config, lease).await?;
     let head = lease.head().await?;
     let (store, _, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
