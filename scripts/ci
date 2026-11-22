@@ -365,10 +365,13 @@ else
   step "doctor" none "$ROOT/scripts/doctor"
 fi
 if ((!ONLY_STEPS)); then step "build test executables" none ensure_build; fi
-cases_start
 step "rustfmt" none cargo fmt --all --check
 step "clippy (full workspace)" none cargo clippy --locked --workspace --all-targets -- -D warnings
 step "clippy (reader-only build)" none cargo clippy --locked --workspace --no-default-features --all-targets -- -D warnings
+# Cases start after the compiler steps. The scheduler admits in arrival
+# order, so a pool that holds every core makes each clippy unit queue behind
+# the next case: clippy took 536-688 s beside the pool and 60-79 s alone.
+cases_start
 step "test-case ownership guard" none ownership_check
 step "reference docs" none reference_docs
 step "reader-only link check" none reader_link_check
