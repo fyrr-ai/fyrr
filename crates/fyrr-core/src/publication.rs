@@ -159,7 +159,10 @@ impl Contract for PolicyArtifact {
         if self.settings.needs_newer_build()
             && self.schema_version.major != INDEXED_POLICY_CONTRACT_VERSION.major
         {
-            return Err("attribute index options and connector columns need the indexed policy version".into());
+            return Err(
+                "attribute index options and connector columns need the indexed policy version"
+                    .into(),
+            );
         }
         if self.retired_sources.len() > MAX_RETIRED_SOURCES {
             return Err("retired_sources holds too many sources".into());

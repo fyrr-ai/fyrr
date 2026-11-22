@@ -1,5 +1,6 @@
 use super::publication::previous_manifest;
 use super::*;
+use lance::dataset::NewColumnTransform;
 
 mod native;
 mod schema;

@@ -150,7 +150,8 @@ pub(crate) async fn publish(
     )
     .await?;
     let manifest = ContentManifest {
-        schema_version: if attribute_indexes.is_empty() && !config.namespace.typed_connector_fields()
+        schema_version: if attribute_indexes.is_empty()
+            && !config.namespace.typed_connector_fields()
         {
             PUBLICATION_CONTRACT_VERSION
         } else {

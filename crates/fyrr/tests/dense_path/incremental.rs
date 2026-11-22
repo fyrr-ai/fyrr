@@ -193,23 +193,22 @@ async fn incremental_namespace_created_before_the_connector_columns_keeps_its_la
     for row in 8..768 {
         std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
     }
-    let (worker, commit, root) =
-        fixture_host_created(8, true, "legacy-fixture", setup, |config| {
-            let loaded = fyrr_core::config::load(config).unwrap();
-            let mut settings = fyrr_writer::commit::namespace_settings(&loaded.config);
-            for (name, _) in fyrr_core::attributes::CONNECTOR_COLUMNS {
-                settings.attributes.remove(name);
-            }
-            let config = loaded.config.clone();
-            std::thread::spawn(move || {
-                tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(fyrr_writer::commit::create_with(&config, settings))
-                    .unwrap();
-            })
-            .join()
-            .unwrap();
-        });
+    let (worker, commit, root) = fixture_host_created(8, true, "legacy-fixture", setup, |config| {
+        let loaded = fyrr_core::config::load(config).unwrap();
+        let mut settings = fyrr_writer::commit::namespace_settings(&loaded.config);
+        for (name, _) in fyrr_core::attributes::CONNECTOR_COLUMNS {
+            settings.attributes.remove(name);
+        }
+        let config = loaded.config.clone();
+        std::thread::spawn(move || {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(fyrr_writer::commit::create_with(&config, settings))
+                .unwrap();
+        })
+        .join()
+        .unwrap();
+    });
     field_documents(&root);
     sync_fields(&worker);
     publish(&commit);
