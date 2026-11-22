@@ -705,53 +705,34 @@ async fn identity_write_api_applies_a_change_only_when_its_condition_holds_on_st
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_lets_one_of_many_unpublished_requests_win_its_condition_on_storage() {
     let (config, root) = setup_on(Backend::Local);
-    let (api_address, committer_address) = (free_address(), free_address());
-    configure(&config, &api_address, "");
+    let address = free_address();
+    configure(&config, &address, "");
     embed(&root, &["blue shirt"]);
-    // One process takes the requests and publishes nothing; the other publishes.
-    let text = std::fs::read_to_string(&config).unwrap();
-    let api = root.join("api.toml");
-    std::fs::write(
-        &api,
-        text.replace(
-            "[writer.serve.admin]",
-            "[writer.serve]\ncommitter = false\n[writer.serve.admin]",
-        ),
-    )
-    .unwrap();
-    let committer = root.join("committer.toml");
-    std::fs::write(
-        &committer,
-        text.replace(&api_address.to_string(), &committer_address.to_string())
-            .replace("coalescing_timer='10m'", "coalescing_timer='1s'"),
-    )
-    .unwrap();
-    let body = |owner: &str| {
-        json!({
-            "patches": [{"id": "d1", "owner": owner}],
-            "conditions": {"d1": {"field": "owner", "op": "eq", "value": null}},
-        })
-    };
-    {
-        let seeding = Writer::start(&committer, &root, committer_address).await;
-        assert_eq!(
-            seeding
-                .post(
-                    WRITE_KEY,
-                    "dense-fixture",
-                    &json!({
-                        "settings": {"attributes": {"owner": "string"}},
-                        "upserts": [{"id": "d1", "text": "blue shirt"}],
-                    })
-                )
-                .await,
-            (200, json!({"upserted": 1, "deleted": 0}))
-        );
-    }
-    let accepting = Writer::start(&api, &root, api_address).await;
+    let writer = Writer::start(&config, &root, address).await;
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({
+                    "settings": {"attributes": {"owner": "string"}},
+                    "upserts": [{"id": "d1", "text": "blue shirt"}],
+                })
+            )
+            .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
     let loaded = fyrr_core::config::load(&config).unwrap();
+    // The committer finds the lease taken and publishes nothing until it is
+    // released, so the requests below are all prepared against the same document.
+    let lease = loop {
+        match fyrr_writer::lease::LeaseGuard::acquire(&loaded.config).await {
+            Ok(lease) => break lease,
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    };
     let owners = ["ann", "bob", "cy"];
-    let waiting = async {
+    let release = async {
         loop {
             let head = fyrr_reader::storage::optional_head(&loaded.config)
                 .await
@@ -767,37 +748,35 @@ async fn identity_write_api_lets_one_of_many_unpublished_requests_win_its_condit
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        // All three are durable and none is published: now one process publishes them.
-        Writer::start(&committer, &root, committer_address).await
+        // All three are durable and none is published.
+        lease.release().await.unwrap();
     };
-    let (replies, _committing) = tokio::join!(
+    let (replies, ()) = tokio::join!(
         futures::future::join_all(owners.iter().map(|owner| {
-            let request = body(owner);
-            let accepting = &accepting;
-            async move { accepting.post(WRITE_KEY, "dense-fixture", &request).await }
+            let request = json!({
+                "patches": [{"id": "d1", "owner": owner}],
+                "conditions": {"d1": {"field": "owner", "op": "eq", "value": null}},
+            });
+            let writer = &writer;
+            async move { writer.post(WRITE_KEY, "dense-fixture", &request).await }
         })),
-        waiting,
+        release,
     );
     let applied: Vec<_> = owners
         .iter()
         .zip(&replies)
         .filter(|(_, reply)| {
-            assert_eq!(reply.0, 200);
+            assert_eq!(reply.0, 200, "{replies:?}");
             reply.1["patched"] == 1
         })
-        .map(|(owner, reply)| {
-            assert_eq!(
-                reply.1,
-                json!({"upserted": 0, "deleted": 0, "patched": 1, "skipped": 0})
-            );
-            *owner
-        })
+        .map(|(owner, _)| *owner)
         .collect();
     assert_eq!(applied.len(), 1, "exactly one applies: {replies:?}");
-    for reply in replies.iter().filter(|reply| reply.1["patched"] == 0) {
+    for reply in &replies {
+        let patched = reply.1["patched"].as_u64().unwrap();
         assert_eq!(
             reply.1,
-            json!({"upserted": 0, "deleted": 0, "patched": 0, "skipped": 1})
+            json!({"upserted": 0, "deleted": 0, "patched": patched, "skipped": 1 - patched})
         );
     }
     assert_eq!(
