@@ -793,3 +793,72 @@ async fn default_concurrency_serves_eight_simultaneous_clients_on_storage() {
         wire.close().await;
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real publication, MCP transport and one namespace saturated by 32 clients"]
+async fn saturated_namespace_leaves_another_namespace_every_slot_on_storage() {
+    const CLIENTS: u32 = 32;
+    let path = std::env::var_os("FYRR_TEST_EMBED_CONFIG").expect("publication fixture config");
+    let mut config = fyrr_core::config::load(std::path::Path::new(&path))
+        .unwrap()
+        .config;
+    config.reader.concurrency = fyrr_core::config::ReaderConfig::default().concurrency;
+    config.embedding.reader_live = false;
+    let cap = u32::try_from(config.reader.concurrency).unwrap();
+    // Two schedulers of one process, as two namespaces have: each its own slots.
+    let mut saturated = PreparedReader::open(&config).await.unwrap();
+    saturated.prewarm().await.unwrap();
+    let hooks = saturated.test_hooks.clone();
+    let mut other = PreparedReader::open(&config).await.unwrap();
+    other.prewarm().await.unwrap();
+    let (saturated, other) = (start(saturated).await.unwrap(), start(other).await.unwrap());
+    let query = json!({"query":"exactneedle","limit":4,"output":"metadata"});
+    let mut clients = Vec::new();
+    // The first `cap` requests execute and stay in native work.
+    for id in 1..=cap {
+        let mut wire = EmbeddingWire::open(saturated.clone()).await;
+        hooks.native_work.enabled.store(true, Ordering::SeqCst);
+        wire.call(id, "search", query.clone()).await;
+        tokio::time::timeout(Duration::from_secs(5), hooks.native_work.entered.notified())
+            .await
+            .expect("the saturated namespace executes `cap` requests");
+        clients.push(wire);
+    }
+    // The next `cap` wait in its queue; the rest are refused at once.
+    for id in cap + 1..=CLIENTS {
+        let mut wire = EmbeddingWire::open(saturated.clone()).await;
+        wire.call(id, "search", query.clone()).await;
+        clients.push(wire);
+    }
+    // Every request of the other namespace is answered while the first is full.
+    let mut served = Vec::new();
+    for id in 1..=cap {
+        let mut wire = EmbeddingWire::open(other.clone()).await;
+        wire.call(id, "search", query.clone()).await;
+        served.push(wire);
+    }
+    for mut wire in served {
+        let reply = wire.reply().await;
+        assert_ne!(reply["result"]["isError"], true, "{reply}");
+        assert!(
+            !reply["result"]["structuredContent"]["hits"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        wire.close().await;
+    }
+    hooks.native_work.release.add_permits(cap as usize);
+    let (mut answered, mut busy) = (0, 0);
+    for mut wire in clients {
+        let reply = wire.reply().await;
+        if reply["result"]["isError"] == true {
+            assert_eq!(reply["result"]["structuredContent"]["code"], "busy");
+            busy += 1;
+        } else {
+            answered += 1;
+        }
+        wire.close().await;
+    }
+    assert_eq!((answered, busy), (2 * cap, CLIENTS - 2 * cap));
+}
