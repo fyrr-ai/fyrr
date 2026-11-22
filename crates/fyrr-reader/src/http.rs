@@ -156,7 +156,7 @@ impl Namespaces {
     /// The configuration of the namespace `name`.
     fn config(&self, name: &str) -> Config {
         let mut config = (*self.process).clone();
-        config.namespace.name = name.to_owned();
+        name.clone_into(&mut config.namespace.name);
         config
     }
     fn cell(
