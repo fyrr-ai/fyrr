@@ -70,6 +70,18 @@ pub(super) enum Trigger {
     Collect,
 }
 
+impl PreparationContext {
+    /// Later preparations reuse what the serving reader created: a changed
+    /// embedding profile or a reranker the namespace gained keeps one spend
+    /// counter instead of starting a new one at each publication.
+    pub(super) fn adopt(&mut self, reader: &PreparedReader) {
+        self.query_embeddings = reader.query_embeddings.clone();
+        if let Some(reranker) = &reader.reranker {
+            self.reranker = Some(reranker.clone());
+        }
+    }
+}
+
 pub(super) fn prepare_version(
     context: &PreparationContext,
     reader: Option<&PreparedReader>,
@@ -179,7 +191,8 @@ pub(super) fn prepare_version(
                 context.budget.clone(),
             )
             .await?;
-            prepared.reranker = context.reranker.clone();
+            // The process-lifetime spend counter, unless the namespace gained a reranker.
+            prepared.reranker = context.reranker.clone().or(prepared.reranker.take());
             #[cfg(test)]
             let prepared = {
                 let mut prepared = prepared;

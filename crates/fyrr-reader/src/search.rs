@@ -389,7 +389,10 @@ pub struct PreparedReader {
     /// (`record_stages`); `None` otherwise.
     #[cfg(test)]
     stage_trace: Option<serde_json::Value>,
+    /// The configuration with the namespace's own settings.
     pub(crate) config: Config,
+    /// The process configuration they were laid over; every reopen starts from it.
+    pub(crate) process_config: Arc<Config>,
     pub(crate) dataset: Arc<Dataset>,
     pub manifest: ContentManifest,
     pub(crate) head: ServingHead,

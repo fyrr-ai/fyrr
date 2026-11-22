@@ -14,7 +14,7 @@ pub(crate) async fn publish(
     maintenance_completed: bool,
 ) -> Result<u64> {
     let (store, root) = namespace_store(config)?;
-    let previous_manifest = previous_manifest(config, store.as_ref(), &root, &head).await?;
+    let previous_manifest = previous_manifest(store.as_ref(), &root, &head).await?;
     if cursor_rewinds.is_empty() {
         cursor_rewinds = previous_manifest
             .as_ref()
@@ -171,7 +171,6 @@ pub(crate) async fn publish(
 }
 
 pub(super) async fn previous_manifest(
-    config: &Config,
     store: &dyn ObjectStore,
     root: &Path,
     head: &ServingHead,
@@ -189,26 +188,9 @@ pub(super) async fn previous_manifest(
     };
     if previous_manifest
         .as_ref()
-        .is_some_and(|manifest| manifest.embedding != identity(&config.embedding))
-    {
-        return Err(WriterError::EmbeddingProfileMismatch);
-    }
-    if previous_manifest
-        .as_ref()
         .is_some_and(|manifest| manifest.chunk_profile != chunk_identity())
     {
         return Err(WriterError::ChunkProfileMismatch);
-    }
-    if previous_manifest
-        .as_ref()
-        .is_some_and(|manifest| manifest.dense_rq_bits != config.namespace.dense_rq_bits)
-    {
-        return Err(WriterError::DenseRqBitsMismatch);
-    }
-    if previous_manifest.as_ref().is_some_and(|manifest| {
-        manifest.dense_partition_rows != config.namespace.dense_partition_rows
-    }) {
-        return Err(WriterError::DensePartitionRowsMismatch);
     }
     Ok(previous_manifest)
 }

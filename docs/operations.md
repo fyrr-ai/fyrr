@@ -99,17 +99,15 @@ and cursors; each step is idempotent, so an interrupted purge is run again.
 
 The current configuration schema is `6.0`, the MCP contract is `4.0`, the prepared-envelope and
 rejection contracts are `5.0`, and content manifests and serving heads are
-`4.0`. Embedding settings are required even for the default BGE-M3 model.
-Republish older namespaces before using this build.
+`4.0`, and policy artifacts are `3.0`. Embedding settings are required even
+for the default BGE-M3 model. Republish older namespaces before using this
+build.
 
-Configuration schema `4.0` changes the default retrieval policy to
-`dense_weight = 0.5` and `lexical_candidates = 200`. An omitted setting now
-uses that value, so the effective policy digest changes. A reader using the
-new defaults refuses a publication using the previous defaults with
-`incompatible_index`. Run `fyrr writer commit` with the updated configuration
-to publish the new policy, then use the same settings in readers and writers.
-To retain the previous policy and its digest, explicitly set both
-`dense_weight = 0.25` and `lexical_candidates = 50` under `[namespace.retrieval]`.
+Configuration schema `4.0` changed the default retrieval policy to
+`dense_weight = 0.5` and `lexical_candidates = 200`. A namespace created from
+a file that omits them gets those values. An existing namespace keeps the
+policy it was created with; its readers and writers use it whatever their
+files say.
 
 Configuration schema `6.0` removes `reader.version_check`,
 `reader.per_request_wait` and `identity.validity_deadline`; delete all three
@@ -122,9 +120,13 @@ older namespaces.
 
 Contracts carry `major.minor` versions; a new minor reads older data. These
 changes need a fresh namespace instead: a new contract major, and any change
-of the embedding `model`, `dimensions`, prefixes, `roles` or
-`send_dimensions` (a sync, commit, maintain, verify or reader against the
-old namespace fails with `embedding_profile_mismatch`).
+of the settings a namespace is created with: the embedding `model`,
+`dimensions`, prefixes, `roles` and `send_dimensions`, the analyzer
+(`namespace.fts_*`), the vector index, composition, retrieval and the reranker's `model`,
+`candidates`, `weight` and `text_chars`. `writer namespace create` records them from the
+configuration file. A process whose file differs still serves the namespace
+with the settings it was created with, and creating the namespace again with
+other settings fails with `namespace_settings_fixed`.
 Publish the new namespace next to the old one, verify it, then switch
 readers:
 
@@ -154,11 +156,6 @@ that namespace's objects ([CLI](cli.md)).
 On S3, deletion first probes whether the server honors `If-Match` on DELETE.
 If it does not, `conditional_delete_unsupported` leaves the serving head
 in place. Use a backend supporting conditional deletion before retrying.
-
-Analyzer (`namespace.fts_*`), composition, retrieval and
-`[namespace.rerank]` changes stay in place: the next commit rebuilds the lexical index or publishes the new
-retrieval policy. Readers must run the same settings; a reader with the old
-ones refuses the new publication with `incompatible_index`.
 
 If a commit reports `head_cas_failed`, the publication may still have become
 visible. `fyrr writer commit --receipt ENVELOPE_ID` checks without writing,

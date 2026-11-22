@@ -188,7 +188,20 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
         WriterCommand::Worker(job) => return worker(job, path),
         _ => {}
     }
-    with_config(path, |loaded| {
+    // Creating or deleting a namespace starts from the file's own settings.
+    // A connector sync only starts workers, which take the settings themselves,
+    // and a commit takes them from the policy it reads at each tick.
+    let existing = !matches!(
+        command,
+        WriterCommand::Namespace { .. }
+            | WriterCommand::Sync {
+                directory: false,
+                ..
+            }
+            | WriterCommand::Commit { receipt: None, .. }
+            | WriterCommand::Serve { .. }
+    );
+    with_config(path, existing, |loaded| {
         let config = &loaded.config;
         match command {
             WriterCommand::Providers | WriterCommand::Worker(_) => {
@@ -323,10 +336,17 @@ fn runtime_command(
     }
 }
 
+/// Loads and validates the configuration. With `existing`, the settings the
+/// namespace was created with replace the file's: the file supplies them only
+/// when a namespace is created.
 #[allow(clippy::print_stderr)]
-fn with_config(path: &Path, body: impl FnOnce(&LoadedConfig) -> ExitCode) -> ExitCode {
+fn with_config(
+    path: &Path,
+    existing: bool,
+    body: impl FnOnce(&LoadedConfig) -> ExitCode,
+) -> ExitCode {
     match config::load(path) {
-        Ok(loaded) => {
+        Ok(mut loaded) => {
             let issues = loaded.validate();
             for issue in &issues {
                 eprintln!("{issue}");
@@ -336,6 +356,10 @@ fn with_config(path: &Path, body: impl FnOnce(&LoadedConfig) -> ExitCode) -> Exi
             } else {
                 // No runtime, Lance call or worker thread exists yet.
                 crate::threads::apply(&loaded.config.writer);
+                if existing && let Err(error) = take_namespace_settings(&mut loaded) {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(exit::FAILURE);
+                }
                 body(&loaded)
             }
         }
@@ -344,6 +368,17 @@ fn with_config(path: &Path, body: impl FnOnce(&LoadedConfig) -> ExitCode) -> Exi
             ExitCode::from(exit::CONFIG)
         }
     }
+}
+
+fn take_namespace_settings(loaded: &mut LoadedConfig) -> Result<()> {
+    let runtime = tokio::runtime::Runtime::new().map_err(|_| WriterError::RuntimeUnavailable)?;
+    loaded.config = runtime
+        .block_on(fyrr_reader::storage::with_namespace_settings(
+            &loaded.config,
+        ))?
+        // The namespace has a reranker and the file has no `[namespace.rerank]`.
+        .ok_or(WriterError::ConfigurationInvalid)?;
+    Ok(())
 }
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
@@ -396,7 +431,7 @@ fn worker(job: &WorkerJob, config: &Path) -> ExitCode {
             prepare,
             full,
             due,
-        } => with_config(config, |loaded| {
+        } => with_config(config, false, |loaded| {
             let Ok(credentials) = crate::secrets::worker_credentials(&loaded.config, source) else {
                 return ExitCode::from(exit::FAILURE);
             };

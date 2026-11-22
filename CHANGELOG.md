@@ -58,6 +58,19 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- **Breaking: a namespace keeps its own index and retrieval settings.**
+  `writer namespace create` records the embedding profile (`model`,
+  `dimensions`, prefixes, `roles`, `send_dimensions`), the analyzer
+  (`namespace.fts_*`), the vector index (`dense_rq_bits`,
+  `dense_partition_rows`), `composition`, `retrieval` and the reranker's
+  `model`, `candidates`, `weight` and `text_chars` from the configuration file in the namespace's policy artifact (policy
+  artifact contract 3.0; republish older namespaces). The file only supplies
+  defaults for a new namespace: a reader or writer whose file differs serves
+  the namespace with the settings it was created with, and creating a
+  namespace again with other settings fails with `namespace_settings_fixed`.
+  Changing a setting means a new namespace; the in-place rebuild or
+  republication that followed an edit of these keys is gone. See
+  [upgrades](docs/operations.md#upgrades).
 - `writer serve` no longer takes the cursor lease, or lists the envelopes,
   to find that a kind of a source is not due: it reads the head and the
   kind's cursor, which are read only. Each sync worker reports when its

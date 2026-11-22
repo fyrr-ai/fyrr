@@ -15,6 +15,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::config::{CompositionSettings, NamespaceConfig, RerankSettings, RetrievalSettings};
 use crate::envelope::{ChunkProfileIdentity, EmbeddingIdentity, FileRef};
 use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
@@ -22,13 +23,60 @@ use crate::version::{Contract, SchemaVersion};
 /// The publication contract version (manifest and head) written by this build.
 pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
 
+/// The index and retrieval settings a namespace is created with and keeps for
+/// its life. The process configuration only supplies them when the namespace is
+/// created; every reader and writer afterwards takes them from the namespace's
+/// policy artifact, which each content manifest pins.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NamespaceSettings {
+    pub embedding: EmbeddingIdentity,
+    pub fts: FtsSettings,
+    /// RaBitQ bits per dimension of the vector index.
+    pub dense_rq_bits: u8,
+    /// Target rows per partition of the vector index.
+    pub dense_partition_rows: u32,
+    pub retrieval: RetrievalSettings,
+    pub composition: CompositionSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank: Option<RerankSettings>,
+}
+
+impl NamespaceSettings {
+    /// The bounds a configuration file is held to, so that no stored settings
+    /// can fail a build or a search later.
+    fn validate(&self) -> Result<(), String> {
+        self.embedding.validate_profile()?;
+        let namespace = NamespaceConfig {
+            rerank: None,
+            retrieval: (&self.retrieval).into(),
+            composition: (&self.composition).into(),
+            name: String::new(),
+            fts_max_token_length: self.fts.max_token_length,
+            fts_stem: self.fts.stem,
+            fts_remove_stop_words: self.fts.remove_stop_words,
+            fts_ascii_folding: self.fts.ascii_folding,
+            dense_rq_bits: self.dense_rq_bits,
+            dense_partition_rows: self.dense_partition_rows,
+        };
+        let mut issues = Vec::new();
+        let mut issue = |path: &str, message: String| issues.push(format!("{path}: {message}"));
+        crate::config::check_namespace(&namespace, &mut issue);
+        if let Some(rerank) = &self.rerank {
+            crate::config::check_rerank(rerank, &mut issue);
+        }
+        issues.into_iter().next().map_or(Ok(()), Err)
+    }
+}
+
 /// Immutable policy generation used by the reader's admission path.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PolicyArtifact {
     pub schema_version: SchemaVersion,
     pub namespace: String,
     pub generation: u64,
-    pub retrieval_policy_digest: String,
+    /// Fixed for the life of the namespace: every generation repeats the
+    /// settings the namespace was created with.
+    pub settings: NamespaceSettings,
     /// Source-wide fixed grants: the hashed reader tokens of every source with
     /// `permissions = "fixed"`. Rows of other sources carry their own readers.
     pub fixed_grants: BTreeMap<String, Vec<String>>,
@@ -55,7 +103,7 @@ pub struct RetiredSource {
 
 impl Contract for PolicyArtifact {
     const NAME: &'static str = "policy-artifact";
-    const VERSION: SchemaVersion = SchemaVersion::new(2, 2);
+    const VERSION: SchemaVersion = SchemaVersion::new(3, 0);
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
         if self.retired_sources.len() > MAX_RETIRED_SOURCES {
@@ -67,7 +115,7 @@ impl Contract for PolicyArtifact {
                 return Err("retired_sources: purged before retired".into());
             }
         }
-        check_digest("retrieval_policy_digest", &self.retrieval_policy_digest)?;
+        self.settings.validate()?;
         for (source, tokens) in &self.fixed_grants {
             check_id("fixed_grants.source", source)?;
             if tokens
@@ -172,6 +220,16 @@ fn check_unique(field: &str, ids: &[String]) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("{field} has duplicates"))
+    }
+}
+
+impl ContentManifest {
+    /// Whether this publication was built with the settings its namespace
+    /// records: the embedding profile and the vector index.
+    pub fn built_with(&self, settings: &NamespaceSettings) -> bool {
+        self.embedding == settings.embedding
+            && self.dense_rq_bits == settings.dense_rq_bits
+            && self.dense_partition_rows == settings.dense_partition_rows
     }
 }
 

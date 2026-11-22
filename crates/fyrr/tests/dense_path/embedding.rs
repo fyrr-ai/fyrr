@@ -23,7 +23,7 @@ fn query(text: &str) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real executable, local fake embedding provider and local storage; scripts/ci"]
-async fn tools_embedding_empty_admission_and_profile_mismatch_make_no_calls_on_storage() {
+async fn tools_embedding_empty_admission_and_namespace_profile_make_no_calls_on_storage() {
     let provider = Provider::open().await;
     let (config, root, _) = tools::fixture();
     let live = configured(&config, &provider, 1000);
@@ -36,6 +36,8 @@ async fn tools_embedding_empty_admission_and_profile_mismatch_make_no_calls_on_s
         "not even a model probe before nonempty authorization"
     );
     drop(client);
+    // A process configured for another embedding profile serves the namespace
+    // with the namespace's own.
     let mismatch = root.join("embedding-mismatch.toml");
     std::fs::write(
         &mismatch,
@@ -44,14 +46,21 @@ async fn tools_embedding_empty_admission_and_profile_mismatch_make_no_calls_on_s
             .replace("[embedding]\n", "[embedding]\ndimensions=512\n"),
     )
     .unwrap();
-    let rejected = run(&mismatch, &["reader", "search", "fixture private mismatch"]);
-    assert!(!rejected.status.success());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("embedding_profile_mismatch"));
+    let mut client = Mcp::open(&mismatch);
+    let served = body(client.call("search", json!({"queries":["fixture private one", "fixture private two"],"sources":["denied"],"limit":4})));
+    assert_eq!(served["hits"], json!([]));
     assert_eq!(provider.calls(), 0);
-    // An idle commit takes no lease, yet it still refuses a changed profile.
-    let rejected = run(&mismatch, &["writer", "commit"]);
+    drop(client);
+    let committed = run(&mismatch, &["writer", "commit"]);
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+    // Creating the namespace again with another profile is refused by name.
+    let rejected = run(&mismatch, &["writer", "namespace", "create"]);
     assert!(!rejected.status.success());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("embedding_profile_mismatch"));
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("namespace_settings_fixed"));
     let uncapped = root.join("embedding-uncapped.toml");
     std::fs::write(
         &uncapped,

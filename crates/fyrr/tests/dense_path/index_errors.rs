@@ -1,92 +1,106 @@
-//! Preserve native index diagnosis across the reader/writer boundary.
+//! A namespace keeps the settings it was created with, whatever a process's
+//! configuration file says.
 use super::*;
 
 #[tokio::test]
-#[ignore = "local storage publication, native index verification and writer CLI errors"]
-async fn writer_verify_preserves_incompatible_index_on_storage() {
+#[ignore = "local storage publication, namespace settings and writer CLI errors"]
+async fn a_namespace_keeps_its_own_settings_on_storage() {
     let (config, root, _) = super::tools::fixture();
     let original = fyrr_core::config::load(&config).unwrap().config;
     assert!(!original.namespace.fts_stem);
-    let valid = super::coordination::command(&config, &["writer", "verify"]);
-    assert_eq!(valid["verified"], true);
-    let before = write_contract(&super::coordination::publication(&config).await.0);
-    let text = std::fs::read_to_string(&config).unwrap();
-    let changed = text.replacen("[namespace]", "[namespace]\nfts_stem = true", 1);
-    assert_ne!(changed, text);
-    let incompatible = root.join("incompatible-index.toml");
-    std::fs::write(&incompatible, changed).unwrap();
-    let parsed = fyrr_core::config::load(&incompatible).unwrap().config;
-    assert!(parsed.namespace.fts_stem);
-    let refused = fyrr_reader::search::PreparedReader::open(&parsed).await;
-    assert!(
-        matches!(refused, Err(fyrr_reader::ReaderError::IncompatibleIndex)),
-        "the same publication must be refused by the actual reader"
-    );
-    let output = super::coordination::host_command(&incompatible)
-        .args(["writer", "verify"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        error.contains("error: incompatible_index"),
-        "writer verification must preserve the native index diagnosis: {error}"
-    );
-    assert!(!error.contains("host_callback_failed"), "{error}");
+    let (head, published) = super::coordination::publication(&config).await;
     assert_eq!(
-        write_contract(&super::coordination::publication(&config).await.0),
-        before,
-        "verification must not change the serving head"
+        published.retrieval_policy_digest,
+        original.namespace.retrieval_digest()
     );
-
-    // Explicit historical settings keep their published identity. A reader
-    // using the new defaults must refuse it until the writer republishes.
-    let historical = root.join("historical-retrieval.toml");
+    let before = write_contract(&head);
+    let text = std::fs::read_to_string(&config).unwrap();
+    let other = root.join("other-settings.toml");
     std::fs::write(
-        &historical,
+        &other,
         text.replacen(
             "[namespace]",
-            "[namespace]\nretrieval = { dense_weight = 0.25, lexical_candidates = 50 }",
+            "[namespace]\nfts_stem = true\ndense_rq_bits = 2\n\
+             retrieval = { dense_weight = 0.25, lexical_candidates = 50 }",
             1,
         ),
     )
     .unwrap();
-    let old = fyrr_core::config::load(&historical).unwrap().config;
-    super::coordination::command(&historical, &["writer", "commit"]);
-    let (_, prior) = super::coordination::publication(&historical).await;
-    assert_eq!(
-        prior.retrieval_policy_digest,
-        old.namespace.retrieval_digest()
-    );
-    assert!(
-        fyrr_reader::search::PreparedReader::open(&old)
-            .await
-            .is_ok()
-    );
-    assert!(matches!(
-        fyrr_reader::search::PreparedReader::open(&original).await,
-        Err(fyrr_reader::ReaderError::IncompatibleIndex)
-    ));
-    super::coordination::command(&config, &["writer", "commit"]);
-    let (_, updated) = super::coordination::publication(&config).await;
-    assert_eq!(
-        updated.retrieval_policy_digest,
+    let parsed = fyrr_core::config::load(&other).unwrap().config;
+    assert!(parsed.namespace.fts_stem);
+    assert_ne!(
+        parsed.namespace.retrieval_digest(),
         original.namespace.retrieval_digest()
     );
-    assert_ne!(
-        updated.retrieval_policy_digest,
-        prior.retrieval_policy_digest
-    );
-    assert_eq!(updated.embedding, prior.embedding);
-    assert!(updated.envelope_ids.is_empty());
-    assert!(
-        fyrr_reader::search::PreparedReader::open(&original)
-            .await
-            .is_ok()
-    );
+
+    // The reader and the writer take the settings from the namespace.
+    let reader = fyrr_reader::search::PreparedReader::open(&parsed)
+        .await
+        .expect("the namespace is served with its own settings");
+    assert_eq!(reader.manifest.publication_id, published.publication_id);
     assert_eq!(
-        super::coordination::command(&config, &["writer", "verify"])["verified"],
+        super::coordination::command(&other, &["writer", "verify"])["verified"],
         true
     );
+    super::coordination::command(&other, &["writer", "commit"]);
+    assert_eq!(
+        write_contract(&super::coordination::publication(&config).await.0),
+        before,
+        "an idle commit with other settings must not change the serving head"
+    );
+
+    // Creating the namespace again repeats its settings; other ones are refused.
+    super::coordination::command(&config, &["writer", "namespace", "create"]);
+    let output = super::coordination::host_command(&other)
+        .args(["writer", "namespace", "create"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("error: namespace_settings_fixed"), "{error}");
+    assert_eq!(
+        write_contract(&super::coordination::publication(&config).await.0),
+        before
+    );
+
+    // A publication that differs from the namespace's recorded settings, in
+    // its analyzer or in its embedding profile of the same size, is an
+    // incompatible index: diagnosed by the reader and preserved by `writer verify`.
+    let (store, path) = fyrr_reader::storage::namespace_store(&original).unwrap();
+    let manifest_path = object_store::path::Path::from(format!(
+        "{path}/{}",
+        head.content.as_ref().unwrap().manifest
+    ));
+    let mut other_embedding = original.embedding.clone();
+    other_embedding.prefix.push_str("other: ");
+    for embedding in [false, true] {
+        let mut tampered = published.clone();
+        if embedding {
+            tampered.embedding = fyrr_reader::embedding::identity(&other_embedding);
+        } else {
+            tampered.fts.stem = !tampered.fts.stem;
+        }
+        object_store::ObjectStoreExt::put(
+            store.as_ref(),
+            &manifest_path,
+            write_contract(&tampered).into(),
+        )
+        .await
+        .unwrap();
+        let refused = fyrr_reader::search::PreparedReader::open(&original).await;
+        assert!(
+            matches!(refused, Err(fyrr_reader::ReaderError::IncompatibleIndex)),
+            "{:?}",
+            refused.map(|_| ())
+        );
+        let output = super::coordination::host_command(&config)
+            .args(["writer", "verify"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("error: incompatible_index"), "{error}");
+        assert!(!error.contains("host_callback_failed"), "{error}");
+    }
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -130,23 +130,23 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 1,
-          "description": "Native FTS `max_token_length`; part of the publication identity.",
+          "description": "Native FTS `max_token_length`.",
           "maximum": 1024,
           "default": 40
         },
         "fts_stem": {
           "type": "boolean",
-          "description": "Publication-level English stemming; changing it rebuilds the FTS index.",
+          "description": "English stemming.",
           "default": false
         },
         "fts_remove_stop_words": {
           "type": "boolean",
-          "description": "Publication-level stop-word removal; changing it rebuilds the FTS index.",
+          "description": "Stop-word removal.",
           "default": false
         },
         "fts_ascii_folding": {
           "type": "boolean",
-          "description": "Publication-level ASCII folding; changing it rebuilds the FTS index.",
+          "description": "ASCII folding.",
           "default": false
         },
         "dense_rq_bits": {
@@ -154,14 +154,14 @@
           "format": "uint8",
           "minimum": 1,
           "maximum": 9,
-          "description": "RaBitQ bits per dimension of the dense vector index. Fixed when the\nnamespace is first published; a writer with another value refuses to\nextend the index.",
+          "description": "RaBitQ bits per dimension of the dense vector index.",
           "default": 1
         },
         "dense_partition_rows": {
           "type": "integer",
           "format": "uint32",
           "minimum": 32,
-          "description": "Target rows per partition of the dense vector index. Fixed when the\nnamespace is first published; a writer with another value refuses to\nextend the index.",
+          "description": "Target rows per partition of the dense vector index.",
           "maximum": 4096,
           "default": 550
         }
@@ -169,7 +169,7 @@
       "required": [
         "name"
       ],
-      "description": "The namespace this deployment serves and writes: one Lance dataset."
+      "description": "The namespace this deployment serves and writes: one Lance dataset. Every\nkey but `name` is the default for a namespace created from this file; an\nexisting namespace keeps the settings it was created with."
     },
     "RerankConfig": {
       "type": "object",

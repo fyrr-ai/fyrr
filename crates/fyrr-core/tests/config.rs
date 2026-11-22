@@ -58,31 +58,37 @@ fn rerank_is_optional_capped_validated_and_bound_into_policy() {
         ))
         .is_err()
     );
+    let digest_of = |from: &str, to: &str| {
+        parse(&format!("{MINIMAL}{}", RERANK.replace(from, to)))
+            .unwrap()
+            .config
+            .namespace
+            .retrieval_digest()
+    };
+    // What decides results is bound into the policy.
     for (from, to) in [
         ("fixture-rerank", "another-model"),
         ("candidates=50", "candidates=30"),
         ("weight=0.5", "weight=1"),
-        ("deadline='1s'", "deadline='2s'"),
-        ("spend_limit_microusd=100", "spend_limit_microusd=99"),
-        ("max_call_cost_microusd=10", "max_call_cost_microusd=11"),
-        ("1234", "1235"),
         (
             "max_call_cost_microusd=10\n",
             "max_call_cost_microusd=10\ntext_chars=2000\n",
         ),
     ] {
-        assert_ne!(
-            digest,
-            parse(&format!("{MINIMAL}{}", RERANK.replace(from, to)))
-                .unwrap()
-                .config
-                .namespace
-                .retrieval_digest()
-        );
+        assert_ne!(digest, digest_of(from, to), "{from}");
+    }
+    // The endpoint, deadline, spend and credential are process configuration.
+    for (from, to) in [
+        ("1234", "1235"),
+        ("deadline='1s'", "deadline='2s'"),
+        ("spend_limit_microusd=100", "spend_limit_microusd=99"),
+        ("max_call_cost_microusd=10", "max_call_cost_microusd=11"),
+    ] {
+        assert_eq!(digest, digest_of(from, to), "{from}");
     }
     let with_secret = format!("{MINIMAL}{RERANK}api_key={{env='RERANK_TEST_KEY'}}\n");
     let secret = parse(&with_secret).unwrap();
-    assert_ne!(digest, secret.config.namespace.retrieval_digest());
+    assert_eq!(digest, secret.config.namespace.retrieval_digest());
     assert!(
         secret
             .missing_secrets(&|_: &str| None)

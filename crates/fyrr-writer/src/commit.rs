@@ -32,6 +32,7 @@ mod publication;
 pub(crate) use group::commit_one;
 pub(crate) use history::RestoreHistory;
 pub(crate) use namespace::configured_identity;
+pub(crate) use namespace::namespace_settings;
 pub(crate) use namespace::sources_allowed;
 pub use namespace::{create, delete};
 pub(crate) use publication::publish;
@@ -462,7 +463,15 @@ pub async fn commit_until_stopped(
     stop: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<(CommitReceipt, bool)> {
     let head = crate::lease::LeaseGuard::peek(config).await?;
-    if group::idle(config, &head).await? {
+    // Every tick takes the namespace's current settings: a long-running service
+    // must not judge batches by the settings of a namespace it served before.
+    let (store, root) = namespace_store(config)?;
+    let policy: PolicyArtifact =
+        fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+    let config = &config
+        .with_settings(&policy.settings)
+        .ok_or(WriterError::ConfigurationInvalid)?;
+    if group::idle(config, &head, &policy).await? {
         return Ok((served_receipt(config, &head).await?, false));
     }
     let receipt = crate::lease::LeaseGuard::with(config, |lease| async move {
@@ -476,9 +485,7 @@ pub async fn commit_until_stopped(
 /// configuration no longer matches the namespace that publication built.
 async fn served_receipt(config: &Config, head: &ServingHead) -> Result<CommitReceipt> {
     let (store, root) = namespace_store(config)?;
-    let Some(manifest) =
-        publication::previous_manifest(config, store.as_ref(), &root, head).await?
-    else {
+    let Some(manifest) = publication::previous_manifest(store.as_ref(), &root, head).await? else {
         return Ok(CommitReceipt {
             lance_version: 0,
             publication_id: None,

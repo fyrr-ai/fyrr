@@ -52,7 +52,6 @@ async fn read(
     publication: &Publication,
     store: Arc<object_store::memory::InMemory>,
     namespace: &str,
-    embedding: &fyrr_core::envelope::EmbeddingIdentity,
 ) -> Reads {
     let store = LatencyStore::new(store, LATENCY);
     let pointer = publication.head.content.as_ref().unwrap();
@@ -64,7 +63,6 @@ async fn read(
         &publication.head,
         pointer,
         namespace,
-        embedding,
         (&caches.0, &caches.1),
     )
     .await;
@@ -74,13 +72,7 @@ async fn read(
 #[tokio::test(start_paused = true)]
 async fn manifest_policy_and_identity_are_read_in_one_round() {
     let p = publication().await;
-    let (result, store, elapsed) = read(
-        &p,
-        p.store.clone(),
-        &p.manifest.namespace,
-        &p.manifest.embedding,
-    )
-    .await;
+    let (result, store, elapsed) = read(&p, p.store.clone(), &p.manifest.namespace).await;
     let (manifest, _, _) = result.unwrap();
     assert_eq!(manifest, p.manifest);
     assert_eq!(store.requests(), 3);
@@ -97,7 +89,6 @@ async fn publication_read_failures_keep_their_sequential_order() {
     let p = publication().await;
     let pointer = p.head.content.clone().unwrap();
     let namespace = p.manifest.namespace.clone();
-    let embedding = p.manifest.embedding.clone();
     let without = |store: Arc<object_store::memory::InMemory>, paths: Vec<String>| async move {
         for path in paths {
             store
@@ -118,37 +109,25 @@ async fn publication_read_failures_keep_their_sequential_order() {
     )
     .await;
     assert_eq!(
-        read(&p, store, &namespace, &embedding).await.0.unwrap_err(),
+        read(&p, store, &namespace).await.0.unwrap_err(),
         StorageUnavailable
     );
     // A foreign manifest is judged before the missing policy.
     let p = publication().await;
     let store = without(p.store.clone(), vec![p.head.policy.object.clone()]).await;
     assert_eq!(
-        read(&p, store.clone(), "other", &embedding)
-            .await
-            .0
-            .unwrap_err(),
+        read(&p, store.clone(), "other").await.0.unwrap_err(),
         PublicationInvalid
-    );
-    let mut foreign = embedding.clone();
-    foreign.fingerprint = digest(b"another embedding");
-    assert_eq!(
-        read(&p, store.clone(), &namespace, &foreign)
-            .await
-            .0
-            .unwrap_err(),
-        EmbeddingProfileMismatch
     );
     // With a valid manifest, a missing policy or identity is not authorized.
     assert_eq!(
-        read(&p, store, &namespace, &embedding).await.0.unwrap_err(),
+        read(&p, store, &namespace).await.0.unwrap_err(),
         AuthorizationUnavailable
     );
     let p = publication().await;
     let store = without(p.store.clone(), vec![p.head.identity.object.clone()]).await;
     assert_eq!(
-        read(&p, store, &namespace, &embedding).await.0.unwrap_err(),
+        read(&p, store, &namespace).await.0.unwrap_err(),
         AuthorizationUnavailable
     );
 }

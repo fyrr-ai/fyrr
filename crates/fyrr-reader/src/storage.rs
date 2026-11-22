@@ -639,6 +639,19 @@ pub async fn artifact<T: fyrr_core::Contract>(
     parse_contract(&bytes).map_err(|_| StorageError::AuthorizationUnavailable)
 }
 
+/// `config` with the settings its namespace was created with in place of the
+/// defaults the file supplies, or the file itself while the namespace does not
+/// exist. `None` when the namespace has a reranker the file cannot reach.
+pub async fn with_namespace_settings(config: &Config) -> Result<Option<Config>, StorageError> {
+    let Some(head) = optional_head(config).await? else {
+        return Ok(Some(config.clone()));
+    };
+    let (store, root) = namespace_store(config)?;
+    let policy: fyrr_core::publication::PolicyArtifact =
+        artifact(store.as_ref(), &root, &head.policy).await?;
+    Ok(config.with_settings(&policy.settings))
+}
+
 /// A reader configured with a directory provider serves only an identity that
 /// holds a published directory read; none is served before the first one.
 pub fn directory_published(

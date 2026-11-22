@@ -227,7 +227,7 @@ impl PreparationReservation {
         // Bound variable partition scratch by the encoded index input and add
         // fixed scratch per vector UUID before opening any of those roots.
         let cpus = lance_core::utils::tokio::get_num_compute_intensive_cpus() as u64;
-        let dim = u64::from(config.embedding.dimensions);
+        let dim = u64::from(manifest.embedding.dimensions);
         let padded_dim = dim.div_ceil(64) * 64;
         let roots = manifest
             .indexes

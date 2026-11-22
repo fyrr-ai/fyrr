@@ -23,7 +23,8 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
     #[cfg(test)]
     let observed_native_slots = native_slots.clone();
     let template = reader;
-    let config = template.config.clone();
+    // Each refresh lays the namespace's settings over the process configuration again.
+    let config = template.process_config.as_ref().clone();
     let mut idle = VecDeque::new();
     for _ in 0..worker_count {
         idle.push_back(template.worker().await?);
@@ -470,6 +471,7 @@ impl Scheduler {
                 self.warm_cancel.cancel();
                 self.idle = workers;
                 let reader = self.template.insert(new);
+                self.context.adopt(reader);
                 self.handover = false;
                 *self.served.write().await = reader.readiness_state();
                 log_refresh("ready", reader.manifest.sequence);
@@ -530,6 +532,7 @@ impl Scheduler {
                     new.report_cache_degradation(self.served.read().await.cache_degraded);
                     self.idle = workers;
                     let reader = self.template.insert(new);
+                    self.context.adopt(reader);
                     *self.served.write().await = reader.readiness_state();
                     self.warm_loss = None;
                     log_refresh("ready", reader.manifest.sequence);

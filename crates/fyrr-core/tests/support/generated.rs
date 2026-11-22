@@ -143,7 +143,39 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
                 schema_version: <PolicyArtifact as Contract>::VERSION,
                 namespace: "acme".into(),
                 generation: 1,
-                retrieval_policy_digest: fyrr_core::limits::digest(b"fixture-policy"),
+                settings: serde_json::from_value(serde_json::json!({
+                    "embedding": {
+                        "model": "BAAI/bge-m3",
+                        "dimensions": 1024,
+                        "fingerprint": "sha256:153ebedfabc06d487f789189fc0d33b7daa637931185368c4c1d331564ad2187",
+                        "settings": {
+                            "api_style": "openai-compatible",
+                            "prefix": "",
+                            "roles": {"document": {}, "query": {}},
+                            "send_dimensions": false
+                        }
+                    },
+                    "fts": {
+                        "tokenizer": "simple",
+                        "max_token_length": 40,
+                        "lowercase": true,
+                        "stem": true,
+                        "remove_stop_words": false,
+                        "ascii_folding": true,
+                        "with_position": false
+                    },
+                    "dense_rq_bits": 1,
+                    "dense_partition_rows": 550,
+                    "retrieval": {
+                        "dense_weight": 0.5,
+                        "dense_candidates": 75,
+                        "lexical_candidates": 200,
+                        "source_cap": 2,
+                        "max_documents": 75
+                    },
+                    "composition": {"fusion": 50, "dense": 0, "lexical": 0}
+                }))
+                .unwrap_or_else(|error| unreachable!("fixture settings parse: {error}")),
                 fixed_grants: Default::default(),
                 row_acl_sequence: None,
                 retired_sources: Default::default(),

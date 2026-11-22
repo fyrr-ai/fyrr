@@ -288,9 +288,10 @@ async fn coordination_crash_boundaries_on_storage() {
         let policy_only = name == "policy-head-not-sent";
         if policy_only {
             for config in [&worker, &committer] {
+                // A source's fixed readers are policy; the namespace's settings are not.
                 let text = std::fs::read_to_string(config).unwrap().replace(
-                    "[namespace]\n",
-                    "[namespace]\ncomposition = { fusion = 49, dense = 1 }\n",
+                    "permissions = \"fixed\"\nreaders = [\"grp:allow\"]",
+                    "permissions = \"fixed\"\nreaders = [\"grp:allow\", \"grp:extra\"]",
                 );
                 std::fs::write(config, text).unwrap();
             }

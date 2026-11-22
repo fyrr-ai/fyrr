@@ -926,6 +926,10 @@
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_partial_left_by_a_failed_download_does_not_stop_pages": {
         "tier": "quick",
         "seconds": 0.05
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::namespace::tests::settings_round_trip_through_a_configuration": {
+        "tier": "quick",
+        "seconds": 0.0
       }
     },
     "children": {
@@ -1609,7 +1613,7 @@
     "kind": "rust",
     "backend": "local",
     "cases": {
-      "full:fyrr:test:dense_path/embedding::tools_embedding_empty_admission_and_profile_mismatch_make_no_calls_on_storage": {
+      "full:fyrr:test:dense_path/embedding::tools_embedding_empty_admission_and_namespace_profile_make_no_calls_on_storage": {
         "tier": "full",
         "seconds": 8.419
       },
@@ -1652,6 +1656,10 @@
       "full:fyrr:test:dense_path/tools::tools_fetch_refuses_unreadable_locator_index_on_storage": {
         "tier": "full",
         "seconds": 10.256
+      },
+      "full:fyrr:test:dense_path/rerank::tools_rerank_settings_come_from_the_namespace_on_storage": {
+        "tier": "full",
+        "seconds": 10.0
       }
     },
     "children": {
@@ -4894,7 +4902,7 @@
     "kind": "rust",
     "backend": "local",
     "cases": {
-      "full:fyrr:test:dense_path/index_errors::writer_verify_preserves_incompatible_index_on_storage": {
+      "full:fyrr:test:dense_path/index_errors::a_namespace_keeps_its_own_settings_on_storage": {
         "tier": "full",
         "seconds": 7.977
       }

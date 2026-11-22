@@ -47,7 +47,7 @@ impl PreparedReader {
                 session.upgrade(),
                 mirror,
                 cache,
-                queries,
+                Some(queries),
                 policies,
                 identities,
                 heads,
@@ -67,10 +67,7 @@ impl PreparedReader {
                     config.reader.mirror_max_bytes,
                 )?),
                 Arc::new(std::sync::Mutex::new(AuthorizationCache::default())),
-                embedding::QueryEmbeddings::new(
-                    &config.embedding,
-                    preparation_budget.permits.clone(),
-                )?,
+                None,
                 Arc::default(),
                 Arc::default(),
                 crate::storage::HeadCache::new(config),
@@ -91,10 +88,27 @@ impl PreparedReader {
             &head,
             pointer,
             &config.namespace.name,
-            &embedding::identity(&config.embedding),
             (&policy_cache, &identity_cache),
         )
         .await?;
+        // The publication was built with the settings the namespace records.
+        if !manifest.built_with(&policy.settings) {
+            return Err(IncompatibleIndex);
+        }
+        // The namespace's own settings, not this process's file, define how it is read.
+        // A namespace with a reranker needs this file's `[namespace.rerank]`.
+        let process_config = Arc::new(config.clone());
+        let config = &config
+            .with_settings(&policy.settings)
+            .ok_or(IncompatibleIndex)?;
+        let query_embeddings = match query_embeddings {
+            Some(shared) if shared.serves(&config.embedding) => shared,
+            // The first open, or a namespace recreated with another profile.
+            _ => embedding::QueryEmbeddings::new(
+                &config.embedding,
+                preparation_budget.permits.clone(),
+            )?,
+        };
         let mirror = Arc::new(mirror.for_publication(&manifest));
         if config.reader.http.is_none() {
             Self::predicate(config, &identity, &policy, None)?;
@@ -117,6 +131,7 @@ impl PreparedReader {
             #[cfg(test)]
             stage_trace: None,
             config: config.clone(),
+            process_config,
             dataset,
             manifest,
             head,
@@ -179,7 +194,6 @@ impl PreparedReader {
         head: &ServingHead,
         pointer: &fyrr_core::publication::ContentPointer,
         namespace: &str,
-        embedding: &fyrr_core::envelope::EmbeddingIdentity,
         (policy_cache, identity_cache): (
             &ArtifactCache<PolicyArtifact>,
             &ArtifactCache<IdentityArtifact>,
@@ -221,9 +235,6 @@ impl PreparedReader {
             || manifest.lance_version != pointer.lance_version
         {
             return Err(PublicationInvalid);
-        }
-        if &manifest.embedding != embedding {
-            return Err(EmbeddingProfileMismatch);
         }
         Ok((manifest, policy?, identity?))
     }
@@ -336,6 +347,7 @@ impl PreparedReader {
         &self,
     ) -> impl std::future::Future<Output = Result<Self>> + Send + 'static {
         let config = self.config.clone();
+        let process_config = self.process_config.clone();
         let manifest = self.manifest.clone();
         let head = self.head.clone();
         let policy = self.policy.clone();
@@ -385,6 +397,7 @@ impl PreparedReader {
                 #[cfg(test)]
                 stage_trace: None,
                 config: config.clone(),
+                process_config,
                 dataset,
                 manifest: manifest.clone(),
                 head: head.clone(),

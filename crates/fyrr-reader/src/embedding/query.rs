@@ -66,6 +66,11 @@ impl QueryEmbeddings {
         }))
     }
 
+    /// Whether this cache embeds with the profile of `config`.
+    pub(crate) fn serves(&self, config: &EmbeddingConfig) -> bool {
+        self.profile_fingerprint == identity(config).fingerprint
+    }
+
     fn remember(&self, key: &str, vector: &[f32]) {
         if self.config.query_cache_max_bytes < crate::generation::PAGE_BYTES {
             return;
