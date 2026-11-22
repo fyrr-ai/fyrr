@@ -105,6 +105,7 @@ pub(crate) async fn start_guarded<G: Send + 'static>(
                 stalled: None,
                 sleeps,
                 dormant: false,
+                woke: None,
                 last_request: started,
                 warm_cancel,
                 next_warm,
@@ -186,6 +187,9 @@ struct Scheduler {
     sleeps: bool,
     /// No check runs, and no request is answered before one has read the head.
     dormant: bool,
+    /// When the last request arrived while dormant: only a check that started
+    /// after it ends the dormancy.
+    woke: Option<Instant>,
     /// The last request that arrived or finished; the only measure of idleness.
     last_request: Instant,
     preparation: Option<VersionPreparation>,
@@ -502,11 +506,14 @@ impl Scheduler {
         self.preparation = None;
         // A check from before the gap read the head before it: run another.
         let outdated = self.stalled.is_some_and(|at| self.check_started < at);
-        if outdated {
+        // A check from before the request that woke the namespace likewise.
+        let early = self.woke.is_some_and(|at| self.check_started < at);
+        if outdated || early {
             self.next_check = Instant::now();
         } else if matches!(prepared, Ok(Ok(_))) {
             self.stalled = None;
             self.dormant = false;
+            self.woke = None;
         }
         match prepared {
             Ok(Ok(Some((new, workers)))) => {
@@ -713,9 +720,8 @@ impl Scheduler {
         };
         self.last_request = Instant::now();
         if self.dormant {
-            // A check that began before this request does not answer it.
             self.next_check = self.last_request;
-            self.stalled = Some(self.last_request);
+            self.woke = Some(self.last_request);
         }
         #[cfg(feature = "test-store")]
         if crate::storage::test_store::version_check()

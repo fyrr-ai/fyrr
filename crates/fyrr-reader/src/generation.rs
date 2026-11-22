@@ -180,13 +180,16 @@ impl PreparationReservation {
             .as_u64()
             .saturating_sub(config.reader.memory_headroom_bytes.as_u64())
             .saturating_sub(crate::search::AUTHORIZATION_CACHE_MAX_BYTES as u64)
-            // A reader that serves namespaces by path gives each a subject
-            // cache of its own; together they are the size of the configured one.
-            .saturating_sub(if config.reader.http.is_some() {
-                crate::search::AUTHORIZATION_CACHE_MAX_BYTES as u64
-            } else {
-                0
-            })
+            // A reader that opens namespaces by path (HTTP with API keys) gives
+            // each a subject cache of its own; together they are the size of
+            // the configured one.
+            .saturating_sub(
+                if config.reader.http.is_some() && !config.identity.api_keys.is_empty() {
+                    crate::search::AUTHORIZATION_CACHE_MAX_BYTES as u64
+                } else {
+                    0
+                },
+            )
             .saturating_sub(Self::rss()?);
         let permits = (available / PAGE_BYTES).min(u32::MAX as u64) as usize;
         Ok(MemoryPool {

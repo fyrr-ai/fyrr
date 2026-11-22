@@ -39,8 +39,8 @@ closes the least recently used one that serves no request, and opens again,
 so the open ones stay inside the budget. Each gets an eighth of
 `reader.mirror_max_bytes` and of the 128 MiB subject cache the configured
 namespace has, so together they add one more mirror and cache budget of the
-configured size; the memory of those caches is taken from
-`reader.memory_max_bytes` too. One that has served no request for
+configured size; a reader with API keys takes the memory of those caches
+from `reader.memory_max_bytes` too. One that has served no request for
 `reader.version_check_interval` makes no storage request until the next one,
 which reads the head first and is answered from that read. Embedding and rerank
 spend limits are per process: every namespace charges the same counters.
