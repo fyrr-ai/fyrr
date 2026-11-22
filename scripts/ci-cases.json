@@ -1027,6 +1027,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-writer:lib:fyrr_writer/prepare::tests::a_patch_of_a_number_is_weighed_by_the_width_of_the_numbers_of_its_namespace": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-writer:lib:fyrr_writer/prepare::tests::the_table_holds_exactly_the_reserved_built_in_columns": {
         "tier": "quick",
         "seconds": 0.0

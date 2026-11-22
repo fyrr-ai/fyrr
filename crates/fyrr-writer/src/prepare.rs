@@ -262,14 +262,25 @@ fn record_estimate(config: &Config) -> u64 {
     2048 + u64::from(config.embedding.dimensions) * 2
 }
 
-/// What the committer may write for a patched document: its record with a text
-/// and every attribute at their largest, and what any record takes besides. The
-/// stored record is what the patch keeps, so this is an upper bound for all but
-/// a record with very many readers, which the committer refuses when it is written.
+/// What the committer may write for a patched document: its record with the
+/// text and every attribute at the largest its type holds, and what any record
+/// takes besides. The stored record is what the patch keeps, so this is an upper
+/// bound for all but a record with very many readers, which the committer
+/// refuses when it is written.
 pub(crate) fn patch_estimate(config: &Config) -> u64 {
-    (crate::chunk::MAX_BYTES
-        + config.namespace.attributes.len() * fyrr_core::limits::schema::MAX_VALUE_BYTES) as u64
-        + record_estimate(config)
+    patch_bytes(&config.namespace.attributes, record_estimate(config))
+}
+fn patch_bytes(attributes: &fyrr_core::attributes::AttributeSchema, record: u64) -> u64 {
+    use fyrr_core::attributes::AttributeType;
+    let attributes: u64 = attributes
+        .values()
+        .map(|kind| match kind {
+            AttributeType::String => fyrr_core::limits::schema::MAX_VALUE_BYTES as u64,
+            AttributeType::Int | AttributeType::Float | AttributeType::Datetime => 8,
+            AttributeType::Bool => 1,
+        })
+        .sum();
+    crate::chunk::MAX_BYTES as u64 + attributes + record
 }
 
 /// Whether `changes` fit the bounds of a single page, which one envelope must.
@@ -739,6 +750,23 @@ impl AttributeColumns {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_patch_of_a_number_is_weighed_by_the_width_of_the_numbers_of_its_namespace() {
+        use fyrr_core::attributes::{AttributeSchema, AttributeType};
+        let floats: AttributeSchema = (0..64)
+            .map(|n| (format!("f{n}"), AttributeType::Float))
+            .collect();
+        // 16 KiB of text, 64 numbers of 8 bytes and the part of any record.
+        let record = 2048 + 1024 * 2;
+        assert_eq!(patch_bytes(&floats, record), 16384 + 64 * 8 + record);
+        assert!(patch_bytes(&floats, record) < 256 * 1024);
+        let mut strings = floats;
+        strings.insert("s".into(), AttributeType::String);
+        assert_eq!(
+            patch_bytes(&strings, record) - (16384 + 64 * 8 + record),
+            4096
+        );
+    }
     #[test]
     fn the_table_holds_exactly_the_reserved_built_in_columns() {
         let schema = schema(8);
