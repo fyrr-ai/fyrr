@@ -29,6 +29,7 @@ and the other `[reader]` and `[writer]` keys in
 | `retrieval` | see below | Candidate depths, fusion weight and output bounds. |
 | `rerank` | absent | Optional hosted reranker; absent makes no reranker calls. |
 | `attributes` | `{}` | Typed attributes of the namespace: name to type, see below. |
+| `write_api` | absent | Serves the [document write API](http-api.md#write-documents) and creates API namespaces, see below. |
 
 ### `[namespace.attributes]`
 
@@ -41,8 +42,9 @@ priority = "int"
 A namespace can declare up to 128 typed attributes when it is created. The
 types are `string`, `int` (64-bit signed), `float` (64-bit), `bool` and
 `datetime` (UTC microseconds, like `updated_at`). The first content publication
-creates a nullable column for each declaration. These columns currently contain
-only nulls. Search's `attributes` filter matches the `key=value` string labels
+creates a nullable column for each declaration. Only the rows of the
+[document write API](http-api.md#write-documents) carry values in them;
+connectors' rows leave them null. Search's `attributes` filter matches the `key=value` string labels
 supplied by connectors. See [connector documents](connectors/authoring.md#documents)
 and [search](mcp-tools.md#search).
 
@@ -55,6 +57,33 @@ A name is a lowercase letter followed by lowercase letters, digits and `_`, at
 most 128 bytes; a built-in column name or a name starting with `_` is refused.
 The schema is recorded in the namespace and in every content manifest, and like
 the other settings it is fixed for the life of the namespace.
+
+The document write API refuses an undeclared attribute with
+`attribute_undeclared`, and a value that does not fit its type with a named
+error: `attribute_type_mismatch`, `attribute_value_invalid` or
+`attribute_value_too_large` (a `string` over 4096 bytes). A schema is refused
+with `attribute_limit_exceeded` (a 129th attribute), `attribute_name_invalid` or
+`attribute_name_reserved`. A namespace that the write API creates cannot declare `id` (the key of a row) as an attribute or as its `text_attribute`.
+
+### `[namespace.write_api]`
+
+```toml
+[namespace.write_api]
+text_attribute = "text"
+open = false
+```
+
+Present, it makes this process serve the
+[document write API](http-api.md#write-documents) (which needs
+`[writer.serve.admin]` and the committer) and gives a namespace created from
+this file or through the API its documents from the API alone: no
+`[[sources]]`, and a connector namespace refuses an API write. The keys are the
+defaults of a new namespace, recorded in it and fixed for its life.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `text_attribute` | `"text"` | The key of a row that holds its text, which is embedded, full-text indexed and returned as the content of its record. Not one of `attributes`. |
+| `open` | `false` | `false`: a row is readable by the reader tokens it names and a row without any by nobody. `true`: every authenticated subject of the deployment reads every row. |
 
 ### `[namespace.composition]`
 

@@ -12,6 +12,7 @@ pub(super) async fn content_page(
     cache: &mut WriterEmbedding,
     advances_cursor: bool,
     permission_stream: bool,
+    attributes: &[ArrayRef],
 ) -> Result<u64> {
     let (store, root) = namespace_store(config)?;
     let sequence = state
@@ -103,6 +104,7 @@ pub(super) async fn content_page(
         root: &root,
         base_head: &base_head,
         permission_stream,
+        attributes,
     };
     let mut rows = PageRows::default();
     for change in changes {
@@ -161,6 +163,8 @@ struct Page<'a> {
     root: &'a Path,
     base_head: &'a Option<BaseHead>,
     permission_stream: bool,
+    /// The typed attribute columns of the rows, in the namespace's order.
+    attributes: &'a [ArrayRef],
 }
 #[derive(Default)]
 struct PageRows {
@@ -443,7 +447,7 @@ impl RowColumns {
                 config.embedding.dimensions as i32,
             );
             let attribute_array = string_lists(self.attributes.iter().map(Vec::as_slice));
-            let columns: Vec<ArrayRef> = vec![
+            let mut columns: Vec<ArrayRef> = vec![
                 Arc::new(StringArray::from(self.sources)),
                 Arc::new(StringArray::from(self.roots)),
                 Arc::new(StringArray::from(self.records)),
@@ -461,7 +465,18 @@ impl RowColumns {
                 Arc::new(TimestampMicrosecondArray::from(self.updated).with_timezone("UTC")),
                 Arc::new(attribute_array),
             ];
-            let rows = RecordBatch::try_new(schema(config.embedding.dimensions), columns)
+            columns.extend(page.attributes.iter().cloned());
+            let schema = schema_with(
+                config.embedding.dimensions,
+                config
+                    .namespace
+                    .attributes
+                    .iter()
+                    .take(page.attributes.len())
+                    .map(|(name, kind)| Field::new(name, kind.arrow_type(), true))
+                    .collect(),
+            );
+            let rows = RecordBatch::try_new(schema.clone(), columns)
                 .map_err(|_| WriterError::PreparedRowsInvalid)?;
             let params = WriteParams {
                 store_params: Some(store_params(config)?),
@@ -470,10 +485,7 @@ impl RowColumns {
             let uri = dataset_uri(config);
             for fragment in FragmentCreateBuilder::new(&uri)
                 .write_params(&params)
-                .write_fragments(RecordBatchIterator::new(
-                    vec![Ok(rows)],
-                    schema(config.embedding.dimensions),
-                ))
+                .write_fragments(RecordBatchIterator::new(vec![Ok(rows)], schema))
                 .await
                 .map_err(|_| WriterError::FragmentWriteFailed)?
             {

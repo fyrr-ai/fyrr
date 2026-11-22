@@ -143,9 +143,9 @@ impl Admission {
         if !live {
             return Err(AuthorizationUnavailable);
         }
-        if principal.tokens.is_empty()
-            || principal.tokens.len() > config.identity.max_tokens_per_user as usize
-        {
+        // A subject without tokens reads nothing in a namespace that checks
+        // readers, which the row filter refuses; an open one admits it.
+        if principal.tokens.len() > config.identity.max_tokens_per_user as usize {
             return Err(AuthorizationUnavailable);
         }
         let groups = principal
