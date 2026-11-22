@@ -358,6 +358,8 @@ mod tests {
             1,
             "one read per refresh"
         );
+        // The first request reads the identity too; later ones read the head.
+        test.authorize_role(ApiKeyRole::Read).await.unwrap();
         let before = test.mirror.totals().requests;
         test.authorize_role(ApiKeyRole::Read).await.unwrap();
         test.authorize_role(ApiKeyRole::Write).await.unwrap();
