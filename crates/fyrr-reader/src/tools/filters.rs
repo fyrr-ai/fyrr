@@ -1,5 +1,82 @@
 use super::*;
 use crate::search::FilterSelection;
+use chrono::{DateTime, Utc};
+use fyrr_core::attributes::{AttributeSchema, AttributeType};
+use fyrr_core::limits::{mcp::MAX_FILTER_VALUES, schema::MAX_VALUE_BYTES};
+use serde_json::Value;
+
+fn comparison_sql(comparison: &Comparison, attributes: &AttributeSchema) -> Result<String> {
+    let Comparison { field, op, value } = comparison;
+    let kind = match field.as_str() {
+        "source_id" | "root_id" | "source_type" | "project" | "author" => AttributeType::String,
+        "updated_at" => AttributeType::Datetime,
+        // The connector labels `key=value`: a set test and nothing else.
+        "attributes" if *op == Op::In => {
+            return Ok(format!(
+                "array_has_any(attributes,[{}])",
+                literals(AttributeType::String, value)?
+            ));
+        }
+        // An attribute name is a plain column name, and only a declared one gets here.
+        name => *attributes.get(name).ok_or(InvalidArgument)?,
+    };
+    if value.is_null() {
+        return match op {
+            Op::Eq => Ok(format!("{field} IS NULL")),
+            Op::Ne => Ok(format!("{field} IS NOT NULL")),
+            _ => Err(InvalidArgument),
+        };
+    }
+    let symbol = match op {
+        Op::In => return Ok(format!("{field} IN ({})", literals(kind, value)?)),
+        Op::NotIn => return Ok(format!("{field} NOT IN ({})", literals(kind, value)?)),
+        Op::Eq => "=",
+        Op::Ne => "<>",
+        Op::Lt => "<",
+        Op::Lte => "<=",
+        Op::Gt => ">",
+        Op::Gte => ">=",
+    };
+    Ok(format!("{field} {symbol} {}", literal(kind, value)?))
+}
+
+/// The values of `in` and `not_in`: one or more literals of `kind`.
+fn literals(kind: AttributeType, values: &Value) -> Result<String> {
+    let values = values
+        .as_array()
+        .filter(|values| (1..=MAX_FILTER_VALUES).contains(&values.len()))
+        .ok_or(InvalidArgument)?;
+    Ok(values
+        .iter()
+        .map(|value| literal(kind, value))
+        .collect::<Result<Vec<_>>>()?
+        .join(","))
+}
+
+fn literal(kind: AttributeType, value: &Value) -> Result<String> {
+    match (kind, value) {
+        (AttributeType::String, Value::String(text)) if text.len() <= MAX_VALUE_BYTES => {
+            Ok(sql(text))
+        }
+        (AttributeType::Int, Value::Number(number)) => number
+            .as_i64()
+            .map(|number| number.to_string())
+            .ok_or(InvalidArgument),
+        (AttributeType::Float, Value::Number(number)) => number
+            .as_f64()
+            .map(|number| format!("{number:?}"))
+            .ok_or(InvalidArgument),
+        (AttributeType::Bool, Value::Bool(flag)) => Ok(flag.to_string()),
+        (AttributeType::Datetime, Value::String(text)) if text.len() <= MAX_VALUE_BYTES => {
+            let time = DateTime::parse_from_rfc3339(text).map_err(|_| InvalidArgument)?;
+            Ok(format!(
+                "timestamp '{}'",
+                time.with_timezone(&Utc).format("%Y-%m-%d %H:%M:%S%.6f")
+            ))
+        }
+        _ => Err(InvalidArgument),
+    }
+}
 
 impl PreparedReader {
     pub(crate) fn metadata(&self, telemetry: Telemetry) -> ResponseMetadata {
@@ -78,60 +155,31 @@ impl PreparedReader {
             .with_row_id();
         Ok(scan)
     }
+    /// The SQL of a filter tree. Every comparison names a built-in field or an
+    /// attribute of the namespace and holds values of that field's type, or the
+    /// request is `invalid_argument`. A comparison with a missing (null) value
+    /// is never true, `ne` and `not_in` included, and `not` keeps it that way:
+    /// SQL three-valued logic, which Lance's scalar indexes follow.
+    pub(crate) fn filter_sql(filter: &Filter, attributes: &AttributeSchema) -> Result<String> {
+        let joined = |nodes: &[Filter], keyword: &str| -> Result<String> {
+            let parts = nodes
+                .iter()
+                .map(|node| Self::filter_sql(node, attributes).map(|sql| format!("({sql})")))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(parts.join(keyword))
+        };
+        match filter {
+            Filter::And { and } => joined(and, " AND "),
+            Filter::Or { or } => joined(or, " OR "),
+            Filter::Not { not } => Ok(format!("NOT ({})", Self::filter_sql(not, attributes)?)),
+            Filter::Compare(comparison) => comparison_sql(comparison, attributes),
+        }
+    }
     pub(crate) async fn apply_filters(&mut self, args: &SearchInput) -> Result<()> {
-        let mut terms = Vec::new();
-        for (column, values) in [
-            ("source_id", &args.sources),
-            ("source_type", &args.source_types),
-            ("project", &args.projects),
-            ("author", &args.authors),
-        ] {
-            if let Some(values) = values {
-                terms.push(format!(
-                    "{column} IN ({})",
-                    values.iter().map(|v| sql(v)).collect::<Vec<_>>().join(",")
-                ));
-            }
-        }
-        for (op, bound) in [(">", args.updated_after), ("<", args.updated_before)] {
-            if let Some(bound) = bound {
-                terms.push(format!(
-                    "updated_at {op} timestamp '{}'",
-                    bound.0.format("%Y-%m-%d %H:%M:%S%.6f")
-                ));
-            }
-        }
-        if let Some(excluded) = &args.exclude {
-            terms.push(format!(
-                "NOT ({})",
-                excluded
-                    .iter()
-                    .map(|k| format!(
-                        "(source_id={} AND root_id={})",
-                        sql(&k.source_id),
-                        sql(&k.root_id)
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(" OR ")
-            ));
-        }
-        if let Some(attributes) = &args.attributes {
-            for attribute in attributes {
-                terms.push(format!(
-                    "array_has_any(attributes,[{}])",
-                    attribute
-                        .values
-                        .iter()
-                        .map(|v| sql(&format!("{}={v}", attribute.key)))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ));
-            }
-        }
-        if terms.is_empty() {
+        let Some(tree) = args.filter_tree() else {
             return Ok(());
-        }
-        let filter = terms.join(" AND ");
+        };
+        let filter = Self::filter_sql(&tree, &self.manifest.attributes)?;
         let predicate = format!("({}) AND ({filter})", self.admission_predicate()?);
         #[cfg(test)]
         self.test_hooks.filter_scan.wait_once().await;

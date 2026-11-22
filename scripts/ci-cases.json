@@ -255,6 +255,22 @@
         "tier": "quick",
         "seconds": 0.1
       },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::the_search_arguments_select_the_rows_of_their_former_sql": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::an_or_is_answered_from_indexes_only_when_every_side_is_indexed": {
+        "tier": "quick",
+        "seconds": 0.3
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::a_missing_attribute_matches_only_a_null_test": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::a_value_of_the_wrong_type_or_field_is_invalid_argument": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/search::tests::lexical_request_mask_precedes_topk_and_preserves_sql_scores": {
         "tier": "quick",
         "seconds": 0.027
@@ -1281,6 +1297,10 @@
         "seconds": 0.004
       },
       "full:fyrr-core:test:mcp/schemas_state_the_effective_limits": {
+        "tier": "quick",
+        "seconds": 0.005
+      },
+      "full:fyrr-core:test:mcp/the_filter_arguments_compile_to_one_tree": {
         "tier": "quick",
         "seconds": 0.005
       },

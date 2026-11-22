@@ -4,9 +4,11 @@
 //! admitted row, and it must still refuse a row outside the admission.
 use super::*;
 use arrow_array::builder::{ListBuilder, StringBuilder};
-use arrow_array::{RecordBatchIterator, TimestampMicrosecondArray};
+use arrow_array::{BooleanArray, Int64Array, RecordBatchIterator, TimestampMicrosecondArray};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use fyrr_core::attributes::AttributeType;
 use lance::dataset::{WriteMode, WriteParams};
+use serde_json::json;
 
 const INDEXED_ROWS: usize = 120;
 const TAIL_ROWS: usize = 40;
@@ -39,7 +41,45 @@ fn schema() -> Arc<Schema> {
             true,
         ),
         Field::new("attributes", list, true),
+        // Typed attributes, as the writer declares them: nullable columns.
+        Field::new("rank", DataType::Int64, true),
+        Field::new("flag", DataType::Boolean, true),
+        Field::new(
+            "seen",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        ),
     ]))
+}
+
+/// The typed attributes of the fixture; `ratio` has no column and only
+/// serves the compiler.
+fn attributes() -> AttributeSchema {
+    AttributeSchema::from([
+        ("rank".to_owned(), AttributeType::Int),
+        ("flag".to_owned(), AttributeType::Bool),
+        ("seen".to_owned(), AttributeType::Datetime),
+        ("ratio".to_owned(), AttributeType::Float),
+    ])
+}
+
+/// Null for every fourth row, so that a missing value is common.
+fn rank(row: usize) -> Option<i64> {
+    (row % 4 != 0).then_some((row % 7) as i64)
+}
+
+fn flag(row: usize) -> Option<bool> {
+    (row % 3 != 0).then_some(row % 2 == 0)
+}
+
+fn seen(row: usize) -> Option<i64> {
+    (row % 5 != 0).then_some(EPOCH + row as i64 * HOUR)
+}
+
+/// The SQL the reader compiles a filter tree to, for the fixture's attributes.
+fn compiled(tree: serde_json::Value) -> String {
+    let tree: Filter = serde_json::from_value(tree).unwrap();
+    PreparedReader::filter_sql(&tree, &attributes()).unwrap()
 }
 
 fn rows(range: std::ops::Range<usize>) -> RecordBatch {
@@ -88,6 +128,16 @@ fn rows(range: std::ops::Range<usize>) -> RecordBatch {
                     .collect::<Vec<_>>(),
             )),
             Arc::new(strings_list(&attributes)),
+            Arc::new(Int64Array::from(
+                range.clone().map(rank).collect::<Vec<_>>(),
+            )),
+            Arc::new(BooleanArray::from(
+                range.clone().map(flag).collect::<Vec<_>>(),
+            )),
+            Arc::new(
+                TimestampMicrosecondArray::from(range.clone().map(seen).collect::<Vec<_>>())
+                    .with_timezone("UTC"),
+            ),
         ],
     )
     .unwrap()
@@ -122,6 +172,9 @@ async fn fixture(name: &str, tail: bool) -> (Dataset, std::path::PathBuf) {
         ("author", "author_idx", IndexType::Bitmap),
         ("updated_at", "updated_at_idx", IndexType::BTree),
         ("attributes", "attributes_idx", IndexType::LabelList),
+        ("rank", "attr_rank_idx", IndexType::BTree),
+        ("flag", "attr_flag_idx", IndexType::Bitmap),
+        ("seen", "attr_seen_idx", IndexType::BTree),
     ] {
         dataset
             .create_index(
@@ -205,7 +258,10 @@ fn filters() -> Vec<(&'static str, String)> {
             .format("%Y-%m-%d %H:%M:%S%.6f")
             .to_string()
     };
-    vec![
+    let seen_after = chrono::DateTime::from_timestamp_micros(EPOCH + 60 * HOUR)
+        .unwrap()
+        .to_rfc3339();
+    let mut filters: Vec<(&'static str, String)> = vec![
         ("source", "source_id IN ('s0')".into()),
         ("author", "author IN ('a1','a4')".into()),
         (
@@ -226,7 +282,63 @@ fn filters() -> Vec<(&'static str, String)> {
         ),
         ("nothing", "author IN ('nobody')".into()),
         ("everything", "source_id IN ('s0','s1','s2')".into()),
-    ]
+    ];
+    // Every operator, over indexed and unindexed fields and over missing values.
+    let on_rank =
+        |op: &str, value: serde_json::Value| json!({"field":"rank","op":op,"value":value});
+    let on_flag = |op: &str, value: bool| json!({"field":"flag","op":op,"value":value});
+    for (name, tree) in [
+        ("eq", on_rank("eq", json!(3))),
+        ("ne", on_rank("ne", json!(3))),
+        ("in", on_rank("in", json!([1, 2]))),
+        ("not_in", on_rank("not_in", json!([1, 2]))),
+        ("lt", on_rank("lt", json!(3))),
+        ("lte", on_rank("lte", json!(3))),
+        ("gt", on_rank("gt", json!(3))),
+        ("gte", on_rank("gte", json!(3))),
+        ("null", on_rank("eq", json!(null))),
+        ("not_null", on_rank("ne", json!(null))),
+        ("bool", on_flag("eq", true)),
+        ("bool_ne", on_flag("ne", true)),
+        ("not", json!({"not": on_rank("gt", json!(4))})),
+        ("not_eq", json!({"not": on_rank("eq", json!(3))})),
+        ("not_not", json!({"not": {"not": on_rank("lt", json!(3))}})),
+        (
+            "datetime",
+            json!({"field":"seen","op":"gt","value":seen_after}),
+        ),
+        (
+            "datetime_null",
+            json!({"field":"seen","op":"eq","value":null}),
+        ),
+        (
+            "datetime_in",
+            json!({"field":"seen","op":"not_in","value":[seen_after]}),
+        ),
+        (
+            "or_indexed",
+            json!({"or": [on_rank("eq", json!(1)), on_flag("eq", true)]}),
+        ),
+        (
+            "or_unindexed",
+            json!({"or": [on_rank("eq", json!(1)), {"field":"root_id","op":"eq","value":"root-005"}]}),
+        ),
+        (
+            "not_or",
+            json!({"not": {"or": [on_rank("gt", json!(4)), on_flag("eq", false)]}}),
+        ),
+        (
+            "nested",
+            json!({"and": [
+                {"or": [{"field":"author","op":"in","value":["a1","a2"]}, on_flag("eq", true)]},
+                {"not": {"and": [on_rank("lte", json!(2)), {"field":"project","op":"ne","value":"p3"}]}},
+                {"field":"author","op":"ne","value":null},
+            ]}),
+        ),
+    ] {
+        filters.push((name, compiled(tree)));
+    }
+    filters
 }
 
 /// The admission `rebuild_admission` builds: rows of the predicate scan,
@@ -419,5 +531,286 @@ async fn selection_refuses_a_row_outside_the_admission() {
             .unwrap_err(),
         AuthorizationUnavailable
     );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The eight search arguments compile to the tree, and the tree to the rows
+/// their former SQL selected.
+#[tokio::test]
+async fn the_search_arguments_select_the_rows_of_their_former_sql() {
+    let (dataset, root) = fixture("arguments", true).await;
+    let (_, admission_predicate, hidden) = subjects().remove(0);
+    let eligible = admission(&dataset, &admission_predicate, &hidden).await;
+    let at = |hours: i64| {
+        chrono::DateTime::from_timestamp_micros(EPOCH + hours * HOUR)
+            .unwrap()
+            .to_rfc3339()
+    };
+    let former = filters();
+    for (name, arguments) in [
+        ("source", json!({"sources": ["s0"]})),
+        ("author", json!({"authors": ["a1", "a4"]})),
+        (
+            "time",
+            json!({"updated_after": at(30), "updated_before": at(100)}),
+        ),
+        (
+            "label",
+            json!({"attributes": [{"key":"team","values":["blue"]}]}),
+        ),
+        (
+            "combined",
+            json!({
+                "projects": ["p1", "p2"],
+                "authors": ["a1", "a2"],
+                "attributes": [{"key":"team","values":["red"]}],
+                "exclude": [{"source_id":"s1","root_id":"root-001"}],
+            }),
+        ),
+    ] {
+        let mut arguments = arguments;
+        arguments["query"] = json!("x");
+        let arguments: SearchInput = serde_json::from_value(arguments).unwrap();
+        let tree = arguments.filter_tree().unwrap();
+        let sql = PreparedReader::filter_sql(&tree, &attributes()).unwrap();
+        let select = |filter: &str| {
+            let predicate = format!("({admission_predicate}) AND ({filter})");
+            let eligible = &eligible;
+            let dataset = &dataset;
+            async move {
+                rows_of(
+                    &PreparedReader::filter_rows(dataset, &predicate, eligible)
+                        .await
+                        .unwrap(),
+                )
+            }
+        };
+        let old = former.iter().find(|(old, _)| *old == name).unwrap();
+        let selected = select(&sql).await;
+        assert!(!selected.is_empty(), "{name}");
+        assert_eq!(selected, select(&old.1).await, "{name}: {sql}");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The rows (by their number in `rows`) that a filter selects.
+async fn selected_numbers(dataset: &Dataset, filter: &str) -> BTreeSet<usize> {
+    let mut scan = dataset.scan();
+    scan.project(&["root_id"]).unwrap();
+    scan.filter(filter).unwrap();
+    let batch = scan.try_into_batch().await.unwrap();
+    strings(&batch, "root_id")
+        .unwrap()
+        .iter()
+        .map(|root| root.unwrap()["root-".len()..].parse().unwrap())
+        .collect()
+}
+
+/// A missing attribute matches `eq null` and `ne null` only; `ne`, `not_in`
+/// and `not` of a comparison do not turn it into a match.
+#[tokio::test]
+async fn a_missing_attribute_matches_only_a_null_test() {
+    let (dataset, root) = fixture("nulls", true).await;
+    let live = |row: &usize| !(row % 5 == 4 && row % 4 == 1);
+    let all: Vec<usize> = (0..INDEXED_ROWS + TAIL_ROWS).filter(live).collect();
+    let on_rank =
+        |op: &str, value: serde_json::Value| json!({"field":"rank","op":op,"value":value});
+    let on_flag = |op: &str, value: bool| json!({"field":"flag","op":op,"value":value});
+    let after = EPOCH + 60 * HOUR;
+    let after_text = chrono::DateTime::from_timestamp_micros(after)
+        .unwrap()
+        .to_rfc3339();
+    let cases: Vec<(&str, serde_json::Value, Box<dyn Fn(usize) -> bool>)> = vec![
+        (
+            "eq null",
+            on_rank("eq", json!(null)),
+            Box::new(|r| rank(r).is_none()),
+        ),
+        (
+            "ne null",
+            on_rank("ne", json!(null)),
+            Box::new(|r| rank(r).is_some()),
+        ),
+        (
+            "eq",
+            on_rank("eq", json!(3)),
+            Box::new(|r| rank(r) == Some(3)),
+        ),
+        (
+            "ne",
+            on_rank("ne", json!(3)),
+            Box::new(|r| rank(r).is_some_and(|v| v != 3)),
+        ),
+        (
+            "not_in",
+            on_rank("not_in", json!([1, 2])),
+            Box::new(|r| rank(r).is_some_and(|v| v != 1 && v != 2)),
+        ),
+        (
+            "not eq",
+            json!({"not": on_rank("eq", json!(3))}),
+            Box::new(|r| rank(r).is_some_and(|v| v != 3)),
+        ),
+        (
+            "not lt",
+            json!({"not": on_rank("lt", json!(3))}),
+            Box::new(|r| rank(r).is_some_and(|v| v >= 3)),
+        ),
+        (
+            "not or",
+            json!({"not": {"or": [on_rank("gt", json!(4)), on_flag("eq", false)]}}),
+            Box::new(|r| rank(r).is_some_and(|v| v <= 4) && flag(r) == Some(true)),
+        ),
+        (
+            "or null",
+            json!({"or": [on_rank("eq", json!(null)), on_rank("eq", json!(6))]}),
+            Box::new(|r| rank(r).is_none() || rank(r) == Some(6)),
+        ),
+        (
+            "bool ne",
+            on_flag("ne", true),
+            Box::new(|r| flag(r) == Some(false)),
+        ),
+        (
+            "datetime gt",
+            json!({"field":"seen","op":"gt","value":after_text}),
+            Box::new(move |r| seen(r).is_some_and(|v| v > after)),
+        ),
+        (
+            "datetime null",
+            json!({"field":"seen","op":"eq","value":null}),
+            Box::new(|r| seen(r).is_none()),
+        ),
+    ];
+    for (name, tree, matches) in &cases {
+        let sql = compiled(tree.clone());
+        let expected: BTreeSet<usize> = all.iter().copied().filter(|r| matches(*r)).collect();
+        assert!(!expected.is_empty(), "{name}");
+        assert_eq!(
+            selected_numbers(&dataset, &sql).await,
+            expected,
+            "{name}: {sql}"
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_value_of_the_wrong_type_or_field_is_invalid_argument() {
+    let compile = |tree: serde_json::Value| {
+        PreparedReader::filter_sql(&serde_json::from_value(tree).unwrap(), &attributes())
+    };
+    let on = |field: &str, op: &str, value: serde_json::Value| json!({"field":field,"op":op,"value":value});
+    for (field, op, value) in [
+        ("nope", "eq", json!(1)),
+        ("vector", "eq", json!(1)),
+        ("rank", "eq", json!("3")),
+        ("rank", "eq", json!(3.5)),
+        ("rank", "eq", json!(true)),
+        ("rank", "in", json!([])),
+        ("rank", "in", json!(3)),
+        ("rank", "in", json!([1, "2"])),
+        ("rank", "in", json!([null])),
+        ("rank", "in", json!((0..65).collect::<Vec<_>>())),
+        ("rank", "lt", json!(null)),
+        ("rank", "not_in", json!(null)),
+        ("flag", "eq", json!(1)),
+        ("seen", "eq", json!("yesterday")),
+        ("seen", "eq", json!(5)),
+        ("ratio", "eq", json!("1.5")),
+        ("author", "eq", json!(5)),
+        ("author", "eq", json!("x".repeat(4097))),
+        ("updated_at", "gt", json!("2026-13-01T00:00:00Z")),
+        ("attributes", "eq", json!("team=blue")),
+        ("attributes", "in", json!([1])),
+        ("attributes", "in", json!(null)),
+    ] {
+        assert_eq!(
+            compile(on(field, op, value.clone())),
+            Err(InvalidArgument),
+            "{field} {op} {value}"
+        );
+    }
+    // A bad value anywhere in the tree fails the whole filter.
+    assert_eq!(
+        compile(json!({"not": {"or": [on("rank", "eq", json!(1)), on("rank", "eq", json!("x"))]}})),
+        Err(InvalidArgument)
+    );
+    // Values the types accept, and the SQL they become.
+    for (field, op, value, sql) in [
+        ("rank", "eq", json!(-3), "rank = -3"),
+        ("ratio", "gt", json!(2), "ratio > 2.0"),
+        ("ratio", "lte", json!(0.5), "ratio <= 0.5"),
+        ("flag", "eq", json!(false), "flag = false"),
+        (
+            "author",
+            "not_in",
+            json!(["it's"]),
+            "author NOT IN ('it''s')",
+        ),
+        ("author", "ne", json!(null), "author IS NOT NULL"),
+        (
+            "seen",
+            "gte",
+            json!("2026-01-02T04:04:05.5+01:00"),
+            "seen >= timestamp '2026-01-02 03:04:05.500000'",
+        ),
+        (
+            "attributes",
+            "in",
+            json!(["a=b", "c=d"]),
+            "array_has_any(attributes,['a=b','c=d'])",
+        ),
+    ] {
+        assert_eq!(compile(on(field, op, value)).as_deref(), Ok(sql));
+    }
+}
+
+/// The shapes `docs/mcp-tools.md` says are answered from indexes alone: a
+/// plan without a refine step reads no row. An `or` needs every side indexed.
+#[tokio::test]
+async fn an_or_is_answered_from_indexes_only_when_every_side_is_indexed() {
+    let (dataset, root) = fixture("plan-or", false).await;
+    let (_, admission_predicate, _) = subjects().remove(0);
+    let on = |field: &str, op: &str, value: serde_json::Value| json!({"field":field,"op":op,"value":value});
+    for (name, tree, from_indexes) in [
+        (
+            "or of indexed fields",
+            json!({"or": [on("author", "eq", json!("a1")), on("rank", "gt", json!(3))]}),
+            true,
+        ),
+        (
+            "or with an unindexed field",
+            json!({"or": [on("author", "eq", json!("a1")), on("root_id", "eq", json!("root-005"))]}),
+            false,
+        ),
+        (
+            "and with an unindexed field",
+            json!({"and": [on("author", "eq", json!("a1")), on("root_id", "eq", json!("root-005"))]}),
+            false,
+        ),
+        (
+            "not of an indexed field",
+            json!({"not": on("author", "eq", json!("a1"))}),
+            true,
+        ),
+        (
+            "and of indexed fields",
+            json!({"and": [on("author", "ne", json!("a1")), on("flag", "eq", json!(true))]}),
+            true,
+        ),
+    ] {
+        let predicate = format!("({admission_predicate}) AND ({})", compiled(tree));
+        let plan = PreparedReader::filter_scan(&dataset, &predicate)
+            .unwrap()
+            .explain_plan(true)
+            .await
+            .unwrap();
+        assert_eq!(
+            plan.contains("refine_filter=--"),
+            from_indexes,
+            "{name}: {plan}"
+        );
+    }
     std::fs::remove_dir_all(root).unwrap();
 }

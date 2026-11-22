@@ -36,6 +36,8 @@ pub mod mcp {
     pub const MAX_EXCLUSIONS: usize = 100;
     pub const MAX_FILTER_VALUES: usize = 64;
     pub const MAX_ATTRIBUTE_FILTERS: usize = 16;
+    /// Nodes of a `filter` tree: every `and`, `or`, `not` and comparison counts.
+    pub const MAX_FILTER_NODES: usize = 64;
     pub const DEFAULT_DEADLINE_MS: u32 = 10_000;
     pub const MAX_DEADLINE_MS: u32 = 300_000;
     pub const FETCH_MAX_DOCUMENTS: u32 = 5;
