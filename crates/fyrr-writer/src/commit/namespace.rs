@@ -327,6 +327,14 @@ pub async fn delete(
 /// Debris has no head to hold a lease with: its fence names no incarnation, so
 /// that the deletion can be run again like any other.
 async fn fence_debris(config: &Config, store: &dyn ObjectStore, root: &Path) -> Result<()> {
+    // A fence that cannot be deleted conditionally would never go.
+    match fyrr_reader::storage::conditional_delete_supported(config).await {
+        Ok(()) => {}
+        Err(object_store::Error::NotSupported { .. }) => {
+            return Err(WriterError::ConditionalDeleteUnsupported);
+        }
+        Err(_) => return Err(WriterError::StorageUnavailable),
+    }
     let mut holder = [0; 16];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut holder)
         .map_err(|_| WriterError::RuntimeUnavailable)?;

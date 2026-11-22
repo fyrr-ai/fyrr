@@ -80,12 +80,11 @@ async fn delete(
     .await
 }
 
-pub(super) async fn delete_file(
+/// Proves that the server honors `If-Match` on DELETE.
+pub(super) async fn probe(
     store: &AmazonS3,
     client: &HttpClient,
     root: &Path,
-    file: &str,
-    tag: &str,
 ) -> object_store::Result<()> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nonce = format!(
@@ -124,6 +123,17 @@ pub(super) async fn delete_file(
             source: "S3 conditional DELETE capability probe must return HTTP 412".into(),
         });
     }
+    Ok(())
+}
+
+pub(super) async fn delete_file(
+    store: &AmazonS3,
+    client: &HttpClient,
+    root: &Path,
+    file: &str,
+    tag: &str,
+) -> object_store::Result<()> {
+    probe(store, client, root).await?;
     let path = file.split('/').fold(root.clone(), Path::join);
     match delete(store, client, &path, tag).await? {
         200..=299 => Ok(()),

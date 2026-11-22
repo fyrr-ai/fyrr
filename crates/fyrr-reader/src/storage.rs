@@ -454,6 +454,26 @@ fn s3_namespace_store(
     Ok((store, root, client))
 }
 
+/// Whether the namespace's store honors conditional deletion, checked without
+/// deleting anything. A local store always does.
+pub async fn conditional_delete_supported(config: &Config) -> object_store::Result<()> {
+    match config.storage.backend() {
+        Some(StorageBackend::Local { .. }) => Ok(()),
+        Some(StorageBackend::S3 { .. }) => {
+            let (store, root, client) =
+                s3_namespace_store(config).map_err(|_| object_store::Error::Generic {
+                    store: "fyrr namespace head",
+                    source: "conditional head deletion failed".into(),
+                })?;
+            conditional::probe(&store, &client, &root).await
+        }
+        None => Err(object_store::Error::Generic {
+            store: "fyrr namespace head",
+            source: "conditional head deletion failed".into(),
+        }),
+    }
+}
+
 /// Delete only the current object `file` of the namespace (a path below its
 /// root: `head.json`, the deletion fence or a cursor) matching the holder's CAS token. S3 deletes the current key
 /// without versionId so an older object cannot revive.

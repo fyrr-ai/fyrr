@@ -152,7 +152,9 @@ command checks each saved object against storage before it deletes anything:
 `fyrr --config fyrr-old.toml writer namespace delete --export EXPORT_DIR`
 unpublishes the old namespace and then deletes every object under its prefix.
 Without an export, `--delete-data NAME` with the namespace name does the same.
-Deletion cannot be undone. Stop every writer of the namespace first: the
+Deletion cannot be undone. Run at most one `namespace create` or `delete` for a
+namespace at a time; concurrent administration commands are not supported.
+Stop every writer of the namespace first: the
 command waits `writer.commit.lease_ttl` for leases to expire, twice. It removes
 current objects only, so a versioned S3 bucket needs a lifecycle rule for
 noncurrent versions. If it stops part way, run the same command again
