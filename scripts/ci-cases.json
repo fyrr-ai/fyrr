@@ -95,6 +95,22 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/http::place_tests::a_place_is_made_by_closing_an_idle_namespace_only": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/http::place_tests::a_slot_takes_its_mirror_with_it": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/http::place_tests::a_process_owns_a_directory_for_the_mirrors_of_path_namespaces": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/rerank::tests::clients_that_share_a_counter_share_the_limit": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/http::response_memory_tests::response_frame_keeps_claim_after_body_drop": {
         "tier": "quick",
         "seconds": 0.0
@@ -254,6 +270,22 @@
       "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::selection_refuses_a_row_outside_the_admission": {
         "tier": "quick",
         "seconds": 0.1
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::the_search_arguments_select_the_rows_of_their_former_sql": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::an_or_is_answered_from_indexes_only_when_every_side_is_indexed": {
+        "tier": "quick",
+        "seconds": 0.3
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::a_missing_attribute_matches_only_a_null_test": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::a_value_of_the_wrong_type_or_field_is_invalid_argument": {
+        "tier": "quick",
+        "seconds": 0.0
       },
       "full:fyrr-reader:lib:fyrr_reader/search::tests::lexical_request_mask_precedes_topk_and_preserves_sql_scores": {
         "tier": "quick",
@@ -1284,6 +1316,10 @@
         "tier": "quick",
         "seconds": 0.005
       },
+      "full:fyrr-core:test:mcp/the_filter_arguments_compile_to_one_tree": {
+        "tier": "quick",
+        "seconds": 0.005
+      },
       "full:fyrr-core:test:mcp/tools_have_names_annotations_and_version": {
         "tier": "quick",
         "seconds": 0.012
@@ -1848,6 +1884,10 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_largest_body_stays_under_the_worker_memory_limit_on_storage": {
         "tier": "full",
         "seconds": 300
+      },
+      "full:fyrr:test:dense_path/api_keys::a_reader_serves_the_namespace_its_path_names": {
+        "tier": "quick",
+        "seconds": 25.0
       }
     }
   },
@@ -1909,6 +1949,10 @@
       "full:fyrr:test:dense_path/maintenance::maintenance_purge_killed_before_its_head_publication_converges_on_storage": {
         "tier": "full",
         "seconds": 36.069
+      },
+      "full:fyrr:test:dense_path/maintenance::maintenance_deletes_history_outside_the_purge_window_on_storage": {
+        "tier": "full",
+        "seconds": 61.0
       },
       "full:fyrr:test:dense_path/maintenance::maintenance_purge_window_and_restore_horizon_on_storage": {
         "tier": "full",

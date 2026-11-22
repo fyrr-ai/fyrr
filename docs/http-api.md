@@ -19,13 +19,37 @@
 | `POST /v1/namespaces/{namespace}/query` | The arguments of [`search`](mcp-tools.md#search) | The `search` result |
 | `POST /v1/namespaces/{namespace}/fetch` | The arguments of [`fetch`](mcp-tools.md#fetch) | The `fetch` result |
 
-`{namespace}` is `namespace.name`. A reader serves one namespace, so any
-other value answers `404`. `list_filters` has no JSON route.
+`{namespace}` names the namespace to read: any namespace under
+`<storage root>/namespaces/`, not only `namespace.name`. The reader opens it
+on the first request, with the settings it is published with, and keeps it
+open for later ones. It keeps at most 8 namespaces open besides the
+configured one, and each holds a place until its scheduler has stopped; a
+request that finds none waits up to 5 seconds, then answers `503 busy`. When
+another namespace needs a place, the one used least recently that is serving no
+request is closed, and if every one is serving, the request answers `503 busy`.
+A request for a closed one opens it again, with a mirror
+filled anew: closing deletes the mirror of that namespace, so only the open
+ones have one. The mirrors are kept in a directory of the process next to the
+configured mirror, `<reader.mirror_path>.paths`, so opening a namespace needs
+write access to the parent of `reader.mirror_path`; without it such a request
+answers `503 storage_unavailable` and the configured namespace is served as
+before. The 8 share the reader's `reader.memory_max_bytes` with the
+configured namespace, and each gets an eighth of `reader.mirror_max_bytes` and
+of the 128 MiB subject cache the configured namespace has, so together they add
+one more mirror and cache budget of the configured size. Embedding and rerank
+spend limits are per process: every namespace charges the same counters.
+`/mcp`, `/readyz` and `/admin/refresh` keep serving the configured namespace
+alone. `list_filters` has no JSON route.
 
 Both routes, like `/mcp`, need the `read` role of an
 [API key](identity.md#identityapi_keys); users signed in through OIDC hold
-`read` only. A key without the role, or limited by `namespace_prefix` to other
-namespaces, answers `403 forbidden`.
+`read` only. Other namespaces than the configured one are for API keys: an OIDC
+user reads the configured namespace through the path and answers `503
+authorization_unavailable` for any other. An API key opens a namespace where
+its role and `namespace_prefix` in the published keys allow it, and reads there
+what that namespace's identity binds it to (declare the key in the
+configuration of every namespace where it reads). A key without the role, or
+limited by `namespace_prefix` to other namespaces, answers `403 forbidden`.
 
 ```sh
 curl https://fyrr.example.com/v1/namespaces/main/query \
@@ -42,10 +66,22 @@ clamped. A `200` body is the tool's `structuredContent`, with the same
 is cancelled like a cancelled MCP call.
 
 A request is checked in this order: `Host` and `Origin`, the
-[limits](#limits), the bearer token and the caller's rate, the namespace,
-the arguments, then the scheduler and the permission checks that every
-tool call passes ([how](architecture.md#authorization)). `deadline_ms`
-counts from arrival, as for MCP.
+[limits](#limits), the bearer token, the role and `namespace_prefix` of an
+API key, the caller's rate (counted by the key's or the user's own ID, not per
+namespace), the shape of the namespace name, the namespace, the arguments, then the scheduler and the permission checks that every
+tool call passes ([how](architecture.md#authorization)). Nothing of the
+namespace is read, and none is opened, before the key's role and prefix and
+the caller's rate have admitted the caller, so a caller that may not read it
+is answered alike whether it exists or not. `deadline_ms` counts from arrival,
+as for MCP.
+
+A namespace that does not exist, or has no content yet, is answered as one
+whose identity does not bind the caller: `401 unauthorized` to an API key and
+`503 authorization_unavailable` to an OIDC user. Finding that out costs one
+read of `head.json`; nothing is kept for the name. A key whose prefix allows a
+namespace can tell by the time the answer takes whether it exists. A name that is not a namespace name (lowercase letters,
+digits and `-`, at most 63 characters, not starting with `-`) answers `404
+invalid_argument`.
 
 ## Errors
 
@@ -54,7 +90,7 @@ statuses, and the boundary adds `forbidden`. The body is `{"error":"<code>"}` an
 
 | Code | Status | When |
 | --- | --- | --- |
-| `invalid_argument` | `400` | The body or its arguments are invalid. `404` when `{namespace}` is not the namespace the reader serves. |
+| `invalid_argument` | `400` | The body or its arguments are invalid. `404` when `{namespace}` is not a namespace name. |
 | `authorization_unavailable` | `503` | The caller's identity or policy cannot be decided. |
 | `storage_unavailable` | `503` | Storage could not be read. |
 | `incompatible_index` | `503` | The published index does not match this reader. |

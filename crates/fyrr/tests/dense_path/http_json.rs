@@ -92,31 +92,26 @@ async fn identity_http_json_routes_share_the_mcp_gates_on_storage() {
         405
     );
 
-    // Only the configured namespace exists; an empty one is just another.
+    // An empty name is no namespace. A namespace that does not exist is
+    // refused as the one a caller is not bound in, whatever the route.
     refusal(
         post(&reader, &tokens[0], "/v1/namespaces//query", &search).await,
         404,
         "invalid_argument",
     )
     .await;
-    refusal(
-        post(&reader, &tokens[0], "/v1/namespaces/other/query", &search).await,
-        404,
-        "invalid_argument",
-    )
-    .await;
-    refusal(
-        post(
-            &reader,
-            &tokens[0],
-            "/v1/namespaces/other/fetch",
-            &json!({"cursor":"x"}),
+    for (path, body) in [
+        ("/v1/namespaces/other/query", &search),
+        ("/v1/namespaces/other/fetch", &json!({"cursor":"x"})),
+    ] {
+        let missing = refusal(
+            post(&reader, &tokens[0], path, body).await,
+            503,
+            "authorization_unavailable",
         )
-        .await,
-        404,
-        "invalid_argument",
-    )
-    .await;
+        .await;
+        assert_eq!(missing["retry-after"], unavailable["retry-after"], "{path}");
+    }
 
     // The same permission filter as MCP: each caller reads its own document
     // and the output is the tool's own structured result.

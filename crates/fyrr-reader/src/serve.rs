@@ -317,7 +317,7 @@ use mcp::{execute, tool_error};
 use preparation::*;
 pub(crate) use recall::SampleSkip;
 use recall::{SampleResult, SampleWork, recall_telemetry};
-pub(crate) use scheduler::start;
+pub(crate) use scheduler::{start, start_guarded};
 pub(crate) use stdio::serve;
 
 #[cfg(test)]

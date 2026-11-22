@@ -16,7 +16,9 @@ use fyrr_core::directory::DirectorySnapshot;
 use fyrr_core::envelope::PreparedEnvelope;
 use fyrr_core::identity::{ApiKeysArtifact, IdentityArtifact};
 use fyrr_core::provider::ProviderInfo;
-use fyrr_core::publication::{ContentManifest, EnvelopeCheckpoint, PolicyArtifact, ServingHead};
+use fyrr_core::publication::{
+    ContentManifest, EnvelopeCheckpoint, HistoryCut, PolicyArtifact, ServingHead,
+};
 use fyrr_core::{Contract, ContractError, SchemaVersion, parse_contract, write_contract};
 use serde_json::{Value, json};
 
@@ -120,6 +122,7 @@ macro_rules! for_each_contract {
         fixtures += $check::<ServingHead>("serving-head");
         fixtures += $check::<PolicyArtifact>("policy-artifact");
         fixtures += $check::<EnvelopeCheckpoint>("envelope-checkpoint");
+        fixtures += $check::<HistoryCut>("history-cut");
         fixtures += $check::<IdentityArtifact>("identity-artifact");
         fixtures += $check::<ApiKeysArtifact>("api-keys-artifact");
         fixtures += $check::<DirectorySnapshot>("directory-snapshot");

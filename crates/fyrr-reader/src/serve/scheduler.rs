@@ -7,6 +7,14 @@ fn blocking_thread_limit(worker_count: usize, concurrency: usize) -> usize {
 }
 
 pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
+    start_guarded(reader, ()).await
+}
+
+/// `start`, with a `guard` that the scheduler's thread holds until it ends.
+pub(crate) async fn start_guarded<G: Send + 'static>(
+    reader: PreparedReader,
+    guard: G,
+) -> Result<McpService> {
     #[cfg(test)]
     let (sample_events, _) = tokio::sync::broadcast::channel(16);
     #[cfg(test)]
@@ -50,6 +58,8 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
     let template = Some(template);
     let (reload, control) = mpsc::channel::<oneshot::Sender<Result<Value>>>(1);
     std::thread::spawn(move || {
+        // Dropped last: after the runtime and the readers it owned.
+        let _guard = guard;
         // Native scans include CPU decoding on Tokio workers. Cap the pool on
         // large hosts; request admission and generation budgets remain separate.
         let worker_threads =

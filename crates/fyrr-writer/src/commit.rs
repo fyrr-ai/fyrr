@@ -209,7 +209,7 @@ pub(crate) async fn published_evidence(
 /// The checkpoint a manifest names. `None` when maintenance removed it as
 /// superseded: the older manifests then still tell the same. A checkpoint that
 /// is not the one named is an error, never skipped.
-async fn read_checkpoint(
+pub(crate) async fn read_checkpoint(
     store: &dyn ObjectStore,
     root: &Path,
     pointer: &GenerationPointer,
@@ -436,8 +436,11 @@ pub async fn receipt(config: &Config, envelope_id: &str) -> Result<CommitReceipt
     if head.namespace != config.namespace.name {
         return Err(WriterError::PublicationNamespaceInvalid);
     }
-    let mut chain =
-        fyrr_reader::storage::manifest_chain(store, root, head.content.map(|p| p.manifest));
+    let mut chain = fyrr_reader::storage::manifest_chain(
+        store,
+        root,
+        head.content.as_ref().map(|p| p.manifest.clone()),
+    );
     while let Some(manifest) = chain.try_next().await? {
         if manifest.namespace != config.namespace.name {
             return Err(WriterError::PublicationNamespaceInvalid);
@@ -449,6 +452,19 @@ pub async fn receipt(config: &Config, envelope_id: &str) -> Result<CommitReceipt
                 envelope_ids: manifest.envelope_ids,
             });
         }
+    }
+    // Maintenance deleted the publications outside the purge window; the
+    // evidence still tells that the envelope was applied, not by which one.
+    if published_evidence(config, &head)
+        .await?
+        .applied
+        .contains(envelope_id)
+    {
+        return Ok(CommitReceipt {
+            lance_version: 0,
+            publication_id: None,
+            envelope_ids: vec![envelope_id.to_owned()],
+        });
     }
     Err(WriterError::ReceiptUnpublished)
 }

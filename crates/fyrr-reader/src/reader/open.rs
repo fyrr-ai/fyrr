@@ -2,7 +2,21 @@ use super::*;
 
 impl PreparedReader {
     pub async fn open(config: &Config) -> Result<Self> {
-        let reader = Self::open_shared(config, None, PreparationReservation::pool(config)?).await?;
+        let budget = PreparationReservation::pool(config)?;
+        Self::open_in(config, budget, AUTHORIZATION_CACHE_MAX_BYTES).await
+    }
+    /// Opens a namespace inside the memory envelope of a reader that is already
+    /// running, with `authorization_bytes` for its subject cache.
+    pub(crate) async fn open_in(
+        config: &Config,
+        budget: MemoryPool,
+        authorization_bytes: usize,
+    ) -> Result<Self> {
+        let mut reader = Self::open_shared(config, None, budget).await?;
+        // Nothing has used the cache yet: an HTTP reader builds no admission at open.
+        reader.admission_cache = Arc::new(std::sync::Mutex::new(
+            AuthorizationCache::with_max_bytes(authorization_bytes),
+        ));
         reader.report_cache_degradation(false);
         Ok(reader)
     }
@@ -104,9 +118,10 @@ impl PreparedReader {
         let query_embeddings = match query_embeddings {
             Some(shared) if shared.serves(&config.embedding) => shared,
             // The first open, or a namespace recreated with another profile.
-            _ => embedding::QueryEmbeddings::new(
+            _ => embedding::QueryEmbeddings::charging(
                 &config.embedding,
                 preparation_budget.permits.clone(),
+                preparation_budget.spent.embedding.clone(),
             )?,
         };
         let mirror = Arc::new(mirror.for_publication(&manifest));
@@ -125,6 +140,15 @@ impl PreparedReader {
             .await?;
         let indexes = verify_indices(&dataset, &manifest, config).await?;
         crate::fts_layout::report(&dataset, &indexes).await;
+        let reranker = config
+            .namespace
+            .rerank
+            .as_ref()
+            .map(|_| {
+                crate::rerank::Reranker::charging(preparation_budget.spent.rerank.clone())
+                    .map(Arc::new)
+            })
+            .transpose()?;
         let mut reader = Self {
             #[cfg(test)]
             test_hooks: Arc::default(),
@@ -157,12 +181,7 @@ impl PreparedReader {
             preparation_budget,
             preparation_reservation,
             query_embeddings,
-            reranker: config
-                .namespace
-                .rerank
-                .as_ref()
-                .map(|_| crate::rerank::Reranker::new().map(Arc::new))
-                .transpose()?,
+            reranker,
             control_store: store,
             control_backend,
             control_root: root,

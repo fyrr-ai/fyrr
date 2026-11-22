@@ -281,6 +281,44 @@ async fn tools_fetch_filters_windows_and_cursors_on_storage() {
             .collect::<BTreeSet<_>>(),
         BTreeSet::from(["r4", "r6"])
     );
+    // The same request as a filter tree, in three shapes, selects the same documents.
+    let range = json!([
+        {"field":"updated_at","op":"gt","value":"2026-09-23T12:00:00Z"},
+        {"field":"updated_at","op":"lt","value":"2026-09-27T00:00:00Z"}
+    ]);
+    let ada = json!({"field":"author","op":"eq","value":"Ada"});
+    let label = |value: &str| json!({"field":"attributes","op":"in","value":[format!("test.label={value}")]});
+    for filter in [
+        json!({"and":[ada,range[0],range[1],{"field":"attributes","op":"in","value":["test.label=label4","test.label=label6"]}]}),
+        json!({"and":[ada,range[0],range[1],{"or":[label("label4"),label("label6")]}]}),
+        json!({"and":[{"not":{"field":"author","op":"ne","value":"Ada"}},range[0],range[1],{"not":{"not":{"or":[label("label4"),label("label6")]}}}]}),
+    ] {
+        let tree = body(client.call(
+            "search",
+            json!({"query":"fixture query","filter":filter,"limit":75}),
+        ));
+        assert_eq!(
+            tree["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|h| h["root_id"].as_str().unwrap())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["r4", "r6"]),
+            "{filter}"
+        );
+    }
+    for filter in [
+        json!({"field":"nope","op":"eq","value":1}),
+        json!({"field":"author","op":"eq","value":5}),
+        json!({"and":[]}),
+        json!({"field":"author","op":"eq","value":"Ada","extra":1}),
+    ] {
+        error(
+            client.call("search", json!({"query":"x","filter":filter})),
+            "invalid_argument",
+        );
+    }
     for filters in [
         json!({"order":"updated_at","projects":["hidden-project"]}),
         json!({"order":"updated_at","authors":["unknown"]}),
