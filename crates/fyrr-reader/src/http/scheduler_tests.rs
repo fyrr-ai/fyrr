@@ -28,17 +28,19 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
     let url = format!("http://{}", listener.local_addr().unwrap());
     config.reader.http.as_mut().unwrap().public_url = format!("{url}/mcp");
     let state = HttpState {
-        namespaces: Arc::new(Namespaces::new(
-            process,
-            budget,
-            api_keys,
-            Arc::new(Served {
-                config: config.clone(),
-                admission: admission.clone(),
-                service: service.clone(),
-            }),
-        )
-        .unwrap()),
+        namespaces: Arc::new(
+            Namespaces::new(
+                process,
+                budget,
+                api_keys,
+                Arc::new(Served {
+                    config: config.clone(),
+                    admission: admission.clone(),
+                    service: service.clone(),
+                }),
+            )
+            .unwrap(),
+        ),
         admission,
         service: service.clone(),
         public: config

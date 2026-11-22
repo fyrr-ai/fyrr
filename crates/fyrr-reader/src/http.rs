@@ -140,9 +140,7 @@ fn own_mirrors(configured: std::path::PathBuf) -> Result<(std::path::PathBuf, st
     let mut root = configured.into_os_string();
     root.push(".paths");
     let root = std::path::PathBuf::from(root);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos());
+    let nanos = fyrr_core::clock::now().timestamp_nanos_opt().unwrap_or(0);
     let own = root.join(format!("{}-{nanos}", std::process::id()));
     MirrorStore::private_directory(&own).map_err(|_| StorageUnavailable)?;
     let lock =
