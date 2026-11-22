@@ -15,7 +15,9 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::attributes::{AttributeIndexes, AttributeSchema, check_indexes, check_schema};
+use crate::attributes::{
+    AttributeIndexes, AttributeSchema, check_indexes, check_schema, has_connector_columns,
+};
 use crate::config::{CompositionSettings, NamespaceConfig, RerankSettings, RetrievalSettings};
 use crate::envelope::{ChunkProfileIdentity, EmbeddingIdentity, FileRef};
 use crate::limits::{check_digest, check_id};
@@ -23,11 +25,12 @@ use crate::version::{Contract, SchemaVersion};
 
 /// The publication contract version (manifest and head) written by this build.
 pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 1);
-/// The version of a manifest that records attribute index options, and of a
-/// policy artifact whose settings do or that sets `read_only`. An older build
-/// would read the attributes and build or expect the default index of each, or
-/// ignore the switch and write, so it must refuse them: it reads only its own
-/// major, and this build reads both. A document without options keeps its
+/// The version of a manifest that records something an older build would
+/// ignore, and of a policy artifact that does: attribute index options, the
+/// typed columns of the metadata fields of connector documents (a build without
+/// them would read nulls), or, for a policy, the `read_only` switch (a build
+/// without it would write). An older build refuses them: it reads only its own
+/// major, and this build reads both. A document with none of them keeps its
 /// version.
 pub const INDEXED_PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
 /// The policy artifact's counterpart of [`INDEXED_PUBLICATION_CONTRACT_VERSION`].
@@ -66,6 +69,13 @@ pub struct NamespaceSettings {
 }
 
 impl NamespaceSettings {
+    /// Whether an older build would misread a namespace with these settings:
+    /// it ignores index options and reads the connector columns as null.
+    pub fn needs_newer_build(&self) -> bool {
+        !self.attribute_indexes.is_empty()
+            || (self.write_api.is_none() && has_connector_columns(&self.attributes))
+    }
+
     /// The bounds a configuration file is held to, so that no stored settings
     /// can fail a build or a search later.
     pub fn validate(&self) -> Result<(), String> {
@@ -136,10 +146,16 @@ pub struct RetiredSource {
 }
 
 impl PolicyArtifact {
+    /// Whether an older build would misread this policy.
+    fn needs_newer_build(&self) -> bool {
+        self.settings.needs_newer_build() || self.read_only
+    }
+
     /// The version to write: the one an older build refuses when the policy
-    /// holds index options or the read-only switch, which it would ignore.
+    /// holds index options, connector columns or the read-only switch, which it
+    /// would ignore.
     pub fn current_version(&self) -> SchemaVersion {
-        if self.settings.attribute_indexes.is_empty() && !self.read_only {
+        if !self.needs_newer_build() {
             <Self as Contract>::VERSION
         } else {
             INDEXED_POLICY_CONTRACT_VERSION
@@ -153,11 +169,12 @@ impl Contract for PolicyArtifact {
     const ALSO_READS: &'static [u16] = &[INDEXED_POLICY_CONTRACT_VERSION.major];
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
-        if (!self.settings.attribute_indexes.is_empty() || self.read_only)
+        if self.needs_newer_build()
             && self.schema_version.major != INDEXED_POLICY_CONTRACT_VERSION.major
         {
             return Err(
-                "attribute index options and read_only need the indexed policy version".into(),
+                "attribute index options, connector columns and read_only need the indexed policy version"
+                    .into(),
             );
         }
         if self.retired_sources.len() > MAX_RETIRED_SOURCES {

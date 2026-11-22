@@ -34,7 +34,7 @@ pub(crate) use group::{
 };
 pub(crate) use history::RestoreHistory;
 pub(crate) use namespace::configured_identity;
-pub(crate) use namespace::namespace_settings;
+pub use namespace::namespace_settings;
 pub(crate) use namespace::sources_allowed;
 pub use namespace::{create, create_with, delete, set_read_only, set_read_only_held};
 pub(crate) use namespace::{ensure_writable, publish_policy};

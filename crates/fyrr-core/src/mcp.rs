@@ -145,6 +145,84 @@ pub struct SearchInput {
     /// Set by the HTTP query route from its `fields` member; no tool argument.
     #[serde(skip)]
     pub fields: Option<ReturnFields>,
+    /// Set by the HTTP query route from its `fusion` member; no tool argument.
+    #[serde(skip)]
+    pub fusion: Option<Fusion>,
+    /// Set by the HTTP query route from its `rerank` member; no tool argument.
+    #[serde(skip)]
+    pub rerank: Option<RerankChoice>,
+}
+
+/// The `fusion` member of a JSON `query` request with `queries`: one ranking
+/// of the documents of all sub-queries, in place of their round-robin merge.
+/// A document scores the sum of `weight / (rank_constant + rank)` over the
+/// sub-queries that return it, rank counted from 1.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Fusion {
+    pub method: FusionMethod,
+    /// Default 60.
+    #[schemars(range(min = 1))]
+    pub rank_constant: Option<u32>,
+    /// One weight per sub-query, in request order; default 1 each.
+    pub weights: Option<Vec<f64>>,
+}
+
+/// How sub-queries are fused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FusionMethod {
+    /// Reciprocal rank fusion.
+    Rrf,
+}
+
+/// The `rerank` member of a JSON `query` request: it applies to the namespace's
+/// configured reranker, within that reranker's candidate count, deadline and
+/// spend limit. A namespace without a reranker refuses it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RerankChoice {
+    /// `false` skips the reranker for this request; default `true`.
+    pub enabled: Option<bool>,
+    /// The attribute whose value is scored: a string attribute, or the text
+    /// attribute of the namespace. Default the text of the record.
+    #[schemars(length(min = 1, max = 128))]
+    pub attribute: Option<String>,
+    /// The text candidates are scored against, 1-4096 UTF-8 bytes. Default the
+    /// text of each sub-query; with it a search by vector alone is reranked too.
+    #[schemars(length(min = 1, max = 4096), extend("x-maxUtf8Bytes" = 4096))]
+    pub query: Option<String>,
+}
+
+impl Fusion {
+    pub fn rank_constant(&self) -> u32 {
+        self.rank_constant.unwrap_or(DEFAULT_RANK_CONSTANT)
+    }
+    /// The weight of sub-query `index`.
+    pub fn weight(&self, index: usize) -> f64 {
+        self.weights.as_ref().map_or(1.0, |weights| weights[index])
+    }
+}
+
+impl RerankChoice {
+    pub fn on(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self
+            .attribute
+            .as_ref()
+            .is_none_or(|name| bounded_text(name, 128))
+            && self
+                .query
+                .as_ref()
+                .is_none_or(|q| bounded_text(q, MAX_QUERY_BYTES) && !q.trim().is_empty())
+        {
+            Ok(())
+        } else {
+            Err("invalid_argument")
+        }
+    }
 }
 
 /// What a hit returns besides the document fields: the `fields` member of a
@@ -1097,6 +1175,18 @@ impl SearchInput {
                     && keys.iter().all(|key| bounded_text(&key.field, 128))
             })
             && (self.queries.is_none() || self.limit.is_none_or(|v| v <= MULTI_QUERY_LIMIT))
+            && self.fusion.as_ref().is_none_or(|fusion| {
+                self.queries.as_ref().is_some_and(|queries| {
+                    fusion.rank_constant != Some(0)
+                        && fusion.weights.as_ref().is_none_or(|weights| {
+                            weights.len() == queries.len()
+                                && weights
+                                    .iter()
+                                    .all(|w| (0.0..=MAX_FUSION_WEIGHT).contains(w))
+                        })
+                })
+            })
+            && self.rerank.as_ref().is_none_or(|r| r.validate().is_ok())
             && self.text_hits.is_none_or(|v| {
                 self.output != Some(OutputMode::Metadata) && v <= self.effective_limit()
             })

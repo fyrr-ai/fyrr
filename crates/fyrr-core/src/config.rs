@@ -507,6 +507,13 @@ impl Default for Composition {
     }
 }
 impl NamespaceConfig {
+    /// Whether this namespace stores the metadata fields of connector
+    /// documents as typed columns, which a namespace created before them does
+    /// not.
+    pub fn typed_connector_fields(&self) -> bool {
+        self.write_api.is_none() && crate::attributes::has_connector_columns(&self.attributes)
+    }
+
     /// Canonical analyzer settings shared by publication and admission.
     pub fn fts_settings(&self) -> crate::publication::FtsSettings {
         crate::publication::FtsSettings {
@@ -1458,6 +1465,16 @@ pub fn parse(text: &str) -> Result<LoadedConfig, Issue> {
 /// Fills defaults that follow from other keys of the same file; explicit
 /// values always win. Every derived URL comes from operator configuration.
 fn derive_defaults(config: &mut Config, raw: &toml::Table) {
+    // A namespace fed by connectors stores their metadata fields as columns.
+    if config.namespace.write_api.is_none() {
+        for (name, kind) in crate::attributes::CONNECTOR_COLUMNS {
+            config
+                .namespace
+                .attributes
+                .entry(name.into())
+                .or_insert(kind);
+        }
+    }
     let identity = &mut config.identity;
     if let Some(oidc) = &mut identity.oidc {
         if oidc.issuer.is_empty()

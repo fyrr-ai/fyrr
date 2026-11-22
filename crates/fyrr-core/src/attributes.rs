@@ -36,6 +36,27 @@ pub const BUILT_IN_COLUMNS: [&str; 16] = [
     "attributes",
 ];
 
+/// The fields of a connector document's metadata that are typed columns of a
+/// namespace created for connectors. A namespace written through the API has
+/// none of them; a new connector namespace declares them with the attributes of
+/// its file and takes no other type for them.
+pub const CONNECTOR_COLUMNS: [(&str, AttributeType); 5] = [
+    ("title", AttributeType::String),
+    ("team", AttributeType::String),
+    ("status", AttributeType::String),
+    ("labels", AttributeType::Array(ElementType::String)),
+    ("created_at", AttributeType::Datetime),
+];
+
+/// Whether `schema` declares every [`CONNECTOR_COLUMNS`] column with its type:
+/// the layout of a connector namespace created with them. An older namespace
+/// declares none of them and keeps the fields in its documents' metadata.
+pub fn has_connector_columns(schema: &AttributeSchema) -> bool {
+    CONNECTOR_COLUMNS
+        .iter()
+        .all(|(name, kind)| schema.get(*name) == Some(kind))
+}
+
 /// The type of an attribute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

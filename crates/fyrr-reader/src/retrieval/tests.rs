@@ -210,3 +210,43 @@ fn composition_cases() {
         }
     }
 }
+
+#[test]
+fn reciprocal_rank_fusion_sums_weight_over_rank_constant_plus_rank() {
+    use fyrr_core::mcp::FusionMethod;
+    let fusion = |rank_constant, weights| Fusion {
+        method: FusionMethod::Rrf,
+        rank_constant,
+        weights,
+    };
+    let lists = || {
+        vec![
+            vec![row("a", "x", "1", 9.0), row("a", "y", "1", 8.0)],
+            vec![row("a", "y", "1", 3.0), row("a", "z", "1", 2.0)],
+        ]
+    };
+    let scores = |fusion: &Fusion| {
+        reciprocal_rank_fusion(lists(), fusion)
+            .into_iter()
+            .map(|(list, hit)| (hit.root, list, hit.score))
+            .collect::<Vec<_>>()
+    };
+    // Rank constant 60 and weight 1 by default: y is second in the first list
+    // and first in the second, x and z are first in one list only.
+    let default = scores(&fusion(None, None));
+    let (x, y, z) = (1.0 / 61.0, 1.0 / 62.0 + 1.0 / 61.0, 1.0 / 62.0);
+    assert_eq!(
+        default,
+        [("y".into(), 1, y), ("x".into(), 0, x), ("z".into(), 1, z)]
+    );
+    // A weight scales the part of its list; y keeps the list that gave it most.
+    let weighted = scores(&fusion(Some(1), Some(vec![3.0, 0.5])));
+    assert_eq!(
+        weighted,
+        [
+            ("x".into(), 0, 3.0 / 2.0),
+            ("y".into(), 0, 3.0 / 3.0 + 0.5 / 2.0),
+            ("z".into(), 1, 0.5 / 3.0),
+        ]
+    );
+}

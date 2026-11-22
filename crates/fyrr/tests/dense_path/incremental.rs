@@ -44,6 +44,193 @@ async fn incremental_unchanged_upsert_still_protects_pending_reconciliation_on_s
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// The documents of the connector fields cases: one with every field, one with
+/// a team only.
+fn field_documents(root: &Path) {
+    input(
+        root,
+        json!({"epoch":1,
+            "content":[[
+                {"id":"a","revision":"r1","texts":["fixture document 0"],"title":"Alpha",
+                    "team":"core","status":"open","labels":["bug","ui"],
+                    "created_at":"2026-01-02T03:04:05.123456+00:00"},
+                {"id":"b","revision":"r1","texts":["fixture document 1"],"team":"infra"},
+            ]],
+            "permissions":[[
+                {"id":"a","revision":"p1","readers":["grp:group"]},
+                {"id":"b","revision":"p1","readers":["grp:group"]},
+            ]],
+            "members":[{"users":[{"id":"u","email":"fixture@example.test",
+                    "email_verification":"verified_corporate","active":true}],
+                "groups":[{"id":"child","members":["usr:u"]},{"id":"group","members":["grp:child"]}]}]}),
+    );
+}
+
+/// The tools return a document's fields, filtering by `filter`.
+fn read_fields(worker: &Path, filter: Value) {
+    let mut client = super::tools::Mcp::open(worker);
+    let found = client.call(
+        "search",
+        json!({"order":"updated_at","output":"metadata","filter":filter}),
+    );
+    let hits = found["structuredContent"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1, "{found}");
+    let hit = &hits[0];
+    assert_eq!(hit["root_id"], "a");
+    assert_eq!(hit["title"], "Alpha");
+    assert_eq!(hit["team"], "core");
+    assert_eq!(hit["status"], "open");
+    assert_eq!(hit["labels"], json!(["bug", "ui"]));
+    assert_eq!(hit["created_at"], "2026-01-02T03:04:05.123456Z");
+    let fetched = client.call("fetch", json!({"source_id":"incremental","root_id":"a"}));
+    let document = &fetched["structuredContent"]["documents"][0];
+    for field in ["title", "team", "status", "labels", "created_at"] {
+        assert_eq!(document[field], hit[field], "{field}");
+    }
+    let other = client.call("fetch", json!({"source_id":"incremental","root_id":"b"}));
+    let other = &other["structuredContent"]["documents"][0];
+    assert!(
+        other["title"].is_null() && other["created_at"].is_null(),
+        "{other}"
+    );
+    assert_eq!(other["labels"], json!([]));
+}
+
+fn sync_fields(worker: &Path) {
+    worker_sync(
+        worker,
+        &[
+            "incremental",
+            "--kind",
+            "content",
+            "--kind",
+            "permissions",
+            "--kind",
+            "members",
+        ],
+    );
+}
+
+/// A connector document's title, team, status, labels and creation time are
+/// typed columns of its namespace, not part of its stored metadata. The tools
+/// filter by them and return them as before.
+#[tokio::test]
+#[ignore = "real worker and local storage; scripts/ci"]
+async fn incremental_connector_fields_are_typed_columns_on_storage() {
+    use arrow_array::{ListArray, TimestampMicrosecondArray};
+    let setup = setup();
+    for row in 8..768 {
+        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
+    }
+    let (worker, commit, root) = fixture_host_at(8, true, "typed-fixture", setup);
+    field_documents(&root);
+    sync_fields(&worker);
+    publish(&commit);
+
+    // The stored rows hold the fields in their own columns and no longer in
+    // their metadata.
+    let batch = rows(&worker).await;
+    let row_of = |root: &str| roots(&batch).iter().position(|r| r == root).unwrap();
+    let text = |column: &str, root: &str| {
+        let array = fyrr_writer::apply::strings(&batch, column).unwrap();
+        let row = row_of(root);
+        (!array.is_null(row)).then(|| array.value(row).to_owned())
+    };
+    assert_eq!(text("title", "a").as_deref(), Some("Alpha"));
+    assert_eq!(text("team", "a").as_deref(), Some("core"));
+    assert_eq!(text("status", "a").as_deref(), Some("open"));
+    assert_eq!(text("title", "b"), None);
+    assert_eq!(text("team", "b").as_deref(), Some("infra"));
+    let labels = batch
+        .column_by_name("labels")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .unwrap();
+    let labels_of = |root: &str| {
+        let items = labels.value(row_of(root));
+        let items = items.as_any().downcast_ref::<StringArray>().unwrap();
+        items
+            .iter()
+            .map(|v| v.unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(labels_of("a"), ["bug", "ui"]);
+    assert!(labels_of("b").is_empty());
+    let created = batch
+        .column_by_name("created_at")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<TimestampMicrosecondArray>()
+        .unwrap();
+    assert_eq!(created.value(row_of("a")), 1_767_323_045_123_456);
+    assert!(created.is_null(row_of("b")));
+    let metadata = fyrr_writer::apply::strings(&batch, "metadata_json").unwrap();
+    assert!(
+        !metadata.value(row_of("a")).contains("Alpha"),
+        "the title is stored once, in its column"
+    );
+    // An older build would read these columns as null: it refuses the namespace.
+    let (_, manifest) = publication(&worker).await;
+    assert_eq!(manifest.schema_version.to_string(), "5.0");
+
+    read_fields(
+        &worker,
+        json!({"and":[
+            {"field":"team","op":"eq","value":"core"},
+            {"field":"labels","op":"contains","value":"bug"},
+            {"field":"created_at","op":"gte","value":"2026-01-01T00:00:00Z"}]}),
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A namespace created before the connector columns keeps its layout: its
+/// documents keep the fields in their metadata, an older publication version
+/// stays, and the tools return the fields as before. Creating it again with a
+/// file that asks for the columns repeats it.
+#[tokio::test]
+#[ignore = "real worker and local storage; scripts/ci"]
+async fn incremental_namespace_created_before_the_connector_columns_keeps_its_layout_on_storage() {
+    let setup = setup();
+    for row in 8..768 {
+        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
+    }
+    let (worker, commit, root) = fixture_host_created(8, true, "legacy-fixture", setup, |config| {
+        let loaded = fyrr_core::config::load(config).unwrap();
+        let mut settings = fyrr_writer::commit::namespace_settings(&loaded.config);
+        for (name, _) in fyrr_core::attributes::CONNECTOR_COLUMNS {
+            settings.attributes.remove(name);
+        }
+        let config = loaded.config.clone();
+        std::thread::spawn(move || {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(fyrr_writer::commit::create_with(&config, settings))
+                .unwrap();
+        })
+        .join()
+        .unwrap();
+    });
+    field_documents(&root);
+    sync_fields(&worker);
+    publish(&commit);
+
+    let batch = rows(&worker).await;
+    assert!(batch.column_by_name("title").is_none(), "no typed columns");
+    let metadata = fyrr_writer::apply::strings(&batch, "metadata_json").unwrap();
+    assert!(
+        (0..metadata.len()).any(|row| metadata.value(row).contains("Alpha")),
+        "the fields stay in the metadata"
+    );
+    let (_, manifest) = publication(&worker).await;
+    assert_eq!(manifest.schema_version.to_string(), "4.1");
+    command(&worker, &["writer", "namespace", "create"]);
+
+    // Filtering by the fields is what the new layout adds.
+    read_fields(&worker, json!({"field":"root_id","op":"eq","value":"a"}));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 pub(super) fn fixture() -> (PathBuf, PathBuf, FixtureRoot) {
     fixture_size(768)
 }
@@ -71,7 +258,20 @@ pub(super) fn fixture_host_at(
     documents: usize,
     publish_initial: bool,
     namespace: &str,
+    setup: (PathBuf, FixtureRoot),
+) -> (PathBuf, PathBuf, FixtureRoot) {
+    fixture_host_created(documents, publish_initial, namespace, setup, |config| {
+        super::coordination::command(config, &["writer", "namespace", "create"]);
+    })
+}
+
+/// `fixture_host_at` with its own way to create the namespace.
+fn fixture_host_created(
+    documents: usize,
+    publish_initial: bool,
+    namespace: &str,
     (config, root): (PathBuf, FixtureRoot),
+    create: impl FnOnce(&Path),
 ) -> (PathBuf, PathBuf, FixtureRoot) {
     for row in 768..documents {
         std::fs::write(
@@ -92,7 +292,7 @@ pub(super) fn fixture_host_at(
         );
     std::fs::write(&config, format!("{text}\n[[sources]]\nid='incremental'\ntype='incremental-test'\npermissions='sync'\ndocument_max_bytes='64B'\n[sources.intervals]\npermissions='5m'\nmembers='5m'\n[sources.scope]\nfixture='{}'\n", root.join("input.json").display())).unwrap();
     input(&root, json!({"epoch":0}));
-    super::coordination::command(&config, &["writer", "namespace", "create"]);
+    create(&config);
     worker_sync(&config, &["allowed", "denied", "--full"]);
     let commit = committer_host(&config, &root);
     if publish_initial {

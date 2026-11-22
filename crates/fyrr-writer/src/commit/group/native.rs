@@ -147,8 +147,7 @@ impl<'a> ContentWork<'a> {
     }
 
     /// The table as a first publication creates it: `fragments` over the
-    /// built-in columns and, for a namespace written through the API, its
-    /// attribute columns.
+    /// built-in columns and the namespace's attribute columns.
     async fn overwrite(&mut self, fragments: Vec<lance::table::format::Fragment>) -> Result<()> {
         let config = self.config;
         let lease = self.lease;
@@ -184,9 +183,12 @@ impl<'a> ContentWork<'a> {
                         config.embedding.dimensions,
                         config
                             .namespace
-                            .write_api
+                            .attributes
                             .iter()
-                            .flat_map(|_| &config.namespace.attributes)
+                            .filter(|_| {
+                                config.namespace.write_api.is_some()
+                                    || config.namespace.typed_connector_fields()
+                            })
                             .map(|(name, kind)| {
                                 arrow_schema::Field::new(name, kind.arrow_type(), true)
                             })

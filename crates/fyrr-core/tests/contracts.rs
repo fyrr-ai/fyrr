@@ -131,6 +131,28 @@ fn attribute_index_options_need_the_version_an_older_build_refuses() {
     }
 }
 
+/// The connector columns are read only from the version an older build
+/// refuses, which would read their fields as null; a namespace without them
+/// keeps its version.
+#[test]
+fn connector_columns_need_the_version_an_older_build_refuses() {
+    let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
+    let partial = json!({"title": "string", "team": "string"});
+    policy["settings"]["attributes"] = partial;
+    assert!(parse::<PolicyArtifact>(&policy).is_ok());
+    policy["settings"]["attributes"] = json!({"title": "string", "team": "string",
+        "status": "string", "labels": {"array": "string"}, "created_at": "datetime"});
+    assert!(parse::<PolicyArtifact>(&policy).is_err());
+    policy["schema_version"] = json!("4.0");
+    assert!(parse::<PolicyArtifact>(&policy).is_ok());
+    let settings = parse::<PolicyArtifact>(&policy).unwrap().settings;
+    assert!(settings.needs_newer_build());
+    // A namespace written through the API declares what it likes.
+    policy["schema_version"] = json!("3.1");
+    policy["settings"]["write_api"] = json!({});
+    assert!(parse::<PolicyArtifact>(&policy).is_ok());
+}
+
 /// A build that does not know the switch would ignore it and write, so a frozen
 /// policy is a version that it refuses.
 #[test]

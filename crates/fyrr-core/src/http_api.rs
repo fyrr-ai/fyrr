@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::attributes::AttributeSchema;
-use crate::mcp::{AggregateInput, FetchInput, Filter, ReturnFields, SearchInput};
+use crate::mcp::{
+    AggregateInput, FetchInput, Filter, Fusion, RerankChoice, ReturnFields, SearchInput,
+};
 use crate::publication::NamespaceSettings;
 
 /// How current the version is that a `query` or `fetch` answer is read from.
@@ -25,7 +27,7 @@ pub enum Consistency {
 }
 
 /// The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
-/// `search` tool and two members that are no tool arguments.
+/// `search` tool and four members that are no tool arguments.
 #[derive(Debug, Clone, PartialEq, JsonSchema)]
 pub struct QueryRequest {
     #[schemars(flatten)]
@@ -34,6 +36,10 @@ pub struct QueryRequest {
     pub consistency: Option<Consistency>,
     /// What a hit returns besides its document fields.
     pub fields: Option<ReturnFields>,
+    /// With `queries`: one ranking of all sub-queries instead of their round-robin merge.
+    pub fusion: Option<Fusion>,
+    /// Switches the configured reranker off, or names what it scores.
+    pub rerank: Option<RerankChoice>,
 }
 
 /// The body of `POST /v1/namespaces/{namespace}/fetch`: the arguments of the

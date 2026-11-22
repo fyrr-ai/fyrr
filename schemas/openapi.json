@@ -415,7 +415,7 @@
       },
       "QueryRequest": {
         "type": "object",
-        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and two members that are no tool arguments.",
+        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and four members that are no tool arguments.",
         "properties": {
           "query": {
             "type": [
@@ -677,6 +677,28 @@
               }
             ],
             "description": "What a hit returns besides its document fields."
+          },
+          "fusion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Fusion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `queries`: one ranking of all sub-queries instead of their round-robin merge."
+          },
+          "rerank": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RerankChoice"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Switches the configured reranker off, or names what it scores."
           }
         }
       },
@@ -911,6 +933,82 @@
           }
         },
         "description": "What a hit returns besides the document fields: the `fields` member of a\nJSON `query` request. `include` names the attributes to return, `exclude`\nthe ones to leave out of all of them (an empty list leaves out none). The\nvector of a row is returned only when `include` names `vector`."
+      },
+      "Fusion": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "method": {
+            "$ref": "#/components/schemas/FusionMethod"
+          },
+          "rank_constant": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 1,
+            "description": "Default 60."
+          },
+          "weights": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "One weight per sub-query, in request order; default 1 each."
+          }
+        },
+        "required": [
+          "method"
+        ],
+        "description": "The `fusion` member of a JSON `query` request with `queries`: one ranking\nof the documents of all sub-queries, in place of their round-robin merge.\nA document scores the sum of `weight / (rank_constant + rank)` over the\nsub-queries that return it, rank counted from 1."
+      },
+      "FusionMethod": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "rrf",
+            "description": "Reciprocal rank fusion."
+          }
+        ],
+        "description": "How sub-queries are fused."
+      },
+      "RerankChoice": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`false` skips the reranker for this request; default `true`."
+          },
+          "attribute": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The attribute whose value is scored: a string attribute, or the text\nattribute of the namespace. Default the text of the record.",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The text candidates are scored against, 1-4096 UTF-8 bytes. Default the\ntext of each sub-query; with it a search by vector alone is reranked too.",
+            "minLength": 1,
+            "maxLength": 4096,
+            "x-maxUtf8Bytes": 4096
+          }
+        },
+        "description": "The `rerank` member of a JSON `query` request: it applies to the namespace's\nconfigured reranker, within that reranker's candidate count, deadline and\nspend limit. A namespace without a reranker refuses it."
       },
       "FetchRequest": {
         "type": "object",

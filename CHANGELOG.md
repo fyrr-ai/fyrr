@@ -7,6 +7,25 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## [Unreleased]
 
+### Changed
+
+- A namespace created for connectors stores `title`, `team`, `status`,
+  `labels` (an array of `string`) and `created_at` (`datetime`) of its
+  documents as typed columns, declared with the namespace like the attributes
+  of the file, so a filter or `order_by` can use them. `search`, `fetch` and
+  `list_filters` return the same fields as before. A namespace created before
+  keeps its layout and works as it did. A manifest of the new layout is
+  content-manifest 5.0 and its policy artifact 4.0, the versions of attribute
+  index options and of the read-only switch, so an older build refuses it
+  instead of reading nulls. The
+  `key=value` attributes of a connector document stay in the `attributes`
+  column. A namespace or a configuration made by an unreleased build between
+  typed attributes (#225) and this change can be refused: one that declares the
+  five connector names with exactly their types, one at the limit of declared
+  attributes (the five count), or one that sets one of the five to another type.
+  Released v0.1.x has no custom attributes and is unaffected. See
+  [tuning](docs/tuning.md#namespaceattributes).
+
 ### Added
 
 - `filter` tests the text of a `string` with `starts_with`, `contains`,
@@ -19,6 +38,15 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   256 KiB. No case-insensitive test is offered. The write conditions and the
   filters of `delete_where` and `patch_where` take the same tests. See
   [Text tests](docs/mcp-tools.md#text-tests).
+- The `query` route of the HTTP API takes `fusion` and `rerank`. `fusion`
+  (`{"method":"rrf","rank_constant":60,"weights":[…]}`, with `queries`) ranks the
+  documents of all sub-queries by reciprocal rank fusion instead of merging
+  them round-robin. `rerank` (`{"enabled":false}`, or `attribute` and `query`)
+  switches the namespace's reranker off for a request or names what it scores;
+  the reranker's candidate count, deadline and spend limit still apply.
+  Neither is a tool argument, so the MCP contract is unchanged. A request
+  without them is answered as before. See
+  [Fusion and reranking](docs/http-api.md#fusion-and-reranking).
 - `POST /v1/namespaces/{namespace}/aggregate` on the reader computes `count`,
   `sum`, `avg`, `min` and `max` over the documents a caller may read and a
   `filter` selects, optionally grouped by up to four scalar fields, in key
@@ -449,6 +477,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   keeps is recorded first in the `history-cut` object (additive to the
   unreleased 4.0 publication contract); a walk of the history ends there, and
   a manifest missing anywhere else is `publication_invalid`.
+- `fyrr writer maintain` also deletes the policy and identity generations
+  older than any generation the serving head or a retained publication names,
+  so `policy/` and `identity/` no longer grow with the number of commits.
 
 ### Security
 

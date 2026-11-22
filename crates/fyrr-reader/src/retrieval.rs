@@ -1,6 +1,7 @@
 //! Complete-union logistic-z scoring, document grouping and slot composition.
 use crate::error::*;
 use fyrr_core::config::{Composition, RetrievalConfig};
+use fyrr_core::mcp::Fusion;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// An authorized lane row; text is loaded only after document selection.
@@ -143,6 +144,44 @@ pub(crate) fn compose(
     }
     selected.truncate(limit);
     Ok(selected)
+}
+
+/// Reciprocal rank fusion of ranked lists of documents, one per sub-query: a
+/// document scores the sum of `weight / (rank_constant + rank)`, rank counted
+/// from 1, over the lists that hold it. Best first, ties by document key. A
+/// hit is the candidate of the list that gave it most, with that list's index.
+pub(crate) fn reciprocal_rank_fusion(
+    lists: Vec<Vec<Candidate>>,
+    fusion: &Fusion,
+) -> Vec<(usize, Candidate)> {
+    let constant = f64::from(fusion.rank_constant());
+    // Per document: its score so far, and what its best list gave it.
+    let mut fused: BTreeMap<(String, String), (f64, f64, usize, Candidate)> = BTreeMap::new();
+    for (list, rows) in lists.into_iter().enumerate() {
+        for (rank, row) in rows.into_iter().enumerate() {
+            let part = fusion.weight(list) / (constant + (rank + 1) as f64);
+            match fused.entry((row.source.clone(), row.root.clone())) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert((part, part, list, row));
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    let (total, best, from, hit) = entry.get_mut();
+                    *total += part;
+                    if part > *best {
+                        (*best, *from) = (part, list);
+                        *hit = row;
+                    }
+                }
+            }
+        }
+    }
+    let mut rows: Vec<_> = fused
+        .into_values()
+        .map(|(score, _, list, row)| (list, Candidate { score, ..row }))
+        .collect();
+    // The map holds documents in key order; the sort is stable.
+    rows.sort_by(|a, b| b.1.score.total_cmp(&a.1.score));
+    rows
 }
 
 #[cfg(test)]

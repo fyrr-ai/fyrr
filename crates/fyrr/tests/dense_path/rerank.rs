@@ -8,17 +8,17 @@ use std::sync::{
 use tools::Mcp;
 
 #[derive(Default)]
-struct State {
-    requests: Mutex<Vec<Value>>,
+pub(super) struct State {
+    pub(super) requests: Mutex<Vec<Value>>,
     mode: AtomicUsize,
 }
-struct Provider {
-    endpoint: String,
-    state: Arc<State>,
+pub(super) struct Provider {
+    pub(super) endpoint: String,
+    pub(super) state: Arc<State>,
     task: tokio::task::JoinHandle<()>,
 }
 impl Provider {
-    async fn open() -> Self {
+    pub(super) async fn open() -> Self {
         let state = Arc::new(State::default());
         let app = axum::Router::new()
             .route("/rerank", axum::routing::post(provider))
@@ -34,7 +34,7 @@ impl Provider {
             task,
         }
     }
-    fn calls(&self) -> usize {
+    pub(super) fn calls(&self) -> usize {
         self.state.requests.lock().unwrap().len()
     }
 }
