@@ -208,7 +208,7 @@ pub(crate) fn local_config(name: &str) -> (Config, std::path::PathBuf) {
 }
 
 /// Publishes a namespace: a source takes a cursor only in one that exists.
-pub(crate) async fn put_head(config: &Config) {
+pub(crate) async fn put_head(config: &Config) -> ServingHead {
     let mut head: ServingHead = serde_json::from_str(include_str!(
         "../../../../fixtures/contracts/serving-head/head.json"
     ))
@@ -220,10 +220,12 @@ pub(crate) async fn put_head(config: &Config) {
     cas_put(store.as_ref(), &path, &head, PutMode::Create)
         .await
         .unwrap();
+    head
 }
 
 async fn namespace_renewal(config: &Config) {
-    put_head(config).await;
+    let head = put_head(config).await;
+    let path = namespace_store(config).unwrap().1.join("head.json");
     let mut lease = LeaseGuard::acquire(config).await.unwrap();
     let (store, entered, resume) = delayed_store(lease.store.clone());
     Arc::get_mut(&mut lease).unwrap().store = store;
