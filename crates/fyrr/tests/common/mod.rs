@@ -40,6 +40,15 @@ pub fn test_providers() -> PathBuf {
     repo().join("crates/fyrr/tests/providers")
 }
 
+/// Cargo's scratch directory for these tests, by its real path. Local storage
+/// refuses a root below a symlink, and `target/` may be a link to a build
+/// volume.
+pub fn target_tmp() -> PathBuf {
+    Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .canonicalize()
+        .unwrap()
+}
+
 /// An immutable variant selected by CI, or Cargo's binary for a direct test run.
 pub fn binary() -> OsString {
     std::env::var_os("FYRR_GATE_BINARY").unwrap_or_else(|| env!("CARGO_BIN_EXE_fyrr").into())
@@ -119,7 +128,7 @@ pub struct Sandbox {
 
 impl Sandbox {
     pub fn new(name: &str) -> Self {
-        Self::new_in(name, Path::new(env!("CARGO_TARGET_TMPDIR")))
+        Self::new_in(name, &target_tmp())
     }
 
     pub fn new_in(name: &str, directory: &Path) -> Self {
