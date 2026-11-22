@@ -1344,6 +1344,10 @@
         "tier": "quick",
         "seconds": 0.002
       },
+      "full:fyrr-core:test:contracts/a_frozen_policy_is_a_version_that_an_older_build_refuses": {
+        "tier": "quick",
+        "seconds": 0.003
+      },
       "full:fyrr-core:test:contracts/attribute_index_options_need_the_version_an_older_build_refuses": {
         "tier": "quick",
         "seconds": 0.002
@@ -2092,6 +2096,10 @@
       "full:fyrr:test:dense_path/api_keys::a_reader_serves_the_namespace_its_path_names": {
         "tier": "quick",
         "seconds": 25.0
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_freezes_a_namespace_and_commits_what_it_accepted_before_on_storage": {
+        "tier": "full",
+        "seconds": 40
       }
     }
   },
@@ -2275,6 +2283,10 @@
       "full:fyrr:test:dense_path/incremental::incremental_idle_member_reread_publishes_nothing_on_storage": {
         "tier": "full",
         "seconds": 20.0
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_read_only_namespace_refuses_syncs_and_commits_what_was_prepared_on_storage": {
+        "tier": "full",
+        "seconds": 60
       }
     }
   },

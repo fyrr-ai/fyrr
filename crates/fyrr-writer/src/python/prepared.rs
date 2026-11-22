@@ -67,6 +67,9 @@ pub(super) fn prepared_kind(
     if rt.block_on(crate::source::retired(&config, &source.id))? {
         return Err(WriterError::SourceRetired);
     }
+    // A frozen namespace takes no sync: nothing is fetched or embedded for it.
+    // Each envelope is checked again under the cursor lease, as it is written.
+    rt.block_on(crate::commit::ensure_writable(&config))?;
     // A kind that is not due takes no lease and lists no envelopes: the head
     // and its cursor, which are read, show it. The lease decides the rest.
     if due && let Some(next) = state::idle_until(&config, &source, kind, &rt, evidence)? {

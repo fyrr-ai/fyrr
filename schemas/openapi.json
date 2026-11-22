@@ -84,6 +84,44 @@
           }
         }
       },
+      "patch": {
+        "tags": [
+          "writer"
+        ],
+        "summary": "Freeze a namespace or thaw it",
+        "description": "Needs an API key with the `admin` role.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/namespace"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatchNamespaceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/ScimError"
+          }
+        },
+        "requestBody": {
+          "description": "The request body.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchNamespaceRequest"
+              }
+            }
+          },
+          "required": true
+        }
+      },
       "delete": {
         "tags": [
           "writer"
@@ -348,6 +386,20 @@
       }
     },
     "schemas": {
+      "PatchNamespaceRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "read_only": {
+            "type": "boolean",
+            "description": "`true` refuses writes and connector syncs; `false` allows them again."
+          }
+        },
+        "required": [
+          "read_only"
+        ],
+        "description": "The body of `PATCH /v1/namespaces/{namespace}`: freezes the namespace or thaws it."
+      },
       "DeleteNamespaceRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -1266,6 +1318,10 @@
             "$ref": "#/components/schemas/NamespaceSettings",
             "description": "The namespace's settings, as its policy records them."
           },
+          "read_only": {
+            "type": "boolean",
+            "description": "Whether the namespace is frozen: writes are refused while it stays readable."
+          },
           "rows": {
             "type": [
               "integer",
@@ -1307,6 +1363,7 @@
           "publication_id",
           "schema",
           "settings",
+          "read_only",
           "rows",
           "logical_bytes",
           "first_published_at",
@@ -1825,6 +1882,27 @@
           "logical_bytes"
         ],
         "description": "`rows` and `logical_bytes` of the data that no index covers yet."
+      },
+      "PatchNamespaceResponse": {
+        "type": "object",
+        "properties": {
+          "namespace": {
+            "type": "string"
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "changed": {
+            "type": "boolean",
+            "description": "`false` when the namespace was already so."
+          }
+        },
+        "required": [
+          "namespace",
+          "read_only",
+          "changed"
+        ],
+        "description": "What a namespace switch answers."
       },
       "DeleteNamespaceResponse": {
         "type": "object",

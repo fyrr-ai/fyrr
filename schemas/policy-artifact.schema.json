@@ -41,6 +41,10 @@
         "$ref": "#/$defs/RetiredSource"
       },
       "description": "Retired sources: readers deny them at once, the committer\nrejects their envelopes, and a restore cannot bring them back. An\nentry is never removed."
+    },
+    "read_only": {
+      "type": "boolean",
+      "description": "The namespace is frozen: API writes and connector syncs are refused\nwhile it stays readable. An envelope that was prepared before the\nswitch is still committed. A policy that sets it is written as version\n4.0, which a build that does not know the switch refuses instead of\nwriting."
     }
   },
   "required": [

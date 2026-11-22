@@ -1,5 +1,7 @@
 //! Incremental contracts through real executable processes and the owned RustFS.
-use super::coordination::{command, committer_host, host_command, publication, worker_sync};
+use super::coordination::{
+    command, committer_host, host_command, publication, worker_command, worker_sync,
+};
 use super::*;
 use arrow_array::{Array, StringArray};
 use fyrr_core::connector::SyncKind;
@@ -189,6 +191,79 @@ pub(super) fn publish_initial(worker: &Path, commit: &Path, root: &Path) {
         ],
     );
     publish(commit);
+}
+
+/// A frozen namespace takes no sync, whatever the source, and still commits the
+/// envelope that was prepared before the switch; thawed, it syncs again.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_read_only_namespace_refuses_syncs_and_commits_what_was_prepared_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    assert_eq!(source_roots(&worker, "incremental").await, ["a", "b"]);
+    // An envelope that is prepared and not published when the namespace is frozen.
+    input(
+        &root,
+        json!({"epoch":2,"content":[[doc("c","r1","fixture document 2")]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    assert_eq!(
+        command(&commit, &["writer", "namespace", "read-only", "true"]),
+        json!({"read_only":true,"changed":true})
+    );
+    assert_eq!(
+        command(&commit, &["writer", "namespace", "read-only", "true"])["changed"],
+        false,
+        "freezing twice changes nothing"
+    );
+
+    // A sync of any source is refused with one named error, before the provider
+    // reads anything.
+    input(
+        &root,
+        json!({"epoch":3,"content":[[doc("d","r1","fixture document 3")]]}),
+    );
+    let before = envelopes(&worker).await.len();
+    for source in ["incremental", "allowed"] {
+        let refused = worker_command(&worker)
+            .args(["writer", "sync", source, "--full"])
+            .output()
+            .unwrap();
+        assert!(!refused.status.success(), "{source}");
+        assert!(
+            String::from_utf8_lossy(&refused.stdout).contains("namespace_read_only"),
+            "{source}: {}",
+            String::from_utf8_lossy(&refused.stdout)
+        );
+    }
+    assert_eq!(envelopes(&worker).await.len(), before, "nothing is written");
+
+    // The envelope prepared before the switch is committed after it, and the
+    // frozen namespace stays readable and maintainable.
+    publish(&commit);
+    assert_eq!(source_roots(&worker, "incremental").await, ["a", "b", "c"]);
+    command(&commit, &["writer", "maintain"]);
+    let (head, _) = publication(&worker).await;
+    let loaded = fyrr_core::config::load(&worker).unwrap();
+    let (store, namespace_root) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let policy: fyrr_core::publication::PolicyArtifact =
+        fyrr_reader::storage::artifact(store.as_ref(), &namespace_root, &head.policy)
+            .await
+            .unwrap();
+    assert!(policy.read_only);
+    assert_eq!(policy.schema_version.to_string(), "4.0");
+
+    // Thawed, the next sync prepares and commits.
+    assert_eq!(
+        command(&commit, &["writer", "namespace", "read-only", "false"]),
+        json!({"read_only":false,"changed":true})
+    );
+    worker_sync(&worker, &["incremental", "--kind", "content"]);
+    publish(&commit);
+    assert_eq!(
+        source_roots(&worker, "incremental").await,
+        ["a", "b", "c", "d"]
+    );
 }
 
 /// A member read that repeats the published snapshot writes no envelope and

@@ -313,6 +313,8 @@ fn dense_reader_and_namespace_paths_keep_identity_and_query_values_private() {
         vec!["writer", "commit", "--receipt", query.as_str()],
         vec!["writer", "namespace", "create"],
         vec!["writer", "namespace", "delete"],
+        vec!["writer", "namespace", "read-only", "true"],
+        vec!["writer", "namespace", "read-only", "false"],
     ] {
         let mut command = vec!["--config", config];
         command.extend(args);

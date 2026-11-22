@@ -642,6 +642,7 @@ async fn non_content_page(
     };
     lease.state().await?;
     lease.persist_observed().await?;
+    crate::commit::ensure_writable(config).await?;
     put_immutable(
         store.as_ref(),
         &root.join("envelopes").join(format!("{id}.json")),

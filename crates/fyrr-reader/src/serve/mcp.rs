@@ -100,7 +100,7 @@ pub(super) async fn execute(
                     .aggregate(args)
                     .await
                     .and_then(|r| serde_json::to_value(r).map_err(|_| StorageUnavailable)),
-                ToolCall::Report => reader.report(),
+                ToolCall::Report => reader.report().await,
             }
         };
         let result = bounded(&context, work).await;

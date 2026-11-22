@@ -156,6 +156,7 @@ impl From<WriterError> for ApiError {
         match error {
             WriterError::EnvelopeBoundsInvalid => Self(413, "request_too_large"),
             WriterError::NamespaceSettingsFixed => Self(409, "namespace_settings_fixed"),
+            WriterError::NamespaceReadOnly => Self(409, "namespace_read_only"),
             WriterError::AttributeTypeChange => Self(409, "attribute_type_change_refused"),
             WriterError::AttributeRemoval => Self(409, "attribute_removal_refused"),
             WriterError::NamespaceChanged => Self(409, "namespace_changed"),
@@ -1049,6 +1050,14 @@ async fn execute(
     };
     if settings.write_api.is_none() {
         return Err(ApiError(409, "namespace_not_writable"));
+    }
+    // Refused before anything is embedded or written. The envelope is checked
+    // again, under the cursor lease, as it becomes durable.
+    if existing
+        .as_ref()
+        .is_some_and(|(_, policy)| policy.read_only)
+    {
+        return Err(ApiError(409, "namespace_read_only"));
     }
     if let Some((head, policy)) = &existing
         && settings != policy.settings

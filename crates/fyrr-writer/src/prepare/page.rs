@@ -157,6 +157,7 @@ pub(super) async fn content_page(
     }
     lease.state().await?;
     lease.persist_observed().await?;
+    crate::commit::ensure_writable(config).await?;
     put_immutable(store.as_ref(), &envelope_path, &envelope).await?;
     if advances_cursor {
         state.cursor = Some(batch.cursor.end.clone());
