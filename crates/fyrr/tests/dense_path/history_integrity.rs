@@ -107,7 +107,8 @@ async fn history_cycles_are_refused_on_storage() {
 #[ignore = "local storage history and recovery boundary; scripts/ci"]
 async fn restore_history_checks_order_before_recovery_on_storage() {
     for command in ["restore", "maintain"] {
-        for ancestor_sequence in [2, 3] {
+        // Sequence 0 stands for an ancestor that is not there at all.
+        for ancestor_sequence in [0, 2, 3] {
             let (config, root, _) = super::tools::fixture();
             let loaded = fyrr_core::config::load(&config).unwrap().config;
             let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded).unwrap();
@@ -134,10 +135,10 @@ async fn restore_history_checks_order_before_recovery_on_storage() {
             tip.publication_id = "pub-00000000000000000000000000881101".into();
             tip.sequence = 2;
             tip.previous_publication_id = Some(ancestor.publication_id.clone());
-            // Envelope evidence ends a walk before the older manifests are
-            // read: the corrupt order is only seen without it.
-            tip.envelope_evidence = None;
             for manifest in [&ancestor, &tip] {
+                if ancestor_sequence == 0 && manifest.publication_id == ancestor.publication_id {
+                    continue;
+                }
                 store
                     .put(
                         &object_store::path::Path::from(format!(

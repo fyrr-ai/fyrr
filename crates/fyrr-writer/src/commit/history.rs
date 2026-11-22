@@ -53,6 +53,7 @@ impl RestoreHistory {
         for id in &head.rejected_envelope_ids {
             self.index.put(Evidence::Rejected, id, &(), true)?;
         }
+        let cut = fyrr_reader::storage::history_cut(store.as_ref(), &root).await?;
         let mut next = head.content.as_ref().map(|p| p.manifest.clone());
         let mut newer_sequence: Option<u64> = None;
         let mut rewinds = None;
@@ -63,11 +64,17 @@ impl RestoreHistory {
                 }
                 break;
             }
-            let m: ContentManifest = fyrr_reader::storage::read_contract(
-                store.as_ref(),
-                &Path::from(format!("{root}/{path}")),
-            )
-            .await?;
+            // Only the cut may be missing before it: a lost manifest is
+            // refused before anything changes.
+            let m: ContentManifest = if newer_sequence.is_some() {
+                fyrr_reader::storage::read_older_manifest(store.as_ref(), &root, &path).await?
+            } else {
+                fyrr_reader::storage::read_contract(
+                    store.as_ref(),
+                    &Path::from(format!("{root}/{path}")),
+                )
+                .await?
+            };
             if newer_sequence.is_some_and(|newer| m.sequence >= newer) {
                 return Err(WriterError::PublicationInvalid);
             }
@@ -91,32 +98,29 @@ impl RestoreHistory {
             next = m
                 .previous_publication_id
                 .map(|id| format!("publications/{id}.json"));
-            // The evidence covers this publication and every older one, which
-            // maintenance may have deleted. An indexed predecessor is cheaper.
-            let covered = match &next {
-                Some(path) => self.index.contains(Evidence::Manifest, path)?,
-                None => true,
-            };
-            if !covered
-                && let Some(evidence) = m.envelope_evidence
-                && let Some(checkpoint) =
-                    read_checkpoint(store.as_ref(), &root, &evidence.checkpoint).await?
-            {
-                for id in checkpoint
-                    .applied_envelope_ids
-                    .into_iter()
-                    .chain(evidence.applied_since)
-                {
-                    self.index.put(Evidence::Applied, &id, &(), true)?;
+            // The history ends at the recorded cut; the evidence of that
+            // manifest covers it and the manifests maintenance deleted.
+            if cut.as_ref() == Some(&m.publication_id) {
+                next = None;
+                if let Some(evidence) = m.envelope_evidence {
+                    let checkpoint = read_checkpoint(store.as_ref(), &root, &evidence.checkpoint)
+                        .await?
+                        .ok_or(WriterError::PublicationInvalid)?;
+                    for id in checkpoint
+                        .applied_envelope_ids
+                        .into_iter()
+                        .chain(evidence.applied_since)
+                    {
+                        self.index.put(Evidence::Applied, &id, &(), true)?;
+                    }
+                    for id in checkpoint
+                        .rejected_envelope_ids
+                        .into_iter()
+                        .chain(evidence.rejected_since)
+                    {
+                        self.index.put(Evidence::Rejected, &id, &(), true)?;
+                    }
                 }
-                for id in checkpoint
-                    .rejected_envelope_ids
-                    .into_iter()
-                    .chain(evidence.rejected_since)
-                {
-                    self.index.put(Evidence::Rejected, &id, &(), true)?;
-                }
-                break;
             }
         }
         self.index.promote()?;

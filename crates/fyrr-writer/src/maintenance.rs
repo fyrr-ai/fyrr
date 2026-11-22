@@ -23,7 +23,7 @@ use lance::dataset::optimize::{CompactionOptions, plan_compaction};
 use lance::dataset::transaction::{Operation, RewriteGroup};
 use lance::index::DatasetIndexExt;
 use lance_index::optimize::OptimizeOptions;
-use object_store::{ObjectStoreExt, path::Path};
+use object_store::{ObjectStoreExt, PutMode, path::Path};
 use std::collections::{BTreeMap, BTreeSet};
 
 // Bound catalog-wide index opens; merge half the budget to amortize each consolidation.
@@ -369,11 +369,11 @@ async fn superseded_history(
     let limit = config.writer.maintenance.step_max_duration.as_duration();
     let start = std::time::Instant::now();
     tokio::time::timeout(limit, async {
-        // Only a served manifest with evidence lets a walk stop before the
-        // older ones; the publication that ends this command adds it.
+        // The cut manifest's evidence stands for the manifests deleted before
+        // it; a manifest older than the evidence has none to stand for.
         if head.content.is_none()
             || kept
-                .first()
+                .last()
                 .is_none_or(|manifest| manifest.envelope_evidence.is_none())
         {
             return Ok(0);
@@ -393,25 +393,43 @@ async fn superseded_history(
             .collect();
         // Record the cut before anything goes: a crash leaves older manifests
         // that the next pass deletes, never a chain with a hole.
-        if let Some(oldest) = kept.last() {
+        if let Some(oldest) = kept.last()
+            && oldest.previous_publication_id.is_some()
+        {
             let (store, root) = namespace_store(config)?;
-            let current = fyrr_reader::storage::history_cut(store.as_ref(), &root).await?;
-            if oldest.previous_publication_id.is_some()
-                && current.as_ref() != Some(&oldest.publication_id)
-            {
+            let path = root.join(HISTORY_CUT_OBJECT);
+            // Read with its version: the write replaces exactly this cut, so a
+            // writer that lost the lease cannot move a newer one back.
+            let (current, mode) = match store.get(&path).await {
+                Ok(object) => {
+                    let version = crate::lease::version_of(&object.meta);
+                    let bytes = object
+                        .bytes()
+                        .await
+                        .map_err(|_| WriterError::StorageUnavailable)?;
+                    let cut: HistoryCut = fyrr_core::parse_contract(&bytes)
+                        .map_err(|_| WriterError::PublicationInvalid)?;
+                    (Some(cut.publication_id), PutMode::Update(version))
+                }
+                Err(object_store::Error::NotFound { .. }) => (None, PutMode::Create),
+                Err(_) => return Err(WriterError::StorageUnavailable),
+            };
+            if current.as_ref() != Some(&oldest.publication_id) {
                 let cut = HistoryCut {
                     schema_version: <HistoryCut as Contract>::VERSION,
                     namespace: config.namespace.name.as_str().to_owned(),
                     publication_id: oldest.publication_id.clone(),
                 };
                 lease.head().await?;
-                store
-                    .put(
-                        &root.join(HISTORY_CUT_OBJECT),
-                        fyrr_core::write_contract(&cut).into(),
-                    )
-                    .await
-                    .map_err(|_| WriterError::StorageUnavailable)?;
+                match crate::lease::cas_put(store.as_ref(), &path, &cut, mode).await {
+                    Ok(_) => {}
+                    // Another writer moved the cut: delete nothing from here.
+                    Err(
+                        object_store::Error::Precondition { .. }
+                        | object_store::Error::AlreadyExists { .. },
+                    ) => return Ok(0),
+                    Err(_) => return Err(WriterError::StorageUnavailable),
+                }
             }
         }
         let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
