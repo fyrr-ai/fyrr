@@ -151,8 +151,8 @@ rescores them with their stored float16 vectors.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `dense_rq_bits` | `1` | 1–9: RaBitQ bits per dimension of the vector index. More bits make the index candidates closer to the exact order at the cost of a larger index. The value is recorded when the namespace is created and fixed for its life. To change it, create a new namespace. |
-| `dense_partition_rows` | `550` | 32–4096: target rows per partition of the vector index. Smaller partitions scan fewer rows per probe but give more centroids to route over and a costlier index build; larger ones do the opposite. The value is recorded when the namespace is created and fixed for its life. To change it, create a new namespace. |
+| `dense_rq_bits` | `1` | 1–9: RaBitQ bits per dimension of the vector index. More bits make the index candidates closer to the exact order at the cost of a larger index. The value is recorded when the namespace is created and fixed for its life. To change it, create a new namespace. As a namespace grows, `writer maintain` (which `writer serve` runs) splits a partition above four times the target and joins one below a quarter of it, so the partition size stays near the target. |
+| `dense_partition_rows` | `550` | 32–4096: target rows per partition of the vector index. Smaller partitions scan fewer rows per probe but give more centroids to route over and a costlier index build; larger ones do the opposite. The value is recorded when the namespace is created and fixed for its life. To change it, create a new namespace. As a namespace grows, `writer maintain` (which `writer serve` runs) splits a partition above four times the target and joins one below a quarter of it, so the partition size stays near the target. |
 
 ### `[reader]` search and memory
 

@@ -155,7 +155,8 @@ async fn maintain_held(
         }
         compacted += 1;
     }
-    // One index name per interruptible step. Merge existing centroids, never retrain.
+    // One index name per interruptible step. Merge the segments; Lance splits and
+    // joins partitions toward the index's target size as it does, never retrains.
     let head = boundary(config, lease, history).await?;
     if head.content.is_some() {
         let dataset = pinned(config, &head).await?;
@@ -237,7 +238,7 @@ async fn merge_index(
     let step = async {
         let before = dataset.version().version;
         let mut work = lineage(lease, &head);
-        let mut options = OptimizeOptions::merge(segments);
+        let mut options = OptimizeOptions::merge(segments).with_partition_rebalancing();
         options.index_names = Some(vec![name]);
         options.retrain = false;
         commit::native_step(
