@@ -119,6 +119,18 @@ fn openapi() -> Value {
         "schema": {"type": "string", "maxLength": 63, "pattern": "^[a-z0-9-]*$"},
     }]);
     let paths = json!({
+        "/metrics": {"get": {
+            "tags": ["reader", "writer"],
+            "summary": "Prometheus metrics of the reader or the writer",
+            "description": "Served only on the extra listener of `reader.http.metrics_listen` or \
+                `writer.serve.metrics_listen`, with no credential. No label or value carries a \
+                namespace name, an identity, a query or document text.",
+            "security": [],
+            "responses": {"200": {
+                "description": "The Prometheus text format, version 0.0.4.",
+                "content": {"text/plain": {"schema": {"type": "string"}}},
+            }},
+        }},
         "/v1/namespaces": {"get": list},
         "/v1/namespaces/{namespace}": {
             "get": operation(
@@ -214,7 +226,7 @@ fn openapi() -> Value {
             "title": "fyrr HTTP API",
             "version": MCP_CONTRACT_VERSION.to_string(),
             "description": "The /v1/ routes of the reader (query, fetch, aggregate, report, list) and of \
-                the writer (documents, delete). The version is that of the MCP contract the \
+                the writer (documents, delete), and `/metrics` of the optional metrics listener. The version is that of the MCP contract the \
                 query and fetch bodies follow.",
         },
         "tags": [{"name": "reader"}, {"name": "writer"}],

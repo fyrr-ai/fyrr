@@ -58,7 +58,9 @@ pub async fn reject(config: &Config, envelope: &PreparedEnvelope, reason: &str) 
             .join(format!("{}.json", envelope.envelope_id)),
         &marker,
     )
-    .await
+    .await?;
+    fyrr_reader::metrics::add(&crate::telemetry::REJECTED_ENVELOPES, &[], 1);
+    Ok(())
 }
 pub async fn rejected(config: &Config, id: &str) -> Result<bool> {
     let (store, root) = namespace_store(config)?;

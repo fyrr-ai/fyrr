@@ -31,6 +31,10 @@
 | `GET /v1/namespaces/{namespace}` | None | The [namespace report](#namespace-report) |
 | `GET /v1/namespaces?prefix=` | None | The [namespace list](#listing-namespaces) |
 
+`GET /metrics` is not one of these routes: only the optional
+[metrics listener](operations.md#metrics) serves it, on its own address and
+without a credential. The OpenAPI file describes it too.
+
 `{namespace}` names the namespace to read: any namespace under
 `<storage root>/namespaces/`, not only `namespace.name`. The reader opens it
 on the first request, with the settings it is published with, and keeps it

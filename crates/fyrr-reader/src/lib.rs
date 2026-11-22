@@ -28,6 +28,7 @@ mod file_digest;
 mod fts_layout;
 mod generation;
 mod http;
+pub mod metrics;
 mod mirror;
 pub mod process_env;
 mod provider;

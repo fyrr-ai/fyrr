@@ -198,3 +198,79 @@ async fn identity_http_json_routes_share_the_mcp_gates_on_storage() {
         200
     );
 }
+
+#[tokio::test]
+#[ignore = "real HTTP reader executable, pinned JWKS and local storage; scripts/ci"]
+async fn identity_http_metrics_listener_counts_requests_without_identity_on_storage() {
+    let (_, issuer_root) = setup();
+    let issuer = Issuer::new(&issuer_root).await;
+    let (worker, _, root, _) = fixture(&issuer).await;
+    let namespace = fyrr_core::config::load(&worker)
+        .unwrap()
+        .config
+        .namespace
+        .name;
+    let reserve = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let metrics = reserve.local_addr().unwrap();
+    drop(reserve);
+    let reader = Reader::start_appended(&worker, &root, |address, base| {
+        format!("\n[identity.oidc]\nissuer='{0}'\naudience='fyrr-http-test'\njwks_url='{0}/jwks'\njwks_validity='1s'\njwks_refresh_interval='100ms'\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\nmetrics_listen='{metrics}'\n", issuer.url)
+    })
+    .await;
+    let token = issuer.token("subject-0", json!({}), json!({}));
+    let query = format!("/v1/namespaces/{namespace}/query");
+    let search = json!({"query":"fixture query","sources":["incremental"],"limit":5});
+    assert_eq!(post(&reader, &token, &query, &search).await.status(), 200);
+    let anonymous = reader
+        .client
+        .post(format!("{}{query}", reader.base))
+        .json(&search)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), 401);
+
+    // The public listener serves no metrics; the extra one needs no credential.
+    let public = reader
+        .client
+        .get(format!("{}/metrics", reader.base))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(public.status(), 200);
+    let scrape = reader
+        .client
+        .get(format!("http://{metrics}/metrics"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(scrape.status(), 200);
+    assert!(
+        scrape.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/plain; version=0.0.4")
+    );
+    let body = scrape.text().await.unwrap();
+    for line in [
+        "fyrr_reader_http_request_duration_seconds_count{route=\"search\",code=\"200\"} 1",
+        "fyrr_reader_http_request_duration_seconds_count{route=\"search\",code=\"401\"} 1",
+        "fyrr_reader_open_namespaces 1",
+        "# TYPE fyrr_reader_queue_wait_seconds histogram",
+        "# TYPE fyrr_reader_object_store_requests_total counter",
+        "# TYPE fyrr_reader_object_store_bytes_total counter",
+        "# TYPE fyrr_reader_mirror_bytes gauge",
+    ] {
+        assert!(body.contains(line), "{line}\n{body}");
+    }
+    // Nothing that names a namespace, a caller, a query or a document.
+    for private in [
+        namespace.as_str(),
+        "subject-0",
+        "fixture query",
+        "fixture document",
+        "http-0",
+    ] {
+        assert!(!body.contains(private), "{private}\n{body}");
+    }
+}

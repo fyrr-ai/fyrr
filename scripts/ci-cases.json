@@ -1774,6 +1774,10 @@
         "tier": "full",
         "seconds": 33.382
       },
+      "full:fyrr:test:dense_path/publication_lifecycle::serve_metrics_count_publications_without_identity_on_storage": {
+        "tier": "full",
+        "seconds": 20
+      },
       "full:fyrr:test:dense_path/publication_lifecycle::serve_runs_a_source_again_when_a_rejection_is_published_on_storage": {
         "tier": "full",
         "seconds": 40
@@ -1966,6 +1970,10 @@
         "seconds": 47.941
       },
       "full:fyrr:test:dense_path/http_json::identity_http_json_routes_share_the_mcp_gates_on_storage": {
+        "tier": "full",
+        "seconds": 30
+      },
+      "full:fyrr:test:dense_path/http_json::identity_http_metrics_listener_counts_requests_without_identity_on_storage": {
         "tier": "full",
         "seconds": 30
       },

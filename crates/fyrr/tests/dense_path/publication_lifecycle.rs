@@ -593,3 +593,69 @@ async fn serve_runs_a_source_again_when_a_rejection_is_published_on_storage() {
     assert!(observed, "the rejection did not make the source read again");
     assert!(result.status.success(), "{}", report(&result));
 }
+
+#[tokio::test]
+#[ignore = "real CLI service, metrics listener and RustFS; scripts/ci"]
+async fn serve_metrics_count_publications_without_identity_on_storage() {
+    use std::sync::{Arc, atomic::AtomicBool};
+    let (worker, commit, root) = fixture();
+    worker_sync(
+        &worker,
+        &["incremental", "--kind", "permissions", "--kind", "members"],
+    );
+    publish(&commit);
+    let namespace = fyrr_core::config::load(&worker)
+        .unwrap()
+        .config
+        .namespace
+        .name;
+    let reserve = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let metrics = reserve.local_addr().unwrap();
+    drop(reserve);
+    let mut text = std::fs::read_to_string(&worker).unwrap();
+    text.push_str(&format!(
+        "\n[writer.commit]\ncoalescing_timer='1s'\n[writer.serve]\nmetrics_listen='{metrics}'\n"
+    ));
+    let service = root.join("service.toml");
+    std::fs::write(&service, text).unwrap();
+    input(
+        &root,
+        json!({"epoch":1,"content":[[doc("healthy","r1","fixture document 1")]]}),
+    );
+    let mut command = super::coordination::worker_command(&service);
+    command.args(["writer", "serve", "--jobs", "1", "--timeout", "4s"]);
+    let mut process =
+        super::coordination::CommitProcess::from_command(command, Arc::new(AtomicBool::new(true)));
+    let client = reqwest::Client::new();
+    let mut body = String::new();
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if let Ok(response) = client.get(format!("http://{metrics}/metrics")).send().await {
+            body = response.text().await.unwrap_or_default();
+            if body.contains("fyrr_writer_commit_rounds_total{outcome=\"published\"} ") {
+                break;
+            }
+        }
+    }
+    Command::new("kill")
+        .args(["-TERM", &process.child().id().to_string()])
+        .status()
+        .unwrap();
+    let result = process.finish();
+    assert!(result.status.success(), "{}", report(&result));
+    for line in [
+        "fyrr_writer_commit_rounds_total{outcome=\"published\"} ",
+        "# TYPE fyrr_writer_commit_duration_seconds histogram",
+        "# TYPE fyrr_writer_pending_envelopes gauge",
+    ] {
+        assert!(body.contains(line), "{line}\n{body}");
+    }
+    for private in [
+        namespace.as_str(),
+        "healthy",
+        "fixture document",
+        "incremental",
+    ] {
+        assert!(!body.contains(private), "{private}\n{body}");
+    }
+}

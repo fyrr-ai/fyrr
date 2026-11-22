@@ -265,18 +265,27 @@ impl Namespaces {
         name: &str,
         create: bool,
     ) -> Result<Option<Arc<tokio::sync::OnceCell<Arc<Served>>>>> {
-        place(
-            &mut crate::sync::lock(&self.open),
-            name,
-            create,
-            MAX_OPEN_NAMESPACES,
-        )
+        let mut open = crate::sync::lock(&self.open);
+        let cell = place(&mut open, name, create, MAX_OPEN_NAMESPACES);
+        // The configured namespace is always open.
+        crate::metrics::set(
+            &crate::metrics::OPEN_NAMESPACES,
+            &[],
+            i64::try_from(open.len() + 1).unwrap_or(i64::MAX),
+        );
+        cell
     }
     /// Closes the namespace used least recently that serves nothing, for the
     /// memory it holds. Whether there was one.
     fn close_idle(&self) -> bool {
-        let closed = close_idle(&mut crate::sync::lock(&self.open));
+        let mut open = crate::sync::lock(&self.open);
+        let closed = close_idle(&mut open);
         if closed {
+            crate::metrics::set(
+                &crate::metrics::OPEN_NAMESPACES,
+                &[],
+                i64::try_from(open.len() + 1).unwrap_or(i64::MAX),
+            );
             crate::telemetry::emit(format_args!(
                 "telemetry namespace=closed reason=memory_budget"
             ));
@@ -540,11 +549,29 @@ fn bearer(request: &Request) -> Result<&str, ()> {
     }
     Ok(token)
 }
+/// The route of a request for the metrics: a fixed word, never the namespace.
+fn route_label(request: &Request) -> &'static str {
+    match request.uri().path() {
+        "/mcp" => "mcp",
+        "/readyz" => "readyz",
+        "/admin/refresh" => "refresh",
+        path if path.starts_with("/.well-known/") => "metadata",
+        _ => json_tool(request).map_or("other", |(tool, _, _)| tool),
+    }
+}
 async fn boundary(State(state): State<HttpState>, mut request: Request, next: Next) -> Response {
-    request.extensions_mut().insert(tokio::time::Instant::now());
-    tokio::time::timeout(REQUEST_TIMEOUT, boundary_inner(state, request, next))
+    let route = route_label(&request);
+    let arrived = tokio::time::Instant::now();
+    request.extensions_mut().insert(arrived);
+    let response = tokio::time::timeout(REQUEST_TIMEOUT, boundary_inner(state, request, next))
         .await
-        .unwrap_or_else(|_| error(StatusCode::GATEWAY_TIMEOUT, DeadlineExceeded))
+        .unwrap_or_else(|_| error(StatusCode::GATEWAY_TIMEOUT, DeadlineExceeded));
+    crate::metrics::observe(
+        &crate::metrics::HTTP_REQUESTS,
+        &[("route", route), ("code", response.status().as_str())],
+        arrived.elapsed(),
+    );
+    response
 }
 async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> Response {
     let h = state.http();
@@ -1160,6 +1187,15 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&h.listen)
         .await
         .map_err(|_| TransportUnavailable)?;
+    let metrics = match &h.metrics_listen {
+        Some(address) => Some(
+            crate::metrics::listen(address)
+                .await
+                .map_err(|_| TransportUnavailable)?,
+        ),
+        None => None,
+    };
+    crate::metrics::set(&crate::metrics::OPEN_NAMESPACES, &[], 1);
     let api_keys = crate::storage::HeadCache::for_file(&config, crate::storage::API_KEYS_FILE);
     let admission = Served::admission_of(&reader, api_keys.clone());
     let (process, budget) = (
@@ -1270,6 +1306,9 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
         ));
     }
     drop(listener);
+    if let Some(metrics) = metrics {
+        metrics.abort();
+    }
     let finish = async { while connections.join_next().await.is_some() {} };
     if tokio::time::timeout(DRAIN_TIMEOUT, finish).await.is_err() {
         connections.abort_all();

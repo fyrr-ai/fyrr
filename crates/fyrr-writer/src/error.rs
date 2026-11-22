@@ -66,6 +66,7 @@ writer_errors! {
     AdminListenUnavailable => ("admin_listen_unavailable", false),
     AdminServiceFailed => ("admin_service_failed", false),
     AdminTlsRequired => ("admin_tls_required", false),
+    MetricsListenUnavailable => ("metrics_listen_unavailable", false),
     ApiNamespaceHasSources => ("api_namespace_has_sources", false),
     WriteApiNeedsCommitter => ("write_api_needs_committer", false),
     AuthorizationUnavailable => ("authorization_unavailable", false),
