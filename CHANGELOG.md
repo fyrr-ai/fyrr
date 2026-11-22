@@ -14,9 +14,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `not_contains` and `not_matches`. A prefix is answered from the B-tree of a
   `string` attribute and a substring or an expression from its n-gram index
   (`ngram = true`); the negations and the patterns without a literal of three
-  characters are scans bounded by the request deadline. An expression is
-  bounded to 512 bytes and a compiled size of 256 KiB. No case-insensitive test
-  is offered. See [Text tests](docs/mcp-tools.md#text-tests).
+  alphanumeric characters are scans bounded by the request deadline. A value is
+  never empty, and an expression is bounded to 512 bytes and a compiled size of
+  256 KiB. No case-insensitive test is offered. The write conditions and the
+  filters of `delete_where` and `patch_where` take the same tests. See
+  [Text tests](docs/mcp-tools.md#text-tests).
 - `POST /v1/namespaces/{namespace}/aggregate` on the reader computes `count`,
   `sum`, `avg`, `min` and `max` over the documents a caller may read and a
   `filter` selects, optionally grouped by up to four scalar fields, in key

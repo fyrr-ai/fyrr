@@ -159,16 +159,19 @@ each with one text value:
 | `matches` | holds a match of the regular expression |
 | `not_matches` | holds no match of the regular expression |
 
-The value is plain text: `%`, `_` and `\` mean nothing in it. A regular
+The value is plain text, never empty: `%`, `_` and `\` mean nothing in it. A regular
 expression is in the syntax of the Rust [`regex`](https://docs.rs/regex)
 crate, which has no look-around and no back-references. It matches anywhere in
 the text, so anchor it with `^` and `$`. It takes at most 512 bytes, and one
 that does not compile, or whose compiled form is over 256 KiB, is
 `invalid_argument`; its matching time is linear in the text. Matching is
 case-sensitive, and no case-insensitive operator is offered; `(?i)` inside a
-regular expression is the only way, and it is a scan. A document without the
-attribute (`null`) matches none of the six, `not_starts_with`, `not_contains`
-and `not_matches` included.
+regular expression is the only way. A document without the attribute (`null`)
+matches none of the six, `not_starts_with`, `not_contains` and `not_matches`
+included, and `not` of a test leaves it out too. The same tests are valid in
+the filter of a write [condition](http-api.md#conditions), of `delete_where`
+and of `patch_where`.
+
 
 How a test runs depends on the indexes of the field:
 
@@ -177,12 +180,15 @@ How a test runs depends on the indexes of the field:
 - `contains` and `matches` are answered from an n-gram index, which an
   attribute has when its schema says `ngram = true`
   ([indexes](tuning.md#namespaceattribute_indexes)), and only when the pattern
-  holds a literal of at least three characters. The index names the candidate
-  documents and the reader checks each of them against the pattern.
+  holds a literal of at least three alphanumeric characters. The index names
+  the candidate documents and the reader checks each of them against the
+  pattern.
+- An attribute that has both a B-tree and an n-gram index is not promised
+  either: the engine may scan it, and the documents it returns are the same.
 - The negations are scans, and so is every test that no index answers: a
-  pattern with no literal of at least three characters (`ab`, `a.b`), an
-  attribute without the index, and a built-in field, which has no n-gram
-  index. A scan reads the column of every document the caller may read and is
+  pattern with no literal of at least three alphanumeric characters (`ab`,
+  `a.b`, `_-_`), an attribute without the index, and a built-in field, which
+  has no n-gram index. A scan reads the column of every document the caller may read and is
   bounded by the request's `deadline_ms`.
 
 A comparison with `null` as its value tests for a missing value: `eq` matches

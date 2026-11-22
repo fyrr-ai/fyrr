@@ -718,6 +718,36 @@ async fn a_text_test_selects_the_rows_whose_text_it_names() {
             Box::new(move |r| has(r, &|n| n.contains('\\'))),
         ),
         (
+            "matches takes an escaped backslash",
+            on("matches", r"a\\b"),
+            Box::new(move |r| has(r, &|n| n.contains('\\'))),
+        ),
+        (
+            "matches takes a backslash",
+            on("matches", r"\\"),
+            Box::new(move |r| has(r, &|n| n.contains('\\'))),
+        ),
+        (
+            "starts_with takes a backslash",
+            on("starts_with", "a\\"),
+            Box::new(move |r| has(r, &|n| n.starts_with("a\\"))),
+        ),
+        (
+            "matches everything but a missing value",
+            on("matches", ".*"),
+            Box::new(move |r| has(r, &|_| true)),
+        ),
+        (
+            "not_matches of everything is empty",
+            on("not_matches", ".*"),
+            Box::new(|_| false),
+        ),
+        (
+            "not of a match of everything is empty",
+            json!({"not": on("matches", ".*")}),
+            Box::new(|_| false),
+        ),
+        (
             "not_matches leaves out a missing value",
             on("not_matches", "^Alpha"),
             Box::new(move |r| has(r, &|n| !n.starts_with("Alpha"))),
@@ -733,7 +763,12 @@ async fn a_text_test_selects_the_rows_whose_text_it_names() {
         let expected: BTreeSet<usize> = all.iter().copied().filter(|r| matches(*r)).collect();
         assert_eq!(
             expected.is_empty(),
-            *name == "contains is case-sensitive",
+            [
+                "contains is case-sensitive",
+                "not_matches of everything is empty",
+                "not of a match of everything is empty"
+            ]
+            .contains(name),
             "{name}"
         );
         assert_eq!(
@@ -755,11 +790,21 @@ fn a_text_test_compiles_to_one_call_and_refuses_what_it_cannot_bound() {
     };
     for (field, op, value, sql) in [
         ("note", "starts_with", json!("it's"), "starts_with(`note`,'it''s')"),
+        ("note", "matches", json!("a"), "regexp_like(`note`,'(?-m)a','m')"),
         ("note", "not_starts_with", json!(r"a\b"), r"NOT starts_with(`note`,'a\b')"),
         ("note", "contains", json!("50%_"), "contains(`note`,'50%_')"),
-        ("note", "not_contains", json!(""), "NOT contains(`note`,'')"),
-        ("note", "matches", json!(r"^a\d+'"), r"regexp_like(`note`,'^a\d+''')"),
-        ("note", "not_matches", json!("x|y"), "NOT regexp_like(`note`,'x|y')"),
+        (
+            "note",
+            "matches",
+            json!(r"^a\d+'"),
+            r"regexp_like(`note`,'(?-m)^a\d+''','m')",
+        ),
+        (
+            "note",
+            "not_matches",
+            json!("x|y"),
+            "NOT regexp_like(`note`,'(?-m)x|y','m')",
+        ),
         ("author", "starts_with", json!("a"), "starts_with(`author`,'a')"),
         ("source_id", "contains", json!("s"), "contains(`source_id`,'s')"),
     ] {
@@ -779,6 +824,13 @@ fn a_text_test_compiles_to_one_call_and_refuses_what_it_cannot_bound() {
         ("note", "matches", json!("a{2,1}")),
         ("note", "matches", json!(huge)),
         ("note", "not_matches", json!(huge)),
+        // An empty value, which DataFusion would turn into `IS NOT NULL`.
+        ("note", "starts_with", json!("")),
+        ("note", "not_starts_with", json!("")),
+        ("note", "contains", json!("")),
+        ("note", "not_contains", json!("")),
+        ("note", "matches", json!("")),
+        ("note", "not_matches", json!("")),
         // A value of another type, a missing value, and a field that is not a string.
         ("note", "starts_with", json!(1)),
         ("note", "starts_with", json!(null)),
