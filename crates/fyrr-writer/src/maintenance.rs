@@ -471,9 +471,6 @@ pub async fn verify(config: &Config) -> Result<serde_json::Value> {
         )),
     )
     .await?;
-    if manifest.embedding != fyrr_reader::embedding::identity(&config.embedding) {
-        return Err(WriterError::EmbeddingProfileMismatch);
-    }
     let dataset = pinned(config, &head).await?;
     let mut stream = dataset
         .scan()

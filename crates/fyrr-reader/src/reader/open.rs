@@ -91,19 +91,26 @@ impl PreparedReader {
             (&policy_cache, &identity_cache),
         )
         .await?;
-        if manifest.embedding != policy.settings.embedding {
+        // The publication was built with the settings the namespace records.
+        let settings = &policy.settings;
+        if manifest.embedding != settings.embedding {
             return Err(EmbeddingProfileMismatch);
+        }
+        if manifest.dense_rq_bits != settings.dense_rq_bits
+            || manifest.dense_partition_rows != settings.dense_partition_rows
+        {
+            return Err(IncompatibleIndex);
         }
         // The namespace's own settings, not this process's file, define how it is read.
         // A namespace with a reranker needs this file's `[namespace.rerank]`.
+        let process_config = Arc::new(config.clone());
         let config = &config
             .with_settings(&policy.settings)
             .ok_or(IncompatibleIndex)?;
         let query_embeddings = match query_embeddings {
             Some(shared) if shared.serves(&config.embedding) => shared,
-            // A namespace recreated with another embedding profile.
-            Some(_) => return Err(EmbeddingProfileMismatch),
-            None => embedding::QueryEmbeddings::new(
+            // The first open, or a namespace recreated with another profile.
+            _ => embedding::QueryEmbeddings::new(
                 &config.embedding,
                 preparation_budget.permits.clone(),
             )?,
@@ -130,6 +137,7 @@ impl PreparedReader {
             #[cfg(test)]
             stage_trace: None,
             config: config.clone(),
+            process_config,
             dataset,
             manifest,
             head,
@@ -345,6 +353,7 @@ impl PreparedReader {
         &self,
     ) -> impl std::future::Future<Output = Result<Self>> + Send + 'static {
         let config = self.config.clone();
+        let process_config = self.process_config.clone();
         let manifest = self.manifest.clone();
         let head = self.head.clone();
         let policy = self.policy.clone();
@@ -394,6 +403,7 @@ impl PreparedReader {
                 #[cfg(test)]
                 stage_trace: None,
                 config: config.clone(),
+                process_config,
                 dataset,
                 manifest: manifest.clone(),
                 head: head.clone(),

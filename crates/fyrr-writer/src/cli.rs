@@ -189,7 +189,8 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
         _ => {}
     }
     // Creating or deleting a namespace starts from the file's own settings.
-    // A connector sync only starts workers, which take the settings themselves.
+    // A connector sync only starts workers, which take the settings themselves,
+    // and a commit takes them from the policy it reads at each tick.
     let existing = !matches!(
         command,
         WriterCommand::Namespace { .. }
@@ -197,6 +198,8 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
                 directory: false,
                 ..
             }
+            | WriterCommand::Commit { receipt: None, .. }
+            | WriterCommand::Serve { .. }
     );
     with_config(path, existing, |loaded| {
         let config = &loaded.config;

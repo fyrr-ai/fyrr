@@ -103,9 +103,6 @@ pub(super) fn prepared_kind(
                 &root,
                 &content.manifest,
             ))?;
-            if manifest.embedding != fyrr_reader::embedding::identity(&config.embedding) {
-                return Err(WriterError::EmbeddingProfileMismatch);
-            }
             if manifest.chunk_profile != crate::prepare::chunk_identity() {
                 return Err(WriterError::ChunkProfileMismatch);
             }

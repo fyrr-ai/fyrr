@@ -23,7 +23,8 @@ pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
     #[cfg(test)]
     let observed_native_slots = native_slots.clone();
     let template = reader;
-    let config = template.config.clone();
+    // Each refresh lays the namespace's settings over the process configuration again.
+    let config = template.process_config.as_ref().clone();
     let mut idle = VecDeque::new();
     for _ in 0..worker_count {
         idle.push_back(template.worker().await?);

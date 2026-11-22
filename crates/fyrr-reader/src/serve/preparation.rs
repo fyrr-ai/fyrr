@@ -179,7 +179,8 @@ pub(super) fn prepare_version(
                 context.budget.clone(),
             )
             .await?;
-            prepared.reranker = context.reranker.clone();
+            // The process-lifetime spend counter, unless the namespace gained a reranker.
+            prepared.reranker = context.reranker.clone().or(prepared.reranker.take());
             #[cfg(test)]
             let prepared = {
                 let mut prepared = prepared;

@@ -15,6 +15,10 @@ mod api_key;
 mod storage;
 mod validation;
 
+pub(crate) use validation::{
+    namespace_settings as check_namespace, rerank_settings as check_rerank,
+};
+
 pub use api_key::{API_KEY_PREFIX, ApiKeyConfig, is_api_key_secret};
 pub use storage::StorageBackend;
 
@@ -237,11 +241,66 @@ impl RerankConfig {
     }
 }
 
+/// The persisted copy of [`RescoreDepth`].
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum RescoreSettings {
+    #[default]
+    Legacy,
+    Fixed {
+        candidates: usize,
+    },
+    Adaptive {
+        min_candidates: usize,
+        max_candidates: usize,
+        min_gap: f64,
+    },
+}
+impl RescoreSettings {
+    fn is_legacy(&self) -> bool {
+        *self == Self::Legacy
+    }
+}
+impl From<&RescoreDepth> for RescoreSettings {
+    fn from(depth: &RescoreDepth) -> Self {
+        match *depth {
+            RescoreDepth::Legacy => Self::Legacy,
+            RescoreDepth::Fixed { candidates } => Self::Fixed { candidates },
+            RescoreDepth::Adaptive {
+                min_candidates,
+                max_candidates,
+                min_gap,
+            } => Self::Adaptive {
+                min_candidates,
+                max_candidates,
+                min_gap,
+            },
+        }
+    }
+}
+impl From<&RescoreSettings> for RescoreDepth {
+    fn from(settings: &RescoreSettings) -> Self {
+        match *settings {
+            RescoreSettings::Legacy => Self::Legacy,
+            RescoreSettings::Fixed { candidates } => Self::Fixed { candidates },
+            RescoreSettings::Adaptive {
+                min_candidates,
+                max_candidates,
+                min_gap,
+            } => Self::Adaptive {
+                min_candidates,
+                max_candidates,
+                min_gap,
+            },
+        }
+    }
+}
+
 /// The persisted copy of [`RetrievalConfig`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RetrievalSettings {
-    #[serde(default, skip_serializing_if = "RescoreDepth::is_legacy")]
-    pub rescore_depth: RescoreDepth,
+    #[serde(default, skip_serializing_if = "RescoreSettings::is_legacy")]
+    pub rescore_depth: RescoreSettings,
     pub dense_weight: f64,
     pub dense_candidates: usize,
     pub lexical_candidates: usize,
@@ -251,7 +310,7 @@ pub struct RetrievalSettings {
 impl RetrievalConfig {
     pub fn settings(&self) -> RetrievalSettings {
         RetrievalSettings {
-            rescore_depth: self.rescore_depth.clone(),
+            rescore_depth: (&self.rescore_depth).into(),
             dense_weight: self.dense_weight,
             dense_candidates: self.dense_candidates,
             lexical_candidates: self.lexical_candidates,
@@ -263,7 +322,7 @@ impl RetrievalConfig {
 impl From<&RetrievalSettings> for RetrievalConfig {
     fn from(settings: &RetrievalSettings) -> Self {
         Self {
-            rescore_depth: settings.rescore_depth.clone(),
+            rescore_depth: (&settings.rescore_depth).into(),
             dense_weight: settings.dense_weight,
             dense_candidates: settings.dense_candidates,
             lexical_candidates: settings.lexical_candidates,

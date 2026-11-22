@@ -76,9 +76,10 @@ restored; see [operations](operations.md#restore-and-rollback).
 
 Every artifact carries a `major.minor` contract version. An unknown major
 is refused with `publication_invalid` at startup or
-`authorization_unavailable` on a live request. A publication whose indexes
-does not match its recorded settings is refused with `incompatible_index`. The exact formats are generated into `schemas/`
-and `fixtures/`.
+`authorization_unavailable` on a live request. A publication whose indexes or
+settings do not match the settings recorded in the namespace's policy artifact
+is refused with `incompatible_index`. The exact formats are generated into
+`schemas/` and `fixtures/`.
 
 ## Local storage
 

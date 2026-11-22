@@ -249,7 +249,7 @@
       "type": "object",
       "properties": {
         "rescore_depth": {
-          "$ref": "#/$defs/RescoreDepth"
+          "$ref": "#/$defs/RescoreSettings"
         },
         "dense_weight": {
           "type": "number",
@@ -285,7 +285,7 @@
       ],
       "description": "The persisted copy of [`RetrievalConfig`]."
     },
-    "RescoreDepth": {
+    "RescoreSettings": {
       "oneOf": [
         {
           "type": "object",
@@ -297,12 +297,10 @@
           },
           "required": [
             "mode"
-          ],
-          "additionalProperties": false
+          ]
         },
         {
           "type": "object",
-          "additionalProperties": false,
           "properties": {
             "mode": {
               "type": "string",
@@ -321,7 +319,6 @@
         },
         {
           "type": "object",
-          "additionalProperties": false,
           "properties": {
             "mode": {
               "type": "string",
@@ -347,10 +344,10 @@
             "min_candidates",
             "max_candidates",
             "min_gap"
-          ],
-          "description": "Expand when the exact cosine gap at the retained boundary is small."
+          ]
         }
-      ]
+      ],
+      "description": "The persisted copy of [`RescoreDepth`]."
     },
     "CompositionSettings": {
       "type": "object",

@@ -219,6 +219,48 @@ async fn tools_rerank_default_and_success_on_storage() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real executable and local storage; scripts/ci"]
+async fn tools_rerank_settings_come_from_the_namespace_on_storage() {
+    let provider = Provider::open().await;
+    let (config, root, _) = tools::fixture();
+    let enabled = configured(&config, &provider, 1.0, 1000, "5s", "");
+    let mut client = Mcp::open(&enabled);
+    let expected = roots(&body(client.call("search", query())));
+    drop(client);
+    // Another weight and candidate count in a process's file change nothing.
+    let text = std::fs::read_to_string(&enabled).unwrap();
+    let other = enabled.with_file_name("other-rerank.toml");
+    std::fs::write(
+        &other,
+        text.replace("candidates=10", "candidates=2")
+            .replace("weight=1\n", "weight=0\n"),
+    )
+    .unwrap();
+    let mut client = Mcp::open(&other);
+    assert_eq!(roots(&body(client.call("search", query()))), expected);
+    drop(client);
+    // A file without a reranker can neither serve nor write the namespace.
+    let bare = enabled.with_file_name("bare-rerank.toml");
+    std::fs::write(&bare, text.split("\n[namespace.rerank]").next().unwrap()).unwrap();
+    for (args, code) in [
+        (["reader", "search", "exactneedle"], "incompatible_index"),
+        (
+            ["writer", "commit", "--stage-timings"],
+            "configuration_invalid",
+        ),
+    ] {
+        let output = coordination::host_command(&bare)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{args:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(code), "{args:?}: {error}");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real executable and local storage; scripts/ci"]
 async fn tools_rerank_denied_and_listing_make_no_calls_on_storage() {
     let provider = Provider::open().await;
     let (config, root, _) = tools::fixture();

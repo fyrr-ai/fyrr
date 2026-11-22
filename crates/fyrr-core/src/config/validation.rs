@@ -11,15 +11,13 @@ impl LoadedConfig {
         api_key::validate(config, &mut error);
         identity_urls_and_http(config, &mut error);
         patterns(config, &mut error);
-        dense_weight(config, &mut error);
+        namespace_settings(&config.namespace, &mut error);
         embedding(config, &mut error);
-        rescore_depth(config, &mut error);
         ranges(config, &mut error);
         storage(config, &mut error);
         storage::local(config, &self.raw, &mut error);
         embedding_endpoint(config, &mut error);
         reader(config, &mut error);
-        composition(config, &mut error);
         writer_bounds(config, &mut error);
         positive_intervals(config, &mut error);
         administration(config, &mut error);
@@ -46,15 +44,7 @@ fn rerank(config: &Config, error: &mut impl FnMut(&str, String)) {
                 "requires HTTPS or loopback HTTP without credentials, query or fragment".into(),
             );
         }
-        if rerank.model.trim().is_empty() || rerank.model.len() > 256 {
-            error("namespace.rerank.model", "must contain 1–256 bytes".into());
-        }
-        if let Some(message) = range_issue(rerank.candidates as u64, 1, RESULT_SLOTS_MAX) {
-            error("namespace.rerank.candidates", message);
-        }
-        if !rerank.weight.is_finite() || !(0.0..=1.0).contains(&rerank.weight) {
-            error("namespace.rerank.weight", "must be between 0 and 1".into());
-        }
+        rerank_settings(&rerank.settings(), error);
         if !(std::time::Duration::from_millis(1)..=std::time::Duration::from_secs(300))
             .contains(&rerank.deadline.as_duration())
         {
@@ -69,12 +59,25 @@ fn rerank(config: &Config, error: &mut impl FnMut(&str, String)) {
                 "must be positive".into(),
             );
         }
-        if let Some(chars) = rerank.text_chars
-            && let Some(message) =
-                range_issue(chars as u64, RERANK_TEXT_CHARS_MIN, RERANK_TEXT_CHARS_MAX)
-        {
-            error("namespace.rerank.text_chars", message);
-        }
+    }
+}
+
+/// What a namespace records of its reranker.
+pub(crate) fn rerank_settings(rerank: &RerankSettings, error: &mut impl FnMut(&str, String)) {
+    if rerank.model.trim().is_empty() || rerank.model.len() > 256 {
+        error("namespace.rerank.model", "must contain 1–256 bytes".into());
+    }
+    if let Some(message) = range_issue(rerank.candidates as u64, 1, RESULT_SLOTS_MAX) {
+        error("namespace.rerank.candidates", message);
+    }
+    if !rerank.weight.is_finite() || !(0.0..=1.0).contains(&rerank.weight) {
+        error("namespace.rerank.weight", "must be between 0 and 1".into());
+    }
+    if let Some(chars) = rerank.text_chars
+        && let Some(message) =
+            range_issue(chars as u64, RERANK_TEXT_CHARS_MIN, RERANK_TEXT_CHARS_MAX)
+    {
+        error("namespace.rerank.text_chars", message);
     }
 }
 
@@ -228,9 +231,21 @@ fn patterns(config: &Config, error: &mut impl FnMut(&str, String)) {
     }
 }
 
-fn dense_weight(config: &Config, error: &mut impl FnMut(&str, String)) {
-    if !config.namespace.retrieval.dense_weight.is_finite()
-        || !(0.0..=1.0).contains(&config.namespace.retrieval.dense_weight)
+/// What a namespace is created with: the same bounds for a configuration file
+/// and for the settings a policy artifact records.
+pub(crate) fn namespace_settings(
+    namespace: &NamespaceConfig,
+    error: &mut impl FnMut(&str, String),
+) {
+    dense_weight(namespace, error);
+    rescore_depth(namespace, error);
+    composition(namespace, error);
+    namespace_ranges(namespace, error);
+}
+
+fn dense_weight(namespace: &NamespaceConfig, error: &mut impl FnMut(&str, String)) {
+    if !namespace.retrieval.dense_weight.is_finite()
+        || !(0.0..=1.0).contains(&namespace.retrieval.dense_weight)
     {
         error(
             "namespace.retrieval.dense_weight",
@@ -293,8 +308,8 @@ fn embedding(config: &Config, error: &mut impl FnMut(&str, String)) {
     }
 }
 
-fn rescore_depth(config: &Config, error: &mut impl FnMut(&str, String)) {
-    match &config.namespace.retrieval.rescore_depth {
+fn rescore_depth(namespace: &NamespaceConfig, error: &mut impl FnMut(&str, String)) {
+    match &namespace.retrieval.rescore_depth {
         RescoreDepth::Legacy => {}
         RescoreDepth::Fixed { candidates } => {
             if !(1..=1200).contains(candidates) {
@@ -324,6 +339,58 @@ fn rescore_depth(config: &Config, error: &mut impl FnMut(&str, String)) {
     }
 }
 
+fn namespace_ranges(namespace: &NamespaceConfig, error: &mut impl FnMut(&str, String)) {
+    let ranges = [
+        (
+            "namespace.retrieval.dense_candidates".into(),
+            namespace.retrieval.dense_candidates as u64,
+            1,
+            RESULT_SLOTS_MAX,
+        ),
+        (
+            "namespace.retrieval.lexical_candidates".into(),
+            namespace.retrieval.lexical_candidates as u64,
+            1,
+            LEXICAL_CANDIDATES_MAX,
+        ),
+        (
+            "namespace.retrieval.source_cap".into(),
+            namespace.retrieval.source_cap as u64,
+            0,
+            RESULT_SLOTS_MAX,
+        ),
+        (
+            "namespace.retrieval.max_documents".into(),
+            namespace.retrieval.max_documents as u64,
+            1,
+            MAX_DOCUMENTS_MAX,
+        ),
+        (
+            "namespace.fts_max_token_length".to_owned(),
+            u64::from(namespace.fts_max_token_length),
+            1,
+            FTS_MAX_TOKEN_LENGTH_MAX,
+        ),
+        (
+            "namespace.dense_rq_bits".to_owned(),
+            u64::from(namespace.dense_rq_bits),
+            1,
+            DENSE_RQ_BITS_MAX,
+        ),
+        (
+            "namespace.dense_partition_rows".to_owned(),
+            u64::from(namespace.dense_partition_rows),
+            DENSE_PARTITION_ROWS_MIN,
+            DENSE_PARTITION_ROWS_MAX,
+        ),
+    ];
+    for (path, value, min, max) in ranges {
+        if let Some(message) = range_issue(value, min, max) {
+            error(&path, message);
+        }
+    }
+}
+
 fn ranges(config: &Config, error: &mut impl FnMut(&str, String)) {
     let mut ranges = vec![
         (
@@ -331,48 +398,6 @@ fn ranges(config: &Config, error: &mut impl FnMut(&str, String)) {
             config.embedding.query_cache_max_bytes,
             0,
             QUERY_CACHE_MAX_BYTES,
-        ),
-        (
-            "namespace.retrieval.dense_candidates".into(),
-            config.namespace.retrieval.dense_candidates as u64,
-            1,
-            RESULT_SLOTS_MAX,
-        ),
-        (
-            "namespace.retrieval.lexical_candidates".into(),
-            config.namespace.retrieval.lexical_candidates as u64,
-            1,
-            LEXICAL_CANDIDATES_MAX,
-        ),
-        (
-            "namespace.retrieval.source_cap".into(),
-            config.namespace.retrieval.source_cap as u64,
-            0,
-            RESULT_SLOTS_MAX,
-        ),
-        (
-            "namespace.retrieval.max_documents".into(),
-            config.namespace.retrieval.max_documents as u64,
-            1,
-            MAX_DOCUMENTS_MAX,
-        ),
-        (
-            "namespace.fts_max_token_length".to_owned(),
-            u64::from(config.namespace.fts_max_token_length),
-            1,
-            FTS_MAX_TOKEN_LENGTH_MAX,
-        ),
-        (
-            "namespace.dense_rq_bits".to_owned(),
-            u64::from(config.namespace.dense_rq_bits),
-            1,
-            DENSE_RQ_BITS_MAX,
-        ),
-        (
-            "namespace.dense_partition_rows".to_owned(),
-            u64::from(config.namespace.dense_partition_rows),
-            DENSE_PARTITION_ROWS_MIN,
-            DENSE_PARTITION_ROWS_MAX,
         ),
         (
             "embedding.dimensions".to_owned(),
@@ -527,8 +552,8 @@ fn reader(config: &Config, error: &mut impl FnMut(&str, String)) {
     }
 }
 
-fn composition(config: &Config, error: &mut impl FnMut(&str, String)) {
-    let composition = &config.namespace.composition;
+fn composition(namespace: &NamespaceConfig, error: &mut impl FnMut(&str, String)) {
+    let composition = &namespace.composition;
     if !(1..=RESULT_SLOTS_MAX).contains(&(composition.fusion as u64))
         || composition.dense as u64 >= RESULT_SLOTS_MAX
         || composition.lexical as u64 >= RESULT_SLOTS_MAX

@@ -55,20 +55,46 @@ pub(crate) fn namespace_settings(config: &Config) -> NamespaceSettings {
     }
 }
 
+/// A namespace that exists: creating it again changes nothing with the same
+/// settings and is refused with other ones, which are fixed for its life.
+async fn repeat_create(
+    store: &dyn ObjectStore,
+    root: &Path,
+    head: &ServingHead,
+    settings: &NamespaceSettings,
+) -> Result<()> {
+    let policy: PolicyArtifact = fyrr_reader::storage::artifact(store, root, &head.policy).await?;
+    if policy.settings == *settings {
+        Ok(())
+    } else {
+        Err(WriterError::NamespaceSettingsFixed)
+    }
+}
+
 pub async fn create(config: &Config) -> Result<()> {
     let (store, root) = namespace_store(config)?;
     let settings = namespace_settings(config);
     if let Some(head) = fyrr_reader::storage::optional_head(config).await? {
-        // The settings are fixed for the life of the namespace: creating it
-        // again changes nothing, and asking for other settings is refused.
-        let policy: PolicyArtifact =
-            fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-        return if policy.settings == settings {
-            Ok(())
-        } else {
-            Err(WriterError::NamespaceSettingsFixed)
-        };
+        return repeat_create(store.as_ref(), &root, &head, &settings).await;
     }
+    match create_new(config, store.as_ref(), &root, settings.clone()).await {
+        // A concurrent creation won: judge its settings as a repeated one.
+        Err(WriterError::ImmutableObjectConflict) => {
+            let head = fyrr_reader::storage::optional_head(config)
+                .await?
+                .ok_or(WriterError::ImmutableObjectConflict)?;
+            repeat_create(store.as_ref(), &root, &head, &settings).await
+        }
+        result => result,
+    }
+}
+
+async fn create_new(
+    config: &Config,
+    store: &dyn ObjectStore,
+    root: &Path,
+    settings: NamespaceSettings,
+) -> Result<()> {
     let now = fyrr_core::clock::now();
     let mut incarnation = [0; 16];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut incarnation)
@@ -84,9 +110,8 @@ pub async fn create(config: &Config) -> Result<()> {
         settings,
     };
     let identity_pointer =
-        crate::prepare::put_generation(store.as_ref(), &root, "identity", 1, &identity).await?;
-    let policy_pointer =
-        crate::prepare::put_generation(store.as_ref(), &root, "policy", 1, &policy).await?;
+        crate::prepare::put_generation(store, root, "identity", 1, &identity).await?;
+    let policy_pointer = crate::prepare::put_generation(store, root, "policy", 1, &policy).await?;
     let head = ServingHead {
         schema_version: PUBLICATION_CONTRACT_VERSION,
         namespace: config.namespace.name.clone(),
@@ -98,7 +123,7 @@ pub async fn create(config: &Config) -> Result<()> {
         updated_at: now,
         incarnation: hex::encode(incarnation),
     };
-    put_immutable(store.as_ref(), &root.join("head.json"), &head).await
+    put_immutable(store, &root.clone().join("head.json"), &head).await
 }
 
 // This coordination record is not a publication or user data. Its authority is
@@ -312,4 +337,52 @@ pub async fn delete(
         Ok(serde_json::json!({"deleted":true,"retained_data":true}))
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(namespace: &str, embedding: &str) -> Config {
+        fyrr_core::config::parse(&format!(
+            "[namespace]\nname='round-trip'\n{namespace}\n[storage]\nuri='s3://round-trip'\n\
+             [embedding]\nendpoint='http://127.0.0.1:9/v1'\n{embedding}\n"
+        ))
+        .unwrap()
+        .config
+    }
+
+    /// The settings a configuration asks for, laid over another configuration
+    /// and read back, are unchanged; what the other one owns stays its own.
+    #[test]
+    fn settings_round_trip_through_a_configuration() {
+        let created = parse(
+            "fts_stem = true\ndense_rq_bits = 3\ndense_partition_rows = 64\n\
+             retrieval = { dense_weight = 0.3, lexical_candidates = 20, rescore_depth = { mode = \"fixed\", candidates = 100 } }\n\
+             composition = { fusion = 40, dense = 5, lexical = 5 }\n\
+             [namespace.rerank]\nendpoint = 'http://127.0.0.1:9/created'\nmodel = 'm'\n\
+             candidates = 9\nweight = 0.7\ntext_chars = 300\ndeadline = '1s'\n\
+             spend_limit_microusd = 100\nmax_call_cost_microusd = 10",
+            "model = 'other-model'\ndimensions = 256\nprefix = 'p: '\nsend_dimensions = true\n\
+             [embedding.roles.document]\ninput_type = 'doc'",
+        );
+        let settings = namespace_settings(&created);
+        let process = parse(
+            "[namespace.rerank]\nendpoint = 'http://127.0.0.1:9/process'\nmodel = 'x'\n\
+             candidates = 1\nweight = 0.1\ndeadline = '2s'\n\
+             spend_limit_microusd = 7\nmax_call_cost_microusd = 3",
+            "",
+        );
+        let effective = process.with_settings(&settings).unwrap();
+        assert_eq!(namespace_settings(&effective), settings);
+        assert_eq!(
+            effective.namespace.retrieval_digest(),
+            created.namespace.retrieval_digest()
+        );
+        let rerank = effective.namespace.rerank.as_ref().unwrap();
+        assert_eq!(rerank.endpoint, "http://127.0.0.1:9/process");
+        assert_eq!(rerank.spend_limit_microusd, 7);
+        // Without a reranker of its own, a process cannot reach the namespace's.
+        assert!(parse("", "").with_settings(&settings).is_none());
+    }
 }

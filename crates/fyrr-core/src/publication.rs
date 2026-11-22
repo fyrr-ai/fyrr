@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{CompositionSettings, RerankSettings, RetrievalSettings};
+use crate::config::{CompositionSettings, NamespaceConfig, RerankSettings, RetrievalSettings};
 use crate::envelope::{ChunkProfileIdentity, EmbeddingIdentity, FileRef};
 use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
@@ -39,6 +39,33 @@ pub struct NamespaceSettings {
     pub composition: CompositionSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerank: Option<RerankSettings>,
+}
+
+impl NamespaceSettings {
+    /// The bounds a configuration file is held to, so that no stored settings
+    /// can fail a build or a search later.
+    fn validate(&self) -> Result<(), String> {
+        self.embedding.validate_profile()?;
+        let namespace = NamespaceConfig {
+            rerank: None,
+            retrieval: (&self.retrieval).into(),
+            composition: (&self.composition).into(),
+            name: String::new(),
+            fts_max_token_length: self.fts.max_token_length,
+            fts_stem: self.fts.stem,
+            fts_remove_stop_words: self.fts.remove_stop_words,
+            fts_ascii_folding: self.fts.ascii_folding,
+            dense_rq_bits: self.dense_rq_bits,
+            dense_partition_rows: self.dense_partition_rows,
+        };
+        let mut issues = Vec::new();
+        let mut issue = |path: &str, message: String| issues.push(format!("{path}: {message}"));
+        crate::config::check_namespace(&namespace, &mut issue);
+        if let Some(rerank) = &self.rerank {
+            crate::config::check_rerank(rerank, &mut issue);
+        }
+        issues.into_iter().next().map_or(Ok(()), Err)
+    }
 }
 
 /// Immutable policy generation used by the reader's admission path.
@@ -88,7 +115,7 @@ impl Contract for PolicyArtifact {
                 return Err("retired_sources: purged before retired".into());
             }
         }
-        self.settings.embedding.validate_profile()?;
+        self.settings.validate()?;
         for (source, tokens) in &self.fixed_grants {
             check_id("fixed_grants.source", source)?;
             if tokens

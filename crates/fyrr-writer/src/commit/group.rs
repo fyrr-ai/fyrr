@@ -17,7 +17,7 @@ pub(crate) async fn commit_one(
     if head.namespace != config.namespace.name {
         return Err(WriterError::PublicationNamespaceInvalid);
     }
-    let previous_manifest = previous_manifest(config, store.as_ref(), &root, &head).await?;
+    let previous_manifest = previous_manifest(store.as_ref(), &root, &head).await?;
     let markers = if let Some(h) = history.as_deref_mut() {
         h.refresh(config, &head).await?;
         h.fences(config, &envelopes).await?
@@ -30,6 +30,11 @@ pub(crate) async fn commit_one(
     };
     let current_policy: PolicyArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+    // The namespace's settings never change: a configuration that does not
+    // carry them judges no batch, rather than rejecting it for good.
+    if current_policy.settings != namespace_settings(config) {
+        return Err(WriterError::NamespaceSettingsFixed);
+    }
     let (accepted, mut rejected) =
         accept_envelopes(config, &head, &current_policy, &markers, envelopes).await?;
     let mut rejection_head = head.clone();
@@ -363,16 +368,11 @@ async fn refresh_identity(
     Ok(pointer_changed)
 }
 
-/// The configured policy, when it differs from the one published. The
-/// namespace's settings never change: a configuration that does not carry
-/// them (the writer takes them from the namespace) is refused.
+/// The configured policy, when it differs from the one published.
 fn configured_policy(
     config: &Config,
     current_policy: &PolicyArtifact,
 ) -> Result<Option<PolicyArtifact>> {
-    if current_policy.settings != namespace_settings(config) {
-        return Err(WriterError::NamespaceSettingsFixed);
-    }
     let source_grants = fixed_grants(config)?;
     if current_policy.fixed_grants == source_grants {
         return Ok(None);
@@ -415,15 +415,17 @@ async fn refresh_policy(
 /// and its indexes need nothing from the writer. `commit_one` takes these
 /// decisions again under the lease, so a stale answer costs a lease, not
 /// correctness.
-pub(crate) async fn idle(config: &Config, head: &ServingHead) -> Result<bool> {
+pub(crate) async fn idle(
+    config: &Config,
+    head: &ServingHead,
+    policy: &PolicyArtifact,
+) -> Result<bool> {
     let (store, root) = namespace_store(config)?;
-    let policy: PolicyArtifact =
-        fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-    if !crate::envelopes::purged_envelopes(config, head, &policy)
+    if !crate::envelopes::purged_envelopes(config, head, policy)
         .await?
         .is_empty()
         || !pending(config, head).await?.is_empty()
-        || configured_policy(config, &policy)?.is_some()
+        || configured_policy(config, policy)?.is_some()
         || next_identity(config, store.as_ref(), &root, head, &[], None)
             .await?
             .1
