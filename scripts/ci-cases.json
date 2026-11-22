@@ -1967,7 +1967,7 @@
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_stores_filters_and_orders_the_other_attribute_types_on_storage": {
         "tier": "full",
-        "seconds": 40
+        "seconds": 2
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_pages_a_listing_and_scans_by_the_document_key_on_storage": {
         "tier": "full",
