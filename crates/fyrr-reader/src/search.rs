@@ -107,10 +107,11 @@ fn select_hits<'q>(
     k: usize,
     max_documents: usize,
 ) -> Vec<SelectedHit<'q>> {
-    let hit = |query_index: usize, rank: usize, candidate: Candidate| SelectedHit {
+    // `k` is the hits a query gives text to when `text_hits` says nothing.
+    let hit = |query_index: usize, rank: usize, k: usize, candidate: Candidate| SelectedHit {
         candidate,
         query: queries[query_index],
-        query_index: args.queries.as_ref().map(|_| {
+        query_index: (args.queries.is_some() || args.sub_queries.is_some()).then(|| {
             let Ok(index) = u32::try_from(query_index) else {
                 unreachable!("validated query batch index");
             };
@@ -130,20 +131,29 @@ fn select_hits<'q>(
             .into_iter()
             .take(k.min(max_documents))
             .enumerate()
-            .map(|(rank, (query_index, candidate))| hit(query_index, rank, candidate))
+            .map(|(rank, (query_index, candidate))| hit(query_index, rank, k, candidate))
             .collect();
     }
-    let selected = ranked
+    let selected: Vec<Vec<_>> = ranked
         .into_iter()
         .enumerate()
         .map(|(query_index, mut rows)| {
+            // A sub-query is cut at its own limit.
+            let k = args
+                .sub_queries
+                .as_ref()
+                .map_or(k, |subs| subs[query_index].limit as usize);
             rows.truncate(k);
             rows.into_iter()
                 .enumerate()
-                .map(|(rank, candidate)| hit(query_index, rank, candidate))
-                .collect::<Vec<_>>()
+                .map(|(rank, candidate)| hit(query_index, rank, k, candidate))
+                .collect()
         })
         .collect();
+    if args.sub_queries.is_some() {
+        // Each sub-query keeps its own hits, in request order.
+        return selected.into_iter().flatten().take(max_documents).collect();
+    }
     interleave(selected, max_documents)
 }
 

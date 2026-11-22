@@ -2041,6 +2041,10 @@
         "tier": "full",
         "seconds": 40
       },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_answers_sub_queries_with_their_own_filters_limits_and_ranking_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
       "full:fyrr:test:dense_path/write_api::identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_storage": {
         "tier": "full",
         "seconds": 40
