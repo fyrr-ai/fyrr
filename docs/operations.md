@@ -47,8 +47,8 @@ Published versions are kept for `writer.purge_window` (one day) and at least
 `writer.version_grace` (one hour) after they stop serving. `fyrr writer
 maintain` runs in lease-held steps: it publishes pending permission changes,
 removes unreadable rows, compacts fragments, updates indexes and deletes
-retired versions, applied envelopes and the publication manifests, policy and
-identity generations and member snapshots that only older versions named. Run it often enough that deleted
+retired versions, applied envelopes and the publication manifests and
+checkpoints that only older versions named. Run it often enough that deleted
 content physically leaves namespace storage within the purge window; until then it remains
 in retained old versions. Physical purge removes one revoked document root
 per bounded step and publishes that step before continuing. A large revoke
@@ -62,7 +62,7 @@ writable `TMPDIR` or writable mirror parent; there is no working-directory
 fallback. History work grows with namespace lifetime. Scratch or disk failures
 report `restore_working_space_exhausted`; bounded active summaries report
 `restore_history_summary_limit`. Cleanup preserves pending work, unresolved
-rejections, latest complete reads and the receipts of retained publications. Repeat commands for further
+rejections, latest complete reads and receipts. Repeat commands for further
 cleanup; reduce `writer.max_envelope_age` or sync frequency if protected
 work reaches the summary bound.
 
@@ -76,7 +76,8 @@ fyrr writer rollback                    # the preceding retained publication
 `fyrr reader check` prints the `publication_id` serving now, and every
 `fyrr writer commit` prints the latest one; keep those to restore an earlier
 point within the retention window. `fyrr writer commit --receipt ENVELOPE_ID`
-finds the retained publication that applied an envelope.
+finds the publication that applied an envelope; for an envelope of a publication
+older than the retention window it only says that the envelope was applied.
 
 Both publish a new version under the namespace lease, with the **current**
 policy, identity, permissions and tombstones: a restore never revives a

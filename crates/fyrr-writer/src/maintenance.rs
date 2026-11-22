@@ -12,7 +12,6 @@ use chrono::Utc;
 use futures::TryStreamExt;
 use fyrr_core::config::Config;
 use fyrr_core::envelope::{EnvelopePayload, RejectionMarker};
-use fyrr_core::identity::IdentityArtifact;
 use fyrr_core::publication::{CommitLineage, ContentManifest, PolicyArtifact, ServingHead};
 use fyrr_reader::storage::{dataset_uri, namespace_store, pinned, read_contract};
 use lance::Dataset;
@@ -151,7 +150,7 @@ async fn maintain_held(
     let staging = local_staging::plan(config).await?;
     removed += local_staging::remove(config, lease, staging).await?;
     envelopes += crate::envelopes::cleanup_held(config, lease).await?;
-    removed += superseded_control_objects(config, lease, history).await?;
+    removed += superseded_history(config, lease, history).await?;
     let head = boundary(config, lease, history).await?;
     if head.content.is_some() {
         let dataset = pinned(config, &head).await?;
@@ -333,26 +332,15 @@ async fn retained(config: &Config, head: &ServingHead) -> Result<Vec<ContentMani
     Ok(keep)
 }
 
-/// The prefixes of the control objects a publication or an envelope can name.
-const CONTROL_PREFIXES: [&str; 7] = [
-    "publications",
-    "evidence",
-    "policy",
-    "identity",
-    "members",
-    "grants",
-    "directory",
-];
-
-/// Delete the control objects that no retained manifest, the served head or a
-/// pending envelope names, directly or through an identity artifact's inputs.
-/// A walk that starts at a manifest older than the window finds its checkpoint
-/// gone and reads the manifests instead, and a chain walk ends at the oldest
-/// manifest left, so what is deleted is history no restore or receipt reaches.
-/// Like the other steps, the pass is bounded by `step_max_duration`, listing
-/// included, and meets the revocation boundary every 64 deletes; what it
-/// leaves, the next `writer maintain` removes.
-async fn superseded_control_objects(
+/// Delete the publication manifests and envelope checkpoints that no retained
+/// manifest names. A chain walk ends at the oldest manifest left, and a walk
+/// that starts at a manifest older than the window finds its checkpoint gone
+/// and reads the manifests instead, so what is deleted is history no restore
+/// or receipt reaches. Like the other steps, the pass is bounded by
+/// `step_max_duration`, listing included, meets the revocation boundary every
+/// 64 deletes and ends when the head publishes; what it leaves, the next
+/// `writer maintain` removes.
+async fn superseded_history(
     config: &Config,
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
@@ -373,62 +361,49 @@ async fn superseded_control_objects(
         {
             return Ok(0);
         }
+        let named: BTreeSet<_> = retained
+            .iter()
+            .flat_map(|manifest| {
+                [format!("publications/{}.json", manifest.publication_id)]
+                    .into_iter()
+                    .chain(
+                        manifest
+                            .envelope_evidence
+                            .iter()
+                            .map(|evidence| evidence.checkpoint.object.clone()),
+                    )
+            })
+            .collect();
+        let served = head.content.as_ref().map(|p| p.publication_id.clone());
         let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
-        let mut named = BTreeSet::new();
-        let mut identities =
-            BTreeMap::from([(head.identity.object.clone(), head.identity.clone())]);
-        named.insert(head.policy.object.clone());
-        for manifest in &retained {
-            named.insert(format!("publications/{}.json", manifest.publication_id));
-            named.insert(manifest.policy.object.clone());
-            named.extend(
-                manifest
-                    .envelope_evidence
-                    .iter()
-                    .map(|evidence| evidence.checkpoint.object.clone()),
-            );
-            identities.insert(manifest.identity.object.clone(), manifest.identity.clone());
-        }
-        for pointer in identities.values() {
-            let identity: IdentityArtifact =
-                fyrr_reader::storage::artifact(store.as_ref(), &root, pointer).await?;
-            named.extend(identity.inputs.into_iter().map(|input| input.object));
-        }
-        named.extend(identities.into_keys());
-        for (_, envelope) in commit::cleanup_evidence(config, &head).await?.envelopes {
-            if let EnvelopePayload::Members(payload) = envelope.payload {
-                named.insert(payload.snapshot_object);
-            }
-        }
-        let mut listed = Vec::new();
-        for prefix in CONTROL_PREFIXES {
-            listed.extend(
-                store
-                    .list(Some(&root.clone().join(prefix)))
-                    .try_collect::<Vec<_>>()
-                    .await?,
-            );
-        }
         let mut deleted = 0;
-        for object in listed {
-            if named.contains(&fyrr_reader::storage::relative_path(
-                &object.location,
-                &root,
-            )) {
-                continue;
-            }
-            if start.elapsed() >= limit {
-                break;
-            }
-            if deleted % 64 == 0 {
-                boundary(config, lease, history).await?;
-            } else {
-                lease.head().await?;
-            }
-            match store.delete(&object.location).await {
-                Ok(()) => deleted += 1,
-                Err(object_store::Error::NotFound { .. }) => {}
-                Err(_) => return Err(WriterError::StorageUnavailable),
+        for prefix in ["publications", "evidence"] {
+            let mut listing = store.list(Some(&root.clone().join(prefix)));
+            while let Some(object) = listing.try_next().await? {
+                if named.contains(&fyrr_reader::storage::relative_path(
+                    &object.location,
+                    &root,
+                )) {
+                    continue;
+                }
+                if start.elapsed() >= limit {
+                    break;
+                }
+                let current = if deleted % 64 == 0 {
+                    boundary(config, lease, history).await?
+                } else {
+                    lease.head().await?
+                };
+                // The references above are those of the head this pass began with.
+                if current.content.as_ref().map(|p| &p.publication_id) != served.as_ref() {
+                    durability.finish().await?;
+                    return Ok(deleted);
+                }
+                match store.delete(&object.location).await {
+                    Ok(()) => deleted += 1,
+                    Err(object_store::Error::NotFound { .. }) => {}
+                    Err(_) => return Err(WriterError::StorageUnavailable),
+                }
             }
         }
         durability.finish().await?;

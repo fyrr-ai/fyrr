@@ -1553,7 +1553,7 @@ async fn control_objects(config: &Path, prefix: &str) -> usize {
 }
 
 /// One round of the history: new content and a new member, so the publication
-/// pins its own identity generation and members snapshot.
+/// is a publication of its own.
 fn history_round(worker: &Path, root: &Path, round: u64) {
     let mut users = vec![
         json!({"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}),
@@ -1573,17 +1573,8 @@ fn history_round(worker: &Path, root: &Path, round: u64) {
 
 #[tokio::test]
 #[ignore = "real CLI and storage; scripts/ci"]
-async fn maintenance_deletes_control_objects_outside_the_purge_window_on_storage() {
+async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
     use futures::TryStreamExt;
-    const PREFIXES: [&str; 7] = [
-        "publications",
-        "evidence",
-        "policy",
-        "identity",
-        "members",
-        "grants",
-        "directory",
-    ];
     let (worker, commit, root) = fixture();
     publish_initial(&worker, &commit, &root);
     for round in 2..=10 {
@@ -1607,19 +1598,16 @@ async fn maintenance_deletes_control_objects_outside_the_purge_window_on_storage
         .rev()
         .find_map(|m| m.envelope_ids.first().cloned())
         .unwrap();
-    for prefix in ["publications", "identity", "members"] {
-        assert!(
-            control_objects(&commit, prefix).await >= 10,
-            "{prefix}: every publication adds one"
-        );
-    }
+    let pending = command(&commit, &["writer", "status"])["pending_envelopes"].clone();
     // Inside the window nothing is deleted, and every receipt is there.
     command(&commit, &["writer", "maintain"]);
     assert!(control_objects(&commit, "publications").await >= 10);
-    command(&commit, &["writer", "commit", "--receipt", &oldest]);
+    assert!(
+        command(&commit, &["writer", "commit", "--receipt", &oldest])["publication_id"].is_string()
+    );
 
-    // Past the window, and past the age the envelopes are kept for.
-    fyrr_core::clock::advance(Duration::from_secs(4 * 24 * 3600)).unwrap();
+    // Past the window, but not past the age the envelopes are kept for.
+    fyrr_core::clock::advance(Duration::from_secs(25 * 3600)).unwrap();
     command(&commit, &["writer", "maintain"]);
     command(&commit, &["writer", "maintain"]);
     // Every maintenance step publishes, so those manifests are retained; the
@@ -1642,22 +1630,36 @@ async fn maintenance_deletes_control_objects_outside_the_purge_window_on_storage
             old.publication_id
         );
     }
-    for prefix in PREFIXES {
-        let count = control_objects(&commit, prefix).await;
+    let checkpoints = control_objects(&commit, "evidence").await;
+    assert!(
+        checkpoints <= publications,
+        "{checkpoints} checkpoints for {publications} retained publications"
+    );
+    // Retained publications keep their receipts; the deleted part answers from
+    // the evidence, without its publication; an envelope never applied does not.
+    for id in kept.iter().flat_map(|m| &m.envelope_ids) {
         assert!(
-            count <= publications,
-            "{prefix}: {count} objects for {publications} retained publications"
+            command(&commit, &["writer", "commit", "--receipt", id])["publication_id"].is_string()
         );
     }
-    // The retained history reaches its receipts; the deleted part does not.
-    for id in kept.iter().flat_map(|m| &m.envelope_ids) {
-        command(&commit, &["writer", "commit", "--receipt", id]);
-    }
-    let lost = host_command(&commit)
-        .args(["writer", "commit", "--receipt", &oldest])
+    let lost = command(&commit, &["writer", "commit", "--receipt", &oldest]);
+    assert!(lost["publication_id"].is_null());
+    assert_eq!(lost["envelope_ids"], json!([oldest]));
+    let unknown = host_command(&commit)
+        .args([
+            "writer",
+            "commit",
+            "--receipt",
+            &format!("env-{}", "0".repeat(32)),
+        ])
         .output()
         .unwrap();
-    assert!(!lost.status.success());
+    assert!(!unknown.status.success());
+    // The envelopes still in the log are still known to have been applied.
+    assert_eq!(
+        command(&commit, &["writer", "status"])["pending_envelopes"],
+        pending
+    );
 
     // A fresh writer, restore and rollback work from what is left.
     history_round(&worker, &root, 11);
