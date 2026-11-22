@@ -5,8 +5,7 @@
 //! purge retires the source and removes its rows, envelopes and cursors; old
 //! Lance versions leave within the purge window like any deleted content.
 use crate::{Result, WriterError};
-use crate::{apply, commit, lease::LeaseGuard, maintenance, prepare};
-use fyrr_core::Contract;
+use crate::{apply, commit, lease::LeaseGuard, maintenance};
 use fyrr_core::config::Config;
 use fyrr_core::connector::SyncKind;
 use fyrr_core::publication::{MAX_RETIRED_SOURCES, PolicyArtifact, RetiredSource, ServingHead};
@@ -95,7 +94,7 @@ async fn holdings(
 /// anything changed: a repeated call is a no-op.
 async fn mark(config: &Config, lease: &LeaseGuard, source: &str, purged: bool) -> Result<bool> {
     let (store, root) = namespace_store(config)?;
-    let mut head = lease.head().await?;
+    let head = lease.head().await?;
     let mut policy: PolicyArtifact = artifact(store.as_ref(), &root, &head.policy).await?;
     let known = policy.retired_sources.contains_key(source);
     if !known && policy.retired_sources.len() >= MAX_RETIRED_SOURCES {
@@ -116,16 +115,7 @@ async fn mark(config: &Config, lease: &LeaseGuard, source: &str, purged: bool) -
     if known && !purge {
         return Ok(false);
     }
-    policy.schema_version = <PolicyArtifact as Contract>::VERSION;
-    policy.generation = head
-        .policy
-        .generation
-        .checked_add(1)
-        .ok_or(WriterError::PolicyGenerationOverflow)?;
-    head.policy =
-        prepare::put_generation(store.as_ref(), &root, "policy", policy.generation, &policy)
-            .await?;
-    lease.publish(head).await?;
+    commit::publish_policy(config, lease, head, policy).await?;
     Ok(true)
 }
 

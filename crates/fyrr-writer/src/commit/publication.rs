@@ -120,7 +120,7 @@ pub(crate) async fn publish(
     if acl_changed {
         let mut policy: PolicyArtifact =
             fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-        policy.schema_version = <PolicyArtifact as fyrr_core::Contract>::VERSION;
+        policy.stamp_version();
         policy.generation = head
             .policy
             .generation

@@ -389,7 +389,7 @@ fn configured_policy(
         return Ok(None);
     }
     let mut policy = current_policy.clone();
-    policy.schema_version = <PolicyArtifact as fyrr_core::Contract>::VERSION;
+    policy.stamp_version();
     policy.fixed_grants = source_grants;
     Ok(Some(policy))
 }

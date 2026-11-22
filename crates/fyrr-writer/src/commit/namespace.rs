@@ -119,6 +119,7 @@ async fn create_new(
         fixed_grants: fixed_grants(config)?,
         row_acl_sequence: None,
         retired_sources: Default::default(),
+        read_only: false,
         schema_version: <PolicyArtifact as fyrr_core::Contract>::VERSION,
         namespace: config.namespace.name.clone(),
         generation: 1,
@@ -209,6 +210,74 @@ async fn deletion_fence(
         return Err(WriterError::LeaseInvalid);
     }
     Ok(Some((fence, version, written)))
+}
+
+/// Publishes `policy` as the next generation of the head the lease holds.
+pub(crate) async fn publish_policy(
+    config: &Config,
+    lease: &LeaseGuard,
+    mut head: ServingHead,
+    mut policy: PolicyArtifact,
+) -> Result<()> {
+    let (store, root) = namespace_store(config)?;
+    policy.stamp_version();
+    policy.generation = head
+        .policy
+        .generation
+        .checked_add(1)
+        .ok_or(WriterError::PolicyGenerationOverflow)?;
+    head.policy =
+        crate::prepare::put_generation(store.as_ref(), &root, "policy", policy.generation, &policy)
+            .await?;
+    lease.publish(head).await
+}
+
+/// Freezes the namespace or thaws it, under the namespace lease, as a new
+/// policy generation. Whether it changed anything: a repeated call is a no-op.
+pub async fn set_read_only(config: &Config, read_only: bool) -> Result<bool> {
+    fyrr_reader::storage::optional_head(config)
+        .await?
+        .ok_or(WriterError::NamespaceUnavailable)?;
+    LeaseGuard::with(config, |lease| async move {
+        set_read_only_held(config, &lease, read_only).await
+    })
+    .await
+}
+
+/// `set_read_only` by a caller that holds the namespace lease already.
+pub async fn set_read_only_held(
+    config: &Config,
+    lease: &LeaseGuard,
+    read_only: bool,
+) -> Result<bool> {
+    let (store, root) = namespace_store(config)?;
+    let head = lease.head().await?;
+    let mut policy: PolicyArtifact =
+        fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+    if policy.read_only == read_only {
+        return Ok(false);
+    }
+    policy.read_only = read_only;
+    publish_policy(config, lease, head, policy).await?;
+    Ok(true)
+}
+
+/// Refuses a write into a read-only namespace. It reads the published head
+/// each time: a writer calls it as its envelope is about to become durable,
+/// under its cursor lease, so a switch published since the request was
+/// accepted is honoured. An envelope that was durable before the switch is
+/// still committed.
+pub(crate) async fn ensure_writable(config: &Config) -> Result<()> {
+    let (store, root) = namespace_store(config)?;
+    let head = fyrr_reader::storage::optional_head(config)
+        .await?
+        .ok_or(WriterError::NamespaceUnavailable)?;
+    let policy: PolicyArtifact =
+        fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+    if policy.read_only {
+        return Err(WriterError::NamespaceReadOnly);
+    }
+    Ok(())
 }
 
 /// Cursor acquisition checks on both sides of its CAS, so a new source cannot

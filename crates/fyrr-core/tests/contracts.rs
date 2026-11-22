@@ -92,6 +92,37 @@ fn a_manifest_and_a_policy_hold_only_valid_attribute_schemas() {
     }
 }
 
+/// A build that does not know the switch would ignore it and write, so a frozen
+/// policy is a version that it refuses, and only a frozen one is.
+#[test]
+fn a_frozen_policy_is_a_version_that_an_older_build_refuses() {
+    let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
+    policy["read_only"] = json!(true);
+    assert!(
+        parse::<PolicyArtifact>(&policy).is_err(),
+        "the flag under 3.1"
+    );
+    policy["schema_version"] = json!("4.0");
+    let frozen = parse::<PolicyArtifact>(&policy).unwrap();
+    assert!(frozen.read_only);
+    policy["read_only"] = json!(false);
+    assert!(
+        parse::<PolicyArtifact>(&policy).is_err(),
+        "4.0 without the flag"
+    );
+    // Written as the content decides, and read back.
+    let mut stamped = frozen.clone();
+    stamped.stamp_version();
+    assert_eq!(stamped.schema_version.to_string(), "4.0");
+    stamped.read_only = false;
+    stamped.stamp_version();
+    assert_eq!(
+        stamped.schema_version,
+        <PolicyArtifact as Contract>::VERSION
+    );
+    assert!(parse::<PolicyArtifact>(&serde_json::to_value(&stamped).unwrap()).is_ok());
+}
+
 #[test]
 fn api_keys_artifact_holds_only_distinct_hashed_keys_with_roles() {
     let base = common::read_json("fixtures/contracts/api-keys-artifact/artifact.json");

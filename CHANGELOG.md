@@ -9,6 +9,15 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `fyrr writer namespace read-only true|false` and `PATCH /v1/namespaces/{namespace}`
+  with `{"read_only": …}` (an API key with the `admin` role) freeze a namespace or
+  thaw it. While it is frozen API writes and connector syncs are refused with
+  `namespace_read_only`, judged against the published head as each envelope
+  becomes durable; envelopes prepared before the switch are still committed, and
+  maintenance and the switch itself still work. The namespace report shows
+  `read_only`. A frozen namespace's policy is `policy-artifact` 4.0, which a build
+  without the switch refuses, readers included. See
+  [Freezing a namespace](docs/http-api.md#freezing-a-namespace).
 - `fyrr writer namespace list [--prefix P]` and `GET /v1/namespaces?prefix=P` on
   the reader list the namespaces of the storage root, in name order, that start
   with `P` and with the `namespace_prefix` of the caller's key. A namespace is

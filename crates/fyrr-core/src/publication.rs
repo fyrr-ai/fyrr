@@ -99,6 +99,28 @@ pub struct PolicyArtifact {
     /// entry is never removed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub retired_sources: BTreeMap<String, RetiredSource>,
+    /// The namespace is frozen: API writes and connector syncs are refused
+    /// while it stays readable. An envelope that was prepared before the
+    /// switch is still committed. Set only in a policy of major 4, which a
+    /// build that does not know the switch refuses instead of writing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
+}
+
+/// The version of a policy with `read_only` set. A writer that does not know
+/// the field would ignore it and write, so it must refuse the policy: it reads
+/// only major 3, and this build reads both.
+pub const READ_ONLY_POLICY_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
+
+impl PolicyArtifact {
+    /// Sets the version this policy is written as, which its content decides.
+    pub fn stamp_version(&mut self) {
+        self.schema_version = if self.read_only {
+            READ_ONLY_POLICY_CONTRACT_VERSION
+        } else {
+            <Self as Contract>::VERSION
+        };
+    }
 }
 
 /// At most this many sources of a namespace can ever be retired.
@@ -115,8 +137,13 @@ pub struct RetiredSource {
 impl Contract for PolicyArtifact {
     const NAME: &'static str = "policy-artifact";
     const VERSION: SchemaVersion = SchemaVersion::new(3, 1);
+    const ALSO_READS: &'static [u16] = &[READ_ONLY_POLICY_CONTRACT_VERSION.major];
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
+        if self.read_only != (self.schema_version.major == READ_ONLY_POLICY_CONTRACT_VERSION.major)
+        {
+            return Err("read_only needs the read-only policy version, and only it".into());
+        }
         if self.retired_sources.len() > MAX_RETIRED_SOURCES {
             return Err("retired_sources holds too many sources".into());
         }

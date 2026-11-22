@@ -182,6 +182,7 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
                 fixed_grants: Default::default(),
                 row_acl_sequence: None,
                 retired_sources: Default::default(),
+                read_only: false,
             }))
             .unwrap_or_else(|_| unreachable!("JSON serialization is UTF-8")),
         },

@@ -136,6 +136,7 @@ writer_errors! {
     ExportInvalid => ("export_invalid", false),
     DeleteConfirmationInvalid => ("delete_confirmation_invalid", false),
     NamespaceDeleting => ("namespace_deleting", false),
+    NamespaceReadOnly => ("namespace_read_only", false),
     FileInventoryUnavailable => ("file_inventory_unavailable", false),
     ForeignLineage => ("foreign_lineage", false),
     IncompatibleIndex => ("incompatible_index", false),

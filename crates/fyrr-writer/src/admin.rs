@@ -7,7 +7,9 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use fyrr_core::config::{ApiKeyRole, Config, DirectoryProvider, is_api_key_secret, prefix_allows};
+use fyrr_core::config::{
+    ApiKeyRole, Config, DirectoryProvider, is_api_key_secret, is_namespace_name, prefix_allows,
+};
 use fyrr_core::identity::ApiKeysArtifact;
 use fyrr_reader::storage::{
     API_KEYS_FILE, api_key_deployment_hash, deployment_root, namespace_store,
@@ -129,12 +131,14 @@ struct DeleteNamespaceBody {
     namespace: String,
 }
 
-/// `DELETE /v1/namespaces/{namespace}`: deletes the namespace and its data. It
-/// needs an API key with the `admin` role and the name repeated in the body.
-async fn delete_namespace(state: Arc<AdminState>, request: Request, name: String) -> Response {
-    if request.method() != axum::http::Method::DELETE {
-        return error(ScimError::new(405, "invalidSyntax"));
-    }
+/// Admits the request of a namespace route: an API key with the `admin` role
+/// in `config`'s namespace, and the body, bounded. The permit is the request's
+/// capacity, held until its work is done.
+async fn admitted(
+    state: &AdminState,
+    request: Request,
+    config: &Config,
+) -> std::result::Result<(tokio::sync::OwnedSemaphorePermit, axum::body::Bytes), Response> {
     let secret = request
         .headers()
         .get(header::AUTHORIZATION)
@@ -143,23 +147,32 @@ async fn delete_namespace(state: Arc<AdminState>, request: Request, name: String
         .filter(|s| s.len() <= 8192)
         .map(str::to_owned);
     let Some(secret) = secret else {
-        return error(ScimError::new(401, "unauthorized"));
+        return Err(error(ScimError::new(401, "unauthorized")));
     };
     let Ok(permit) = state.capacity.clone().try_acquire_owned() else {
-        return error(ScimError::new(503, "temporarilyUnavailable"));
+        return Err(error(ScimError::new(503, "temporarilyUnavailable")));
     };
-    if let Err(denied) = admin_key(&state.config, &secret).await {
-        return error(denied);
+    if let Err(denied) = admin_key(config, &secret).await {
+        return Err(error(denied));
     }
-    let bytes = match tokio::time::timeout(
+    match tokio::time::timeout(
         std::time::Duration::from_secs(5),
         axum::body::to_bytes(request.into_body(), 4096),
     )
     .await
     {
-        Ok(Ok(b)) => b,
-        Ok(Err(_)) => return error(ScimError::new(413, "tooLarge")),
-        Err(_) => return error(ScimError::new(408, "invalidSyntax")),
+        Ok(Ok(bytes)) => Ok((permit, bytes)),
+        Ok(Err(_)) => Err(error(ScimError::new(413, "tooLarge"))),
+        Err(_) => Err(error(ScimError::new(408, "invalidSyntax"))),
+    }
+}
+
+/// `DELETE /v1/namespaces/{namespace}`: deletes the namespace and its data. It
+/// needs an API key with the `admin` role and the name repeated in the body.
+async fn delete_namespace(state: Arc<AdminState>, request: Request, name: String) -> Response {
+    let (permit, bytes) = match admitted(&state, request, &state.config).await {
+        Ok(admitted) => admitted,
+        Err(refused) => return refused,
     };
     let Ok(body) = serde_json::from_slice::<DeleteNamespaceBody>(&bytes) else {
         return error(ScimError::new(400, "invalidSyntax"));
@@ -184,6 +197,53 @@ async fn delete_namespace(state: Arc<AdminState>, request: Request, name: String
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatchNamespaceBody {
+    read_only: bool,
+}
+
+/// `PATCH /v1/namespaces/{namespace}` with `read_only`: freezes the namespace
+/// or thaws it. It needs an API key with the `admin` role. It answers `503`
+/// while the committer holds the namespace lease; the request is then repeated.
+async fn patch_namespace(state: Arc<AdminState>, request: Request, name: String) -> Response {
+    // A namespace written through the API is named by its path, as for its
+    // documents; any other is the one this process is configured for.
+    let config = if state.write.is_some() {
+        if !is_namespace_name(&name) {
+            return error(ScimError::new(404, "notFound"));
+        }
+        crate::write_api::named(&state.config, &name)
+    } else {
+        state.config.clone()
+    };
+    let (permit, bytes) = match admitted(&state, request, &config).await {
+        Ok(admitted) => admitted,
+        Err(refused) => return refused,
+    };
+    let Ok(body) = serde_json::from_slice::<PatchNamespaceBody>(&bytes) else {
+        return error(ScimError::new(400, "invalidSyntax"));
+    };
+    if name != config.namespace.name {
+        return error(ScimError::new(404, "notFound"));
+    }
+    let result = tokio::spawn(async move {
+        let _permit = permit;
+        crate::commit::set_read_only(&config, body.read_only).await
+    })
+    .await;
+    match result {
+        Ok(Ok(changed)) => (
+            StatusCode::OK,
+            Json(json!({"namespace": name, "read_only": body.read_only, "changed": changed})),
+        )
+            .into_response(),
+        Ok(Err(WriterError::NamespaceUnavailable)) => error(ScimError::new(404, "notFound")),
+        Ok(Err(e)) => error(e.into()),
+        Err(_) => error(ScimError::new(503, "temporarilyUnavailable")),
+    }
+}
+
 async fn handle(State(state): State<Arc<AdminState>>, request: Request) -> Response {
     let path = request.uri().path().to_owned();
     // `/v1/namespaces/{namespace}` only: `/documents` below it is the write API.
@@ -191,7 +251,11 @@ async fn handle(State(state): State<Arc<AdminState>>, request: Request) -> Respo
         .strip_prefix("/v1/namespaces/")
         .filter(|name| !name.contains('/'))
     {
-        return delete_namespace(state, request, name.to_owned()).await;
+        return match *request.method() {
+            axum::http::Method::PATCH => patch_namespace(state, request, name.to_owned()).await,
+            axum::http::Method::DELETE => delete_namespace(state, request, name.to_owned()).await,
+            _ => error(ScimError::new(405, "invalidSyntax")),
+        };
     }
     if path.starts_with("/v1/") {
         // Its own authentication (an API key with the `write` role) and its own capacity.

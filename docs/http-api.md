@@ -106,6 +106,7 @@ namespace's published version, with no storage request of its own:
 | `namespace`, `publication_id` | The namespace and the content publication the answer describes. |
 | `schema` | The typed attributes of the version, name to type; `{}` when it has none. |
 | `settings` | The namespace's [settings](configuration.md), as its policy records them. |
+| `read_only` | Whether the namespace is [frozen](#freezing-a-namespace). |
 | `rows` | Approximate live rows (a document is one or more rows). `null` for a version published before contract 4.1. |
 | `logical_bytes` | Approximate bytes of the data files of those rows, without indexes. `null` as `rows`. |
 | `first_published_at` | When the namespace's first content publication was committed. `null` for a namespace published before contract 4.1: that time is not known. |
@@ -128,6 +129,36 @@ reader tokens and reads no rows.
 curl -H "Authorization: Bearer $FYRR_KEY" \
   https://fyrr.example.com/v1/namespaces/acme
 ```
+
+## Freezing a namespace
+
+`PATCH /v1/namespaces/{namespace}` on the writer's administration listener
+takes `{"read_only": true}` to freeze the namespace and `{"read_only": false}`
+to thaw it, and answers `{"namespace","read_only","changed"}`; `changed` is
+`false` when the namespace was already so. It needs an API key with the `admin`
+role whose `namespace_prefix` allows the namespace. The CLI does the same:
+`fyrr writer namespace read-only true|false`.
+
+While the namespace is frozen it stays readable, and:
+
+- a document write is `409 namespace_read_only`;
+- a connector sync fails with `namespace_read_only`, whatever its kind;
+- maintenance, retiring and purging a source, a restore and the switch itself
+  still work.
+
+The switch is a new policy generation published under the namespace lease. A
+writer judges it against the published head when an envelope is about to become
+durable, not only when its request arrived, so a request that was accepted
+before the switch but had not written its envelope yet is refused too. An
+envelope that was durable before the switch is still committed, also after it:
+a frozen namespace is quiet once `fyrr writer status` shows nothing pending.
+The committer holds the namespace lease while it publishes, so a switch made
+then answers `503` (`temporarilyUnavailable`) and is repeated.
+
+A policy with the switch set is written as contract `policy-artifact` 4.0, which
+a build that does not know the switch refuses, instead of writing into the
+namespace. The same refusal reaches its readers: upgrade every reader before
+freezing a namespace. Thawing writes 3.1 again.
 
 ## Listing namespaces
 
@@ -432,5 +463,5 @@ request was accepted does not cancel it.
 | `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
 | `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
 | `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `vector_not_patchable`, `text_not_patchable`, `embedding_not_configured`, `document_invalid`, `condition_invalid`, `filter_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
-| `namespace_settings_fixed`, `namespace_not_writable`, `namespace_not_empty`, `namespace_changed`, `rejected` | `409` | The namespace has other settings, takes its documents from connectors, is to be created over envelopes that a deleted namespace left, was replaced by another while the request was prepared, or the committer refused the request (nothing of it is applied). |
+| `namespace_read_only`, `namespace_settings_fixed`, `namespace_not_writable`, `namespace_not_empty`, `namespace_changed`, `rejected` | `409` | The namespace is [frozen](#freezing-a-namespace), has other settings, takes its documents from connectors, is to be created over envelopes that a deleted namespace left, was replaced by another while the request was prepared, or the committer refused the request (nothing of it is applied). |
 | `busy`, `unavailable`, `outcome_unknown` | `503` | The writer is busy, storage or the published keys cannot be read, or the answer did not come within 10 minutes; `Retry-After` is 1. |

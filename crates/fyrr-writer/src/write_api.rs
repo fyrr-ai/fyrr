@@ -151,6 +151,7 @@ impl From<WriterError> for ApiError {
         match error {
             WriterError::EnvelopeBoundsInvalid => Self(413, "request_too_large"),
             WriterError::NamespaceSettingsFixed => Self(409, "namespace_settings_fixed"),
+            WriterError::NamespaceReadOnly => Self(409, "namespace_read_only"),
             WriterError::PublicationInvalid => Self(400, "settings_invalid"),
             WriterError::DocumentInvalid => Self(400, "document_invalid"),
             WriterError::SyncBusy => Self(503, "busy"),
@@ -971,6 +972,14 @@ async fn execute(
     };
     if settings.write_api.is_none() {
         return Err(ApiError(409, "namespace_not_writable"));
+    }
+    // Refused before anything is embedded or written. The envelope is checked
+    // again, under the cursor lease, as it becomes durable.
+    if existing
+        .as_ref()
+        .is_some_and(|(_, policy)| policy.read_only)
+    {
+        return Err(ApiError(409, "namespace_read_only"));
     }
     if existing.is_some() && laid_over(&settings, requested.as_ref())? != settings {
         return Err(ApiError(409, "namespace_settings_fixed"));

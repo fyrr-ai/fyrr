@@ -14,6 +14,7 @@ impl PreparedReader {
             "schema": manifest.attributes,
             "settings": serde_json::to_value(&self.policy.settings)
                 .map_err(|_| StorageUnavailable)?,
+            "read_only": self.policy.read_only,
             "rows": stats.map(|stats| stats.rows),
             "logical_bytes": stats.map(|stats| stats.logical_bytes),
             "first_published_at": stats.and_then(|stats| stats.first_published_at),
