@@ -1,0 +1,4 @@
+# Use type(scope): summary in the imperative, at most 72 characters.
+#
+# Explain what changed and why.
+# For behavior changes, include the relevant CI steps and test counts.
