@@ -471,7 +471,7 @@ async fn superseded_history(
         {
             return Ok(0);
         }
-        let named: BTreeSet<_> = kept
+        let mut named: BTreeSet<_> = kept
             .iter()
             .flat_map(|manifest| {
                 [format!("publications/{}.json", manifest.publication_id)]
@@ -484,6 +484,14 @@ async fn superseded_history(
                     )
             })
             .collect();
+        // The object a pointer names is kept whatever its key says: the
+        // contract does not make the key the canonical name of the generation.
+        named.extend(
+            kept.iter()
+                .flat_map(|manifest| [&manifest.policy, &manifest.identity])
+                .chain([&head.policy, &head.identity])
+                .map(|pointer| pointer.object.clone()),
+        );
         // Record the cut before anything goes: a crash leaves older manifests
         // that the next pass deletes, never a chain with a hole.
         if let Some(oldest) = kept.last()
@@ -544,12 +552,13 @@ async fn superseded_history(
             }
         }
         // A policy or identity generation is named by the head and by each
-        // retained manifest, and generations only grow along the head: one
-        // below the oldest generation any of them names was replaced before
-        // the oldest retained manifest was published, and a reader that
-        // fetched the head within `version_grace` has a retained manifest at
-        // or before that head. Higher ones are kept, orphans of a failed
-        // publication included, until the head passes them.
+        // retained manifest, and generations only grow along the head. Only
+        // one below the oldest generation they name is deleted; higher ones,
+        // orphans of a failed publication included, stay until the head passes
+        // them. A reader that loaded an older head-only generation (a
+        // directory pull, a retire, the read-only switch publish no manifest)
+        // can read it gone once and fails closed with `StorageUnavailable`; a
+        // fresh head fixes that.
         let policy_floor = kept
             .iter()
             .map(|manifest| manifest.policy.generation)
@@ -572,7 +581,10 @@ async fn superseded_history(
                 let relative = fyrr_reader::storage::relative_path(&object.location, &root);
                 let superseded = match floor {
                     None => !named.contains(&relative),
-                    Some(floor) => generation_of(&relative, prefix).is_some_and(|g| g < floor),
+                    Some(floor) => {
+                        !named.contains(&relative)
+                            && generation_of(&relative, prefix).is_some_and(|g| g < floor)
+                    }
                 };
                 if !superseded {
                     continue;
@@ -604,14 +616,39 @@ async fn superseded_history(
     .map_err(|_| WriterError::MaintenanceStepDeadline)?
 }
 
-/// The generation of `<prefix>/<generation>-<digest>.json`; any other name has none.
+/// The generation of an object whose key is exactly what the writer gives a
+/// generation, `<prefix>/<generation>-<64 hex digits>.json`; any other key has
+/// none, and is kept.
 fn generation_of(relative: &str, prefix: &str) -> Option<u64> {
     let name = relative.strip_prefix(prefix)?.strip_prefix('/')?;
     let (generation, digest) = name.strip_suffix(".json")?.split_once('-')?;
-    if digest.contains('/') {
-        return None;
+    let number: u64 = generation.parse().ok()?;
+    (number.to_string() == generation
+        && digest.len() == 64
+        && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    .then_some(number)
+}
+
+#[cfg(test)]
+mod generation_key_tests {
+    use super::generation_of;
+
+    #[test]
+    fn only_the_writers_own_key_has_a_generation() {
+        let hex = "0123456789abcdef".repeat(4);
+        assert_eq!(generation_of(&format!("policy/9-{hex}.json"), "policy"), Some(9));
+        for key in [
+            "policy/1-backup.json".to_owned(),
+            format!("policy/09-{hex}.json"),
+            format!("policy/+9-{hex}.json"),
+            format!("policy/9-{}.json", hex.to_uppercase()),
+            format!("policy/9-{hex}.bak"),
+            format!("policy/inputs/9-{hex}.json"),
+            format!("identity/9-{hex}.json"),
+        ] {
+            assert_eq!(generation_of(&key, "policy"), None, "{key}");
+        }
     }
-    generation.parse().ok()
 }
 
 async fn cleanup_versions(

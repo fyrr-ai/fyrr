@@ -1631,12 +1631,24 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
         store.head(&path(&manifest.publication_id)).await.unwrap();
     }
     store.put(&path(&lost), bytes.into()).await.unwrap();
-    // Inside the window nothing is deleted, and every receipt is there.
+    // Inside the window no publication is deleted, and every receipt is there.
     let identities = control_objects(&commit, "identity").await;
     assert!(identities >= 10, "{identities} identity generations");
     command(&commit, &["writer", "maintain"]);
     assert!(control_objects(&commit, "publications").await >= 10);
-    assert_eq!(control_objects(&commit, "identity").await, identities);
+    // Only what precedes the first publication may go: every generation a
+    // publication names is there.
+    for manifest in &chain {
+        for pointer in [&manifest.policy, &manifest.identity] {
+            store
+                .head(&object_store::path::Path::from(format!(
+                    "{namespace}/{}",
+                    pointer.object
+                )))
+                .await
+                .unwrap();
+        }
+    }
     assert!(
         command(&commit, &["writer", "commit", "--receipt", &oldest])["publication_id"].is_string()
     );
@@ -1705,11 +1717,26 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
         "{generations:?} generations for {} retained publications",
         kept.len()
     );
+    // A key that is not the writer's own name for a generation is never
+    // taken for one, whatever it holds.
+    let backup = object_store::path::Path::from(format!("{namespace}/identity/1-backup.json"));
+    let bytes = store
+        .get(&object_store::path::Path::from(format!(
+            "{namespace}/{}",
+            head.identity.object
+        )))
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    store.put(&backup, bytes.into()).await.unwrap();
     command(&commit, &["writer", "maintain"]);
+    store.head(&backup).await.unwrap();
     assert_eq!(
         [
             control_objects(&commit, "policy").await,
-            control_objects(&commit, "identity").await
+            control_objects(&commit, "identity").await - 1
         ],
         generations
     );
