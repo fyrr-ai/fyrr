@@ -159,7 +159,8 @@ fn ordering(name: &str, ascending: bool) -> ColumnOrdering {
     ColumnOrdering {
         column_name: name.into(),
         ascending,
-        nulls_first: false,
+        // Nulls sort first ascending and last descending.
+        nulls_first: ascending,
     }
 }
 pub(crate) use fyrr_core::limits::record_revision as revision;

@@ -77,6 +77,37 @@
               null
             ]
           },
+          "order_by": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "required": [
+                "field",
+                "direction"
+              ],
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "x-maxUtf8Bytes": 128
+                },
+                "direction": {
+                  "type": "string",
+                  "enum": [
+                    "asc",
+                    "desc"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "maxItems": 4,
+            "minItems": 1
+          },
           "sources": {
             "type": [
               "array",
