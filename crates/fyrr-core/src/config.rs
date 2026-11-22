@@ -991,6 +991,10 @@ pub struct WriterServeConfig {
     /// Run the committer role; switch off to keep batch `commit` jobs.
     #[serde(default = "default_true")]
     pub committer: bool,
+    /// Run `fyrr writer maintain` when the served version has work for it
+    /// (needs the committer role); switch off to schedule it yourself.
+    #[serde(default = "default_true")]
+    pub maintenance: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin: Option<WriterAdminConfig>,
 }
