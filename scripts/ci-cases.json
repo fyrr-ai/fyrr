@@ -4914,7 +4914,7 @@
       },
       "full:fyrr:test:writer_provider/prepared_timeout_names_flag_and_rerun_preserves_durable_work_on_storage": {
         "tier": "quick",
-        "seconds": 8.0
+        "seconds": 33.0
       }
     }
   },
