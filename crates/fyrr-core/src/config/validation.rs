@@ -476,13 +476,6 @@ fn ranges(config: &Config, error: &mut impl FnMut(&str, String)) {
             error(&path, message);
         }
     }
-    let dimensions = u64::from(config.embedding.dimensions);
-    if dimensions != 0 && !dimensions.is_multiple_of(DIMENSIONS_MULTIPLE) {
-        error(
-            "embedding.dimensions",
-            format!("must be a multiple of {DIMENSIONS_MULTIPLE}"),
-        );
-    }
 }
 
 fn storage(config: &Config, error: &mut impl FnMut(&str, String)) {

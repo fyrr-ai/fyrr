@@ -1142,10 +1142,6 @@
         "tier": "quick",
         "seconds": 0.01
       },
-      "full:fyrr-core:test:config/embedding_dimensions_must_be_a_multiple_of_what_the_index_builds": {
-        "tier": "quick",
-        "seconds": 0.01
-      },
       "full:fyrr-core:test:config/dense_partition_rows_defaults_to_550_and_is_bounded_without_changing_the_digest": {
         "tier": "quick",
         "seconds": 0.01

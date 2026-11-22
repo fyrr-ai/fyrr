@@ -102,6 +102,14 @@ async fn create_new(
     root: &Path,
     settings: NamespaceSettings,
 ) -> Result<()> {
+    // The dimension is chosen here and binds the namespace for good, and the
+    // dense index cannot be built over any other. Stored settings that predate
+    // this check are read as they are.
+    if !u64::from(settings.embedding.dimensions)
+        .is_multiple_of(fyrr_core::config::DIMENSIONS_MULTIPLE)
+    {
+        return Err(WriterError::PublicationInvalid);
+    }
     let now = fyrr_core::clock::now();
     let mut incarnation = [0; 16];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut incarnation)
