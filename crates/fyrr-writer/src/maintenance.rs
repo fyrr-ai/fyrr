@@ -142,18 +142,29 @@ async fn maintain_held(
             }
         }
     }
-    boundary(config, lease, history).await?;
-    let (mut removed, protected, unverified_protected, cleaned) =
-        tokio::time::timeout(limit, cleanup_versions(config, lease, history))
+    // One retained set for both cleanups: a manifest goes only with the
+    // version files that this set protects.
+    let head = boundary(config, lease, history).await?;
+    let kept = if head.content.is_some() {
+        tokio::time::timeout(limit, retained(config, &head))
             .await
-            .map_err(|_| WriterError::MaintenanceStepDeadline)??;
+            .map_err(|_| WriterError::MaintenanceStepDeadline)??
+    } else {
+        Vec::new()
+    };
+    let (mut removed, protected, unverified_protected, cleaned) = tokio::time::timeout(
+        limit,
+        cleanup_versions(config, lease, history, &head, &kept),
+    )
+    .await
+    .map_err(|_| WriterError::MaintenanceStepDeadline)??;
     let staging = local_staging::plan(config).await?;
     removed += local_staging::remove(config, lease, staging).await?;
     envelopes += crate::envelopes::cleanup_held(config, lease).await?;
     // A manifest is the proof that its version's files were removed: it goes
     // only once the version cleanup of this run has left none behind.
     if cleaned && protected == 0 {
-        removed += superseded_history(config, lease, history).await?;
+        removed += superseded_history(config, lease, history, &head, &kept).await?;
     }
     let head = boundary(config, lease, history).await?;
     if head.content.is_some() {
@@ -335,15 +346,15 @@ async fn retained(config: &Config, head: &ServingHead) -> Result<Vec<ContentMani
         retired = Some(manifest.committed_at);
         keep.push(manifest);
     }
-    // A chain that ends at a missing predecessor is complete only where
-    // maintenance deleted it: past the window. Anywhere else a manifest was
-    // lost, and what the window keeps is not known.
+    // Maintenance deletes a predecessor once it has been retired for the grace,
+    // and it was retired when the next manifest was committed. A chain that
+    // ends at a missing predecessor sooner lost a manifest the window keeps.
     if ended
         && keep.last().is_some_and(|oldest| {
             oldest.previous_publication_id.is_some()
                 && (fyrr_core::clock::now() - oldest.committed_at)
                     .to_std()
-                    .is_ok_and(|age| age < config.writer.purge_window.as_duration())
+                    .is_ok_and(|age| age < config.writer.version_grace.as_duration())
         })
     {
         return Err(WriterError::PublicationInvalid);
@@ -363,24 +374,22 @@ async fn superseded_history(
     config: &Config,
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
+    head: &ServingHead,
+    kept: &[ContentManifest],
 ) -> Result<usize> {
     let limit = config.writer.maintenance.step_max_duration.as_duration();
     let start = std::time::Instant::now();
     tokio::time::timeout(limit, async {
-        let head = boundary(config, lease, history).await?;
-        if head.content.is_none() {
-            return Ok(0);
-        }
-        let retained = retained(config, &head).await?;
         // Only a served manifest with evidence lets a walk stop before the
         // older ones; the publication that ends this command adds it.
-        if retained
-            .first()
-            .is_none_or(|manifest| manifest.envelope_evidence.is_none())
+        if head.content.is_none()
+            || kept
+                .first()
+                .is_none_or(|manifest| manifest.envelope_evidence.is_none())
         {
             return Ok(0);
         }
-        let named: BTreeSet<_> = retained
+        let named: BTreeSet<_> = kept
             .iter()
             .flat_map(|manifest| {
                 [format!("publications/{}.json", manifest.publication_id)]
@@ -436,17 +445,14 @@ async fn cleanup_versions(
     config: &Config,
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
+    head: &ServingHead,
+    kept: &[ContentManifest],
 ) -> Result<(usize, usize, usize, bool)> {
-    let head = boundary(config, lease, history).await?;
     if head.content.is_none() {
         return Ok((0, 0, 0, true));
     }
-    let dataset = pinned(config, &head).await?;
-    let versions: BTreeSet<_> = retained(config, &head)
-        .await?
-        .iter()
-        .map(|m| m.lance_version)
-        .collect();
+    let dataset = pinned(config, head).await?;
+    let versions: BTreeSet<_> = kept.iter().map(|m| m.lance_version).collect();
     let oldest = *versions
         .first()
         .ok_or(WriterError::PublicationUnavailable)?;
@@ -463,7 +469,7 @@ async fn cleanup_versions(
         unresolved,
         envelopes,
         ..
-    } = commit::cleanup_evidence(config, &head).await?;
+    } = commit::cleanup_evidence(config, head).await?;
     let mut protected = BTreeSet::new();
     for (_, envelope) in envelopes {
         if applied.contains(&envelope.envelope_id) && !unresolved.contains(&envelope.envelope_id) {

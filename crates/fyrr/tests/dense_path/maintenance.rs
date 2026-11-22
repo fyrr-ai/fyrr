@@ -1684,6 +1684,15 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
         pending
     );
 
+    // The history ends at a manifest younger than the window when the one
+    // before it was deleted past its grace: that is no lost manifest.
+    fyrr_core::clock::advance(Duration::from_secs(2 * 3600)).unwrap();
+    command(&commit, &["writer", "maintain"]);
+    assert!(matches!(
+        store.head(&path(&chain[0].publication_id)).await,
+        Err(object_store::Error::NotFound { .. })
+    ));
+
     // A fresh writer, restore and rollback work from what is left.
     history_round(&worker, &root, 11);
     publish(&commit);
