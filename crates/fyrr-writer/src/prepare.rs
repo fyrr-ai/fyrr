@@ -674,7 +674,7 @@ impl AttributeColumns {
     pub(crate) fn finish(self) -> Vec<ArrayRef> {
         self.schema
             .values()
-            .zip(&self.columns)
+            .zip(self.columns)
             .map(|(kind, values)| attribute_array(*kind, values))
             .collect()
     }
@@ -684,7 +684,7 @@ impl AttributeColumns {
 /// or null.
 fn attribute_array(
     kind: fyrr_core::attributes::AttributeType,
-    values: &[fyrr_core::attributes::AttributeValue],
+    values: Vec<fyrr_core::attributes::AttributeValue>,
 ) -> ArrayRef {
     use fyrr_core::attributes::{AttributeType as T, AttributeValue as V};
     match kind {
@@ -730,25 +730,27 @@ fn attribute_array(
             _ => None,
         }))),
         T::Array(element) => {
-            let items: Vec<V> = values
+            let lengths: Vec<usize> = values
                 .iter()
-                .flat_map(|v| match v {
-                    V::Array(items) => items.as_slice(),
-                    _ => &[],
+                .map(|v| match v {
+                    V::Array(items) => items.len(),
+                    _ => 0,
                 })
-                .cloned()
                 .collect();
-            let lengths = values.iter().map(|v| match v {
-                V::Array(items) => items.len(),
-                _ => 0,
-            });
+            let present = NullBuffer::from_iter(values.iter().map(|v| matches!(v, V::Array(_))));
+            // The elements move out of the values: they are not copied.
+            let items: Vec<V> = values
+                .into_iter()
+                .flat_map(|v| match v {
+                    V::Array(items) => items,
+                    _ => Vec::new(),
+                })
+                .collect();
             Arc::new(ListArray::new(
                 Arc::new(Field::new("item", element.scalar().arrow_type(), false)),
                 OffsetBuffer::from_lengths(lengths),
-                attribute_array(element.scalar(), &items),
-                Some(NullBuffer::from_iter(
-                    values.iter().map(|v| matches!(v, V::Array(_))),
-                )),
+                attribute_array(element.scalar(), items),
+                Some(present),
             ))
         }
     }

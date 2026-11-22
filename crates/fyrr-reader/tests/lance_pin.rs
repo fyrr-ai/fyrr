@@ -507,11 +507,14 @@ async fn every_offered_attribute_type_has_an_index_that_answers_its_filters() {
         (
             ElementType::Datetime,
             Arc::new(
-                TimestampMicrosecondArray::from(vec![1_000_000, 2_000_000]).with_timezone("UTC"),
+                // 1970-01-01T00:00:01Z and 9999-12-31T00:00:00Z, which a
+                // nanosecond timestamp cannot hold.
+                TimestampMicrosecondArray::from(vec![1_000_000, 253_402_214_400_000_000])
+                    .with_timezone("UTC"),
             ),
             literals(
-                "timestamp '1970-01-01 00:00:01.000000'",
-                "timestamp '1970-01-01 00:00:02.000000'",
+                "timestamp(6) '1970-01-01 00:00:01.000000'",
+                "timestamp(6) '9999-12-31 00:00:00.000000'",
             ),
         ),
         (

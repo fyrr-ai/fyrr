@@ -118,7 +118,9 @@ fn literal(kind: AttributeType, value: &Value) -> Result<String> {
         (AttributeType::Datetime, Value::String(text)) => {
             let time = DateTime::parse_from_rfc3339(text).map_err(|_| InvalidArgument)?;
             Ok(format!(
-                "timestamp '{}'",
+                // Microseconds, as stored: a bare literal is nanoseconds and
+                // overflows past the year 2262.
+                "timestamp(6) '{}'",
                 time.with_timezone(&Utc).format("%Y-%m-%d %H:%M:%S%.6f")
             ))
         }

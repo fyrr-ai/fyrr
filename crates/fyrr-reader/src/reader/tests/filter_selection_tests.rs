@@ -770,7 +770,7 @@ fn a_value_of_the_wrong_type_or_field_is_invalid_argument() {
             "seen",
             "gte",
             json!("2026-01-02T04:04:05.5+01:00"),
-            "`seen` >= timestamp '2026-01-02 03:04:05.500000'",
+            "`seen` >= timestamp(6) '2026-01-02 03:04:05.500000'",
         ),
         (
             "attributes",
