@@ -3,9 +3,11 @@ use crate::error::*;
 use crate::provider::BodyError;
 use crate::retrieval::Candidate;
 use crate::search::{PreparedReader, ids, strings};
+use arrow_array::Array;
 use futures::{StreamExt, TryStreamExt, stream};
+use fyrr_core::attributes::AttributeType;
 use fyrr_core::config::{Environment, ProcessEnvironment, RerankConfig};
-use fyrr_core::mcp::Telemetry;
+use fyrr_core::mcp::{RerankChoice, Telemetry};
 use serde::Deserialize;
 use std::sync::{
     Arc,
@@ -256,15 +258,63 @@ fn blend(rows: &mut [Candidate], scores: &[f64], weight: f64) {
     }
 }
 
+/// The configured reranker, unless the request switches it off.
+pub(crate) fn configured<'a>(
+    reader: &'a PreparedReader,
+    choice: Option<&RerankChoice>,
+) -> Option<&'a RerankConfig> {
+    reader
+        .config
+        .namespace
+        .rerank
+        .as_ref()
+        .filter(|_| choice.is_none_or(RerankChoice::on))
+}
+
+/// The column the reranker scores: the text of the record, or the string
+/// attribute a request names. A request that asks for a reranker the namespace
+/// lacks, or for an attribute it cannot score, is invalid.
+pub(crate) fn scored_column(
+    reader: &PreparedReader,
+    choice: Option<&RerankChoice>,
+) -> Result<String> {
+    const TEXT: &str = "searchable_text";
+    let Some(choice) = choice.filter(|choice| choice.on()) else {
+        return Ok(TEXT.into());
+    };
+    if reader.config.namespace.rerank.is_none() {
+        return Err(InvalidArgument);
+    }
+    match choice.attribute.as_deref() {
+        None => Ok(TEXT.into()),
+        Some(name)
+            if reader
+                .config
+                .namespace
+                .write_api
+                .as_ref()
+                .is_some_and(|api| api.text_attribute == name) =>
+        {
+            Ok(TEXT.into())
+        }
+        Some(name) if reader.manifest.attributes.get(name) == Some(&AttributeType::String) => {
+            Ok(name.into())
+        }
+        Some(_) => Err(InvalidArgument),
+    }
+}
+
 pub(crate) async fn rerank(
     reader: &mut PreparedReader,
     queries: &[&str],
     ranked: &mut [Vec<Candidate>],
+    choice: Option<&RerankChoice>,
     telemetry: &mut Telemetry,
 ) -> Result<bool> {
-    let Some(config) = reader.config.namespace.rerank.clone() else {
+    let Some(config) = configured(reader, choice).cloned() else {
         return Ok(false);
     };
+    let column = scored_column(reader, choice)?;
     let start = Instant::now();
     let deadline = start + config.deadline.as_duration();
     let refused_admission = Arc::new(AtomicBool::new(false));
@@ -275,6 +325,7 @@ pub(crate) async fn rerank(
             queries,
             ranked,
             &config,
+            &column,
             deadline,
             &refused_admission,
         ),
@@ -304,6 +355,7 @@ async fn rerank_inner(
     queries: &[&str],
     ranked: &mut [Vec<Candidate>],
     config: &RerankConfig,
+    column: &str,
     deadline: Instant,
     refused_admission: &Arc<AtomicBool>,
 ) -> Result<bool> {
@@ -330,7 +382,7 @@ async fn rerank_inner(
     if reader.refresh_authorization().await? {
         return Err(AuthorizationUnavailable);
     }
-    let documents = prepare_rerank_documents(reader, queries, ranked, config).await?;
+    let documents = prepare_rerank_documents(reader, queries, ranked, config, column).await?;
     if reader.refresh_authorization().await? {
         return Err(AuthorizationUnavailable);
     }
@@ -413,6 +465,7 @@ async fn prepare_rerank_documents(
     queries: &[&str],
     ranked: &[Vec<Candidate>],
     config: &RerankConfig,
+    column: &str,
 ) -> Result<Vec<Result<Vec<String>>>> {
     let mut documents = Vec::with_capacity(ranked.len());
     for rows in ranked.iter() {
@@ -431,12 +484,12 @@ async fn prepare_rerank_documents(
         let batch = reader
             .rows_by_id(
                 &row_ids,
-                &["source_id", "root_id", "record_id", "searchable_text"],
+                &["source_id", "root_id", "record_id", column],
                 PublicationInvalid,
             )
             .await?;
         let ids = ids(&batch)?;
-        let text = strings(&batch, "searchable_text")?;
+        let text = strings(&batch, column)?;
         let mut texts = Vec::new();
         let mut bytes = queries[documents.len()].len();
         let mut oversized = false;
@@ -452,8 +505,13 @@ async fn prepare_rerank_documents(
             {
                 return Err(StorageUnavailable);
             }
+            // An attribute the document does not set has no text to score.
             let body = window(
-                text.value(index),
+                if text.is_null(index) {
+                    ""
+                } else {
+                    text.value(index)
+                },
                 queries[documents.len()],
                 config.text_chars,
             );

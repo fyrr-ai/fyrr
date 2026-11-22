@@ -252,6 +252,47 @@ curl https://fyrr.example.com/v1/namespaces/main/query \
   -d '{"query":"backup","fields":{"include":["price","vector"],"scores":true}}'
 ```
 
+## Fusion and reranking
+
+The `query` route takes two more members that choose, for one request, what
+the namespace's settings otherwise decide. Neither is an argument of the tool:
+`fetch` and `/mcp` refuse them, and their output does not change. A request
+without them is answered as before.
+
+`fusion` applies to a request with `queries`. Without it, the hits of the
+sub-queries are merged round-robin and `limit` counts the hits of each
+sub-query. With it, the answer is one ranking of the documents of all
+sub-queries, at most `limit` hits and at most `max_documents` documents long.
+
+| Member | Effect |
+| --- | --- |
+| `method` | Required: `rrf`, reciprocal rank fusion. A document scores the sum of `weight / (rank_constant + rank)` over the sub-queries that return it, with `rank` counted from 1 in the sub-query's own order, after the reranker. |
+| `rank_constant` | A positive integer; default 60. |
+| `weights` | One number from 0 to 1,000,000 per sub-query, in request order; default 1 each. |
+
+A hit's `score` is its fused score, and its `query_index` names the sub-query
+that gave it most.
+
+`rerank` acts on the reranker the namespace is configured with. It adds no
+candidates, calls, spend or time: the namespace's candidate count, deadline and
+spend limit apply as they do to any request, and a namespace without a reranker
+answers `400 invalid_argument` to a `rerank` that does not switch it off.
+
+| Member | Effect |
+| --- | --- |
+| `enabled` | `false` makes no reranker call for this request; default `true`. |
+| `attribute` | The value each candidate is scored by: a typed `string` attribute, or the namespace's text attribute. Default the text of the record. Any other name is `400 invalid_argument`. |
+| `query` | The text candidates are scored against, for every sub-query. Default the text of each sub-query. A search by `vector` alone is reranked only when this is set. |
+
+```sh
+curl https://fyrr.example.com/v1/namespaces/main/query \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"queries":["backup policy","restore runbook"],
+       "fusion":{"method":"rrf","weights":[2,1]},
+       "rerank":{"query":"how do we restore a backup"}}'
+```
+
 ## Aggregate
 
 `POST /v1/namespaces/{namespace}/aggregate` computes aggregates over the
