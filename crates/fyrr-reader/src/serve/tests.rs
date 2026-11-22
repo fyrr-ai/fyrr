@@ -195,6 +195,12 @@ async fn recall_sampler_cadence_poor_ann_and_same_filtered_reference() {
     )
     .unwrap();
     let filtered_approximate = dense_roots(&mut reader, &filtered).await;
+    assert!(
+        exact[..10]
+            .iter()
+            .all(|(root, _)| !filtered_approximate.contains(root)),
+        "an excluded root was returned"
+    );
     let service = start(reader).await.unwrap();
     let mut events = service.sample_events.subscribe();
     for _ in 0..99 {

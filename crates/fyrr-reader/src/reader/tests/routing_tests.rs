@@ -179,9 +179,8 @@ async fn filtered_ann_on_storage() {
     // reads fewer bytes than the exact scan of its selection: a 1-bit RaBitQ
     // code (144 B) per probed row plus 4 * dense_candidates stored vectors
     // (2 KiB) against one stored vector per selected row. Every selection
-    // below holds at least 400 rows at k <= 10, so each one takes the index;
-    // the exact choice is covered by
-    // `filtered_index_search_reads_fewer_bytes_than_the_exact_scan`.
+    // below holds at least 400 rows at k <= 10, so each one takes the index,
+    // except (f), whose larger k makes the exact scan cheaper.
     match reader.admission.eligible.max_len() {
         // Every grant: 2000 allowed, 2000 denied, 401 correlated rows.
         Some(4401) => {
@@ -206,6 +205,14 @@ async fn filtered_ann_on_storage() {
             let (rows, t) = filtered_dense(&mut reader, &["correlated"], 1, 6).await;
             assert!(searched_index(&t), "{t:?}");
             assert_eq!(rows.len(), 1);
+            // (f) The same 401 rows at k=75 with every partition probed: the
+            // codes of all 4401 rows plus 300 stored vectors (~1.25 MB) cost
+            // more than the 401 stored vectors (~0.82 MB), so the planner
+            // must take the exact scan.
+            let (rows, t) = filtered_dense(&mut reader, &["correlated"], 75, 65536).await;
+            assert!(!searched_index(&t), "{t:?}");
+            assert_eq!(rows.len(), 75);
+            assert!(rows.iter().all(|row| row.source == "correlated"));
         }
         // (d) A subject who reads only the allowed source: a filter on both
         // sources returns the intersection.
