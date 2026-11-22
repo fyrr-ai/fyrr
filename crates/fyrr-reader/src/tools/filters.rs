@@ -302,6 +302,8 @@ impl PreparedReader {
                     root: root.into(),
                     record: strings(&batch, "record_id")?.value(row).into(),
                     score: 0.0,
+                    lexical: None,
+                    distance: None,
                 });
                 if selected.len() == limit {
                     break 'scan;
@@ -329,6 +331,7 @@ impl PreparedReader {
             vec![],
             telemetry,
             None,
+            args.fields.as_ref(),
         )
         .await
     }

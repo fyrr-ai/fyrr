@@ -141,6 +141,45 @@ pub struct SearchInput {
     /// Deadline in milliseconds; default 10000.
     #[schemars(range(min = 1, max = 300_000))]
     pub deadline_ms: Option<u32>,
+    /// Set by the HTTP query route from its `fields` member; no tool argument.
+    #[serde(skip)]
+    pub fields: Option<ReturnFields>,
+}
+
+/// What a hit returns besides the document fields: the `fields` member of a
+/// JSON `query` request. `include` names the attributes to return, `exclude`
+/// the ones to leave out of all of them (an empty list leaves out none). The
+/// vector of a row is returned only when `include` names `vector`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReturnFields {
+    pub include: Option<Vec<String>>,
+    pub exclude: Option<Vec<String>>,
+    /// Report the lexical score and the vector distance of each hit.
+    #[serde(default)]
+    pub scores: bool,
+}
+
+impl ReturnFields {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let names = |names: &Vec<String>| {
+            names.len() <= crate::limits::schema::MAX_ATTRIBUTES + 1
+                && names
+                    .iter()
+                    .all(|name| bounded_text(name, crate::limits::schema::MAX_NAME_BYTES))
+        };
+        if self
+            .include
+            .as_ref()
+            .is_none_or(|n| !n.is_empty() && names(n))
+            && self.exclude.as_ref().is_none_or(names)
+            && !(self.include.is_some() && self.exclude.is_some())
+        {
+            Ok(())
+        } else {
+            Err("invalid_argument")
+        }
+    }
 }
 
 /// How much text a hit carries.
@@ -420,6 +459,18 @@ pub struct SearchHit {
     pub score: f64,
     pub excerpt: Option<Excerpt>,
     pub content: Option<String>,
+    /// Typed attributes and vector asked for in `fields`, over HTTP only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub attributes: Option<serde_json::Map<String, Value>>,
+    /// Raw lexical score, with `fields.scores`; absent when the lexical lane did not find the hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub lexical_score: Option<f64>,
+    /// Raw vector distance, with `fields.scores`; absent when the dense lane did not find the hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub distance: Option<f64>,
 }
 
 /// A literal passage of the record; offsets are Unicode codepoints in the record text.

@@ -115,6 +115,33 @@ storage_unavailable` with `Retry-After`; it is never answered from the held
 version, and retrying it is safe. Any other value than the two answers `400
 invalid_argument`.
 
+## Returned fields
+
+The `query` route takes one more member, `fields`, that chooses what a hit
+returns besides its document fields. It is no argument of the tool: `fetch`
+and `/mcp` refuse it, and their output does not change. A request without it
+returns what it returned before.
+
+| Member | Effect |
+| --- | --- |
+| `include` | The typed [attributes](tuning.md#namespaceattributes) to return: one or more names. `vector` names the row's vector, returned as an array of numbers. A name the namespace does not declare is `400 invalid_argument`. |
+| `exclude` | Returns every typed attribute except these; `[]` returns all of them. A name the namespace does not declare is ignored. The vector is never returned by `exclude`. |
+| `scores` | `true` adds `lexical_score`, the raw lexical score, and `distance`, the raw vector distance, next to the final `score`. A hit the lexical lane did not find has no `lexical_score`; one the dense lane did not find has no `distance`. |
+
+`include` and `exclude` are exclusive. The attributes of a hit are the
+object `attributes`, with the JSON type of each attribute (`datetime` as an
+RFC 3339 string, `uint` as a number, `uuid` as 8-4-4-4-12 hexadecimal digits,
+`bytes` as base64 and an array as a JSON array of its elements); an attribute the document does not set is `null`. Only the
+columns asked for are read, in the same read as the hit's other fields, and
+only for rows the caller may read.
+
+```sh
+curl https://fyrr.example.com/v1/namespaces/main/query \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"backup","fields":{"include":["price","vector"],"scores":true}}'
+```
+
 ## Errors
 
 The nine tool error codes of [MCP tools](mcp-tools.md#errors) map to these

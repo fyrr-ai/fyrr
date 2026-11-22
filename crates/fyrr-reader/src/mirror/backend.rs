@@ -77,7 +77,7 @@ impl MirrorStore {
         self.get_immutable(location, options, false).await
     }
     /// A read through the mirror. With `paged`, a head of a pinned `data/`
-    /// file is answered from the manifest and a ranged read of one is served
+    /// or `_indices/` file is answered from the manifest and a ranged read of one is served
     /// in pages, or downloads a small file whole when it fits; without it, a
     /// miss downloads the complete file.
     async fn get_immutable(
@@ -138,19 +138,21 @@ impl MirrorStore {
         if let (Some(size), Some(range), false) = (size, &options.range, unverified)
             && (size > self.whole_bytes || !self.whole_fits(&file, size).await?)
         {
-            if !self.pages_fit(size) {
-                if size > self.max_bytes {
-                    Self::remember_oversized(&self.oversized, file);
-                }
+            if size > self.max_bytes {
+                Self::remember_oversized(&self.oversized, file);
                 return self.pass_through(location, options, &counters).await;
             }
-            let range = range.as_range(size).map_err(|source| Error::Generic {
-                store: "fyrr immutable mirror",
-                source: Box::new(source),
-            })?;
-            return self
-                .read_pages(location, range, size, &file, &counters)
-                .await;
+            // An object that fits the mirror whole but not with its page map
+            // is downloaded whole below: pages could not keep it.
+            if self.pages_fit(size) {
+                let range = range.as_range(size).map_err(|source| Error::Generic {
+                    store: "fyrr immutable mirror",
+                    source: Box::new(source),
+                })?;
+                return self
+                    .read_pages(location, range, size, &file, &counters)
+                    .await;
+            }
         }
         let object = self
             .download_lock(&file)

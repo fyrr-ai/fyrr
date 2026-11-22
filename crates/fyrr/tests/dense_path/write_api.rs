@@ -746,7 +746,7 @@ async fn identity_write_api_stores_filters_and_orders_the_other_attribute_types_
         .enumerate()
         .map(|(n, id)| {
             let mut row = json!({
-                "id": id, "text": texts[n], "readers": ["grp:allow"],
+                "id": id, "text": texts[n], "readers": ["grp:allow", "usr:x"],
                 "big": big[n], "owner": owner[n], "blob": blob[n],
             });
             for (name, _, [x, y], _) in &arrays {
@@ -940,6 +940,241 @@ async fn identity_write_api_stores_filters_and_orders_the_other_attribute_types_
         )
         .await;
     assert_eq!(status, 400, "an array of bytes is not a type");
+
+    // The HTTP query returns every type as its JSON form: `uint` a number,
+    // a UUID its digits, `bytes` base64 and an array an array.
+    let mut reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let response = reader
+        .client
+        .post(format!("{}/v1/namespaces/dense-fixture/query", reader.base))
+        .bearer_auth(secret(READ_KEY))
+        .json(&json!({
+            "query": "alpha", "output": "metadata", "limit": 20,
+            "fields": {"exclude": []},
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let answer: Value = response.json().await.unwrap();
+    let attributes = |id: &str| {
+        answer["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|hit| hit["root_id"] == id)
+            .unwrap()["attributes"]
+            .clone()
+    };
+    let expected = |row: usize| {
+        let mut object = json!({"big": big[row], "owner": owner[row], "blob": blob[row]});
+        for (name, _, [x, y], _) in &arrays {
+            object[name] = match row {
+                0 => json!([x, y]),
+                1 => json!([x]),
+                2 => json!([]),
+                3 => Value::Null,
+                _ => json!([y]),
+            };
+        }
+        object
+    };
+    for (row, id) in ["a", "b", "c", "d", "e"].iter().enumerate() {
+        let mut want = expected(row);
+        // A datetime comes back in UTC.
+        want["stamps"] = match row {
+            0 => json!(["2026-01-02T03:04:05Z", "2026-02-03T03:05:06Z"]),
+            1 => json!(["2026-01-02T03:04:05Z"]),
+            2 => json!([]),
+            3 => Value::Null,
+            _ => json!(["2026-02-03T03:05:06Z"]),
+        };
+        assert_eq!(attributes(id), want, "{id}");
+    }
+    assert_eq!(attributes("a")["counts"], json!([1, u64::MAX]));
+    assert_eq!(attributes("b")["blob"], "/w==");
+    reader.stop().await;
+}
+
+/// A JSON query chooses the attributes, the vector and the scores a hit
+/// returns, reads only those columns, and returns nothing of a row the caller
+/// may not read.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_returns_the_attributes_vectors_and_scores_a_query_asks_for_on_storage()
+{
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let texts = ["alpha", "bravo", "charlie", "golf"];
+    embed(&root, &texts);
+    let writer = Writer::start(&config, &root, address).await;
+    let upserts = [
+        json!({"id": "a", "text": texts[0], "vector": vector(0, 1024), "readers": ["usr:x"],
+               "price": 3.0, "stock": 2, "tag": "red", "ok": true, "seen": "2026-01-02T03:04:05Z"}),
+        json!({"id": "b", "text": texts[1], "vector": vector(1, 1024), "readers": ["usr:x"],
+               "price": 1.0, "ok": false}),
+        json!({"id": "c", "text": texts[2], "vector": vector(2, 1024), "readers": ["usr:x"],
+               "price": 2.0, "stock": 7, "tag": "blue"}),
+        // As close to the query as a row can be, and the cheapest, but nobody may read it.
+        json!({"id": "hidden", "text": texts[3], "vector": vector(0, 1024), "readers": ["usr:nobody"],
+               "price": 0.5, "stock": 9, "tag": "secret"}),
+    ];
+    let settings = json!({"attributes": {
+        "price": "float", "stock": "int", "tag": "string", "ok": "bool", "seen": "datetime"}});
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"settings": settings, "upserts": upserts})
+            )
+            .await,
+        (200, json!({"upserted": 4, "deleted": 0}))
+    );
+    let mut reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let ask = async |body: Value| -> (u16, Value) {
+        let response = reader
+            .client
+            .post(format!("{}/v1/namespaces/dense-fixture/query", reader.base))
+            .bearer_auth(secret(READ_KEY))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        (
+            response.status().as_u16(),
+            response.json::<Value>().await.unwrap(),
+        )
+    };
+    let search = |fields: Value| json!({"query": "alpha", "vector": vector(0, 1024), "output": "metadata", "fields": fields});
+    let hits = |answer: (u16, Value)| -> Vec<Value> {
+        assert_eq!(answer.0, 200, "{}", answer.1);
+        answer.1["hits"].as_array().unwrap().clone()
+    };
+    let hit = |hits: &[Value], id: &str| {
+        hits.iter()
+            .find(|hit| hit["root_id"] == id)
+            .unwrap()
+            .clone()
+    };
+
+    // Without `fields` a hit carries neither attributes nor the extra scores.
+    let mut plain = search(json!({}));
+    plain.as_object_mut().unwrap().remove("fields");
+    let plain = hits(ask(plain).await);
+    assert_eq!(plain.len(), 3, "the hidden row is not a hit");
+    for hit in &plain {
+        for key in ["attributes", "lexical_score", "distance"] {
+            assert!(hit.get(key).is_none(), "{key}");
+        }
+    }
+
+    // Only the attributes in the include list; a value that is not set is null.
+    let included = hits(ask(search(json!({"include": ["price", "tag"]}))).await);
+    assert_eq!(
+        hit(&included, "a")["attributes"],
+        json!({"price": 3.0, "tag": "red"})
+    );
+    assert_eq!(
+        hit(&included, "b")["attributes"],
+        json!({"price": 1.0, "tag": null})
+    );
+    // An empty exclude list returns every attribute but the vector, typed.
+    let all = hits(ask(search(json!({"exclude": []}))).await);
+    assert_eq!(
+        hit(&all, "a")["attributes"],
+        json!({"price": 3.0, "stock": 2, "tag": "red", "ok": true, "seen": "2026-01-02T03:04:05Z"})
+    );
+    assert_eq!(
+        hit(&all, "b")["attributes"],
+        json!({"price": 1.0, "stock": null, "tag": null, "ok": false, "seen": null})
+    );
+    // A name the namespace does not declare is ignored in the exclude list.
+    let rest = hits(ask(search(json!({"exclude": ["tag", "stock", "nope"]}))).await);
+    assert_eq!(
+        hit(&rest, "c")["attributes"],
+        json!({"price": 2.0, "ok": null, "seen": null})
+    );
+    // The vector is a number array, named in the include list only.
+    let vectors = hits(ask(search(json!({"include": ["vector"]}))).await);
+    let stored = hit(&vectors, "a")["attributes"]["vector"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let sent = vector(0, 1024);
+    assert_eq!(stored.len(), sent.len());
+    for (got, want) in stored.iter().zip(&sent) {
+        // Stored as 16-bit floats.
+        assert!((got.as_f64().unwrap() - f64::from(*want)).abs() < 2e-3);
+    }
+    // The scores: the lexical lane finds one row, the dense lane all of them.
+    let scored = hits(ask(search(json!({"scores": true}))).await);
+    let (a, b) = (hit(&scored, "a"), hit(&scored, "b"));
+    assert!(a["lexical_score"].as_f64().unwrap() > 0.0);
+    assert!(a["distance"].as_f64().unwrap() < 0.01);
+    assert!(b.get("lexical_score").is_none());
+    assert!(b["distance"].as_f64().unwrap() > a["distance"].as_f64().unwrap());
+    assert!(a.get("attributes").is_none());
+    // A listing returns attributes too, and still only of rows the caller may read.
+    let listing = hits(
+        ask(
+            json!({"order_by": [{"field": "price", "direction": "asc"}], "output": "metadata",
+                   "fields": {"include": ["price", "tag"]}}),
+        )
+        .await,
+    );
+    let prices: Vec<_> = listing
+        .iter()
+        .map(|hit| hit["attributes"]["price"].clone())
+        .collect();
+    assert_eq!(prices, [json!(1.0), json!(2.0), json!(3.0)]);
+
+    // An included name the namespace does not declare is invalid; so is a
+    // malformed `fields`, and the fetch route has no such member.
+    for fields in [
+        json!({"include": ["nope"]}),
+        json!({"include": []}),
+        json!({"include": ["price"], "exclude": []}),
+        json!({"scores": "yes"}),
+        json!({"other": true}),
+        json!("all"),
+    ] {
+        assert_eq!(
+            ask(search(fields.clone())).await,
+            (400, json!({"error": "invalid_argument"})),
+            "{fields}"
+        );
+    }
+    // Also when no row matches, so nothing is hydrated.
+    let mut nothing = search(json!({"include": ["nope"]}));
+    nothing["filter"] = json!({"field": "root_id", "op": "eq", "value": "none"});
+    assert_eq!(
+        ask(nothing).await,
+        (400, json!({"error": "invalid_argument"}))
+    );
+    let fetch = reader
+        .client
+        .post(format!("{}/v1/namespaces/dense-fixture/fetch", reader.base))
+        .bearer_auth(secret(READ_KEY))
+        .json(&json!({"source_id": "_api", "root_id": "a", "fields": {}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fetch.status(), 400);
+    // MCP tools keep their arguments and their output.
+    let mut client = Mcp::open(&config);
+    error(
+        client.call("search", search(json!({"include": ["price"]}))),
+        "invalid_argument",
+    );
+    reader.stop().await;
 }
 
 /// A search takes its query vector from the request instead of the embedding

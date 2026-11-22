@@ -215,6 +215,10 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-reader:lib:fyrr_reader/retrieval::tests::a_fused_hit_keeps_the_raw_lexical_score_and_distance_of_its_lanes": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-reader:lib:fyrr_reader/retrieval::tests::composition_cases": {
         "tier": "quick",
         "seconds": 0.001
@@ -920,6 +924,14 @@
         "seconds": 0.05
       },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::data_ranges_fetch_only_the_pages_they_lack": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::index_ranges_fetch_only_the_pages_they_lack": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::an_index_file_that_fits_only_without_its_map_is_downloaded_whole": {
         "tier": "quick",
         "seconds": 0.05
       },
@@ -1950,6 +1962,10 @@
         "seconds": 40
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_searches_by_a_query_vector_exact_or_approximate_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_returns_the_attributes_vectors_and_scores_a_query_asks_for_on_storage": {
         "tier": "full",
         "seconds": 40
       },

@@ -210,6 +210,19 @@ pub fn parse_uuid(text: &str) -> Option<[u8; 16]> {
     hex::decode(groups.concat()).ok()?.try_into().ok()
 }
 
+/// A UUID as 8-4-4-4-12 lowercase hexadecimal digits.
+pub fn format_uuid(bytes: [u8; 16]) -> String {
+    let hex = hex::encode(bytes);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
+}
+
 /// The type of the elements an undeclared attribute takes from its first value.
 fn element_of(value: &serde_json::Value) -> Option<ElementType> {
     use serde_json::Value;

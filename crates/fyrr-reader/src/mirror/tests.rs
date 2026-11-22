@@ -909,13 +909,17 @@ struct PagedFixture {
 const PAGED_SIZE: usize = 100_000;
 impl PagedFixture {
     async fn new(name: &str, max_bytes: u64) -> Self {
+        Self::at(name, max_bytes, "data/f.lance").await
+    }
+    /// The object at `relative` to the dataset root.
+    async fn at(name: &str, max_bytes: u64, relative: &str) -> Self {
         let directory = temporary_directory(name);
         let mirror = bound_mirror(&directory, max_bytes);
         let source = Arc::new(object_store::memory::InMemory::new());
-        let path = Path::from("dataset.lance/data/f.lance");
+        let path = Path::from(format!("dataset.lance/{relative}"));
         source.put(&path, Self::bytes(0).into()).await.unwrap();
         let files = vec![fyrr_core::envelope::FileRef {
-            path: "data/f.lance".into(),
+            path: relative.into(),
             size_bytes: PAGED_SIZE as u64,
         }];
         let lease = Some(mirror.pin(&files).await.unwrap());
@@ -1057,10 +1061,16 @@ async fn a_small_data_file_that_cannot_be_kept_whole_is_not_downloaded_whole() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-/// A data file no larger than `WHOLE_FILE_BYTES` is downloaded whole by its
+/// A data or index file no larger than `WHOLE_FILE_BYTES` is downloaded whole by its
 /// first ranged read: one request instead of one per scattered range.
 #[tokio::test]
 async fn a_small_data_file_is_downloaded_whole_on_its_first_read() {
+    for relative in ["data/f.lance", "_indices/u/index.idx"] {
+        small_file_is_downloaded_whole(relative).await;
+    }
+}
+
+async fn small_file_is_downloaded_whole(relative: &str) {
     let directory = temporary_directory("small-whole");
     let mirror = Arc::new({
         let mirror = MirrorStore::new(directory.clone(), 1 << 20).unwrap();
@@ -1069,12 +1079,12 @@ async fn a_small_data_file_is_downloaded_whole_on_its_first_read() {
         mirror
     });
     let source = Arc::new(object_store::memory::InMemory::new());
-    let path = Path::from("dataset.lance/data/f.lance");
+    let path = Path::from(format!("dataset.lance/{relative}"));
     let expected = PagedFixture::bytes(0);
     source.put(&path, expected.clone().into()).await.unwrap();
     let _lease = mirror
         .pin(&[fyrr_core::envelope::FileRef {
-            path: "data/f.lance".into(),
+            path: relative.into(),
             size_bytes: PAGED_SIZE as u64,
         }])
         .await
@@ -1168,6 +1178,67 @@ async fn data_ranges_fetch_only_the_pages_they_lack() {
             & 0o777,
         0o600
     );
+}
+
+/// An `_indices/` file above the threshold is read in verified pages like a
+/// data file, and warming replaces its pages with the complete file.
+#[tokio::test]
+async fn index_ranges_fetch_only_the_pages_they_lack() {
+    let f = PagedFixture::at("pages-index", 1 << 20, "_indices/u/index.idx").await;
+    let expected = PagedFixture::bytes(0);
+    assert_eq!(f.store.head(&f.path).await.unwrap().size, PAGED_SIZE as u64);
+    assert_eq!(
+        f.mirror.totals().requests,
+        0,
+        "a pinned head needs no request"
+    );
+    assert_eq!(
+        f.read(10_000..10_100).await.unwrap(),
+        expected[10_000..10_100]
+    );
+    assert_eq!(
+        (f.mirror.totals().requests, f.mirror.totals().bytes),
+        (1, 4096),
+        "one page"
+    );
+    assert_eq!(
+        f.read(10_000..20_000).await.unwrap(),
+        expected[10_000..20_000]
+    );
+    assert_eq!(
+        (f.mirror.totals().requests, f.mirror.totals().bytes),
+        (2, 3 * 4096),
+        "only the two missing pages"
+    );
+    assert!(f.exists("sparse") && f.exists("map") && !f.exists("blob"));
+    f.mirror.prewarm(f.source.clone(), &f.files).await.unwrap();
+    assert!(f.exists("blob") && !f.exists("sparse") && !f.exists("map"));
+    let requests = f.mirror.totals().requests;
+    assert_eq!(
+        f.read(60_000..70_000).await.unwrap(),
+        expected[60_000..70_000]
+    );
+    assert_eq!(f.mirror.totals().requests, requests);
+}
+
+/// An index file that fits the mirror but not together with its page map is
+/// downloaded whole by one request, not read past the mirror range by range.
+#[tokio::test]
+async fn an_index_file_that_fits_only_without_its_map_is_downloaded_whole() {
+    let size = PAGED_SIZE as u64;
+    let f = PagedFixture::at("pages-no-map-room", size, "_indices/u/index.idx").await;
+    assert!(!f.mirror.pages_fit(size));
+    let expected = PagedFixture::bytes(0);
+    for range in [90_000..100_000_usize, 0..4096] {
+        let bytes = range.start as u64..range.end as u64;
+        assert_eq!(f.read(bytes).await.unwrap(), expected[range]);
+    }
+    assert_eq!(
+        (f.mirror.totals().requests, f.mirror.totals().bytes),
+        (1, size),
+        "one whole download serves every range"
+    );
+    assert!(f.exists("blob") && !f.exists("sparse"));
 }
 
 #[tokio::test]
@@ -1414,11 +1485,11 @@ async fn heads_of_other_files_are_not_answered_from_the_manifest() {
     let directory = temporary_directory("pages-index-head");
     let mirror = bound_mirror(&directory, 1 << 20);
     let source = Arc::new(object_store::memory::InMemory::new());
-    let path = Path::from("dataset.lance/_indices/i/part.idx");
+    let path = Path::from("dataset.lance/_deletions/i/part.arrow");
     source.put(&path, vec![7; 100].into()).await.unwrap();
     let _lease = mirror
         .pin(&[fyrr_core::envelope::FileRef {
-            path: "_indices/i/part.idx".into(),
+            path: "_deletions/i/part.arrow".into(),
             size_bytes: 100,
         }])
         .await

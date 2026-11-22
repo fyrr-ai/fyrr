@@ -1,10 +1,12 @@
-//! Page-granular read-through of `data/` files.
+//! Page-granular read-through of `data/` and `_indices/` files.
 //!
 //! A Lance data file holds every column of its rows, and most reads want one
 //! column or a few rows: the admission scan reads `source_id` of every file,
-//! rescoring and hydration read scattered rows. Copying the whole object on
-//! the first such read downloads what the query never touches. A ranged read
-//! of a `data/` file larger than [`WHOLE_FILE_BYTES`] whose size the pinned
+//! rescoring and hydration read scattered rows. An index file (a vector
+//! partition, a full-text posting list, a scalar index page) is read the same
+//! way, a few ranges of a large object. Copying the whole object on the first
+//! such read downloads what the query never touches. A ranged read of a
+//! `data/` or `_indices/` file larger than [`WHOLE_FILE_BYTES`] whose size the pinned
 //! manifest states therefore fetches only the 4 KiB pages it lacks and keeps
 //! them in two owned-private files named by the blob stem (a smaller file is
 //! copied whole when the mirror has room for it):
@@ -46,7 +48,7 @@ const GAP_PAGES: u64 = 16;
 const FETCH_PAGES: u64 = (16 << 20) / PAGE;
 /// Requests of one read in flight at once.
 const FETCH_CONCURRENCY: usize = 16;
-/// A data file up to this size is downloaded whole on its first read rather
+/// A data or index file up to this size is downloaded whole on its first read rather
 /// than in pages. Opening a reader touches the footer, the column metadata
 /// and the first page of every data file, two or three dependent requests,
 /// and warming then downloads the file anyway: one request instead of up to
@@ -96,7 +98,7 @@ struct Fetched {
 }
 
 impl MirrorStore {
-    /// A `data/` file of the bound dataset.
+    /// A `data/` or `_indices/` file of the bound dataset.
     pub(super) fn ranged_class(&self, location: &Path) -> bool {
         let key = crate::sync::lock(&self.dataset_cache_key);
         key.as_ref().is_some_and(|(_, root)| {
@@ -104,7 +106,9 @@ impl MirrorStore {
                 .as_ref()
                 .strip_prefix(root.as_str())
                 .and_then(|relative| relative.strip_prefix('/'))
-                .is_some_and(|relative| relative.starts_with("data/"))
+                .is_some_and(|relative| {
+                    relative.starts_with("data/") || relative.starts_with("_indices/")
+                })
         })
     }
     /// The size a pinned manifest states for the object behind `blob`.
@@ -333,7 +337,7 @@ impl MirrorStore {
             tag,
         ))
     }
-    /// Answers `range` of a `data/` object of `size` bytes from its pages,
+    /// Answers `range` of a `data/` or `_indices/` object of `size` bytes from its pages,
     /// fetching the missing ones. File I/O and hashing run on the blocking pool.
     pub(super) async fn read_pages(
         &self,

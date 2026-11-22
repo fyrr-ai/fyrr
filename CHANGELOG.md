@@ -25,6 +25,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   namespace's vector `model` and `dimensions` in `settings.embedding`, and a
   deployment whose documents all carry vectors needs no `[embedding]` table.
   See [HTTP write API](docs/http-api.md#write-documents).
+- The JSON `query` route takes `fields`: the typed attributes to return (an
+  `include` list, or all of them but an `exclude` list), the vector of a row as
+  an array of numbers, and with `scores` the raw lexical score and vector
+  distance next to the final score. Only those columns are read, and only of
+  rows the caller may read. The MCP tools keep their output. See
+  [Returned fields](docs/http-api.md#returned-fields).
 - `search` takes a `vector`, a query vector used instead of an embedding of the
   query text; alone, it searches the dense lane only and makes no embedding
   call. `exact: true` scans every row that passes the filters and the caller's
@@ -125,8 +131,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   filtered, sorted or indexed), and arrays of every scalar type but `bytes`,
   declared as `{ array = "string" }`. An array has a label-list index. `filter`
   tests an array with `contains`, `not_contains`, `contains_any`,
-  `contains_all` and `contains_none`; `order_by` refuses an array and `bytes`.
-  Existing schemas are unchanged. See
+  `contains_all` and `contains_none`; `order_by` refuses an array and `bytes`. A query's `fields` returns
+  them as a number, a UUID string, base64 and a JSON array. Existing schemas
+  are unchanged. See
   [tuning](docs/tuning.md#namespaceattributes) and
   [Filters](docs/mcp-tools.md#filters).
 
@@ -246,6 +253,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   replacement. `metadata.stale_version` is now set in every reader whenever
   the answer comes from an older version than the head the reader last
   read.
+- The reader's mirror reads an index file (`_indices/`: a vector partition, a
+  full-text posting list, a scalar index page) of more than 2 MiB in verified
+  4 KiB pages as it does a data file, instead of downloading it whole on its
+  first read. A cold full-text or vector query fetches only the pages it
+  touches; an index file of up to 2 MiB is still downloaded whole.
 - The reader's mirror downloads a data file of up to 2 MiB whole on its
   first read instead of in pages. Opening a reader reads the footer, the
   column metadata and the first page of every data file, two or three

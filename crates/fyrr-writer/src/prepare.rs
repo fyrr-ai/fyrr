@@ -12,7 +12,7 @@ use arrow_array::{
     Int64Array, ListArray, RecordBatch, RecordBatchIterator, StringArray,
     TimestampMicrosecondArray, UInt64Array,
 };
-use arrow_buffer::{NullBuffer, OffsetBuffer};
+use arrow_buffer::{Buffer, NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field, Schema};
 use fyrr_core::config::{Config, PermissionsMode, ProcessEnvironment};
 use fyrr_core::connector::{
@@ -715,17 +715,16 @@ fn attribute_array(
             }))
             .with_timezone("UTC"),
         ),
-        T::Uuid => Arc::new(
-            FixedSizeBinaryArray::try_from_sparse_iter_with_size(
-                values.iter().map(|v| match v {
-                    V::Uuid(bytes) => Some(bytes.as_slice()),
-                    _ => None,
-                }),
-                16,
-            )
-            // Every value is 16 bytes long.
-            .expect("a UUID is 16 bytes"),
-        ),
+        T::Uuid => Arc::new(FixedSizeBinaryArray::new(
+            16,
+            Buffer::from_iter(values.iter().flat_map(|v| match v {
+                V::Uuid(bytes) => *bytes,
+                _ => [0; 16],
+            })),
+            Some(NullBuffer::from_iter(
+                values.iter().map(|v| matches!(v, V::Uuid(_))),
+            )),
+        )),
         T::Bytes => Arc::new(BinaryArray::from_iter(values.iter().map(|v| match v {
             V::Bytes(bytes) => Some(bytes.as_slice()),
             _ => None,

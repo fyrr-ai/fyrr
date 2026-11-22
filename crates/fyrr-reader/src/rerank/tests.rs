@@ -8,6 +8,8 @@ fn row(index: usize, score: f64) -> Candidate {
         root: index.to_string(),
         record: "0".into(),
         score,
+        lexical: None,
+        distance: None,
     }
 }
 
