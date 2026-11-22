@@ -34,9 +34,14 @@ configured mirror, `<reader.mirror_path>.paths`, so opening a namespace needs
 write access to the parent of `reader.mirror_path`; without it such a request
 answers `503 storage_unavailable` and the configured namespace is served as
 before. The 8 share the reader's `reader.memory_max_bytes` with the
-configured namespace, and each gets an eighth of `reader.mirror_max_bytes` and
-of the 128 MiB subject cache the configured namespace has, so together they add
-one more mirror and cache budget of the configured size. Embedding and rerank
+configured namespace: a namespace that the memory left cannot fund in full
+closes the least recently used one that serves no request, and opens again,
+so the open ones stay inside the budget. Each gets an eighth of
+`reader.mirror_max_bytes` and of the 128 MiB subject cache the configured
+namespace has, so together they add one more mirror and cache budget of the
+configured size. One that has served no request for
+`reader.version_check_interval` makes no storage request until the next one,
+which reads the head first and is answered from that read. Embedding and rerank
 spend limits are per process: every namespace charges the same counters.
 `/mcp`, `/readyz` and `/admin/refresh` keep serving the configured namespace
 alone. `list_filters` has no JSON route.

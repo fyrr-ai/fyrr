@@ -831,3 +831,127 @@ async fn a_reader_serves_the_namespace_its_path_names() {
     );
     reader.stop().await;
 }
+
+/// The root IDs a JSON route answered with.
+fn hits_of(body: &Value) -> Vec<String> {
+    body["hits"]
+        .as_array()
+        .map(|hits| {
+            hits.iter()
+                .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+#[ignore = "real writer, HTTP reader executable and local storage; scripts/ci"]
+async fn an_idle_namespace_answers_from_a_head_read_after_its_request() {
+    let mut deployment = Deployment::new().await;
+    deployment.without_directory();
+    let key = Key::new("nm-idle-p4z", "FYRR_TEST_API_KEY_IDLE", 65, "usr:u1");
+    let published = deployment.publish(&[&key], &[&key], "");
+    assert!(published.status.success(), "{}", report(&published));
+    let second = deployment.sibling("idle", &[&key]);
+    // A reader as it ships, with checks every second.
+    let config = deployment.root.join("idle-reader.toml");
+    let text = std::fs::read_to_string(deployment.shipped()).unwrap();
+    std::fs::write(
+        &config,
+        text.replace("[reader]", "[reader]\nversion_check_interval = '1s'"),
+    )
+    .unwrap();
+    let mut reader = Reader::start_appended(&config, &deployment.root, key_http).await;
+    let (status, body) = path_query(&reader, &key.secret, &second).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(hits_of(&body), [deployment.doc(1)]);
+
+    // No request for several intervals, then its source is retired. The next
+    // request must not be answered from the view the namespace held.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let sibling = deployment.root.join("idle.toml");
+    for args in [
+        &["writer", "source", "retire", "incremental"][..],
+        &["writer", "commit"],
+    ] {
+        let output = worker_command(&sibling)
+            .env(key.variable, &key.secret)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {}", report(&output));
+    }
+    let (status, body) = path_query(&reader, &key.secret, &second).await;
+    assert!(
+        status != 200 || hits_of(&body).is_empty(),
+        "answered {status} {body} after the source was retired"
+    );
+    reader.stop().await;
+}
+
+/// A field of the last line the reader reported about its memory envelope.
+fn accounting(log: &str, field: &str) -> u64 {
+    log.lines()
+        .rev()
+        .find(|line| line.contains("generation_preparation=accounting"))
+        .and_then(|line| {
+            line.split_whitespace()
+                .find_map(|word| word.strip_prefix(&format!("{field}=")))?
+                .parse()
+                .ok()
+        })
+        .unwrap_or_else(|| panic!("no accounting of {field} in the reader's log:\n{log}"))
+}
+
+#[tokio::test]
+#[ignore = "real writer, HTTP reader executable and local storage; scripts/ci"]
+async fn namespaces_opened_by_path_stay_inside_the_memory_budget() {
+    const MIB: u64 = 1024 * 1024;
+    let mut deployment = Deployment::new().await;
+    deployment.without_directory();
+    let key = Key::new("nm-mem-p4z", "FYRR_TEST_API_KEY_MEM", 66, "usr:u1");
+    let published = deployment.publish(&[&key], &[&key], "");
+    assert!(published.status.success(), "{}", report(&published));
+    // Two more than fit: the configured namespace and two others fill the
+    // budget set below, and four are opened.
+    let names: Vec<String> = (0..4)
+        .map(|n| deployment.sibling(&format!("mem{n}"), &[&key]))
+        .collect();
+
+    // What the configured namespace holds, and what the process held before
+    // the envelope was taken from the budget: both are read from a reader
+    // with the default budget.
+    let text = std::fs::read_to_string(&deployment.worker).unwrap();
+    let mut probe = Reader::start_appended(&deployment.worker, &deployment.root, key_http).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let log = probe.stderr_text();
+    probe.stop().await;
+    let held = accounting(&log, "reserved_bytes");
+    // The pool is the budget less the headroom (128 MiB by default), the
+    // subject cache (128 MiB) and the resident memory at start.
+    let resident =
+        accounting(&log, "budget_bytes") - accounting(&log, "capacity_bytes") - 256 * MIB;
+    let budget = (resident + 256 * MIB + held * 7 / 2).div_ceil(MIB);
+    let tight = deployment.root.join("tight-reader.toml");
+    std::fs::write(
+        &tight,
+        text.replace(
+            "[reader]",
+            &format!("[reader]\nmemory_max_bytes = '{budget}MiB'"),
+        ),
+    )
+    .unwrap();
+
+    let mut reader = Reader::start_appended(&tight, &deployment.root, key_http).await;
+    for name in names.iter().chain(&names[..1]) {
+        let (status, body) = path_query(&reader, &key.secret, name).await;
+        assert_eq!(status, 200, "{name}: {body}");
+        assert_eq!(hits_of(&body), [deployment.doc(1)], "{name}");
+    }
+    let log = reader.stderr_text();
+    assert!(
+        log.contains("telemetry namespace=closed reason=memory_budget"),
+        "no namespace was closed for memory:\n{log}"
+    );
+    reader.stop().await;
+}

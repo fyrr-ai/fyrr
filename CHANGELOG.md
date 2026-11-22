@@ -102,6 +102,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- A namespace opened by its request path that has served no request for one
+  `reader.version_check_interval` makes no storage request until the next one,
+  which reads the head first and is answered from that read. When the memory
+  budget cannot fund a namespace in full, the least recently used namespace
+  that serves no request is closed for it. See
+  [HTTP JSON API](docs/http-api.md#routes) and
+  [Revocation](docs/security.md#revocation).
+
 - **Breaking: a namespace keeps its own index and retrieval settings.**
   `writer namespace create` records the embedding profile (`model`,
   `dimensions`, prefixes, `roles`, `send_dimensions`), the analyzer

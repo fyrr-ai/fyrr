@@ -41,6 +41,7 @@ fn a_slot_takes_its_mirror_with_it() {
     let slots = Arc::new(Semaphore::new(1));
     let slot = Slot {
         mirror: mirror.clone(),
+        closed: Arc::default(),
         _permit: slots.clone().try_acquire_owned().unwrap(),
     };
     assert_eq!(slots.available_permits(), 0);

@@ -100,6 +100,12 @@ plan for:
   prepares a new version its checks pause, and a request then reads the
   head itself once the held one is that old. `SIGHUP` and
   `POST /admin/refresh` start a check at once.
+- A namespace opened by its request path that has served no request for one
+  check interval stops its version checks and makes no storage request. Its
+  next request reads the head first and is answered from that read, or
+  refused, never from the version the namespace held: a revocation published
+  while it slept reaches that answer, and one published later reaches every
+  answer by the same bound of two intervals.
 
 ### Source polling
 

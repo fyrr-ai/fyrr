@@ -439,6 +439,21 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
         OPEN_BUDGET,
         2 * intervals + 10,
     );
+
+    // Once it has served nothing for an interval it asks for nothing, so
+    // only the configured namespace checks its head; the next request
+    // is still answered.
+    let (mark, started) = (seen.len(), std::time::Instant::now());
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    let intervals = usize::try_from(started.elapsed().as_millis() / INTERVAL.as_millis()).unwrap();
+    within(
+        "an idle namespace opened by its path",
+        phase(mark),
+        0,
+        intervals + 2,
+    );
+    let response = post("dense-fixture-two".to_owned()).await.unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     reader.stop().await;
     std::fs::remove_dir_all(root).unwrap();

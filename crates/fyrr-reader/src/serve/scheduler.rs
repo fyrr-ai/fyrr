@@ -7,13 +7,17 @@ fn blocking_thread_limit(worker_count: usize, concurrency: usize) -> usize {
 }
 
 pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
-    start_guarded(reader, ()).await
+    start_guarded(reader, (), false).await
 }
 
 /// `start`, with a `guard` that the scheduler's thread holds until it ends.
+/// With `sleeps`, the scheduler makes no storage request while it serves
+/// nothing: after one check interval without a request it stops its version
+/// checks, and the next request waits for a check before it is answered.
 pub(crate) async fn start_guarded<G: Send + 'static>(
     reader: PreparedReader,
     guard: G,
+    sleeps: bool,
 ) -> Result<McpService> {
     #[cfg(test)]
     let (sample_events, _) = tokio::sync::broadcast::channel(16);
@@ -99,6 +103,9 @@ pub(crate) async fn start_guarded<G: Send + 'static>(
                 alive: (started, fyrr_core::clock::now()),
                 check_started: started,
                 stalled: None,
+                sleeps,
+                dormant: false,
+                last_request: started,
                 warm_cancel,
                 next_warm,
                 warm_loss,
@@ -175,6 +182,12 @@ struct Scheduler {
     /// When the loop found that the process had not run for a while and a
     /// version check was due or cut off; cleared by a check started later.
     stalled: Option<Instant>,
+    /// Whether the scheduler stops its checks when idle (`start_guarded`).
+    sleeps: bool,
+    /// No check runs, and no request is answered before one has read the head.
+    dormant: bool,
+    /// The last request that arrived or finished.
+    last_request: Instant,
     preparation: Option<VersionPreparation>,
     warming: Option<(Arc<()>, VersionPreparation)>,
     warm_cancel: CancellationToken,
@@ -215,6 +228,19 @@ impl Scheduler {
             let now = Instant::now();
             self.notice_stall(now);
             let sampling_idle = sampling.is_empty();
+            if self.sleeps
+                && !self.dormant
+                && now >= self.last_request + self.interval
+                && self.pending.is_empty()
+                && self.input.is_empty()
+                && self.running.is_empty()
+                && sampling_idle
+                && self.preparation.is_none()
+                && self.warming.is_none()
+                && !self.handover
+            {
+                self.dormant = true;
+            }
             let reserved = self.context.budget.cap.saturating_sub(
                 self.context.budget.permits.available_permits() as u64
                     * crate::generation::PAGE_BYTES,
@@ -251,11 +277,16 @@ impl Scheduler {
                     self.prepare(Trigger::Reload);
                     self.next_check = now + self.interval;
                 }
-            } else if !self.handover && self.preparation.is_none() && now >= self.next_check {
+            } else if !self.handover
+                && self.preparation.is_none()
+                && now >= self.next_check
+                && (!self.dormant || !self.pending.is_empty())
+            {
                 self.prepare(Trigger::Collect);
                 self.next_check = now + self.interval;
             }
             if !self.handover
+                && !self.dormant
                 && self.preparation.is_none()
                 && self.warming.is_none()
                 && now >= self.next_warm
@@ -369,11 +400,13 @@ impl Scheduler {
             self.stalled = Some(now);
         }
     }
-    /// Whether `job` still waits for the check after a gap: no longer than
-    /// [`VERSION_WAIT`], and no longer than half of the time it has.
+    /// Whether `job` still waits for a check. After a gap it waits no longer
+    /// than [`VERSION_WAIT`], and no longer than half of the time it has. A
+    /// dormant scheduler holds none of the version it would answer from, so it
+    /// waits for the check as long as the request has time.
     fn awaits_check(&self, job: &Job, now: Instant) -> bool {
         let wait = VERSION_WAIT.min((job.timing.deadline - job.timing.arrived) / 2);
-        self.stalled.is_some() && now < job.timing.arrived + wait
+        self.dormant || (self.stalled.is_some() && now < job.timing.arrived + wait)
     }
     fn prepare(&mut self, trigger: Trigger) {
         self.check_started = Instant::now();
@@ -472,6 +505,7 @@ impl Scheduler {
             self.next_check = Instant::now();
         } else if matches!(prepared, Ok(Ok(_))) {
             self.stalled = None;
+            self.dormant = false;
         }
         match prepared {
             Ok(Ok(Some((new, workers)))) => {
@@ -506,6 +540,12 @@ impl Scheduler {
                 ));
             }
             _ => {
+                if self.dormant {
+                    // Nothing older may answer what waited for this check.
+                    for job in self.pending.drain(..) {
+                        let _ = job.reply.send(tool_error(StorageUnavailable));
+                    }
+                }
                 log_refresh(
                     "retry",
                     self.template.as_ref().map_or(0, |r| r.manifest.sequence),
@@ -570,6 +610,7 @@ impl Scheduler {
     }
     fn on_finished(&mut self, result: ExecutionResult, sampling_idle: bool) -> Option<SampleWork> {
         let (mut reader, dense) = result;
+        self.last_request = Instant::now();
         if let Some((completion, expires)) = dense {
             self.successful_dense += 1;
             if self.successful_dense.is_multiple_of(100) {
@@ -669,6 +710,10 @@ impl Scheduler {
             self.eof = true;
             return;
         };
+        self.last_request = Instant::now();
+        if self.dormant {
+            self.next_check = self.last_request;
+        }
         #[cfg(feature = "test-store")]
         if crate::storage::test_store::version_check()
             == Some(crate::storage::test_store::VersionCheck::Every)
