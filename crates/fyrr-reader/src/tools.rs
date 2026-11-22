@@ -8,7 +8,9 @@ use crate::telemetry::micros;
 use arrow_array::{Array, RecordBatch, UInt64Array};
 use futures::TryStreamExt;
 use fyrr_core::connector::DocumentMetadata;
-use fyrr_core::limits::mcp::{FETCH_MAX_CONTENT_BYTES, FETCH_MAX_DOCUMENTS, FETCH_MAX_RECORDS};
+use fyrr_core::limits::mcp::{
+    FETCH_MAX_CONTENT_BYTES, FETCH_MAX_DOCUMENTS, FETCH_MAX_RECORDS, LIST_FILTERS_MAX_VALUES,
+};
 use fyrr_core::mcp::*;
 use lance::dataset::scanner::{ColumnOrdering, RowAddrMask, RowAddrTreeMap};
 use object_store::ObjectStoreExt;
@@ -167,6 +169,7 @@ pub(crate) use fyrr_core::limits::record_revision as revision;
 fn clip(text: &str, max: usize) -> &str {
     &text[..text.floor_char_boundary(text.len().min(max))]
 }
+mod aggregate;
 mod fetch;
 mod filters;
 pub use filters::filter_sql;
