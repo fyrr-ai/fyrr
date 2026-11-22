@@ -10,14 +10,16 @@ pub(super) fn tool_error(code: ReaderError) -> CallToolResult {
 }
 #[derive(Clone, Debug)]
 pub(crate) enum ToolCall {
-    Search(SearchInput),
+    Search(Box<SearchInput>),
     Fetch(FetchInput),
     ListFilters(ListFiltersInput),
 }
 impl ToolCall {
     pub(crate) fn parse(name: &str, args: Value) -> Result<Self> {
         let call = match name {
-            "search" => Self::Search(serde_json::from_value(args).map_err(|_| InvalidArgument)?),
+            "search" => Self::Search(Box::new(
+                serde_json::from_value(args).map_err(|_| InvalidArgument)?,
+            )),
             "fetch" => Self::Fetch(serde_json::from_value(args).map_err(|_| InvalidArgument)?),
             "list_filters" => {
                 Self::ListFilters(serde_json::from_value(args).map_err(|_| InvalidArgument)?)

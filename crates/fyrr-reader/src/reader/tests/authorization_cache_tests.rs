@@ -78,10 +78,14 @@ async fn request(
     subject: &crate::auth::AuthenticatedSubject,
     args: &SearchInput,
 ) -> serde_json::Value {
-    let reply = cache_test_enqueue(service, ToolCall::Search(args.clone()), subject.clone())
-        .await
-        .await
-        .unwrap();
+    let reply = cache_test_enqueue(
+        service,
+        ToolCall::Search(Box::new(args.clone())),
+        subject.clone(),
+    )
+    .await
+    .await
+    .unwrap();
     assert_ne!(reply.is_error, Some(true), "{:?}", reply.structured_content);
     reply.structured_content.unwrap()
 }
@@ -270,14 +274,14 @@ async fn authorization_cache_budget_on_storage() {
     hooks.completion.enabled.store(true, Ordering::SeqCst);
     let mut first = cache_test_enqueue(
         &service,
-        ToolCall::Search(args.clone()),
+        ToolCall::Search(Box::new(args.clone())),
         subjects[0].clone(),
     )
     .await;
     held_boundary(&hooks.completion, &mut first).await;
     let mut second = cache_test_enqueue(
         &service,
-        ToolCall::Search(args.clone()),
+        ToolCall::Search(Box::new(args.clone())),
         subjects[1].clone(),
     )
     .await;
@@ -355,8 +359,12 @@ async fn authorization_cache_budget_on_storage() {
         .authorization_output
         .enabled
         .store(true, Ordering::SeqCst);
-    let mut revoked =
-        cache_test_enqueue(&service, ToolCall::Search(args), subjects[0].clone()).await;
+    let mut revoked = cache_test_enqueue(
+        &service,
+        ToolCall::Search(Box::new(args)),
+        subjects[0].clone(),
+    )
+    .await;
     held_boundary(&hooks.authorization_output, &mut revoked).await;
     let revoke = root.join("cache-revoke.json");
     writer(

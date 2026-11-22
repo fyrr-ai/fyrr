@@ -5,6 +5,7 @@
 
 mod common;
 
+use fyrr_core::config::DIMENSIONS_MAX;
 use fyrr_core::limits::mcp::{
     MAX_FILTER_DEPTH, MAX_FILTER_NODES, MAX_FILTER_VALUES, MAX_LISTING_WINDOW, MAX_ORDER_KEYS,
 };
@@ -266,6 +267,7 @@ fn examples_round_trip_and_match_tool_schemas() {
 
 #[test]
 fn validation_enforces_bytes_relations_and_bounds() {
+    let dimensions_max = usize::try_from(DIMENSIONS_MAX).unwrap();
     let search = |value: Value| {
         serde_json::from_value::<SearchInput>(value)
             .unwrap()
@@ -289,6 +291,14 @@ fn validation_enforces_bytes_relations_and_bounds() {
         json!({"order_by":[]}),
         json!({"order_by":[{"field":"","direction":"asc"}]}),
         json!({"order_by":vec![json!({"field":"p","direction":"asc"}); MAX_ORDER_KEYS + 1]}),
+        json!({"query":"a","vector":[]}),
+        // A vector search is no listing: no window beyond 75, no offset.
+        json!({"vector":[1.0],"limit":76}),
+        json!({"vector":[1.0],"offset":0}),
+        json!({"vector":vec![1.0; dimensions_max + 1]}),
+        json!({"queries":["a","b"],"vector":[1.0]}),
+        json!({"vector":[1.0],"order_by":[{"field":"p","direction":"asc"}]}),
+        json!({"order":"updated_at","exact":true}),
         // A page of a listing ends within the window, and only a listing has one.
         json!({"order":"updated_at","limit":MAX_LISTING_WINDOW + 1}),
         json!({"order":"updated_at","limit":MAX_LISTING_WINDOW,"offset":1}),
@@ -298,6 +308,14 @@ fn validation_enforces_bytes_relations_and_bounds() {
         json!({"queries":["a","b"],"offset":0}),
     ] {
         assert!(search(value).is_err());
+    }
+    for value in [
+        json!({"vector":[1.0]}),
+        json!({"vector":vec![1.0; dimensions_max],"exact":true}),
+        json!({"query":"a","vector":[1.0],"exact":false}),
+        json!({"queries":["a","b"],"exact":true}),
+    ] {
+        assert!(search(value).is_ok());
     }
     assert!(
         search(json!({"order_by":vec![json!({"field":"p","direction":"asc"}); MAX_ORDER_KEYS]}))

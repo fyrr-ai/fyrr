@@ -132,12 +132,19 @@ impl PreparedReader {
         let lexical_predicate = Self::fts_requires_sql_prefilter(&self.dataset, &self.indexes)
             .then_some(predicate.as_str());
         self.stage(&mut telemetry, "predicate", stage, filter_counters);
-        if args.query.is_none() && args.queries.is_none() {
+        if !args.has_text() && args.vector.is_none() {
             return self.listing(args, telemetry).await;
         }
         // Determine participation before preparing query vectors or consulting
         // the process cache. Refused arms cannot observe shared cache membership.
         self.authorization()?;
+        if let Some(vector) = &args.vector {
+            embedding::validate(vector, self.config.embedding.dimensions)
+                .map_err(|_| InvalidArgument)?;
+        }
+        if args.exact == Some(true) {
+            super::dense::exact_scan_bound(self.selected_rows().max_len().unwrap_or(0))?;
+        }
         if self.selected_rows().max_len().unwrap_or(0) == 0 {
             let mut metadata = self.metadata(Telemetry::default());
             metadata.degraded = vec![Lane::Dense];
@@ -171,7 +178,10 @@ impl PreparedReader {
             };
         let start = Instant::now();
         let runtime = self.query_embeddings.clone();
-        let mut vectors = runtime.prepare(queries)?;
+        let mut vectors = match &args.vector {
+            Some(vector) => embedding::QueryWork::supplied(vector.clone()),
+            None => runtime.prepare(queries)?,
+        };
         telemetry
             .stage_us
             .insert("embedding".into(), micros(start.elapsed()));
@@ -208,6 +218,7 @@ impl PreparedReader {
                 fallback_telemetry
             ),
             self.dense_batch(
+                args,
                 queries,
                 embedding_deadline,
                 &runtime,
@@ -275,14 +286,19 @@ impl PreparedReader {
         let mut elapsed = 0;
         for query in queries {
             let start = Instant::now();
-            let result = Self::lexical(
-                &self.dataset,
-                self.selected_rows(),
-                lexical_predicate,
-                query,
-                self.config.namespace.retrieval.lexical_candidates,
-            )
-            .await;
+            // A vector without text has no lexical lane.
+            let result = if !args.has_text() {
+                Ok((Vec::new(), 0, 0))
+            } else {
+                Self::lexical(
+                    &self.dataset,
+                    self.selected_rows(),
+                    lexical_predicate,
+                    query,
+                    self.config.namespace.retrieval.lexical_candidates,
+                )
+                .await
+            };
             elapsed += micros(start.elapsed());
             results.push(result);
         }
@@ -328,6 +344,7 @@ impl PreparedReader {
 
     async fn dense_batch(
         &self,
+        args: &SearchInput,
         queries: &[&str],
         embedding_deadline: Instant,
         runtime: &embedding::QueryEmbeddings,
@@ -366,6 +383,10 @@ impl PreparedReader {
                 }
             }
         }
+        // An exact search never settles for the lexical lane alone.
+        if failed && args.exact == Some(true) {
+            return Err(EmbeddingUnavailable);
+        }
         let mut results = Vec::with_capacity(queries.len());
         for vector in &mut vectors.vectors {
             let vector = if failed {
@@ -377,7 +398,13 @@ impl PreparedReader {
                 Ok(vector) => self
                     .dense(
                         &vector,
-                        self.config.namespace.retrieval.dense_candidates,
+                        // The request limit is the least depth that can fill it.
+                        self.config
+                            .namespace
+                            .retrieval
+                            .dense_candidates
+                            .max(args.effective_limit() as usize),
+                        args.exact == Some(true),
                         telemetry,
                     )
                     .await
@@ -433,17 +460,21 @@ impl PreparedReader {
                     predicate.to_owned(),
                 ));
             }
-            let selected = compose(
-                dense,
-                lexical,
-                &self.config.namespace.composition,
-                self.config
-                    .namespace
-                    .rerank
-                    .as_ref()
-                    .map_or(k, |rerank| k.max(rerank.candidates)),
-                &self.config.namespace.retrieval,
-            )?;
+            let selected = if args.has_text() {
+                compose(
+                    dense,
+                    lexical,
+                    &self.config.namespace.composition,
+                    self.config
+                        .namespace
+                        .rerank
+                        .as_ref()
+                        .map_or(k, |rerank| k.max(rerank.candidates)),
+                    &self.config.namespace.retrieval,
+                )?
+            } else {
+                crate::retrieval::dense_only(dense, k)?
+            };
             #[cfg(test)]
             self.trace_stages(|stages| {
                 stages["composition"] = serde_json::json!(
@@ -503,7 +534,10 @@ impl PreparedReader {
             return Ok(result);
         }
         drop(fallback);
-        if crate::rerank::rerank(self, queries, &mut ranked_queries, &mut telemetry).await? {
+        // Nothing to rerank against without text.
+        if args.has_text()
+            && crate::rerank::rerank(self, queries, &mut ranked_queries, &mut telemetry).await?
+        {
             degraded.push(Lane::Rerank);
         }
         let selected = select_hits(ranked_queries, queries, args, output, k, max_documents);

@@ -69,7 +69,7 @@ async fn enqueue(
     receiver
 }
 async fn search(service: &McpService, args: &SearchInput) {
-    let reply = enqueue(service, ToolCall::Search(args.clone()), false)
+    let reply = enqueue(service, ToolCall::Search(Box::new(args.clone())), false)
         .await
         .await
         .unwrap();
@@ -207,7 +207,7 @@ async fn recall_sampler_cadence_poor_ann_and_same_filtered_reference() {
     for _ in 0..99 {
         search(&service, &args).await;
     }
-    let cancelled = enqueue(&service, ToolCall::Search(args.clone()), true)
+    let cancelled = enqueue(&service, ToolCall::Search(Box::new(args.clone())), true)
         .await
         .await
         .unwrap();
@@ -257,7 +257,7 @@ async fn recall_sampler_cancellation_during_native_scan_reuses_worker() {
     }
     // Finish dense foreground I/O before arming the one-shot read boundary.
     hooks.completion.enabled.store(true, Ordering::SeqCst);
-    let hundredth = enqueue(&service, ToolCall::Search(args.clone()), false).await;
+    let hundredth = enqueue(&service, ToolCall::Search(Box::new(args.clone())), false).await;
     hooks.completion.entered.notified().await;
     read.enabled.store(true, Ordering::SeqCst);
     hooks.completion.enabled.store(false, Ordering::SeqCst);
@@ -273,7 +273,7 @@ async fn recall_sampler_cancellation_during_native_scan_reuses_worker() {
     let listing: SearchInput =
         serde_json::from_value(json!({"sources":["allowed"],"order":"updated_at","limit":1}))
             .unwrap();
-    let foreground = enqueue(&service, ToolCall::Search(listing), false).await;
+    let foreground = enqueue(&service, ToolCall::Search(Box::new(listing)), false).await;
     let skipped = event(&mut events, "recall_skip_cancelled").await;
     assert_eq!(skipped["recall_selected"], 1);
     assert_eq!(skipped["recall_completed"], 0);

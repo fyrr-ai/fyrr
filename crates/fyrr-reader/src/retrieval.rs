@@ -47,6 +47,13 @@ fn documents(rows: Vec<Candidate>) -> Vec<Candidate> {
         .filter(|r| seen.insert((r.source.clone(), r.root.clone())))
         .collect()
 }
+/// A search without text has one lane, so the documents keep its order by
+/// distance: no fusion weight may reorder or zero them.
+pub(crate) fn dense_only(dense: Vec<Candidate>, limit: usize) -> Result<Vec<Candidate>> {
+    let mut rows = documents(ranked(dense)?);
+    rows.truncate(limit);
+    Ok(rows)
+}
 pub(crate) fn compose(
     dense: Vec<Candidate>,
     lexical: Vec<Candidate>,

@@ -25,6 +25,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   namespace's vector `model` and `dimensions` in `settings.embedding`, and a
   deployment whose documents all carry vectors needs no `[embedding]` table.
   See [HTTP write API](docs/http-api.md#write-documents).
+- `search` takes a `vector`, a query vector used instead of an embedding of the
+  query text; alone, it searches the dense lane only and makes no embedding
+  call. `exact: true` scans every row that passes the filters and the caller's
+  permissions instead of probing the index, up to 100000 rows and the request
+  deadline. The dense candidate depth is at least the request `limit`. See
+  [`search`](docs/mcp-tools.md#search).
 - `search` takes one `filter` argument, a tree of `and`, `or`, `not` and
   comparisons (`eq`, `ne`, `in`, `not_in`, `lt`, `lte`, `gt`, `gte`) of
   at most 64 nodes and 16 levels over the built-in fields and the namespace's typed

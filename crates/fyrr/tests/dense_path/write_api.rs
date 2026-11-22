@@ -654,6 +654,106 @@ async fn identity_write_api_orders_a_listing_by_attributes_on_storage() {
     }
 }
 
+/// A search takes its query vector from the request instead of the embedding
+/// provider, scans exactly when asked, fetches as many candidates as its limit
+/// asks for, and stays inside the filter and the caller's permissions.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_searches_by_a_query_vector_exact_or_approximate_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    // Two dense candidates: only the request limit can fetch more.
+    configure(
+        &config,
+        &address,
+        "[namespace.retrieval]\ndense_candidates = 2",
+    );
+    let writer = Writer::start(&config, &root, address).await;
+    let texts = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+    let mut upserts: Vec<Value> = texts
+        .iter()
+        .enumerate()
+        .map(|(n, text)| {
+            let id = ["a", "b", "c", "d", "e", "f"][n];
+            json!({"id": id, "text": text, "vector": vector(n, 1024), "readers": ["grp:allow"]})
+        })
+        .collect();
+    // As close to the query as a row can be, but nobody may read it.
+    upserts.push(json!({"id": "hidden", "text": "golf", "vector": vector(1, 1024), "readers": ["usr:nobody"]}));
+    assert_eq!(
+        writer
+            .post(WRITE_KEY, "dense-fixture", &json!({"upserts": upserts}))
+            .await,
+        (200, json!({"upserted": 7, "deleted": 0}))
+    );
+    let mut client = Mcp::open(&config);
+    let mut listed = |arguments: Value| -> Vec<String> {
+        let mut arguments = arguments;
+        arguments["output"] = json!("metadata");
+        body(client.call("search", arguments))["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let query = vector(1, 1024);
+    let calls = root.embedding.calls();
+
+    // A vector without text searches the dense lane alone, and the limit, not
+    // the two configured candidates, sets how deep it reads.
+    let approximate = listed(json!({"vector": query, "limit": 5}));
+    assert_eq!(approximate.len(), 5);
+    assert_eq!(approximate[0], "b");
+    assert!(!approximate.contains(&"hidden".to_owned()));
+    // An exact search finds the same rows in the same order.
+    assert_eq!(
+        listed(json!({"vector": query, "limit": 5, "exact": true})),
+        approximate
+    );
+    // With text, the vector stands in for the embedding of the text.
+    let hybrid = listed(json!({"query": "charlie", "vector": query, "limit": 3}));
+    let mut top = hybrid[..2].to_vec();
+    top.sort();
+    assert_eq!(top, ["b", "c"]);
+    // The filter and the caller's permissions still bound an exact scan.
+    let mut filtered = listed(json!({
+        "vector": query,
+        "exact": true,
+        "filter": {"field": "root_id", "op": "in", "value": ["a", "c", "hidden"]},
+    }));
+    filtered.sort();
+    assert_eq!(filtered, ["a", "c"]);
+    assert_eq!(root.embedding.calls(), calls, "no embedding call");
+
+    // An exact search whose text cannot be embedded fails instead of
+    // answering from the lexical lane alone, as the same search without exact does.
+    root.embedding.reject("alpha");
+    assert_eq!(
+        listed(json!({"query": "alpha", "limit": 3}))[0],
+        "a",
+        "the lexical lane answers"
+    );
+    error(
+        client.call("search", json!({"query": "alpha", "exact": true})),
+        "storage_unavailable",
+    );
+
+    let mut short = query.clone();
+    short.pop();
+    for arguments in [
+        json!({"vector": short}),
+        json!({"vector": vec![0.0; 1024]}),
+        // Zero once stored as 16-bit floats.
+        json!({"vector": vec![1e-10; 1024]}),
+        json!({"vector": [], "query": "alpha"}),
+        json!({"vector": query, "queries": ["alpha", "bravo"]}),
+        json!({"exact": true, "order": "updated_at"}),
+    ] {
+        error(client.call("search", arguments), "invalid_argument");
+    }
+}
+
 /// A listing takes an offset, and a scan by the document key visits every
 /// readable document of a publication once, on twice the largest page plus one
 /// documents with unreadable ones between them.

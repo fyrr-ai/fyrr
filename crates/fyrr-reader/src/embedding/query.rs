@@ -42,6 +42,16 @@ pub(crate) struct QueryWork {
     _copies: Option<OwnedSemaphorePermit>,
 }
 impl QueryWork {
+    /// The vector the caller sent: no cache entry, no provider call.
+    pub(crate) fn supplied(vector: Vec<f32>) -> Self {
+        Self {
+            vectors: vec![Ok(vector)],
+            provider: ProviderStats::default(),
+            provider_us: 0,
+            keys: Vec::new(),
+            _copies: None,
+        }
+    }
     pub(crate) fn degrade(&mut self, code: ReaderError) {
         self.vectors
             .iter_mut()
