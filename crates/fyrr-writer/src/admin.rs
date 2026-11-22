@@ -125,12 +125,6 @@ async fn admin_key(config: &Config, secret: &str) -> std::result::Result<(), Sci
     }
 }
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DeleteNamespaceBody {
-    namespace: String,
-}
-
 /// Admits the request of a namespace route: an API key with the `admin` role
 /// in `config`'s namespace, and the body, bounded. The permit is the request's
 /// capacity, held until its work is done.
@@ -174,7 +168,8 @@ async fn delete_namespace(state: Arc<AdminState>, request: Request, name: String
         Ok(admitted) => admitted,
         Err(refused) => return refused,
     };
-    let Ok(body) = serde_json::from_slice::<DeleteNamespaceBody>(&bytes) else {
+    let Ok(body) = serde_json::from_slice::<fyrr_core::http_api::DeleteNamespaceRequest>(&bytes)
+    else {
         return error(ScimError::new(400, "invalidSyntax"));
     };
     if name != state.config.namespace.name {
@@ -197,12 +192,6 @@ async fn delete_namespace(state: Arc<AdminState>, request: Request, name: String
     }
 }
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PatchNamespaceBody {
-    read_only: bool,
-}
-
 /// `PATCH /v1/namespaces/{namespace}` with `read_only`: freezes the namespace
 /// or thaws it. It needs an API key with the `admin` role. It answers `503`
 /// while the committer holds the namespace lease; the request is then repeated.
@@ -221,7 +210,7 @@ async fn patch_namespace(state: Arc<AdminState>, request: Request, name: String)
         Ok(admitted) => admitted,
         Err(refused) => return refused,
     };
-    let Ok(body) = serde_json::from_slice::<PatchNamespaceBody>(&bytes) else {
+    let Ok(body) = serde_json::from_slice::<fyrr_core::http_api::PatchNamespaceRequest>(&bytes) else {
         return error(ScimError::new(400, "invalidSyntax"));
     };
     if name != config.namespace.name {
@@ -235,7 +224,11 @@ async fn patch_namespace(state: Arc<AdminState>, request: Request, name: String)
     match result {
         Ok(Ok(changed)) => (
             StatusCode::OK,
-            Json(json!({"namespace": name, "read_only": body.read_only, "changed": changed})),
+            Json(fyrr_core::http_api::PatchNamespaceResponse {
+                namespace: name,
+                read_only: body.read_only,
+                changed,
+            }),
         )
             .into_response(),
         Ok(Err(WriterError::NamespaceUnavailable)) => error(ScimError::new(404, "notFound")),

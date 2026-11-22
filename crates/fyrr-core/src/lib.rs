@@ -24,6 +24,7 @@ pub mod config;
 pub mod connector;
 pub mod directory;
 pub mod envelope;
+pub mod http_api;
 pub mod identity;
 pub mod limits;
 pub mod mcp;

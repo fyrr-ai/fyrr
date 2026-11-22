@@ -26,6 +26,7 @@ use fyrr_core::envelope::{
     BaseHead, DocumentIntent, DocumentPatch, EnvelopeDocument, FilterPatch, FilterWrites,
     envelope_id,
 };
+use fyrr_core::http_api::WriteResponse;
 use fyrr_core::identity::ApiKeysArtifact;
 use fyrr_core::mcp::Filter;
 use fyrr_core::publication::{NamespaceSettings, PolicyArtifact};
@@ -926,7 +927,7 @@ async fn execute(
     commits: &Commits,
     mut body: Payload,
     slot: OwnedMutexGuard<()>,
-) -> Result<Value, ApiError> {
+) -> Result<WriteResponse, ApiError> {
     let requested = match &body.settings {
         None => None,
         Some(raw) if raw.get().len() > SETTINGS_MAX_BYTES => {
@@ -1024,7 +1025,12 @@ async fn execute(
         conditions,
         filter_writes,
     )?;
-    let mut answer = json!({"upserted": upserted, "deleted": deleted});
+    let mut answer = WriteResponse {
+        upserted,
+        deleted,
+        patched: None,
+        skipped: None,
+    };
     let (head, served) = match existing {
         Some(existing) => existing,
         None => {
@@ -1057,13 +1063,11 @@ async fn execute(
     {
         durable(&config).await?;
         if only_skipped {
-            answer["upserted"] = 0.into();
-            answer["deleted"] = 0.into();
-            if !patch_ids.is_empty() {
-                answer["patched"] = 0.into();
-            }
+            answer.upserted = 0;
+            answer.deleted = 0;
+            answer.patched = (!patch_ids.is_empty()).then_some(0);
             if guarded > 0 {
-                answer["skipped"] = guarded.into();
+                answer.skipped = Some(guarded as u64);
             }
         }
         return Ok(answer);
@@ -1093,12 +1097,10 @@ async fn execute(
                         committed(&dataset, API_SOURCE_ID, &guarded_upserts, &revision).await?;
                     let state = crate::apply::state_source(API_SOURCE_ID);
                     let deletes = committed(&dataset, &state, &guarded_deletes, &revision).await?;
-                    answer["upserted"] = (upserted - guarded_upserts.len() as u64 + upserts).into();
-                    answer["deleted"] = (deleted - guarded_deletes.len() as u64 + deletes).into();
-                    if !patch_ids.is_empty() {
-                        answer["patched"] = patched.into();
-                    }
-                    answer["skipped"] = (guarded as u64 - patched - upserts - deletes).into();
+                    answer.upserted = upserted - guarded_upserts.len() as u64 + upserts;
+                    answer.deleted = deleted - guarded_deletes.len() as u64 + deletes;
+                    answer.patched = (!patch_ids.is_empty()).then_some(patched);
+                    answer.skipped = Some(guarded as u64 - patched - upserts - deletes);
                 }
                 return Ok(answer);
             }
@@ -1249,4 +1251,53 @@ async fn write_envelope(
     )
     .await?;
     Ok((id, format!("rev-{sequence}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fyrr_core::http_api::{PatchWhere, WriteRequest, WriteRow};
+
+    /// The body that `schemas/openapi.json` describes is the body the route
+    /// parses: `Payload` refuses a member that `WriteRequest` has and it lacks.
+    #[test]
+    fn the_documented_request_is_the_parsed_one() {
+        let row = |id: &str| WriteRow {
+            id: id.into(),
+            readers: Some(vec!["usr:ann".into()]),
+            vector: Some(vec![1.0]),
+            values: Map::from_iter([("text".into(), json!("Blue shirt"))]),
+        };
+        let filter: Filter =
+            serde_json::from_value(json!({"field": "price", "op": "eq", "value": 1}))
+                .expect("filter");
+        let request = WriteRequest {
+            settings: Some(Map::from_iter([("attributes".into(), json!({}))])),
+            upserts: vec![row("a")],
+            deletes: vec!["b".into()],
+            patches: vec![row("c")],
+            conditions: BTreeMap::from([("a".into(), filter.clone())]),
+            delete_where: Some(filter.clone()),
+            patch_where: Some(PatchWhere {
+                filter,
+                set: Map::from_iter([("price".into(), json!(2))]),
+            }),
+        };
+        ROWS_LEFT.set(10);
+        let payload: Payload =
+            serde_json::from_value(serde_json::to_value(&request).expect("request JSON"))
+                .expect("the route parses the documented request");
+        assert_eq!(
+            (
+                payload.upserts.0.len(),
+                payload.deletes.0.len(),
+                payload.patches.0.len(),
+                payload.conditions.len(),
+                payload.settings.is_some(),
+                payload.delete_where.is_some(),
+                payload.patch_where.is_some(),
+            ),
+            (1, 1, 1, 1, true, true, true)
+        );
+    }
 }

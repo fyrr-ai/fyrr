@@ -151,7 +151,7 @@ pub struct SearchInput {
 /// JSON `query` request. `include` names the attributes to return, `exclude`
 /// the ones to leave out of all of them (an empty list leaves out none). The
 /// vector of a row is returned only when `include` names `vector`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReturnFields {
     pub include: Option<Vec<String>>,
