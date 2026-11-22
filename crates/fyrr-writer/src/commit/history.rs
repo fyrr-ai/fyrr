@@ -67,7 +67,14 @@ impl RestoreHistory {
             // Only the cut may be missing before it: a lost manifest is
             // refused before anything changes.
             let m: ContentManifest = if newer_sequence.is_some() {
-                fyrr_reader::storage::read_older_manifest(store.as_ref(), &root, &path).await?
+                fyrr_reader::storage::read_older_manifest(
+                    store.as_ref(),
+                    &root,
+                    &path,
+                    cut.as_ref(),
+                )
+                .await?
+                .ok_or(WriterError::PublicationInvalid)?
             } else {
                 fyrr_reader::storage::read_contract(
                     store.as_ref(),

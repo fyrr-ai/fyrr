@@ -411,19 +411,14 @@ async fn superseded_history(
         {
             let (store, root) = namespace_store(config)?;
             // The cut manifest's evidence stands for the manifests before it:
-            // an earlier pass with a shorter window may have deleted it.
-            if let Some(evidence) = &oldest.envelope_evidence {
-                match store
-                    .head(&Path::from(format!(
-                        "{root}/{}",
-                        evidence.checkpoint.object
-                    )))
-                    .await
-                {
-                    Ok(_) => {}
-                    Err(object_store::Error::NotFound { .. }) => return Ok(0),
-                    Err(_) => return Err(WriterError::StorageUnavailable),
-                }
+            // an earlier pass with a shorter window may have deleted it, and a
+            // checkpoint that does not read is no stand-in either.
+            if let Some(evidence) = &oldest.envelope_evidence
+                && commit::read_checkpoint(store.as_ref(), &root, &evidence.checkpoint)
+                    .await?
+                    .is_none()
+            {
+                return Ok(0);
             }
             let path = root.join(HISTORY_CUT_OBJECT);
             // Read with its version: the write replaces exactly this cut, so a
@@ -827,12 +822,17 @@ pub(crate) async fn purge_warnings(
             let Some(id) = previous else {
                 return Ok(false);
             };
-            let manifest = fyrr_reader::storage::read_older_manifest(
+            // A maintenance that cut the history meanwhile ends the walk.
+            let Some(manifest) = fyrr_reader::storage::read_older_manifest(
                 store.as_ref(),
                 &root,
                 &format!("publications/{id}.json"),
+                cut.as_ref(),
             )
-            .await?;
+            .await?
+            else {
+                return Ok(false);
+            };
             if old(manifest.committed_at) {
                 if revoked_at.contains(&manifest.sequence) {
                     return Ok(true);

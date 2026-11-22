@@ -335,6 +335,19 @@ pub async fn delete(
             return Err(WriterError::ExportInvalid);
         }
         lease.delete_head(config).await?;
+        // A namespace created again restarts at sequence 1; a cut of this one
+        // would hold its history back. It is part of the verified export.
+        match store
+            .delete(
+                &root
+                    .clone()
+                    .join(fyrr_core::publication::HISTORY_CUT_OBJECT),
+            )
+            .await
+        {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
+            Err(_) => return Err(WriterError::StorageUnavailable),
+        }
         Ok(serde_json::json!({"deleted":true,"retained_data":true}))
     })
     .await

@@ -757,22 +757,32 @@ pub async fn read_manifest(
 ) -> Result<fyrr_core::publication::ContentManifest, StorageError> {
     read_contract(store, &Path::from(format!("{root}/{relative}"))).await
 }
-/// An older publication of a walk. Only the recorded cut may be missing
-/// before it, so a manifest that is gone is `PublicationInvalid`.
+/// An older publication of a walk that read `cut`. A manifest that is gone is
+/// `PublicationInvalid`, unless the cut has moved since: a concurrent
+/// maintenance deleted it, and the walk ends here (`None`).
 pub async fn read_older_manifest(
     store: &dyn ObjectStore,
     root: &Path,
     relative: &str,
-) -> Result<fyrr_core::publication::ContentManifest, StorageError> {
+    cut: Option<&String>,
+) -> Result<Option<fyrr_core::publication::ContentManifest>, StorageError> {
     let bytes = match store.get(&Path::from(format!("{root}/{relative}"))).await {
         Ok(object) => object
             .bytes()
             .await
             .map_err(|_| StorageError::StorageUnavailable)?,
-        Err(object_store::Error::NotFound { .. }) => return Err(StorageError::PublicationInvalid),
+        Err(object_store::Error::NotFound { .. }) => {
+            return if history_cut(store, root).await?.as_ref() == cut {
+                Err(StorageError::PublicationInvalid)
+            } else {
+                Ok(None)
+            };
+        }
         Err(_) => return Err(StorageError::StorageUnavailable),
     };
-    parse_contract(&bytes).map_err(|_| StorageError::PublicationInvalid)
+    parse_contract(&bytes)
+        .map(Some)
+        .map_err(|_| StorageError::PublicationInvalid)
 }
 
 /// The oldest publication the namespace keeps, once maintenance cut the
@@ -821,7 +831,12 @@ pub fn manifest_chain(
                 None => history_cut(store.as_ref(), &root).await?,
             };
             let manifest = if newer_sequence.is_some() {
-                read_older_manifest(store.as_ref(), &root, &path).await?
+                let Some(manifest) =
+                    read_older_manifest(store.as_ref(), &root, &path, cut.as_ref()).await?
+                else {
+                    return Ok(None);
+                };
+                manifest
             } else {
                 read_manifest(store.as_ref(), &root, &path).await?
             };
