@@ -713,7 +713,7 @@ fn search_description() -> String {
         "Search the authorized corpus (lexical and dense). Only documents the caller may \
          read are returned; an empty result is not an error. Scores are not probabilities. \
          Excerpts are passages of up to {EXCERPT_CODEPOINTS} codepoints with \
-         record_id, revision and codepoint offsets usable as a fetch window. Filters match exactly; \
+         record_id, revision and offsets usable as a fetch window. Filters match exactly; \
          an unknown value gives an empty result. queries replaces query; \
          limit is per query (default/max 20), interleaved by rank then query index and deduplicated. \
          text_hits applies per query before deduplication; excerpt_chars caps passage length. \
