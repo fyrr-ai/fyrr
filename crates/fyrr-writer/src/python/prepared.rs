@@ -231,6 +231,7 @@ impl Preparation<'_> {
             let mut checker =
                 BatchChecker::new(&self.source.id, self.kind, limits, state.cursor.clone());
             let cursor = state.cursor.clone();
+            let first_sequence = state.sequence;
             let request = Request {
                 source_json: &source_json,
                 kind: self.kind,
@@ -292,9 +293,13 @@ impl Preparation<'_> {
             {
                 return Err(WriterError::MembershipSnapshotIncomplete);
             }
-            // Only the read that replaces a rejected generation ends with a
-            // complete-read envelope: it alone consumes the rejection markers.
-            // Any other read writes nothing beyond its own changes.
+            // A permission read is published whole or not at all: it ends with a
+            // complete-read envelope, and the committer holds back the read's
+            // envelopes until it exists. The read that replaces a rejected
+            // generation always ends with one, which also consumes the rejection
+            // markers. Any other read ends with one only when it, or an earlier
+            // read that failed, wrote an envelope: a read that changed nothing
+            // writes nothing.
             if !held.is_empty() {
                 // Only a whole snapshot read here, parts 0 to last, can be
                 // compared; a read resumed after an earlier part was written
@@ -340,8 +345,10 @@ impl Preparation<'_> {
                     }
                 }
             }
-            if replaces_rejection
-                && (self.kind == SyncKind::Permissions || self.kind == SyncKind::Members)
+            if (replaces_rejection
+                && (self.kind == SyncKind::Permissions || self.kind == SyncKind::Members))
+                || (self.kind == SyncKind::Permissions
+                    && (state.sequence != first_sequence || pending.permission_read_open()))
             {
                 let batch = ConnectorBatch {
                     schema_version: fyrr_core::connector::CONNECTOR_CONTRACT_VERSION,

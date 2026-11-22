@@ -183,6 +183,7 @@ impl RestoreHistory {
             }
         }
         pending.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
+        super::hold_unfinished_permission_reads(&mut pending);
         Ok(pending)
     }
     pub(crate) fn summaries(&self) -> impl Iterator<Item = &RejectionMarker> {

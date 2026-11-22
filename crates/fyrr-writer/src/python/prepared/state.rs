@@ -170,10 +170,21 @@ pub(super) struct Pending {
     /// The newest rejection generation that a complete-read envelope ended.
     pub(super) completed_generation: u32,
     pub(super) members_tail: Option<(u64, bool)>,
+    /// The newest unpublished permission envelope of this source, and whether
+    /// it is the complete-read envelope that ends a read.
+    permissions_tail: Option<(u64, bool)>,
     pub(super) store: Arc<dyn ObjectStore>,
     content_count: u64,
     content_bytes: u64,
     markers: Vec<RejectionMarker>,
+}
+
+impl Pending {
+    /// Whether an earlier read of this source left permission envelopes that no
+    /// complete-read envelope releases yet.
+    pub(super) fn permission_read_open(&self) -> bool {
+        self.permissions_tail.is_some_and(|(_, complete)| !complete)
+    }
 }
 
 impl Preparation<'_> {
@@ -188,6 +199,7 @@ impl Preparation<'_> {
         let mut durable_generation = 0;
         let mut durable_restore_sequence = 0;
         let mut members_tail = None;
+        let mut permissions_tail = None;
         let mut completed_generation = 0;
         evidence.refresh(self.config, self.rt, head)?;
         let Snapshot {
@@ -282,6 +294,12 @@ impl Preparation<'_> {
                 {
                     members_tail = Some((envelope.sequence, part.last));
                 }
+                if let EnvelopePayload::Permissions(part) = &envelope.payload
+                    && !applied.contains(&envelope.envelope_id)
+                    && permissions_tail.is_none_or(|(sequence, _)| envelope.sequence > sequence)
+                {
+                    permissions_tail = Some((envelope.sequence, part.complete_read));
+                }
                 durable_cursors.push((
                     envelope.sequence,
                     if envelope.advances_cursor {
@@ -303,6 +321,7 @@ impl Preparation<'_> {
             restore_sequence: durable_restore_sequence,
             completed_generation,
             members_tail,
+            permissions_tail,
             store,
             content_count,
             content_bytes,

@@ -560,7 +560,7 @@
       "properties": {
         "complete_read": {
           "type": "boolean",
-          "description": "True only on the empty envelope that ends a read replacing a rejected\ngeneration; it alone consumes the rejection markers."
+          "description": "True only on the empty envelope that ends a read. The read's other\nenvelopes are committable only once it exists, so a read that fails\npublishes none of its change. Ending a read that replaces a rejected\ngeneration, it also consumes the rejection markers."
         },
         "documents": {
           "type": "array",

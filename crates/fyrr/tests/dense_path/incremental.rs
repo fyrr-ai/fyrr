@@ -703,9 +703,13 @@ async fn rejected_authorization(kind: SyncKind) {
         .await
         .unwrap()
         .0;
+    // A permission read is published whole: without its terminal envelope its
+    // other envelopes wait. A members snapshot is applied part by part.
     assert!(
-        partial_ids.iter().all(|id| applied.contains(id)),
-        "{kind:?}: partial replacement must be durably applied"
+        partial_ids
+            .iter()
+            .all(|id| applied.contains(id) == (kind != SyncKind::Permissions)),
+        "{kind:?}: partial replacement durability"
     );
     // A later drain must still refuse the affected content, while publishing another source.
     std::fs::write(root.join("sources/0.txt"), "fixture document 3").unwrap();
@@ -751,6 +755,14 @@ async fn rejected_authorization(kind: SyncKind) {
     assert!(
         receipt.to_string().contains(&content_id),
         "{kind:?}: complete replacement receipt"
+    );
+    let applied = fyrr_writer::commit::published_ids(&loaded.config, &publication(&worker).await.0)
+        .await
+        .unwrap()
+        .0;
+    assert!(
+        partial_ids.iter().all(|id| applied.contains(id)),
+        "{kind:?}: the complete replacement applies its partial envelopes"
     );
     let control = source_rows(&worker, "allowed").await;
     let row = roots(&control).iter().position(|id| id == "0.txt").unwrap();
@@ -809,6 +821,11 @@ async fn rejected_authorization(kind: SyncKind) {
         late.rejection_generation,
         late.cursor.start.as_deref(),
     );
+    // The holder finishes its read: the committer holds a permission envelope
+    // back until its read ends, and only then reaches the rejection.
+    if let EnvelopePayload::Permissions(payload) = &mut late.payload {
+        payload.complete_read = true;
+    }
     store
         .put(
             &ns.clone()

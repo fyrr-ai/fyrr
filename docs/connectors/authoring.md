@@ -106,7 +106,10 @@ class overrides.
 A document never spans batches; keep every batch within `context.limits`.
 A failed read must raise, not yield partial results: a partial permission
 or membership read leaves the last applied rights in place, which is the
-safe outcome; the operator retires a source that stays broken.
+safe outcome; the operator retires a source that stays broken. The writer
+publishes a permission read's batches only once the read has ended, so batches
+yielded before a failure are never published; the read resumes from its last
+cursor and publishes them with the rest.
 
 ## Documents
 

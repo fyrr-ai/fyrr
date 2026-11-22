@@ -55,7 +55,29 @@ pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<Prepared
         result.push(envelope);
     }
     result.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
+    hold_unfinished_permission_reads(&mut result);
     Ok(result)
+}
+
+/// A permission read is published whole or not at all: its envelopes wait until
+/// its terminal complete-read envelope exists. A source's permission envelopes
+/// newer than its newest complete-read envelope belong to a read that has not
+/// finished (it failed or is running), so they are not committable yet; the read
+/// that resumes it ends with the envelope that releases them.
+pub(crate) fn hold_unfinished_permission_reads(envelopes: &mut Vec<PreparedEnvelope>) {
+    let mut complete: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    for e in envelopes.iter() {
+        if e.kind == fyrr_core::connector::SyncKind::Permissions && crate::apply::complete_read(e) {
+            let newest = complete.entry(e.source_id.clone()).or_default();
+            *newest = (*newest).max(e.sequence);
+        }
+    }
+    envelopes.retain(|e| {
+        e.kind != fyrr_core::connector::SyncKind::Permissions
+            || complete
+                .get(&e.source_id)
+                .is_some_and(|newest| e.sequence <= *newest)
+    });
 }
 
 pub async fn envelope_paths(

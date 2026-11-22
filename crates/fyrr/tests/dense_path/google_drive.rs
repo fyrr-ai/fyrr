@@ -212,6 +212,91 @@ fn in_every_lane(config: &Path, expected: &[&str]) {
     }
 }
 
+/// A permission read that fails on a later page, after its first batch (the
+/// revoked shared-drive grant, yielded first) became an envelope, publishes none
+/// of its change; the read that follows publishes all of it.
+#[tokio::test]
+#[ignore = "real CLI, fake Drive and local storage; scripts/ci"]
+async fn google_drive_failed_permission_read_publishes_none_of_its_change_on_storage() {
+    let drive = Drive::start();
+    for email in [OWNER, READER] {
+        drive
+            .server
+            .call_async("user", json!({"email":email}))
+            .await;
+    }
+    let shared =
+        |members: &[&str]| json!({"drive_id":"drive-eng","name":"Engineering","members":members});
+    drive
+        .server
+        .call_async("drive", shared(&[OWNER, READER]))
+        .await;
+    let files = ["shared-1", "shared-2", "shared-3"];
+    for file in files {
+        drive
+            .put(file, "fixture document 0", json!({"drive":"drive-eng"}))
+            .await;
+    }
+    let (worker, commit, _root) = fixture(&drive, SYNC);
+    let every_kind = [
+        "--kind",
+        "content",
+        "--kind",
+        "permissions",
+        "--kind",
+        "members",
+    ];
+    drive.synced(&worker, &every_kind);
+    publish(&commit);
+    for file in files {
+        assert!(readable(&worker, file), "{file}");
+    }
+    let permission_envelopes = async || {
+        envelopes(&worker)
+            .await
+            .into_iter()
+            .filter(|(_, e)| e.source_id == "drive" && e.kind == SyncKind::Permissions)
+            .count()
+    };
+    let written = permission_envelopes().await;
+
+    // The reader leaves the shared drive, and every file changes, so the
+    // changes feed has two pages. The grant batch precedes the first page; the
+    // permission list of the file on the second page cannot be read.
+    drive.server.call_async("drive", shared(&[OWNER])).await;
+    for file in files {
+        drive
+            .put_unindexed(file, "fixture document 0", json!({}))
+            .await;
+    }
+    drive
+        .server
+        .call_async(
+            "fail",
+            json!({"match":{"path":"/files/shared-3/permissions$"},"status":403,"reason":"insufficientFilePermissions"}),
+        )
+        .await;
+    drive.refused(&worker, &["--kind", "permissions"]);
+    assert!(
+        permission_envelopes().await > written,
+        "the read must fail after its first batch was written"
+    );
+    publish(&commit);
+    for file in files {
+        assert!(
+            readable(&worker, file),
+            "{file}: a failed read publishes nothing"
+        );
+    }
+
+    // The read that follows resumes and publishes the whole change.
+    drive.synced(&worker, &["--kind", "permissions"]);
+    publish(&commit);
+    for file in files {
+        assert!(!readable(&worker, file), "{file}: the revoke is published");
+    }
+}
+
 /// Under `sync` the permission stream alone decides who reads a document:
 /// direct, group and shared-drive grants admit the reader, and each revoke
 /// removes the document from every retrieval lane.
