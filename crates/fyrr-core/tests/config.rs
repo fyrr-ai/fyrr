@@ -724,6 +724,35 @@ fn api_keys_need_a_name_readers_and_a_well_formed_unique_secret() {
 }
 
 #[test]
+fn api_keys_carry_roles_and_a_namespace_prefix() {
+    let key = |extra: &str| {
+        format!("\n[[identity.api_keys]]\nname='agents'\nkey={{env='KEY_ONE'}}\n{extra}\n")
+    };
+    // A key without roles keeps reading.
+    let plain = parse(&format!("{MINIMAL}{}", key("readers=['usr:7']"))).unwrap();
+    assert_eq!(
+        plain.config.identity.api_keys[0].roles,
+        [fyrr_core::config::ApiKeyRole::Read]
+    );
+    assert_eq!(plain.config.identity.api_keys[0].namespace_prefix, None);
+    // Only a key that reads needs readers.
+    assert!(errors_with(&key("roles=['write','admin','list']")).is_empty());
+    assert_error(&key("roles=['read','write']"), "api_keys[0].readers");
+    assert_error(&key("roles=[]\nreaders=['usr:7']"), "api_keys[0].roles");
+    assert!(parse(&format!("{MINIMAL}{}", key("roles=['root']"))).is_err());
+    assert!(errors_with(&key("roles=['write']\nnamespace_prefix='team-'")).is_empty());
+    for bad in ["''", "'Team'", "'team_'", &format!("'{}'", "a".repeat(64))] {
+        assert_error(
+            &key(&format!("roles=['write']\nnamespace_prefix={bad}")),
+            "api_keys[0].namespace_prefix",
+        );
+    }
+    assert!(fyrr_core::config::prefix_allows(None, "main"));
+    assert!(fyrr_core::config::prefix_allows(Some("team-"), "team-a"));
+    assert!(!fyrr_core::config::prefix_allows(Some("team-"), "main"));
+}
+
+#[test]
 fn http_without_a_login_method_stays_valid_for_the_writer_and_the_check_warns() {
     let http =
         "\n[reader.http]\nlisten='127.0.0.1:8080'\npublic_url='https://reader.example/mcp'\n";
@@ -838,6 +867,11 @@ fn set(table: &mut toml::Table, path: &[Step], value: toml::Value) {
         .entry(key.clone())
         .or_insert_with(|| toml::Value::Table(toml::Table::new()));
     let next = match (rest.first(), slot) {
+        (Some(Step::Index(index)), toml::Value::Array(items)) if rest.len() == 1 => {
+            // A list of plain values, such as `roles`.
+            *items.get_mut(*index).expect("example has the item") = value;
+            return;
+        }
         (Some(Step::Index(index)), toml::Value::Array(items)) => {
             let item = items
                 .get_mut(*index)
@@ -900,7 +934,7 @@ fn every_schema_constraint_is_enforced() {
     let mut base: toml::Table = toml::from_str(&common::read(EXAMPLE)).expect("example TOML");
     // The example declares no API key, whose constraints the walk must reach too.
     let key: toml::Table = toml::from_str(
-        "name = \"agents\"\nkey = { env = \"FYRR_API_KEY_AGENTS\" }\nreaders = [\"grp:engineering\"]\n",
+        "name = \"agents\"\nkey = { env = \"FYRR_API_KEY_AGENTS\" }\nreaders = [\"grp:engineering\"]\nroles = [\"read\"]\n",
     )
     .expect("key TOML");
     base["identity"]

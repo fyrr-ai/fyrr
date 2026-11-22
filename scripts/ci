@@ -8,8 +8,11 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT"
 
-declare -A ROW_TITLES=()
-while IFS=$'\t' read -r row title; do ROW_TITLES["$row"]="$title"; done < <("$ROOT/scripts/ci-cases" titles)
+declare -A ROW_TITLES=() ROW_KINDS=()
+while IFS=$'\t' read -r row kind title; do
+  ROW_TITLES["$row"]="$title"
+  ROW_KINDS["$row"]="$kind"
+done < <("$ROOT/scripts/ci-cases" metadata)
 row_name() { printf '%s\n' "${ROW_TITLES[$1]:-$1}"; }
 
 ONLY_STEPS=0
@@ -214,6 +217,10 @@ cases_start() {
   local -a selected_rows=()
   local row name count
   if [[ -n "$CASE_ROW" ]]; then
+    if [[ "${ROW_KINDS[$CASE_ROW]:-}" == python ]]; then
+      step "$(row_name "$CASE_ROW")" pytest "$ROOT/scripts/ci-cases" run "$CASE_ROW" ${CASE_ID:+"$CASE_ID"}
+      return
+    fi
     selected_rows=("$CASE_ROW")
   else
     while IFS=$'\t' read -r row count; do

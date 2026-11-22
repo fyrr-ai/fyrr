@@ -547,6 +547,10 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::published_api_keys_decide_roles_namespaces_and_age": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/http::admission::tests::changed_identity_binding_is_observed_on_next_request": {
         "tier": "quick",
         "seconds": 0.001
@@ -1162,6 +1166,10 @@
         "tier": "quick",
         "seconds": 0.01
       },
+      "full:fyrr-core:test:config/api_keys_carry_roles_and_a_namespace_prefix": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
       "full:fyrr-core:test:config/http_without_a_login_method_stays_valid_for_the_writer_and_the_check_warns": {
         "tier": "quick",
         "seconds": 0.01
@@ -1176,6 +1184,10 @@
     "title": "contract fixtures",
     "kind": "rust",
     "cases": {
+      "full:fyrr-core:test:contracts/api_keys_artifact_holds_only_distinct_hashed_keys_with_roles": {
+        "tier": "quick",
+        "seconds": 0.002
+      },
       "full:fyrr-core:test:contracts/arrow_document_changes_schema_is_checked_before_rows": {
         "tier": "quick",
         "seconds": 0.002
@@ -1546,6 +1558,10 @@
         "tier": "full",
         "seconds": 70.0
       },
+      "full:fyrr:test:dense_path/storage_budget::an_http_reader_with_api_keys_reads_them_once_per_version_check": {
+        "tier": "full",
+        "seconds": 30.0
+      },
       "full:fyrr:test:dense_path/mirror_identity::reader_paused_past_its_version_check_answers_from_the_new_publication": {
         "tier": "full",
         "seconds": 15.0
@@ -1769,6 +1785,10 @@
         "tier": "full",
         "seconds": 47.941
       },
+      "full:fyrr:test:dense_path/http_json::identity_http_json_routes_share_the_mcp_gates_on_storage": {
+        "tier": "full",
+        "seconds": 30
+      },
       "full:fyrr:test:dense_path/http_mcp::identity_http_authentication_isolation_rate_limits_drain_and_refresh_on_storage": {
         "tier": "full",
         "seconds": 85.864
@@ -1808,6 +1828,10 @@
       "full:fyrr:test:dense_path/api_keys::oidc_and_keys_coexist": {
         "tier": "full",
         "seconds": 7.006
+      },
+      "full:fyrr:test:dense_path/api_keys::deployment_keys_carry_roles_and_a_namespace_prefix": {
+        "tier": "quick",
+        "seconds": 15.0
       }
     }
   },

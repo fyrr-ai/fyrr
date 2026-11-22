@@ -63,6 +63,9 @@ pub enum WriterCommand {
         #[arg(long)]
         snapshot: std::path::PathBuf,
     },
+    /// Publish the configured API keys of the deployment under the storage
+    /// root, for the readers of every namespace. Replaces the published set.
+    Keys,
     /// Persist a credential from an environment variable, never a CLI value.
     Credential {
         #[arg(long)]
@@ -200,6 +203,7 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
             }
             | WriterCommand::Commit { receipt: None, .. }
             | WriterCommand::Serve { .. }
+            | WriterCommand::Keys
     );
     with_config(path, existing, |loaded| {
         let config = &loaded.config;
@@ -253,6 +257,7 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
                     .map_err(|_| WriterError::DirectorySnapshotInvalid)?;
                 crate::directory::publish(config, &snapshot).await
             }),
+            WriterCommand::Keys => runtime_command(crate::keys::publish(config)),
             WriterCommand::Credential { name, from_env } => {
                 runtime_command(crate::secrets::credential_put(config, name, from_env))
             }

@@ -2,13 +2,14 @@
 use crate::error::*;
 use axum::{
     Router,
-    extract::{Request, State},
-    http::{StatusCode, header},
+    extract::{Path, Request, State},
+    http::{Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use fyrr_core::config::{Config, ProcessEnvironment};
+use fyrr_core::config::{ApiKeyRole, Config, ProcessEnvironment};
+use fyrr_core::mcp::ErrorCode;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
@@ -40,6 +41,11 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(301);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(302);
+/// The caller went away before its answer; no standard status says so.
+const CLIENT_CLOSED_REQUEST: StatusCode = match StatusCode::from_u16(499) {
+    Ok(status) => status,
+    Err(_) => unreachable!(),
+};
 
 #[derive(Clone)]
 struct HttpState {
@@ -113,7 +119,38 @@ impl ControlLimits {
     }
 }
 fn error(status: StatusCode, code: ReaderError) -> Response {
-    (status, axum::Json(json!({"error":code.as_str()}))).into_response()
+    retry_after((status, axum::Json(json!({"error":code.as_str()}))).into_response())
+}
+/// Names a delay on every 429 (the rate window) and 503 (a short pause).
+fn retry_after(mut response: Response) -> Response {
+    let seconds = match response.status() {
+        StatusCode::TOO_MANY_REQUESTS => RATE_WINDOW.as_secs(),
+        StatusCode::SERVICE_UNAVAILABLE => 1,
+        _ => return response,
+    };
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, seconds.into());
+    response
+}
+/// The tool a `POST /v1/namespaces/{namespace}/query` or `.../fetch` runs and
+/// the role an API key needs for it. `/mcp` needs `read` as well. A key without
+/// the role of a route gets 403 `forbidden`; `/readyz` and `/admin/refresh`
+/// take no API key.
+fn json_tool(request: &Request) -> Option<(&'static str, ApiKeyRole)> {
+    if request.method() != Method::POST {
+        return None;
+    }
+    match request
+        .uri()
+        .path()
+        .strip_prefix("/v1/namespaces/")?
+        .split_once('/')?
+    {
+        (_, "query") => Some(("search", ApiKeyRole::Read)),
+        (_, "fetch") => Some(("fetch", ApiKeyRole::Read)),
+        _ => None,
+    }
 }
 fn bearer(request: &Request) -> Result<&str, ()> {
     let mut values = request.headers().get_all(header::AUTHORIZATION).iter();
@@ -163,7 +200,10 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
         crate::telemetry::emit(format_args!("http refused code={}", HostMismatch));
         return error(StatusCode::FORBIDDEN, HostMismatch);
     }
-    let _permit = if request.uri().path() != "/mcp" {
+    let route = json_tool(&request);
+    let tool = route.map(|(tool, _)| tool);
+    let role = route.map_or(ApiKeyRole::Read, |(_, role)| role);
+    let _permit = if request.uri().path() != "/mcp" && tool.is_none() {
         match state.permits.clone().try_acquire_owned() {
             Ok(p) => Some(p),
             Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, Busy),
@@ -180,7 +220,7 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
     {
         return error(StatusCode::PAYLOAD_TOO_LARGE, InvalidArgument);
     }
-    if request.uri().path() == "/mcp" {
+    if request.uri().path() == "/mcp" || tool.is_some() {
         let token = bearer(&request).map(str::to_owned);
         let (mut parts, body) = request.into_parts();
         let bytes =
@@ -195,20 +235,28 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                     return error(StatusCode::REQUEST_TIMEOUT, DeadlineExceeded);
                 }
             };
-        let message = serde_json::from_slice::<rmcp::model::ClientJsonRpcMessage>(&bytes).ok();
-        let parsed = match &message {
-            Some(rmcp::model::ClientJsonRpcMessage::Request(rpc)) => match &rpc.request {
-                rmcp::model::ClientRequest::CallToolRequest(call) => {
-                    Some(crate::serve::ToolCall::parse(
-                        &call.params.name,
-                        serde_json::Value::Object(
-                            call.params.arguments.clone().unwrap_or_default(),
-                        ),
-                    ))
-                }
+        let (message, parsed) = if let Some(name) = tool {
+            let call = serde_json::from_slice(&bytes)
+                .map_err(|_| InvalidArgument)
+                .and_then(|arguments| crate::serve::ToolCall::parse(name, arguments));
+            (None, Some(call))
+        } else {
+            let message = serde_json::from_slice::<rmcp::model::ClientJsonRpcMessage>(&bytes).ok();
+            let parsed = match &message {
+                Some(rmcp::model::ClientJsonRpcMessage::Request(rpc)) => match &rpc.request {
+                    rmcp::model::ClientRequest::CallToolRequest(call) => {
+                        Some(crate::serve::ToolCall::parse(
+                            &call.params.name,
+                            serde_json::Value::Object(
+                                call.params.arguments.clone().unwrap_or_default(),
+                            ),
+                        ))
+                    }
+                    _ => None,
+                },
                 _ => None,
-            },
-            _ => None,
+            };
+            (message, parsed)
         };
         let ms = parsed
             .as_ref()
@@ -243,11 +291,11 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
         let Ok(_mcp_permit) = permits.try_acquire_owned() else {
             return error(StatusCode::SERVICE_UNAVAILABLE, Busy);
         };
-        let subject = match authenticate_mcp(&state, h, token, &message, deadline, &expected).await
-        {
-            Ok(subject) => subject,
-            Err(response) => return response,
-        };
+        let subject =
+            match authenticate_mcp(&state, h, token, &message, deadline, &expected, role).await {
+                Ok(subject) => subject,
+                Err(response) => return response,
+            };
         request = Request::from_parts(parts, axum::body::Body::from(bytes));
         request.extensions_mut().insert(subject);
     }
@@ -272,6 +320,7 @@ async fn authenticate_mcp(
     message: &Option<rmcp::model::ClientJsonRpcMessage>,
     deadline: tokio::time::Instant,
     expected: &str,
+    role: ApiKeyRole,
 ) -> Result<crate::auth::AuthenticatedSubject, Response> {
     let cancellation = match message {
         Some(rmcp::model::ClientJsonRpcMessage::Notification(notification)) => {
@@ -310,17 +359,21 @@ async fn authenticate_mcp(
     };
     // The lookup of an API key precedes everything else, a cancellation included.
     let admit = || async {
-        timeout_at(deadline, state.admission.authorize(&state.config, &subject))
-            .await?
-            .map_err(|code| match code {
-                Unauthorized => authentication_failure(state, code, expected),
-                _ => error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable),
-            })
+        timeout_at(
+            deadline,
+            state.admission.authorize(&state.config, &subject, role),
+        )
+        .await?
+        .map_err(|code| match code {
+            Unauthorized => authentication_failure(state, code, expected),
+            Forbidden => error(StatusCode::FORBIDDEN, Forbidden),
+            _ => error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable),
+        })
     };
     // Authenticated control traffic has its own concurrency bound and never
     // spends a user's or group's request allowance. IDs remain subject-scoped.
     if let Some(cancel) = cancellation {
-        if subject.api_key {
+        if subject.api_key.is_some() {
             admit().await?;
         }
         let mut limits = timeout_at(deadline, state.control_limits.lock()).await?;
@@ -481,7 +534,58 @@ async fn readiness(State(state): State<HttpState>) -> Response {
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
-    (status, axum::Json(serde_json::Value::Object(readiness))).into_response()
+    retry_after((status, axum::Json(serde_json::Value::Object(readiness))).into_response())
+}
+/// Runs the parsed call the boundary authenticated through the scheduler that
+/// serves MCP and answers its output as plain JSON.
+async fn tool_json(
+    State(state): State<HttpState>,
+    Path(namespace): Path<String>,
+    request: Request,
+) -> Response {
+    let extensions = request.extensions();
+    let (Some(arrived), Some(parsed), Some(claims)) = (
+        extensions.get::<tokio::time::Instant>().copied(),
+        extensions.get::<Result<crate::serve::ToolCall>>().cloned(),
+        extensions
+            .get::<Arc<crate::serve::ResponseClaims>>()
+            .cloned(),
+    ) else {
+        unreachable!("the HTTP boundary parses and accounts a JSON call before routing it");
+    };
+    let subject = extensions
+        .get::<crate::auth::AuthenticatedSubject>()
+        .cloned();
+    if namespace != state.config.namespace.name {
+        return error(StatusCode::NOT_FOUND, InvalidArgument);
+    }
+    let call = match parsed {
+        Ok(call) => call,
+        Err(code) => return error(StatusCode::BAD_REQUEST, code),
+    };
+    let result = state
+        .service
+        .call_json(call, subject, arrived, claims)
+        .await;
+    if result.is_error != Some(true) {
+        return axum::Json(result.structured_content).into_response();
+    }
+    let code = result
+        .structured_content
+        .and_then(|value| serde_json::from_value::<fyrr_core::mcp::ToolError>(value).ok())
+        .map_or(ErrorCode::StorageUnavailable, |error| error.code);
+    let status = match code {
+        ErrorCode::InvalidArgument => StatusCode::BAD_REQUEST,
+        ErrorCode::StaleCursor => StatusCode::CONFLICT,
+        ErrorCode::DeadlineExceeded => StatusCode::REQUEST_TIMEOUT,
+        ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        ErrorCode::Cancelled => CLIENT_CLOSED_REQUEST,
+        ErrorCode::AuthorizationUnavailable
+        | ErrorCode::StorageUnavailable
+        | ErrorCode::IncompatibleIndex
+        | ErrorCode::Busy => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    retry_after((status, axum::Json(json!({"error":code.as_str()}))).into_response())
 }
 async fn refresh(State(state): State<HttpState>, request: Request) -> Response {
     let Some(credential) = &state.http().operator_credential else {
@@ -510,6 +614,9 @@ async fn refresh(State(state): State<HttpState>, request: Request) -> Response {
         return error(StatusCode::TOO_MANY_REQUESTS, RateLimited);
     }
     *refresh = Some(Instant::now());
+    if !state.config.identity.api_keys.is_empty() {
+        let _ = state.admission.refresh_api_keys().await;
+    }
     match state.service.refresh().await {
         Ok(p) => axum::Json(p).into_response(),
         Err(code) => error(StatusCode::SERVICE_UNAVAILABLE, code),
@@ -533,7 +640,26 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
         reader.control_root.clone(),
         reader.identity_cache.clone(),
         reader.head_cache.clone(),
+        crate::storage::HeadCache::for_file(&config, crate::storage::API_KEYS_FILE),
     ));
+    // Only a reader that declares API keys takes bearers for them, so only it
+    // reads the published ones: at start and at each version check. Until
+    // they are read, API-key requests are refused and OIDC ones are not.
+    if !config.identity.api_keys.is_empty() {
+        let interval = config
+            .reader
+            .version_check_interval
+            .as_duration()
+            .min(Duration::from_secs(30));
+        let admission = admission.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+            loop {
+                tick.tick().await;
+                let _ = admission.refresh_api_keys().await;
+            }
+        });
+    }
     let service = crate::serve::start(reader).await?;
     let state = HttpState {
         admission,
@@ -572,6 +698,9 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
             .route("/.well-known/oauth-protected-resource", get(metadata))
             .route("/.well-known/oauth-protected-resource/mcp", get(metadata));
     }
+    router = router
+        .route("/v1/namespaces/{namespace}/query", post(tool_json))
+        .route("/v1/namespaces/{namespace}/fetch", post(tool_json));
     if h.operator_credential.is_some() {
         router = router.route("/admin/refresh", post(refresh));
     }

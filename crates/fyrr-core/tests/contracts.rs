@@ -14,7 +14,7 @@ use fyrr_core::connector::{
 };
 use fyrr_core::directory::DirectorySnapshot;
 use fyrr_core::envelope::PreparedEnvelope;
-use fyrr_core::identity::IdentityArtifact;
+use fyrr_core::identity::{ApiKeysArtifact, IdentityArtifact};
 use fyrr_core::provider::ProviderInfo;
 use fyrr_core::publication::{ContentManifest, EnvelopeCheckpoint, PolicyArtifact, ServingHead};
 use fyrr_core::{Contract, ContractError, SchemaVersion, parse_contract, write_contract};
@@ -90,6 +90,25 @@ fn a_manifest_and_a_policy_hold_only_valid_attribute_schemas() {
     }
 }
 
+#[test]
+fn api_keys_artifact_holds_only_distinct_hashed_keys_with_roles() {
+    let base = common::read_json("fixtures/contracts/api-keys-artifact/artifact.json");
+    assert!(parse::<ApiKeysArtifact>(&base).is_ok());
+    for (path, value) in [
+        ("/keys/0/subject", json!("usr:ada")),
+        ("/keys/0/roles", json!([])),
+        ("/keys/0/roles", json!(["root"])),
+        ("/keys/0/namespace_prefix", json!("Team_")),
+    ] {
+        let mut invalid = base.clone();
+        *invalid.pointer_mut(path).expect("fixture path") = value;
+        assert!(parse::<ApiKeysArtifact>(&invalid).is_err(), "{path}");
+    }
+    let mut twice = base.clone();
+    twice["keys"][1]["subject"] = base["keys"][0]["subject"].clone();
+    assert!(parse::<ApiKeysArtifact>(&twice).is_err());
+}
+
 /// Runs `check` once per contract type with its fixture directory and schema.
 macro_rules! for_each_contract {
     ($check:ident) => {{
@@ -102,6 +121,7 @@ macro_rules! for_each_contract {
         fixtures += $check::<PolicyArtifact>("policy-artifact");
         fixtures += $check::<EnvelopeCheckpoint>("envelope-checkpoint");
         fixtures += $check::<IdentityArtifact>("identity-artifact");
+        fixtures += $check::<ApiKeysArtifact>("api-keys-artifact");
         fixtures += $check::<DirectorySnapshot>("directory-snapshot");
         fixtures += $check::<fyrr_core::secret::EncryptedSecret>("encrypted-secret");
         fixtures += $check::<ProviderInfo>("connector-provider");

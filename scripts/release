@@ -106,11 +106,10 @@ binary_runtime() {
 }
 
 # --- binaries (the shipping release profile) ------------------
-BINARIES="$ROOT/target/release-binaries"
-rm -rf "$BINARIES"
+BINARIES="$(mktemp -d "$ROOT/target/release-binaries.XXXXXX")"
+trap 'rm -rf -- "$BINARIES"' EXIT
 if [[ -n "$SUPPLIED" ]]; then
   log "using the binaries in $SUPPLIED"
-  mkdir -p "$BINARIES"
   for binary in fyrr fyrr-reader; do
     [[ -f "$SUPPLIED/$binary" ]] || die "$SUPPLIED/$binary is missing"
     install -m 0755 "$SUPPLIED/$binary" "$BINARIES/$binary"

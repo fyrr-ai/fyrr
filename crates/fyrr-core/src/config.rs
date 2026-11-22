@@ -19,7 +19,9 @@ pub(crate) use validation::{
     namespace_settings as check_namespace, rerank_settings as check_rerank,
 };
 
-pub use api_key::{API_KEY_PREFIX, ApiKeyConfig, is_api_key_secret};
+pub use api_key::{
+    API_KEY_PREFIX, ApiKeyConfig, ApiKeyRole, is_api_key_secret, is_namespace_prefix, prefix_allows,
+};
 pub use storage::StorageBackend;
 
 use std::collections::{BTreeMap, BTreeSet};

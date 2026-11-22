@@ -96,6 +96,11 @@ export const navigation = [
         "mcp-tools.md",
         "MCP tools",
         "Three tools. Your agent works out the rest."
+      ],
+      [
+        "http-api.md",
+        "HTTP JSON API",
+        "The same questions over plain JSON, for callers without MCP."
       ]
     ]
   ],

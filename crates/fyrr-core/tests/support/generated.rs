@@ -7,7 +7,7 @@ use serde_json::Value;
 use fyrr_core::connector::{ConnectorBatch, CursorState, document_changes_arrow_schema};
 use fyrr_core::directory::DirectorySnapshot;
 use fyrr_core::envelope::{PreparedEnvelope, RejectionMarker};
-use fyrr_core::identity::IdentityArtifact;
+use fyrr_core::identity::{ApiKeysArtifact, IdentityArtifact};
 use fyrr_core::mcp::{ToolError, error_codes, tools_list};
 use fyrr_core::provider::{ProviderInfo, SDK_SERIES};
 use fyrr_core::publication::{ContentManifest, EnvelopeCheckpoint, PolicyArtifact, ServingHead};
@@ -261,6 +261,10 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
         GeneratedFile {
             path: "schemas/directory-snapshot.schema.json",
             contents: pretty(&contract_schema::<DirectorySnapshot>()),
+        },
+        GeneratedFile {
+            path: "schemas/api-keys-artifact.schema.json",
+            contents: pretty(&contract_schema::<ApiKeysArtifact>()),
         },
         GeneratedFile {
             path: "schemas/identity-artifact.schema.json",
