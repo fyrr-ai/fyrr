@@ -19,7 +19,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   index options and of the read-only switch, so an older build refuses it
   instead of reading nulls. The
   `key=value` attributes of a connector document stay in the `attributes`
-  column. See [tuning](docs/tuning.md#namespaceattributes).
+  column. A namespace or a configuration made by an unreleased build between
+  typed attributes (#225) and this change can be refused: one that declares the
+  five connector names with exactly their types, one at the limit of declared
+  attributes (the five count), or one that sets one of the five to another type.
+  Released v0.1.x has no custom attributes and is unaffected. See
+  [tuning](docs/tuning.md#namespaceattributes).
 
 ### Added
 
