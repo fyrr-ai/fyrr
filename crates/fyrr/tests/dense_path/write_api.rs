@@ -194,7 +194,7 @@ async fn identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_stor
     // text) must not leave the namespace created, with the mode it asked for.
     let invalid = json!({
         "settings": {"write_api": {"open": true}},
-        "upserts": [{"id": "d", "text": "red\u0000hat"}],
+        "upserts": [{"id": "d", "text": "red\0hat"}],
     });
     assert_eq!(
         writer.post(WRITE_KEY, namespace, &invalid).await,

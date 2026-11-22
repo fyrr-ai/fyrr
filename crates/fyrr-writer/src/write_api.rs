@@ -186,11 +186,7 @@ pub(crate) async fn handle(api: &WriteApi, config: &Config, request: Request) ->
     }
 }
 
-async fn accept(
-    api: &WriteApi,
-    config: &Config,
-    request: Request,
-) -> Result<Response, ApiError> {
+async fn accept(api: &WriteApi, config: &Config, request: Request) -> Result<Response, ApiError> {
     let namespace = request
         .uri()
         .path()
@@ -328,8 +324,10 @@ fn laid_over(
     }
     let settings: NamespaceSettings =
         serde_json::from_value(value).map_err(|_| ApiError(400, "settings_invalid"))?;
-    // A request cannot make a namespace that the API does not write.
-    if settings.write_api.is_none() {
+    // A request cannot make a namespace that the API does not write, and its
+    // settings are held to the bounds of a configuration before anything is
+    // built from them.
+    if settings.write_api.is_none() || settings.validate().is_err() {
         return Err(ApiError(400, "settings_invalid"));
     }
     Ok(settings)
@@ -427,9 +425,10 @@ fn changes(
     let change = |op, root_id: String| DocumentChange {
         op,
         root_id,
-        // The revision is set with the sequence of the envelope.
-        source_revision: (op == ChangeOp::Upsert).then(|| "pending".to_owned()),
-        revision_order: None,
+        // The revision is set with the sequence of the envelope; until then the
+        // longest it can be, so that the bounds checked now are those of the envelope.
+        source_revision: (op == ChangeOp::Upsert).then(|| format!("rev-{}", u64::MAX)),
+        revision_order: Some(i64::MAX),
         expected_prior_revision: None,
         permission_revision: None,
         readers: Vec::new(),
@@ -483,8 +482,15 @@ fn changes(
 
 /// The namespace is not to be created over what a deleted one left: its
 /// envelopes would be published into the new one.
-async fn leftovers(store: &dyn object_store::ObjectStore, root: &object_store::path::Path) -> Result<(), ApiError> {
-    match store.list(Some(&root.clone().join("envelopes"))).next().await {
+async fn leftovers(
+    store: &dyn object_store::ObjectStore,
+    root: &object_store::path::Path,
+) -> Result<(), ApiError> {
+    match store
+        .list(Some(&root.clone().join("envelopes")))
+        .next()
+        .await
+    {
         None => Ok(()),
         Some(Ok(_)) => Err(ApiError(409, "namespace_not_empty")),
         Some(Err(_)) => Err(ApiError(503, "unavailable")),
@@ -531,7 +537,10 @@ async fn execute(
     let settings = match &existing {
         Some((_, policy)) => policy.settings.clone(),
         None => {
-            let settings = laid_over(&crate::commit::namespace_settings(config), requested.as_ref())?;
+            let settings = laid_over(
+                &crate::commit::namespace_settings(config),
+                requested.as_ref(),
+            )?;
             // `id` is the key of a row in the request.
             if settings.attributes.contains_key("id")
                 || settings
@@ -647,6 +656,14 @@ async fn write_envelope(
 ) -> Result<String, ApiError> {
     let (store, root) = fyrr_reader::storage::namespace_store(config)?;
     let mut state = lease.state().await?;
+    // The namespace the request was checked against is the one it is written
+    // into: another may have taken its place since.
+    if fyrr_reader::storage::optional_head(config)
+        .await?
+        .is_none_or(|current| current.incarnation != head.incarnation)
+    {
+        return Err(ApiError(409, "namespace_changed"));
+    }
     let (generation, cursor) = (state.rejection_generation, state.cursor.clone());
     let id_of = |sequence: u64| {
         envelope_id(

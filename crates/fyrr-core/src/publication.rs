@@ -53,7 +53,7 @@ pub struct NamespaceSettings {
 impl NamespaceSettings {
     /// The bounds a configuration file is held to, so that no stored settings
     /// can fail a build or a search later.
-    fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         self.embedding.validate_profile()?;
         let namespace = NamespaceConfig {
             rerank: None,
