@@ -15,7 +15,12 @@
 )]
 #![allow(clippy::unwrap_used)] // Fixture setup failures are assertions.
 #![allow(clippy::print_stdout)]
-use arrow_array::{Float32Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray};
+use arrow_array::{
+    ArrayRef, BooleanArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int64Array,
+    ListArray, RecordBatch, RecordBatchIterator, StringArray, TimestampMicrosecondArray,
+    UInt32Array, UInt64Array,
+};
+use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field, Schema};
 use lance::{
     Dataset,
@@ -447,5 +452,164 @@ async fn configurable_max_token_length_default_40_and_override_128() {
         "native indexed boundary hits: default 40 => 39 only; rebuilt override 128 => \
             39,40,41,127; lengths 128,129 dropped (exclusive byte bound)"
     );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The attribute types a schema offers: a scalar column and an array column of
+/// each element type, with the index kind `AttributeType` names, answer the
+/// filters the reader compiles (`=`, `array_has`, `array_has_any`,
+/// `array_has_all` and their negations) from that index. An element type
+/// that fails here must not be offered.
+#[tokio::test]
+async fn every_offered_attribute_type_has_an_index_that_answers_its_filters() {
+    use fyrr_core::attributes::{AttributeType, ElementType};
+    // A new element type is not offered until it is tested here.
+    let _: fn(ElementType) = |element| match element {
+        ElementType::String
+        | ElementType::Int
+        | ElementType::Float
+        | ElementType::Bool
+        | ElementType::Datetime
+        | ElementType::Uint
+        | ElementType::Uuid => {}
+    };
+    // Two values of each element type, with the SQL literal of each.
+    let literals = |a: &str, b: &str| [a.to_owned(), b.to_owned()];
+    let samples: Vec<(ElementType, ArrayRef, [String; 2])> = vec![
+        (
+            ElementType::String,
+            Arc::new(StringArray::from(vec!["a", "b"])),
+            literals("'a'", "'b'"),
+        ),
+        (
+            ElementType::Int,
+            Arc::new(Int64Array::from(vec![-1, 2])),
+            literals("-1", "2"),
+        ),
+        (
+            ElementType::Uint,
+            Arc::new(UInt64Array::from(vec![1, u64::MAX])),
+            literals("1", &u64::MAX.to_string()),
+        ),
+        (
+            ElementType::Float,
+            Arc::new(Float64Array::from(vec![0.5, 1.5])),
+            literals("0.5", "1.5"),
+        ),
+        (
+            ElementType::Bool,
+            Arc::new(BooleanArray::from(vec![true, false])),
+            literals("true", "false"),
+        ),
+        (
+            ElementType::Datetime,
+            Arc::new(
+                TimestampMicrosecondArray::from(vec![1_000_000, 2_000_000]).with_timezone("UTC"),
+            ),
+            literals(
+                "timestamp '1970-01-01 00:00:01.000000'",
+                "timestamp '1970-01-01 00:00:02.000000'",
+            ),
+        ),
+        (
+            ElementType::Uuid,
+            Arc::new(
+                FixedSizeBinaryArray::try_from_iter([[1_u8; 16], [2; 16]].into_iter()).unwrap(),
+            ),
+            [
+                format!("X'{}'", "01".repeat(16)),
+                format!("X'{}'", "02".repeat(16)),
+            ],
+        ),
+    ];
+    let take = |values: &ArrayRef, rows: Vec<Option<u32>>| {
+        arrow_select::take::take(values.as_ref(), &UInt32Array::from(rows), None).unwrap()
+    };
+    let (mut fields, mut columns) = (Vec::new(), Vec::new());
+    for (element, pair, _) in &samples {
+        let name = format!("{element:?}").to_lowercase();
+        // One value per row: a, b, b, a and none.
+        fields.push(Field::new(
+            format!("one_{name}"),
+            element.scalar().arrow_type(),
+            true,
+        ));
+        columns.push(take(pair, vec![Some(0), Some(1), Some(1), Some(0), None]));
+        // The array of each row: [a, b], [b], [a], [] and none.
+        let kind = AttributeType::Array(*element);
+        fields.push(Field::new(format!("many_{name}"), kind.arrow_type(), true));
+        let list = ListArray::new(
+            Arc::new(Field::new("item", pair.data_type().clone(), false)),
+            OffsetBuffer::from_lengths([2, 1, 1, 0, 0]),
+            take(pair, vec![Some(0), Some(1), Some(1), Some(0)]),
+            Some(NullBuffer::from(vec![true, true, true, true, false])),
+        );
+        assert_eq!(list.data_type(), &kind.arrow_type());
+        columns.push(Arc::new(list));
+    }
+    let schema = Arc::new(Schema::new(fields));
+    let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+    let root = directory("attribute-types");
+    let mut dataset = Dataset::write(
+        RecordBatchIterator::new(vec![Ok(batch)], schema),
+        root.join("types.lance").to_str().unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    for (element, _, _) in &samples {
+        let name = format!("{element:?}").to_lowercase();
+        for (column, kind) in [
+            (format!("one_{name}"), element.scalar()),
+            (format!("many_{name}"), AttributeType::Array(*element)),
+        ] {
+            let index = match kind.index_kind().unwrap() {
+                "bitmap" => IndexType::Bitmap,
+                "label_list" => IndexType::LabelList,
+                _ => IndexType::BTree,
+            };
+            dataset
+                .create_index(
+                    &[column.as_str()],
+                    index,
+                    Some(format!("{column}_idx")),
+                    &lance_index::scalar::ScalarIndexParams::default(),
+                    false,
+                )
+                .await
+                .unwrap_or_else(|error| panic!("{column}: {error}"));
+        }
+    }
+    let count = |filter: String| {
+        let dataset = &dataset;
+        async move {
+            let mut scan = dataset.scan();
+            scan.filter(&filter).unwrap();
+            let plan = scan.explain_plan(true).await.unwrap();
+            let rows = scan.count_rows().await.unwrap();
+            (rows, plan.contains("ScalarIndexQuery"), filter, plan)
+        }
+    };
+    for (element, _, [a, b]) in &samples {
+        let name = format!("{element:?}").to_lowercase();
+        let (one, many) = (format!("one_{name}"), format!("many_{name}"));
+        // Rows that hold `a`: 0 and 3 of the scalar; 0 and 2 of the array.
+        for (filter, rows, indexed) in [
+            (format!("{one} = {a}"), 2, true),
+            (format!("{one} IN ({a},{b})"), 4, true),
+            (format!("array_has({many},{a})"), 2, true),
+            (format!("NOT array_has({many},{a})"), 2, false),
+            (format!("array_has_any({many},[{a},{b}])"), 3, true),
+            (format!("array_has_all({many},[{a},{b}])"), 1, true),
+            (format!("NOT array_has_any({many},[{b}])"), 2, false),
+        ] {
+            let (found, used, filter, plan) = count(filter).await;
+            assert_eq!(found, rows, "{filter}");
+            assert!(
+                used || !indexed,
+                "{filter} is not answered by its index: {plan}"
+            );
+        }
+    }
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -2,11 +2,13 @@
 //! function that infers and validates a value against it.
 //!
 //! Every attribute is nullable and is stored as its own column of the table.
-//! An undeclared attribute takes the type of its first value; `datetime` is
-//! never inferred, only declared.
+//! An undeclared attribute takes the type of its first value (`string`, `int`,
+//! `float` or `bool`, or an array of one of them); `uint`, `datetime`, `uuid`
+//! and `bytes` are never inferred, only declared.
 
 use std::collections::BTreeMap;
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::DateTime;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -46,27 +48,73 @@ pub enum AttributeType {
     Bool,
     /// An RFC 3339 string in requests, stored as UTC microseconds.
     Datetime,
+    /// 64-bit unsigned integer.
+    Uint,
+    /// A UUID as 8-4-4-4-12 hexadecimal digits in requests, stored in 16 bytes.
+    Uuid,
+    /// Base64 in requests. Stored, never filtered, sorted or indexed.
+    Bytes,
+    /// A list of values of one scalar type, written `{"array": "string"}`.
+    Array(ElementType),
+}
+
+/// The type of the elements of an array: every scalar type but `bytes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ElementType {
+    String,
+    Int,
+    Float,
+    Bool,
+    Datetime,
+    Uint,
+    Uuid,
+}
+
+impl ElementType {
+    /// The scalar type of a single element.
+    pub fn scalar(self) -> AttributeType {
+        match self {
+            Self::String => AttributeType::String,
+            Self::Int => AttributeType::Int,
+            Self::Float => AttributeType::Float,
+            Self::Bool => AttributeType::Bool,
+            Self::Datetime => AttributeType::Datetime,
+            Self::Uint => AttributeType::Uint,
+            Self::Uuid => AttributeType::Uuid,
+        }
+    }
 }
 
 impl AttributeType {
     /// The type of the attribute's column.
     pub fn arrow_type(self) -> arrow_schema::DataType {
-        use arrow_schema::{DataType, TimeUnit};
+        use arrow_schema::{DataType, Field, TimeUnit};
         match self {
             Self::String => DataType::Utf8,
             Self::Int => DataType::Int64,
             Self::Float => DataType::Float64,
             Self::Bool => DataType::Boolean,
             Self::Datetime => DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            Self::Uint => DataType::UInt64,
+            Self::Uuid => DataType::FixedSizeBinary(16),
+            Self::Bytes => DataType::Binary,
+            Self::Array(element) => DataType::List(std::sync::Arc::new(Field::new(
+                "item",
+                element.scalar().arrow_type(),
+                false,
+            ))),
         }
     }
 
-    /// The kind of the attribute's scalar index: a bitmap for `bool`, a B-tree
-    /// for every other type.
-    pub fn index_kind(self) -> &'static str {
+    /// The kind of the attribute's index: a bitmap for `bool`, a label list for
+    /// an array, a B-tree for every other type but `bytes`, which has none.
+    pub fn index_kind(self) -> Option<&'static str> {
         match self {
-            Self::Bool => "bitmap",
-            _ => "btree",
+            Self::Bytes => None,
+            Self::Bool => Some("bitmap"),
+            Self::Array(_) => Some("label_list"),
+            _ => Some("btree"),
         }
     }
 }
@@ -90,6 +138,11 @@ pub enum AttributeValue {
     Bool(bool),
     /// UTC microseconds.
     Datetime(i64),
+    Uint(u64),
+    Uuid([u8; 16]),
+    Bytes(Vec<u8>),
+    /// The elements of an array, each a scalar.
+    Array(Vec<AttributeValue>),
 }
 
 /// Why an attribute or a value was refused. The code is the named error; no
@@ -148,10 +201,97 @@ pub fn check_schema(schema: &AttributeSchema) -> Result<(), AttributeError> {
     schema.keys().try_for_each(|name| check_name(name))
 }
 
+/// The 16 bytes of a UUID written as 8-4-4-4-12 hexadecimal digits, either case.
+pub fn parse_uuid(text: &str) -> Option<[u8; 16]> {
+    let groups: Vec<&str> = text.split('-').collect();
+    if groups.iter().map(|group| group.len()).ne([8, 4, 4, 4, 12]) {
+        return None;
+    }
+    hex::decode(groups.concat()).ok()?.try_into().ok()
+}
+
+/// The type of the elements an undeclared attribute takes from its first value.
+fn element_of(value: &serde_json::Value) -> Option<ElementType> {
+    use serde_json::Value;
+    match value {
+        Value::String(_) => Some(ElementType::String),
+        Value::Bool(_) => Some(ElementType::Bool),
+        Value::Number(number) if number.is_f64() => Some(ElementType::Float),
+        Value::Number(_) => Some(ElementType::Int),
+        _ => None,
+    }
+}
+
+/// The type of an undeclared attribute's first value; none for an empty array.
+fn inferred(value: &serde_json::Value) -> Result<Option<AttributeType>, AttributeError> {
+    let invalid = AttributeError::ValueInvalid;
+    match value {
+        serde_json::Value::Array(items) => items
+            .first()
+            .map(|first| element_of(first).map(AttributeType::Array).ok_or(invalid))
+            .transpose(),
+        _ => element_of(value)
+            .map(|element| Some(element.scalar()))
+            .ok_or(invalid),
+    }
+}
+
+/// One scalar value of the type `kind`.
+fn scalar(
+    kind: AttributeType,
+    value: &serde_json::Value,
+) -> Result<AttributeValue, AttributeError> {
+    use serde_json::Value;
+    let bounded = |text: &str| {
+        if text.len() > MAX_VALUE_BYTES {
+            Err(AttributeError::ValueTooLarge)
+        } else {
+            Ok(())
+        }
+    };
+    Ok(match (kind, value) {
+        (AttributeType::String, Value::String(text)) => {
+            bounded(text)?;
+            AttributeValue::String(text.clone())
+        }
+        (AttributeType::Int, Value::Number(number)) if !number.is_f64() => {
+            // An integer above `i64::MAX` is a number of this type that does not fit.
+            AttributeValue::Int(number.as_i64().ok_or(AttributeError::ValueInvalid)?)
+        }
+        (AttributeType::Uint, Value::Number(number)) if !number.is_f64() => {
+            AttributeValue::Uint(number.as_u64().ok_or(AttributeError::ValueInvalid)?)
+        }
+        (AttributeType::Float, Value::Number(number)) => {
+            AttributeValue::Float(number.as_f64().ok_or(AttributeError::ValueInvalid)?)
+        }
+        (AttributeType::Bool, Value::Bool(flag)) => AttributeValue::Bool(*flag),
+        (AttributeType::Datetime, Value::String(text)) => {
+            bounded(text)?;
+            let time =
+                DateTime::parse_from_rfc3339(text).map_err(|_| AttributeError::ValueInvalid)?;
+            AttributeValue::Datetime(time.timestamp_micros())
+        }
+        (AttributeType::Uuid, Value::String(text)) => {
+            AttributeValue::Uuid(parse_uuid(text).ok_or(AttributeError::ValueInvalid)?)
+        }
+        (AttributeType::Bytes, Value::String(text)) => {
+            bounded(text)?;
+            AttributeValue::Bytes(
+                STANDARD
+                    .decode(text)
+                    .map_err(|_| AttributeError::ValueInvalid)?,
+            )
+        }
+        _ => return Err(AttributeError::TypeMismatch),
+    })
+}
+
 /// Infers and validates in one step. A declared attribute holds only its type;
 /// an undeclared one is added to `schema` with the type of its value
-/// (`string`, `int`, `float` or `bool`). A `null` is valid for every attribute
-/// and infers nothing. On an error `schema` is unchanged.
+/// (`string`, `int`, `float` or `bool`, or an array of one of them, by its
+/// first element). A `null` is valid for every attribute and infers nothing,
+/// and neither does an empty array of an undeclared one. On an error `schema`
+/// is unchanged.
 pub fn resolve(
     schema: &mut AttributeSchema,
     name: &str,
@@ -162,42 +302,21 @@ pub fn resolve(
     if value.is_null() {
         return Ok(AttributeValue::Null);
     }
-    let inferred = match value {
-        Value::String(_) => AttributeType::String,
-        Value::Bool(_) => AttributeType::Bool,
-        Value::Number(number) if number.is_f64() => AttributeType::Float,
-        Value::Number(_) => AttributeType::Int,
-        _ => return Err(AttributeError::ValueInvalid),
-    };
     let declared = schema.get(name).copied();
+    let Some(kind) = declared.map_or_else(|| inferred(value), |kind| Ok(Some(kind)))? else {
+        return Ok(AttributeValue::Null);
+    };
     if declared.is_none() && schema.len() >= MAX_ATTRIBUTES {
         return Err(AttributeError::TooMany);
     }
-    let kind = declared.unwrap_or(inferred);
     let typed = match (kind, value) {
-        (AttributeType::String, Value::String(text)) => {
-            if text.len() > MAX_VALUE_BYTES {
-                return Err(AttributeError::ValueTooLarge);
-            }
-            AttributeValue::String(text.clone())
-        }
-        (AttributeType::Int, Value::Number(number)) if !number.is_f64() => {
-            // An integer above `i64::MAX` is a number of this type that does not fit.
-            AttributeValue::Int(number.as_i64().ok_or(AttributeError::ValueInvalid)?)
-        }
-        (AttributeType::Float, Value::Number(number)) => {
-            AttributeValue::Float(number.as_f64().ok_or(AttributeError::ValueInvalid)?)
-        }
-        (AttributeType::Bool, Value::Bool(flag)) => AttributeValue::Bool(*flag),
-        (AttributeType::Datetime, Value::String(text)) => {
-            if text.len() > MAX_VALUE_BYTES {
-                return Err(AttributeError::ValueTooLarge);
-            }
-            let time =
-                DateTime::parse_from_rfc3339(text).map_err(|_| AttributeError::ValueInvalid)?;
-            AttributeValue::Datetime(time.timestamp_micros())
-        }
-        _ => return Err(AttributeError::TypeMismatch),
+        (AttributeType::Array(element), Value::Array(items)) => AttributeValue::Array(
+            items
+                .iter()
+                .map(|item| scalar(element.scalar(), item))
+                .collect::<Result<_, _>>()?,
+        ),
+        _ => scalar(kind, value)?,
     };
     schema.entry(name.to_owned()).or_insert(kind);
     Ok(typed)
@@ -294,13 +413,163 @@ mod tests {
     #[test]
     fn structured_values_are_refused() {
         let mut schema = AttributeSchema::new();
-        for value in [json!([1]), json!({"a": 1})] {
+        for value in [
+            json!({"a": 1}),
+            json!([[1]]),
+            json!([null]),
+            json!([{"a": 1}]),
+        ] {
             assert_eq!(
                 resolve(&mut schema, "a", &value),
-                Err(AttributeError::ValueInvalid)
+                Err(AttributeError::ValueInvalid),
+                "{value}"
             );
         }
         assert!(schema.is_empty());
+    }
+
+    #[test]
+    fn an_undeclared_array_takes_its_type_from_its_first_element() {
+        let mut schema = AttributeSchema::new();
+        for (name, value, element) in [
+            ("a", json!(["x", "y"]), ElementType::String),
+            ("b", json!([1, 2]), ElementType::Int),
+            ("c", json!([1.5]), ElementType::Float),
+            ("d", json!([true, false]), ElementType::Bool),
+        ] {
+            assert!(matches!(
+                resolve(&mut schema, name, &value),
+                Ok(AttributeValue::Array(items)) if items.len() == value.as_array().unwrap().len()
+            ));
+            assert_eq!(schema[name], AttributeType::Array(element));
+        }
+        // The first element decides: a later one of another type does not fit.
+        assert_eq!(
+            resolve(&mut schema, "e", &json!([1, "x"])),
+            Err(AttributeError::TypeMismatch)
+        );
+        assert!(!schema.contains_key("e"));
+        // An empty array tells nothing of its elements.
+        assert_eq!(
+            resolve(&mut schema, "f", &json!([])),
+            Ok(AttributeValue::Null)
+        );
+        assert!(!schema.contains_key("f"));
+    }
+
+    #[test]
+    fn the_new_types_are_declared_and_checked() {
+        let uuid = "0191e5c8-7b3a-7c2e-9f10-0123456789ab";
+        let bytes = [0x01, 0x91, 0xe5, 0xc8, 0x7b, 0x3a, 0x7c, 0x2e];
+        let mut schema = schema(&[
+            ("big", AttributeType::Uint),
+            ("id", AttributeType::Uuid),
+            ("blob", AttributeType::Bytes),
+            ("ids", AttributeType::Array(ElementType::Uuid)),
+            ("when", AttributeType::Array(ElementType::Datetime)),
+            ("tags", AttributeType::Array(ElementType::String)),
+        ]);
+        assert_eq!(
+            resolve(&mut schema, "big", &json!(u64::MAX)),
+            Ok(AttributeValue::Uint(u64::MAX))
+        );
+        assert_eq!(
+            resolve(&mut schema, "id", &json!(uuid.to_uppercase())),
+            Ok(AttributeValue::Uuid(parse_uuid(uuid).unwrap()))
+        );
+        assert_eq!(
+            parse_uuid(uuid).unwrap()[..8],
+            bytes,
+            "the digits are the bytes in order"
+        );
+        assert_eq!(
+            resolve(&mut schema, "blob", &json!("AZHlyHs6fC4=")),
+            Ok(AttributeValue::Bytes(bytes.to_vec()))
+        );
+        assert_eq!(
+            resolve(&mut schema, "ids", &json!([uuid, uuid])),
+            Ok(AttributeValue::Array(vec![
+                AttributeValue::Uuid(
+                    parse_uuid(uuid).unwrap()
+                );
+                2
+            ]))
+        );
+        // A declared array takes an empty array, stored as one.
+        assert_eq!(
+            resolve(&mut schema, "tags", &json!([])),
+            Ok(AttributeValue::Array(vec![]))
+        );
+        for (name, value, error) in [
+            ("big", json!(-1), AttributeError::ValueInvalid),
+            ("big", json!(u64::MAX as f64), AttributeError::TypeMismatch),
+            ("big", json!("1"), AttributeError::TypeMismatch),
+            (
+                "id",
+                json!(uuid.replace('-', "")),
+                AttributeError::ValueInvalid,
+            ),
+            (
+                "id",
+                json!(format!("{{{uuid}}}")),
+                AttributeError::ValueInvalid,
+            ),
+            (
+                "id",
+                json!("0191e5c8-7b3a-7c2e-9f10-0123456789ag"),
+                AttributeError::ValueInvalid,
+            ),
+            ("blob", json!("not base64!"), AttributeError::ValueInvalid),
+            ("blob", json!(1), AttributeError::TypeMismatch),
+            ("ids", json!([uuid, "x"]), AttributeError::ValueInvalid),
+            ("ids", json!(uuid), AttributeError::TypeMismatch),
+            ("tags", json!(["a", 1]), AttributeError::TypeMismatch),
+            ("tags", json!(["a", null]), AttributeError::TypeMismatch),
+            ("tags", json!("a"), AttributeError::TypeMismatch),
+            ("when", json!(["yesterday"]), AttributeError::ValueInvalid),
+            ("id", json!(["x"]), AttributeError::TypeMismatch),
+        ] {
+            assert_eq!(
+                resolve(&mut schema, name, &value),
+                Err(error),
+                "{name} {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_array_element_and_a_bytes_value_are_bounded() {
+        let mut schema = schema(&[
+            ("tags", AttributeType::Array(ElementType::String)),
+            ("blob", AttributeType::Bytes),
+        ]);
+        let over = "x".repeat(MAX_VALUE_BYTES + 1);
+        for (name, value) in [("tags", json!(["a", over])), ("blob", json!(over))] {
+            assert_eq!(
+                resolve(&mut schema, name, &value),
+                Err(AttributeError::ValueTooLarge),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_have_no_index_and_no_array_type() {
+        assert_eq!(AttributeType::Bytes.index_kind(), None);
+        assert_eq!(AttributeType::Uuid.index_kind(), Some("btree"));
+        assert_eq!(AttributeType::Uint.index_kind(), Some("btree"));
+        assert_eq!(
+            AttributeType::Array(ElementType::Bool).index_kind(),
+            Some("label_list")
+        );
+        // The old forms keep their text, and an array is a table.
+        let parsed: AttributeSchema =
+            serde_json::from_value(json!({"a": "int", "b": {"array": "uuid"}, "c": "bytes"}))
+                .unwrap();
+        assert_eq!(parsed["a"], AttributeType::Int);
+        assert_eq!(parsed["b"], AttributeType::Array(ElementType::Uuid));
+        assert_eq!(parsed["c"], AttributeType::Bytes);
+        assert!(serde_json::from_value::<AttributeType>(json!({"array": "bytes"})).is_err());
     }
 
     #[test]

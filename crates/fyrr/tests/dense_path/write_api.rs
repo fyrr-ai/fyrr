@@ -654,6 +654,294 @@ async fn identity_write_api_orders_a_listing_by_attributes_on_storage() {
     }
 }
 
+/// Unsigned, UUID, bytes and array attributes are written over HTTP and stored
+/// in their own columns. A listing filters and orders by the ones that can be,
+/// and refuses `bytes` and the arrays where they cannot be.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_stores_filters_and_orders_the_other_attribute_types_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let texts = ["alpha", "bravo", "charlie", "delta", "echo"];
+    embed(&root, &texts);
+    let writer = Writer::start(&config, &root, address).await;
+    let uuid = |n: u64| json!(format!("00000000-0000-0000-0000-{n:012x}"));
+    // The two values of each array type as stored, and as a filter writes them.
+    let arrays = [
+        (
+            "tags",
+            json!("string"),
+            [json!("red"), json!("blue")],
+            [json!("red"), json!("blue")],
+        ),
+        (
+            "nums",
+            json!("int"),
+            [json!(-5), json!(7)],
+            [json!(-5), json!(7)],
+        ),
+        (
+            "ratios",
+            json!("float"),
+            [json!(0.5), json!(1.5)],
+            [json!(0.5), json!(1.5)],
+        ),
+        (
+            "flags",
+            json!("bool"),
+            [json!(true), json!(false)],
+            [json!(true), json!(false)],
+        ),
+        (
+            "stamps",
+            json!("datetime"),
+            [
+                json!("2026-01-02T03:04:05Z"),
+                json!("2026-02-03T04:05:06+01:00"),
+            ],
+            [
+                json!("2026-01-02T04:04:05+01:00"),
+                json!("2026-02-03T03:05:06Z"),
+            ],
+        ),
+        (
+            "counts",
+            json!("uint"),
+            [json!(1), json!(u64::MAX)],
+            [json!(1), json!(u64::MAX)],
+        ),
+        (
+            "owners",
+            json!("uuid"),
+            [uuid(7), uuid(8)],
+            [json!(uuid(7).as_str().unwrap().to_uppercase()), uuid(8)],
+        ),
+    ];
+    let mut attributes = json!({
+        "big": "uint", "owner": "uuid", "blob": "bytes",
+    });
+    for (name, element, _, _) in &arrays {
+        attributes[name] = json!({"array": element});
+    }
+    // Row a holds both values of each array, b the first, c none, d is missing
+    // and e holds the second.
+    let big = [
+        json!(1),
+        json!(u64::MAX),
+        json!(1_u64 << 63),
+        Value::Null,
+        json!(5),
+    ];
+    let owner = [uuid(3), uuid(1), uuid(2), Value::Null, uuid(5)];
+    let blob = [
+        json!("AAEC"),
+        json!("/w=="),
+        Value::Null,
+        Value::Null,
+        json!(""),
+    ];
+    let upserts: Vec<Value> = ["a", "b", "c", "d", "e"]
+        .iter()
+        .enumerate()
+        .map(|(n, id)| {
+            let mut row = json!({
+                "id": id, "text": texts[n], "readers": ["grp:allow"],
+                "big": big[n], "owner": owner[n], "blob": blob[n],
+            });
+            for (name, _, [x, y], _) in &arrays {
+                row[name] = match n {
+                    0 => json!([x, y]),
+                    1 => json!([x]),
+                    2 => json!([]),
+                    3 => Value::Null,
+                    _ => json!([y]),
+                };
+            }
+            row
+        })
+        .collect();
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"settings": {"attributes": attributes}, "upserts": upserts})
+            )
+            .await,
+        (200, json!({"upserted": 5, "deleted": 0}))
+    );
+
+    // The columns are of the types the schema names, `bytes` holds its bytes
+    // and has no index, and every other attribute has the index of its kind.
+    let loaded = fyrr_core::config::load(&config).unwrap();
+    let head = fyrr_reader::storage::optional_head(&loaded.config)
+        .await
+        .unwrap()
+        .unwrap();
+    let dataset = fyrr_reader::storage::pinned(&loaded.config, &head)
+        .await
+        .unwrap();
+    for (column, arrow) in [
+        ("big", "UInt64"),
+        ("owner", "FixedSizeBinary(16)"),
+        ("blob", "Binary"),
+    ] {
+        let field = dataset.schema().field(column).unwrap();
+        assert_eq!(field.data_type().to_string(), arrow, "{column}");
+    }
+    assert_eq!(
+        dataset
+            .count_rows(Some("blob = X'000102'".into()))
+            .await
+            .unwrap(),
+        1
+    );
+    let (_, manifest) = super::coordination::publication(&config).await;
+    let kinds: std::collections::BTreeMap<_, _> = manifest
+        .indexes
+        .iter()
+        .map(|index| (index.column.as_str(), index.kind.as_str()))
+        .collect();
+    assert!(!kinds.contains_key("blob"), "bytes is not indexed");
+    assert_eq!(kinds["big"], "btree");
+    assert_eq!(kinds["owner"], "btree");
+    for (name, ..) in &arrays {
+        assert_eq!(kinds[*name], "label_list", "{name}");
+    }
+
+    let mut client = Mcp::open(&config);
+    let mut listed = |arguments: Value| -> Vec<String> {
+        let mut arguments = arguments;
+        arguments["output"] = json!("metadata");
+        body(client.call("search", arguments))["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let sorted = |mut found: Vec<String>| {
+        found.sort();
+        found
+    };
+    let on = |field: &str, op: &str, value: Value| json!({"order": "updated_at", "filter": {"field": field, "op": op, "value": value}});
+    // Every array type answers the five tests, a missing array none of them.
+    for (name, _, _, [x, y]) in &arrays {
+        for (op, value, expected) in [
+            ("contains", json!(x), vec!["a", "b"]),
+            ("not_contains", json!(x), vec!["c", "e"]),
+            ("contains_any", json!([x, y]), vec!["a", "b", "e"]),
+            ("contains_all", json!([x, y]), vec!["a"]),
+            ("contains_none", json!([x]), vec!["c", "e"]),
+        ] {
+            assert_eq!(sorted(listed(on(name, op, value))), expected, "{name} {op}");
+        }
+    }
+    assert_eq!(sorted(listed(on("tags", "eq", Value::Null))), ["d"]);
+    assert_eq!(
+        sorted(listed(on("tags", "ne", Value::Null))),
+        ["a", "b", "c", "e"]
+    );
+    // The scalar types compare as their type does, the whole range of `uint` included.
+    for (field, op, value, expected) in [
+        ("big", "gt", json!(i64::MAX), vec!["b", "c"]),
+        ("big", "eq", json!(u64::MAX), vec!["b"]),
+        ("big", "in", json!([1, 5]), vec!["a", "e"]),
+        ("big", "lt", json!(5), vec!["a"]),
+        (
+            "owner",
+            "eq",
+            json!(uuid(3).as_str().unwrap().to_uppercase()),
+            vec!["a"],
+        ),
+        ("owner", "in", json!([uuid(1), uuid(5)]), vec!["b", "e"]),
+        ("owner", "gt", uuid(2), vec!["a", "e"]),
+    ] {
+        assert_eq!(
+            sorted(listed(on(field, op, value))),
+            expected,
+            "{field} {op}"
+        );
+    }
+
+    // Ordering by `uint` and UUID: nulls first ascending, last descending.
+    let key = |field: &str, direction: &str| json!({"field": field, "direction": direction});
+    for (field, direction, expected) in [
+        ("big", "asc", ["d", "a", "e", "c", "b"]),
+        ("big", "desc", ["b", "c", "e", "a", "d"]),
+        ("owner", "asc", ["d", "b", "c", "a", "e"]),
+        ("owner", "desc", ["e", "a", "c", "b", "d"]),
+    ] {
+        assert_eq!(
+            listed(json!({"order_by": [key(field, direction)]})),
+            expected,
+            "{field} {direction}"
+        );
+    }
+
+    // What cannot be ordered or compared is refused, never guessed at.
+    for arguments in [
+        json!({"order_by": [key("blob", "asc")]}),
+        json!({"order_by": [key("tags", "asc")]}),
+        json!({"order_by": [key("counts", "desc")]}),
+        on("blob", "eq", json!("AAEC")),
+        on("blob", "eq", Value::Null),
+        on("blob", "contains", json!("AAEC")),
+        on("tags", "eq", json!("red")),
+        on("tags", "in", json!(["red"])),
+        on("tags", "lt", json!("red")),
+        on("big", "contains", json!(1)),
+        on("big", "contains_any", json!([1])),
+        on("tags", "contains", Value::Null),
+        on("tags", "contains", json!(1)),
+        on("tags", "contains_any", json!("red")),
+        on("tags", "contains_any", json!([])),
+        on("nums", "contains_all", json!([1, "2"])),
+        on("owners", "contains", json!("not a uuid")),
+        on("counts", "contains", json!(-1)),
+    ] {
+        error(client.call("search", arguments.clone()), "invalid_argument");
+    }
+
+    // A value that does not fit its type, and a type that is not offered,
+    // refuse the whole request.
+    for (row, code) in [
+        (json!({"blob": "not base64!"}), "attribute_value_invalid"),
+        (
+            json!({"owner": "00000000000000000000000000000001"}),
+            "attribute_value_invalid",
+        ),
+        (json!({"big": -1}), "attribute_value_invalid"),
+        (json!({"big": 1.5}), "attribute_type_mismatch"),
+        (json!({"tags": ["red", 1]}), "attribute_type_mismatch"),
+        (json!({"tags": "red"}), "attribute_type_mismatch"),
+        (json!({"nums": [1, null]}), "attribute_type_mismatch"),
+    ] {
+        let mut row = row;
+        row["id"] = json!("x");
+        row["text"] = json!("alpha");
+        assert_eq!(
+            writer
+                .post(WRITE_KEY, "dense-fixture", &json!({"upserts": [row]}))
+                .await,
+            (400, json!({"error": code})),
+            "{code}"
+        );
+    }
+    let (status, _) = writer
+        .post(
+            WRITE_KEY,
+            "other-fixture",
+            &json!({
+                "settings": {"attributes": {"x": {"array": "bytes"}}},
+                "upserts": [{"id": "x", "text": "alpha"}],
+            }),
+        )
+        .await;
+    assert_eq!(status, 400, "an array of bytes is not a type");
+}
+
 /// A search takes its query vector from the request instead of the embedding
 /// provider, scans exactly when asked, fetches as many candidates as its limit
 /// asks for, and stays inside the filter and the caller's permissions.

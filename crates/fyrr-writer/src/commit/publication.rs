@@ -33,8 +33,9 @@ pub(crate) async fn publish(
             .attributes
             .iter()
             .find(|(name, _)| fyrr_core::attributes::index_name(name) == index.name)
+            .and_then(|(column, kind)| Some((column, kind.index_kind()?)))
         {
-            (column.as_str(), kind.index_kind())
+            (column.as_str(), kind)
         } else {
             continue;
         };

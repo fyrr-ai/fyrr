@@ -991,6 +991,22 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::an_undeclared_array_takes_its_type_from_its_first_element": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::the_new_types_are_declared_and_checked": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::an_array_element_and_a_bytes_value_are_bounded": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::bytes_have_no_index_and_no_array_type": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-core:lib:fyrr_core/attributes::tests::every_error_has_a_distinct_code": {
         "tier": "quick",
         "seconds": 0.0
@@ -1361,6 +1377,10 @@
       "full:fyrr-reader:test:lance_pin/configurable_max_token_length_default_40_and_override_128": {
         "tier": "quick",
         "seconds": 0.022
+      },
+      "full:fyrr-reader:test:lance_pin/every_offered_attribute_type_has_an_index_that_answers_its_filters": {
+        "tier": "quick",
+        "seconds": 0.1
       },
       "full:fyrr-reader:test:lance_pin/native_rabitq_centroid_codes_and_f32_routing_order": {
         "tier": "quick",
@@ -1944,6 +1964,10 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_orders_a_listing_by_attributes_on_storage": {
         "tier": "full",
         "seconds": 1
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_stores_filters_and_orders_the_other_attribute_types_on_storage": {
+        "tier": "full",
+        "seconds": 40
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_pages_a_listing_and_scans_by_the_document_key_on_storage": {
         "tier": "full",

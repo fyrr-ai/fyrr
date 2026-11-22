@@ -37,11 +37,18 @@ and the other `[reader]` and `[writer]` keys in
 [namespace.attributes]
 created = "datetime"
 priority = "int"
+groups = { array = "string" }
 ```
 
 A namespace can declare up to 128 typed attributes when it is created. The
-types are `string`, `int` (64-bit signed), `float` (64-bit), `bool` and
-`datetime` (UTC microseconds, like `updated_at`). The first content publication
+types are `string`, `int` (64-bit signed), `uint` (64-bit unsigned), `float`
+(64-bit), `bool`, `datetime` (UTC microseconds, like `updated_at`), `uuid`
+(8-4-4-4-12 hexadecimal digits in requests, either case; stored in 16 bytes)
+and `bytes` (base64 in requests, at most 4096 characters). An array is
+`{ array = "<type>" }` of any type but `bytes`: a JSON array of values of that
+type, none of them `null`. These types are declared, never inferred: an
+undeclared attribute takes the type of its first value, `string`, `int`,
+`float` or `bool`, or an array of one of them. The first content publication
 creates a nullable column for each declaration. The
 [`filter` argument](mcp-tools.md#filters) can compare those columns. The
 [document write API](http-api.md#write-documents) supplies their values.
@@ -50,8 +57,9 @@ returns no hits on those rows. Use the `attributes` argument to match the
 `key=value` string labels supplied by
 [connector documents](connectors/authoring.md#documents).
 
-A `string`, number or `datetime` attribute gets a B-tree index and a `bool` a
-bitmap index. A reader opens each index: about two storage requests per
+A `string`, number, `datetime` or `uuid` attribute gets a B-tree index, a
+`bool` a bitmap index and an array a label-list index. A `bytes` attribute has
+no index: it is stored, and cannot be filtered or sorted by. A reader opens each index: about two storage requests per
 attribute when it opens a namespace (1.8 measured with 64 attributes; the
 storage request budget test holds it).
 

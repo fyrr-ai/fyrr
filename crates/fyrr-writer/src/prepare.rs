@@ -8,9 +8,11 @@ use crate::embedding::WriterEmbedding;
 use arrow_array::builder::{ListBuilder, StringBuilder};
 use arrow_array::types::Float16Type;
 use arrow_array::{
-    ArrayRef, FixedSizeListArray, RecordBatch, RecordBatchIterator, StringArray,
+    ArrayRef, BinaryArray, BooleanArray, FixedSizeBinaryArray, FixedSizeListArray, Float64Array,
+    Int64Array, ListArray, RecordBatch, RecordBatchIterator, StringArray,
     TimestampMicrosecondArray, UInt64Array,
 };
+use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field, Schema};
 use fyrr_core::config::{Config, PermissionsMode, ProcessEnvironment};
 use fyrr_core::connector::{
@@ -642,36 +644,13 @@ pub(crate) async fn bind_files(
 /// Typed attribute columns, built row by row from the values of a request.
 pub(crate) struct AttributeColumns {
     schema: fyrr_core::attributes::AttributeSchema,
-    columns: Vec<AttributeColumn>,
-}
-enum AttributeColumn {
-    String(arrow_array::builder::StringBuilder),
-    Int(arrow_array::builder::Int64Builder),
-    Float(arrow_array::builder::Float64Builder),
-    Bool(arrow_array::builder::BooleanBuilder),
-    Time(arrow_array::builder::TimestampMicrosecondBuilder),
+    columns: Vec<Vec<fyrr_core::attributes::AttributeValue>>,
 }
 impl AttributeColumns {
     pub(crate) fn new(schema: &fyrr_core::attributes::AttributeSchema) -> Self {
-        use arrow_array::builder::{
-            BooleanBuilder, Float64Builder, Int64Builder, StringBuilder,
-            TimestampMicrosecondBuilder,
-        };
-        use fyrr_core::attributes::AttributeType;
         Self {
             schema: schema.clone(),
-            columns: schema
-                .values()
-                .map(|kind| match kind {
-                    AttributeType::String => AttributeColumn::String(StringBuilder::new()),
-                    AttributeType::Int => AttributeColumn::Int(Int64Builder::new()),
-                    AttributeType::Float => AttributeColumn::Float(Float64Builder::new()),
-                    AttributeType::Bool => AttributeColumn::Bool(BooleanBuilder::new()),
-                    AttributeType::Datetime => {
-                        AttributeColumn::Time(TimestampMicrosecondBuilder::new())
-                    }
-                })
-                .collect(),
+            columns: vec![Vec::new(); schema.len()],
         }
     }
 
@@ -682,42 +661,97 @@ impl AttributeColumns {
         &mut self,
         values: &serde_json::Map<String, serde_json::Value>,
     ) -> std::result::Result<(), fyrr_core::attributes::AttributeError> {
-        use fyrr_core::attributes::{AttributeValue, resolve};
         for (name, column) in self.schema.clone().keys().zip(&mut self.columns) {
-            let typed = resolve(
+            column.push(fyrr_core::attributes::resolve(
                 &mut self.schema,
                 name,
                 values.get(name).unwrap_or(&serde_json::Value::Null),
-            )?;
-            match (column, typed) {
-                (AttributeColumn::String(b), AttributeValue::String(v)) => b.append_value(v),
-                (AttributeColumn::Int(b), AttributeValue::Int(v)) => b.append_value(v),
-                (AttributeColumn::Float(b), AttributeValue::Float(v)) => b.append_value(v),
-                (AttributeColumn::Bool(b), AttributeValue::Bool(v)) => b.append_value(v),
-                (AttributeColumn::Time(b), AttributeValue::Datetime(v)) => b.append_value(v),
-                (AttributeColumn::String(b), _) => b.append_null(),
-                (AttributeColumn::Int(b), _) => b.append_null(),
-                (AttributeColumn::Float(b), _) => b.append_null(),
-                (AttributeColumn::Bool(b), _) => b.append_null(),
-                (AttributeColumn::Time(b), _) => b.append_null(),
-            }
+            )?);
         }
         Ok(())
     }
 
     pub(crate) fn finish(self) -> Vec<ArrayRef> {
-        self.columns
-            .into_iter()
-            .map(|column| -> ArrayRef {
-                match column {
-                    AttributeColumn::String(mut b) => Arc::new(b.finish()),
-                    AttributeColumn::Int(mut b) => Arc::new(b.finish()),
-                    AttributeColumn::Float(mut b) => Arc::new(b.finish()),
-                    AttributeColumn::Bool(mut b) => Arc::new(b.finish()),
-                    AttributeColumn::Time(mut b) => Arc::new(b.finish().with_timezone("UTC")),
-                }
-            })
+        self.schema
+            .values()
+            .zip(&self.columns)
+            .map(|(kind, values)| attribute_array(*kind, values))
             .collect()
+    }
+}
+
+/// The column of an attribute of type `kind`: each of `values` is of that type,
+/// or null.
+fn attribute_array(
+    kind: fyrr_core::attributes::AttributeType,
+    values: &[fyrr_core::attributes::AttributeValue],
+) -> ArrayRef {
+    use fyrr_core::attributes::{AttributeType as T, AttributeValue as V};
+    match kind {
+        T::String => Arc::new(StringArray::from_iter(values.iter().map(|v| match v {
+            V::String(text) => Some(text.as_str()),
+            _ => None,
+        }))),
+        T::Int => Arc::new(Int64Array::from_iter(values.iter().map(|v| match v {
+            V::Int(number) => Some(*number),
+            _ => None,
+        }))),
+        T::Uint => Arc::new(UInt64Array::from_iter(values.iter().map(|v| match v {
+            V::Uint(number) => Some(*number),
+            _ => None,
+        }))),
+        T::Float => Arc::new(Float64Array::from_iter(values.iter().map(|v| match v {
+            V::Float(number) => Some(*number),
+            _ => None,
+        }))),
+        T::Bool => Arc::new(BooleanArray::from_iter(values.iter().map(|v| match v {
+            V::Bool(flag) => Some(*flag),
+            _ => None,
+        }))),
+        T::Datetime => Arc::new(
+            TimestampMicrosecondArray::from_iter(values.iter().map(|v| match v {
+                V::Datetime(micros) => Some(*micros),
+                _ => None,
+            }))
+            .with_timezone("UTC"),
+        ),
+        T::Uuid => Arc::new(
+            FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                values.iter().map(|v| match v {
+                    V::Uuid(bytes) => Some(bytes.as_slice()),
+                    _ => None,
+                }),
+                16,
+            )
+            // Every value is 16 bytes long.
+            .expect("a UUID is 16 bytes"),
+        ),
+        T::Bytes => Arc::new(BinaryArray::from_iter(values.iter().map(|v| match v {
+            V::Bytes(bytes) => Some(bytes.as_slice()),
+            _ => None,
+        }))),
+        T::Array(element) => {
+            let items: Vec<V> = values
+                .iter()
+                .flat_map(|v| match v {
+                    V::Array(items) => items.as_slice(),
+                    _ => &[],
+                })
+                .cloned()
+                .collect();
+            let lengths = values.iter().map(|v| match v {
+                V::Array(items) => items.len(),
+                _ => 0,
+            });
+            Arc::new(ListArray::new(
+                Arc::new(Field::new("item", element.scalar().arrow_type(), false)),
+                OffsetBuffer::from_lengths(lengths),
+                attribute_array(element.scalar(), &items),
+                Some(NullBuffer::from_iter(
+                    values.iter().map(|v| matches!(v, V::Array(_))),
+                )),
+            ))
+        }
     }
 }
 
