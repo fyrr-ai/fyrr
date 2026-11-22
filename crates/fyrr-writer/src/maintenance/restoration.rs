@@ -664,6 +664,15 @@ pub(super) async fn restore_attempt(
         .await?;
     let start = std::time::Instant::now();
 
+    // The settings hold the attributes of now: a version from before one was
+    // added has no column for it, and gets one that reads null.
+    Box::pin(commit::add_attribute_columns(
+        config,
+        lease,
+        &mut attempt.dataset,
+        &mut attempt.work,
+    ))
+    .await?;
     let before = attempt.dataset.version().version;
     commit::native_step(
         lease,

@@ -154,7 +154,7 @@ fn openapi() -> Value {
         )},
         "/v1/namespaces/{namespace}/documents": {"post": operation(
             "writer",
-            "Upsert, patch and delete documents, all or none",
+            "Upsert, patch and delete documents, all or none; or change the schema",
             "an API key with the `write` role",
             "Error",
             Some(requests.subschema_for::<WriteRequest>()),

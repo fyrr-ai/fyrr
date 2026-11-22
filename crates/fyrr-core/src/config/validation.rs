@@ -249,6 +249,10 @@ pub(crate) fn namespace_settings(
     namespace_ranges(namespace, error);
     if let Err(code) = crate::attributes::check_schema(&namespace.attributes) {
         error("namespace.attributes", code.to_string());
+    } else if let Err(code) =
+        crate::attributes::check_indexes(&namespace.attributes, &namespace.attribute_indexes)
+    {
+        error("namespace.attribute_indexes", code.to_string());
     }
     if let Some(api) = &namespace.write_api {
         if let Err(code) = crate::attributes::check_name(&api.text_attribute) {

@@ -175,7 +175,7 @@ async fn verify(
         .map(|(column, name, kind)| (*column, (*name, *kind)))
         .collect();
     let start = tokio::time::Instant::now();
-    let expected = expected_indexes(&Default::default());
+    let expected = expected_indexes(&Default::default(), &Default::default());
     let result = verify_loaded_indices(indexes, &[0, 1], fts_compatible, &expected, |column, _| {
         let store = store.clone();
         let (name, kind) = by_column[column.as_str()];
