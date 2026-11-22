@@ -80,8 +80,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `string`, `int`, `float`, `bool` or `datetime`. Each is a nullable table
   column of its own with a B-tree (bitmap for `bool`) index, and the schema is
   recorded in the namespace's policy artifact and in every content manifest
-  (contracts 3.0 and 4.0, unreleased). The attribute values themselves arrive
-  with the document write API. See [tuning](docs/tuning.md#namespaceattributes).
+  (contracts 3.0 and 4.0, unreleased). The columns currently contain only nulls.
+  See [tuning](docs/tuning.md#namespaceattributes).
 
 ### Changed
 
