@@ -198,6 +198,45 @@ pub struct RerankConfig {
     pub text_chars: Option<usize>,
 }
 
+/// What of a reranker decides results: recorded in the namespace when it is
+/// created. The endpoint, credential, spend caps and deadline stay process
+/// configuration ([`RerankConfig`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RerankSettings {
+    pub model: String,
+    /// Authorized composed documents to rerank before the request limit.
+    #[schemars(range(min = 1, max = RESULT_SLOTS_MAX))]
+    pub candidates: usize,
+    /// Logistic population-z score blend; 1 uses raw reranker order, 0 fusion order.
+    #[schemars(range(min = 0, max = 1))]
+    pub weight: f64,
+    /// Per-candidate text bound in characters; absent sends the whole record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = RERANK_TEXT_CHARS_MIN, max = RERANK_TEXT_CHARS_MAX))]
+    pub text_chars: Option<usize>,
+}
+impl RerankConfig {
+    pub fn settings(&self) -> RerankSettings {
+        RerankSettings {
+            model: self.model.clone(),
+            candidates: self.candidates,
+            weight: self.weight,
+            text_chars: self.text_chars,
+        }
+    }
+    /// This configuration with the namespace's reranker settings.
+    fn with_settings(&self, settings: &RerankSettings) -> Self {
+        Self {
+            model: settings.model.clone(),
+            candidates: settings.candidates,
+            weight: settings.weight,
+            text_chars: settings.text_chars,
+            ..self.clone()
+        }
+    }
+}
+
 /// Retrieval policy bound into each publication's ranking identity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -335,7 +374,7 @@ impl NamespaceConfig {
             policy.push(serde_json::json!({"retrieval_v1": self.retrieval}));
         }
         if let Some(rerank) = &self.rerank {
-            policy.push(serde_json::json!({"rerank_v1": rerank}));
+            policy.push(serde_json::json!({"rerank_v2": rerank.settings()}));
         }
         crate::limits::digest(serde_json::Value::Array(policy).to_string().as_bytes())
     }
@@ -1284,9 +1323,12 @@ impl Config {
     /// This configuration with the settings the namespace was created with in
     /// place of the defaults the file supplies for a new namespace. What stays
     /// is process configuration: the embedding endpoint, credentials, spend and
-    /// timeouts, and everything outside `[namespace]` and the embedding profile.
+    /// timeouts, the reranker's endpoint, credential, spend and deadline, and
+    /// everything outside `[namespace]` and the embedding profile. `None` when
+    /// the namespace has a reranker and this configuration has no
+    /// `[namespace.rerank]` to reach one with.
     #[must_use]
-    pub fn with_settings(&self, settings: &crate::publication::NamespaceSettings) -> Self {
+    pub fn with_settings(&self, settings: &crate::publication::NamespaceSettings) -> Option<Self> {
         let mut config = self.clone();
         let embedding = &settings.embedding;
         config.embedding.model.clone_from(&embedding.model);
@@ -1313,8 +1355,12 @@ impl Config {
         namespace.dense_partition_rows = settings.dense_partition_rows;
         namespace.retrieval.clone_from(&settings.retrieval);
         namespace.composition.clone_from(&settings.composition);
-        namespace.rerank.clone_from(&settings.rerank);
-        config
+        namespace.rerank = match (&settings.rerank, &self.namespace.rerank) {
+            (Some(settings), Some(process)) => Some(process.with_settings(settings)),
+            (Some(_), None) => return None,
+            (None, _) => None,
+        };
+        Some(config)
     }
 
     /// The reader's mirror directory: `reader.mirror_path`, or

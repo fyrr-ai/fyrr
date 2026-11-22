@@ -64,6 +64,13 @@ slots total at most 75.
 | `max_call_cost_microusd` | required | At least 1: operator-attested cost bound of one request; reserved before each call. |
 | `text_chars` | absent | 200–32768: send the window with the most distinct query terms instead of the whole record. |
 
+A namespace records only what decides its results: `model`, `candidates`,
+`weight` and `text_chars`. `endpoint`, `api_key`, `deadline` and the two spend
+keys are process configuration: change them in any process's file. A process
+that serves or writes a namespace with a reranker needs `[namespace.rerank]`
+for them, and a reader without it refuses the namespace with
+`incompatible_index`.
+
 Reranker calls run at most four at once and occupy one reader concurrency
 slot until they finish or the deadline expires. There are no retries or
 redirects.

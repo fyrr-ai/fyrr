@@ -95,7 +95,10 @@ impl PreparedReader {
             return Err(EmbeddingProfileMismatch);
         }
         // The namespace's own settings, not this process's file, define how it is read.
-        let config = &config.with_settings(&policy.settings);
+        // A namespace with a reranker needs this file's `[namespace.rerank]`.
+        let config = &config
+            .with_settings(&policy.settings)
+            .ok_or(IncompatibleIndex)?;
         let query_embeddings = match query_embeddings {
             Some(shared) if shared.serves(&config.embedding) => shared,
             // A namespace recreated with another embedding profile.

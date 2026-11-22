@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Composition, RerankConfig, RetrievalConfig};
+use crate::config::{Composition, RerankSettings, RetrievalConfig};
 use crate::envelope::{ChunkProfileIdentity, EmbeddingIdentity, FileRef};
 use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
@@ -27,10 +27,6 @@ pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0)
 /// its life. The process configuration only supplies them when the namespace is
 /// created; every reader and writer afterwards takes them from the namespace's
 /// policy artifact, which each content manifest pins.
-///
-/// shortcut: the reranker is recorded whole, with its credential reference and
-/// spend caps; split those off when a deployment must change a cap without a
-/// new namespace.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NamespaceSettings {
     pub embedding: EmbeddingIdentity,
@@ -42,7 +38,7 @@ pub struct NamespaceSettings {
     pub retrieval: RetrievalConfig,
     pub composition: Composition,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rerank: Option<RerankConfig>,
+    pub rerank: Option<RerankSettings>,
 }
 
 /// Immutable policy generation used by the reader's admission path.

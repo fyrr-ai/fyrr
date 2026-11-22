@@ -122,8 +122,8 @@ Contracts carry `major.minor` versions; a new minor reads older data. These
 changes need a fresh namespace instead: a new contract major, and any change
 of the settings a namespace is created with: the embedding `model`,
 `dimensions`, prefixes, `roles` and `send_dimensions`, the analyzer
-(`namespace.fts_*`), the vector index, composition, retrieval and
-`[namespace.rerank]`. `writer namespace create` records them from the
+(`namespace.fts_*`), the vector index, composition, retrieval and the reranker's `model`,
+`candidates`, `weight` and `text_chars`. `writer namespace create` records them from the
 configuration file. A process whose file differs still serves the namespace
 with the settings it was created with, and creating the namespace again with
 other settings fails with `namespace_settings_fixed`.

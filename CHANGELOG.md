@@ -62,8 +62,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `writer namespace create` records the embedding profile (`model`,
   `dimensions`, prefixes, `roles`, `send_dimensions`), the analyzer
   (`namespace.fts_*`), the vector index (`dense_rq_bits`,
-  `dense_partition_rows`), `composition`, `retrieval` and `[namespace.rerank]`
-  from the configuration file in the namespace's policy artifact (policy
+  `dense_partition_rows`), `composition`, `retrieval` and the reranker's
+  `model`, `candidates`, `weight` and `text_chars` from the configuration file in the namespace's policy artifact (policy
   artifact contract 3.0; republish older namespaces). The file only supplies
   defaults for a new namespace: a reader or writer whose file differs serves
   the namespace with the settings it was created with, and creating a

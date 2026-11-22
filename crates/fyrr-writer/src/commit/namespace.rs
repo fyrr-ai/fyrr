@@ -48,7 +48,10 @@ pub(crate) fn namespace_settings(config: &Config) -> NamespaceSettings {
         dense_partition_rows: namespace.dense_partition_rows,
         retrieval: namespace.retrieval.clone(),
         composition: namespace.composition.clone(),
-        rerank: namespace.rerank.clone(),
+        rerank: namespace
+            .rerank
+            .as_ref()
+            .map(fyrr_core::config::RerankConfig::settings),
     }
 }
 

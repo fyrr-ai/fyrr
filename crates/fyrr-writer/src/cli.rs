@@ -361,8 +361,10 @@ fn with_config(
 
 fn take_namespace_settings(loaded: &mut LoadedConfig) -> Result<()> {
     let runtime = tokio::runtime::Runtime::new().map_err(|_| WriterError::RuntimeUnavailable)?;
-    loaded.config =
-        runtime.block_on(fyrr_reader::storage::with_namespace_settings(&loaded.config))?;
+    loaded.config = runtime
+        .block_on(fyrr_reader::storage::with_namespace_settings(&loaded.config))?
+        // The namespace has a reranker and the file has no `[namespace.rerank]`.
+        .ok_or(WriterError::ConfigurationInvalid)?;
     Ok(())
 }
 

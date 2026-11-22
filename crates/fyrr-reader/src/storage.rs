@@ -641,10 +641,10 @@ pub async fn artifact<T: fyrr_core::Contract>(
 
 /// `config` with the settings its namespace was created with in place of the
 /// defaults the file supplies, or the file itself while the namespace does not
-/// exist.
-pub async fn with_namespace_settings(config: &Config) -> Result<Config, StorageError> {
+/// exist. `None` when the namespace has a reranker the file cannot reach.
+pub async fn with_namespace_settings(config: &Config) -> Result<Option<Config>, StorageError> {
     let Some(head) = optional_head(config).await? else {
-        return Ok(config.clone());
+        return Ok(Some(config.clone()));
     };
     let (store, root) = namespace_store(config)?;
     let policy: fyrr_core::publication::PolicyArtifact =
