@@ -131,6 +131,36 @@ When the HTTP parser rejects a request for exceeding a header limit, it
 returns `431` with an empty body. If the API detects oversized headers
 after parsing, it returns `431` with `{"error":"invalid_argument"}`.
 
+## Export a namespace
+
+A scan by the document key lists every document the token may read once, in
+pages of at most 1000 ([how it works](mcp-tools.md#paging-and-scanning)). The
+script needs `curl` and `jq`, and writes one hit per line; read the text of a
+document with [`fetch`](mcp-tools.md#fetch).
+
+```sh
+url=https://fyrr.example.com/v1/namespaces/main/query
+last=null
+while :; do
+  body=$(jq -n --argjson last "$last" '
+    {order_by: [{field: "source_id", direction: "asc"}, {field: "root_id", direction: "asc"}],
+     output: "metadata", limit: 1000}
+    + ($last | if . == null then {} else {filter: {or: [
+        {field: "source_id", op: "gt", value: .source_id},
+        {and: [{field: "source_id", op: "eq", value: .source_id},
+               {field: "root_id", op: "gt", value: .root_id}]}]}} end)')
+  page=$(curl -sf "$url" -H "Authorization: Bearer $ACCESS_TOKEN" \
+    -H "Content-Type: application/json" -d "$body") || exit 1
+  [ "$(printf '%s\n' "$page" | jq '.hits | length')" -gt 0 ] || break
+  printf '%s\n' "$page" | jq -c '.hits[]' >> export.jsonl
+  last=$(printf '%s\n' "$page" | jq -c '.hits[-1] | {source_id, root_id}')
+done
+```
+
+With `reader.max_response_bytes` set, a page can hold fewer hits than `limit`;
+the script goes on from the last hit it got, so nothing is skipped. If not even
+one hit fits the budget, the answer is `503 busy`, and the script stops.
+
 ## Write documents
 
 > **In short**

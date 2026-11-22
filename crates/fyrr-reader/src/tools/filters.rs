@@ -233,7 +233,8 @@ impl PreparedReader {
             .map_err(|_| StorageUnavailable)?;
         let mut selected = Vec::new();
         let mut roots = BTreeSet::new();
-        let limit = args.limit.unwrap_or(50) as usize;
+        let limit = args.effective_limit() as usize;
+        let offset = args.offset.unwrap_or(0) as usize;
         'scan: while let Some(batch) = stream.try_next().await.map_err(|_| StorageUnavailable)? {
             for row in 0..batch.num_rows() {
                 if !self.selected_rows().selected(ids(&batch)?.value(row)) {
@@ -241,17 +242,20 @@ impl PreparedReader {
                 }
                 let source = strings(&batch, "source_id")?.value(row);
                 let root = strings(&batch, "root_id")?.value(row);
-                if roots.insert((source.to_owned(), root.to_owned())) {
-                    selected.push(Candidate {
-                        row_id: ids(&batch)?.value(row),
-                        source: source.into(),
-                        root: root.into(),
-                        record: strings(&batch, "record_id")?.value(row).into(),
-                        score: 0.0,
-                    });
-                    if selected.len() == limit {
-                        break 'scan;
-                    }
+                // The offset counts documents, not rows: a connector document
+                // has several records, so Lance's own offset would skip rows.
+                if !roots.insert((source.to_owned(), root.to_owned())) || roots.len() <= offset {
+                    continue;
+                }
+                selected.push(Candidate {
+                    row_id: ids(&batch)?.value(row),
+                    source: source.into(),
+                    root: root.into(),
+                    record: strings(&batch, "record_id")?.value(row).into(),
+                    score: 0.0,
+                });
+                if selected.len() == limit {
+                    break 'scan;
                 }
             }
         }

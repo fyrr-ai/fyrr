@@ -30,6 +30,10 @@ pub mod mcp {
     pub const MAX_QUERY_BYTES: usize = 4096;
     pub const DEFAULT_SEARCH_LIMIT: u32 = 50;
     pub const MAX_SEARCH_LIMIT: u32 = 75;
+    /// The most documents a listing reaches: `offset + limit`. The reader
+    /// reads every matching row before the first batch of an ordered scan, so a
+    /// page deeper than this is a scan by the document key instead.
+    pub const MAX_LISTING_WINDOW: u32 = 1_000;
     pub const MAX_QUERIES: usize = 16;
     pub const MULTI_QUERY_LIMIT: u32 = 20;
     pub const EXCERPT_CODEPOINTS: u32 = 1200;

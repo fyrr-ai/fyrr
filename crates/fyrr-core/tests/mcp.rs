@@ -6,7 +6,7 @@
 mod common;
 
 use fyrr_core::limits::mcp::{
-    MAX_FILTER_DEPTH, MAX_FILTER_NODES, MAX_FILTER_VALUES, MAX_ORDER_KEYS,
+    MAX_FILTER_DEPTH, MAX_FILTER_NODES, MAX_FILTER_VALUES, MAX_LISTING_WINDOW, MAX_ORDER_KEYS,
 };
 use fyrr_core::mcp::{
     Comparison, ErrorCode, FetchInput, FetchOutput, Filter, ListFiltersInput, ListFiltersOutput,
@@ -135,7 +135,8 @@ fn schemas_state_the_effective_limits() {
     assert_eq!(properties["query"]["maxLength"], json!(4096));
     assert_eq!(properties["query"]["x-maxUtf8Bytes"], json!(4096));
     assert_eq!(properties["limit"]["minimum"], json!(1));
-    assert_eq!(properties["limit"]["maximum"], json!(75));
+    assert_eq!(properties["limit"]["maximum"], json!(1000));
+    assert_eq!(properties["offset"]["maximum"], json!(1000));
     assert_eq!(properties["exclude"]["maxItems"], json!(100));
     assert_eq!(properties["deadline_ms"]["maximum"], json!(300_000));
     for filter in ["sources", "source_types", "projects", "authors"] {
@@ -255,11 +256,11 @@ fn examples_round_trip_and_match_tool_schemas() {
     );
 
     let mut over_limit = common::read_json("fixtures/mcp/examples/search-input.json");
-    over_limit["limit"] = json!(76);
+    over_limit["limit"] = json!(MAX_LISTING_WINDOW + 1);
     let validator = jsonschema::validator_for(&search["inputSchema"]).expect("compiles");
     assert!(
         !validator.is_valid(&over_limit),
-        "limit 76 must be outside the schema"
+        "a limit past the window must be outside the schema"
     );
 }
 
@@ -288,6 +289,13 @@ fn validation_enforces_bytes_relations_and_bounds() {
         json!({"order_by":[]}),
         json!({"order_by":[{"field":"","direction":"asc"}]}),
         json!({"order_by":vec![json!({"field":"p","direction":"asc"}); MAX_ORDER_KEYS + 1]}),
+        // A page of a listing ends within the window, and only a listing has one.
+        json!({"order":"updated_at","limit":MAX_LISTING_WINDOW + 1}),
+        json!({"order":"updated_at","limit":MAX_LISTING_WINDOW,"offset":1}),
+        json!({"order":"updated_at","offset":MAX_LISTING_WINDOW}),
+        json!({"order":"updated_at","offset":u32::MAX}),
+        json!({"query":"a","offset":0}),
+        json!({"queries":["a","b"],"offset":0}),
     ] {
         assert!(search(value).is_err());
     }
@@ -295,6 +303,13 @@ fn validation_enforces_bytes_relations_and_bounds() {
         search(json!({"order_by":vec![json!({"field":"p","direction":"asc"}); MAX_ORDER_KEYS]}))
             .is_ok()
     );
+    for value in [
+        json!({"order":"updated_at","limit":MAX_LISTING_WINDOW}),
+        json!({"order":"updated_at","limit":1,"offset":MAX_LISTING_WINDOW - 1}),
+        json!({"order":"updated_at","offset":MAX_LISTING_WINDOW - 50}),
+    ] {
+        assert!(search(value).is_ok());
+    }
     // A filter is read within its bounds or the request does not parse.
     let filter = |value: Value| {
         serde_json::from_value::<SearchInput>(json!({"query":"a","filter":value})).is_ok()

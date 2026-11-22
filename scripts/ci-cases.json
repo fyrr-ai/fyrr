@@ -1929,6 +1929,10 @@
         "tier": "full",
         "seconds": 1
       },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_pages_a_listing_and_scans_by_the_document_key_on_storage": {
+        "tier": "full",
+        "seconds": 20
+      },
       "full:fyrr:test:dense_path/write_api::identity_write_api_largest_body_stays_under_the_worker_memory_limit_on_storage": {
         "tier": "full",
         "seconds": 300

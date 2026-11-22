@@ -654,6 +654,129 @@ async fn identity_write_api_orders_a_listing_by_attributes_on_storage() {
     }
 }
 
+/// A listing takes an offset, and a scan by the document key visits every
+/// readable document of a publication once, on twice the largest page plus one
+/// documents with unreadable ones between them.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+#[allow(clippy::print_stderr)]
+async fn identity_write_api_pages_a_listing_and_scans_by_the_document_key_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    embed(&root, &["alpha"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let window = fyrr_core::limits::mcp::MAX_LISTING_WINDOW as usize;
+    let readable: Vec<String> = (0..2 * window + 1).map(|n| format!("d{n:05}")).collect();
+    let upserts: Vec<Value> = readable
+        .iter()
+        .map(|id| json!({"id": id, "text": "alpha", "readers": ["grp:allow"]}))
+        // Nobody may read these, whatever the order.
+        .chain((0..readable.len()).step_by(333).map(
+            |n| json!({"id": format!("d{n:05}x"), "text": "alpha", "readers": ["usr:nobody"]}),
+        ))
+        .collect();
+    assert_eq!(
+        writer
+            .post(WRITE_KEY, "dense-fixture", &json!({"upserts": upserts}))
+            .await
+            .0,
+        200
+    );
+    let mut client = Mcp::open(&config);
+    let key = |field: &str, direction: &str| json!({"field": field, "direction": direction});
+    let by_key = json!([key("source_id", "asc"), key("root_id", "asc")]);
+    let page = |client: &mut Mcp, arguments: Value| -> Vec<(String, String)> {
+        let mut arguments = arguments;
+        arguments["output"] = json!("metadata");
+        body(client.call("search", arguments))["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| {
+                (
+                    hit["source_id"].as_str().unwrap().to_owned(),
+                    hit["root_id"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+
+    // The offset counts documents.
+    let offset_page = page(
+        &mut client,
+        json!({"order_by": by_key, "offset": 5, "limit": 3}),
+    );
+    assert_eq!(
+        offset_page.iter().map(|hit| &hit.1).collect::<Vec<_>>(),
+        readable[5..8].iter().collect::<Vec<_>>()
+    );
+    // A page ends within the window.
+    for arguments in [
+        json!({"order_by": by_key, "offset": 1, "limit": window}),
+        json!({"order_by": by_key, "offset": window}),
+        json!({"query": "alpha", "offset": 1}),
+    ] {
+        error(client.call("search", arguments), "invalid_argument");
+    }
+
+    // The scan: the key after the last one seen, until a page is empty.
+    let mut seen = Vec::new();
+    let mut last: Option<(String, String)> = None;
+    loop {
+        let mut arguments = json!({"order_by": by_key, "limit": window});
+        if let Some((source, root)) = &last {
+            arguments["filter"] = json!({"or": [
+                {"field": "source_id", "op": "gt", "value": source},
+                {"and": [
+                    {"field": "source_id", "op": "eq", "value": source},
+                    {"field": "root_id", "op": "gt", "value": root},
+                ]},
+            ]});
+        }
+        let hits = page(&mut client, arguments);
+        let Some(end) = hits.last().cloned() else {
+            break;
+        };
+        seen.extend(hits.iter().map(|hit| hit.1.clone()));
+        last = Some(end);
+    }
+    assert_eq!(seen, readable);
+    // The measurement behind the window: the response size and the latency of
+    // a full page of metadata.
+    let start = Instant::now();
+    let full = client.call(
+        "search",
+        json!({"order_by": by_key, "limit": window, "output": "metadata"}),
+    );
+    eprintln!(
+        "page of {window} documents: {} bytes in {:?}",
+        full.to_string().len(),
+        start.elapsed()
+    );
+
+    // The response budget truncates a page from its end, and the scan goes on
+    // from the last document it kept.
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("[reader]\n", "[reader]\nmax_response_bytes=4096\n");
+    std::fs::write(&config, text).unwrap();
+    let mut bounded = Mcp::open(&config);
+    let result = body(bounded.call(
+        "search",
+        json!({"order_by": by_key, "limit": window, "output": "metadata"}),
+    ));
+    assert!(result["truncated"]["hits_dropped"].as_u64().unwrap() > 0);
+    let kept: Vec<_> = result["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(kept.len() < window);
+    assert_eq!(kept, readable[..kept.len()]);
+}
+
 /// The peak resident memory of a process, in bytes.
 fn peak_memory(pid: u32) -> u64 {
     std::fs::read_to_string(format!("/proc/{pid}/status"))
