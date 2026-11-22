@@ -77,7 +77,7 @@ impl MirrorStore {
         self.get_immutable(location, options, false).await
     }
     /// A read through the mirror. With `paged`, a head of a pinned `data/`
-    /// file is answered from the manifest and a ranged read of one is served
+    /// or `_indices/` file is answered from the manifest and a ranged read of one is served
     /// in pages, or downloads a small file whole when it fits; without it, a
     /// miss downloads the complete file.
     async fn get_immutable(

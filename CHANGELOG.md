@@ -237,6 +237,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   replacement. `metadata.stale_version` is now set in every reader whenever
   the answer comes from an older version than the head the reader last
   read.
+- The reader's mirror reads an index file (`_indices/`: a vector partition, a
+  full-text posting list, a scalar index page) of more than 2 MiB in verified
+  4 KiB pages as it does a data file, instead of downloading it whole on its
+  first read. A cold full-text or vector query fetches only the pages it
+  touches; an index file of up to 2 MiB is still downloaded whole.
 - The reader's mirror downloads a data file of up to 2 MiB whole on its
   first read instead of in pages. Opening a reader reads the footer, the
   column metadata and the first page of every data file, two or three

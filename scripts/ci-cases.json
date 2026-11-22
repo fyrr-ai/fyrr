@@ -923,6 +923,10 @@
         "tier": "quick",
         "seconds": 0.05
       },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::index_ranges_fetch_only_the_pages_they_lack": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_damaged_or_unrecorded_page_is_fetched_again": {
         "tier": "quick",
         "seconds": 0.05
