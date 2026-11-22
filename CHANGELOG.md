@@ -32,6 +32,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   (`patched`, `skipped`). A `vector` without the text, or a text without its
   vector, is refused. See
   [HTTP write API](docs/http-api.md#write-documents).
+- The write API takes `delete_where` and `patch_where`: a filter whose matching
+  documents are deleted, or patched with the attributes or readers of `set`.
+  The committer evaluates it once against the state the request is applied to;
+  more than 10,000 matches refuse the request and change nothing. Deletes by
+  filter apply before the rest of the request, patches by filter next. A filter
+  write ignores row permissions; the `write` role is the authorization. See
+  [HTTP write API](docs/http-api.md#write-documents).
 - A row of the write API may carry its own `vector`, and so may a section of a
   connector document (the optional `vector` column of the document-change
   contract, version 1.4). Such a row is stored with that vector and its text is

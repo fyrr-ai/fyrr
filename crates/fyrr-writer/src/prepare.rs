@@ -216,12 +216,16 @@ pub fn quarantine_reason(
 pub enum ContentChange {
     Write(Box<DocumentChange>),
     Present(EnvelopeDocument),
+    /// Deletes and patches of the documents that match a filter, which the
+    /// committer finds when it applies the envelope.
+    Where(Box<fyrr_core::envelope::FilterWrites>),
 }
 impl std::fmt::Debug for ContentChange {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::Write(_) => "ContentChange::Write",
             Self::Present(_) => "ContentChange::Present",
+            Self::Where(_) => "ContentChange::Where",
         })
     }
 }
@@ -230,6 +234,12 @@ impl std::fmt::Debug for ContentChange {
 fn weigh(config: &Config, change: &ContentChange) -> Result<(u64, u64)> {
     match change {
         ContentChange::Write(change) => weigh_change(config, change),
+        // The documents it matches are not known yet: only the committer's
+        // check of the records it really writes can refuse them.
+        ContentChange::Where(writes) => {
+            let encoded = serde_json::to_vec(writes).map_err(|_| WriterError::DocumentInvalid)?;
+            Ok((1, encoded.len() as u64))
+        }
         ContentChange::Present(document) => {
             let encoded = serde_json::to_vec(document).map_err(|_| WriterError::DocumentInvalid)?;
             // The records a patch writes are weighed once for all patches of

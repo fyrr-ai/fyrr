@@ -25,6 +25,12 @@ pub const MAX_REVISION_BYTES: usize = 256;
 /// Reader and member references (`usr:<id>` / `grp:<id>`).
 pub const MAX_READER_REF_BYTES: usize = 600;
 
+/// The most documents one write filter may match, `delete_where` and
+/// `patch_where` each. A filter that matches more fails its request and changes
+/// nothing. The committer rewrites a matched document as a record of the
+/// envelope, so the bound keeps one envelope far below `writer.commit`'s limits.
+pub const MAX_FILTER_WRITE_DOCUMENTS: usize = 10_000;
+
 /// Public request contract.
 pub mod mcp {
     pub const MAX_QUERY_BYTES: usize = 4096;

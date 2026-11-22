@@ -209,8 +209,9 @@ impl PreparedReader {
     /// attribute of the namespace and holds values of that field's type, or the
     /// request is `invalid_argument`. A comparison with a missing (null) value
     /// is never true, `ne` and `not_in` included, and `not` keeps it that way:
-    /// SQL three-valued logic, which Lance's scalar indexes follow.
-    pub(crate) fn filter_sql(filter: &Filter, attributes: &AttributeSchema) -> Result<String> {
+    /// SQL three-valued logic, which Lance's scalar indexes follow. The write
+    /// API compiles its filters with this function as well.
+    pub fn filter_sql(filter: &Filter, attributes: &AttributeSchema) -> Result<String> {
         let joined = |nodes: &[Filter], keyword: &str| -> Result<String> {
             let parts = nodes
                 .iter()

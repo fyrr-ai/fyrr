@@ -74,6 +74,36 @@ pub struct ContentPayload {
     pub fragments: Vec<PreparedFragment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quarantined: Vec<QuarantineEntry>,
+    /// Deletes and patches of every document that matches a filter, which the
+    /// committer evaluates once against the state the envelope is applied to;
+    /// written by the write API only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_writes: Option<FilterWrites>,
+}
+
+/// What an envelope does to the documents that match a filter. Deletes apply
+/// first, then patches, then the documents of the envelope itself, which win
+/// over a filter for the documents they name, except that a patch by id of a
+/// document the filter deletes finds it deleted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FilterWrites {
+    /// The revision and its order of the documents the filters match.
+    pub source_revision: String,
+    pub revision_order: i64,
+    /// The documents to delete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete: Option<crate::mcp::Filter>,
+    /// The documents to patch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<FilterPatch>,
+}
+
+/// A patch of every document that matches `filter`. It writes attributes or
+/// readers, never a text, which would need a vector of its own per document.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FilterPatch {
+    pub filter: crate::mcp::Filter,
+    pub values: Box<DocumentPatch>,
 }
 
 /// Replacement or delete intent for one document.
@@ -334,6 +364,23 @@ impl Contract for PreparedEnvelope {
                     check_digest("quarantined[].revision_digest", &entry.revision_digest)?;
                     if entry.reason != "document_invalid" && entry.reason != "document_oversized" {
                         return Err("quarantine reason invalid".into());
+                    }
+                }
+                if let Some(writes) = &content.filter_writes {
+                    check_text(
+                        "filter_writes.source_revision",
+                        &writes.source_revision,
+                        MAX_REVISION_BYTES,
+                    )?;
+                    if self.source_id != crate::connector::API_SOURCE_ID {
+                        return Err("only the write API writes by filter".into());
+                    }
+                    if writes
+                        .patch
+                        .as_ref()
+                        .is_some_and(|p| p.values.text.is_some() || p.values.vector.is_some())
+                    {
+                        return Err("a patch by filter writes no text".into());
                     }
                 }
                 for document in &content.documents {

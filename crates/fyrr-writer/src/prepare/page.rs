@@ -49,7 +49,7 @@ pub(super) async fn content_page(
         .iter()
         .filter_map(|change| match change {
             ContentChange::Write(change) => Some(change),
-            ContentChange::Present(_) => None,
+            ContentChange::Present(_) | ContentChange::Where(_) => None,
         })
         .filter(|change| {
             change.op == ChangeOp::Upsert && quarantine_reason(config, source, change).is_none()
@@ -133,6 +133,7 @@ pub(super) async fn content_page(
             documents: rows.documents,
             fragments,
             quarantined: rows.quarantined,
+            filter_writes: rows.filter_writes,
         }),
     };
     if let EnvelopePayload::Content(payload) = &envelope.payload {
@@ -171,6 +172,7 @@ struct Page<'a> {
 struct PageRows {
     documents: Vec<EnvelopeDocument>,
     quarantined: Vec<QuarantineEntry>,
+    filter_writes: Option<fyrr_core::envelope::FilterWrites>,
     columns: RowColumns,
 }
 #[derive(Default)]
@@ -213,6 +215,10 @@ impl PageRows {
             ContentChange::Write(change) => *change,
             ContentChange::Present(document) => {
                 self.documents.push(document);
+                return Ok(());
+            }
+            ContentChange::Where(writes) => {
+                self.filter_writes = Some(*writes);
                 return Ok(());
             }
         };
