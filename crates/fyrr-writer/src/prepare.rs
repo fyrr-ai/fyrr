@@ -232,12 +232,10 @@ fn weigh(config: &Config, change: &ContentChange) -> Result<(u64, u64)> {
         ContentChange::Write(change) => weigh_change(config, change),
         ContentChange::Present(document) => {
             let encoded = serde_json::to_vec(document).map_err(|_| WriterError::DocumentInvalid)?;
+            // The records a patch writes are weighed once for all patches of
+            // an envelope, in `check_atomic`.
             let row = if document.intent == DocumentIntent::Patch {
-                within(
-                    patch_bound(config),
-                    config.writer.commit.group_max_bytes.as_u64(),
-                    BASE_BYTES + encoded.len() as u64,
-                )
+                0
             } else {
                 record_estimate(config)
             };
@@ -317,6 +315,17 @@ pub fn check_atomic(config: &Config, changes: &[ContentChange]) -> Result<()> {
         rows = rows.saturating_add(work);
         bytes = bytes.saturating_add(estimate);
     }
+    let patches = changes
+        .iter()
+        .filter(|change| {
+            matches!(change, ContentChange::Present(d) if d.intent == DocumentIntent::Patch)
+        })
+        .count() as u64;
+    bytes = bytes.saturating_add(within(
+        patches.saturating_mul(patch_bound(config)),
+        config.writer.commit.group_max_bytes.as_u64(),
+        bytes,
+    ));
     if rows > config.writer.commit.group_max_rows
         || bytes > config.writer.commit.group_max_bytes.as_u64()
     {
@@ -829,6 +838,10 @@ mod tests {
         let taken = BASE_BYTES + 100;
         assert!(taken + within(bound, 256 * 1024, taken) <= 256 * 1024);
         assert_eq!(within(5, 256 * 1024, taken), 5, "a small bound is kept");
+        // The patches of an envelope share one clamp, so a delete beside them
+        // still fits: 100 bytes of patch and 3 KiB of delete.
+        let taken = taken + 3 * 1024;
+        assert!(taken + within(2 * bound, 256 * 1024, taken) <= 256 * 1024);
         // Each other type takes the most its column can hold of it.
         let weigh = |kind| {
             patch_bytes(&AttributeSchema::from([("a".into(), kind)]), record) - (16384 + record)
