@@ -24,10 +24,11 @@ use crate::version::{Contract, SchemaVersion};
 /// The publication contract version (manifest and head) written by this build.
 pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 1);
 /// The version of a manifest that records attribute index options, and of a
-/// policy artifact whose settings do. An older build would read the attributes
-/// and build or expect the default index of each, so it must refuse them: it
-/// reads only its own major, and this build reads both. A document without
-/// options keeps its version.
+/// policy artifact whose settings do or that sets `read_only`. An older build
+/// would read the attributes and build or expect the default index of each, or
+/// ignore the switch and write, so it must refuse them: it reads only its own
+/// major, and this build reads both. A document without options keeps its
+/// version.
 pub const INDEXED_PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
 /// The policy artifact's counterpart of [`INDEXED_PUBLICATION_CONTRACT_VERSION`].
 pub const INDEXED_POLICY_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
@@ -114,6 +115,13 @@ pub struct PolicyArtifact {
     /// entry is never removed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub retired_sources: BTreeMap<String, RetiredSource>,
+    /// The namespace is frozen: API writes and connector syncs are refused
+    /// while it stays readable. An envelope that was prepared before the
+    /// switch is still committed. A policy that sets it is written as version
+    /// 4.0, which a build that does not know the switch refuses instead of
+    /// writing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
 }
 
 /// At most this many sources of a namespace can ever be retired.
@@ -128,10 +136,10 @@ pub struct RetiredSource {
 }
 
 impl PolicyArtifact {
-    /// The version to write: the one an older build refuses when the settings
-    /// hold index options it would ignore.
+    /// The version to write: the one an older build refuses when the policy
+    /// holds index options or the read-only switch, which it would ignore.
     pub fn current_version(&self) -> SchemaVersion {
-        if self.settings.attribute_indexes.is_empty() {
+        if self.settings.attribute_indexes.is_empty() && !self.read_only {
             <Self as Contract>::VERSION
         } else {
             INDEXED_POLICY_CONTRACT_VERSION
@@ -145,10 +153,12 @@ impl Contract for PolicyArtifact {
     const ALSO_READS: &'static [u16] = &[INDEXED_POLICY_CONTRACT_VERSION.major];
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
-        if !self.settings.attribute_indexes.is_empty()
+        if (!self.settings.attribute_indexes.is_empty() || self.read_only)
             && self.schema_version.major != INDEXED_POLICY_CONTRACT_VERSION.major
         {
-            return Err("attribute index options need the indexed policy version".into());
+            return Err(
+                "attribute index options and read_only need the indexed policy version".into(),
+            );
         }
         if self.retired_sources.len() > MAX_RETIRED_SOURCES {
             return Err("retired_sources holds too many sources".into());

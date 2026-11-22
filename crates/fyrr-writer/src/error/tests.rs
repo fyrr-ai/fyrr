@@ -121,6 +121,7 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
         ("export_invalid", false),
         ("delete_confirmation_invalid", false),
         ("namespace_deleting", false),
+        ("namespace_read_only", false),
         ("file_inventory_unavailable", false),
         ("foreign_lineage", false),
         ("incompatible_index", false),

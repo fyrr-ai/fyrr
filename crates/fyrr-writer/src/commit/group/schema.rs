@@ -45,6 +45,10 @@ pub(crate) async fn change_schema(
         let mut head = lease.head().await?;
         let current: PolicyArtifact =
             fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+        // Judged under the lease, against the policy the head serves.
+        if current.read_only {
+            return Err(WriterError::NamespaceReadOnly);
+        }
         // Before the first publication every envelope that waits was prepared
         // with the settings the table is to be created from: they stay fixed.
         if head.content.is_none() {
