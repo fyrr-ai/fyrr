@@ -71,7 +71,6 @@ pub(crate) fn api_key(config: &Config, token: &str) -> Result<AuthenticatedSubje
 }
 #[derive(Clone)]
 pub(crate) struct Authenticator {
-    config: Config,
     oidc: OidcConfig,
     client: reqwest::Client,
     trust: Arc<Mutex<Trust>>,
@@ -124,7 +123,6 @@ impl Authenticator {
             .map_err(|_| ConfigurationInvalid)?;
         Ok(Self {
             refresh: Arc::new(Mutex::new(())),
-            config: config.clone(),
             oidc,
             client,
             trust: Arc::new(Mutex::new(Trust {
@@ -134,7 +132,13 @@ impl Authenticator {
             })),
         })
     }
-    pub(crate) async fn authenticate(&self, token: &str) -> Result<AuthenticatedSubject> {
+    /// The subject of an access token in the namespace `config` names: its
+    /// key is hashed there, as that namespace's identity binds it.
+    pub(crate) async fn authenticate(
+        &self,
+        config: &Config,
+        token: &str,
+    ) -> Result<AuthenticatedSubject> {
         if token.is_empty() || token.len() > 16 * 1024 {
             return Err(Unauthorized);
         }
@@ -227,7 +231,7 @@ impl Authenticator {
             return Err(Unauthorized);
         }
         let key = crate::storage::hash_principal(
-            &self.config,
+            config,
             "key",
             &format!(
                 "oidc:{}:{}{}",

@@ -88,6 +88,11 @@ fn compiled(pattern: &str) -> regex::Regex {
 }
 
 static NAMESPACE: LazyLock<regex::Regex> = LazyLock::new(|| compiled(NAMESPACE_PATTERN));
+
+/// Whether `text` is a namespace name.
+pub fn is_namespace_name(text: &str) -> bool {
+    NAMESPACE.is_match(text)
+}
 static STORAGE_URI: LazyLock<regex::Regex> = LazyLock::new(|| compiled(STORAGE_URI_PATTERN));
 static SOURCE_ID: LazyLock<regex::Regex> = LazyLock::new(|| compiled(SOURCE_ID_PATTERN));
 pub static PROVIDER: LazyLock<regex::Regex> = LazyLock::new(|| compiled(PROVIDER_PATTERN));

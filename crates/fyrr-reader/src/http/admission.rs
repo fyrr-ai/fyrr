@@ -80,10 +80,29 @@ impl Admission {
         *cached = Some((pointer.clone(), identity.clone()));
         Ok(identity)
     }
-    /// Admits `subject` to a route that needs `role`. An API key holds the roles
-    /// of its entry in the published keys, and is unknown without one, also
-    /// while the keys cannot be read; any other subject holds `read`. A key
-    /// that lacks the role, or may not act in this namespace, is `Forbidden`.
+    /// Whether `subject` may use a route that needs `role` in the namespace
+    /// `name`, from the published keys alone, before anything of the namespace
+    /// is read. An API key holds the roles of its entry in the published keys,
+    /// and is unknown without one, also while the keys cannot be read; any
+    /// other subject holds `read`. A key that lacks the role, or may not act in
+    /// the namespace, is `Forbidden`.
+    pub(super) async fn grant(
+        &self,
+        subject: &crate::auth::AuthenticatedSubject,
+        role: ApiKeyRole,
+        name: &str,
+    ) -> Result<(), ReaderError> {
+        let allowed = if let Some(hash) = &subject.api_key {
+            let keys = self.api_keys.read(&self.store, &self.keys_root).await?;
+            let grant = keys.grant(hash).ok_or(Unauthorized)?;
+            grant.roles.contains(&role) && prefix_allows(grant.namespace_prefix.as_deref(), name)
+        } else {
+            role == ApiKeyRole::Read
+        };
+        if allowed { Ok(()) } else { Err(Forbidden) }
+    }
+    /// Admits `subject` to a route that needs `role` in the namespace this
+    /// admission serves (see [`Self::grant`]).
     pub(super) async fn authorize(
         &self,
         config: &Config,
@@ -99,17 +118,7 @@ impl Admission {
     > {
         let head = self.head().await?;
         let now = fyrr_core::clock::now();
-        let allowed = if let Some(hash) = &subject.api_key {
-            let keys = self.api_keys.read(&self.store, &self.keys_root).await?;
-            let grant = keys.grant(hash).ok_or(Unauthorized)?;
-            grant.roles.contains(&role)
-                && prefix_allows(grant.namespace_prefix.as_deref(), &config.namespace.name)
-        } else {
-            role == ApiKeyRole::Read
-        };
-        if !allowed {
-            return Err(Forbidden);
-        }
+        self.grant(subject, role, &config.namespace.name).await?;
         let live = head.namespace == config.namespace.name && subject.expires > now.timestamp();
         // An API-key secret proves nothing until the identity binds it, so its
         // lookup comes before the namespace and expiry checks: an unbound

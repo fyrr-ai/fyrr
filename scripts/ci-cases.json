@@ -1776,6 +1776,10 @@
       "full:fyrr:test:dense_path/api_keys::deployment_keys_carry_roles_and_a_namespace_prefix": {
         "tier": "quick",
         "seconds": 15.0
+      },
+      "full:fyrr:test:dense_path/api_keys::a_reader_serves_the_namespace_its_path_names": {
+        "tier": "quick",
+        "seconds": 25.0
       }
     }
   },

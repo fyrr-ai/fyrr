@@ -19,13 +19,22 @@
 | `POST /v1/namespaces/{namespace}/query` | The arguments of [`search`](mcp-tools.md#search) | The `search` result |
 | `POST /v1/namespaces/{namespace}/fetch` | The arguments of [`fetch`](mcp-tools.md#fetch) | The `fetch` result |
 
-`{namespace}` is `namespace.name`. A reader serves one namespace, so any
-other value answers `404`. `list_filters` has no JSON route.
+`{namespace}` names the namespace to read: any namespace under
+`<storage root>/namespaces/`, not only `namespace.name`. The reader opens it
+on the first request, with the settings it is published with, and keeps it
+open for later ones. It keeps at most 8 namespaces open besides the
+configured one and closes the one used least recently when another needs the
+place; a request for a closed one opens it again. All of them share the
+reader's `reader.memory_max_bytes`. `/mcp`, `/readyz` and `/admin/refresh`
+keep serving the configured namespace alone. `list_filters` has no JSON route.
 
 Both routes, like `/mcp`, need the `read` role of an
 [API key](identity.md#identityapi_keys); users signed in through OIDC hold
-`read` only. A key without the role, or limited by `namespace_prefix` to other
-namespaces, answers `403 forbidden`.
+`read` only. Callers are admitted per namespace: an API key reads where its
+`namespace_prefix` allows and where the identity of that namespace binds it
+(declare the key in the configuration of every namespace where it reads), and
+an OIDC user where that identity binds the user. A key without the role, or
+limited by `namespace_prefix` to other namespaces, answers `403 forbidden`.
 
 ```sh
 curl https://fyrr.example.com/v1/namespaces/main/query \
@@ -42,10 +51,20 @@ clamped. A `200` body is the tool's `structuredContent`, with the same
 is cancelled like a cancelled MCP call.
 
 A request is checked in this order: `Host` and `Origin`, the
-[limits](#limits), the bearer token and the caller's rate, the namespace,
+[limits](#limits), the bearer token, the role and `namespace_prefix` of an
+API key, the shape of the namespace name, the namespace, the caller's rate,
 the arguments, then the scheduler and the permission checks that every
-tool call passes ([how](architecture.md#authorization)). `deadline_ms`
-counts from arrival, as for MCP.
+tool call passes ([how](architecture.md#authorization)). Nothing of the
+namespace is read before the key's role and prefix have admitted the
+caller, so a caller that may not read it is answered alike whether it exists
+or not. `deadline_ms` counts from arrival, as for MCP.
+
+A namespace that does not exist is answered as one that does not bind the
+caller: `401 unauthorized` to an API key and `503 authorization_unavailable`
+to an OIDC user. Finding that out costs one read of `head.json`; nothing is
+kept for the name. A name that is not a namespace name (lowercase letters,
+digits and `-`, at most 63 characters, not starting with `-`) answers `404
+invalid_argument`.
 
 ## Errors
 
@@ -54,7 +73,7 @@ statuses, and the boundary adds `forbidden`. The body is `{"error":"<code>"}` an
 
 | Code | Status | When |
 | --- | --- | --- |
-| `invalid_argument` | `400` | The body or its arguments are invalid. `404` when `{namespace}` is not the namespace the reader serves. |
+| `invalid_argument` | `400` | The body or its arguments are invalid. `404` when `{namespace}` is not a namespace name. |
 | `authorization_unavailable` | `503` | The caller's identity or policy cannot be decided. |
 | `storage_unavailable` | `503` | Storage could not be read. |
 | `incompatible_index` | `503` | The published index does not match this reader. |

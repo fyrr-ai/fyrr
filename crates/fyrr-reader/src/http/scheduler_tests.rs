@@ -17,18 +17,28 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
         api_key: None,
         expires: fyrr_core::clock::now().timestamp() + 600,
     };
-    let admission = Arc::new(admission::Admission::new(
-        reader.control_store.clone(),
-        reader.control_root.clone(),
-        reader.identity_cache.clone(),
-        reader.head_cache.clone(),
-        crate::storage::HeadCache::for_file(&config, crate::storage::API_KEYS_FILE),
-    ));
+    let api_keys = crate::storage::HeadCache::for_file(&config, crate::storage::API_KEYS_FILE);
+    let admission = Served::admission_of(&reader, api_keys.clone());
+    let (process, budget) = (
+        reader.process_config.clone(),
+        reader.preparation_budget.clone(),
+    );
     let service = crate::serve::start(reader).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     config.reader.http.as_mut().unwrap().public_url = format!("{url}/mcp");
     let state = HttpState {
+        namespaces: Arc::new(Namespaces {
+            process,
+            budget,
+            api_keys,
+            configured: Arc::new(Served {
+                config: config.clone(),
+                admission: admission.clone(),
+                service: service.clone(),
+            }),
+            open: std::sync::Mutex::default(),
+        }),
         admission,
         service: service.clone(),
         public: config

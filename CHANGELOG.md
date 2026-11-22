@@ -14,6 +14,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   the same authentication, scheduler, deadline and rate limits. Errors map to
   HTTP statuses, and 429 and 503 answers carry `Retry-After`. See
   [HTTP JSON API](docs/http-api.md).
+- The JSON routes serve the namespace the request path names, not only
+  `namespace.name`: the reader opens it on its first request, after the
+  caller's API key role and `namespace_prefix` have admitted it, and keeps up
+  to 8 such namespaces open. A namespace that does not exist costs one read of
+  its head and is answered as one that does not bind the caller (previously
+  `404`). `/mcp` still serves the configured namespace. See
+  [HTTP JSON API](docs/http-api.md).
 - The Jira connector indexes the custom fields listed in the new
   `scope.fields` (rich text, string or number values) as `field` sections
   labelled with the field ID, for example acceptance criteria. See

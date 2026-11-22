@@ -2,7 +2,11 @@ use super::*;
 
 impl PreparedReader {
     pub async fn open(config: &Config) -> Result<Self> {
-        let reader = Self::open_shared(config, None, PreparationReservation::pool(config)?).await?;
+        Self::open_in(config, PreparationReservation::pool(config)?).await
+    }
+    /// Opens a namespace inside the memory envelope of a reader that is already running.
+    pub(crate) async fn open_in(config: &Config, budget: MemoryPool) -> Result<Self> {
+        let reader = Self::open_shared(config, None, budget).await?;
         reader.report_cache_degradation(false);
         Ok(reader)
     }
