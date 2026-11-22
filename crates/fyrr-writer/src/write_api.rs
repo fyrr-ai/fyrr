@@ -356,6 +356,8 @@ fn api_source() -> SourceConfig {
 /// The checked rows of the request, against the schema, the text key and the
 /// vector dimension the namespace was created with. The rows are taken from
 /// `body`, not copied.
+// A vector is stored as float32: the numbers of a JSON body narrow to it.
+#[allow(clippy::cast_possible_truncation)]
 fn checked(
     body: &mut Payload,
     config: &Config,
