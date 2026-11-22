@@ -223,6 +223,10 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-reader:lib:fyrr_reader/retrieval::tests::reciprocal_rank_fusion_sums_weight_over_rank_constant_plus_rank": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-reader:lib:fyrr_reader/routing::tests::auto_threshold_is_only_a_strategy_decision": {
         "tier": "quick",
         "seconds": 0.0
@@ -2014,6 +2018,14 @@
         "seconds": 40
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_returns_the_attributes_vectors_and_scores_a_query_asks_for_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_reranks_as_a_query_asks_within_the_spend_limit_on_storage": {
         "tier": "full",
         "seconds": 40
       },

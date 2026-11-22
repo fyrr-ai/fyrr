@@ -35,6 +35,8 @@ pub mod mcp {
     /// page deeper than this is a scan by the document key instead.
     pub const MAX_LISTING_WINDOW: u32 = 1_000;
     pub const MAX_QUERIES: usize = 16;
+    /// The rank constant of a reciprocal rank fusion that names none.
+    pub const DEFAULT_RANK_CONSTANT: u32 = 60;
     pub const MULTI_QUERY_LIMIT: u32 = 20;
     pub const EXCERPT_CODEPOINTS: u32 = 1200;
     pub const MAX_EXCLUSIONS: usize = 100;

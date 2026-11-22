@@ -3014,3 +3014,293 @@ async fn identity_write_api_restores_a_version_from_before_an_attribute_was_adde
         ["b"]
     );
 }
+
+/// `POST /v1/namespaces/dense-fixture/query` as the read key.
+async fn ask(reader: &super::http_mcp::Reader, body: Value) -> (u16, Value) {
+    let response = reader
+        .client
+        .post(format!("{}/v1/namespaces/dense-fixture/query", reader.base))
+        .bearer_auth(secret(READ_KEY))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    (
+        response.status().as_u16(),
+        response.json::<Value>().await.unwrap(),
+    )
+}
+fn roots(answer: &(u16, Value)) -> Vec<String> {
+    assert_eq!(answer.0, 200, "{}", answer.1);
+    answer.1["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let texts = ["alpha", "bravo", "charlie", "delta"];
+    embed(&root, &texts);
+    let writer = Writer::start(&config, &root, address).await;
+    let upserts: Vec<Value> = texts
+        .iter()
+        .map(|text| json!({"id": &text[..1], "text": text, "readers": ["usr:x"]}))
+        .collect();
+    assert_eq!(
+        writer
+            .post(WRITE_KEY, "dense-fixture", &json!({"upserts": upserts}))
+            .await
+            .0,
+        200
+    );
+    let reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let search = |fusion: Value| {
+        let mut body = json!({"queries": ["alpha", "bravo"], "limit": 3, "output": "metadata"});
+        if !fusion.is_null() {
+            body["fusion"] = fusion;
+        }
+        body
+    };
+
+    // Without `fusion` each sub-query keeps its own hits, merged round-robin:
+    // `limit` counts the hits of each sub-query.
+    let merged = ask(&reader, search(Value::Null)).await;
+    assert_eq!(roots(&merged).len(), 4);
+    assert_eq!(merged.1["hits"][0]["query_index"], 0);
+    assert_eq!(merged.1["hits"][1]["query_index"], 1);
+
+    // With it, one ranking of at most `limit` documents. The first hit is the
+    // one the heavier sub-query ranks first, and it scores its weight over the
+    // rank constant plus one, plus what the other sub-query gives it.
+    for (weights, first, query_index) in [([3.0, 1.0], "a", 0), ([1.0, 3.0], "b", 1)] {
+        let fused = ask(
+            &reader,
+            search(json!({"method": "rrf", "weights": weights})),
+        )
+        .await;
+        assert_eq!(roots(&fused).len(), 3, "{}", fused.1);
+        let hit = &fused.1["hits"][0];
+        assert_eq!(hit["root_id"], first);
+        assert_eq!(hit["query_index"], query_index);
+        let score = hit["score"].as_f64().unwrap();
+        assert!(score > 3.0 / 61.0 && score < 3.0 / 61.0 + 1.0 / 61.0, "{score}");
+        let scores: Vec<f64> = fused.1["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["score"].as_f64().unwrap())
+            .collect();
+        assert!(scores.windows(2).all(|pair| pair[0] >= pair[1]), "{scores:?}");
+    }
+    // A large rank constant flattens the parts of the ranks: the weights decide.
+    let flat = ask(
+        &reader,
+        search(json!({"method": "rrf", "rank_constant": 1000000, "weights": [1.0, 2.0]})),
+    )
+    .await;
+    assert_eq!(roots(&flat)[0], "b");
+
+    // Fusion is for `queries`, one weight each, no negative ones, a positive
+    // rank constant and the one method.
+    for (body, fusion) in [
+        (
+            json!({"query": "alpha", "output": "metadata"}),
+            json!({"method": "rrf"}),
+        ),
+        (search(Value::Null), json!({"method": "rrf", "weights": [1.0]})),
+        (
+            search(Value::Null),
+            json!({"method": "rrf", "weights": [1.0, -1.0]}),
+        ),
+        (
+            search(Value::Null),
+            json!({"method": "rrf", "rank_constant": 0}),
+        ),
+        (search(Value::Null), json!({"method": "borda"})),
+        (search(Value::Null), json!({"weights": [1.0, 1.0]})),
+        (search(Value::Null), json!({"method": "rrf", "k": 60})),
+    ] {
+        let mut body = body;
+        body["fusion"] = fusion.clone();
+        assert_eq!(
+            ask(&reader, body).await,
+            (400, json!({"error": "invalid_argument"})),
+            "{fusion}"
+        );
+    }
+    // The namespace has no reranker: a request cannot switch one on, or name
+    // what it scores, but it may switch it off.
+    for rerank in [
+        json!({}),
+        json!({"query": "alpha"}),
+        json!({"enabled": true}),
+    ] {
+        let mut body = search(Value::Null);
+        body["rerank"] = rerank.clone();
+        assert_eq!(
+            ask(&reader, body).await,
+            (400, json!({"error": "invalid_argument"})),
+            "{rerank}"
+        );
+    }
+    let mut off = search(Value::Null);
+    off["rerank"] = json!({"enabled": false});
+    assert_eq!(roots(&ask(&reader, off).await).len(), 4);
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_reranks_as_a_query_asks_within_the_spend_limit_on_storage() {
+    let provider = super::rerank::Provider::open().await;
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    // Room for five provider calls of at most 10 millionths of a dollar.
+    configure(
+        &config,
+        &address,
+        &format!(
+            "[namespace.rerank]\nendpoint='{}'\nmodel='fixture-rerank'\napi_key={{env='FYRR_TEST_SECRET'}}\n\
+             candidates=10\nweight=1\ndeadline='5s'\nspend_limit_microusd=55\nmax_call_cost_microusd=10\n",
+            provider.endpoint
+        ),
+    );
+    let texts = ["alpha", "bravo", "charlie", "delta"];
+    embed(&root, &texts);
+    let writer = Writer::start(&config, &root, address).await;
+    let tags = [Some("red"), Some("blue"), None, Some("green")];
+    let upserts: Vec<Value> = texts
+        .iter()
+        .zip(tags)
+        .map(|(text, tag)| {
+            let mut row = json!({"id": &text[..1], "text": text, "readers": ["usr:x"]});
+            if let Some(tag) = tag {
+                row["tag"] = json!(tag);
+            }
+            row
+        })
+        .collect();
+    let settings = json!({"attributes": {"tag": "string", "price": "float"}});
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"settings": settings, "upserts": upserts})
+            )
+            .await
+            .0,
+        200
+    );
+    let reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let search = |rerank: Value| {
+        let mut body = json!({"query": "alpha", "limit": 4, "output": "metadata"});
+        if !rerank.is_null() {
+            body["rerank"] = rerank;
+        }
+        body
+    };
+    let last_request = || provider.state.requests.lock().unwrap().last().unwrap().clone();
+    let documents = |request: &Value| {
+        let mut documents: Vec<String> = request["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|text| text.as_str().unwrap().to_owned())
+            .collect();
+        documents.sort();
+        documents
+    };
+
+    // Switched off, the request makes no call and keeps the fusion order.
+    let off = ask(&reader, search(json!({"enabled": false}))).await;
+    let fused = roots(&off);
+    assert_eq!(fused.len(), 4);
+    assert_eq!(provider.calls(), 0);
+    let reversed: Vec<String> = fused.iter().rev().cloned().collect();
+
+    // Without the member the namespace's policy applies: the fixture provider
+    // puts the last candidate first, and scores the text of the record.
+    let policy = ask(&reader, search(Value::Null)).await;
+    assert_eq!(roots(&policy), reversed);
+    assert_eq!(provider.calls(), 1);
+    let request = last_request();
+    assert_eq!(request["query"], "alpha");
+    assert_eq!(documents(&request), texts);
+
+    // The request names the text the candidates are scored against.
+    let named = ask(&reader, search(json!({"query": "something else"}))).await;
+    assert_eq!(roots(&named), reversed);
+    assert_eq!(provider.calls(), 2);
+    assert_eq!(last_request()["query"], "something else");
+
+    // And the attribute: a string one, with "" for a row that sets none, or
+    // the namespace's text attribute.
+    assert_eq!(
+        roots(&ask(&reader, search(json!({"attribute": "tag"}))).await),
+        reversed
+    );
+    assert_eq!(provider.calls(), 3);
+    assert_eq!(documents(&last_request()), ["", "blue", "green", "red"]);
+    assert_eq!(
+        roots(&ask(&reader, search(json!({"attribute": "text"}))).await),
+        reversed
+    );
+    assert_eq!(provider.calls(), 4);
+    assert_eq!(documents(&last_request()), texts);
+
+    // Anything else is refused, before any call.
+    for rerank in [
+        json!({"attribute": "price"}),
+        json!({"attribute": "nope"}),
+        json!({"query": ""}),
+        json!({"enabled": "yes"}),
+        json!({"other": 1}),
+    ] {
+        assert_eq!(
+            ask(&reader, search(rerank.clone())).await,
+            (400, json!({"error": "invalid_argument"})),
+            "{rerank}"
+        );
+    }
+    assert_eq!(provider.calls(), 4);
+
+    // A search by vector alone has no text to score against, unless the
+    // request supplies it.
+    let by_vector = |rerank: Value| {
+        let mut body = json!({"vector": vector(0, 1024), "limit": 4, "output": "metadata"});
+        if !rerank.is_null() {
+            body["rerank"] = rerank;
+        }
+        body
+    };
+    assert_eq!(
+        roots(&ask(&reader, by_vector(Value::Null)).await).len(),
+        4
+    );
+    assert_eq!(provider.calls(), 4);
+    assert_eq!(
+        roots(&ask(&reader, by_vector(json!({"query": "alpha"}))).await).len(),
+        4
+    );
+    assert_eq!(provider.calls(), 5);
+
+    // The spend limit is the namespace's, whoever asks: the next call is not
+    // made and the answer says so.
+    let spent = ask(&reader, search(json!({"query": "again"}))).await;
+    assert_eq!(roots(&spent), fused);
+    assert_eq!(spent.1["metadata"]["degraded"], json!(["rerank"]));
+    assert_eq!(provider.calls(), 5);
+}

@@ -7,7 +7,7 @@ use crate::embedding::{self, digest};
 use crate::error::*;
 use crate::generation::{GenerationState, MemoryPool, NativeSession, PreparationReservation};
 use crate::mirror::{MirrorLease, MirrorRequest, MirrorStore};
-use crate::retrieval::{Candidate, compose};
+use crate::retrieval::{Candidate, compose, reciprocal_rank_fusion};
 use crate::routing::{CentroidRouter, RoutingFallback, strategy, take_probes};
 use crate::storage::*;
 use arrow_array::{Array, Float32Array, RecordBatch, StringArray, UInt32Array, UInt64Array};
@@ -107,6 +107,32 @@ fn select_hits<'q>(
     k: usize,
     max_documents: usize,
 ) -> Vec<SelectedHit<'q>> {
+    let hit = |query_index: usize, rank: usize, candidate: Candidate| SelectedHit {
+        candidate,
+        query: queries[query_index],
+        query_index: args.queries.as_ref().map(|_| {
+            let Ok(index) = u32::try_from(query_index) else {
+                unreachable!("validated query batch index");
+            };
+            index
+        }),
+        output: if rank < args.text_hits.map_or(k, |count| count as usize) {
+            output
+        } else {
+            OutputMode::Metadata
+        },
+        excerpt_chars: args
+            .excerpt_chars
+            .unwrap_or(fyrr_core::limits::mcp::EXCERPT_CODEPOINTS),
+    };
+    if let Some(fusion) = &args.fusion {
+        return reciprocal_rank_fusion(ranked, fusion)
+            .into_iter()
+            .take(k)
+            .enumerate()
+            .map(|(rank, (query_index, candidate))| hit(query_index, rank, candidate))
+            .collect();
+    }
     let selected = ranked
         .into_iter()
         .enumerate()
@@ -114,24 +140,7 @@ fn select_hits<'q>(
             rows.truncate(k);
             rows.into_iter()
                 .enumerate()
-                .map(|(rank, candidate)| SelectedHit {
-                    candidate,
-                    query: queries[query_index],
-                    query_index: args.queries.as_ref().map(|_| {
-                        let Ok(index) = u32::try_from(query_index) else {
-                            unreachable!("validated query batch index");
-                        };
-                        index
-                    }),
-                    output: if rank < args.text_hits.map_or(k, |count| count as usize) {
-                        output
-                    } else {
-                        OutputMode::Metadata
-                    },
-                    excerpt_chars: args
-                        .excerpt_chars
-                        .unwrap_or(fyrr_core::limits::mcp::EXCERPT_CODEPOINTS),
-                })
+                .map(|(rank, candidate)| hit(query_index, rank, candidate))
                 .collect::<Vec<_>>()
         })
         .collect();

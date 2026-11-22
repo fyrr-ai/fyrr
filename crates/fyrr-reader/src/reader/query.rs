@@ -53,6 +53,7 @@ impl PreparedReader {
         let (total, before, telemetry, _pin) = self.request_prologue().await?;
         // An unknown included attribute is refused even when nothing matches.
         self.returned_columns(args.fields.as_ref())?;
+        crate::rerank::scored_column(self, args.rerank.as_ref())?;
         let deadline = deadline.unwrap_or_else(|| {
             total
                 + std::time::Duration::from_millis(u64::from(
@@ -463,20 +464,18 @@ impl PreparedReader {
                     predicate.to_owned(),
                 ));
             }
+            let depth = crate::rerank::configured(self, args.rerank.as_ref())
+                .map_or(k, |rerank| k.max(rerank.candidates));
             let selected = if args.has_text() {
                 compose(
                     dense,
                     lexical,
                     &self.config.namespace.composition,
-                    self.config
-                        .namespace
-                        .rerank
-                        .as_ref()
-                        .map_or(k, |rerank| k.max(rerank.candidates)),
+                    depth,
                     &self.config.namespace.retrieval,
                 )?
             } else {
-                crate::retrieval::dense_only(dense, k)?
+                crate::retrieval::dense_only(dense, depth)?
             };
             #[cfg(test)]
             self.trace_stages(|stages| {
@@ -529,7 +528,9 @@ impl PreparedReader {
             // No native hydration or rerank preparation may run on a parked slot.
             // Optional reranking fails open to the prepared composition in this
             // contended deadline path; normal reranking retains its existing path.
-            if self.config.namespace.rerank.is_some() && !result.hits.is_empty() {
+            if crate::rerank::configured(self, args.rerank.as_ref()).is_some()
+                && !result.hits.is_empty()
+            {
                 degraded.push(Lane::Rerank);
             }
             result.metadata.degraded = degraded;
@@ -537,9 +538,21 @@ impl PreparedReader {
             return Ok(result);
         }
         drop(fallback);
-        // Nothing to rerank against without text.
-        if args.has_text()
-            && crate::rerank::rerank(self, queries, &mut ranked_queries, &mut telemetry).await?
+        // Nothing to rerank against without text; a request may supply it.
+        let scored_text = args.rerank.as_ref().and_then(|r| r.query.as_deref());
+        let texts: Vec<&str> = queries
+            .iter()
+            .map(|query| scored_text.unwrap_or(query))
+            .collect();
+        if (args.has_text() || scored_text.is_some())
+            && crate::rerank::rerank(
+                self,
+                &texts,
+                &mut ranked_queries,
+                args.rerank.as_ref(),
+                &mut telemetry,
+            )
+            .await?
         {
             degraded.push(Lane::Rerank);
         }
