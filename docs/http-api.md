@@ -320,9 +320,13 @@ patches of those that do not, as the committer applied the request in the order
 of publication. A patch is weighed against `writer.commit.group_max_bytes` by the largest record it can write, capped at what is left of that limit, so no request is refused for the estimate alone; the committer refuses (`409 rejected`) a request whose rewritten records really exceed it. The counts are best effort: a patch of a document that a later
 request of the same publication replaces or deletes counts as skipped.
 
-`delete_where` and `patch_where` match the documents of this namespace that the
-API wrote, whatever their `readers`: the `write` role is the authorization, not
-the row permissions. The committer evaluates each filter once, against the
+`delete_where` and `patch_where` need an [API key](identity.md#identityapi_keys)
+with the `admin` role besides `write`: how many documents a filter matches, and
+whether it matches more than the bound below, tells something about documents
+that the key may not be allowed to read. A request with either from a key
+without `admin` is `403 forbidden`. They match the documents of this namespace
+that the API wrote, whatever their `readers`: the roles are the authorization,
+not the row permissions. The committer evaluates each filter once, against the
 documents the request is applied to, that is, after every request published
 before it, so the last request wins as it does for ids. A filter that matches
 more than 10,000 documents (`MAX_FILTER_WRITE_DOCUMENTS`) refuses the request
@@ -356,7 +360,7 @@ request was accepted does not cancel it.
 | Code | Status | When |
 | --- | --- | --- |
 | `unauthorized` | `401` | No API key, or a key that is not among the published keys. |
-| `forbidden` | `403` | The key lacks the `write` role or its `namespace_prefix` excludes the namespace. |
+| `forbidden` | `403` | The key lacks the `write` role or its `namespace_prefix` excludes the namespace, or the request has `delete_where` or `patch_where` and the key lacks the `admin` role. |
 | `not_found` | `404` | `{namespace}` is not a namespace name, or the process has no `[namespace.write_api]`. |
 | `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
 | `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |

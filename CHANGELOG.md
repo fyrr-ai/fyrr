@@ -37,7 +37,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   The committer evaluates it once against the state the request is applied to;
   more than 10,000 matches refuse the request and change nothing. Deletes by
   filter apply before the rest of the request, patches by filter next. A filter
-  write ignores row permissions; the `write` role is the authorization. See
+  write ignores row permissions and needs an API key with the `admin` role
+  besides `write`. See
   [HTTP write API](docs/http-api.md#write-documents).
 - A row of the write API may carry its own `vector`, and so may a section of a
   connector document (the optional `vector` column of the document-change

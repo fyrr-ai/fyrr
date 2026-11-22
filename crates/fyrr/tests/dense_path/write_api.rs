@@ -13,6 +13,8 @@ fn secret(n: usize) -> String {
 }
 pub(super) const WRITE_KEY: usize = 41;
 const READ_KEY: usize = 42;
+/// May write, and write by filter.
+const ADMIN_KEY: usize = 44;
 /// May write the namespaces whose names start with `shop-`.
 const SCOPED_KEY: usize = 43;
 
@@ -27,6 +29,7 @@ pub(super) fn configure(config: &Path, address: &std::net::SocketAddr, extra: &s
             "{base}\n[namespace.write_api]\n{extra}\n\
              [[identity.api_keys]]\nname='writer'\nkey={{env='FYRR_TEST_WRITE_KEY'}}\nroles=['write']\n\
              [[identity.api_keys]]\nname='reader'\nkey={{env='FYRR_TEST_READ_KEY'}}\nreaders=['usr:x']\n\
+             [[identity.api_keys]]\nname='admin-writer'\nkey={{env='FYRR_TEST_ADMIN_KEY'}}\nroles=['write','admin']\n\
              [[identity.api_keys]]\nname='scoped'\nkey={{env='FYRR_TEST_SCOPED_KEY'}}\nroles=['write']\nnamespace_prefix='shop-'\n\
              [writer]\nthreads=2\n\
              [writer.commit]\ncoalescing_timer='10m'\n\
@@ -65,6 +68,7 @@ impl Writer {
             .env("FYRR_TEST_WRITE_KEY", secret(WRITE_KEY))
             .env("FYRR_TEST_READ_KEY", secret(READ_KEY))
             .env("FYRR_TEST_SCOPED_KEY", secret(SCOPED_KEY))
+            .env("FYRR_TEST_ADMIN_KEY", secret(ADMIN_KEY))
             .output()
             .unwrap();
         assert!(keys.status.success(), "{}", report(&keys));
@@ -73,6 +77,7 @@ impl Writer {
             .env("FYRR_TEST_WRITE_KEY", secret(WRITE_KEY))
             .env("FYRR_TEST_READ_KEY", secret(READ_KEY))
             .env("FYRR_TEST_SCOPED_KEY", secret(SCOPED_KEY))
+            .env("FYRR_TEST_ADMIN_KEY", secret(ADMIN_KEY))
             .env("FYRR_TEST_OPERATOR", OPERATOR)
             .stdout(std::fs::File::create(root.join("service.stdout")).unwrap())
             .stderr(std::fs::File::create(root.join("service.stderr")).unwrap())
@@ -541,7 +546,7 @@ async fn identity_write_api_deletes_and_patches_the_documents_that_match_a_filte
         ],
     );
     let writer = Writer::start(&config, &root, address).await;
-    let post = async |body: Value| writer.post(WRITE_KEY, "dense-fixture", &body).await;
+    let post = async |body: Value| writer.post(ADMIN_KEY, "dense-fixture", &body).await;
     let team = |name: &str| json!({"field": "team", "op": "eq", "value": name});
     assert_eq!(
         post(json!({
@@ -669,6 +674,24 @@ async fn identity_write_api_deletes_and_patches_the_documents_that_match_a_filte
         1
     );
 
+    // A key without the `admin` role learns nothing from a filter: it is refused
+    // whatever the filter matches, and nothing changes.
+    for body in [
+        json!({"delete_where": team("t2")}),
+        json!({"patch_where": {"filter": team("t2"), "set": {"price": 1.0}}}),
+    ] {
+        assert_eq!(
+            writer.post(WRITE_KEY, "dense-fixture", &body).await,
+            (403, json!({"error": "forbidden"}))
+        );
+    }
+    assert_eq!(
+        stored(&config, "root_id = 'b1' AND price = 8.0")
+            .await
+            .num_rows(),
+        1
+    );
+
     // A filter that matches nothing changes nothing.
     assert_eq!(post(json!({"delete_where": team("none")})).await.0, 200);
     assert_eq!(stored(&config, "root_id = 'b1'").await.num_rows(), 1);
@@ -702,7 +725,7 @@ async fn identity_write_api_deletes_and_patches_the_documents_that_match_a_filte
     let empty = tokio::time::timeout(
         Duration::from_secs(60),
         writer.post(
-            WRITE_KEY,
+            ADMIN_KEY,
             "shop-empty",
             &json!({"settings": {"attributes": {"team": "string"}}, "delete_where": team("t1")}),
         ),
@@ -752,14 +775,14 @@ async fn identity_write_api_refuses_a_filter_that_matches_too_many_documents_on_
     let both = json!({"field": "team", "op": "in", "value": ["big", "extra"]});
     assert_eq!(
         writer
-            .post(WRITE_KEY, namespace, &json!({"delete_where": both}))
+            .post(ADMIN_KEY, namespace, &json!({"delete_where": both}))
             .await,
         (409, json!({"error": "rejected"}))
     );
     assert_eq!(
         writer
             .post(
-                WRITE_KEY,
+                ADMIN_KEY,
                 namespace,
                 &json!({"patch_where": {"filter": both, "set": {"team": "moved"}}})
             )
@@ -774,7 +797,7 @@ async fn identity_write_api_refuses_a_filter_that_matches_too_many_documents_on_
     let big = json!({"field": "team", "op": "eq", "value": "big"});
     assert_eq!(
         writer
-            .post(WRITE_KEY, namespace, &json!({"delete_where": big}))
+            .post(ADMIN_KEY, namespace, &json!({"delete_where": big}))
             .await,
         (200, json!({"upserted": 0, "deleted": 0}))
     );

@@ -145,7 +145,9 @@ secret: anyone who holds it can search what its readers allow, so give each
 role its own and serve it over TLS. A write that deletes or patches by filter
 (`delete_where`, `patch_where` of the [write API](http-api.md#write-documents))
 ignores row permissions: it reaches every document of the namespace that the
-filter matches, and the `write` role is its only authorization. After the next identity publication,
+filter matches, so it needs the `admin` role besides `write` (`403 forbidden`
+otherwise), which also keeps a `write`-only key from learning attribute values
+through the bound on the number of matches. After the next identity publication,
 every reader refuses a removed key within two version checks. A reader that
 holds a usable head and identity answers an unknown or malformed key with
 `401`; when it cannot read the head or the identity, every caller gets

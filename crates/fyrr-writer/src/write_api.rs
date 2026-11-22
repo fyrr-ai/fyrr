@@ -270,7 +270,7 @@ async fn accept(api: &WriteApi, config: &Config, request: Request) -> Result<Res
     }
     // The key is checked as the request arrives; a key revoked afterwards does
     // not cancel an envelope that was already accepted.
-    authorize(config, namespace, request.headers()).await?;
+    let admin = authorize(config, namespace, request.headers()).await?;
     let permit = api
         .capacity
         .clone()
@@ -317,6 +317,11 @@ async fn accept(api: &WriteApi, config: &Config, request: Request) -> Result<Res
         Err(_) if exceeded => return Err(ApiError(413, "too_many_rows")),
         Err(_) => return Err(ApiError(400, "body_invalid")),
     };
+    // The count of matches and the bound of a filter tell about documents the
+    // key may not be allowed to read.
+    if !admin && (body.delete_where.is_some() || body.patch_where.is_some()) {
+        return Err(ApiError(403, "forbidden"));
+    }
     // The work outlives a caller that goes away: an envelope that was begun is
     // finished, and the capacity is held until then.
     let (config, commits) = (config.clone(), api.commits.clone());
@@ -329,7 +334,12 @@ async fn accept(api: &WriteApi, config: &Config, request: Request) -> Result<Res
     Ok(Json(done).into_response())
 }
 
-async fn authorize(config: &Config, namespace: &str, headers: &HeaderMap) -> Result<(), ApiError> {
+/// Checks the key for writing in `namespace`; whether it also holds `admin`.
+async fn authorize(
+    config: &Config,
+    namespace: &str,
+    headers: &HeaderMap,
+) -> Result<bool, ApiError> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -349,7 +359,7 @@ async fn authorize(config: &Config, namespace: &str, headers: &HeaderMap) -> Res
     if grant.roles.contains(&ApiKeyRole::Write)
         && prefix_allows(grant.namespace_prefix.as_deref(), namespace)
     {
-        Ok(())
+        Ok(grant.roles.contains(&ApiKeyRole::Admin))
     } else {
         Err(ApiError(403, "forbidden"))
     }
