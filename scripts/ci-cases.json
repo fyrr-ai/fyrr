@@ -103,6 +103,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/http::place_tests::a_process_owns_a_directory_for_the_mirrors_of_path_namespaces": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/rerank::tests::clients_that_share_a_counter_share_the_limit": {
         "tier": "quick",
         "seconds": 0.0
