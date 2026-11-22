@@ -118,9 +118,10 @@ impl PreparedReader {
         let query_embeddings = match query_embeddings {
             Some(shared) if shared.serves(&config.embedding) => shared,
             // The first open, or a namespace recreated with another profile.
-            _ => embedding::QueryEmbeddings::new(
+            _ => embedding::QueryEmbeddings::charging(
                 &config.embedding,
                 preparation_budget.permits.clone(),
+                preparation_budget.spent.embedding.clone(),
             )?,
         };
         let mirror = Arc::new(mirror.for_publication(&manifest));
@@ -139,6 +140,15 @@ impl PreparedReader {
             .await?;
         let indexes = verify_indices(&dataset, &manifest, config).await?;
         crate::fts_layout::report(&dataset, &indexes).await;
+        let reranker = config
+            .namespace
+            .rerank
+            .as_ref()
+            .map(|_| {
+                crate::rerank::Reranker::charging(preparation_budget.spent.rerank.clone())
+                    .map(Arc::new)
+            })
+            .transpose()?;
         let mut reader = Self {
             #[cfg(test)]
             test_hooks: Arc::default(),
@@ -171,12 +181,7 @@ impl PreparedReader {
             preparation_budget,
             preparation_reservation,
             query_embeddings,
-            reranker: config
-                .namespace
-                .rerank
-                .as_ref()
-                .map(|_| crate::rerank::Reranker::new().map(Arc::new))
-                .transpose()?,
+            reranker,
             control_store: store,
             control_backend,
             control_root: root,

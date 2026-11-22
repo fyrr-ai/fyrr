@@ -33,7 +33,7 @@ pub struct EmbeddingClient {
     config: EmbeddingConfig,
     http: reqwest::Client,
     verified: tokio::sync::Mutex<bool>,
-    reserved: AtomicU64,
+    reserved: Arc<AtomicU64>,
     calls: AtomicU64,
     embedding_calls: AtomicU64,
     elapsed_us: AtomicU64,
@@ -109,12 +109,18 @@ impl EmbeddingClient {
             config: config.clone(),
             http,
             verified: false.into(),
-            reserved: AtomicU64::new(0),
+            reserved: Arc::default(),
             calls: AtomicU64::new(0),
             embedding_calls: AtomicU64::new(0),
             elapsed_us: AtomicU64::new(0),
             pool,
         })
+    }
+    /// This client charges its calls to `spent`, which other clients share.
+    #[must_use]
+    pub(crate) fn charging(mut self, spent: Arc<AtomicU64>) -> Self {
+        self.reserved = spent;
+        self
     }
     pub fn stats(&self) -> ProviderStats {
         ProviderStats {

@@ -33,3 +33,18 @@ fn a_place_is_made_by_closing_an_idle_namespace_only() {
     assert!(b.get().is_none());
     assert_eq!(names(&open), ["a", "b"]);
 }
+
+#[test]
+fn a_slot_takes_its_mirror_with_it() {
+    let mirror = std::env::temp_dir().join(format!("fyrr-slot-{}", std::process::id()));
+    std::fs::create_dir_all(mirror.join("dataset")).unwrap();
+    let slots = Arc::new(Semaphore::new(1));
+    let slot = Slot {
+        mirror: mirror.clone(),
+        _permit: slots.clone().try_acquire_owned().unwrap(),
+    };
+    assert_eq!(slots.available_permits(), 0);
+    drop(slot);
+    assert!(!mirror.exists());
+    assert_eq!(slots.available_permits(), 1);
+}

@@ -110,6 +110,22 @@ struct Namespaces {
     api_keys: crate::storage::HeadCache<fyrr_core::identity::ApiKeysArtifact>,
     configured: Arc<Served>,
     open: std::sync::Mutex<Open<Served>>,
+    /// One per live namespace, held by its scheduler until it ends.
+    slots: Arc<Semaphore>,
+    /// How many namespaces have been opened: each has a mirror of its own.
+    opened: std::sync::atomic::AtomicU64,
+}
+/// A place among the live namespaces. It goes with the scheduler of the
+/// namespace, which has stopped by then, and takes the mirror that namespace
+/// filled with it, so the mirrors on disk are those of the live namespaces.
+struct Slot {
+    mirror: std::path::PathBuf,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.mirror);
+    }
 }
 /// Open namespaces, least recently used first. Each has one place that
 /// concurrent requests share, so a namespace is opened once.
@@ -153,6 +169,22 @@ fn place<T>(
     Ok(Some(cell))
 }
 impl Namespaces {
+    fn new(
+        process: Arc<Config>,
+        budget: crate::generation::MemoryPool,
+        api_keys: crate::storage::HeadCache<fyrr_core::identity::ApiKeysArtifact>,
+        configured: Arc<Served>,
+    ) -> Self {
+        Self {
+            process,
+            budget,
+            api_keys,
+            configured,
+            open: std::sync::Mutex::default(),
+            slots: Arc::new(Semaphore::new(MAX_OPEN_NAMESPACES)),
+            opened: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
     /// The configuration of the namespace `name`.
     fn config(&self, name: &str) -> Config {
         let mut config = (*self.process).clone();
@@ -194,9 +226,27 @@ impl Namespaces {
         let (this, name) = (self.clone(), name.to_owned());
         tokio::spawn(async move {
             cell.get_or_try_init(|| async move {
+                // A namespace that is closing holds its place until it is gone.
+                let permit = tokio::time::timeout(IO_TIMEOUT, this.slots.clone().acquire_owned())
+                    .await
+                    .map_err(|_| Busy)?
+                    .map_err(|_| Busy)?;
                 let mut config = this.config(&name);
                 let places = u64::try_from(MAX_OPEN_NAMESPACES).unwrap_or(u64::MAX);
                 config.reader.mirror_max_bytes /= places;
+                let base = config
+                    .mirror_directory(&ProcessEnvironment)
+                    .ok_or(StorageConfigurationInvalid)?;
+                let mirror = base.join(format!(
+                    "path-{}",
+                    this.opened
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                ));
+                config.reader.mirror_path = Some(mirror.to_string_lossy().into_owned());
+                let slot = Slot {
+                    mirror,
+                    _permit: permit,
+                };
                 let reader = crate::search::PreparedReader::open_in(
                     &config,
                     this.budget.clone(),
@@ -205,7 +255,7 @@ impl Namespaces {
                 .await?;
                 let config = reader.config.clone();
                 let admission = Served::admission_of(&reader, this.api_keys.clone());
-                let service = crate::serve::start(reader).await?;
+                let service = crate::serve::start_guarded(reader, slot).await?;
                 Ok(Arc::new(Served {
                     config,
                     admission,
@@ -879,17 +929,16 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
         });
     }
     let service = crate::serve::start(reader).await?;
-    let namespaces = Arc::new(Namespaces {
+    let namespaces = Arc::new(Namespaces::new(
         process,
         budget,
         api_keys,
-        configured: Arc::new(Served {
+        Arc::new(Served {
             config: config.clone(),
             admission: admission.clone(),
             service: service.clone(),
         }),
-        open: std::sync::Mutex::default(),
-    });
+    ));
     let state = HttpState {
         admission,
         service: service.clone(),

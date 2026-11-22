@@ -23,14 +23,19 @@
 `<storage root>/namespaces/`, not only `namespace.name`. The reader opens it
 on the first request, with the settings it is published with, and keeps it
 open for later ones. It keeps at most 8 namespaces open besides the
-configured one. When another needs the place it closes the one used least
-recently that is serving no request; if every one is, the request answers
-`503 busy`. A request for a closed one opens it again. The 8 share the
-reader's `reader.memory_max_bytes` with the configured namespace, and each gets
-an eighth of `reader.mirror_max_bytes` and of the 128 MiB subject cache the
-configured namespace has, so together they add one more mirror and cache
-budget of the configured size. `/mcp`, `/readyz` and `/admin/refresh` keep
-serving the configured namespace alone. `list_filters` has no JSON route.
+configured one, and each holds a place until its scheduler has stopped; a
+request that finds none waits up to 5 seconds, then answers `503 busy`. When
+another namespace needs a place, the one used least recently that is serving no
+request is closed, and if every one is serving, the request answers `503 busy`.
+A request for a closed one opens it again, with a mirror
+filled anew: closing deletes the mirror of that namespace, so only the open
+ones have one. The 8 share the reader's `reader.memory_max_bytes` with the
+configured namespace, and each gets an eighth of `reader.mirror_max_bytes` and
+of the 128 MiB subject cache the configured namespace has, so together they add
+one more mirror and cache budget of the configured size. Embedding and rerank
+spend limits are per process: every namespace charges the same counters.
+`/mcp`, `/readyz` and `/admin/refresh` keep serving the configured namespace
+alone. `list_filters` has no JSON route.
 
 Both routes, like `/mcp`, need the `read` role of an
 [API key](identity.md#identityapi_keys); users signed in through OIDC hold
