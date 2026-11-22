@@ -324,6 +324,7 @@ impl PreparedReader {
                         args.text_hits
                             .filter(|_| args.order == Some(SearchOrder::UpdatedAt))
                             .map(|count| (count, output)),
+                        args.fields.as_ref(),
                     )
                     .await
                 }
@@ -548,6 +549,7 @@ impl PreparedReader {
             args.text_hits
                 .filter(|_| args.order == Some(SearchOrder::UpdatedAt))
                 .map(|count| (count, output)),
+            args.fields.as_ref(),
         )
         .await
     }

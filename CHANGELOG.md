@@ -25,6 +25,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   namespace's vector `model` and `dimensions` in `settings.embedding`, and a
   deployment whose documents all carry vectors needs no `[embedding]` table.
   See [HTTP write API](docs/http-api.md#write-documents).
+- The JSON `query` route takes `fields`: the typed attributes to return (an
+  `include` list, or all of them but an `exclude` list), the vector of a row as
+  an array of numbers, and with `scores` the raw lexical score and vector
+  distance next to the final score. Only those columns are read, and only of
+  rows the caller may read. The MCP tools keep their output. See
+  [Returned fields](docs/http-api.md#returned-fields).
 - `search` takes a `vector`, a query vector used instead of an embedding of the
   query text; alone, it searches the dense lane only and makes no embedding
   call. `exact: true` scans every row that passes the filters and the caller's

@@ -101,6 +101,8 @@ impl PreparedReader {
                 root: strings(batch, "root_id")?.value(row).into(),
                 record: strings(batch, "record_id")?.value(row).into(),
                 score,
+                lexical: None,
+                distance: None,
             });
         }
         rows.sort_by(|a, b| {

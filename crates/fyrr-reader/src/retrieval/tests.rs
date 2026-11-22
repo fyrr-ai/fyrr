@@ -7,6 +7,8 @@ fn row(source: &str, root: &str, record: &str, score: f64) -> Candidate {
         root: root.into(),
         record: record.into(),
         score,
+        lexical: None,
+        distance: None,
     }
 }
 #[test]
@@ -42,6 +44,28 @@ fn a_search_without_text_keeps_the_order_by_distance_whatever_the_weights() {
     )
     .unwrap();
     assert!(fused.iter().all(|r| r.score == 0.0));
+}
+
+#[test]
+fn a_fused_hit_keeps_the_raw_lexical_score_and_distance_of_its_lanes() {
+    // The dense lane scores a hit by minus its distance.
+    let dense = vec![row("a", "x", "1", -0.25), row("a", "y", "1", -0.5)];
+    let lexical = vec![row("a", "x", "1", 7.5), row("a", "z", "1", 3.0)];
+    let fused = compose(
+        dense,
+        lexical,
+        &Composition::default(),
+        10,
+        &RetrievalConfig::default(),
+    )
+    .unwrap();
+    let raw = |root: &str| {
+        let hit = fused.iter().find(|r| r.root == root).unwrap();
+        (hit.lexical, hit.distance)
+    };
+    assert_eq!(raw("x"), (Some(7.5), Some(0.25)));
+    assert_eq!(raw("y"), (None, Some(0.5)));
+    assert_eq!(raw("z"), (Some(3.0), None));
 }
 
 #[test]
