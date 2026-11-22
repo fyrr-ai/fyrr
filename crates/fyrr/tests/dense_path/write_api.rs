@@ -2477,11 +2477,11 @@ async fn identity_write_api_changes_the_schema_of_a_live_namespace_on_storage() 
     let (config, root) = setup_on(Backend::Local);
     let address = free_address();
     configure(&config, &address, "");
-    // The maintenance of this test is the one it runs; indexes build on 2 threads.
+    // The maintenance of this test is the one it runs (`configure` builds on 2 threads).
     let text = std::fs::read_to_string(&config).unwrap();
     std::fs::write(
         &config,
-        format!("{text}\n[writer]\nthreads = 2\n[writer.serve]\nmaintenance = false\n"),
+        format!("{text}\n[writer.serve]\nmaintenance = false\n"),
     )
     .unwrap();
     embed(&root, &["alpha", "bravo", "charlie"]);
@@ -2741,8 +2741,6 @@ async fn identity_write_api_keeps_the_columns_of_added_attributes_in_table_order
     let (config, root) = setup_on(Backend::Local);
     let address = free_address();
     configure(&config, &address, "");
-    let text = std::fs::read_to_string(&config).unwrap();
-    std::fs::write(&config, format!("{text}\n[writer]\nthreads = 2\n")).unwrap();
     embed(&root, &["alpha", "bravo", "charlie"]);
     let writer = Writer::start(&config, &root, address).await;
     let post = async |body: Value| writer.post(WRITE_KEY, "dense-fixture", &body).await;
@@ -2827,8 +2825,6 @@ async fn identity_write_api_restores_a_version_from_before_an_attribute_was_adde
     let (config, root) = setup_on(Backend::Local);
     let address = free_address();
     configure(&config, &address, "");
-    let text = std::fs::read_to_string(&config).unwrap();
-    std::fs::write(&config, format!("{text}\n[writer]\nthreads = 2\n")).unwrap();
     embed(&root, &["alpha"]);
     let writer = Writer::start(&config, &root, address).await;
     let post = async |body: Value| writer.post(WRITE_KEY, "dense-fixture", &body).await;

@@ -1084,7 +1084,12 @@ async fn execute(
                 other => break other?,
             }
         }
-        return Ok(json!({"upserted": 0, "deleted": 0}));
+        return Ok(WriteResponse {
+            upserted: 0,
+            deleted: 0,
+            patched: None,
+            skipped: None,
+        });
     }
     let config = config
         .with_settings(&settings)
