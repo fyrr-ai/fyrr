@@ -1043,6 +1043,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-writer:lib:fyrr_writer/prepare::tests::a_patch_of_a_number_is_weighed_by_the_width_of_the_numbers_of_its_namespace": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-writer:lib:fyrr_writer/prepare::tests::the_table_holds_exactly_the_reserved_built_in_columns": {
         "tier": "quick",
         "seconds": 0.0
@@ -1978,6 +1982,14 @@
         "seconds": 40
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_refuses_whole_and_keeps_connector_namespaces_apart_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_patches_a_document_and_keeps_what_it_does_not_name_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_patches_the_text_with_its_vector_on_storage": {
         "tier": "full",
         "seconds": 40
       },

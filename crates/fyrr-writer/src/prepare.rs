@@ -232,7 +232,14 @@ fn weigh(config: &Config, change: &ContentChange) -> Result<(u64, u64)> {
         ContentChange::Write(change) => weigh_change(config, change),
         ContentChange::Present(document) => {
             let encoded = serde_json::to_vec(document).map_err(|_| WriterError::DocumentInvalid)?;
-            Ok((1, encoded.len() as u64 + record_estimate(config)))
+            // The records a patch writes are weighed once for all patches of
+            // an envelope, in `check_atomic`.
+            let row = if document.intent == DocumentIntent::Patch {
+                0
+            } else {
+                record_estimate(config)
+            };
+            Ok((1, encoded.len() as u64 + row))
         }
     }
 }
@@ -259,14 +266,66 @@ fn record_estimate(config: &Config) -> u64 {
     2048 + u64::from(config.embedding.dimensions) * 2
 }
 
+/// What an envelope weighs before its first change.
+const BASE_BYTES: u64 = 16384;
+
+/// What the committer may write for a patched document: its record with the
+/// text and every attribute at the largest its type holds, and what any record
+/// takes besides. The stored record is what the patch keeps, so this is an upper
+/// bound for all but a record with very many readers, which the committer
+/// refuses when it is written.
+pub(crate) fn patch_bound(config: &Config) -> u64 {
+    patch_bytes(&config.namespace.attributes, record_estimate(config))
+}
+/// The part of `bound` that an envelope of `taken` bytes may weigh within
+/// `max`. The estimate only groups envelopes: a patch is never refused for it
+/// alone, and the committer refuses the rows that really overrun the limit.
+pub(crate) fn within(bound: u64, max: u64, taken: u64) -> u64 {
+    bound.min(max.saturating_sub(taken))
+}
+fn patch_bytes(attributes: &fyrr_core::attributes::AttributeSchema, record: u64) -> u64 {
+    let attributes: u64 = attributes.values().map(|kind| value_bytes(*kind)).sum();
+    crate::chunk::MAX_BYTES as u64 + attributes + record
+}
+/// The most a value of the type `kind` takes in its column.
+fn value_bytes(kind: fyrr_core::attributes::AttributeType) -> u64 {
+    use fyrr_core::attributes::{AttributeType as T, ElementType as E};
+    match kind {
+        T::String | T::Bytes => fyrr_core::limits::schema::MAX_VALUE_BYTES as u64,
+        T::Int | T::Float | T::Datetime | T::Uint => 8,
+        T::Uuid => 16,
+        T::Bool => 1,
+        // An element takes at least 2 bytes of a row, so a row holds at most
+        // `ROW_MAX_BYTES / 2` of them. Strings share the row's bytes besides.
+        T::Array(element) => {
+            let count = crate::write_api::ROW_MAX_BYTES as u64 / 2;
+            match element {
+                E::String => crate::write_api::ROW_MAX_BYTES as u64 + 4 * count,
+                element => count * value_bytes(element.scalar()),
+            }
+        }
+    }
+}
+
 /// Whether `changes` fit the bounds of a single page, which one envelope must.
 pub fn check_atomic(config: &Config, changes: &[ContentChange]) -> Result<()> {
-    let (mut rows, mut bytes) = (0u64, 16384u64);
+    let (mut rows, mut bytes) = (0u64, BASE_BYTES);
     for change in changes {
         let (work, estimate) = weigh(config, change)?;
         rows = rows.saturating_add(work);
         bytes = bytes.saturating_add(estimate);
     }
+    let patches = changes
+        .iter()
+        .filter(|change| {
+            matches!(change, ContentChange::Present(d) if d.intent == DocumentIntent::Patch)
+        })
+        .count() as u64;
+    bytes = bytes.saturating_add(within(
+        patches.saturating_mul(patch_bound(config)),
+        config.writer.commit.group_max_bytes.as_u64(),
+        bytes,
+    ));
     if rows > config.writer.commit.group_max_rows
         || bytes > config.writer.commit.group_max_bytes.as_u64()
     {
@@ -759,6 +818,48 @@ fn attribute_array(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_patch_of_a_number_is_weighed_by_the_width_of_the_numbers_of_its_namespace() {
+        use fyrr_core::attributes::{AttributeSchema, AttributeType, ElementType};
+        let floats: AttributeSchema = (0..64)
+            .map(|n| (format!("f{n}"), AttributeType::Float))
+            .collect();
+        // 16 KiB of text, 64 numbers of 8 bytes and the part of any record.
+        let record = 2048 + 1024 * 2;
+        assert_eq!(patch_bytes(&floats, record), 16384 + 64 * 8 + record);
+        assert!(patch_bytes(&floats, record) < 256 * 1024);
+        // A namespace of arrays weighs 4 MiB a patch, which is not held against
+        // a request in a group of 256 KiB: a patch of a number still fits.
+        let arrays: AttributeSchema = (0..64)
+            .map(|n| (format!("a{n}"), AttributeType::Array(ElementType::Uint)))
+            .collect();
+        let bound = patch_bytes(&arrays, record);
+        assert!(bound > 256 * 1024);
+        let taken = BASE_BYTES + 100;
+        assert!(taken + within(bound, 256 * 1024, taken) <= 256 * 1024);
+        assert_eq!(within(5, 256 * 1024, taken), 5, "a small bound is kept");
+        // The patches of an envelope share one clamp, so a delete beside them
+        // still fits: 100 bytes of patch and 3 KiB of delete.
+        let taken = taken + 3 * 1024;
+        assert!(taken + within(2 * bound, 256 * 1024, taken) <= 256 * 1024);
+        // Each other type takes the most its column can hold of it.
+        let weigh = |kind| {
+            patch_bytes(&AttributeSchema::from([("a".into(), kind)]), record) - (16384 + record)
+        };
+        assert_eq!(weigh(AttributeType::Uint), 8);
+        assert_eq!(weigh(AttributeType::Uuid), 16);
+        assert_eq!(weigh(AttributeType::Bool), 1);
+        assert_eq!(weigh(AttributeType::String), 4096);
+        assert_eq!(weigh(AttributeType::Bytes), 4096);
+        assert_eq!(
+            weigh(AttributeType::Array(ElementType::Float)),
+            (1 << 19) * 8
+        );
+        assert_eq!(
+            weigh(AttributeType::Array(ElementType::String)),
+            (1 << 20) + 4 * (1 << 19)
+        );
+    }
     #[test]
     fn the_table_holds_exactly_the_reserved_built_in_columns() {
         let schema = schema(8);

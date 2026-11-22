@@ -238,6 +238,7 @@ impl PageRows {
             expected_prior_revision: change.expected_prior_revision,
             permission_revision: change.permission_revision,
             records: count,
+            patch: None,
         });
         Ok(())
     }
