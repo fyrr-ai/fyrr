@@ -493,9 +493,9 @@ def main():
     manifest = json.loads(MANIFEST.read_text())
     if mode == "check":
         validate(manifest, inventory())
-    elif mode == "titles":
+    elif mode == "metadata":
         for row, spec in manifest.items():
-            print(f"{row}\t{spec['title']}")
+            print(f"{row}\t{spec['kind']}\t{spec['title']}")
     elif mode == "rows":
         rows = [
             row
