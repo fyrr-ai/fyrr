@@ -148,6 +148,7 @@ anything that moves image size also need `scripts/ci --images`.
 | `scripts/s3-fixture start\|env\|status\|stop` | A loopback RustFS container for this checkout; `env` prints the `FYRR_TEST_S3_*` variables. |
 | `scripts/keycloak-fixture start\|env\|status\|stop` | A loopback Keycloak for the identity rows. |
 | `scripts/check-reader-only` | Proves the reader-only build contains no writer or provider code, and that neither build links Python. |
+| `scripts/bench-write [--storage local\|fixture\|s3]` | Measures write latency and write-to-searchable time of the real HTTP path: p50, p90 and p99 per batch size, object-store operations per write, and the fragment and index-segment counts. Results go in [docs/investigations/write-latency.md](docs/investigations/write-latency.md). |
 | `scripts/images` | Builds, tests and measures both images. It compiles the binaries in the pinned builder stage, or packages existing ones with `--binaries DIR`. |
 | `scripts/release` | Assembles versioned local release artifacts with SHA-256 sums; it publishes nothing itself (see [Releasing](#releasing)). |
 
