@@ -86,7 +86,6 @@ pub struct SearchInput {
     pub queries: Option<Vec<String>>,
     /// Query vector of the namespace's dimensions, instead of an embedding of query. Without query the search is dense only and makes no embedding call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(min = 1, max = DIMENSIONS_MAX))]
     pub vector: Option<Vec<f32>>,
     /// Exact search: score every row that passes the filter and the caller's permissions instead of probing the index. Refused as invalid_argument when more rows pass than the bound of an exact search.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -711,11 +710,11 @@ pub const SERVER_INSTRUCTIONS: &str = "fyrr searches this organization's indexed
 
 fn search_description() -> String {
     format!(
-        "Search the authorized corpus (lexical and dense, fused). Only documents the caller may \
-         read are returned; an empty result is not an error. Scores only order results; they are \
-         not probabilities. Excerpts are passages of up to {EXCERPT_CODEPOINTS} codepoints with \
-         record_id, revision and codepoint offsets usable as a fetch window. Filters match exactly; \
-         an unknown value gives an empty result. queries accepts 2–16 texts instead of query; \
+        "Search the authorized corpus (lexical and dense). Only documents the caller may \
+         read are returned; an empty result is not an error. Scores are not probabilities. \
+         Excerpts are passages of up to {EXCERPT_CODEPOINTS} codepoints with \
+         record_id, revision and offsets usable as a fetch window. Filters match exactly; \
+         an unknown value gives an empty result. queries replaces query; \
          limit is per query (default/max 20), interleaved by rank then query index and deduplicated. \
          text_hits applies per query before deduplication; excerpt_chars caps passage length. \
          For context on a task, search with both the ticket's title and its body as two queries. \

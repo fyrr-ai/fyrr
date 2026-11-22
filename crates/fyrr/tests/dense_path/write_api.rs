@@ -606,7 +606,8 @@ async fn identity_write_api_searches_by_a_query_vector_exact_or_approximate_on_s
         .iter()
         .enumerate()
         .map(|(n, text)| {
-            json!({"id": ["a", "b", "c", "d", "e", "f"][n], "text": text, "vector": vector(n, 1024), "readers": ["grp:allow"]})
+            let id = ["a", "b", "c", "d", "e", "f"][n];
+            json!({"id": id, "text": text, "vector": vector(n, 1024), "readers": ["grp:allow"]})
         })
         .collect();
     // As close to the query as a row can be, but nobody may read it.
