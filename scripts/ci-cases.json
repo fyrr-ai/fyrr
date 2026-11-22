@@ -1590,6 +1590,10 @@
         "tier": "full",
         "seconds": 40.0
       },
+      "full:fyrr:test:dense_path/storage_budget::an_idle_writer_service_that_wrote_to_many_namespaces_stays_within_the_budget_of_one": {
+        "tier": "full",
+        "seconds": 60.0
+      },
       "full:fyrr:test:dense_path/storage_budget::a_writer_service_maintains_the_namespace_it_serves": {
         "tier": "full",
         "seconds": 600.0
@@ -1886,6 +1890,10 @@
         "seconds": 15.0
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_writes_to_many_namespaces_from_one_process_on_storage": {
         "tier": "full",
         "seconds": 40
       },
