@@ -39,6 +39,10 @@
       "fusion": 50,
       "dense": 0,
       "lexical": 0
+    },
+    "attributes": {
+      "created": "datetime",
+      "priority": "int"
     }
   },
   "fixed_grants": {}

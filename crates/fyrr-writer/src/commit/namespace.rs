@@ -52,6 +52,7 @@ pub(crate) fn namespace_settings(config: &Config) -> NamespaceSettings {
             .rerank
             .as_ref()
             .map(fyrr_core::config::RerankConfig::settings),
+        attributes: namespace.attributes.clone(),
     }
 }
 

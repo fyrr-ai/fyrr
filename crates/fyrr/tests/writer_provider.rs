@@ -103,12 +103,15 @@ async fn prepared_timeout_names_flag_and_rerun_preserves_durable_work_on_storage
         "--kind",
         "content",
         "--timeout",
-        "5s",
+        // The provider yields one batch and then sleeps for 60 s. The batch
+        // must be durable before the timeout fires; a worker start on a
+        // loaded machine has taken more than 5 s.
+        "30s",
     ]);
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("timeout after 5000ms; increase --timeout"),
+        stderr.contains("timeout after 30000ms; increase --timeout"),
         "{stderr}"
     );
     assert!(output.stdout.is_empty());
