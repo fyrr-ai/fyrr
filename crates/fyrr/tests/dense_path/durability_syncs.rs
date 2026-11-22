@@ -143,9 +143,9 @@ fn acknowledged_puts(log: &Path, storage: &Path) -> BTreeMap<String, usize> {
     puts
 }
 
-#[tokio::test]
+#[test]
 #[ignore = "real prepare/publication fsync recorder, including existing ancestor names"]
-async fn references_are_synced_before_real_prepare_and_publication() {
+fn references_are_synced_before_real_prepare_and_publication() {
     let (config, root) = setup_on(Backend::Local);
     for n in 8..768 {
         std::fs::remove_file(root.join("sources").join(format!("{n}.txt"))).unwrap();
@@ -182,15 +182,6 @@ async fn references_are_synced_before_real_prepare_and_publication() {
     else {
         unreachable!()
     };
-    let (bootstrap, bootstrap_namespace) =
-        fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    bootstrap
-        .put(
-            &bootstrap_namespace.join(".review-bootstrap"),
-            b"bootstrap".to_vec().into(),
-        )
-        .await
-        .unwrap();
     // Existing names may have been created by a killed writer or native Lance.
     std::fs::DirBuilder::new()
         .recursive(true)
