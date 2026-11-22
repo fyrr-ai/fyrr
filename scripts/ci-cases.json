@@ -415,6 +415,10 @@
         "tier": "quick",
         "seconds": 0.014
       },
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::generation_key_tests::only_the_writers_own_key_has_a_generation": {
+        "tier": "quick",
+        "seconds": 0.003
+      },
       "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_fragments::tests::reused_ids_cannot_prove_file_identity_and_restore_mismatch_falls_back": {
         "tier": "quick",
         "seconds": 0.003

@@ -484,14 +484,6 @@ async fn superseded_history(
                     )
             })
             .collect();
-        // The object a pointer names is kept whatever its key says: the
-        // contract does not make the key the canonical name of the generation.
-        named.extend(
-            kept.iter()
-                .flat_map(|manifest| [&manifest.policy, &manifest.identity])
-                .chain([&head.policy, &head.identity])
-                .map(|pointer| pointer.object.clone()),
-        );
         // Record the cut before anything goes: a crash leaves older manifests
         // that the next pass deletes, never a chain with a hole.
         if let Some(oldest) = kept.last()
@@ -568,6 +560,20 @@ async fn superseded_history(
             .map(|manifest| manifest.identity.generation)
             .fold(head.identity.generation, u64::min);
         let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
+        // The object a pointer names is kept whatever its key says: the
+        // contract does not make the key the canonical name of the generation.
+        // The key is the one the reader resolves, `//` and all.
+        named.extend(
+            kept.iter()
+                .flat_map(|manifest| [&manifest.policy, &manifest.identity])
+                .chain([&head.policy, &head.identity])
+                .map(|pointer| {
+                    fyrr_reader::storage::relative_path(
+                        &Path::from(format!("{root}/{}", pointer.object)),
+                        &root,
+                    )
+                }),
+        );
         let served = head.content.as_ref().map(|p| p.publication_id.clone());
         let mut deleted = 0;
         for (prefix, floor) in [
@@ -625,7 +631,9 @@ fn generation_of(relative: &str, prefix: &str) -> Option<u64> {
     let number: u64 = generation.parse().ok()?;
     (number.to_string() == generation
         && digest.len() == 64
-        && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        && digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
     .then_some(number)
 }
 
@@ -636,7 +644,10 @@ mod generation_key_tests {
     #[test]
     fn only_the_writers_own_key_has_a_generation() {
         let hex = "0123456789abcdef".repeat(4);
-        assert_eq!(generation_of(&format!("policy/9-{hex}.json"), "policy"), Some(9));
+        assert_eq!(
+            generation_of(&format!("policy/9-{hex}.json"), "policy"),
+            Some(9)
+        );
         for key in [
             "policy/1-backup.json".to_owned(),
             format!("policy/09-{hex}.json"),
