@@ -134,6 +134,9 @@ async fn restore_history_checks_order_before_recovery_on_storage() {
             tip.publication_id = "pub-00000000000000000000000000881101".into();
             tip.sequence = 2;
             tip.previous_publication_id = Some(ancestor.publication_id.clone());
+            // Envelope evidence ends a walk before the older manifests are
+            // read: the corrupt order is only seen without it.
+            tip.envelope_evidence = None;
             for manifest in [&ancestor, &tip] {
                 store
                     .put(

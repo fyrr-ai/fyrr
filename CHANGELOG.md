@@ -262,6 +262,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   manifest and one checkpoint are enough. The first publication after the
   upgrade still walks the older chain once. `fyrr writer maintain` deletes
   checkpoints that no retained manifest names.
+- `fyrr writer maintain` deletes the publication manifests, policy and identity
+  generations, member and grant snapshots and directory snapshots that no
+  publication inside `writer.purge_window`, no served head and no pending
+  envelope names, so these no longer grow with the number of commits. A
+  receipt older than the window is no longer found.
 
 ### Security
 

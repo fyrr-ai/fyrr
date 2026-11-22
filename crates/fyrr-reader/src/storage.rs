@@ -699,6 +699,25 @@ pub async fn read_manifest(
 ) -> Result<fyrr_core::publication::ContentManifest, StorageError> {
     read_contract(store, &Path::from(format!("{root}/{relative}"))).await
 }
+/// An older publication of a walk. `None` once maintenance deleted it with the
+/// rest of the history outside the purge window: the walk ends there.
+pub async fn read_older_manifest(
+    store: &dyn ObjectStore,
+    root: &Path,
+    relative: &str,
+) -> Result<Option<fyrr_core::publication::ContentManifest>, StorageError> {
+    let bytes = match store.get(&Path::from(format!("{root}/{relative}"))).await {
+        Ok(object) => object
+            .bytes()
+            .await
+            .map_err(|_| StorageError::StorageUnavailable)?,
+        Err(object_store::Error::NotFound { .. }) => return Ok(None),
+        Err(_) => return Err(StorageError::StorageUnavailable),
+    };
+    parse_contract(&bytes)
+        .map(Some)
+        .map_err(|_| StorageError::PublicationInvalid)
+}
 pub fn manifest_chain(
     store: Arc<dyn ObjectStore>,
     root: Path,
@@ -715,7 +734,15 @@ pub fn manifest_chain(
             let Some(path) = path else {
                 return Ok(None);
             };
-            let manifest = read_manifest(store.as_ref(), &root, &path).await?;
+            let manifest = if newer_sequence.is_some() {
+                let Some(manifest) = read_older_manifest(store.as_ref(), &root, &path).await?
+                else {
+                    return Ok(None);
+                };
+                manifest
+            } else {
+                read_manifest(store.as_ref(), &root, &path).await?
+            };
             // Every publication advances sequence. A backward walk must decrease,
             // so corrupt cycles terminate without retaining paths or capping history.
             if newer_sequence.is_some_and(|sequence| manifest.sequence >= sequence) {

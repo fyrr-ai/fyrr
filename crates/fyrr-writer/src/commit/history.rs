@@ -91,6 +91,33 @@ impl RestoreHistory {
             next = m
                 .previous_publication_id
                 .map(|id| format!("publications/{id}.json"));
+            // The evidence covers this publication and every older one, which
+            // maintenance may have deleted. An indexed predecessor is cheaper.
+            let covered = match &next {
+                Some(path) => self.index.contains(Evidence::Manifest, path)?,
+                None => true,
+            };
+            if !covered
+                && let Some(evidence) = m.envelope_evidence
+                && let Some(checkpoint) =
+                    read_checkpoint(store.as_ref(), &root, &evidence.checkpoint).await?
+            {
+                for id in checkpoint
+                    .applied_envelope_ids
+                    .into_iter()
+                    .chain(evidence.applied_since)
+                {
+                    self.index.put(Evidence::Applied, &id, &(), true)?;
+                }
+                for id in checkpoint
+                    .rejected_envelope_ids
+                    .into_iter()
+                    .chain(evidence.rejected_since)
+                {
+                    self.index.put(Evidence::Rejected, &id, &(), true)?;
+                }
+                break;
+            }
         }
         self.index.promote()?;
         if let Some(rewinds) = rewinds {

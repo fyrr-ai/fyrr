@@ -1814,6 +1814,10 @@
         "tier": "full",
         "seconds": 36.069
       },
+      "full:fyrr:test:dense_path/maintenance::maintenance_deletes_control_objects_outside_the_purge_window_on_storage": {
+        "tier": "full",
+        "seconds": 61.0
+      },
       "full:fyrr:test:dense_path/maintenance::maintenance_purge_window_and_restore_horizon_on_storage": {
         "tier": "full",
         "seconds": 42.941

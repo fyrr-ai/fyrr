@@ -1384,7 +1384,7 @@ fn age_observations(request: &str, response: &mut Vec<u8>, expired: Option<&str>
     }
     super::corrections::rewrite_ok_body(response, |body| {
         let mut changed = false;
-        if request.contains("/publications/") {
+        if request.contains("/publications/") && !request.contains("list-type=") {
             if let Ok(mut value) = serde_json::from_slice::<Value>(body) {
                 value["committed_at"] =
                     json!((fyrr_core::clock::now() - chrono::Duration::hours(25)).to_rfc3339());
@@ -1537,4 +1537,132 @@ async fn maintenance_purge_window_and_restore_horizon_on_storage() {
     );
     drop(mcp);
     drop(guard);
+}
+
+/// Objects the namespace holds under one control prefix.
+async fn control_objects(config: &Path, prefix: &str) -> usize {
+    use futures::TryStreamExt;
+    let loaded = fyrr_core::config::load(config).unwrap();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    store
+        .list(Some(&namespace.join(prefix)))
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap()
+        .len()
+}
+
+/// One round of the history: new content and a new member, so the publication
+/// pins its own identity generation and members snapshot.
+fn history_round(worker: &Path, root: &Path, round: u64) {
+    let mut users = vec![
+        json!({"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}),
+    ];
+    users.extend((2..=round).map(|n| json!({"id":format!("u{n}"),"email":format!("u{n}@example.test"),"email_verification":"verified_corporate","active":true})));
+    input(
+        root,
+        json!({"epoch":round,
+            "content":[[replacement("a", &format!("r{round}"), &format!("r{}", round - 1), &format!("fixture document {round}"))]],
+            "members":[{"users":users,"groups":[{"id":"child","members":["usr:u"]},{"id":"group","members":["grp:child"]}]}]}),
+    );
+    worker_sync(
+        worker,
+        &["incremental", "--kind", "content", "--kind", "members"],
+    );
+}
+
+#[tokio::test]
+#[ignore = "real CLI and storage; scripts/ci"]
+async fn maintenance_deletes_control_objects_outside_the_purge_window_on_storage() {
+    use futures::TryStreamExt;
+    const PREFIXES: [&str; 7] = [
+        "publications",
+        "evidence",
+        "policy",
+        "identity",
+        "members",
+        "grants",
+        "directory",
+    ];
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    for round in 2..=10 {
+        history_round(&worker, &root, round);
+        publish(&commit);
+    }
+    let loaded = fyrr_core::config::load(&commit).unwrap();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let (head, _) = publication(&commit).await;
+    let chain = fyrr_reader::storage::manifest_chain(
+        store.clone(),
+        namespace.clone(),
+        head.content.as_ref().map(|p| p.manifest.clone()),
+    )
+    .try_collect::<Vec<_>>()
+    .await
+    .unwrap();
+    assert!(chain.len() >= 10, "{} publications", chain.len());
+    let oldest = chain
+        .iter()
+        .rev()
+        .find_map(|m| m.envelope_ids.first().cloned())
+        .unwrap();
+    for prefix in ["publications", "identity", "members"] {
+        assert!(
+            control_objects(&commit, prefix).await >= 10,
+            "{prefix}: every publication adds one"
+        );
+    }
+    // Inside the window nothing is deleted, and every receipt is there.
+    command(&commit, &["writer", "maintain"]);
+    assert!(control_objects(&commit, "publications").await >= 10);
+    command(&commit, &["writer", "commit", "--receipt", &oldest]);
+
+    // Past the window, and past the age the envelopes are kept for.
+    fyrr_core::clock::advance(Duration::from_secs(4 * 24 * 3600)).unwrap();
+    command(&commit, &["writer", "maintain"]);
+    command(&commit, &["writer", "maintain"]);
+    // Every maintenance step publishes, so those manifests are retained; the
+    // earlier history is gone but for the newest publication before them.
+    let (head, _) = publication(&commit).await;
+    let kept = fyrr_reader::storage::manifest_chain(
+        store.clone(),
+        namespace.clone(),
+        head.content.as_ref().map(|p| p.manifest.clone()),
+    )
+    .try_collect::<Vec<_>>()
+    .await
+    .unwrap();
+    let publications = control_objects(&commit, "publications").await;
+    assert_eq!(kept.len(), publications, "unreachable manifests remain");
+    for old in &chain[1..] {
+        assert!(
+            !kept.iter().any(|m| m.publication_id == old.publication_id),
+            "{} remains",
+            old.publication_id
+        );
+    }
+    for prefix in PREFIXES {
+        let count = control_objects(&commit, prefix).await;
+        assert!(
+            count <= publications,
+            "{prefix}: {count} objects for {publications} retained publications"
+        );
+    }
+    // The retained history reaches its receipts; the deleted part does not.
+    for id in kept.iter().flat_map(|m| &m.envelope_ids) {
+        command(&commit, &["writer", "commit", "--receipt", id]);
+    }
+    let lost = host_command(&commit)
+        .args(["writer", "commit", "--receipt", &oldest])
+        .output()
+        .unwrap();
+    assert!(!lost.status.success());
+
+    // A fresh writer, restore and rollback work from what is left.
+    history_round(&worker, &root, 11);
+    publish(&commit);
+    command(&commit, &["writer", "rollback"]);
+    assert_eq!(command(&commit, &["writer", "verify"])["verified"], true);
+    std::fs::remove_dir_all(root).unwrap();
 }
