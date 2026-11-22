@@ -64,6 +64,15 @@ impl FilterPlan {
     }
 }
 
+/// An exact search reads every selected row, so it takes at most
+/// `MAX_EXACT_ROWS` of them; a larger selection needs a narrower filter.
+pub(super) fn exact_scan_bound(selected: u64) -> Result<()> {
+    if selected > fyrr_core::limits::mcp::MAX_EXACT_ROWS {
+        return Err(InvalidArgument);
+    }
+    Ok(())
+}
+
 enum DenseRefinement {
     Expand(usize),
     Rows(Vec<Candidate>),
@@ -74,6 +83,7 @@ impl PreparedReader {
         &self,
         vector: &[f32],
         k: usize,
+        exact: bool,
         telemetry: &mut Telemetry,
     ) -> Result<Vec<Candidate>> {
         embedding::validate(vector, self.config.embedding.dimensions)?;
@@ -81,6 +91,9 @@ impl PreparedReader {
             return Err(InvalidArgument);
         }
         self.authorization()?;
+        if exact {
+            exact_scan_bound(self.selected_rows().max_len().unwrap_or(0))?;
+        }
         let wanted = k.min(
             usize::try_from(self.selected_rows().max_len().unwrap_or(0))
                 .map_err(|_| StorageUnavailable)?,
@@ -106,7 +119,7 @@ impl PreparedReader {
                 self.config.namespace.dense_rq_bits,
             ),
         };
-        let indexed = self.maps_enabled && plan.indexed;
+        let indexed = self.maps_enabled && plan.indexed && !exact;
         loop {
             let before = self.mirror.counters();
             let start = Instant::now();
@@ -147,7 +160,9 @@ impl PreparedReader {
                     &query_array,
                     wanted,
                     k,
-                    self.preparation_reservation.warm() && self.filter_selection.is_none(),
+                    self.preparation_reservation.warm()
+                        && self.filter_selection.is_none()
+                        && !exact,
                     self.fallback_probes,
                     telemetry,
                 )

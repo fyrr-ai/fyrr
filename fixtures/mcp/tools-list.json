@@ -30,6 +30,23 @@
             "maxItems": 16,
             "minItems": 2
           },
+          "vector": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 8192,
+            "minItems": 1
+          },
+          "exact": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "text_hits": {
             "type": [
               "integer",

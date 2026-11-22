@@ -619,3 +619,11 @@ fn filtered_index_search_reads_fewer_bytes_than_the_exact_scan() {
     // Without a filter the targets are unscaled.
     assert_eq!(plan(&full, 100_100).target(&full[0], 16), 8_800);
 }
+
+#[test]
+fn an_exact_scan_stops_one_row_past_its_bound() {
+    use super::dense::exact_scan_bound;
+    use fyrr_core::limits::mcp::MAX_EXACT_ROWS;
+    assert_eq!(exact_scan_bound(MAX_EXACT_ROWS), Ok(()));
+    assert_eq!(exact_scan_bound(MAX_EXACT_ROWS + 1), Err(InvalidArgument));
+}

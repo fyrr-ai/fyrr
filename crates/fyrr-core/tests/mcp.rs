@@ -5,6 +5,7 @@
 
 mod common;
 
+use fyrr_core::config::DIMENSIONS_MAX;
 use fyrr_core::limits::mcp::{
     MAX_FILTER_DEPTH, MAX_FILTER_NODES, MAX_FILTER_VALUES, MAX_ORDER_KEYS,
 };
@@ -288,8 +289,21 @@ fn validation_enforces_bytes_relations_and_bounds() {
         json!({"order_by":[]}),
         json!({"order_by":[{"field":"","direction":"asc"}]}),
         json!({"order_by":vec![json!({"field":"p","direction":"asc"}); MAX_ORDER_KEYS + 1]}),
+        json!({"query":"a","vector":[]}),
+        json!({"vector":vec![1.0; DIMENSIONS_MAX as usize + 1]}),
+        json!({"queries":["a","b"],"vector":[1.0]}),
+        json!({"vector":[1.0],"order_by":[{"field":"p","direction":"asc"}]}),
+        json!({"order":"updated_at","exact":true}),
     ] {
         assert!(search(value).is_err());
+    }
+    for value in [
+        json!({"vector":[1.0]}),
+        json!({"vector":vec![1.0; DIMENSIONS_MAX as usize],"exact":true}),
+        json!({"query":"a","vector":[1.0],"exact":false}),
+        json!({"queries":["a","b"],"exact":true}),
+    ] {
+        assert!(search(value).is_ok());
     }
     assert!(
         search(json!({"order_by":vec![json!({"field":"p","direction":"asc"}); MAX_ORDER_KEYS]}))

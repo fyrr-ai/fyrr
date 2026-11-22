@@ -147,7 +147,10 @@ async fn filtered_dense(
     reader.apply_filters(&args).await.unwrap();
     // The fixture's query vector is its first document's vector.
     let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
-    let rows = reader.dense(&vector, k, &mut telemetry).await.unwrap();
+    let rows = reader
+        .dense(&vector, k, false, &mut telemetry)
+        .await
+        .unwrap();
     for row in &rows {
         // Nothing outside the authorization and the filter is returned.
         assert!(reader.selected_rows().selected(row.row_id));

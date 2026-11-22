@@ -15,6 +15,7 @@ use schemars::{JsonSchema, Schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
 
+use crate::config::DIMENSIONS_MAX;
 use crate::limits::mcp::*;
 use crate::version::SchemaVersion;
 
@@ -83,6 +84,13 @@ pub struct SearchInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 2, max = 16), inner(length(min = 1, max = 4096)))]
     pub queries: Option<Vec<String>>,
+    /// Query vector of the namespace's dimensions, instead of an embedding of query. Without query the search is dense only and makes no embedding call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = DIMENSIONS_MAX))]
+    pub vector: Option<Vec<f32>>,
+    /// Exact search: score every row that passes the filter and the caller's permissions instead of probing the index. Refused as invalid_argument when more rows pass than the bound of an exact search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact: Option<bool>,
     /// Hits carrying text per query, before deduplication; default all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(max = 75))]
@@ -921,6 +929,10 @@ impl SearchInput {
             _ => Some(Filter::And { and: terms }),
         }
     }
+    /// Whether a lexical lane runs: the request has query text.
+    pub fn has_text(&self) -> bool {
+        self.query.is_some() || self.queries.is_some()
+    }
     pub fn effective_limit(&self) -> u32 {
         self.limit.unwrap_or(if self.queries.is_some() {
             MULTI_QUERY_LIMIT
@@ -935,6 +947,7 @@ impl SearchInput {
             .is_none_or(|q| bounded_text(q, MAX_QUERY_BYTES) && !q.trim().is_empty())
             && self.queries.as_ref().is_none_or(|queries| {
                 self.query.is_none()
+                    && self.vector.is_none()
                     && self.order != Some(SearchOrder::UpdatedAt)
                     && self.order_by.is_none()
                     && (2..=MAX_QUERIES).contains(&queries.len())
@@ -942,12 +955,20 @@ impl SearchInput {
                         .iter()
                         .all(|q| bounded_text(q, MAX_QUERY_BYTES) && !q.trim().is_empty())
             })
-            && (self.query.is_some()
-                || self.queries.is_some()
+            && (self.has_text()
+                || self.vector.is_some()
                 || self.order == Some(SearchOrder::UpdatedAt)
                 || self.order_by.is_some())
+            && self
+                .vector
+                .as_ref()
+                .is_none_or(|vector| (1..=DIMENSIONS_MAX as usize).contains(&vector.len()))
+            && self
+                .exact
+                .is_none_or(|_| self.has_text() || self.vector.is_some())
             && self.order_by.as_ref().is_none_or(|keys| {
                 self.query.is_none()
+                    && self.vector.is_none()
                     && self.order.is_none()
                     && (1..=MAX_ORDER_KEYS).contains(&keys.len())
                     && keys.iter().all(|key| bounded_text(&key.field, 128))

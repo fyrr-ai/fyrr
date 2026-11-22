@@ -255,6 +255,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::an_exact_scan_stops_one_row_past_its_bound": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::selection_equals_the_masked_scan_for_every_subject_and_filter": {
         "tier": "quick",
         "seconds": 0.1
@@ -1894,6 +1898,10 @@
         "seconds": 40
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_without_embedding_settings_takes_only_vectors_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_searches_by_a_query_vector_exact_or_approximate_on_storage": {
         "tier": "full",
         "seconds": 40
       },
