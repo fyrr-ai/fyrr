@@ -100,17 +100,24 @@ class Rows:
 
 class Server:
     def __init__(self, address):
-        host, port = address.split(":")
-        self.address = address
-        self.connection = http.client.HTTPConnection(host, int(port), timeout=1800)
+        self.host, port = address.split(":")
+        self.port = int(port)
 
-    def call(self, method, path, key, body):
+    def call(self, method, path, key, body=None):
+        """One request on its own connection. The clock starts when the
+        connection is made, so the connection is not in the time."""
         headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
+        connection = http.client.HTTPConnection(self.host, self.port, timeout=1800)
+        connection.connect()
         started = time.perf_counter()
-        self.connection.request(method, path, body, headers)
-        response = self.connection.getresponse()
+        try:
+            connection.request(method, path, body, headers)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # a refusal can answer before the body is sent; the answer is read
+        response = connection.getresponse()
         answer = response.read()
         elapsed = time.perf_counter() - started
+        connection.close()
         with contextlib.suppress(ValueError):
             answer = json.loads(answer)
         return response.status, answer, elapsed
@@ -182,7 +189,8 @@ def main():
     args = parser.parse_args()
     binary = Path(args.binary).resolve()
 
-    work = Path(tempfile.mkdtemp(prefix="write-", dir=ROOT / "target"))
+    # Local storage refuses a path with a symlink in it, and `target` may be one.
+    work = Path(tempfile.mkdtemp(prefix="write-", dir=ROOT / "target")).resolve()
     work.chmod(0o700)
     write_key = "fyrr_key_" + secrets.token_hex(32)
     read_key = "fyrr_key_" + secrets.token_hex(32)
@@ -193,6 +201,7 @@ def main():
         '[embedding]\nendpoint = "http://127.0.0.1:9/v1"\nmodel = "caller-supplied"\n'
         "dimensions = %d\n"
         '[identity]\nhashing_key = { env = "FYRR_BENCH_HASHING_KEY" }\n'
+        'encryption_key = { env = "FYRR_BENCH_ENCRYPTION_KEY" }\n'
         "[namespace.write_api]\nopen = true\n"
         "[[identity.api_keys]]\nname = 'writer'\nkey = { env = 'FYRR_BENCH_WRITE_KEY' }\n"
         "roles = ['write']\n"
@@ -214,6 +223,7 @@ def main():
     env = dict(
         os.environ,
         FYRR_BENCH_HASHING_KEY=secrets.token_hex(32),
+        FYRR_BENCH_ENCRYPTION_KEY=secrets.token_hex(32),
         FYRR_BENCH_WRITE_KEY=write_key,
         FYRR_BENCH_READ_KEY=read_key,
         FYRR_BENCH_OPERATOR=secrets.token_hex(16),
@@ -233,7 +243,9 @@ def main():
             stderr=(work / ("-".join(command[:2]) + ".stderr")).open("w"),
         )
 
-    subprocess.run([*base, "writer", "keys"], env=env, check=True, capture_output=True)
+    keys = subprocess.run([*base, "writer", "keys"], env=env, capture_output=True, text=True)
+    if keys.returncode:
+        raise SystemExit("writer keys failed: " + keys.stderr)
     writer_log, reader_log = work / "writer.jsonl", work / "reader.jsonl"
     writer = run(["writer", "serve", "--jobs", "1"], writer_log)
     reader = None
@@ -251,7 +263,6 @@ def main():
                     )
                     break
                 except OSError:
-                    write = Server(writer_address)
                     time.sleep(0.1)
             else:
                 raise SystemExit("the writer did not come up")
@@ -260,15 +271,11 @@ def main():
         read = Server(reader_address)
         for _ in range(600):
             try:
-                read.connection.request("GET", "/readyz")
-                response = read.connection.getresponse()
-                response.read()
-                if response.status == 200:
+                if read.call("GET", "/readyz", read_key)[0] == 200:
                     break
-                time.sleep(0.1)
             except OSError:
-                read = Server(reader_address)
-                time.sleep(0.1)
+                pass
+            time.sleep(0.1)
 
         def fetch(ns, root):
             return read.call(
@@ -288,7 +295,13 @@ def main():
         writer_ops, reader_ops = Diagnostics(writer_log), Diagnostics(reader_log)
         writer_ops.take(), reader_ops.take()
         result = {}
+        serve_log = work / "writer-serve.stderr"
+
+        def maintenance_runs():
+            return serve_log.read_text().count("event=maintained")
+
         for batch, count in PLAN:
+            maintained = maintenance_runs()
             ns = "bench-%d" % batch
             writes, reads = [], []
             for n in range(count):
@@ -306,6 +319,8 @@ def main():
                 "write": summary(writes),
                 "read": summary(reads),
                 "total": summary([w + r for w, r in zip(writes, reads, strict=False)]),
+                "maintenance_runs": maintenance_runs() - maintained,
+                "writes_over_10s": sum(1 for w in writes if w > 10),
                 "writer_object_store_ops_per_write": {
                     m: round(c / count, 2) for m, c in sorted(ops.items())
                 },
@@ -326,6 +341,7 @@ def main():
                     "index_segments": shape["index_segments"],
                 }
             result[str(batch)] = entry
+            print("batch %d done" % batch, file=sys.stderr, flush=True)
 
         # Receiving and binding the body, on the largest batch: the same rows,
         # refused after they were read and scanned, and after they were bound.

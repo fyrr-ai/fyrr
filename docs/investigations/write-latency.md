@@ -31,3 +31,43 @@ scores the timings; every number comes from those executables on the real path.
 
 Run `scripts/bench-write --storage local|fixture|s3`; it prints one JSON
 document with the machine, storage and versions.
+
+## Result: local storage
+
+Measured with the release build of this change (`fyrr 0.1.1`, full build) on **local storage** (`file://`, an XFS volume), on a 12th Gen Intel Core
+i9-12900H (20 logical CPUs, 31 GiB), Linux 7.0.0-43. The S3 fixture and real S3
+were **not measured**; the script runs them with `--storage fixture` and
+`--storage s3`. Two complete runs agree; the table is the second.
+
+| Rows per write | Writes | `write` p50 / p90 / p99 (ms) | `read` p50 / p90 / p99 (ms) | `total` p50 / p90 / p99 (ms) |
+| ---: | ---: | --- | --- | --- |
+| 1 | 1,000 | 438 / 696 / 29,785 | 110 / 210 / 351 | 549 / 912 / 29,944 |
+| 1,000 | 50 | 560 / 778 / 880 | 85 / 143 / 163 | 645 / 925 / 1,043 |
+| 50,000 | 5 | 47,462 / 50,431 / 50,431 | 57 / 120 / 120 | 47,519 / 50,517 / 50,517 |
+
+The p99 of 50 and of 5 writes is their maximum. The first run gave 416 / 774 /
+35,597 ms (`write`, 1 row), 602 / 792 / 966 ms (1,000 rows) and 57,263 / 80,402
+ms (50,000 rows, p50 / maximum).
+
+- **The tail of single-row writes is maintenance.** 16 of the 1,000 writes took
+  over 10 s (maximum 43.7 s); `writer serve` ran maintenance 15 times in that
+  phase, and a write waits for the committer's lease meanwhile. The 1,000- and
+  50,000-row phases ran it 0 times, and the 50,000-row writes took 47–50 s
+  without it.
+- **Object-store operations per write**, as the writer's storage wrapper
+  records them (local storage: calls of the storage layer, not network
+  requests): 1 row: 1,831 `GET`, 53 `HEAD`, 28 `LIST`, 65 `PUT`; 1,000 rows:
+  719 `GET`, 39 `HEAD`, 18 `LIST`, 36 `PUT`; 50,000 rows: 1,260 `GET`, 43
+  `HEAD`, 19 `LIST`, 36 `PUT` and 2 multipart uploads. A strong fetch costs the
+  reader 26–52 `GET`. These counts include the writer's maintenance work and
+  its polling of the head while it waits for the answer.
+- **After 1,000 single-row writes** the served version has 168 data files
+  (fragments) and 41 segments in each of its 12 indexes.
+- **Receiving the body is not the cost.** The 50,000-row body (about 62 MB, 128
+  dimensions) was refused with `403` after it was read and scanned in 81 ms
+  (p50 of 3) and with `400 vector_invalid` after its first 49,999 rows were
+  bound in 304 ms, against 47,462 ms for the write. JSON number parsing is 0.6 %
+  of a 50,000-row write at this dimension, so no binary vector encoding is
+  proposed.
+- `read` is a strong fetch by key after the answer: the head check and a key
+  lookup, 85 ms at p50 for 1,000 rows. It is not the latency of a ranked search.

@@ -198,11 +198,12 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     let mut fragments = 0;
     let mut index_segments = BTreeMap::<String, u64>::new();
     if let Some(pointer) = &head.content {
-        let manifest: fyrr_core::publication::ContentManifest = fyrr_reader::storage::read_contract(
-            store.as_ref(),
-            &Path::from(format!("{root}/{}", pointer.manifest)),
-        )
-        .await?;
+        let manifest: fyrr_core::publication::ContentManifest =
+            fyrr_reader::storage::read_contract(
+                store.as_ref(),
+                &Path::from(format!("{root}/{}", pointer.manifest)),
+            )
+            .await?;
         fragments = manifest
             .files
             .iter()
