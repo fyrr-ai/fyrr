@@ -62,6 +62,12 @@ pub async fn content(
     let mut taken = Vec::new();
     for document in &payload.documents {
         let old = previous.get(&document.root_id);
+        // A patch never creates a document: one that is not there is skipped.
+        if document.intent == DocumentIntent::Patch
+            && old.is_none_or(|old| old.deleted || old.content_purged)
+        {
+            continue;
+        }
         if let Some(old) = old {
             if document.intent == DocumentIntent::Replace
                 && old.deleted
@@ -138,10 +144,57 @@ pub async fn content(
             )?);
             continue;
         }
+        next.revision.clone_from(&document.source_revision);
+        if let Some(patch) = &document.patch {
+            // The stored records are rewritten with the patch's values; their
+            // vectors, and every column it does not name, are copied as stored.
+            if let Some(stated) = &patch.readers {
+                next.permission = Some(PermissionState {
+                    revision: None,
+                    readers: stated.clone(),
+                    containers: Vec::new(),
+                });
+            }
+            let stored = dataset
+                .scan()
+                .filter(&rows_filter(
+                    &envelope.source_id,
+                    std::slice::from_ref(&document.root_id),
+                ))
+                .map_err(|_| WriterError::ChangedRowsInvalid)?
+                .try_into_batch()
+                .await
+                .map_err(|_| WriterError::ChangedRowScanFailed)?;
+            let revision = document
+                .source_revision
+                .as_deref()
+                .ok_or(WriterError::DocumentRevisionMissing)?;
+            for row in 0..stored.num_rows() {
+                let kept = match &next.permission {
+                    Some(permission) => effective_readers(
+                        own_readers(&stored, row)?.as_deref(),
+                        &permission.readers,
+                    ),
+                    None => tokens(&stored, row)?,
+                };
+                if let Some(before) = readers.remove(&(
+                    document.root_id.clone(),
+                    strings(&stored, "record_id")?.value(row).to_owned(),
+                )) {
+                    acl_changed |= before.iter().any(|token| !kept.contains(token));
+                }
+                output.push(with_patch(
+                    &with_state(&stored.slice(row, 1), &next, &kept)?,
+                    patch,
+                    revision,
+                    &config.namespace.attributes,
+                )?);
+            }
+            continue;
+        }
         next.deleted = false;
         next.content_purged = false;
         next.delete_sequence = None;
-        next.revision.clone_from(&document.source_revision);
         if old.is_some_and(|s| s.content_purged)
             && fixed_readers.as_ref().is_none_or(|r| r.is_empty())
             && next

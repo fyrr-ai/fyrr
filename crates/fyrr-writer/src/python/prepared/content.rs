@@ -147,6 +147,7 @@ impl Preparation<'_> {
                     expected_prior_revision: change.source_revision.clone(),
                     permission_revision: change.permission_revision.clone(),
                     records: 0,
+                    patch: None,
                 }));
             }
             !unchanged

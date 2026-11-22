@@ -309,6 +309,222 @@ async fn identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_stor
     assert!(!events.contains("blue shirt"), "no text in the log");
 }
 
+/// The stored rows of the documents that pass `filter`, from the dataset the
+/// head serves.
+async fn stored(config: &Path, filter: &str) -> arrow_array::RecordBatch {
+    let loaded = fyrr_core::config::load(config).unwrap();
+    let head = fyrr_reader::storage::optional_head(&loaded.config)
+        .await
+        .unwrap()
+        .unwrap();
+    let dataset = fyrr_reader::storage::pinned(&loaded.config, &head)
+        .await
+        .unwrap();
+    dataset
+        .scan()
+        .filter(&format!("source_id = '_api' AND ({filter})"))
+        .unwrap()
+        .try_into_batch()
+        .await
+        .unwrap()
+}
+
+/// A patch writes the attributes it names and leaves the document as stored:
+/// the text, the vector (nothing is embedded) and the readers. It shares its
+/// request with upserts and deletes, and never creates a document.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_patches_a_document_and_keeps_what_it_does_not_name_on_storage() {
+    use arrow_array::Array;
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    embed(&root, &["blue shirt", "red hat", "green coat"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let post = async |body: Value| writer.post(WRITE_KEY, "dense-fixture", &body).await;
+    assert_eq!(
+        post(json!({
+            "settings": {"attributes": {"price": "float", "stock": "int"}},
+            "upserts": [
+                {"id": "a1", "text": "blue shirt", "price": 12.5, "stock": 3, "readers": ["grp:allow"]},
+                {"id": "a2", "text": "red hat", "price": 4.0, "readers": ["usr:nobody"]},
+            ],
+        }))
+        .await,
+        (200, json!({"upserted": 2, "deleted": 0}))
+    );
+    let vector_before = stored(&config, "root_id = 'a1'").await["vector"].to_data();
+    let calls = root.embedding.calls();
+
+    // A named attribute changes; the other attribute, the text, the vector and
+    // the readers stay. A patch of a document that is not there is skipped.
+    assert_eq!(
+        post(json!({"patches": [{"id": "a1", "price": 9.0}, {"id": "zz", "price": 1.0}]})).await,
+        (
+            200,
+            json!({"upserted": 0, "deleted": 0, "patched": 1, "skipped": 1})
+        )
+    );
+    assert_eq!(root.embedding.calls(), calls, "a patch embeds nothing");
+    let one = stored(&config, "root_id = 'a1'").await;
+    assert_eq!(one.num_rows(), 1);
+    assert_eq!(one["vector"].to_data(), vector_before);
+    assert_eq!(
+        stored(
+            &config,
+            "root_id = 'a1' AND price = 9.0 AND stock = 3 AND searchable_text = 'blue shirt'"
+        )
+        .await
+        .num_rows(),
+        1
+    );
+    assert_eq!(stored(&config, "root_id = 'zz'").await.num_rows(), 0);
+    assert_eq!(hits(&config, "blue shirt"), ["a1"], "the readers stayed");
+
+    // `null` clears an attribute; readers named by a patch replace the stored ones.
+    assert_eq!(
+        post(json!({"patches": [{"id": "a1", "stock": null, "readers": ["usr:nobody"]}]})).await,
+        (
+            200,
+            json!({"upserted": 0, "deleted": 0, "patched": 1, "skipped": 0})
+        )
+    );
+    assert_eq!(
+        stored(&config, "root_id = 'a1' AND price = 9.0 AND stock IS NULL")
+            .await
+            .num_rows(),
+        1
+    );
+    assert!(!hits(&config, "blue shirt").contains(&"a1".to_owned()));
+
+    // One request holds upserts, patches and deletes, all or none.
+    assert_eq!(
+        post(json!({
+            "upserts": [{"id": "a3", "text": "green coat", "readers": ["grp:allow"]}],
+            "patches": [{"id": "a1", "price": 1.0}, {"id": "a2", "price": 5.5}],
+            "deletes": ["a2"],
+        }))
+        .await,
+        (400, json!({"error": "duplicate_id"}))
+    );
+    assert_eq!(
+        post(json!({
+            "upserts": [{"id": "a3", "text": "green coat", "readers": ["grp:allow"]}],
+            "patches": [{"id": "a1", "price": 1.0}],
+            "deletes": ["a2"],
+        }))
+        .await,
+        (
+            200,
+            json!({"upserted": 1, "deleted": 1, "patched": 1, "skipped": 0})
+        )
+    );
+    assert_eq!(
+        stored(&config, "root_id = 'a1' AND price = 1.0")
+            .await
+            .num_rows(),
+        1
+    );
+    assert_eq!(stored(&config, "root_id = 'a3'").await.num_rows(), 1);
+    assert_eq!(stored(&config, "root_id = 'a2'").await.num_rows(), 0);
+    assert_eq!(
+        post(json!({"upserts": [{"id": "x"}], "patches": [{"id": "a1", "price": 7.0}]})).await,
+        (400, json!({"error": "text_missing"})),
+        "a refused request patches nothing"
+    );
+    assert_eq!(
+        stored(&config, "root_id = 'a1' AND price = 1.0")
+            .await
+            .num_rows(),
+        1
+    );
+
+    // A deleted document is not created again by a patch.
+    assert_eq!(
+        post(json!({"patches": [{"id": "a2", "price": 2.0}]})).await,
+        (
+            200,
+            json!({"upserted": 0, "deleted": 0, "patched": 0, "skipped": 1})
+        )
+    );
+    assert_eq!(stored(&config, "root_id = 'a2'").await.num_rows(), 0);
+
+    // The vector is never patched, nor the text that a provider embeds.
+    for (patch, code) in [
+        (
+            json!({"id": "a1", "vector": vector(5, 1024)}),
+            "vector_not_patchable",
+        ),
+        (json!({"id": "a1", "text": "red hat"}), "text_not_patchable"),
+        (json!({"id": "a1", "colour": "red"}), "attribute_undeclared"),
+        (
+            json!({"id": "a1", "price": "cheap"}),
+            "attribute_type_mismatch",
+        ),
+        (json!({"id": "a1", "readers": "grp:x"}), "readers_invalid"),
+        (json!({"price": 1.0}), "id_missing"),
+    ] {
+        assert_eq!(
+            post(json!({"patches": [patch]})).await,
+            (400, json!({"error": code}))
+        );
+    }
+}
+
+/// Where nothing embeds the text, a patch may write it, and the vector stays.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_patches_the_text_where_nothing_embeds_it_on_storage() {
+    use arrow_array::Array;
+    let (config, root) = setup_on(Backend::Local);
+    let text = std::fs::read_to_string(&config).unwrap();
+    let (from, to) = (
+        text.find("[embedding]").unwrap(),
+        text.find("[identity]").unwrap(),
+    );
+    std::fs::write(&config, format!("{}{}", &text[..from], &text[to..])).unwrap();
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let writer = Writer::start(&config, &root, address).await;
+    let fingerprint = fyrr_core::envelope::EmbeddingSettings {
+        api_style: fyrr_core::envelope::EmbeddingApiStyle::OpenaiCompatible,
+        prefix: String::new(),
+        roles: Default::default(),
+        send_dimensions: false,
+    }
+    .fingerprint("BAAI/bge-m3", 16);
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({
+                    "settings": {"embedding": {"dimensions": 16, "fingerprint": fingerprint}},
+                    "upserts": [{"id": "a", "text": "alpha", "vector": vector(0, 16)}],
+                })
+            )
+            .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    let vector_before = stored(&config, "root_id = 'a'").await["vector"].to_data();
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"patches": [{"id": "a", "text": "alpha two"}]})
+            )
+            .await,
+        (
+            200,
+            json!({"upserted": 0, "deleted": 0, "patched": 1, "skipped": 0})
+        )
+    );
+    let one = stored(&config, "root_id = 'a' AND searchable_text = 'alpha two'").await;
+    assert_eq!(one.num_rows(), 1);
+    assert_eq!(one["vector"].to_data(), vector_before);
+}
+
 /// One process writes to many namespaces at once: each is created by its
 /// first write, holds only its own documents, and is written only by a key that
 /// may write it.

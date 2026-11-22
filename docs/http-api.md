@@ -227,7 +227,7 @@ one hit fits the budget, the answer is `503 busy`, and the script stops.
 >   the writer listener.
 > - `{namespace}` is any namespace name: the first request for a name creates
 >   the namespace, and each namespace has its own lease and its own head.
-> - A request upserts rows and deletes ids, all or none. It is answered when
+> - A request upserts rows, patches rows and deletes ids, all or none. It is answered when
 >   the head that readers serve holds it, or has refused it.
 > - It needs an [API key](identity.md#identityapi_keys) with the `write` role,
 >   published with `fyrr writer keys`.
@@ -246,6 +246,7 @@ The body is one JSON object (`application/json`, no `Content-Encoding`):
 | Key | Meaning |
 | --- | --- |
 | `upserts` | Rows. A row is an object with an `id` (string, its key in the namespace), its text under the key `text_attribute`, `readers` (`usr:<id>` or `grp:<id>`; ignored by an open namespace), optionally its `vector` (a list of numbers) and a value for any declared [attribute](tuning.md#namespaceattributes). A row replaces the document with that `id`, readers included. |
+| `patches` | Rows that change a document without replacing it. A row is an object with an `id`, and the attributes to write: a declared [attribute](tuning.md#namespaceattributes) (`null` clears it), `readers`, or the text under the key `text_attribute`. Everything a patch does not name stays as stored, the vector included, and nothing is embedded. A patch of an `id` that does not exist is skipped and never creates a document. |
 | `deletes` | IDs to delete. An ID that does not exist is a delete of nothing. |
 | `settings` | The [settings](tuning.md#namespace) of a namespace that does not exist yet, laid over the process defaults. For an existing namespace it must not change any: `409 namespace_settings_fixed`. |
 
@@ -272,8 +273,17 @@ without an answer is published with the next request for its namespace.
 The namespace is created by the first request, with its settings, and a
 request with only `settings` creates it. A row is one record: its text is at
 most 16 KiB, and it is not chunked. The same `id` twice in one request is
-`400 duplicate_id`. The answer is `{"upserted":n,"deleted":m}`, the rows of the
-request. A body over `writer.envelope_max_bytes` or with more rows than
+`400 duplicate_id`, across `upserts`, `patches` and `deletes`. The answer is
+`{"upserted":n,"deleted":m}`, the rows of the request. A request with `patches`
+adds `"patched":p`, the patches of documents that exist, and `"skipped":q`, the
+patches of those that do not; a document is counted as it is published when the
+request is prepared.
+
+A patch of a vector (`vector`) is `400 vector_not_patchable`. A patch of the text is
+`400 text_not_patchable` while the namespace has an
+[`[embedding]`](configuration.md#embedding) provider, because the stored vector
+would no longer match it; a namespace without one takes the text and keeps its
+vector. A body over `writer.envelope_max_bytes` or with more rows than
 `writer.envelope_max_rows` is `413`; the body is counted as it arrives. A
 request holds one envelope: more than `writer.commit.group_max_rows` records
 or `group_max_bytes` is `413 request_too_large`.
@@ -294,6 +304,6 @@ request was accepted does not cancel it.
 | `not_found` | `404` | `{namespace}` is not a namespace name, or the process has no `[namespace.write_api]`. |
 | `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
 | `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
-| `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `embedding_not_configured`, `document_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
+| `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `vector_not_patchable`, `text_not_patchable`, `embedding_not_configured`, `document_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
 | `namespace_settings_fixed`, `namespace_not_writable`, `namespace_not_empty`, `namespace_changed`, `rejected` | `409` | The namespace has other settings, takes its documents from connectors, is to be created over envelopes that a deleted namespace left, was replaced by another while the request was prepared, or the committer refused the request (nothing of it is applied). |
 | `busy`, `unavailable`, `outcome_unknown` | `503` | The writer is busy, storage or the published keys cannot be read, or the answer did not come within 10 minutes; `Retry-After` is 1. |

@@ -946,10 +946,11 @@ async fn envelope_work(
                         .ok_or(WriterError::EnvelopeBoundsInvalid)
                 },
             )?;
+            // A delete and a patch each touch a record that is not in a fragment.
             let deletes = p
                 .documents
                 .iter()
-                .filter(|d| d.intent == DocumentIntent::Delete)
+                .filter(|d| d.intent != DocumentIntent::Replace)
                 .count() as u64;
             (
                 rows.checked_add(deletes)

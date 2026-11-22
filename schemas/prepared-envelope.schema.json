@@ -360,7 +360,18 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0,
-          "description": "Records written for this document (0 for a delete)."
+          "description": "Records written for this document (0 for a delete or a patch)."
+        },
+        "patch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DocumentPatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What a `Patch` writes; present for that intent only."
         }
       },
       "required": [
@@ -369,6 +380,37 @@
         "records"
       ],
       "description": "Replacement or delete intent for one document."
+    },
+    "DocumentPatch": {
+      "type": "object",
+      "properties": {
+        "readers": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Hashed readers that replace the document's; `null` keeps them."
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The new text of the record; `null` keeps it."
+        },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Attribute values by name; a `null` clears the attribute."
+        }
+      },
+      "required": [
+        "attributes"
+      ],
+      "description": "The values a patch writes into the stored records of a document. Every\ncolumn it does not name stays as stored, the vector included."
     },
     "DocumentIntent": {
       "oneOf": [
@@ -381,6 +423,11 @@
           "type": "string",
           "const": "delete",
           "description": "Remove every record of the document."
+        },
+        {
+          "type": "string",
+          "const": "patch",
+          "description": "Write the values of `patch` into the records of an existing document;\na document that does not exist is skipped, never created."
         }
       ],
       "description": "What the committer does with a document."

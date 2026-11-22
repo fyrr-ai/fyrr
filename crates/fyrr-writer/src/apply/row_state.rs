@@ -154,6 +154,14 @@ pub fn keys_filter(source: &str, roots: &[String]) -> String {
         roots.iter().map(|r| sql(r)).collect::<Vec<_>>().join(",")
     )
 }
+/// The content rows of the documents `roots`, without their tombstones.
+pub fn rows_filter(source: &str, roots: &[String]) -> String {
+    format!(
+        "source_id = {} AND root_id IN ({})",
+        sql(source),
+        roots.iter().map(|r| sql(r)).collect::<Vec<_>>().join(",")
+    )
+}
 pub fn strings<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray> {
     batch
         .column_by_name(name)
@@ -238,6 +246,57 @@ pub(crate) fn with_state(
         Arc::new(StringArray::from(vec![metadata.to_string()])),
     )?;
     replace(&result, "readers", readers(permissions))
+}
+/// A one-row batch with the values of `patch` written over it: its revision,
+/// the text and the typed attributes the patch names. The vector and every
+/// other column stay as they are.
+pub(crate) fn with_patch(
+    batch: &RecordBatch,
+    patch: &fyrr_core::envelope::DocumentPatch,
+    revision: &str,
+    attributes: &fyrr_core::attributes::AttributeSchema,
+) -> Result<RecordBatch> {
+    let mut batch = replace(
+        batch,
+        "source_revision",
+        Arc::new(StringArray::from(vec![revision])),
+    )?;
+    if let Some(text) = &patch.text {
+        let mut metadata: serde_json::Value =
+            serde_json::from_str(strings(&batch, "metadata_json")?.value(0))
+                .map_err(|_| WriterError::ChangedRowsInvalid)?;
+        metadata["_fyrr_record_revision"] = fyrr_core::limits::record_revision(
+            strings(&batch, "source_id")?.value(0),
+            strings(&batch, "root_id")?.value(0),
+            strings(&batch, "record_id")?.value(0),
+            text,
+        )
+        .into();
+        metadata["_fyrr_text_utf8_bytes"] = (text.len() as u64).into();
+        batch = replace(
+            &batch,
+            "searchable_text",
+            Arc::new(StringArray::from(vec![text.as_str()])),
+        )?;
+        batch = replace(
+            &batch,
+            "metadata_json",
+            Arc::new(StringArray::from(vec![metadata.to_string()])),
+        )?;
+    }
+    let named: fyrr_core::attributes::AttributeSchema = attributes
+        .iter()
+        .filter(|(name, _)| patch.attributes.contains_key(*name))
+        .map(|(name, kind)| (name.clone(), *kind))
+        .collect();
+    let mut columns = crate::prepare::AttributeColumns::new(&named);
+    columns
+        .push(&patch.attributes)
+        .map_err(|_| WriterError::ChangedRowsInvalid)?;
+    for (name, array) in named.keys().zip(columns.finish()) {
+        batch = replace(&batch, name, array)?;
+    }
+    Ok(batch)
 }
 pub(crate) fn marker_row(
     dimensions: u32,

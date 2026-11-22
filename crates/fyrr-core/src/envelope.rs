@@ -88,8 +88,25 @@ pub struct EnvelopeDocument {
     pub expected_prior_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_revision: Option<String>,
-    /// Records written for this document (0 for a delete).
+    /// Records written for this document (0 for a delete or a patch).
     pub records: u32,
+    /// What a `Patch` writes; present for that intent only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<DocumentPatch>,
+}
+
+/// The values a patch writes into the stored records of a document. Every
+/// column it does not name stays as stored, the vector included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DocumentPatch {
+    /// Hashed readers that replace the document's; `null` keeps them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readers: Option<Vec<String>>,
+    /// The new text of the record; `null` keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Attribute values by name; a `null` clears the attribute.
+    pub attributes: serde_json::Map<String, serde_json::Value>,
 }
 
 /// What the committer does with a document.
@@ -100,6 +117,9 @@ pub enum DocumentIntent {
     Replace,
     /// Remove every record of the document.
     Delete,
+    /// Write the values of `patch` into the records of an existing document;
+    /// a document that does not exist is skipped, never created.
+    Patch,
 }
 
 /// A Lance fragment written by the worker but not yet committed.
@@ -314,8 +334,8 @@ impl Contract for PreparedEnvelope {
                 for document in &content.documents {
                     check_id("documents[].root_id", &document.root_id)?;
                     match (document.intent, &document.source_revision) {
-                        (DocumentIntent::Replace, None) => {
-                            return Err("a replace needs source_revision".into());
+                        (DocumentIntent::Replace | DocumentIntent::Patch, None) => {
+                            return Err("a replace or a patch needs source_revision".into());
                         }
                         (_, Some(revision)) => {
                             check_text(
@@ -326,8 +346,11 @@ impl Contract for PreparedEnvelope {
                         }
                         (DocumentIntent::Delete, None) => {}
                     }
-                    if document.intent == DocumentIntent::Delete && document.records != 0 {
-                        return Err("a delete writes no records".into());
+                    if document.intent != DocumentIntent::Replace && document.records != 0 {
+                        return Err("only a replace writes records".into());
+                    }
+                    if (document.intent == DocumentIntent::Patch) != document.patch.is_some() {
+                        return Err("a patch, and only a patch, carries patch values".into());
                     }
                 }
                 SyncKind::Content

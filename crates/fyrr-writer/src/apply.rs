@@ -7,11 +7,11 @@ mod row_state;
 pub use content_apply::content;
 pub use row_state::{
     DocumentState, PermissionState, container_token, keys_filter, permission_readers, reader_token,
-    state, state_source, states, strings, tokens,
+    rows_filter, state, state_source, states, strings, tokens,
 };
 pub(crate) use row_state::{
-    OWN_READERS, effective_readers, marker_row, own_readers, with_own_readers, with_state,
-    with_typed,
+    OWN_READERS, effective_readers, marker_row, own_readers, with_own_readers, with_patch,
+    with_state, with_typed,
 };
 
 use arrow_array::types::Float16Type;
