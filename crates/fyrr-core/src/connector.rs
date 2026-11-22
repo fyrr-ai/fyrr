@@ -24,6 +24,10 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+/// The source ID of the documents of a namespace written through the HTTP API.
+/// A configured source ID starts with a letter or digit, so none can be this.
+pub const API_SOURCE_ID: &str = "_api";
+
 use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;

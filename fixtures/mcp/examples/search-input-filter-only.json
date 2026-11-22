@@ -15,5 +15,6 @@
   "updated_before": null,
   "attributes": null,
   "exclude": null,
+  "filter": null,
   "deadline_ms": null
 }

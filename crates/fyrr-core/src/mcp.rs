@@ -120,6 +120,8 @@ pub struct SearchInput {
     /// Documents to omit, e.g. ones already returned.
     #[schemars(length(min = 1, max = 100))]
     pub exclude: Option<Vec<DocumentKey>>,
+    /// Filter tree of `and`, `or`, `not` and comparisons; a hit also matches the arguments above.
+    pub filter: Option<Filter>,
     /// Deadline in milliseconds; default 10000.
     #[schemars(range(min = 1, max = 300_000))]
     pub deadline_ms: Option<u32>,
@@ -152,6 +154,119 @@ pub struct AttributeFilter {
     pub key: String,
     #[schemars(length(min = 1, max = 64), inner(length(min = 1, max = 384)))]
     pub values: Vec<String>,
+}
+
+/// A filter tree: `and` and `or` of one or more filters, `not` of one, or a
+/// comparison of a field with a value. At most [`MAX_FILTER_NODES`] nodes in
+/// [`MAX_FILTER_DEPTH`] levels. It is read from the request in one pass that
+/// stops at the first bound it exceeds.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum Filter {
+    And { and: Vec<Filter> },
+    Or { or: Vec<Filter> },
+    Not { not: Box<Filter> },
+    Compare(Comparison),
+}
+
+/// A field compared with a value; `in` and `not_in` take an array of values.
+/// The reader checks the field and the value against the namespace's schema.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Comparison {
+    pub field: String,
+    pub op: Op,
+    pub value: Value,
+}
+
+/// How a field is compared with a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Op {
+    Eq,
+    Ne,
+    In,
+    NotIn,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+}
+
+impl<'de> Deserialize<'de> for Filter {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut nodes = MAX_FILTER_NODES;
+        Self::parse(
+            Value::deserialize(deserializer)?,
+            &mut nodes,
+            MAX_FILTER_DEPTH,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+impl Filter {
+    fn parse_group(
+        items: Value,
+        nodes: &mut usize,
+        depth: usize,
+    ) -> Result<Vec<Filter>, &'static str> {
+        let Value::Array(items) = items else {
+            return Err("filter group is not an array");
+        };
+        if items.is_empty() {
+            return Err("filter group is empty");
+        }
+        items
+            .into_iter()
+            .map(|item| Self::parse(item, nodes, depth))
+            .collect()
+    }
+
+    /// Takes the request's JSON apart without copying it: every node spends one
+    /// of `nodes` and one level of `depth`. Never reports a value.
+    fn parse(value: Value, nodes: &mut usize, depth: usize) -> Result<Self, &'static str> {
+        *nodes = nodes.checked_sub(1).ok_or("filter has too many nodes")?;
+        let depth = depth.checked_sub(1).ok_or("filter is nested too deeply")?;
+        let Value::Object(mut object) = value else {
+            return Err("filter node is not an object");
+        };
+        if object.len() == 1 {
+            if let Some(items) = object.remove("and") {
+                return Ok(Self::And {
+                    and: Self::parse_group(items, nodes, depth)?,
+                });
+            }
+            if let Some(items) = object.remove("or") {
+                return Ok(Self::Or {
+                    or: Self::parse_group(items, nodes, depth)?,
+                });
+            }
+            if let Some(inner) = object.remove("not") {
+                return Ok(Self::Not {
+                    not: Box::new(Self::parse(inner, nodes, depth)?),
+                });
+            }
+        }
+        let comparison: Comparison = serde_json::from_value(Value::Object(object))
+            .map_err(|_| "filter comparison is not a field, an op and a value")?;
+        let scalar = |value: &Value| match value {
+            Value::String(text) => text.len() <= crate::limits::schema::MAX_VALUE_BYTES,
+            Value::Null | Value::Bool(_) | Value::Number(_) => true,
+            _ => false,
+        };
+        let value_fits = match &comparison.value {
+            Value::Array(values) => {
+                (1..=MAX_FILTER_VALUES).contains(&values.len()) && values.iter().all(scalar)
+            }
+            value => scalar(value),
+        };
+        if bounded_text(&comparison.field, 128) && value_fits {
+            Ok(Self::Compare(comparison))
+        } else {
+            Err("filter comparison is out of bounds")
+        }
+    }
 }
 
 /// A document's logical identity.
@@ -610,7 +725,33 @@ fn tool_schema<T: JsonSchema>(serialize: bool) -> Value {
     let mut value = schema.to_value();
     compact_tool_schema(&mut value);
     strip_numeric_formats(&mut value);
+    reference_definitions(&mut value);
     value
+}
+
+/// A recursive type is both inlined where it is used and kept in `$defs`;
+/// points the inlined copy at the definition instead, to keep `tools/list` small.
+fn reference_definitions(root: &mut Value) {
+    fn walk(value: &mut Value, defs: &serde_json::Map<String, Value>) {
+        let children: Vec<&mut Value> = match value {
+            Value::Object(object) => object
+                .iter_mut()
+                .filter(|(key, _)| key.as_str() != "$defs")
+                .map(|(_, child)| child)
+                .collect(),
+            Value::Array(items) => items.iter_mut().collect(),
+            _ => return,
+        };
+        for child in children {
+            match defs.iter().find(|(_, definition)| *definition == &*child) {
+                Some((name, _)) => *child = json!({ "$ref": format!("#/$defs/{name}") }),
+                None => walk(child, defs),
+            }
+        }
+    }
+    if let Some(defs) = root.get("$defs").and_then(Value::as_object).cloned() {
+        walk(root, &defs);
+    }
 }
 
 /// Tool descriptions state semantics and units once; nested schemas retain constraints.
@@ -700,6 +841,63 @@ fn valid_deadline(value: Option<u32>) -> bool {
     value.is_none_or(|v| (1..=MAX_DEADLINE_MS).contains(&v))
 }
 impl SearchInput {
+    /// The one filter tree of the request: the filter arguments (`sources`,
+    /// `source_types`, `projects`, `authors`, `updated_after`, `updated_before`,
+    /// `attributes` and `exclude`) and `filter`, joined by `and`. A connector
+    /// attribute `key=value` is a label of the field `attributes`.
+    pub fn filter_tree(&self) -> Option<Filter> {
+        let compare = |field: &str, op, value: Value| {
+            Filter::Compare(Comparison {
+                field: field.into(),
+                op,
+                value,
+            })
+        };
+        let mut terms = Vec::new();
+        for (field, values) in [
+            ("source_id", &self.sources),
+            ("source_type", &self.source_types),
+            ("project", &self.projects),
+            ("author", &self.authors),
+        ] {
+            if let Some(values) = values {
+                terms.push(compare(field, Op::In, json!(values)));
+            }
+        }
+        for (op, bound) in [(Op::Gt, self.updated_after), (Op::Lt, self.updated_before)] {
+            if let Some(bound) = bound {
+                terms.push(compare("updated_at", op, json!(bound)));
+            }
+        }
+        for attribute in self.attributes.iter().flatten() {
+            let labels: Vec<_> = attribute
+                .values
+                .iter()
+                .map(|value| format!("{}={value}", attribute.key))
+                .collect();
+            terms.push(compare("attributes", Op::In, json!(labels)));
+        }
+        if let Some(excluded) = &self.exclude {
+            let documents = excluded
+                .iter()
+                .map(|key| Filter::And {
+                    and: vec![
+                        compare("source_id", Op::Eq, json!(key.source_id)),
+                        compare("root_id", Op::Eq, json!(key.root_id)),
+                    ],
+                })
+                .collect();
+            terms.push(Filter::Not {
+                not: Box::new(Filter::Or { or: documents }),
+            });
+        }
+        terms.extend(self.filter.clone());
+        match terms.len() {
+            0 => None,
+            1 => terms.pop(),
+            _ => Some(Filter::And { and: terms }),
+        }
+    }
     pub fn effective_limit(&self) -> u32 {
         self.limit.unwrap_or(if self.queries.is_some() {
             MULTI_QUERY_LIMIT

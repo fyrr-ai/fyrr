@@ -38,7 +38,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["std", "ser
 clap = { version = "4.6", default-features = false, features = ["std", "help", "usage", "error-context", "derive", "env"] }
 schemars = { version = "1.2", default-features = false, features = ["std", "derive", "chrono04"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = { version = "1.0.151", features = ["preserve_order"] }
+serde_json = { version = "1.0.151", features = ["preserve_order", "raw_value"] }
 thiserror = "2.0.21"
 tokio = { version = "1.53", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 toml = { version = "1.2.1", default-features = false, features = ["parse", "display", "serde", "std"] }

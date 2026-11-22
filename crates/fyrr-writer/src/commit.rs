@@ -34,7 +34,7 @@ pub(crate) use history::RestoreHistory;
 pub(crate) use namespace::configured_identity;
 pub(crate) use namespace::namespace_settings;
 pub(crate) use namespace::sources_allowed;
-pub use namespace::{create, delete};
+pub use namespace::{create, create_with, delete};
 pub(crate) use publication::publish;
 
 pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<PreparedEnvelope>> {
@@ -498,6 +498,9 @@ pub async fn commit_until_stopped(
     let config = &config
         .with_settings(&policy.settings)
         .ok_or(WriterError::ConfigurationInvalid)?;
+    if config.namespace.write_api.is_some() && !config.sources.is_empty() {
+        return Err(WriterError::ApiNamespaceHasSources);
+    }
     if group::idle(config, &head, &policy).await? {
         let (receipt, maintenance_due) = served_receipt(config, &head).await?;
         let tick = Tick {

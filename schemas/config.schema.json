@@ -173,6 +173,17 @@
           },
           "description": "Typed attributes declared for a new namespace: name to `string`, `int`,\n`float`, `bool` or `datetime`. Each is a nullable column with its own\nindex.",
           "default": {}
+        },
+        "write_api": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WriteApiSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present: the writer serves `POST /v1/namespaces/{namespace}/documents`,\nand a namespace created from this file or through that route takes its\ndocuments only from the API (no `[[sources]]`). The keys are the\ndefaults of a new namespace; an existing one keeps its own."
         }
       },
       "required": [
@@ -441,6 +452,22 @@
         }
       ],
       "description": "The type of an attribute."
+    },
+    "WriteApiSettings": {
+      "type": "object",
+      "properties": {
+        "text_attribute": {
+          "type": "string",
+          "description": "The key of a row that holds its text: embedded, full-text indexed and\nreturned as the content of the record. It is not a typed attribute and\nnot one of `attributes`.",
+          "default": "text"
+        },
+        "open": {
+          "type": "boolean",
+          "description": "`false`: a row is readable by the reader tokens it names, and a row\nthat names none by nobody. `true`: every authenticated subject of the\ndeployment reads every row.",
+          "default": false
+        }
+      },
+      "description": "How a namespace written through the HTTP API stores and shows its rows. Fixed\nfor the life of the namespace."
     },
     "StorageConfig": {
       "type": "object",
