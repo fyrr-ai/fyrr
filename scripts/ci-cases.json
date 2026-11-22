@@ -323,6 +323,18 @@
         "tier": "quick",
         "seconds": 0.1
       },
+      "full:fyrr-reader:lib:fyrr_reader/tools::aggregate::tests::the_average_of_large_finite_floats_is_finite": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-reader:lib:fyrr_reader/tools::aggregate::tests::a_sum_of_whole_numbers_is_exact_in_the_64_bit_range": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-reader:lib:fyrr_reader/tools::aggregate::tests::negative_zero_is_zero_in_a_key_and_a_minimum": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-reader:lib:fyrr_reader/tools::cursor_tests::list_cursor_maximum_identifiers_and_windows_fit_and_roundtrip": {
         "tier": "quick",
         "seconds": 0.001

@@ -69,8 +69,9 @@ impl Cell {
             AttributeType::Uint => {
                 Self::Uint(column::<UInt64Array>(batch, name, PublicationRowsInvalid)?.value(row))
             }
+            // `-0.0` is `0.0`: one group, one minimum.
             AttributeType::Float => Self::Float(Float(
-                column::<Float64Array>(batch, name, PublicationRowsInvalid)?.value(row),
+                column::<Float64Array>(batch, name, PublicationRowsInvalid)?.value(row) + 0.0,
             )),
             AttributeType::Bool => {
                 Self::Bool(column::<BooleanArray>(batch, name, PublicationRowsInvalid)?.value(row))
@@ -156,7 +157,12 @@ impl Measure {
         match (self.op, cell) {
             (_, Cell::Int(value)) if self.sums() => acc.int += i128::from(value),
             (_, Cell::Uint(value)) if self.sums() => acc.int += i128::from(value),
-            (_, Cell::Float(value)) if self.sums() => acc.float += value.0,
+            (AggregateOp::Sum, Cell::Float(value)) => acc.float += value.0,
+            // A running mean: the sum of two large finite values overflows, their mean does not.
+            (AggregateOp::Avg, Cell::Float(value)) => {
+                let n = acc.count as f64;
+                acc.float = acc.float - acc.float / n + value.0 / n;
+            }
             (AggregateOp::Min, cell) if acc.best.as_ref().is_none_or(|best| cell < *best) => {
                 acc.best = Some(cell);
             }
@@ -172,20 +178,23 @@ impl Measure {
         matches!(self.op, AggregateOp::Sum | AggregateOp::Avg)
     }
 
-    #[allow(clippy::cast_precision_loss)] // shortcut: an average is a float; exact sums are integers
+    #[allow(clippy::cast_precision_loss)] // an average is a float
     fn finish(&self, acc: &Acc) -> Value {
         match self.op {
             AggregateOp::Count => acc.count.into(),
             _ if acc.count == 0 => Value::Null,
             AggregateOp::Sum => match self.column {
                 Some((_, AttributeType::Float)) => float_json(acc.float),
-                // shortcut: a sum past 64 bits is a float; exact sums wait for a request that needs them
+                // shortcut: a sum past the 64-bit range is an approximate float; exact sums wait for a request that needs them
                 _ => i64::try_from(acc.int)
                     .map(Value::from)
                     .or_else(|_| u64::try_from(acc.int).map(Value::from))
                     .unwrap_or_else(|_| float_json(acc.int as f64)),
             },
-            AggregateOp::Avg => float_json((acc.int as f64 + acc.float) / acc.count as f64),
+            AggregateOp::Avg => match self.column {
+                Some((_, AttributeType::Float)) => float_json(acc.float),
+                _ => float_json(acc.int as f64 / acc.count as f64),
+            },
             AggregateOp::Min | AggregateOp::Max => {
                 acc.best.as_ref().map_or(Value::Null, Cell::json)
             }
@@ -198,7 +207,9 @@ impl Measure {
 #[derive(Clone, Default)]
 struct Acc {
     count: u64,
+    /// The sum of whole numbers.
     int: i128,
+    /// The sum of floats, or their running mean for `avg`.
     float: f64,
     best: Option<Cell>,
 }
@@ -272,5 +283,85 @@ impl PreparedReader {
                 .collect(),
             metadata,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::ArrayRef;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    fn batch(floats: &[f64], ints: &[i64]) -> RecordBatch {
+        RecordBatch::try_from_iter([
+            (
+                "f",
+                Arc::new(Float64Array::from(floats.to_vec())) as ArrayRef,
+            ),
+            ("i", Arc::new(Int64Array::from(ints.to_vec())) as ArrayRef),
+        ])
+        .unwrap()
+    }
+
+    fn run(op: AggregateOp, field: &str, kind: AttributeType, batch: &RecordBatch) -> Value {
+        let measure = Measure {
+            op,
+            column: Some((field.into(), kind)),
+        };
+        let mut acc = Acc::default();
+        for row in 0..batch.num_rows() {
+            measure.add(&mut acc, batch, row).unwrap();
+        }
+        measure.finish(&acc)
+    }
+
+    #[test]
+    fn the_average_of_large_finite_floats_is_finite() {
+        let batch = batch(&[1e308, 1e308, 1e308], &[0, 0, 0]);
+        let average = run(AggregateOp::Avg, "f", AttributeType::Float, &batch);
+        assert_eq!(average.as_f64(), Some(1e308));
+        // The sum does overflow, and JSON holds no infinity.
+        assert_eq!(
+            run(AggregateOp::Sum, "f", AttributeType::Float, &batch),
+            Value::Null
+        );
+        assert_eq!(
+            run(AggregateOp::Avg, "i", AttributeType::Int, &batch),
+            json!(0.0)
+        );
+    }
+
+    #[test]
+    fn a_sum_of_whole_numbers_is_exact_in_the_64_bit_range() {
+        let batch = batch(&[0.0, 0.0], &[i64::MAX - 1, 1]);
+        assert_eq!(
+            run(AggregateOp::Sum, "i", AttributeType::Int, &batch),
+            json!(i64::MAX)
+        );
+        let batch = batch_of(&[i64::MAX, 1]);
+        assert_eq!(
+            run(AggregateOp::Sum, "i", AttributeType::Int, &batch),
+            json!(9_223_372_036_854_775_808_u64)
+        );
+    }
+
+    fn batch_of(ints: &[i64]) -> RecordBatch {
+        batch(&vec![0.0; ints.len()], ints)
+    }
+
+    #[test]
+    fn negative_zero_is_zero_in_a_key_and_a_minimum() {
+        let batch = batch(&[-0.0, 0.0], &[0, 0]);
+        let keys: Vec<_> = (0..2)
+            .map(|row| Cell::read(&batch, "f", AttributeType::Float, row).unwrap())
+            .collect();
+        assert_eq!(keys[0], keys[1]);
+        assert_eq!(
+            run(AggregateOp::Min, "f", AttributeType::Float, &batch)
+                .as_f64()
+                .map(f64::is_sign_negative),
+            Some(false)
+        );
     }
 }

@@ -241,8 +241,10 @@ numbers, text bytewise and `datetime` by time. A document with no value in a
 `group_by` field is in no group. Every count is of documents, not rows: a
 document that has several records counts once and gives one value, the one of
 its first row. A `null` value is skipped, so the `sum`, `avg`, `min` or `max`
-of no value is `null`. A `sum` of whole numbers is exact; past 64 bits it is a
-float, and the `sum` and `avg` of floats are floats (`null` when not finite).
+of no value is `null`. A `sum` of whole numbers is exact while it fits 64 bits
+(a signed integer, or an unsigned one when it is above the signed range) and an
+approximate float beyond; an `avg` is a float, and so is the `sum` of floats
+(`null` when not finite). `-0.0` is `0.0`.
 `datetime` and `uuid` values are written as in a hit's attributes.
 
 Only documents the caller may read are counted. More than
