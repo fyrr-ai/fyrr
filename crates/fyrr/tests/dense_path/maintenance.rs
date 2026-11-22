@@ -1633,8 +1633,7 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
     fyrr_core::clock::advance(Duration::from_secs(25 * 3600)).unwrap();
     command(&commit, &["writer", "maintain"]);
     command(&commit, &["writer", "maintain"]);
-    // Every maintenance step publishes, so those manifests are retained; the
-    // earlier history is gone but for the newest publication before them.
+    // Every maintenance step publishes, so those manifests are retained.
     let (head, _) = publication(&commit).await;
     let kept = fyrr_reader::storage::manifest_chain(
         store.clone(),
@@ -1646,14 +1645,19 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
     .unwrap();
     let publications = control_objects(&commit, "publications").await;
     assert_eq!(kept.len(), publications, "unreachable manifests remain");
-    // The manifest where the window ends stays; everything before it goes.
-    // `chain[0]` is kept for the grace after its retirement, `chain[1]` is that
-    // boundary.
-    let remains = |id: &str| kept.iter().any(|m| m.publication_id == id);
-    assert!(remains(&chain[0].publication_id) && remains(&chain[1].publication_id));
-    for old in &chain[2..] {
+    // Of the manifests past the window, one is kept for the grace after its
+    // retirement and one is the boundary where the walk ends: the history
+    // before them, the original publications included, is gone.
+    let window = chrono::Duration::hours(24);
+    let outside: Vec<_> = kept
+        .iter()
+        .filter(|m| fyrr_core::clock::now() - m.committed_at >= window)
+        .map(|m| m.publication_id.clone())
+        .collect();
+    assert_eq!(outside.len(), 2, "{outside:?}");
+    for old in &chain {
         assert!(
-            !remains(&old.publication_id),
+            !kept.iter().any(|m| m.publication_id == old.publication_id),
             "{} remains",
             old.publication_id
         );
@@ -1689,12 +1693,13 @@ async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
         pending
     );
 
-    // The window moved on: `chain[0]` is the boundary now, `chain[1]` goes.
+    // The window moved on: the grace one is the boundary now, the old boundary
+    // goes, and the history ends at a manifest younger than the window.
     fyrr_core::clock::advance(Duration::from_secs(2 * 3600)).unwrap();
     command(&commit, &["writer", "maintain"]);
-    store.head(&path(&chain[0].publication_id)).await.unwrap();
+    store.head(&path(&outside[0])).await.unwrap();
     assert!(matches!(
-        store.head(&path(&chain[1].publication_id)).await,
+        store.head(&path(&outside[1])).await,
         Err(object_store::Error::NotFound { .. })
     ));
 
