@@ -32,6 +32,7 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
         ("namespace_settings_fixed", false),
         ("attribute_type_change_refused", false),
         ("attribute_removal_refused", false),
+        ("namespace_changed", false),
         ("embedding_local_cache_configuration_invalid", false),
         ("embedding_local_cache_unavailable", true),
         ("embedding_local_cache_invalid", true),

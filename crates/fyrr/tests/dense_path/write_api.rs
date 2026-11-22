@@ -2125,18 +2125,7 @@ async fn identity_write_api_changes_the_schema_of_a_live_namespace_on_storage() 
             .filter(|name| name != "attributes_idx")
             .collect()
     };
-    let listed = |filter: Value| -> Vec<String> {
-        let mut client = Mcp::open(&config);
-        let mut hits: Vec<String> =
-            body(client.call("search", json!({"output": "metadata", "filter": filter, "order_by": [{"field": "root_id", "direction": "asc"}]})))["hits"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
-                .collect();
-        hits.sort();
-        hits
-    };
+    let listed = |filter: Value| listing(&config, filter);
     let set =
         |names: &[&str]| -> BTreeSet<String> { names.iter().map(|n| (*n).to_owned()).collect() };
 
@@ -2241,21 +2230,7 @@ async fn identity_write_api_changes_the_schema_of_a_live_namespace_on_storage() 
         listed(json!({"field": "stock", "op": "eq", "value": null})),
         ["a", "b"]
     );
-    let mut built = None;
-    for _ in 0..40 {
-        let maintained = run(&config, &["writer", "maintain"]);
-        if maintained.status.success() {
-            built = Some(maintained);
-            break;
-        }
-        assert!(
-            String::from_utf8_lossy(&maintained.stderr).contains("committer_busy"),
-            "{}",
-            report(&maintained)
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    assert!(built.is_some(), "maintenance never got the lease");
+    run_when_free(&config, &["writer", "maintain"]).await;
     assert_eq!(
         names().await,
         set(&[
@@ -2348,5 +2323,167 @@ async fn identity_write_api_changes_the_schema_of_a_live_namespace_on_storage() 
     assert_eq!(
         listed(json!({"field": "stock", "op": "gt", "value": 2})),
         ["c"]
+    );
+}
+
+/// The ids a listing of the namespace returns under `filter`, in order.
+fn listing(config: &Path, filter: Value) -> Vec<String> {
+    let mut client = Mcp::open(config);
+    body(client.call(
+        "search",
+        json!({"output": "metadata", "filter": filter,
+               "order_by": [{"field": "root_id", "direction": "asc"}]}),
+    ))["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// Runs a writer command that needs the namespace's lease, which the service
+/// holds while it publishes: tries again until it is free.
+async fn run_when_free(config: &Path, args: &[&str]) -> Value {
+    for _ in 0..40 {
+        let output = run(config, args);
+        if output.status.success() {
+            return serde_json::from_slice(&output.stdout).expect("JSON output");
+        }
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("committer_busy"),
+            "{}",
+            report(&output)
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("the namespace lease never came free");
+}
+
+/// A column added to a table that already has columns takes the next field id,
+/// so a table's columns are not in name order: values written after the schema
+/// grew still land in the attribute they were written for, whether they are
+/// upserted or patched.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_keeps_the_columns_of_added_attributes_in_table_order_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, format!("{text}\n[writer]\nthreads = 2\n")).unwrap();
+    embed(&root, &["alpha", "bravo", "charlie"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let post = async |body: Value| writer.post(WRITE_KEY, "dense-fixture", &body).await;
+    let row = |id: &str, text: &str, more: Value| {
+        let mut row = json!({"id": id, "text": text, "readers": ["grp:allow"]});
+        row.as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        row
+    };
+    assert_eq!(
+        post(json!({"settings": {"attributes": {"z": "int"}},
+                    "upserts": [row("r1", "alpha", json!({"z": 7}))]}))
+        .await
+        .0,
+        200
+    );
+    // Added after `z`, and sorted before it.
+    assert_eq!(
+        post(json!({"settings": {"attributes": {"a": "string", "b": "float"}}}))
+            .await
+            .0,
+        200
+    );
+    let (head, _) = super::coordination::publication(&config).await;
+    // A schema change carries nothing else, and a refused one changes nothing.
+    assert_eq!(
+        post(json!({"settings": {"attributes": {"c": "int"}},
+                    "upserts": [row("r9", "alpha", json!({}))]}))
+        .await,
+        (400, json!({"error": "schema_change_with_rows"}))
+    );
+    let (after, manifest) = super::coordination::publication(&config).await;
+    assert_eq!(after.content, head.content);
+    assert_eq!(manifest.attributes.len(), 3);
+    assert_eq!(
+        post(json!({"upserts": [
+            row("r2", "bravo", json!({"z": 1, "a": "x", "b": 2.5})),
+            row("r3", "charlie", json!({"z": 2, "a": "y", "b": 0.5})),
+        ]}))
+        .await,
+        (200, json!({"upserted": 2, "deleted": 0}))
+    );
+    let eq = |field: &str, value: Value| json!({"field": field, "op": "eq", "value": value});
+    assert_eq!(listing(&config, eq("z", json!(7))), ["r1"]);
+    assert_eq!(listing(&config, eq("z", json!(1))), ["r2"]);
+    assert_eq!(listing(&config, eq("a", json!("y"))), ["r3"]);
+    assert_eq!(
+        listing(&config, json!({"field": "b", "op": "gt", "value": 1.0})),
+        ["r2"]
+    );
+    assert_eq!(listing(&config, eq("a", Value::Null)), ["r1"]);
+    assert_eq!(
+        post(json!({"patches": [{"id": "r2", "a": "w", "z": 3}]}))
+            .await
+            .0,
+        200
+    );
+    assert_eq!(listing(&config, eq("a", json!("w"))), ["r2"]);
+    assert_eq!(listing(&config, eq("z", json!(3))), ["r2"]);
+    assert_eq!(listing(&config, eq("b", json!(2.5))), ["r2"]);
+    assert_eq!(success(&config, &["writer", "verify"])["verified"], true);
+}
+
+/// A restore to a version from before an attribute was added gives the table the
+/// column the policy declares, null for its rows, and publishes a table the
+/// reader opens.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_restores_a_version_from_before_an_attribute_was_added_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, format!("{text}\n[writer]\nthreads = 2\n")).unwrap();
+    embed(&root, &["alpha"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let post = async |body: Value| writer.post(WRITE_KEY, "dense-fixture", &body).await;
+    assert_eq!(
+        post(json!({"settings": {"attributes": {"price": "float"}},
+                    "upserts": [{"id": "a", "text": "alpha", "readers": ["grp:allow"], "price": 2.5}]}))
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        post(json!({"settings": {"attributes": {"stock": "int"}}}))
+            .await
+            .0,
+        200
+    );
+    let (_, added) = super::coordination::publication(&config).await;
+    assert!(added.attributes.contains_key("stock"));
+    let restored = run_when_free(&config, &["writer", "rollback"]).await;
+    assert_eq!(restored["restored"], true);
+    // The publication has the column the namespace declares, and a reader opens it.
+    let (_, manifest) = super::coordination::publication(&config).await;
+    assert_eq!(manifest.attributes, added.attributes);
+    let eq = |field: &str, value: Value| json!({"field": field, "op": "eq", "value": value});
+    assert_eq!(listing(&config, eq("stock", Value::Null)), ["a"]);
+    assert_eq!(listing(&config, eq("price", json!(2.5))), ["a"]);
+    assert_eq!(success(&config, &["writer", "verify"])["verified"], true);
+    // The restored namespace takes rows with the attribute.
+    assert_eq!(
+        post(
+            json!({"upserts": [{"id": "b", "text": "alpha", "readers": ["grp:allow"], "stock": 4}]})
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        listing(&config, json!({"field": "stock", "op": "gt", "value": 1})),
+        ["b"]
     );
 }

@@ -127,6 +127,10 @@ impl WriteApi {
     }
 }
 
+/// How long a schema change waits for the lease: tries, and the pause between them.
+const LEASE_WAIT_TRIES: u32 = 50;
+const LEASE_WAIT: Duration = Duration::from_millis(100);
+
 struct ApiError(u16, &'static str);
 impl ApiError {
     fn response(self) -> Response {
@@ -150,6 +154,7 @@ impl From<WriterError> for ApiError {
             WriterError::NamespaceSettingsFixed => Self(409, "namespace_settings_fixed"),
             WriterError::AttributeTypeChange => Self(409, "attribute_type_change_refused"),
             WriterError::AttributeRemoval => Self(409, "attribute_removal_refused"),
+            WriterError::NamespaceChanged => Self(409, "namespace_changed"),
             WriterError::CommitterBusy => Self(503, "busy"),
             WriterError::PublicationInvalid => Self(400, "settings_invalid"),
             WriterError::DocumentInvalid => Self(400, "document_invalid"),
@@ -445,13 +450,13 @@ fn merge(into: &mut Value, patch: &Value) {
 fn laid_over(
     base: &NamespaceSettings,
     request: Option<&Value>,
-) -> Result<NamespaceSettings, ApiError> {
-    let mut value = serde_json::to_value(base).map_err(|_| ApiError(400, "settings_invalid"))?;
+) -> Result<NamespaceSettings, WriterError> {
+    let invalid = WriterError::PublicationInvalid;
+    let mut value = serde_json::to_value(base).map_err(|_| invalid)?;
     if let Some(request) = request {
         merge(&mut value, request);
     }
-    let mut settings: NamespaceSettings =
-        serde_json::from_value(value).map_err(|_| ApiError(400, "settings_invalid"))?;
+    let mut settings: NamespaceSettings = serde_json::from_value(value).map_err(|_| invalid)?;
     // A request declares the model and dimension of its vectors. The profile
     // that binds them is derived unless the request sends it: a wrong one is
     // refused by the settings' validation, or differs from an existing namespace's.
@@ -463,7 +468,7 @@ fn laid_over(
     }
     // A request cannot make a namespace that the API does not write.
     if settings.write_api.is_none() {
-        return Err(ApiError(400, "settings_invalid"));
+        return Err(invalid);
     }
     // An option that is the default is not an entry: a schema has one spelling.
     settings
@@ -479,20 +484,50 @@ fn laid_over(
 fn changed_schema(
     current: &NamespaceSettings,
     request: Option<&Value>,
-) -> Result<NamespaceSettings, ApiError> {
+) -> Result<NamespaceSettings, WriterError> {
     // `null` is how a request says that an attribute goes.
     if request
         .and_then(|request| request.get("attributes")?.as_object())
         .is_some_and(|attributes| attributes.values().any(Value::is_null))
     {
-        return Err(WriterError::AttributeRemoval.into());
+        return Err(WriterError::AttributeRemoval);
     }
     let next = laid_over(current, request)?;
     crate::commit::check_schema_change(current, &next)?;
     if next != *current && (next.validate().is_err() || next.attributes.contains_key("id")) {
-        return Err(ApiError(400, "settings_invalid"));
+        return Err(WriterError::PublicationInvalid);
     }
     Ok(next)
+}
+
+/// The attributes in the order of the table's columns, which is the order they
+/// were added in. A fragment names its columns by position, so the columns of
+/// the rows follow it, whatever the order of the names. A table that does not
+/// exist yet is created with them in name order.
+async fn attribute_order(
+    config: &Config,
+    head: Option<&fyrr_core::publication::ServingHead>,
+) -> Result<Vec<String>, ApiError> {
+    let attributes = &config.namespace.attributes;
+    let mut order = Vec::new();
+    if let Some(head) = head.filter(|head| head.content.is_some() && !attributes.is_empty()) {
+        let dataset = fyrr_reader::storage::pinned(config, head).await?;
+        order.extend(
+            dataset
+                .schema()
+                .fields
+                .iter()
+                .filter(|field| attributes.contains_key(&field.name))
+                .map(|field| field.name.clone()),
+        );
+    }
+    let missing: Vec<_> = attributes
+        .keys()
+        .filter(|name| !order.contains(name))
+        .cloned()
+        .collect();
+    order.extend(missing);
+    Ok(order)
 }
 
 fn api_source() -> SourceConfig {
@@ -670,7 +705,7 @@ async fn committed(
 /// patches and the filters of its conditions by the id they test.
 type Checked = (
     Vec<Upsert>,
-    Vec<ArrayRef>,
+    Vec<(String, ArrayRef)>,
     Patches,
     BTreeMap<String, Filter>,
 );
@@ -678,7 +713,12 @@ type Checked = (
 /// The checked rows of the request, against the schema, the text key and the
 /// vector dimension the namespace was created with. The rows are taken from
 /// `body`, not copied.
-fn checked(body: &mut Payload, config: &Config, text_key: &str) -> Result<Checked, ApiError> {
+fn checked(
+    body: &mut Payload,
+    config: &Config,
+    text_key: &str,
+    order: Vec<String>,
+) -> Result<Checked, ApiError> {
     let attributes = &config.namespace.attributes;
     let mut conditions = Conditions {
         given: std::mem::take(&mut body.conditions),
@@ -691,7 +731,7 @@ fn checked(body: &mut Payload, config: &Config, text_key: &str) -> Result<Checke
         }
     }
     let mut rows = Vec::with_capacity(body.upserts.0.len());
-    let mut columns = crate::prepare::AttributeColumns::new(attributes);
+    let mut columns = crate::prepare::AttributeColumns::new(attributes, order);
     for raw in std::mem::take(&mut body.upserts.0) {
         // A row is read one at a time, as a tree only when it is of a size a row can be.
         if raw.get().len() > ROW_MAX_BYTES {
@@ -931,6 +971,40 @@ async fn execute(
     if settings.write_api.is_none() {
         return Err(ApiError(409, "namespace_not_writable"));
     }
+    if let Some((head, policy)) = &existing
+        && settings != policy.settings
+    {
+        // A schema change carries settings only: the rows of a request that is
+        // refused or lost cannot leave a changed schema behind.
+        if !(body.upserts.0.is_empty()
+            && body.patches.0.is_empty()
+            && body.deletes.0.is_empty()
+            && body.conditions.is_empty())
+        {
+            return Err(ApiError(400, "schema_change_with_rows"));
+        }
+        // The change is made again under the lease, to the settings it finds
+        // there. The committer holds the lease while it publishes, and a request
+        // it answered may not have released it yet: wait for it a moment.
+        let mut waited = 0;
+        loop {
+            let changed = crate::commit::change_schema(config, |held, current| {
+                if held.incarnation != head.incarnation {
+                    return Err(WriterError::NamespaceChanged);
+                }
+                changed_schema(current, requested.as_ref())
+            })
+            .await;
+            match changed {
+                Err(WriterError::CommitterBusy) if waited < LEASE_WAIT_TRIES => {
+                    waited += 1;
+                    tokio::time::sleep(LEASE_WAIT).await;
+                }
+                other => break other?,
+            }
+        }
+        return Ok(json!({"upserted": 0, "deleted": 0}));
+    }
     let config = config
         .with_settings(&settings)
         .ok_or(ApiError(503, "unavailable"))?;
@@ -939,7 +1013,8 @@ async fn execute(
         .write_api
         .as_ref()
         .map_or("text", |api| api.text_attribute.as_str());
-    let (rows, attributes, patches, conditions) = checked(&mut body, &config, text_key)?;
+    let order = attribute_order(&config, existing.as_ref().map(|(head, _)| head)).await?;
+    let (rows, attributes, patches, conditions) = checked(&mut body, &config, text_key, order)?;
     let (upserted, deleted) = (rows.len() as u64, body.deletes.0.len() as u64);
     if upserted + deleted + patches.len() as u64 == 0 && requested.is_none() {
         return Err(ApiError(400, "empty_request"));
@@ -961,18 +1036,7 @@ async fn execute(
     let changes = changes(&config, rows, body.deletes.0, patches, conditions)?;
     let mut answer = json!({"upserted": upserted, "deleted": deleted});
     let (head, served) = match existing {
-        Some((head, served)) if served.settings == settings => (head, served),
-        // The schema is published before the request's rows are accepted. The
-        // head it leaves is the one the envelope is prepared against.
-        Some(_) => {
-            crate::commit::change_schema(&config, settings.clone()).await?;
-            let head = fyrr_reader::storage::optional_head(&config)
-                .await?
-                .ok_or(ApiError(503, "unavailable"))?;
-            let policy: PolicyArtifact =
-                fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-            (head, policy)
-        }
+        Some(existing) => existing,
         None => {
             leftovers(store.as_ref(), &root).await?;
             crate::commit::create_with(&config, settings.clone()).await?;
@@ -1063,7 +1127,7 @@ async fn prepare(
     config: &Config,
     head: &fyrr_core::publication::ServingHead,
     changes: Vec<ContentChange>,
-    attributes: Vec<ArrayRef>,
+    attributes: Vec<(String, ArrayRef)>,
     slot: OwnedMutexGuard<()>,
 ) -> Result<(String, String), ApiError> {
     let lease = CursorLease::acquire(config, API_SOURCE_ID, SyncKind::Content).await?;
@@ -1083,7 +1147,7 @@ async fn write_envelope(
     head: &fyrr_core::publication::ServingHead,
     lease: &CursorLease,
     mut changes: Vec<ContentChange>,
-    attributes: Vec<ArrayRef>,
+    attributes: Vec<(String, ArrayRef)>,
 ) -> Result<(String, String), ApiError> {
     let (store, root) = fyrr_reader::storage::namespace_store(config)?;
     let mut state = lease.state().await?;

@@ -29,17 +29,23 @@ pub(crate) fn check_schema_change(
     Ok(())
 }
 
-/// Publishes the namespace with the settings `next` under the lease, judged
-/// against the settings it has then. A new attribute is a column that reads null
+/// Publishes the namespace with the settings `change` makes of the ones it has
+/// under the lease, so that two changes at once both apply. `change` also sees
+/// the head, to refuse a namespace that is not the one the request was made
+/// for. A new attribute is a column that reads null
 /// for the rows already stored. An index switched off is dropped with the
 /// publication; one switched on is built by the next maintenance, and a filter
 /// on its attribute is a scan until then.
-pub(crate) async fn change_schema(config: &Config, next: NamespaceSettings) -> Result<()> {
+pub(crate) async fn change_schema(
+    config: &Config,
+    change: impl FnOnce(&ServingHead, &NamespaceSettings) -> Result<NamespaceSettings> + Send,
+) -> Result<()> {
     LeaseGuard::with(config, |lease| async move {
         let (store, root) = namespace_store(config)?;
         let mut head = lease.head().await?;
         let current: PolicyArtifact =
             fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+        let next = change(&head, &current.settings)?;
         check_schema_change(&current.settings, &next)?;
         if current.settings == next {
             return Ok(());

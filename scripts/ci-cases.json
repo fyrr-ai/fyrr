@@ -2037,6 +2037,14 @@
         "tier": "full",
         "seconds": 40
       },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_keeps_the_columns_of_added_attributes_in_table_order_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_restores_a_version_from_before_an_attribute_was_added_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
       "full:fyrr:test:dense_path/write_api::identity_write_api_stores_filters_and_orders_the_other_attribute_types_on_storage": {
         "tier": "full",
         "seconds": 2

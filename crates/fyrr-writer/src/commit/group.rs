@@ -34,8 +34,9 @@ pub(crate) async fn commit_one(
     };
     let current_policy: PolicyArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-    // The namespace's settings never change: a configuration that does not
-    // carry them judges no batch, rather than rejecting it for good.
+    // The namespace's settings change only by a schema request: a configuration
+    // that does not carry the ones the policy holds now judges no batch, rather
+    // than rejecting it for good.
     if current_policy.settings != namespace_settings(config) {
         return Err(WriterError::NamespaceSettingsFixed);
     }
@@ -595,7 +596,7 @@ pub(crate) async fn build_attribute_indexes(
 /// Adds a nullable column for each declared attribute. Lance records it in the
 /// table's metadata: no data file is written, and rows read as null until a
 /// value is written.
-async fn add_attribute_columns(
+pub(crate) async fn add_attribute_columns(
     config: &Config,
     lease: &LeaseGuard,
     dataset: &mut Dataset,

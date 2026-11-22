@@ -353,8 +353,9 @@ request of the same publication replaces or deletes counts as skipped.
 ### Changing the schema
 
 A request whose `settings` hold `attributes` and `attribute_indexes` changes
-the schema of a namespace that exists; the request may carry nothing else. The
-settings are laid over the namespace's: an attribute named again with its type
+the schema of a namespace that exists; the request may carry nothing else: with
+rows, deletes or conditions it is `400 schema_change_with_rows` and changes
+nothing. The settings are laid over the namespace's: an attribute named again with its type
 and an index option named again change nothing.
 
 ```json
@@ -363,9 +364,10 @@ and an index option named again change nothing.
 ```
 
 The answer is `{"upserted":0,"deleted":0}` once the head that readers serve
-holds the new schema; readers keep the version they serve until then. A request
-with rows and `settings` publishes the schema first and then takes the rows
-with it, and a request whose rows are refused changes nothing.
+holds the new schema; readers keep the version they serve until then. The
+settings are laid over the ones the namespace has when the change is made, so
+two changes at once both apply. A request for a namespace that was replaced
+meanwhile is `409 namespace_changed`.
 
 - A new attribute is a nullable column: it reads `null` for every document
   written before it, and a filter with `{"op": "eq", "value": null}` finds them.
@@ -383,7 +385,7 @@ with it, and a request whose rows are refused changes nothing.
   attribute is `409 attribute_removal_refused`. Any other setting, a name that
   is not declared or an option the type cannot have is refused as it is for a
   namespace that is created (`409 namespace_settings_fixed`, `400 settings_invalid`).
-  A change of the schema while the committer publishes is `503 busy`: send it again.
+  A change of the schema waits about 5 s for the committer to publish, then is `503 busy`: send it again.
 
 A manifest that records index options is [contract](../CONTRIBUTING.md#rules-for-changes)
 version 5.0, and a policy artifact whose settings hold them 4.0. A build that
@@ -451,7 +453,7 @@ request was accepted does not cancel it.
 | `not_found` | `404` | `{namespace}` is not a namespace name, or the process has no `[namespace.write_api]`. |
 | `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
 | `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
-| `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `vector_not_patchable`, `text_not_patchable`, `embedding_not_configured`, `document_invalid`, `condition_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
+| `schema_change_with_rows`, `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `vector_not_patchable`, `text_not_patchable`, `embedding_not_configured`, `document_invalid`, `condition_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
 | `namespace_settings_fixed`, `namespace_not_writable`, `namespace_not_empty`, `namespace_changed`, `rejected` | `409` | The namespace has other settings, takes its documents from connectors, is to be created over envelopes that a deleted namespace left, was replaced by another while the request was prepared, or the committer refused the request (nothing of it is applied). |
 | `attribute_type_change_refused`, `attribute_removal_refused` | `409` | The settings give an attribute of the namespace another type, or remove it. |
 | `busy`, `unavailable`, `outcome_unknown` | `503` | The writer is busy, storage or the published keys cannot be read, or the answer did not come within 10 minutes; `Retry-After` is 1. |
