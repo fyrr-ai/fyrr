@@ -447,6 +447,26 @@
         "tier": "quick",
         "seconds": 0.01
       },
+      "full:fyrr-writer:lib:fyrr_writer/commit::permission_reads::tests::a_read_is_released_only_with_its_complete_read_envelope": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::permission_reads::tests::a_missing_sequence_holds_the_read": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::permission_reads::tests::the_envelopes_of_an_abandoned_read_are_never_released": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::permission_reads::tests::a_resumed_read_releases_what_the_failed_one_wrote": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::permission_reads::tests::a_split_read_continues_from_its_first_pending_envelope": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
       "full:fyrr-writer:lib:fyrr_writer/commit::history::tests::replacement_read_preserves_rejection_fences": {
         "tier": "quick",
         "seconds": 0.0
@@ -1899,6 +1919,10 @@
       "full:fyrr:test:dense_path/incremental::incremental_large_members_snapshot_passes_dry_run_and_a_prepared_run_on_storage": {
         "tier": "full",
         "seconds": 60.0
+      },
+      "full:fyrr:test:dense_path/incremental::incremental_full_permission_read_never_releases_an_abandoned_batch_on_storage": {
+        "tier": "full",
+        "seconds": 40.0
       },
       "full:fyrr:test:dense_path/incremental::incremental_idle_member_reread_publishes_nothing_on_storage": {
         "tier": "full",

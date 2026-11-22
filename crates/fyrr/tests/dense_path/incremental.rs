@@ -191,6 +191,47 @@ pub(super) fn publish_initial(worker: &Path, commit: &Path, root: &Path) {
     publish(commit);
 }
 
+/// A permission read that fails after its first batch and is abandoned by a
+/// `--full` read: the batch it wrote is never published, whichever read ends
+/// later.
+#[tokio::test]
+#[ignore = "real CLI and local storage; scripts/ci"]
+async fn incremental_full_permission_read_never_releases_an_abandoned_batch_on_storage() {
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    let granted = row_readers(&rows(&worker).await, "a");
+    assert!(!granted.is_empty());
+    // The read revokes `a` in its first batch and fails before its second.
+    input(
+        &root,
+        json!({"epoch":2,"permissions":[[{"id":"a","revision":"p2","readers":[]}],[{"id":"b","revision":"p2","readers":[]}]],"fail_permissions_after":1}),
+    );
+    let failed = super::coordination::worker_command(&worker)
+        .args(["writer", "sync", "incremental", "--kind", "permissions"])
+        .output()
+        .unwrap();
+    assert!(!failed.status.success(), "the scripted failure");
+    publish(&commit);
+    assert_eq!(row_readers(&rows(&worker).await, "a"), granted);
+    // `a` is gone from the source; a --full read starts over without it.
+    input(
+        &root,
+        json!({"epoch":3,"permissions":[[{"id":"b","revision":"p2","readers":[]}]]}),
+    );
+    worker_sync(&worker, &["incremental", "--kind", "permissions", "--full"]);
+    publish(&commit);
+    let batch = rows(&worker).await;
+    assert!(
+        row_readers(&batch, "b").is_empty(),
+        "the full read is published"
+    );
+    assert_eq!(
+        row_readers(&batch, "a"),
+        granted,
+        "the batch of the abandoned read is not"
+    );
+}
+
 /// A member read that repeats the published snapshot writes no envelope and
 /// publishes nothing.
 #[tokio::test]
@@ -825,6 +866,7 @@ async fn rejected_authorization(kind: SyncKind) {
     // back until its read ends, and only then reaches the rejection.
     if let EnvelopePayload::Permissions(payload) = &mut late.payload {
         payload.complete_read = true;
+        payload.first_sequence = late.sequence;
     }
     store
         .put(

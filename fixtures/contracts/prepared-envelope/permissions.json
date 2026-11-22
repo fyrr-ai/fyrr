@@ -21,6 +21,7 @@
   "payload": {
     "type": "permissions",
     "complete_read": false,
+    "first_sequence": 0,
     "documents": [
       {
         "root_id": "1AbCdEfGhIjKlMnOpQrStUv",

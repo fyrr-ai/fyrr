@@ -156,6 +156,8 @@ class Incremental(Connector):
                 ],
                 cursor=f"{data['epoch']}-{index}",
             )
+            if data.get("fail_permissions_after") == index + 1:
+                raise RuntimeError("scripted failure")
 
     def members(self, cursor: str | None) -> Iterator[PrincipalBatch]:
         data = self.data()

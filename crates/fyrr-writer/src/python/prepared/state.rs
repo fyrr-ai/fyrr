@@ -170,21 +170,14 @@ pub(super) struct Pending {
     /// The newest rejection generation that a complete-read envelope ended.
     pub(super) completed_generation: u32,
     pub(super) members_tail: Option<(u64, bool)>,
-    /// The newest unpublished permission envelope of this source, and whether
-    /// it is the complete-read envelope that ends a read.
-    permissions_tail: Option<(u64, bool)>,
+    /// The first unpublished permission envelope of this source after its newest
+    /// complete-read envelope, with its rejection generation: a read that has
+    /// not ended, which a read resuming from the cursor continues.
+    pub(super) permissions_open: Option<(u64, u32)>,
     pub(super) store: Arc<dyn ObjectStore>,
     content_count: u64,
     content_bytes: u64,
     markers: Vec<RejectionMarker>,
-}
-
-impl Pending {
-    /// Whether an earlier read of this source left permission envelopes that no
-    /// complete-read envelope releases yet.
-    pub(super) fn permission_read_open(&self) -> bool {
-        self.permissions_tail.is_some_and(|(_, complete)| !complete)
-    }
 }
 
 impl Preparation<'_> {
@@ -199,7 +192,8 @@ impl Preparation<'_> {
         let mut durable_generation = 0;
         let mut durable_restore_sequence = 0;
         let mut members_tail = None;
-        let mut permissions_tail = None;
+        let mut newest_complete_read = 0;
+        let mut unpublished_permissions = Vec::new();
         let mut completed_generation = 0;
         evidence.refresh(self.config, self.rt, head)?;
         let Snapshot {
@@ -294,11 +288,14 @@ impl Preparation<'_> {
                 {
                     members_tail = Some((envelope.sequence, part.last));
                 }
-                if let EnvelopePayload::Permissions(part) = &envelope.payload
-                    && !applied.contains(&envelope.envelope_id)
-                    && permissions_tail.is_none_or(|(sequence, _)| envelope.sequence > sequence)
-                {
-                    permissions_tail = Some((envelope.sequence, part.complete_read));
+                if let EnvelopePayload::Permissions(part) = &envelope.payload {
+                    if part.complete_read {
+                        newest_complete_read = newest_complete_read.max(envelope.sequence);
+                    }
+                    if !applied.contains(&envelope.envelope_id) {
+                        unpublished_permissions
+                            .push((envelope.sequence, envelope.rejection_generation));
+                    }
                 }
                 durable_cursors.push((
                     envelope.sequence,
@@ -313,6 +310,10 @@ impl Preparation<'_> {
                 }
             }
         }
+        let permissions_open = unpublished_permissions
+            .into_iter()
+            .filter(|(sequence, _)| *sequence > newest_complete_read)
+            .min();
         Ok(Pending {
             paths,
             content_paths,
@@ -321,7 +322,7 @@ impl Preparation<'_> {
             restore_sequence: durable_restore_sequence,
             completed_generation,
             members_tail,
-            permissions_tail,
+            permissions_open,
             store,
             content_count,
             content_bytes,

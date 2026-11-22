@@ -322,12 +322,13 @@ pub async fn non_content(
     state: &mut CursorState,
     lease: &crate::sync_lease::CursorLease,
     base: Option<BaseHead>,
-    complete_read: bool,
+    // The sequence of the first envelope of the read that this envelope ends.
+    complete_read: Option<u64>,
 ) -> Result<()> {
     use fyrr_core::connector::BatchBody;
     // A permission read that changes nothing publishes nothing: only the cursor
     // moves. Replaying its window after a lost cursor is harmless.
-    if !complete_read
+    if complete_read.is_none()
         && let BatchBody::PermissionChanges {
             documents,
             container_grants,
@@ -377,7 +378,7 @@ pub async fn non_content(
                 lease,
                 base.clone(),
                 complete_read,
-                advances && !complete_read,
+                advances && complete_read.is_none(),
             )
             .await?;
         }
@@ -391,7 +392,7 @@ pub async fn non_content(
         lease,
         base,
         complete_read,
-        !complete_read,
+        complete_read.is_none(),
     )
     .await
 }
@@ -404,7 +405,7 @@ async fn non_content_page(
     state: &mut CursorState,
     lease: &crate::sync_lease::CursorLease,
     base: Option<BaseHead>,
-    complete_read: bool,
+    complete_read: Option<u64>,
     advances_cursor: bool,
 ) -> Result<()> {
     use fyrr_core::connector::BatchBody;
@@ -439,7 +440,8 @@ async fn non_content_page(
                     .collect::<Result<_, _>>()?;
             }
             EnvelopePayload::Permissions(PermissionsPayload {
-                complete_read,
+                complete_read: complete_read.is_some(),
+                first_sequence: complete_read.unwrap_or(0),
                 documents,
                 container_grants,
             })
@@ -456,7 +458,7 @@ async fn non_content_page(
             )
             .await?;
             EnvelopePayload::Members(MembersPayload {
-                complete_read,
+                complete_read: complete_read.is_some(),
                 snapshot_id: part.snapshot_id.clone(),
                 snapshot_object: object,
                 snapshot_digest: hash,

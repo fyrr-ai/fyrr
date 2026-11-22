@@ -231,7 +231,23 @@ impl Preparation<'_> {
             let mut checker =
                 BatchChecker::new(&self.source.id, self.kind, limits, state.cursor.clone());
             let cursor = state.cursor.clone();
-            let first_sequence = state.sequence;
+            // The sequence of the first envelope of the read that ends here: a
+            // read resumed from its cursor continues the one that did not end,
+            // any other (a first or a --full read) starts a new one, and
+            // the envelopes the abandoned read left are never released.
+            let written = state.sequence;
+            let first_sequence = match pending.permissions_open {
+                Some((first, generation))
+                    if self.kind == SyncKind::Permissions
+                        && state.cursor.is_some()
+                        && generation == state.rejection_generation =>
+                {
+                    first
+                }
+                _ => written
+                    .checked_add(1)
+                    .ok_or(WriterError::CursorSequenceOverflow)?,
+            };
             let request = Request {
                 source_json: &source_json,
                 kind: self.kind,
@@ -274,7 +290,7 @@ impl Preparation<'_> {
                             state,
                             self.lease,
                             base.clone(),
-                            false,
+                            None,
                         ))
                     }
                 },
@@ -294,12 +310,12 @@ impl Preparation<'_> {
                 return Err(WriterError::MembershipSnapshotIncomplete);
             }
             // A permission read is published whole or not at all: it ends with a
-            // complete-read envelope, and the committer holds back the read's
-            // envelopes until it exists. The read that replaces a rejected
-            // generation always ends with one, which also consumes the rejection
-            // markers. Any other read ends with one only when it, or an earlier
-            // read that failed, wrote an envelope: a read that changed nothing
-            // writes nothing.
+            // complete-read envelope that names its first envelope, and the
+            // committer holds back the read's envelopes until it exists. The read
+            // that replaces a rejected generation always ends with one, which
+            // also consumes the rejection markers. Any other read ends with one
+            // only when it wrote an envelope or left an earlier read's envelopes
+            // unreleased: a read that changed nothing writes nothing.
             if !held.is_empty() {
                 // Only a whole snapshot read here, parts 0 to last, can be
                 // compared; a read resumed after an earlier part was written
@@ -340,7 +356,7 @@ impl Preparation<'_> {
                             state,
                             self.lease,
                             base.clone(),
-                            false,
+                            None,
                         ))?;
                     }
                 }
@@ -348,7 +364,7 @@ impl Preparation<'_> {
             if (replaces_rejection
                 && (self.kind == SyncKind::Permissions || self.kind == SyncKind::Members))
                 || (self.kind == SyncKind::Permissions
-                    && (state.sequence != first_sequence || pending.permission_read_open()))
+                    && (state.sequence != written || pending.permissions_open.is_some()))
             {
                 let batch = ConnectorBatch {
                     schema_version: fyrr_core::connector::CONNECTOR_CONTRACT_VERSION,
@@ -382,7 +398,7 @@ impl Preparation<'_> {
                     state,
                     self.lease,
                     base.clone(),
-                    true,
+                    Some(first_sequence),
                 ))?;
             }
             Ok(checker.stats)

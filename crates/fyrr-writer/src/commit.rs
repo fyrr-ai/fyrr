@@ -27,6 +27,7 @@ use std::sync::Arc;
 mod group;
 pub(crate) mod history;
 mod namespace;
+pub(crate) mod permission_reads;
 mod publication;
 
 pub(crate) use group::commit_one;
@@ -37,6 +38,19 @@ pub use namespace::{create, delete};
 pub(crate) use publication::publish;
 
 pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<PreparedEnvelope>> {
+    let mut result = list_pending(config, head).await?;
+    // A listing is not a snapshot: an envelope written while it ran can fall in
+    // a page already read, and the complete-read envelope that follows it in a
+    // later one. Listing again, after the marker is known to exist, shows every
+    // envelope of the read it ends.
+    if result.iter().any(|e| permission_reads::ended(e).is_some()) {
+        result = list_pending(config, head).await?;
+    }
+    permission_reads::keep_ended_reads(&mut result);
+    Ok(result)
+}
+
+async fn list_pending(config: &Config, head: &ServingHead) -> Result<Vec<PreparedEnvelope>> {
     let mut result = Vec::new();
     let (paths, applied) = envelope_paths(config, head).await?;
     let paths: Vec<_> = paths
@@ -55,29 +69,7 @@ pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<Prepared
         result.push(envelope);
     }
     result.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
-    hold_unfinished_permission_reads(&mut result);
     Ok(result)
-}
-
-/// A permission read is published whole or not at all: its envelopes wait until
-/// its terminal complete-read envelope exists. A source's permission envelopes
-/// newer than its newest complete-read envelope belong to a read that has not
-/// finished (it failed or is running), so they are not committable yet; the read
-/// that resumes it ends with the envelope that releases them.
-pub(crate) fn hold_unfinished_permission_reads(envelopes: &mut Vec<PreparedEnvelope>) {
-    let mut complete: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
-    for e in envelopes.iter() {
-        if e.kind == fyrr_core::connector::SyncKind::Permissions && crate::apply::complete_read(e) {
-            let newest = complete.entry(e.source_id.clone()).or_default();
-            *newest = (*newest).max(e.sequence);
-        }
-    }
-    envelopes.retain(|e| {
-        e.kind != fyrr_core::connector::SyncKind::Permissions
-            || complete
-                .get(&e.source_id)
-                .is_some_and(|newest| e.sequence <= *newest)
-    });
 }
 
 pub async fn envelope_paths(

@@ -314,6 +314,10 @@ pub(crate) async fn cleanup_held(
             }
         }
     }
+    let abandoned = crate::commit::permission_reads::abandoned(
+        &envelopes.iter().map(|(_, e)| e).collect::<Vec<_>>(),
+        &applied,
+    );
     let mut retired = Vec::new();
     for (path, envelope) in envelopes {
         if retired.len() as u64 >= config.writer.commit.group_max_rows {
@@ -329,7 +333,8 @@ pub(crate) async fn cleanup_held(
             || unresolved.contains(&envelope.envelope_id)
             || latest_applied.get(&(envelope.source_id.clone(), envelope.kind.as_str()))
                 == Some(&envelope.sequence)
-            || !applied.contains(&envelope.envelope_id)
+            || (!applied.contains(&envelope.envelope_id)
+                && !abandoned.contains(&envelope.envelope_id))
             || multipart.is_some_and(|id| {
                 keep_multipart.contains(&(
                     envelope.source_id.clone(),
