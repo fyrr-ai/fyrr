@@ -658,6 +658,19 @@ async fn identity_write_api_searches_by_a_query_vector_exact_or_approximate_on_s
     assert_eq!(filtered, ["a", "c"]);
     assert_eq!(root.embedding.calls(), calls, "no embedding call");
 
+    // An exact search whose text cannot be embedded fails instead of
+    // answering from the lexical lane alone, as the same search without exact does.
+    root.embedding.reject("alpha");
+    assert_eq!(
+        listed(json!({"query": "alpha", "limit": 3}))[0],
+        "a",
+        "the lexical lane answers"
+    );
+    error(
+        client.call("search", json!({"query": "alpha", "exact": true})),
+        "storage_unavailable",
+    );
+
     let mut short = query.clone();
     short.pop();
     for arguments in [

@@ -91,9 +91,6 @@ impl PreparedReader {
             return Err(InvalidArgument);
         }
         self.authorization()?;
-        if exact {
-            exact_scan_bound(self.selected_rows().max_len().unwrap_or(0))?;
-        }
         let wanted = k.min(
             usize::try_from(self.selected_rows().max_len().unwrap_or(0))
                 .map_err(|_| StorageUnavailable)?,

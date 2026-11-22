@@ -211,6 +211,10 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-reader:lib:fyrr_reader/retrieval::tests::a_search_without_text_keeps_the_order_by_distance_whatever_the_weights": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-reader:lib:fyrr_reader/retrieval::tests::composition_cases": {
         "tier": "quick",
         "seconds": 0.001

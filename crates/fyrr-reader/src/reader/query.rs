@@ -140,6 +140,9 @@ impl PreparedReader {
             embedding::validate(vector, self.config.embedding.dimensions)
                 .map_err(|_| InvalidArgument)?;
         }
+        if args.exact == Some(true) {
+            super::dense::exact_scan_bound(self.selected_rows().max_len().unwrap_or(0))?;
+        }
         if self.selected_rows().max_len().unwrap_or(0) == 0 {
             let mut metadata = self.metadata(Telemetry::default());
             metadata.degraded = vec![Lane::Dense];
@@ -378,6 +381,10 @@ impl PreparedReader {
                 }
             }
         }
+        // An exact search never settles for the lexical lane alone.
+        if failed && args.exact == Some(true) {
+            return Err(EmbeddingUnavailable);
+        }
         let mut results = Vec::with_capacity(queries.len());
         for vector in &mut vectors.vectors {
             let vector = if failed {
@@ -451,17 +458,21 @@ impl PreparedReader {
                     predicate.to_owned(),
                 ));
             }
-            let selected = compose(
-                dense,
-                lexical,
-                &self.config.namespace.composition,
-                self.config
-                    .namespace
-                    .rerank
-                    .as_ref()
-                    .map_or(k, |rerank| k.max(rerank.candidates)),
-                &self.config.namespace.retrieval,
-            )?;
+            let selected = if args.has_text() {
+                compose(
+                    dense,
+                    lexical,
+                    &self.config.namespace.composition,
+                    self.config
+                        .namespace
+                        .rerank
+                        .as_ref()
+                        .map_or(k, |rerank| k.max(rerank.candidates)),
+                    &self.config.namespace.retrieval,
+                )?
+            } else {
+                crate::retrieval::dense_only(dense, k)?
+            };
             #[cfg(test)]
             self.trace_stages(|stages| {
                 stages["composition"] = serde_json::json!(

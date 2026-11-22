@@ -10,6 +10,41 @@ fn row(source: &str, root: &str, record: &str, score: f64) -> Candidate {
     }
 }
 #[test]
+fn a_search_without_text_keeps_the_order_by_distance_whatever_the_weights() {
+    let dense = vec![
+        row("a", "z", "1", 0.2),
+        row("a", "y", "1", 0.9),
+        row("a", "y", "2", 0.8),
+        row("a", "x", "1", 0.5),
+    ];
+    let order = |rows: Vec<Candidate>| {
+        rows.iter()
+            .map(|r| (r.root.clone(), r.score))
+            .collect::<Vec<_>>()
+    };
+    // One row per document, best first, scores untouched.
+    assert_eq!(
+        order(dense_only(dense.clone(), 10).unwrap()),
+        [("y".into(), 0.9), ("x".into(), 0.5), ("z".into(), 0.2)]
+    );
+    assert_eq!(dense_only(dense, 2).unwrap().len(), 2);
+    // The fusion with a dense weight of zero loses that order.
+    let none = RetrievalConfig {
+        dense_weight: 0.0,
+        ..RetrievalConfig::default()
+    };
+    let fused = compose(
+        vec![row("a", "z", "1", 0.2), row("a", "y", "1", 0.9)],
+        vec![],
+        &Composition::default(),
+        10,
+        &none,
+    )
+    .unwrap();
+    assert!(fused.iter().all(|r| r.score == 0.0));
+}
+
+#[test]
 fn composition_cases() {
     let slots = Composition {
         fusion: 1,
