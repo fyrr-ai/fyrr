@@ -91,9 +91,13 @@ pub struct SearchInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 1200))]
     pub excerpt_chars: Option<u32>,
-    /// Hits per query; default 50 for query, default/max 20 for queries.
-    #[schemars(range(min = 1, max = 75))]
+    /// Hits per query; default 50 for query, default/max 20 for queries. A listing takes up to 1000 less its offset.
+    #[schemars(range(min = 1, max = MAX_LISTING_WINDOW))]
     pub limit: Option<u32>,
+    /// Documents a listing skips: only without query or queries, and offset plus limit is at most 1000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(max = MAX_LISTING_WINDOW))]
+    pub offset: Option<u32>,
     /// Text per hit; default excerpt.
     pub output: Option<OutputMode>,
     /// Default relevance; updated_at sorts newest first, null dates last.
@@ -929,6 +933,12 @@ impl SearchInput {
         })
     }
     pub fn validate(&self) -> Result<(), &'static str> {
+        let listing = self.query.is_none() && self.queries.is_none();
+        let max_limit = if listing {
+            MAX_LISTING_WINDOW
+        } else {
+            MAX_SEARCH_LIMIT
+        };
         let valid = self
             .query
             .as_ref()
@@ -960,9 +970,15 @@ impl SearchInput {
                 (1..=EXCERPT_CODEPOINTS).contains(&v)
                     && self.output.unwrap_or(OutputMode::Excerpt) == OutputMode::Excerpt
             })
-            && self
-                .limit
-                .is_none_or(|v| (1..=MAX_SEARCH_LIMIT).contains(&v))
+            && self.limit.is_none_or(|v| (1..=max_limit).contains(&v))
+            && if listing {
+                self.offset
+                    .unwrap_or(0)
+                    .saturating_add(self.effective_limit())
+                    <= MAX_LISTING_WINDOW
+            } else {
+                self.offset.is_none()
+            }
             && valid_deadline(self.deadline_ms)
             && [
                 &self.sources,

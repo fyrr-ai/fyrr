@@ -68,7 +68,8 @@ impl PreparedReader {
     ) -> Result<SearchOutput> {
         let start = Instant::now();
         let before = self.mirror.counters();
-        if selected.len() > 320
+        // 320 is 16 queries of 20 hits; a listing reaches its window.
+        if selected.len() > 320_usize.max(fyrr_core::limits::mcp::MAX_LISTING_WINDOW as usize)
             || selected
                 .iter()
                 .any(|r| !self.selected_rows().selected(r.candidate.row_id))

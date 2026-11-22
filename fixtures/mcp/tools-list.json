@@ -51,8 +51,16 @@
               "integer",
               "null"
             ],
-            "maximum": 75,
+            "maximum": 1000,
             "minimum": 1
+          },
+          "offset": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "maximum": 1000,
+            "minimum": 0
           },
           "output": {
             "type": [

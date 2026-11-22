@@ -26,6 +26,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   field or a typed attribute, ascending or descending. Missing values sort
   first ascending and last descending, and ties are broken by the document key.
   See [Ordering a listing](docs/mcp-tools.md#ordering-a-listing).
+- A listing (`search` without `query` or `queries`) takes `offset` and a
+  `limit` of up to 1000, with `offset + limit` at most 1000. Ordering by the
+  document key and filtering for the key after the last one seen scans a whole
+  namespace; see [Paging and scanning](docs/mcp-tools.md#paging-and-scanning)
+  and the [export recipe](docs/http-api.md#export-a-namespace).
 - The reader serves `search` and `fetch` as plain JSON at
   `POST /v1/namespaces/{namespace}/query` and `.../fetch`, next to MCP, with
   the same authentication, scheduler, deadline and rate limits. Errors map to
