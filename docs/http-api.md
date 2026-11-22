@@ -8,8 +8,9 @@
 > - They take the arguments of the [MCP tools](mcp-tools.md) and return their
 >   structured results. Authentication, permissions, deadlines, rate limits
 >   and the scheduler are those of `/mcp`.
-> - [Errors](#errors) are an HTTP status and `{"error":"<code>"}`; 429 and
->   503 carry `Retry-After`.
+> - [API errors](#errors) carry an HTTP status and `{"error":"<code>"}`.
+>   `429` and `503` carry `Retry-After`. The HTTP parser can return `431`
+>   with an empty body.
 
 ## Routes
 
@@ -74,6 +75,10 @@ The listener bounds every route, `/mcp` included:
 | Requests in flight | 64 | `503 busy`. Cancellation notices to `/mcp` have their own 8. |
 | Concurrently executing requests | `reader.concurrency` (default 8), with an equal queue | `503 busy`. |
 | Body | 1 MiB | `413 invalid_argument`. |
-| Headers | 64 fields, 32 KiB | `431 invalid_argument`. |
+| Headers | 64 fields, 32 KiB | `431` (see below). |
 | Requests per user and per group | `user_requests_per_minute`, `group_requests_per_minute` (default 120) | `429 rate_limited`. |
 | Deadline | `deadline_ms`, default 10 s, at most 300 s | `408 deadline_exceeded`. |
+
+When the HTTP parser rejects a request for exceeding a header limit, it
+returns `431` with an empty body. If the API detects oversized headers
+after parsing, it returns `431` with `{"error":"invalid_argument"}`.
