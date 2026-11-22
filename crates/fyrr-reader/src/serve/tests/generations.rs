@@ -19,6 +19,7 @@ async fn generation_inflight_pin_and_mirror_eviction_on_real_s3() {
                 subject: None,
                 response_claims: Arc::default(),
                 recall_query_index: 0,
+                strong: false,
                 _permit: Arc::new(service.slots.clone().try_acquire_owned().unwrap()),
                 timing: RequestTiming {
                     arrived: now,

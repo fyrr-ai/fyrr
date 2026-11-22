@@ -157,6 +157,7 @@ impl McpService {
     }
     /// Queues one parsed call on the scheduler and waits for its result. MCP
     /// tools and the JSON routes share this path.
+    #[allow(clippy::too_many_arguments)]
     async fn run(
         &self,
         call: ToolCall,
@@ -165,6 +166,7 @@ impl McpService {
         response_claims: Arc<ResponseClaims>,
         cancelled: CancellationToken,
         permit: Arc<tokio::sync::OwnedSemaphorePermit>,
+        strong: bool,
     ) -> CallToolResult {
         let (reply, response) = oneshot::channel();
         let deadline = arrived + Duration::from_millis(u64::from(call.deadline_ms()));
@@ -181,6 +183,7 @@ impl McpService {
             _permit: permit,
             response_claims,
             recall_query_index: 0,
+            strong,
         };
         if self.sender.try_send(job).is_err() {
             return tool_error(Busy);
@@ -197,6 +200,7 @@ impl McpService {
         subject: Option<crate::auth::AuthenticatedSubject>,
         arrived: Instant,
         response_claims: Arc<ResponseClaims>,
+        strong: bool,
     ) -> CallToolResult {
         if subject.is_none() {
             return tool_error(AuthorizationUnavailable);
@@ -208,8 +212,16 @@ impl McpService {
         *crate::sync::lock(&response_claims.admission) = Some(permit.clone());
         let cancelled = CancellationToken::new();
         let _cancel_on_drop = cancelled.clone().drop_guard();
-        self.run(call, subject, arrived, response_claims, cancelled, permit)
-            .await
+        self.run(
+            call,
+            subject,
+            arrived,
+            response_claims,
+            cancelled,
+            permit,
+            strong,
+        )
+        .await
     }
     pub(crate) async fn publication(&self) -> Value {
         let mut readiness = self.publication.read().await.clone();
@@ -355,6 +367,7 @@ impl ServerHandler for McpService {
                 response_claims,
                 cancellation,
                 permit,
+                false,
             )
             .await,
         )

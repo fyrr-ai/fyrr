@@ -56,6 +56,7 @@ async fn enqueue(
             _permit: permit,
             response_claims: Arc::default(),
             recall_query_index: 0,
+            strong: false,
             timing: RequestTiming {
                 arrived: now,
                 deadline: now + Duration::from_secs(10),

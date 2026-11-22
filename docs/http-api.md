@@ -89,6 +89,32 @@ namespace can tell by the time the answer takes whether it exists. A name that i
 digits and `-`, at most 63 characters, not starting with `-`) answers `404
 invalid_argument`.
 
+## Consistency
+
+Both routes take one more member besides the arguments of the tool,
+`consistency`. It is no argument of the tool and `/mcp` has no such member.
+
+| Value | Answer |
+| --- | --- |
+| `cached` (default) | From the version the reader holds, found by its latest [version check](reader-writer.md#reader). A write acknowledged a moment ago may not show yet. |
+| `strong` | After a version check that started once the request arrived: the answer includes every write acknowledged before the request began. |
+
+```sh
+curl https://fyrr.example.com/v1/namespaces/main/query \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"backup","consistency":"strong"}'
+```
+
+A `strong` request costs one `GET` of the serving head when the head has not
+moved. When it has, the request waits for the reader to switch to the new
+version, within its deadline. The check is the reader's own version check, so
+the request is still answered through the caller's permission filter and
+admission, as any other. If the check fails, the request answers `503
+storage_unavailable` with `Retry-After`; it is never answered from the held
+version, and retrying it is safe. Any other value than the two answers `400
+invalid_argument`.
+
 ## Errors
 
 The nine tool error codes of [MCP tools](mcp-tools.md#errors) map to these
@@ -98,7 +124,7 @@ statuses, and the boundary adds `forbidden`. The body is `{"error":"<code>"}` an
 | --- | --- | --- |
 | `invalid_argument` | `400` | The body or its arguments are invalid. `404` when `{namespace}` is not a namespace name. |
 | `authorization_unavailable` | `503` | The caller's identity or policy cannot be decided. |
-| `storage_unavailable` | `503` | Storage could not be read. |
+| `storage_unavailable` | `503` | Storage could not be read, or the head check of a [`strong`](#consistency) request failed. |
 | `incompatible_index` | `503` | The published index does not match this reader. |
 | `deadline_exceeded` | `408` | The deadline passed, in the queue or while executing. |
 | `cancelled` | `499` | The request was cancelled; the caller has normally gone. |

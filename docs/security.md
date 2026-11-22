@@ -99,7 +99,10 @@ plan for:
   intervals after it was published (60 s by default): while the reader
   prepares a new version its checks pause, and a request then reads the
   head itself once the held one is that old. `SIGHUP` and
-  `POST /admin/refresh` start a check at once.
+  `POST /admin/refresh` start a check at once. An HTTP JSON request with
+  `consistency: "strong"` starts one too and is answered only after it, so it
+  sees a revocation published before it arrived; if the check fails it
+  answers `503 storage_unavailable`.
 - A namespace opened by its request path that has served no request for one
   check interval stops its version checks and any cache fill and makes no
   storage request. Its next request reads the head first and is answered from
