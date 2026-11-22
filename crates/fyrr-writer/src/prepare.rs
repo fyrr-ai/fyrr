@@ -233,7 +233,11 @@ fn weigh(config: &Config, change: &ContentChange) -> Result<(u64, u64)> {
         ContentChange::Present(document) => {
             let encoded = serde_json::to_vec(document).map_err(|_| WriterError::DocumentInvalid)?;
             let row = if document.intent == DocumentIntent::Patch {
-                patch_estimate(config)
+                within(
+                    patch_bound(config),
+                    config.writer.commit.group_max_bytes.as_u64(),
+                    BASE_BYTES + encoded.len() as u64,
+                )
             } else {
                 record_estimate(config)
             };
@@ -264,13 +268,22 @@ fn record_estimate(config: &Config) -> u64 {
     2048 + u64::from(config.embedding.dimensions) * 2
 }
 
+/// What an envelope weighs before its first change.
+const BASE_BYTES: u64 = 16384;
+
 /// What the committer may write for a patched document: its record with the
 /// text and every attribute at the largest its type holds, and what any record
 /// takes besides. The stored record is what the patch keeps, so this is an upper
 /// bound for all but a record with very many readers, which the committer
 /// refuses when it is written.
-pub(crate) fn patch_estimate(config: &Config) -> u64 {
+pub(crate) fn patch_bound(config: &Config) -> u64 {
     patch_bytes(&config.namespace.attributes, record_estimate(config))
+}
+/// The part of `bound` that an envelope of `taken` bytes may weigh within
+/// `max`. The estimate only groups envelopes: a patch is never refused for it
+/// alone, and the committer refuses the rows that really overrun the limit.
+pub(crate) fn within(bound: u64, max: u64, taken: u64) -> u64 {
+    bound.min(max.saturating_sub(taken))
 }
 fn patch_bytes(attributes: &fyrr_core::attributes::AttributeSchema, record: u64) -> u64 {
     let attributes: u64 = attributes.values().map(|kind| value_bytes(*kind)).sum();
@@ -298,7 +311,7 @@ fn value_bytes(kind: fyrr_core::attributes::AttributeType) -> u64 {
 
 /// Whether `changes` fit the bounds of a single page, which one envelope must.
 pub fn check_atomic(config: &Config, changes: &[ContentChange]) -> Result<()> {
-    let (mut rows, mut bytes) = (0u64, 16384u64);
+    let (mut rows, mut bytes) = (0u64, BASE_BYTES);
     for change in changes {
         let (work, estimate) = weigh(config, change)?;
         rows = rows.saturating_add(work);
@@ -806,6 +819,16 @@ mod tests {
         let record = 2048 + 1024 * 2;
         assert_eq!(patch_bytes(&floats, record), 16384 + 64 * 8 + record);
         assert!(patch_bytes(&floats, record) < 256 * 1024);
+        // A namespace of arrays weighs 4 MiB a patch, which is not held against
+        // a request in a group of 256 KiB: a patch of a number still fits.
+        let arrays: AttributeSchema = (0..64)
+            .map(|n| (format!("a{n}"), AttributeType::Array(ElementType::Uint)))
+            .collect();
+        let bound = patch_bytes(&arrays, record);
+        assert!(bound > 256 * 1024);
+        let taken = BASE_BYTES + 100;
+        assert!(taken + within(bound, 256 * 1024, taken) <= 256 * 1024);
+        assert_eq!(within(5, 256 * 1024, taken), 5, "a small bound is kept");
         // Each other type takes the most its column can hold of it.
         let weigh = |kind| {
             patch_bytes(&AttributeSchema::from([("a".into(), kind)]), record) - (16384 + record)

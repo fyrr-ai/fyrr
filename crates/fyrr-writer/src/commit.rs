@@ -961,9 +961,11 @@ async fn envelope_work(
             (
                 rows.checked_add(deletes)
                     .ok_or(WriterError::EnvelopeBoundsInvalid)?,
-                bytes
-                    .checked_add(patches.saturating_mul(crate::prepare::patch_estimate(config)))
-                    .ok_or(WriterError::EnvelopeBoundsInvalid)?,
+                bytes.saturating_add(crate::prepare::within(
+                    patches.saturating_mul(crate::prepare::patch_bound(config)),
+                    config.writer.commit.group_max_bytes.as_u64(),
+                    bytes,
+                )),
             )
         }
         EnvelopePayload::Permissions(p) => (
