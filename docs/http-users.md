@@ -83,6 +83,13 @@ To revoke a key:
 4. Send `POST /admin/refresh` to each reader; without that, a reader refuses
    the key within two `reader.version_check_interval`s.
 
+When the keys are published for the whole deployment with `fyrr writer keys`,
+run it after step 1 instead of steps 2 and 4: a removed key is refused by
+every reader within two `reader.version_check_interval`s, whatever each
+namespace's identity still binds. Run `writer commit` as well to drop its
+grants. [Identity](identity.md#identityapi_keys) describes the roles and the
+namespace prefix a key can carry.
+
 A reader that holds a usable head and identity answers an unknown, malformed
 or removed key with `401`, and without OIDC the challenge is a bare
 `WWW-Authenticate: Bearer`. When the reader cannot read the head or the

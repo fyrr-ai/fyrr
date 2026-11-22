@@ -724,6 +724,35 @@ fn api_keys_need_a_name_readers_and_a_well_formed_unique_secret() {
 }
 
 #[test]
+fn api_keys_carry_roles_and_a_namespace_prefix() {
+    let key = |extra: &str| {
+        format!("\n[[identity.api_keys]]\nname='agents'\nkey={{env='KEY_ONE'}}\n{extra}\n")
+    };
+    // A key without roles keeps reading.
+    let plain = parse(&format!("{MINIMAL}{}", key("readers=['usr:7']"))).unwrap();
+    assert_eq!(
+        plain.config.identity.api_keys[0].roles,
+        [fyrr_core::config::ApiKeyRole::Read]
+    );
+    assert_eq!(plain.config.identity.api_keys[0].namespace_prefix, None);
+    // Only a key that reads needs readers.
+    assert!(errors_with(&key("roles=['write','admin','list']")).is_empty());
+    assert_error(&key("roles=['read','write']"), "api_keys[0].readers");
+    assert_error(&key("roles=[]\nreaders=['usr:7']"), "api_keys[0].roles");
+    assert!(parse(&format!("{MINIMAL}{}", key("roles=['root']"))).is_err());
+    assert!(errors_with(&key("roles=['write']\nnamespace_prefix='team-'")).is_empty());
+    for bad in ["''", "'Team'", "'team_'", &format!("'{}'", "a".repeat(64))] {
+        assert_error(
+            &key(&format!("roles=['write']\nnamespace_prefix={bad}")),
+            "api_keys[0].namespace_prefix",
+        );
+    }
+    assert!(fyrr_core::config::prefix_allows(None, "main"));
+    assert!(fyrr_core::config::prefix_allows(Some("team-"), "team-a"));
+    assert!(!fyrr_core::config::prefix_allows(Some("team-"), "main"));
+}
+
+#[test]
 fn http_without_a_login_method_stays_valid_for_the_writer_and_the_check_warns() {
     let http =
         "\n[reader.http]\nlisten='127.0.0.1:8080'\npublic_url='https://reader.example/mcp'\n";

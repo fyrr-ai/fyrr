@@ -218,9 +218,11 @@ fn http_reader_configuration_and_startup_keep_identity_and_credentials_private()
         vec!["reader", "check"],
     ];
     #[cfg(feature = "writer")]
-    let commands = commands
-        .into_iter()
-        .chain([vec!["writer", "status"], vec!["writer", "commit"]]);
+    let commands = commands.into_iter().chain([
+        vec!["writer", "status"],
+        vec!["writer", "commit"],
+        vec!["writer", "keys"],
+    ]);
     for args in commands {
         let mut command = vec!["--config", config.to_str().expect("config path")];
         command.extend(args);
@@ -288,6 +290,7 @@ fn dense_reader_and_namespace_paths_keep_identity_and_query_values_private() {
         vec!["writer", "serve", "--jobs", query.as_str()],
         vec!["writer", "serve", "--timeout", "0s"],
         vec!["writer", "directory", "--snapshot", query.as_str()],
+        vec!["writer", "keys"],
         vec!["writer", "sync", "--directory"],
         vec![
             "writer",

@@ -21,6 +21,11 @@
 `{namespace}` is `namespace.name`. A reader serves one namespace, so any
 other value answers `404`. `list_filters` has no JSON route.
 
+Both routes, like `/mcp`, need the `read` role of an
+[API key](identity.md#identityapi_keys); users signed in through OIDC hold
+`read` only. A key without the role, or limited by `namespace_prefix` to other
+namespaces, answers `403 forbidden`.
+
 ```sh
 curl https://fyrr.example.com/v1/namespaces/main/query \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
@@ -44,7 +49,7 @@ counts from arrival, as for MCP.
 ## Errors
 
 The nine tool error codes of [MCP tools](mcp-tools.md#errors) map to these
-statuses. The body is `{"error":"<code>"}` and nothing else.
+statuses, and the boundary adds `forbidden`. The body is `{"error":"<code>"}` and nothing else.
 
 | Code | Status | When |
 | --- | --- | --- |
@@ -57,6 +62,7 @@ statuses. The body is `{"error":"<code>"}` and nothing else.
 | `stale_cursor` | `409` | The `fetch` cursor is expired, belongs to another subject or its content version changed. |
 | `busy` | `503` | The in-flight limit, the concurrency cap or the queue is exhausted. |
 | `rate_limited` | `429` | A per-user or per-group request limit was reached. |
+| `forbidden` | `403` | An API key lacks the role the route needs or may not act in this namespace. This code is not a tool error: only the HTTP boundary answers it. |
 
 `429` and `503` answers carry `Retry-After` in seconds: 60 for `429` (the
 rate window) and 1 for `503`. These routes also answer the refusals of the

@@ -22,6 +22,7 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
         reader.control_root.clone(),
         reader.identity_cache.clone(),
         reader.head_cache.clone(),
+        admission::ApiKeys::new(Duration::from_secs(30)),
     ));
     let service = crate::serve::start(reader).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

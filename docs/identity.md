@@ -39,7 +39,9 @@ walks through it.
 | --- | --- | --- |
 | `name` | required | Unique ID like a source ID (`[a-z0-9][a-z0-9_-]{0,62}`). It names the key in this file; the artifacts hold only its hash. |
 | `key` | required | `{ env = "VAR" }`: the secret, `fyrr_key_` followed by at least 43 characters from `[A-Za-z0-9_-]`. Generate it with `echo "fyrr_key_$(openssl rand -hex 32)"`. Every key needs its own value. |
-| `readers` | required | At least one reader token (`usr:<id>`, `grp:<id>`) the key acts with, as `stdio_readers`, including source-scoped tokens for `permissions = "sync"` sources. |
+| `readers` | required with `read` | At least one reader token (`usr:<id>`, `grp:<id>`) the key acts with, as `stdio_readers`, including source-scoped tokens for `permissions = "sync"` sources. A key without the `read` role needs none. |
+| `roles` | `["read"]` | What the key may do over HTTP: `read` (search and fetch, over `/mcp` and the [JSON API](http-api.md)), `write`, `list` and `admin`. At least one. A route whose role the key lacks answers `403 forbidden`. Only `read` has routes today; the other roles are granted so that later routes need no new key. |
+| `namespace_prefix` | absent | The key acts only in namespaces whose name starts with this (1–63 characters from `[a-z0-9-]`). In any other namespace it answers `403 forbidden`. |
 
 Only the **writer** reads the secret, so the reader needs no key in its
 environment. Every host that publishes identity needs every key's variable:
@@ -48,6 +50,22 @@ check` reports a variable that is unset, a secret of the wrong shape and two
 keys with the same secret; `config check --no-env` skips that. The writer
 skips a key whose secret is missing or malformed and publishes every other
 key; two keys with the same secret stop its commit.
+
+A key is the same subject in every namespace of a deployment that shares one
+`hashing_key`. `fyrr writer keys` publishes the keys of the configuration,
+each as its keyed hash with its roles and prefix, in one object under the
+storage root (`api-keys.json`, above `namespaces/`) by compare-and-swap, and
+writes nothing when it is current. Run it from a configuration that declares
+every key of the deployment, on a host that has their variables. While no such
+object exists a key acts as declared in the namespace's own configuration,
+with `read`. Once it exists it is the deployment's whole key set: a reader that
+declares keys refuses a key that is not in it, and takes each key's roles and
+prefix from it. What a key may read still comes from `readers` in each
+namespace's identity, so declare the key in the configuration of every
+namespace where it reads (the writer binds it only where its prefix matches).
+A reader reads the object when it starts and at every version check interval
+(`POST /admin/refresh` too), one more `GET` each; it refuses every key when it
+cannot read it or holds a copy older than two intervals.
 
 `reader serve` over HTTP needs `[identity.oidc]`, an API key or both, and
 refuses to start without them; `config check` warns about it. The writer does

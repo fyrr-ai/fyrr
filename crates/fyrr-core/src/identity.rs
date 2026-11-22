@@ -10,11 +10,15 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::config::{ApiKeyRole, is_namespace_prefix};
 use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
 
 /// The identity artifact contract version written by this build.
 pub const IDENTITY_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(2, 0);
+
+/// The API-keys artifact contract version written by this build.
+pub const API_KEYS_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(1, 0);
 
 /// One identity artifact generation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -152,6 +156,58 @@ impl Contract for IdentityArtifact {
         }
         for input in &self.inputs {
             check_digest("inputs[].digest", &input.digest)?;
+        }
+        Ok(())
+    }
+}
+
+/// The API keys of a deployment, published once under the storage root and
+/// read by every reader of it. A key is the keyed hash of its secret; the
+/// artifact never holds a secret, a name or a reader token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ApiKeysArtifact {
+    pub schema_version: SchemaVersion,
+    pub keys: Vec<ApiKeyGrant>,
+}
+
+/// One published API key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ApiKeyGrant {
+    /// `key:<64 lowercase hex>`, the keyed hash of the secret. The same hash
+    /// binds the key in the identity artifact of each namespace.
+    pub subject: String,
+    pub roles: Vec<ApiKeyRole>,
+    /// The key acts only in namespaces whose name starts with this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace_prefix: Option<String>,
+}
+
+impl ApiKeysArtifact {
+    pub fn grant(&self, subject: &str) -> Option<&ApiKeyGrant> {
+        self.keys.iter().find(|key| key.subject == subject)
+    }
+}
+
+impl Contract for ApiKeysArtifact {
+    const NAME: &'static str = "api-keys-artifact";
+    const VERSION: SchemaVersion = API_KEYS_CONTRACT_VERSION;
+
+    fn validate(&self) -> Result<(), String> {
+        let mut subjects = BTreeSet::new();
+        for key in &self.keys {
+            if !is_hashed(&key.subject, KEY_PREFIX) || !subjects.insert(&key.subject) {
+                return Err("keys[].subject must be a distinct hashed key".into());
+            }
+            if key.roles.is_empty() {
+                return Err("keys[].roles must not be empty".into());
+            }
+            if key
+                .namespace_prefix
+                .as_deref()
+                .is_some_and(|prefix| !is_namespace_prefix(prefix))
+            {
+                return Err("keys[].namespace_prefix is not a namespace prefix".into());
+            }
         }
         Ok(())
     }

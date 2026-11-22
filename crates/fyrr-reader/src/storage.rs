@@ -501,6 +501,31 @@ pub async fn read_contract<T: Contract>(
     parse_contract(&bytes).map_err(|_| StorageError::PublicationInvalid)
 }
 
+/// Where the deployment's API keys are published: the storage root, above
+/// `namespaces/`, so every namespace's reader finds the same object.
+pub fn api_keys_path(namespace_root: &Path) -> Path {
+    let parts: Vec<_> = namespace_root.parts().collect();
+    Path::from_iter(parts[..parts.len().saturating_sub(2)].iter().cloned()).join("api-keys.json")
+}
+
+/// The published API keys, or `None` while no writer has published any.
+pub async fn api_keys(
+    store: &dyn ObjectStore,
+    namespace_root: &Path,
+) -> Result<Option<fyrr_core::identity::ApiKeysArtifact>, StorageError> {
+    let bytes = match store.get(&api_keys_path(namespace_root)).await {
+        Ok(result) => result
+            .bytes()
+            .await
+            .map_err(|_| StorageError::StorageUnavailable)?,
+        Err(object_store::Error::NotFound { .. }) => return Ok(None),
+        Err(_) => return Err(StorageError::StorageUnavailable),
+    };
+    parse_contract(&bytes)
+        .map(Some)
+        .map_err(|_| StorageError::PublicationInvalid)
+}
+
 pub async fn optional_head(
     config: &Config,
 ) -> Result<Option<fyrr_core::publication::ServingHead>, StorageError> {
@@ -523,6 +548,17 @@ fn namespace_mac(
     kind: &str,
     value: &str,
 ) -> Result<hmac::Hmac<sha2::Sha256>, StorageError> {
+    keyed_mac(config, config.namespace.name.as_str(), kind, value)
+}
+
+/// The MAC of `value` in `kind` under the hashing key, scoped to `scope`: a
+/// namespace name, or empty for what every namespace of a deployment shares.
+fn keyed_mac(
+    config: &Config,
+    scope: &str,
+    kind: &str,
+    value: &str,
+) -> Result<hmac::Hmac<sha2::Sha256>, StorageError> {
     use hmac::{KeyInit, Mac};
     let key = config
         .identity
@@ -533,7 +569,7 @@ fn namespace_mac(
         .map_err(|_| StorageError::AuthorizationUnavailable)?;
     let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(key.expose().as_bytes())
         .map_err(|_| StorageError::AuthorizationUnavailable)?;
-    for part in ["fyrr-hmac-2", config.namespace.name.as_str(), kind, value] {
+    for part in ["fyrr-hmac-2", scope, kind, value] {
         mac.update(&(part.len() as u64).to_be_bytes());
         mac.update(part.as_bytes());
     }
@@ -541,15 +577,16 @@ fn namespace_mac(
 }
 
 pub fn hash_principal(config: &Config, prefix: &str, value: &str) -> Result<String, StorageError> {
-    hash_in_domain(config, prefix, prefix, value)
+    hash_in_domain(config, &config.namespace.name, prefix, prefix, value)
 }
 
-/// `<prefix>:<hex>` of the HMAC of `value` in its own MAC domain. `namespace_mac`
-/// frames every part with its length, so two different domains never yield the
-/// same MAC input, whatever the values: a hash in one domain cannot equal one in
-/// another except by an HMAC-SHA256 collision.
+/// `<prefix>:<hex>` of the HMAC of `value` in its own MAC domain and `scope`.
+/// `keyed_mac` frames every part with its length, so two different domains or
+/// scopes never yield the same MAC input, whatever the values: a hash in one
+/// cannot equal one in another except by an HMAC-SHA256 collision.
 fn hash_in_domain(
     config: &Config,
+    scope: &str,
     prefix: &str,
     domain: &str,
     value: &str,
@@ -558,24 +595,26 @@ fn hash_in_domain(
     Ok(format!(
         "{prefix}:{}",
         hex::encode(
-            namespace_mac(config, domain, value)?
+            keyed_mac(config, scope, domain, value)?
                 .finalize()
                 .into_bytes()
         )
     ))
 }
 
-/// The subject key of an API-key secret, as a `key:` hash. Its MAC domain is
-/// not the one of `hash_principal(config, "key", …)` (directory users, the
-/// stdio subject, OIDC subjects), so no value of those can produce it.
+/// The subject key of an API-key secret, as a `key:` hash. It names no
+/// namespace, so one key is the same subject in all of them, and its MAC scope
+/// is not the one of `hash_principal(config, "key", …)` (directory users, the
+/// stdio subject, OIDC subjects), whose scope is a namespace name: no value of
+/// those can produce it.
 pub fn api_key_subject(config: &Config, secret: &str) -> Result<String, StorageError> {
-    hash_in_domain(config, "key", "api-key-secret", secret)
+    hash_in_domain(config, "", "key", "api-key-secret", secret)
 }
 
 /// The principal key an API key acts as: the hash of its name in a domain of
 /// its own, apart from every user and from the secret domain.
 pub fn api_key_principal(config: &Config, name: &str) -> Result<String, StorageError> {
-    hash_in_domain(config, "key", "api-key-name", name)
+    hash_in_domain(config, &config.namespace.name, "key", "api-key-name", name)
 }
 
 pub(crate) fn verify_hash(

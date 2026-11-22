@@ -4,6 +4,7 @@
 use super::coordination::{host_command, worker_command};
 use super::http_mcp::{Issuer, Reader, fixture};
 use super::*;
+use fyrr_core::config::ApiKeyRole;
 use fyrr_reader::storage::{api_key_principal, api_key_subject};
 use std::time::Duration;
 
@@ -20,6 +21,8 @@ struct Key {
     variable: &'static str,
     secret: String,
     readers: &'static str,
+    /// More lines of the key's table, such as `roles`.
+    extra: String,
 }
 impl Key {
     fn new(name: &'static str, variable: &'static str, n: usize, readers: &'static str) -> Self {
@@ -28,12 +31,18 @@ impl Key {
             variable,
             secret: secret(n),
             readers,
+            extra: String::new(),
         }
     }
     fn table(&self) -> String {
+        let readers = if self.readers.is_empty() {
+            String::new()
+        } else {
+            format!("readers=['{}']\n", self.readers)
+        };
         format!(
-            "\n[[identity.api_keys]]\nname='{}'\nkey={{env='{}'}}\nreaders=['{}']\n",
-            self.name, self.variable, self.readers
+            "\n[[identity.api_keys]]\nname='{}'\nkey={{env='{}'}}\n{readers}{}\n",
+            self.name, self.variable, self.extra
         )
     }
 }
@@ -537,4 +546,140 @@ async fn oidc_and_keys_coexist() {
     assert_eq!(refused.0, 401);
     assert!(refused.2.unwrap().contains("resource_metadata"));
     oidc_only.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "real writer, HTTP MCP executable and local storage; scripts/ci"]
+async fn deployment_keys_carry_roles_and_a_namespace_prefix() {
+    let deployment = Deployment::new().await;
+    let (matching, other) = (
+        deployment.namespace[..2].to_owned(),
+        format!("{}-other", deployment.namespace),
+    );
+    let reads = Key::new("nm-reads-q7x", "FYRR_TEST_API_KEY_READS", 81, "usr:u1");
+    let writes = Key {
+        extra: "roles=['write']".into(),
+        ..Key::new("nm-writes-q7x", "FYRR_TEST_API_KEY_WRITES", 82, "")
+    };
+    let both = Key {
+        extra: format!("roles=['read','write']\nnamespace_prefix='{matching}'"),
+        ..Key::new("nm-both-q7x", "FYRR_TEST_API_KEY_BOTH", 83, "usr:u2")
+    };
+    let elsewhere = Key {
+        extra: format!("namespace_prefix='{other}'"),
+        ..Key::new("nm-else-q7x", "FYRR_TEST_API_KEY_ELSE", 84, "usr:u3")
+    };
+    let all = [&reads, &writes, &both, &elsewhere];
+    let published = deployment.publish(&all, &all, "");
+    assert!(published.status.success(), "{}", report(&published));
+    let keys = |present: &[&Key]| {
+        writer(&deployment.commit, present)
+            .args(["writer", "keys"])
+            .output()
+            .unwrap()
+    };
+
+    // A reader that checks its version once a second.
+    let fast = deployment.root.join("fast.toml");
+    std::fs::write(
+        &fast,
+        std::fs::read_to_string(deployment.shipped())
+            .unwrap()
+            .replace("[reader]", "[reader]\nversion_check_interval = '1s'"),
+    )
+    .unwrap();
+    let mut reader = Reader::start_appended(&fast, &deployment.root, key_http).await;
+    // Nothing is published yet: a key reads in the namespace that binds it.
+    assert_eq!(refusal(&reader, &reads.secret).await.0, 200);
+    assert_eq!(refusal(&reader, &both.secret).await.0, 200);
+
+    let output = keys(&all);
+    assert!(output.status.success(), "{}", report(&output));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\"changed\":true"));
+    let output = keys(&all);
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("\"changed\":false"),
+        "a current artifact is not written again: {}",
+        report(&output)
+    );
+    // A key that does not hold `read`, or acts in other namespaces only, is
+    // refused with one code on every route; within two version checks.
+    let forbidden = |status: u16, body: &str| {
+        assert_eq!(status, 403);
+        assert_eq!(body, "{\"error\":\"forbidden\"}");
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    while refusal(&reader, &writes.secret).await.0 != 403 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "keys never reached the reader"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    for key in [&writes, &elsewhere] {
+        let (status, body, _) = refusal(&reader, &key.secret).await;
+        forbidden(status, &body);
+        let response = reader
+            .client
+            .post(format!(
+                "{}/v1/namespaces/{}/query",
+                reader.base, deployment.namespace
+            ))
+            .bearer_auth(&key.secret)
+            .json(&json!({"query":"fixture query"}))
+            .send()
+            .await
+            .unwrap();
+        forbidden(response.status().as_u16(), &response.text().await.unwrap());
+    }
+    assert_eq!(refusal(&reader, &reads.secret).await.0, 200);
+    assert_eq!(refusal(&reader, &both.secret).await.0, 200);
+    assert_eq!(refusal(&reader, &secret(99)).await.0, 401);
+
+    // The artifact holds hashes with roles and prefixes, nothing else of a key.
+    let cfg = fyrr_core::config::load(&deployment.worker).unwrap().config;
+    let (store, root) = fyrr_reader::storage::namespace_store(&cfg).unwrap();
+    let artifact = fyrr_reader::storage::api_keys(store.as_ref(), &root)
+        .await
+        .unwrap()
+        .expect("published keys");
+    let grant = artifact
+        .grant(&api_key_subject(&cfg, &both.secret).unwrap())
+        .expect("a grant per key");
+    assert_eq!(grant.roles, [ApiKeyRole::Read, ApiKeyRole::Write]);
+    assert_eq!(grant.namespace_prefix.as_deref(), Some(matching.as_str()));
+    let text = String::from_utf8(write_contract(&artifact)).unwrap();
+    let log = reader.stderr_text();
+    for key in all {
+        for secret in [
+            key.secret.as_str(),
+            &key.secret["fyrr_key_".len()..],
+            key.name,
+        ] {
+            assert!(!text.contains(secret), "the artifact holds {secret}");
+            assert!(!log.contains(secret), "the reader's log holds {secret}");
+        }
+    }
+
+    // Dropping a key from the artifact alone refuses it at the readers within
+    // two version checks; the identity of the namespace is not republished.
+    let kept = [&writes, &both, &elsewhere];
+    let tables: String = kept.iter().map(|key| key.table()).collect();
+    std::fs::write(
+        &deployment.commit,
+        format!("{}{tables}", deployment.base_commit),
+    )
+    .unwrap();
+    let output = keys(&kept);
+    assert!(output.status.success(), "{}", report(&output));
+    let started = std::time::Instant::now();
+    while refusal(&reader, &reads.secret).await.0 != 401 {
+        assert!(
+            started.elapsed() < Duration::from_secs(6),
+            "a removed key was still served"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(refusal(&reader, &both.secret).await.0, 200);
+    reader.stop().await;
 }
