@@ -102,6 +102,7 @@ pub(crate) async fn start_guarded<G: Send + 'static>(
                 next_check,
                 alive: (started, fyrr_core::clock::now()),
                 check_started: started,
+                checked: None,
                 stalled: None,
                 sleeps,
                 dormant: false,
@@ -180,6 +181,9 @@ struct Scheduler {
     /// The last pass of the loop, on the monotonic and the wall clock.
     alive: (Instant, chrono::DateTime<chrono::Utc>),
     check_started: Instant,
+    /// When the latest check that read the head and ended well started. A
+    /// strong read waits for one that started after it arrived.
+    checked: Option<Instant>,
     /// When the loop found that the process had not run for a while and a
     /// version check was due or cut off; cleared by a check started later.
     stalled: Option<Instant>,
@@ -411,7 +415,15 @@ impl Scheduler {
     /// waits for the check as long as the request has time.
     fn awaits_check(&self, job: &Job, now: Instant) -> bool {
         let wait = VERSION_WAIT.min((job.timing.deadline - job.timing.arrived) / 2);
-        self.dormant || (self.stalled.is_some() && now < job.timing.arrived + wait)
+        self.dormant
+            || self.unchecked(job)
+            || (self.stalled.is_some() && now < job.timing.arrived + wait)
+    }
+    /// A strong read, which no check that started after it arrived has
+    /// confirmed yet. It waits for one as long as it has time, and never
+    /// runs on the view held before.
+    fn unchecked(&self, job: &Job) -> bool {
+        job.strong && !self.checked.is_some_and(|at| at >= job.timing.arrived)
     }
     fn prepare(&mut self, trigger: Trigger) {
         self.check_started = Instant::now();
@@ -508,6 +520,16 @@ impl Scheduler {
         let outdated = self.stalled.is_some_and(|at| self.check_started < at);
         // A check from before the request that woke the namespace likewise.
         let early = self.woke.is_some_and(|at| self.check_started < at);
+        // A check that lost to a newer head, or that started before a strong
+        // read arrived, leaves that read waiting for the next one.
+        let superseded = matches!(prepared, Ok(Err(PreparationSuperseded)));
+        let behind = self
+            .pending
+            .iter()
+            .any(|job| job.strong && (superseded || self.check_started < job.timing.arrived));
+        if matches!(prepared, Ok(Ok(_))) {
+            self.checked = Some(self.check_started);
+        }
         if outdated || early {
             self.next_check = Instant::now();
         } else if matches!(prepared, Ok(Ok(_))) {
@@ -548,6 +570,16 @@ impl Scheduler {
                 ));
             }
             _ => {
+                // Nothing older may answer what this check was to confirm.
+                let (failed, kept) = std::mem::take(&mut self.pending)
+                    .into_iter()
+                    .partition::<VecDeque<_>, _>(|job| {
+                        job.strong && !superseded && job.timing.arrived <= self.check_started
+                    });
+                self.pending = kept;
+                for job in failed {
+                    let _ = job.reply.send(tool_error(StorageUnavailable));
+                }
                 if self.dormant {
                     // Nothing older may answer what waited for this check.
                     for job in self.pending.drain(..) {
@@ -558,7 +590,7 @@ impl Scheduler {
                     "retry",
                     self.template.as_ref().map_or(0, |r| r.manifest.sequence),
                 );
-                if !outdated {
+                if !outdated && !behind {
                     self.next_check = Instant::now() + Duration::from_secs(1);
                 }
                 if let Some(reply) = self.reload_reply.take() {
@@ -730,6 +762,12 @@ impl Scheduler {
             let now = Instant::now();
             self.next_check = now;
             self.stalled = Some(now);
+        }
+        // A strong read starts a check, unless the one running began after it arrived.
+        if self.unchecked(&job)
+            && (self.preparation.is_none() || self.check_started < job.timing.arrived)
+        {
+            self.next_check = self.last_request;
         }
         self.pending.push_back(job);
     }

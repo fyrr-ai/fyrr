@@ -1622,6 +1622,10 @@
         "tier": "full",
         "seconds": 40.0
       },
+      "full:fyrr:test:dense_path/storage_budget::a_strong_read_checks_the_head_and_never_answers_from_a_held_view": {
+        "tier": "full",
+        "seconds": 60.0
+      },
       "full:fyrr:test:dense_path/mirror_identity::reader_paused_past_its_version_check_answers_from_the_new_publication": {
         "tier": "full",
         "seconds": 15.0

@@ -459,6 +459,170 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// What a strong read adds to the budgets above: one `GET` of the head when it
+/// has not moved. A cached read adds none.
+const STRONG_HEAD_READS: usize = 1;
+
+/// A `strong` read of the HTTP JSON route reads the head after it arrived: one
+/// request when the head has not moved, the new publication when it has, and
+/// a retryable refusal, never the held view, when the head cannot be read.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn a_strong_read_checks_the_head_and_never_answers_from_a_held_view() {
+    let (config, root) = setup_on(Backend::Local);
+    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    assert_eq!(endpoint, "local-storage", "owned by the local CI row");
+    let key = format!("fyrr_key_{:064}", 6);
+    // The longest interval of a reader: no check of its own during the test.
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("# fyrr-test-head-check = every", "")
+        .replace("[reader]", "[reader]\nversion_check_interval = '30s'");
+    let text = format!(
+        "{text}\n[[identity.api_keys]]\nname='budget'\nkey={{env='FYRR_BUDGET_KEY'}}\nreaders=['usr:budget']\n"
+    );
+    std::fs::write(&config, &text).unwrap();
+    let namespace = fyrr_core::config::load(&config)
+        .unwrap()
+        .config
+        .namespace
+        .name;
+    let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
+    root.embedding.insert_both("ledger", vector);
+    success(&config, &["writer", "namespace", "create"]);
+    sync_texts(&config, &root, &[("kept.txt", KEPT)]);
+    success(&config, &["writer", "commit"]);
+    let writer = |args: &[&str]| {
+        let output = super::coordination::host_command(&config)
+            .args(args)
+            .env("FYRR_BUDGET_KEY", &key)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", report(&output));
+    };
+    writer(&["writer", "keys"]);
+
+    let seen = Seen::default();
+    let unreadable = Arc::new(AtomicBool::new(false));
+    let hook: BoundaryHook = {
+        let (observe, unreadable) = (seen.hook(), unreadable.clone());
+        Arc::new(move |request, body, after| {
+            let head = request
+                .lines()
+                .next()
+                .is_some_and(|line| line.starts_with("GET ") && line.contains("/head.json "));
+            observe(request, body, after)
+                || (!after && head && unreadable.load(std::sync::atomic::Ordering::SeqCst))
+        })
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), hook);
+    let observed_config = root.join("observed.toml");
+    std::fs::write(&observed_config, text.replace(&endpoint, &observed)).unwrap();
+    let mut reader =
+        super::http_mcp::Reader::start_appended(&observed_config, &root, |address, base| {
+            format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+        })
+        .await;
+    let ask = |consistency: Option<&str>| {
+        let mut body = json!({"query":"ledger"});
+        if let Some(level) = consistency {
+            body["consistency"] = json!(level);
+        }
+        let request = reader
+            .client
+            .post(format!("{}/v1/namespaces/{namespace}/query", reader.base))
+            .bearer_auth(&key)
+            .json(&body);
+        async move {
+            let response = request.send().await.unwrap();
+            let retry = response.headers().get("retry-after").cloned();
+            (
+                response.status().as_u16(),
+                response.json::<Value>().await.unwrap(),
+                retry,
+            )
+        }
+    };
+    let publication = |body: &Value| {
+        body["metadata"]["publication_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    // The requests of a phase other than reads of the published keys.
+    let phase = |from: usize| {
+        let (heads, others) = seen.since(from);
+        let others: Vec<_> = others
+            .into_iter()
+            .filter(|read| !read.ends_with("/api-keys.json"))
+            .collect();
+        (heads, others)
+    };
+
+    let (status, body, _) = ask(None).await;
+    assert_eq!(status, 200, "{body}");
+    let first = publication(&body);
+    // A value that is no level is refused before anything is read.
+    let (status, body, _) = ask(Some("eventual")).await;
+    assert_eq!((status, body), (400, json!({"error":"invalid_argument"})));
+    seen.settle();
+    // The first strong read starts the check that the next ones follow.
+    let (status, body, _) = ask(Some("strong")).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(publication(&body), first);
+
+    // Nothing moved: a cached read asks storage nothing, a strong one reads the head once.
+    let mark = seen.len();
+    let (status, ..) = ask(Some("cached")).await;
+    assert_eq!(status, 200);
+    let (status, ..) = ask(None).await;
+    assert_eq!(status, 200);
+    within("a cached read", phase(mark), 0, 0);
+    let mark = seen.len();
+    let (status, body, _) = ask(Some("strong")).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(publication(&body), first);
+    let (heads, others) = phase(mark);
+    assert_eq!(
+        heads, STRONG_HEAD_READS,
+        "a strong read reads the head once"
+    );
+    within("a strong read", (heads, others), 0, STRONG_HEAD_READS);
+
+    // A write acknowledged before the request: the held view lacks it, a strong read has it.
+    sync_texts(&config, &root, &[("kept.txt", KEPT), ("extra.txt", EXTRA)]);
+    writer(&["writer", "commit"]);
+    let second = super::coordination::publication(&config)
+        .await
+        .1
+        .publication_id;
+    assert_ne!(second, first);
+    let (status, body, _) = ask(Some("cached")).await;
+    assert_eq!(status, 200);
+    assert_eq!(publication(&body), first, "the held view is not refreshed");
+    let (status, body, _) = ask(Some("strong")).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(publication(&body), second);
+
+    // A head that cannot be read: a named, retryable refusal, not the held view.
+    unreadable.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (status, body, retry) = ask(Some("strong")).await;
+    assert_eq!(
+        (status, body),
+        (503, json!({"error":"storage_unavailable"}))
+    );
+    assert_eq!(retry.unwrap(), "1");
+    unreadable.store(false, std::sync::atomic::Ordering::SeqCst);
+    let (status, body, _) = ask(Some("strong")).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(publication(&body), second);
+
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    reader.stop().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// A running writer service, stopped when dropped, also when a check fails.
 struct Service(std::process::Child, Arc<AtomicBool>);
 impl Drop for Service {

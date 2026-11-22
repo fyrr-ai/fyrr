@@ -460,6 +460,25 @@ fn json_tool(request: &Request) -> Option<(&'static str, ApiKeyRole, String)> {
     }
 }
 
+/// Set on a JSON call that asked for `consistency: "strong"`.
+#[derive(Clone)]
+struct StrongRead;
+/// Takes `consistency` off the arguments of a JSON call, where it is no
+/// argument of the tool, and says whether it is `strong`; `cached` is the default.
+fn strong_read(arguments: &mut serde_json::Value) -> Result<bool, ReaderError> {
+    match arguments
+        .as_object_mut()
+        .and_then(|arguments| arguments.remove("consistency"))
+    {
+        None => Ok(false),
+        Some(level) => match level.as_str() {
+            Some("cached") => Ok(false),
+            Some("strong") => Ok(true),
+            _ => Err(InvalidArgument),
+        },
+    }
+}
+
 /// What a request asks of its caller: the role its route needs and, for a
 /// route that names one, the namespace.
 struct Needs<'a> {
@@ -557,7 +576,12 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
         let (message, parsed) = if let Some(name) = tool {
             let call = serde_json::from_slice(&bytes)
                 .map_err(|_| InvalidArgument)
-                .and_then(|arguments| crate::serve::ToolCall::parse(name, arguments));
+                .and_then(|mut arguments| {
+                    if strong_read(&mut arguments)? {
+                        parts.extensions.insert(StrongRead);
+                    }
+                    crate::serve::ToolCall::parse(name, arguments)
+                });
             (None, Some(call))
         } else {
             let message = serde_json::from_slice::<rmcp::model::ClientJsonRpcMessage>(&bytes).ok();
@@ -953,9 +977,10 @@ async fn tool_json(request: Request) -> Response {
         Ok(call) => call,
         Err(code) => return error(StatusCode::BAD_REQUEST, code),
     };
+    let strong = extensions.get::<StrongRead>().is_some();
     let result = served
         .service
-        .call_json(call, subject, arrived, claims)
+        .call_json(call, subject, arrived, claims, strong)
         .await;
     if result.is_error != Some(true) {
         return axum::Json(result.structured_content).into_response();

@@ -146,6 +146,9 @@ struct Job {
     _permit: Arc<tokio::sync::OwnedSemaphorePermit>,
     response_claims: Arc<ResponseClaims>,
     recall_query_index: usize,
+    /// Whether the call waits for a version check that started after it
+    /// arrived (`consistency: "strong"`).
+    strong: bool,
 }
 #[derive(Clone)]
 pub(crate) struct McpService {
@@ -291,6 +294,7 @@ pub(crate) async fn cache_test_enqueue(
             _permit: permit,
             response_claims: Arc::default(),
             recall_query_index: 0,
+            strong: false,
             timing: RequestTiming {
                 arrived: now,
                 deadline: now + Duration::from_secs(300),
