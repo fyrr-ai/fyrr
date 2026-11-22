@@ -2,6 +2,7 @@ use super::*;
 use crate::search::FilterSelection;
 use chrono::{DateTime, Utc};
 use fyrr_core::attributes::{AttributeSchema, AttributeType, parse_uuid};
+use fyrr_core::limits::mcp::{MAX_REGEX_BYTES, MAX_REGEX_PROGRAM_BYTES};
 use serde_json::Value;
 
 /// The scalar type of a built-in field or of an attribute the namespace
@@ -51,6 +52,12 @@ fn comparison_sql(comparison: &Comparison, attributes: &AttributeSchema) -> Resu
         };
     }
     let symbol = match op {
+        Op::StartsWith | Op::NotStartsWith | Op::Matches | Op::NotMatches => {
+            return text_sql(&column, kind, *op, value);
+        }
+        Op::Contains | Op::NotContains if kind == AttributeType::String => {
+            return text_sql(&column, kind, *op, value);
+        }
         Op::Contains | Op::NotContains | Op::ContainsAny | Op::ContainsAll | Op::ContainsNone => {
             return array_sql(&column, kind, *op, value);
         }
@@ -64,6 +71,39 @@ fn comparison_sql(comparison: &Comparison, attributes: &AttributeSchema) -> Resu
         Op::Gte => ">=",
     };
     Ok(format!("{column} {symbol} {}", literal(kind, value)?))
+}
+
+/// A test of the text of a `string`: a prefix, a substring or a regular
+/// expression, or its negation. Lance answers `starts_with` from a B-tree and
+/// `contains` and `regexp_like` from an n-gram index; a missing value matches
+/// neither side, as in every other comparison.
+fn text_sql(column: &str, kind: AttributeType, op: Op, value: &Value) -> Result<String> {
+    let (AttributeType::String, Value::String(pattern)) = (kind, value) else {
+        return Err(InvalidArgument);
+    };
+    let (function, negated) = match op {
+        Op::StartsWith => ("starts_with", false),
+        Op::NotStartsWith => ("starts_with", true),
+        Op::Contains => ("contains", false),
+        Op::NotContains => ("contains", true),
+        Op::Matches => ("regexp_like", false),
+        Op::NotMatches => ("regexp_like", true),
+        _ => return Err(InvalidArgument),
+    };
+    if function == "regexp_like" {
+        // The pattern is untrusted. The regex engine runs in time linear in the
+        // text, so the compile bounds are what keeps a request cheap; Lance
+        // compiles it with the engine's own, larger limit.
+        if pattern.len() > MAX_REGEX_BYTES {
+            return Err(InvalidArgument);
+        }
+        regex::RegexBuilder::new(pattern)
+            .size_limit(MAX_REGEX_PROGRAM_BYTES)
+            .build()
+            .map_err(|_| InvalidArgument)?;
+    }
+    let test = format!("{function}({column},{})", sql(pattern));
+    Ok(if negated { format!("NOT {test}") } else { test })
 }
 
 /// A test of the elements of an array attribute. A scalar attribute has none,

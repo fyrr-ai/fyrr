@@ -299,6 +299,14 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::a_text_test_selects_the_rows_whose_text_it_names": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::a_text_test_compiles_to_one_call_and_refuses_what_it_cannot_bound": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/search::tests::lexical_request_mask_precedes_topk_and_preserves_sql_scores": {
         "tier": "quick",
         "seconds": 0.027
@@ -1434,6 +1442,10 @@
         "tier": "quick",
         "seconds": 0.1
       },
+      "full:fyrr-reader:test:lance_pin/string_filters_use_the_btree_and_the_ngram_index_where_they_can": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
       "full:fyrr-reader:test:lance_pin/native_rabitq_centroid_codes_and_f32_routing_order": {
         "tier": "quick",
         "seconds": 0.01
@@ -2066,6 +2078,10 @@
         "seconds": 1
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_aggregates_the_documents_a_caller_reads_on_storage": {
+        "tier": "full",
+        "seconds": 4
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_filters_strings_by_prefix_substring_and_expression_on_storage": {
         "tier": "full",
         "seconds": 4
       },

@@ -125,9 +125,10 @@ the column, bounded by the request's `deadline_ms`
 ([indexes](tuning.md#namespaceattribute_indexes)).
 
 An array attribute takes `eq` or `ne` with `null` and the five operators below,
-and a scalar attribute takes none of the five. `contains` and `not_contains`
-take one value of the element type, and `contains_any`, `contains_all` and
-`contains_none` a non-empty array of them.
+and a scalar attribute takes none of the five but `contains` and
+`not_contains` on a `string` (see [Text tests](#text-tests)). `contains` and
+`not_contains` take one value of the element type, and `contains_any`,
+`contains_all` and `contains_none` a non-empty array of them.
 
 | Operator | Matches the documents whose array |
 | --- | --- |
@@ -142,6 +143,47 @@ An empty array holds nothing, so it matches `not_contains` and
 five. The field `attributes` takes `in` only, with
 connector labels written `key=value`; it is what the `attributes` argument
 compiles to.
+
+#### Text tests
+
+A `string` field (the built-in `source_id`, `root_id`, `source_type`,
+`project` and `author`, or a `string` attribute) takes six tests of its text,
+each with one text value:
+
+| Operator | Matches the documents whose text |
+| --- | --- |
+| `starts_with` | begins with the value |
+| `not_starts_with` | does not begin with the value |
+| `contains` | holds the value |
+| `not_contains` | does not hold the value |
+| `matches` | holds a match of the regular expression |
+| `not_matches` | holds no match of the regular expression |
+
+The value is plain text: `%`, `_` and `\` mean nothing in it. A regular
+expression is in the syntax of the Rust [`regex`](https://docs.rs/regex)
+crate, which has no look-around and no back-references. It matches anywhere in
+the text, so anchor it with `^` and `$`. It takes at most 512 bytes, and one
+that does not compile, or whose compiled form is over 256 KiB, is
+`invalid_argument`; its matching time is linear in the text. Matching is
+case-sensitive, and no case-insensitive operator is offered; `(?i)` inside a
+regular expression is the only way, and it is a scan. A document without the
+attribute (`null`) matches none of the six, `not_starts_with`, `not_contains`
+and `not_matches` included.
+
+How a test runs depends on the indexes of the field:
+
+- `starts_with` is answered from the B-tree index of a `string` attribute,
+  which it has unless its schema says `index = false`.
+- `contains` and `matches` are answered from an n-gram index, which an
+  attribute has when its schema says `ngram = true`
+  ([indexes](tuning.md#namespaceattribute_indexes)), and only when the pattern
+  holds a literal of at least three characters. The index names the candidate
+  documents and the reader checks each of them against the pattern.
+- The negations are scans, and so is every test that no index answers: a
+  pattern with no literal of at least three characters (`ab`, `a.b`), an
+  attribute without the index, and a built-in field, which has no n-gram
+  index. A scan reads the column of every document the caller may read and is
+  bounded by the request's `deadline_ms`.
 
 A comparison with `null` as its value tests for a missing value: `eq` matches
 a document without the attribute and `ne` one with it. Every other comparison

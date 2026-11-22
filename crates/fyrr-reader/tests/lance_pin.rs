@@ -623,3 +623,74 @@ async fn every_offered_attribute_type_has_an_index_that_answers_its_filters() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// The string filters of `filter`: a prefix is answered from a B-tree, a
+/// substring and an expression with a literal of three characters from an
+/// n-gram index, and the rest, the negations and the short patterns, by a scan
+/// that returns the same rows as the index would.
+#[tokio::test]
+async fn string_filters_use_the_btree_and_the_ngram_index_where_they_can() {
+    let kinds = ["alpha", "bravo", "charlie"];
+    let names: Vec<Option<String>> = (0..200)
+        .map(|row| Some(format!("item-{row:04}-{}", kinds[row % 3])))
+        .chain([None])
+        .collect();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("name", DataType::Utf8, true),
+        Field::new("text", DataType::Utf8, true),
+    ]));
+    let column = || Arc::new(StringArray::from(names.clone())) as ArrayRef;
+    let batch = RecordBatch::try_new(schema.clone(), vec![column(), column()]).unwrap();
+    let root = directory("string-filters");
+    let mut dataset = Dataset::write(
+        RecordBatchIterator::new(vec![Ok(batch)], schema),
+        root.join("strings.lance").to_str().unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    for (column, kind) in [("name", IndexType::BTree), ("text", IndexType::NGram)] {
+        dataset
+            .create_index(
+                &[column],
+                kind,
+                Some(format!("{column}_idx")),
+                &lance_index::scalar::ScalarIndexParams::default(),
+                false,
+            )
+            .await
+            .unwrap();
+    }
+    let mut failures = Vec::new();
+    for (filter, rows, indexed) in [
+        ("starts_with(name,'item-00')", 100, true),
+        ("starts_with(name,'item-001')", 10, true),
+        ("contains(text,'bravo')", 67, true),
+        (r"regexp_like(text,'^item-001\d-alpha$')", 3, true),
+        ("regexp_like(text,'r.vo')", 67, false),
+        ("contains(text,'ra')", 67, false),
+        ("NOT starts_with(name,'item-00')", 100, false),
+        ("NOT contains(text,'bravo')", 133, false),
+        (r"NOT regexp_like(text,'^item-001\d-alpha$')", 197, false),
+    ] {
+        let mut scan = dataset.scan();
+        let outcome = async {
+            scan.filter(filter).map_err(|e| e.to_string())?;
+            let plan = scan.explain_plan(true).await.map_err(|e| e.to_string())?;
+            let found = scan.count_rows().await.map_err(|e| e.to_string())?;
+            if found != rows {
+                return Err(format!("{found} rows, not {rows}"));
+            }
+            if plan.contains("ScalarIndexQuery") != indexed {
+                return Err(format!("indexed is not {indexed}: {plan}"));
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = outcome {
+            failures.push(format!("{filter}: {error}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    std::fs::remove_dir_all(root).unwrap();
+}

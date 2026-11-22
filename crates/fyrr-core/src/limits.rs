@@ -39,6 +39,10 @@ pub mod mcp {
     pub const EXCERPT_CODEPOINTS: u32 = 1200;
     pub const MAX_EXCLUSIONS: usize = 100;
     pub const MAX_FILTER_VALUES: usize = 64;
+    /// Bytes of the regular expression of a `matches` filter.
+    pub const MAX_REGEX_BYTES: usize = 512;
+    /// Bytes the compiled program of a `matches` filter may take.
+    pub const MAX_REGEX_PROGRAM_BYTES: usize = 256 * 1024;
     pub const MAX_ATTRIBUTE_FILTERS: usize = 16;
     /// Rows an `exact` search may scan: those that pass the filter and the
     /// caller's permissions. Each is read as a stored vector, so the scan costs
