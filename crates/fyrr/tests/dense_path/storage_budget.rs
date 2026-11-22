@@ -496,15 +496,24 @@ async fn a_sync_worker_reads_no_more_manifests_as_the_history_grows() {
     let evidence = namespace.clone().join("evidence");
     let named: Vec<_> = store.list(Some(&evidence)).try_collect().await.unwrap();
     assert_eq!(named.len(), 1, "one checkpoint for a history this short");
-    let stray = evidence
-        .clone()
-        .join(format!("999-{}.json", "0".repeat(64)));
-    store.put(&stray, "{}".into()).await.unwrap();
+    // More than the 64 deletes between two revocation boundaries.
+    let strays: Vec<_> = (0..130)
+        .map(|i| {
+            evidence
+                .clone()
+                .join(format!("{i}-{}.json", "0".repeat(64)))
+        })
+        .collect();
+    for stray in &strays {
+        store.put(stray, "{}".into()).await.unwrap();
+    }
     success(&config, &["writer", "maintain"]);
-    assert!(matches!(
-        store.head(&stray).await,
-        Err(object_store::Error::NotFound { .. })
-    ));
+    for stray in &strays {
+        assert!(matches!(
+            store.head(stray).await,
+            Err(object_store::Error::NotFound { .. })
+        ));
+    }
     let kept: Vec<_> = store.list(Some(&evidence)).try_collect().await.unwrap();
     assert_eq!(kept.len(), 1);
     assert_eq!(kept[0].location, named[0].location);
