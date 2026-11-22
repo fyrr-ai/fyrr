@@ -168,7 +168,7 @@ page costs the rows that match, not the page size.
 
 With `reader.max_response_bytes` set, a page over the budget loses hits from
 its end and says so in `truncated`. Advance by the hits returned, not by
-`limit`. Pages are not a snapshot: when a publication lands between two
+`limit`. If not even one hit fits, the answer is `busy`, never an empty page. Pages are not a snapshot: when a publication lands between two
 requests (`metadata.publication_id` changes), `offset` can skip or repeat a
 document.
 

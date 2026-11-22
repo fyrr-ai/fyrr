@@ -145,14 +145,15 @@ while :; do
                {field: "root_id", op: "gt", value: .root_id}]}]}} end)')
   page=$(curl -sf "$url" -H "Authorization: Bearer $ACCESS_TOKEN" \
     -H "Content-Type: application/json" -d "$body") || exit 1
-  [ "$(echo "$page" | jq '.hits | length')" -gt 0 ] || break
-  echo "$page" | jq -c '.hits[]' >> export.jsonl
-  last=$(echo "$page" | jq -c '.hits[-1] | {source_id, root_id}')
+  [ "$(printf '%s\n' "$page" | jq '.hits | length')" -gt 0 ] || break
+  printf '%s\n' "$page" | jq -c '.hits[]' >> export.jsonl
+  last=$(printf '%s\n' "$page" | jq -c '.hits[-1] | {source_id, root_id}')
 done
 ```
 
 With `reader.max_response_bytes` set, a page can hold fewer hits than `limit`;
-the script goes on from the last hit it got, so nothing is skipped.
+the script goes on from the last hit it got, so nothing is skipped. If not even
+one hit fits the budget, the answer is `503 busy`, and the script stops.
 
 ## Write documents
 
