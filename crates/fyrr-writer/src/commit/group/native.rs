@@ -185,6 +185,10 @@ impl<'a> ContentWork<'a> {
                             .namespace
                             .attributes
                             .iter()
+                            .filter(|_| {
+                                config.namespace.write_api.is_some()
+                                    || config.namespace.typed_connector_fields()
+                            })
                             .map(|(name, kind)| {
                                 arrow_schema::Field::new(name, kind.arrow_type(), true)
                             })

@@ -12,7 +12,7 @@ pub(super) async fn content_page(
     cache: &mut WriterEmbedding,
     advances_cursor: bool,
     permission_stream: bool,
-    attributes: &[ArrayRef],
+    attributes: &[(String, ArrayRef)],
 ) -> Result<u64> {
     let (store, root) = namespace_store(config)?;
     let sequence = state
@@ -137,7 +137,7 @@ pub(super) async fn content_page(
         payload: EnvelopePayload::Content(ContentPayload {
             embedding: identity(&config.embedding),
             chunk_profile: chunk_identity(),
-            table_schema_version: SchemaVersion::new(2, 0),
+            table_schema_version: SchemaVersion::new(1, 2),
             documents: rows.documents,
             fragments,
             quarantined: rows.quarantined,
@@ -173,8 +173,10 @@ struct Page<'a> {
     root: &'a Path,
     base_head: &'a Option<BaseHead>,
     permission_stream: bool,
-    /// The typed attribute columns of the rows, in the namespace's order.
-    attributes: &'a [ArrayRef],
+    /// The typed attribute columns of the rows, in the order of the table's
+    /// columns: a fragment names its columns by position, so another order
+    /// would store each value under another attribute.
+    attributes: &'a [(String, ArrayRef)],
 }
 #[derive(Default)]
 struct PageRows {
@@ -270,7 +272,7 @@ impl<'a> DocumentRows<'a> {
         let mut common = change.metadata.clone();
         let map = common.as_mut().and_then(|m| m.connector_map.take());
         let mut typed = serde_json::Map::new();
-        if source.id != fyrr_core::connector::API_SOURCE_ID
+        if page.config.namespace.typed_connector_fields()
             && let Some(metadata) = &mut common
         {
             typed.insert("title".into(), metadata.title.take().into());
@@ -472,9 +474,14 @@ impl RowColumns {
                 self.updated
                     .push(common.updated_at.map(|t| t.timestamp_micros()));
                 self.attributes.push(change.attributes.clone());
-                if source.id != fyrr_core::connector::API_SOURCE_ID {
+                if config.namespace.typed_connector_fields() {
+                    // Connector namespaces never change their schema: the table's
+                    // columns are in name order.
                     self.typed
-                        .get_or_insert_with(|| AttributeColumns::new(&config.namespace.attributes))
+                        .get_or_insert_with(|| {
+                            let schema = &config.namespace.attributes;
+                            AttributeColumns::new(schema, schema.keys().cloned().collect())
+                        })
                         .push(&rows.typed)
                         .map_err(|_| WriterError::DocumentInvalid)?;
                 }
@@ -520,16 +527,12 @@ impl RowColumns {
                 Arc::new(TimestampMicrosecondArray::from(self.updated).with_timezone("UTC")),
                 Arc::new(attribute_array),
             ];
-            let width = typed.len();
-            columns.extend(typed);
+            columns.extend(typed.iter().map(|(_, column)| column.clone()));
             let schema = schema_with(
                 config.embedding.dimensions,
-                config
-                    .namespace
-                    .attributes
+                typed
                     .iter()
-                    .take(width)
-                    .map(|(name, kind)| Field::new(name, kind.arrow_type(), true))
+                    .map(|(name, column)| Field::new(name, column.data_type().clone(), true))
                     .collect(),
             );
             let rows = RecordBatch::try_new(schema.clone(), columns)

@@ -19,6 +19,10 @@
 
 ## Routes
 
+[`schemas/openapi.json`](../schemas/openapi.json) describes these routes and the
+[write route](#write-documents) as OpenAPI 3.1; it ships in the release as
+`fyrr-openapi-<version>.json`.
+
 | Route | Body | Answer |
 | --- | --- | --- |
 | `POST /v1/namespaces/{namespace}/query` | The arguments of [`search`](mcp-tools.md#search) | The `search` result |
@@ -320,7 +324,7 @@ The body is one JSON object (`application/json`, no `Content-Encoding`):
 | `delete_where` | A [filter](mcp-tools.md#filters): every document that matches it is deleted. The deletes by filter apply before everything else in the request, so that one request can replace the documents of a group. |
 | `patch_where` | `{"filter": …, "set": {…}}`: every document that matches the filter is patched with `set`, a patch row without its `id` (attributes and `readers`, never a text). The patches by filter apply after `delete_where` and before the rest of the request. |
 | `conditions` | An object from an `id` of the request, in `upserts`, `patches` or `deletes`, to a [filter](mcp-tools.md#filters) that the stored document with that `id` must meet for the change to apply. A comparison's `value` may be `{"row": "<attribute>"}`, which is what the change's own row holds of that declared attribute (`null` when it holds none); a delete has no row. See [Conditions](#conditions). |
-| `settings` | The [settings](tuning.md#namespace) of a namespace that does not exist yet, laid over the process defaults. For an existing namespace it must not change any: `409 namespace_settings_fixed`. |
+| `settings` | The [settings](tuning.md#namespace) of a namespace that does not exist yet, laid over the process defaults. For an existing namespace they may add `attributes` and set `attribute_indexes` ([Changing the schema](#changing-the-schema)) and must change no other setting: `409 namespace_settings_fixed`. |
 
 A row that carries a `vector` is stored with it, and its text is not
 embedded. The vector has the dimension of the namespace, finite float32
@@ -351,6 +355,50 @@ adds `"patched":p`, the patches of documents that exist, and `"skipped":q`, the
 patches of those that do not (and the changes whose [condition](#conditions) is
 not met), as the committer applied the request in the order of publication. A patch is weighed against `writer.commit.group_max_bytes` by the largest record it can write, capped at what is left of that limit, so no request is refused for the estimate alone; the committer refuses (`409 rejected`) a request whose rewritten records really exceed it. The counts are best effort: a patch of a document that a later
 request of the same publication replaces or deletes counts as skipped.
+
+### Changing the schema
+
+A request whose `settings` hold `attributes` and `attribute_indexes` changes
+the schema of a namespace that exists; the request may carry nothing else: with
+rows, deletes or conditions it is `400 schema_change_with_rows` and changes
+nothing. The settings are laid over the namespace's: an attribute named again with its type
+and an index option named again change nothing.
+
+```json
+{"settings": {"attributes": {"stock": "int", "note": "string"},
+              "attribute_indexes": {"price": {"index": false}, "note": {"ngram": true}}}}
+```
+
+The answer is `{"upserted":0,"deleted":0}` once the head that readers serve
+holds the new schema; readers keep the version they serve until then. The
+settings are laid over the ones the namespace has when the change is made, so
+two changes at once both apply. A request for a namespace that was replaced
+meanwhile is `409 namespace_changed`. A namespace that has no publication yet
+(created with `settings` alone) keeps its schema until its first rows are
+published: `409 namespace_not_published`.
+
+- A new attribute is a nullable column: it reads `null` for every document
+  written before it, and a filter with `{"op": "eq", "value": null}` finds them.
+  Its index is built by the next maintenance, like every index that is switched
+  on; until then a filter or a sort on the attribute is answered by a scan of
+  the table, bounded by the request deadline ([filters](mcp-tools.md#filters)).
+  `fyrr writer serve` runs the maintenance when a manifest lacks an index that
+  the settings ask for; `fyrr writer maintain` runs it by hand.
+- An index switched off (`"index": false`) is dropped by the publication of the
+  schema, and the attribute is scanned from then on. `"index": true` switches it
+  on again. `full_text` and `ngram` ask for the text indexes of a `string`.
+- A type is never changed and an attribute is never removed, as that would change
+  what the values already stored mean: another type, also an array of another
+  element type, is `409 attribute_type_change_refused`, and `null` for an
+  attribute is `409 attribute_removal_refused`. Any other setting, a name that
+  is not declared or an option the type cannot have is refused as it is for a
+  namespace that is created (`409 namespace_settings_fixed`, `400 settings_invalid`).
+  A change of the schema waits about 5 s for the committer to publish, then is `503 busy`: send it again.
+
+A manifest that records index options is [contract](../CONTRIBUTING.md#rules-for-changes)
+version 5.0, and a policy artifact whose settings hold them 4.0. A build that
+does not know them refuses the namespace instead of serving it with the
+default indexes; a namespace that sets none keeps 4.1 and 3.1.
 
 ### Conditions
 
@@ -431,6 +479,7 @@ request was accepted does not cancel it.
 | `not_found` | `404` | `{namespace}` is not a namespace name, or the process has no `[namespace.write_api]`. |
 | `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
 | `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
-| `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `vector_not_patchable`, `text_not_patchable`, `embedding_not_configured`, `document_invalid`, `condition_invalid`, `filter_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
+| `schema_change_with_rows`, `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `vector_not_patchable`, `text_not_patchable`, `embedding_not_configured`, `document_invalid`, `condition_invalid`, `filter_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
 | `namespace_settings_fixed`, `namespace_not_writable`, `namespace_not_empty`, `namespace_changed`, `rejected` | `409` | The namespace has other settings, takes its documents from connectors, is to be created over envelopes that a deleted namespace left, was replaced by another while the request was prepared, or the committer refused the request (nothing of it is applied). |
+| `attribute_type_change_refused`, `attribute_removal_refused`, `namespace_not_published` | `409` | The settings give an attribute of the namespace another type, or remove it, or change the schema of a namespace that has no publication yet. |
 | `busy`, `unavailable`, `outcome_unknown` | `503` | The writer is busy, storage or the published keys cannot be read, or the answer did not come within 10 minutes; `Retry-After` is 1. |

@@ -111,14 +111,9 @@ and cursors; each step is idempotent, so an interrupted purge is run again.
 
 The current configuration schema is `6.0`, the MCP contract is `4.0`, the prepared-envelope and
 rejection contracts are `5.0` (an envelope with a write condition is `6.0`, which an older committer refuses and this build reads), and content manifests and serving heads are
-`5.0`, and policy artifacts are `3.0`. Embedding settings are required even
+`4.0`, and policy artifacts are `3.0`. Embedding settings are required even
 for the default BGE-M3 model. Republish older namespaces before using this
 build.
-
-Publication contract `5.0` and table schema `2.0` store a connector document's
-`title`, `team`, `status`, `labels` and `created_at` in columns of their own. A
-namespace published before is refused by every reader and writer with
-`unsupported schema major version 4.1`; republish it into a new namespace.
 
 Configuration schema `4.0` changed the default retrieval policy to
 `dense_weight = 0.5` and `lexical_candidates = 200`. A namespace created from

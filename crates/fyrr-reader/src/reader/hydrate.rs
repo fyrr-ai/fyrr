@@ -103,9 +103,10 @@ impl PreparedReader {
     }
 
     /// The columns that hold the metadata fields of a connector document: none
-    /// in a namespace written through the API.
+    /// in a namespace written through the API or created before them, which
+    /// keeps the fields in the metadata of its rows.
     pub(crate) fn connector_columns(&self) -> Vec<&'static str> {
-        if self.config.namespace.write_api.is_some() {
+        if !self.config.namespace.typed_connector_fields() {
             return Vec::new();
         }
         CONNECTOR_COLUMNS.iter().map(|(name, _)| *name).collect()

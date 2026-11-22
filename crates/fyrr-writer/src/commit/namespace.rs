@@ -39,7 +39,7 @@ pub(crate) fn configured_identity(config: &Config, generation: u64) -> Result<Id
 
 /// The settings `config` asks for: what a new namespace is created with, and
 /// what an existing one must already have for a request to repeat its creation.
-pub(crate) fn namespace_settings(config: &Config) -> NamespaceSettings {
+pub fn namespace_settings(config: &Config) -> NamespaceSettings {
     let namespace = &config.namespace;
     NamespaceSettings {
         embedding: identity(&config.embedding),
@@ -53,6 +53,7 @@ pub(crate) fn namespace_settings(config: &Config) -> NamespaceSettings {
             .as_ref()
             .map(fyrr_core::config::RerankConfig::settings),
         attributes: namespace.attributes.clone(),
+        attribute_indexes: namespace.attribute_indexes.clone(),
         write_api: namespace.write_api.clone(),
     }
 }
@@ -66,7 +67,19 @@ async fn repeat_create(
     settings: &NamespaceSettings,
 ) -> Result<()> {
     let policy: PolicyArtifact = fyrr_reader::storage::artifact(store, root, &head.policy).await?;
-    if policy.settings == *settings {
+    let mut asked = settings.clone();
+    // A namespace created before the connector columns has none of them, and
+    // a file that asks for them again still repeats its creation.
+    if policy.settings.write_api.is_none()
+        && !fyrr_core::attributes::has_connector_columns(&policy.settings.attributes)
+    {
+        for (name, _) in fyrr_core::attributes::CONNECTOR_COLUMNS {
+            if !policy.settings.attributes.contains_key(name) {
+                asked.attributes.remove(name);
+            }
+        }
+    }
+    if policy.settings == asked {
         Ok(())
     } else {
         Err(WriterError::NamespaceSettingsFixed)
@@ -115,7 +128,7 @@ async fn create_new(
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut incarnation)
         .map_err(|_| WriterError::RuntimeUnavailable)?;
     let identity = configured_identity(config, 1)?;
-    let policy = PolicyArtifact {
+    let mut policy = PolicyArtifact {
         fixed_grants: fixed_grants(config)?,
         row_acl_sequence: None,
         retired_sources: Default::default(),
@@ -124,6 +137,7 @@ async fn create_new(
         generation: 1,
         settings,
     };
+    policy.schema_version = policy.current_version();
     // A deletion that removed the head may still be removing objects, and a new
     // head would be removed with them: run the deletion again first. Any other
     // object under the prefix, the fence included, refuses the creation. The

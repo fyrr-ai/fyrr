@@ -92,6 +92,67 @@ fn a_manifest_and_a_policy_hold_only_valid_attribute_schemas() {
     }
 }
 
+/// Index options are read only from the versions an older build refuses: it
+/// would ignore them and build or expect the default index of each attribute.
+#[test]
+fn attribute_index_options_need_the_version_an_older_build_refuses() {
+    let options = json!({"title": {"index": false, "full_text": true}});
+    let mut manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
+    manifest["attributes"] = json!({"title": "string", "count": "bytes"});
+    assert!(parse::<ContentManifest>(&manifest).is_ok());
+    manifest["attribute_indexes"] = options.clone();
+    assert!(parse::<ContentManifest>(&manifest).is_err());
+    manifest["schema_version"] = json!("5.0");
+    assert!(parse::<ContentManifest>(&manifest).is_ok());
+    let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
+    policy["settings"]["attributes"] = json!({"title": "string", "count": "bytes"});
+    assert!(parse::<PolicyArtifact>(&policy).is_ok());
+    policy["settings"]["attribute_indexes"] = options;
+    assert!(parse::<PolicyArtifact>(&policy).is_err());
+    policy["schema_version"] = json!("4.0");
+    assert!(parse::<PolicyArtifact>(&policy).is_ok());
+    // An option is of a declared attribute, differs from the default and is one
+    // its type can have: a `bytes` has no index and a number no text index.
+    for (name, option) in [
+        ("undeclared", json!({"index": false})),
+        ("title", json!({})),
+        ("title", json!({"index": true, "full_text": false})),
+        ("title", json!({"fulltext": true})),
+        ("count", json!({"index": false})),
+        ("count", json!({"ngram": true})),
+    ] {
+        policy["settings"]["attribute_indexes"] = json!({ name: option });
+        assert!(parse::<PolicyArtifact>(&policy).is_err(), "{name} {option}");
+        manifest["attribute_indexes"] = json!({ name: option });
+        assert!(
+            parse::<ContentManifest>(&manifest).is_err(),
+            "{name} {option}"
+        );
+    }
+}
+
+/// The connector columns are read only from the version an older build
+/// refuses, which would read their fields as null; a namespace without them
+/// keeps its version.
+#[test]
+fn connector_columns_need_the_version_an_older_build_refuses() {
+    let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
+    let partial = json!({"title": "string", "team": "string"});
+    policy["settings"]["attributes"] = partial;
+    assert!(parse::<PolicyArtifact>(&policy).is_ok());
+    policy["settings"]["attributes"] = json!({"title": "string", "team": "string",
+        "status": "string", "labels": {"array": "string"}, "created_at": "datetime"});
+    assert!(parse::<PolicyArtifact>(&policy).is_err());
+    policy["schema_version"] = json!("4.0");
+    assert!(parse::<PolicyArtifact>(&policy).is_ok());
+    let settings = parse::<PolicyArtifact>(&policy).unwrap().settings;
+    assert!(settings.needs_newer_build());
+    // A namespace written through the API declares what it likes.
+    policy["schema_version"] = json!("3.1");
+    policy["settings"]["write_api"] = json!({});
+    assert!(parse::<PolicyArtifact>(&policy).is_ok());
+}
+
 #[test]
 fn api_keys_artifact_holds_only_distinct_hashed_keys_with_roles() {
     let base = common::read_json("fixtures/contracts/api-keys-artifact/artifact.json");
@@ -592,9 +653,8 @@ fn semantic_violations_are_refused_without_echoing_values() {
             assert!(!error.to_string().contains(sentinel), "{error}");
         }
         let mut old = fixture;
-        // A manifest of the table before the connector columns (4.1) is refused.
         old["schema_version"] = json!(if pointer == "/embedding" {
-            "4.1"
+            "2.2"
         } else {
             "4.0"
         });

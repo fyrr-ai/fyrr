@@ -123,12 +123,6 @@ async fn admin_key(config: &Config, secret: &str) -> std::result::Result<(), Sci
     }
 }
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DeleteNamespaceBody {
-    namespace: String,
-}
-
 /// `DELETE /v1/namespaces/{namespace}`: deletes the namespace and its data. It
 /// needs an API key with the `admin` role and the name repeated in the body.
 async fn delete_namespace(state: Arc<AdminState>, request: Request, name: String) -> Response {
@@ -161,7 +155,8 @@ async fn delete_namespace(state: Arc<AdminState>, request: Request, name: String
         Ok(Err(_)) => return error(ScimError::new(413, "tooLarge")),
         Err(_) => return error(ScimError::new(408, "invalidSyntax")),
     };
-    let Ok(body) = serde_json::from_slice::<DeleteNamespaceBody>(&bytes) else {
+    let Ok(body) = serde_json::from_slice::<fyrr_core::http_api::DeleteNamespaceRequest>(&bytes)
+    else {
         return error(ScimError::new(400, "invalidSyntax"));
     };
     if name != state.config.namespace.name {

@@ -35,5 +35,5 @@
     }
   },
   "x-fyrr-contract": "history-cut",
-  "x-fyrr-schema-version": "5.0"
+  "x-fyrr-schema-version": "4.1"
 }

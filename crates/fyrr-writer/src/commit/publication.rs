@@ -1,4 +1,5 @@
 use super::*;
+use fyrr_core::attributes::{attribute_index_kind, indexes_present, possible_indexes};
 
 /// Publish native work through the same immutable manifest and fenced head CAS.
 #[allow(clippy::too_many_arguments)]
@@ -28,14 +29,11 @@ pub(crate) async fn publish(
             INDEXES.iter().find(|(_, name, _, _)| *name == index.name)
         {
             (column, kind)
-        } else if let Some((column, kind)) = config
-            .namespace
-            .attributes
-            .iter()
-            .find(|(name, _)| fyrr_core::attributes::index_name(name) == index.name)
-            .and_then(|(column, kind)| Some((column, kind.index_kind()?)))
+        } else if let Some((column, kind, option, _)) =
+            possible_indexes(&config.namespace.attributes)
+                .find(|(_, _, _, name)| *name == index.name)
         {
-            (column.as_str(), kind)
+            (column, attribute_index_kind(kind, option))
         } else {
             continue;
         };
@@ -46,6 +44,11 @@ pub(crate) async fn publish(
             uuid: index.uuid.to_string(),
         });
     }
+    // What the table has, not what the settings ask for: an index that is
+    // switched on waits for maintenance, and a reader expects what is built.
+    let attribute_indexes = indexes_present(&config.namespace.attributes, |name| {
+        indexes.iter().any(|index| index.name == name)
+    });
     let reader_coverage = fyrr_reader::storage::coverage(&actual, "readers_idx");
     if dataset
         .manifest()
@@ -120,7 +123,7 @@ pub(crate) async fn publish(
     if acl_changed {
         let mut policy: PolicyArtifact =
             fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-        policy.schema_version = <PolicyArtifact as fyrr_core::Contract>::VERSION;
+        policy.schema_version = policy.current_version();
         policy.generation = head
             .policy
             .generation
@@ -147,7 +150,12 @@ pub(crate) async fn publish(
     )
     .await?;
     let manifest = ContentManifest {
-        schema_version: PUBLICATION_CONTRACT_VERSION,
+        schema_version: if attribute_indexes.is_empty() && !config.namespace.typed_connector_fields()
+        {
+            PUBLICATION_CONTRACT_VERSION
+        } else {
+            INDEXED_PUBLICATION_CONTRACT_VERSION
+        },
         namespace: config.namespace.name.clone(),
         publication_id: publication_id.clone(),
         sequence,
@@ -169,6 +177,7 @@ pub(crate) async fn publish(
         retrieval_policy_digest: config.namespace.retrieval_digest(),
         indexes,
         attributes: config.namespace.attributes.clone(),
+        attribute_indexes,
         files,
         envelope_ids: receipts,
         lineage: lineage.clone(),

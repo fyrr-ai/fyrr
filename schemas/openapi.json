@@ -1,0 +1,2400 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "fyrr HTTP API",
+    "version": "4.0",
+    "description": "The /v1/ routes of the reader (query, fetch, report, list) and of the writer (documents, delete). The version is that of the MCP contract the query and fetch bodies follow."
+  },
+  "tags": [
+    {
+      "name": "reader"
+    },
+    {
+      "name": "writer"
+    }
+  ],
+  "security": [
+    {
+      "bearer": []
+    }
+  ],
+  "paths": {
+    "/v1/namespaces": {
+      "get": {
+        "tags": [
+          "reader"
+        ],
+        "summary": "List the namespaces the key may act in",
+        "description": "Needs an API key with the `admin` or `list` role.",
+        "parameters": [
+          {
+            "name": "prefix",
+            "in": "query",
+            "required": false,
+            "description": "Keeps the names that start with it.",
+            "schema": {
+              "type": "string",
+              "maxLength": 63,
+              "pattern": "^[a-z0-9-]*$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NamespaceList"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/namespaces/{namespace}": {
+      "get": {
+        "tags": [
+          "reader"
+        ],
+        "summary": "Report a namespace's schema, settings, size and index state",
+        "description": "Needs an API key with the `admin` or `list` role.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/namespace"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NamespaceReport"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "writer"
+        ],
+        "summary": "Delete a namespace and its data",
+        "description": "Needs an API key with the `admin` role.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/namespace"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteNamespaceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/ScimError"
+          }
+        },
+        "requestBody": {
+          "description": "The request body.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteNamespaceRequest"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/v1/namespaces/{namespace}/query": {
+      "post": {
+        "tags": [
+          "reader"
+        ],
+        "summary": "Search the namespace: the `search` tool as JSON",
+        "description": "Needs an API key with the `read` role, or an OIDC user.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/namespace"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchOutput"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "description": "The request body.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/v1/namespaces/{namespace}/fetch": {
+      "post": {
+        "tags": [
+          "reader"
+        ],
+        "summary": "Fetch documents of the namespace: the `fetch` tool as JSON",
+        "description": "Needs an API key with the `read` role, or an OIDC user.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/namespace"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FetchOutput"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "description": "The request body.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FetchRequest"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/v1/namespaces/{namespace}/documents": {
+      "post": {
+        "tags": [
+          "writer"
+        ],
+        "summary": "Upsert, patch and delete documents, all or none; or change the schema",
+        "description": "Needs an API key with the `write` role.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/namespace"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WriteResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "description": "The request body.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WriteRequest"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "parameters": {
+      "namespace": {
+        "name": "namespace",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "maxLength": 63,
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        }
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "An error: an HTTP status and `{\"error\":\"<code>\"}`; docs/http-api.md lists the codes.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        }
+      },
+      "ScimError": {
+        "description": "A SCIM error (`application/scim+json`).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "schemas",
+                "status",
+                "detail"
+              ],
+              "properties": {
+                "schemas": {
+                  "const": [
+                    "urn:ietf:params:scim:api:messages:2.0:Error"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "description": "The HTTP status."
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "scimType": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "DeleteNamespaceRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "namespace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace"
+        ],
+        "description": "The body of `DELETE /v1/namespaces/{namespace}`: the name, repeated."
+      },
+      "QueryRequest": {
+        "type": "object",
+        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and two members that are no tool arguments.",
+        "properties": {
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Query text, 1-4096 UTF-8 bytes. Omit only for a filter-only listing with order=updated_at or order_by.",
+            "minLength": 1,
+            "maxLength": 4096,
+            "x-maxUtf8Bytes": 4096
+          },
+          "queries": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "description": "Alternative to query: 2–16 queries, sharing filters and deadline.",
+            "minItems": 2,
+            "maxItems": 16
+          },
+          "vector": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Query vector of the namespace's dimensions, instead of an embedding of query. Without query the search is dense only and makes no embedding call."
+          },
+          "exact": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Exact search: score every row that passes the filter and the caller's permissions instead of probing the index. Refused as invalid_argument when more rows pass than the bound of an exact search."
+          },
+          "text_hits": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0,
+            "description": "Hits carrying text per query, before deduplication; default all.",
+            "maximum": 75
+          },
+          "excerpt_chars": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 1,
+            "description": "Excerpt length in Unicode codepoints; default 1200; excerpt output only.",
+            "maximum": 1200
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 1,
+            "description": "Hits per query; default 50 for query, default/max 20 for queries. A listing takes up to 1000 less its offset.",
+            "maximum": 1000
+          },
+          "offset": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0,
+            "description": "Documents a listing skips: only without query or queries, and offset plus limit is at most 1000.",
+            "maximum": 1000
+          },
+          "output": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutputMode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Text per hit; default excerpt."
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SearchOrder"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Default relevance; updated_at sorts newest first, null dates last."
+          },
+          "order_by": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/OrderKey"
+            },
+            "description": "Listing order without query or queries, instead of order: 1-4 keys, the first most significant.\nNulls sort first ascending and last descending; ties are broken by the document key.",
+            "minItems": 1,
+            "maxItems": 4
+          },
+          "sources": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "description": "Source IDs.",
+            "minItems": 1,
+            "maxItems": 64
+          },
+          "source_types": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "description": "Source types.",
+            "minItems": 1,
+            "maxItems": 64
+          },
+          "projects": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "description": "Project IDs.",
+            "minItems": 1,
+            "maxItems": 64
+          },
+          "authors": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "description": "Authors.",
+            "minItems": 1,
+            "maxItems": 64
+          },
+          "updated_after": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/McpTime"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Exclusive lower bound on updated_at (RFC 3339)."
+          },
+          "updated_before": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/McpTime"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Exclusive upper bound on updated_at (RFC 3339)."
+          },
+          "attributes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/AttributeFilter"
+            },
+            "description": "Connector attributes; a hit matches every entry.",
+            "minItems": 1,
+            "maxItems": 16
+          },
+          "exclude": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/DocumentKey"
+            },
+            "description": "Documents to omit, e.g. ones already returned.",
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Filter"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Filter tree of `and`, `or`, `not` and comparisons; a hit also matches the arguments above."
+          },
+          "deadline_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 1,
+            "description": "Deadline in milliseconds; default 10000.",
+            "maximum": 300000
+          },
+          "consistency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Consistency"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Defaults to `cached`."
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReturnFields"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What a hit returns besides its document fields."
+          }
+        }
+      },
+      "OutputMode": {
+        "type": "string",
+        "enum": [
+          "metadata",
+          "excerpt",
+          "content"
+        ],
+        "description": "How much text a hit carries."
+      },
+      "SearchOrder": {
+        "type": "string",
+        "enum": [
+          "relevance",
+          "updated_at"
+        ],
+        "description": "Result order."
+      },
+      "OrderKey": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "direction": {
+            "$ref": "#/components/schemas/SortDirection"
+          }
+        },
+        "required": [
+          "field",
+          "direction"
+        ],
+        "description": "A built-in field or a typed attribute of the namespace to sort by. The\nreader refuses a field it does not know or whose values are not an orderable\nscalar: the connector labels, an array or `bytes`."
+      },
+      "SortDirection": {
+        "type": "string",
+        "enum": [
+          "asc",
+          "desc"
+        ]
+      },
+      "McpTime": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "AttributeFilter": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9._-]+$"
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 384
+            },
+            "minItems": 1,
+            "maxItems": 64
+          }
+        },
+        "required": [
+          "key",
+          "values"
+        ],
+        "description": "Equality (one value) or IN (several values) on one connector attribute."
+      },
+      "DocumentKey": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "root_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "source_id",
+          "root_id"
+        ],
+        "description": "A document's logical identity."
+      },
+      "Filter": {
+        "anyOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "and": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Filter"
+                }
+              }
+            },
+            "required": [
+              "and"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "or": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Filter"
+                }
+              }
+            },
+            "required": [
+              "or"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "not": {
+                "$ref": "#/components/schemas/Filter"
+              }
+            },
+            "required": [
+              "not"
+            ]
+          },
+          {
+            "$ref": "#/components/schemas/Comparison"
+          }
+        ],
+        "description": "A filter tree: `and` and `or` of one or more filters, `not` of one, or a\ncomparison of a field with a value. At most [`MAX_FILTER_NODES`] nodes in\n[`MAX_FILTER_DEPTH`] levels. It is read from the request in one pass that\nstops at the first bound it exceeds."
+      },
+      "Comparison": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "op": {
+            "$ref": "#/components/schemas/Op"
+          },
+          "value": true
+        },
+        "required": [
+          "field",
+          "op",
+          "value"
+        ],
+        "description": "A field compared with a value; `in` and `not_in` take an array of values.\nThe reader checks the field and the value against the namespace's schema."
+      },
+      "Op": {
+        "type": "string",
+        "enum": [
+          "eq",
+          "ne",
+          "in",
+          "not_in",
+          "lt",
+          "lte",
+          "gt",
+          "gte",
+          "contains",
+          "not_contains",
+          "contains_any",
+          "contains_all",
+          "contains_none"
+        ],
+        "description": "How a field is compared with a value. The last five test the elements of an\narray attribute and apply to nothing else."
+      },
+      "Consistency": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "cached",
+            "description": "The version the reader holds; a write acknowledged a moment ago may not show yet."
+          },
+          {
+            "type": "string",
+            "const": "strong",
+            "description": "After a version check that started once the request arrived."
+          }
+        ],
+        "description": "How current the version is that a `query` or `fetch` answer is read from."
+      },
+      "ReturnFields": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "include": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "exclude": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "scores": {
+            "type": "boolean",
+            "description": "Report the lexical score and the vector distance of each hit.",
+            "default": false
+          }
+        },
+        "description": "What a hit returns besides the document fields: the `fields` member of a\nJSON `query` request. `include` names the attributes to return, `exclude`\nthe ones to leave out of all of them (an empty list leaves out none). The\nvector of a row is returned only when `include` names `vector`."
+      },
+      "FetchRequest": {
+        "type": "object",
+        "description": "The body of `POST /v1/namespaces/{namespace}/fetch`: the arguments of the\n`fetch` tool and `consistency`, which is no tool argument.",
+        "properties": {
+          "documents": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/FetchDocument"
+            },
+            "description": "Ordered documents with individual record windows; alternative to other lookups.",
+            "minItems": 1,
+            "maxItems": 5
+          },
+          "uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact canonical source URI, matched byte for byte after trimming whitespace.",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "source_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "root_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "next_cursor of the previous page.",
+            "minLength": 1,
+            "maxLength": 16384
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FetchWindow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A span of one record returned by search; needs source_id and root_id."
+          },
+          "deadline_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 1,
+            "description": "Deadline in milliseconds; default 10000.",
+            "maximum": 300000
+          },
+          "consistency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Consistency"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Defaults to `cached`."
+          }
+        }
+      },
+      "FetchDocument": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "root_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FetchWindow"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "source_id",
+          "root_id"
+        ],
+        "description": "One ordered fetch lookup and its optional record window."
+      },
+      "FetchWindow": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "record_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "revision": {
+            "type": "string",
+            "description": "The hit's revision token; a changed record returns document_changed.",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "start": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "end": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0
+          },
+          "context": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 65536
+          }
+        },
+        "required": [
+          "record_id",
+          "revision",
+          "start"
+        ],
+        "description": "A codepoint span of a record: start..end, or start with context on both sides."
+      },
+      "WriteRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "settings": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true,
+            "description": "Part of the settings of a namespace that does not exist yet, laid over the\nprocess defaults. For a namespace that is published, a request with\n`settings` alone and only `attributes` and `attribute_indexes` in them\nchanges its schema: attributes are added and indexes set; another type\nor a removed attribute is `attribute_type_change_refused` or\n`attribute_removal_refused`, rows with it `schema_change_with_rows`, and a\nnamespace with no publication yet `namespace_not_published`."
+          },
+          "upserts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WriteRow"
+            },
+            "description": "Rows that replace the documents with their ids."
+          },
+          "deletes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "IDs to delete."
+          },
+          "patches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WriteRow"
+            },
+            "description": "Rows that write some attributes of a document that exists."
+          },
+          "conditions": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Filter"
+            },
+            "description": "From an id of the request to the filter that the stored document with\nthat id must meet for the change to apply. Needs the `admin` role."
+          },
+          "delete_where": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Filter"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Deletes every document that matches the filter, before the rest of the\nrequest is applied. Needs the `admin` role."
+          },
+          "patch_where": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PatchWhere"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Patches every document that matches a filter, after `delete_where` and\nbefore the rest of the request. Needs the `admin` role."
+          }
+        },
+        "description": "The body of `POST /v1/namespaces/{namespace}/documents`."
+      },
+      "WriteRow": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The row's key in the namespace."
+          },
+          "readers": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "`usr:<id>` or `grp:<id>`; ignored by an open namespace."
+          },
+          "vector": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "The vector of the row's text, of the namespace's dimension."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": true,
+        "description": "One row of `upserts` or `patches`."
+      },
+      "PatchWhere": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "filter": {
+            "$ref": "#/components/schemas/Filter"
+          },
+          "set": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "A patch row without its `id`: attributes and `readers`, never a text."
+          }
+        },
+        "required": [
+          "filter",
+          "set"
+        ],
+        "description": "The `patch_where` member of a write."
+      },
+      "NamespaceList": {
+        "type": "object",
+        "properties": {
+          "namespaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names in name order."
+          }
+        },
+        "required": [
+          "namespaces"
+        ],
+        "description": "What `GET /v1/namespaces` answers."
+      },
+      "NamespaceReport": {
+        "type": "object",
+        "properties": {
+          "namespace": {
+            "type": "string"
+          },
+          "publication_id": {
+            "type": "string"
+          },
+          "schema": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AttributeType"
+            },
+            "description": "The typed attributes of the version, name to type."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/NamespaceSettings",
+            "description": "The namespace's settings, as its policy records them."
+          },
+          "rows": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Approximate live rows; `null` for a version published before contract 4.1."
+          },
+          "logical_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Approximate bytes of the data files of those rows, without indexes; `null` as `rows`."
+          },
+          "first_published_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the namespace's first content publication was committed; `null` when that is not known."
+          },
+          "unindexed": {
+            "$ref": "#/components/schemas/Unindexed",
+            "description": "The data that an index of the version does not cover yet."
+          },
+          "last_write_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the version was published."
+          }
+        },
+        "required": [
+          "namespace",
+          "publication_id",
+          "schema",
+          "settings",
+          "rows",
+          "logical_bytes",
+          "first_published_at",
+          "unindexed",
+          "last_write_at"
+        ],
+        "description": "What `GET /v1/namespaces/{namespace}` answers: what the reader holds of the\nnamespace's published version."
+      },
+      "AttributeType": {
+        "oneOf": [
+          {
+            "type": "string",
+            "enum": [
+              "string",
+              "bool"
+            ]
+          },
+          {
+            "type": "string",
+            "const": "int",
+            "description": "64-bit signed integer."
+          },
+          {
+            "type": "string",
+            "const": "float",
+            "description": "64-bit float."
+          },
+          {
+            "type": "string",
+            "const": "datetime",
+            "description": "An RFC 3339 string in requests, stored as UTC microseconds."
+          },
+          {
+            "type": "string",
+            "const": "uint",
+            "description": "64-bit unsigned integer."
+          },
+          {
+            "type": "string",
+            "const": "uuid",
+            "description": "A UUID as 8-4-4-4-12 hexadecimal digits in requests, stored in 16 bytes."
+          },
+          {
+            "type": "string",
+            "const": "bytes",
+            "description": "Base64 in requests. Stored, never filtered, sorted or indexed."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "array": {
+                "$ref": "#/components/schemas/ElementType"
+              }
+            },
+            "required": [
+              "array"
+            ],
+            "additionalProperties": false,
+            "description": "A list of values of one scalar type, written `{\"array\": \"string\"}`."
+          }
+        ],
+        "description": "The type of an attribute."
+      },
+      "ElementType": {
+        "type": "string",
+        "enum": [
+          "string",
+          "int",
+          "float",
+          "bool",
+          "datetime",
+          "uint",
+          "uuid"
+        ],
+        "description": "The type of the elements of an array: every scalar type but `bytes`."
+      },
+      "NamespaceSettings": {
+        "type": "object",
+        "properties": {
+          "embedding": {
+            "$ref": "#/components/schemas/EmbeddingIdentity"
+          },
+          "fts": {
+            "$ref": "#/components/schemas/FtsSettings"
+          },
+          "dense_rq_bits": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255,
+            "description": "RaBitQ bits per dimension of the vector index."
+          },
+          "dense_partition_rows": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0,
+            "description": "Target rows per partition of the vector index."
+          },
+          "retrieval": {
+            "$ref": "#/components/schemas/RetrievalSettings"
+          },
+          "composition": {
+            "$ref": "#/components/schemas/CompositionSettings"
+          },
+          "rerank": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RerankSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AttributeType"
+            },
+            "description": "The typed attributes the namespace declares. Each is a nullable column;\na request that changes the schema adds attributes and never changes or\nremoves one."
+          },
+          "attribute_indexes": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AttributeIndex"
+            },
+            "description": "The indexes the attributes are to have where they are not the default.\nAn index switched on is built by the next maintenance; the manifest\nrecords the ones that are built."
+          },
+          "write_api": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WriteApiSettings"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present: the namespace is written through the HTTP API and takes no\nconnector source. Fixed with the rest of the settings."
+          }
+        },
+        "required": [
+          "embedding",
+          "fts",
+          "dense_rq_bits",
+          "dense_partition_rows",
+          "retrieval",
+          "composition"
+        ],
+        "description": "The index and retrieval settings a namespace is created with and keeps for\nits life. The process configuration only supplies them when the namespace is\ncreated; every reader and writer afterwards takes them from the namespace's\npolicy artifact, which each content manifest pins."
+      },
+      "EmbeddingIdentity": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "dimensions": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "Digest of the model settings and text transformation (prefix,\nnormalization) that keys the embedding cache."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/EmbeddingSettings"
+          }
+        },
+        "required": [
+          "model",
+          "dimensions",
+          "fingerprint",
+          "settings"
+        ],
+        "description": "The embedding identity bound into envelopes and publications."
+      },
+      "EmbeddingSettings": {
+        "type": "object",
+        "properties": {
+          "api_style": {
+            "$ref": "#/components/schemas/EmbeddingApiStyle"
+          },
+          "prefix": {
+            "type": "string",
+            "maxLength": 4096,
+            "x-maxUtf8Bytes": 4096
+          },
+          "roles": {
+            "$ref": "#/components/schemas/EmbeddingRoles"
+          },
+          "send_dimensions": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "api_style",
+          "prefix",
+          "roles",
+          "send_dimensions"
+        ],
+        "description": "Vector-affecting settings recorded with a publication's model/dimensions."
+      },
+      "EmbeddingApiStyle": {
+        "type": "string",
+        "enum": [
+          "openai-compatible"
+        ],
+        "description": "Fixed protocol identity recorded in persisted embedding settings."
+      },
+      "EmbeddingRoles": {
+        "type": "object",
+        "properties": {
+          "document": {
+            "$ref": "#/components/schemas/EmbeddingRole"
+          },
+          "query": {
+            "$ref": "#/components/schemas/EmbeddingRole"
+          }
+        },
+        "required": [
+          "document",
+          "query"
+        ],
+        "description": "Persisted role transformations accept future minor-version additions.\nConfiguration uses strict types at its TOML boundary."
+      },
+      "EmbeddingRole": {
+        "type": "object",
+        "properties": {
+          "prefix": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 4096,
+            "x-maxUtf8Bytes": 4096
+          },
+          "input_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 128,
+            "x-maxUtf8Bytes": 128
+          }
+        }
+      },
+      "FtsSettings": {
+        "type": "object",
+        "properties": {
+          "tokenizer": {
+            "type": "string"
+          },
+          "max_token_length": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "lowercase": {
+            "type": "boolean"
+          },
+          "stem": {
+            "type": "boolean"
+          },
+          "remove_stop_words": {
+            "type": "boolean"
+          },
+          "ascii_folding": {
+            "type": "boolean"
+          },
+          "with_position": {
+            "type": "boolean",
+            "description": "Positional postings; false while there is no phrase scoring."
+          }
+        },
+        "required": [
+          "tokenizer",
+          "max_token_length",
+          "lowercase",
+          "stem",
+          "remove_stop_words",
+          "ascii_folding",
+          "with_position"
+        ],
+        "description": "FTS analyzer settings, part of the publication identity."
+      },
+      "RetrievalSettings": {
+        "type": "object",
+        "properties": {
+          "rescore_depth": {
+            "$ref": "#/components/schemas/RescoreSettings"
+          },
+          "dense_weight": {
+            "type": "number",
+            "format": "double"
+          },
+          "dense_candidates": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "lexical_candidates": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "source_cap": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "max_documents": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "dense_weight",
+          "dense_candidates",
+          "lexical_candidates",
+          "source_cap",
+          "max_documents"
+        ],
+        "description": "The persisted copy of [`RetrievalConfig`]."
+      },
+      "RescoreSettings": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "const": "legacy"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "const": "fixed"
+              },
+              "candidates": {
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "mode",
+              "candidates"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "const": "adaptive"
+              },
+              "min_candidates": {
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0
+              },
+              "max_candidates": {
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0
+              },
+              "min_gap": {
+                "type": "number",
+                "format": "double"
+              }
+            },
+            "required": [
+              "mode",
+              "min_candidates",
+              "max_candidates",
+              "min_gap"
+            ]
+          }
+        ],
+        "description": "The persisted copy of [`RescoreDepth`]."
+      },
+      "CompositionSettings": {
+        "type": "object",
+        "properties": {
+          "fusion": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "dense": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "lexical": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "fusion",
+          "dense",
+          "lexical"
+        ],
+        "description": "The persisted copy of [`Composition`]."
+      },
+      "RerankSettings": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "candidates": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 1,
+            "description": "Authorized composed documents to rerank before the request limit.",
+            "maximum": 75
+          },
+          "weight": {
+            "type": "number",
+            "format": "double",
+            "description": "Logistic population-z score blend; 1 uses raw reranker order, 0 fusion order.",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "text_chars": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 200,
+            "description": "Per-candidate text bound in characters; absent sends the whole record.",
+            "maximum": 32768
+          }
+        },
+        "required": [
+          "model",
+          "candidates",
+          "weight"
+        ],
+        "description": "What of a reranker decides results: recorded in the namespace when it is\ncreated. The endpoint, credential, spend caps and deadline stay process\nconfiguration ([`RerankConfig`]). Persisted types accept the fields a newer\nminor version adds, unlike their configuration counterparts."
+      },
+      "AttributeIndex": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "type": "boolean",
+            "default": true
+          },
+          "full_text": {
+            "type": "boolean",
+            "default": false
+          },
+          "ngram": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "index",
+          "full_text",
+          "ngram"
+        ],
+        "description": "The indexes an attribute has: the scalar one unless it says otherwise, and a\nfull-text or an n-gram index when it asks for one. An attribute without an\nindex is still filtered and sorted: by a scan of the table."
+      },
+      "WriteApiSettings": {
+        "type": "object",
+        "properties": {
+          "text_attribute": {
+            "type": "string",
+            "description": "The key of a row that holds its text: embedded, full-text indexed and\nreturned as the content of the record. It is not a typed attribute and\nnot one of `attributes`.",
+            "default": "text"
+          },
+          "open": {
+            "type": "boolean",
+            "description": "`false`: a row is readable by the reader tokens it names, and a row\nthat names none by nobody. `true`: every authenticated subject of the\ndeployment reads every row.",
+            "default": false
+          }
+        },
+        "required": [
+          "text_attribute",
+          "open"
+        ],
+        "description": "How a namespace written through the HTTP API stores and shows its rows. Fixed\nfor the life of the namespace."
+      },
+      "Unindexed": {
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "logical_bytes": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "rows",
+          "logical_bytes"
+        ],
+        "description": "`rows` and `logical_bytes` of the data that no index covers yet."
+      },
+      "DeleteNamespaceResponse": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "description": "What a namespace deletion answers."
+      },
+      "SearchOutput": {
+        "type": "object",
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchHit"
+            }
+          },
+          "truncated": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Truncation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the response budget trimmed text or hits (narrow or lower `limit`)."
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/ResponseMetadata"
+          }
+        },
+        "required": [
+          "hits",
+          "metadata"
+        ],
+        "description": "`search` result."
+      },
+      "SearchHit": {
+        "type": "object",
+        "properties": {
+          "query_index": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0,
+            "description": "Winning query's zero-based index, present only for multi-query search.",
+            "maximum": 15
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "root_id": {
+            "type": "string"
+          },
+          "record_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string",
+            "description": "Revision token of the record."
+          },
+          "source_uri": {
+            "type": "string"
+          },
+          "source_type": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "team": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/McpTime"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/McpTime"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "score": {
+            "type": "number",
+            "format": "double",
+            "description": "Orders hits only."
+          },
+          "excerpt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Excerpt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attributes": {
+            "type": "object",
+            "description": "Typed attributes and vector asked for in `fields`."
+          },
+          "lexical_score": {
+            "type": "number",
+            "description": "Raw lexical score, with `fields.scores`; absent when the lexical lane did not find the hit."
+          },
+          "distance": {
+            "type": "number",
+            "description": "Raw vector distance, with `fields.scores`; absent when the dense lane did not find the hit."
+          }
+        },
+        "required": [
+          "source_id",
+          "root_id",
+          "record_id",
+          "revision",
+          "source_uri",
+          "source_type",
+          "title",
+          "author",
+          "team",
+          "project",
+          "status",
+          "labels",
+          "created_at",
+          "updated_at",
+          "score",
+          "excerpt",
+          "content"
+        ],
+        "description": "One hit, in a deterministic total order."
+      },
+      "Excerpt": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "start": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "end": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "text",
+          "start",
+          "end"
+        ],
+        "description": "A literal passage of the record; offsets are Unicode codepoints in the record text."
+      },
+      "Truncation": {
+        "type": "object",
+        "properties": {
+          "text_dropped": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "hits_dropped": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
+          }
+        },
+        "required": [
+          "text_dropped",
+          "hits_dropped"
+        ]
+      },
+      "ResponseMetadata": {
+        "type": "object",
+        "properties": {
+          "schema_version": {
+            "$ref": "#/components/schemas/SchemaVersion"
+          },
+          "publication_id": {
+            "type": "string"
+          },
+          "content_version": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "committed_at": {
+            "$ref": "#/components/schemas/McpTime"
+          },
+          "degraded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Lane"
+            },
+            "description": "Lanes skipped by degradation (e.g. dense after a failed query embedding)."
+          },
+          "stale_version": {
+            "type": "boolean",
+            "description": "The answer comes from an older version than the serving head the\nreader last read."
+          },
+          "omitted_bytes": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "UTF-8 bytes omitted by clipping or the payload budget."
+          },
+          "telemetry": {
+            "$ref": "#/components/schemas/Telemetry"
+          }
+        },
+        "required": [
+          "schema_version",
+          "publication_id",
+          "content_version",
+          "committed_at",
+          "degraded",
+          "stale_version",
+          "omitted_bytes",
+          "telemetry"
+        ],
+        "description": "Metadata on every response."
+      },
+      "SchemaVersion": {
+        "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+      },
+      "Lane": {
+        "type": "string",
+        "enum": [
+          "dense",
+          "lexical",
+          "rerank"
+        ],
+        "description": "A retrieval lane."
+      },
+      "Telemetry": {
+        "type": "object",
+        "properties": {
+          "rerank_us": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Rerank preparation and concurrent provider wait, separate from retrieval."
+          },
+          "cache": {
+            "$ref": "#/components/schemas/CacheState"
+          },
+          "queue_wait_ms": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "routing_strategy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoutingMethod"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Effective centroid route; mixed means different routes across index deltas."
+          },
+          "routing_fallback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoutingFallback"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "First optional routing failure across index deltas, never an I/O or auth error."
+          },
+          "stage_us": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "description": "Fixed stage names, microseconds; no query or identity labels."
+          },
+          "stage_s3_requests": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "description": "Requests and bytes on the same bounded stages."
+          },
+          "stage_s3_bytes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "unindexed_rows_scanned": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "filter_rows_scanned": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Authorized rows inspected for this call's document counts, never cached."
+          },
+          "lexical_candidates_fetched": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Lexical candidates returned, including repeated fetches for cutoff ties."
+          },
+          "lexical_tie_bound_hits": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Unresolved lexical cutoff ties at the fixed fetch bound (zero or one)."
+          },
+          "dense_candidates_fetched": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Dense candidates read, including repeated fetches for cutoff ties."
+          },
+          "dense_tie_bound_hits": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Unresolved dense cutoff ties at the fixed fetch bound (zero or one)."
+          },
+          "s3_requests": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "s3_bytes": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "cache",
+          "queue_wait_ms",
+          "unindexed_rows_scanned",
+          "s3_requests",
+          "s3_bytes"
+        ],
+        "description": "Bounded per-request telemetry."
+      },
+      "CacheState": {
+        "type": "string",
+        "enum": [
+          "hot",
+          "warm",
+          "cold"
+        ],
+        "description": "Cache state of the request."
+      },
+      "RoutingMethod": {
+        "type": "string",
+        "enum": [
+          "exact",
+          "rabitq",
+          "mixed"
+        ],
+        "description": "Effective routing used by this request's native vector indexes."
+      },
+      "RoutingFallback": {
+        "type": "string",
+        "enum": [
+          "absent",
+          "build_failed",
+          "memory_budget",
+          "eligible_shortlist"
+        ],
+        "description": "Bounded reasons for using exact centroid routing instead of RaBitQ."
+      },
+      "FetchOutput": {
+        "type": "object",
+        "properties": {
+          "documents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FetchedDocument"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "document_changed": {
+            "type": "boolean",
+            "description": "Single-lookup window status; list requests report status on each document."
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServedWindow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Codepoint range served for a window, after the content limit."
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/ResponseMetadata"
+          }
+        },
+        "required": [
+          "documents",
+          "next_cursor",
+          "document_changed",
+          "window",
+          "metadata"
+        ],
+        "description": "`fetch` result."
+      },
+      "FetchedDocument": {
+        "type": "object",
+        "properties": {
+          "document_changed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Per-document window status for a list request; changed records have no text."
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServedWindow"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "root_id": {
+            "type": "string"
+          },
+          "source_uri": {
+            "type": "string"
+          },
+          "source_type": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "team": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/McpTime"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/McpTime"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "connector_map": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true,
+            "description": "Untrusted connector metadata."
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FetchedRecord"
+            }
+          }
+        },
+        "required": [
+          "source_id",
+          "root_id",
+          "source_uri",
+          "source_type",
+          "title",
+          "author",
+          "team",
+          "project",
+          "status",
+          "labels",
+          "created_at",
+          "updated_at",
+          "connector_map",
+          "records"
+        ],
+        "description": "A document with its records in order."
+      },
+      "ServedWindow": {
+        "type": "object",
+        "properties": {
+          "record_id": {
+            "type": "string"
+          },
+          "start": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "end": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "record_id",
+          "start",
+          "end"
+        ],
+        "description": "The span a window request returned."
+      },
+      "FetchedRecord": {
+        "type": "object",
+        "properties": {
+          "record_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_id",
+          "revision",
+          "text"
+        ],
+        "description": "One record's text."
+      },
+      "WriteResponse": {
+        "type": "object",
+        "properties": {
+          "upserted": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "deleted": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "patched": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Present when the request has patches."
+          },
+          "skipped": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0,
+            "description": "The patches and conditional changes that did not apply; present when the request has any."
+          }
+        },
+        "required": [
+          "upserted",
+          "deleted"
+        ],
+        "description": "What a write answers: the changes that applied."
+      },
+      "ErrorBody": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "A code that [`docs/http-api.md`](../docs/http-api.md) lists."
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "description": "The body of an error answer of the reader and of the write route. The\nnamespace deletion answers a SCIM error instead."
+      }
+    }
+  }
+}

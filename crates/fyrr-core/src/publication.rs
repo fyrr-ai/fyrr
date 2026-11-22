@@ -15,14 +15,25 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::attributes::{AttributeSchema, check_schema};
+use crate::attributes::{
+    AttributeIndexes, AttributeSchema, check_indexes, check_schema, has_connector_columns,
+};
 use crate::config::{CompositionSettings, NamespaceConfig, RerankSettings, RetrievalSettings};
 use crate::envelope::{ChunkProfileIdentity, EmbeddingIdentity, FileRef};
 use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
 
 /// The publication contract version (manifest and head) written by this build.
-pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
+pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 1);
+/// The version of a manifest that records something an older build would
+/// ignore, and of a policy artifact whose settings do: attribute index options,
+/// or the typed columns of the metadata fields of connector documents (a build
+/// without them would read nulls). An older build refuses them: it reads only
+/// its own major, and this build reads both. A document without either keeps
+/// its version.
+pub const INDEXED_PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
+/// The policy artifact's counterpart of [`INDEXED_PUBLICATION_CONTRACT_VERSION`].
+pub const INDEXED_POLICY_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
 
 /// The index and retrieval settings a namespace is created with and keeps for
 /// its life. The process configuration only supplies them when the namespace is
@@ -40,10 +51,16 @@ pub struct NamespaceSettings {
     pub composition: CompositionSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerank: Option<RerankSettings>,
-    /// The typed attributes the namespace declares when it is created. Each is
-    /// a nullable column with its own index from the first publication.
+    /// The typed attributes the namespace declares. Each is a nullable column;
+    /// a request that changes the schema adds attributes and never changes or
+    /// removes one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: AttributeSchema,
+    /// The indexes the attributes are to have where they are not the default.
+    /// An index switched on is built by the next maintenance; the manifest
+    /// records the ones that are built.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attribute_indexes: AttributeIndexes,
     /// Present: the namespace is written through the HTTP API and takes no
     /// connector source. Fixed with the rest of the settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -51,6 +68,13 @@ pub struct NamespaceSettings {
 }
 
 impl NamespaceSettings {
+    /// Whether an older build would misread a namespace with these settings:
+    /// it ignores index options and reads the connector columns as null.
+    pub fn needs_newer_build(&self) -> bool {
+        !self.attribute_indexes.is_empty()
+            || (self.write_api.is_none() && has_connector_columns(&self.attributes))
+    }
+
     /// The bounds a configuration file is held to, so that no stored settings
     /// can fail a build or a search later.
     pub fn validate(&self) -> Result<(), String> {
@@ -67,6 +91,7 @@ impl NamespaceSettings {
             dense_rq_bits: self.dense_rq_bits,
             dense_partition_rows: self.dense_partition_rows,
             attributes: self.attributes.clone(),
+            attribute_indexes: self.attribute_indexes.clone(),
             write_api: self.write_api.clone(),
         };
         let mut issues = Vec::new();
@@ -85,8 +110,8 @@ pub struct PolicyArtifact {
     pub schema_version: SchemaVersion,
     pub namespace: String,
     pub generation: u64,
-    /// Fixed for the life of the namespace: every generation repeats the
-    /// settings the namespace was created with.
+    /// Fixed for the life of the namespace but its attributes and their
+    /// indexes, which only grow and change by a schema request.
     pub settings: NamespaceSettings,
     /// Source-wide fixed grants: the hashed reader tokens of every source with
     /// `permissions = "fixed"`. Rows of other sources carry their own readers.
@@ -112,11 +137,30 @@ pub struct RetiredSource {
     pub purged_at: Option<DateTime<Utc>>,
 }
 
+impl PolicyArtifact {
+    /// The version to write: the one an older build refuses when the settings
+    /// hold index options it would ignore or the connector columns it would
+    /// read as null.
+    pub fn current_version(&self) -> SchemaVersion {
+        if !self.settings.needs_newer_build() {
+            <Self as Contract>::VERSION
+        } else {
+            INDEXED_POLICY_CONTRACT_VERSION
+        }
+    }
+}
+
 impl Contract for PolicyArtifact {
     const NAME: &'static str = "policy-artifact";
     const VERSION: SchemaVersion = SchemaVersion::new(3, 1);
+    const ALSO_READS: &'static [u16] = &[INDEXED_POLICY_CONTRACT_VERSION.major];
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
+        if self.settings.needs_newer_build()
+            && self.schema_version.major != INDEXED_POLICY_CONTRACT_VERSION.major
+        {
+            return Err("attribute index options and connector columns need the indexed policy version".into());
+        }
         if self.retired_sources.len() > MAX_RETIRED_SOURCES {
             return Err("retired_sources holds too many sources".into());
         }
@@ -168,10 +212,14 @@ pub struct ContentManifest {
     /// Digest of the retrieval policy, including the result composition.
     pub retrieval_policy_digest: String,
     pub indexes: Vec<IndexIdentity>,
-    /// The typed attributes of this version: each is a nullable column with an
-    /// index of its own among `indexes`.
+    /// The typed attributes of this version: each is a nullable column.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: AttributeSchema,
+    /// The attributes whose built indexes are not the default: each attribute
+    /// has the scalar index of its type unless it says `index: false`, and the
+    /// text indexes it asks for, among `indexes`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attribute_indexes: AttributeIndexes,
     /// Immutable files of this version, relative to the dataset root.
     pub files: Vec<FileRef>,
     /// Envelopes this publication committed.
@@ -391,6 +439,7 @@ pub struct Lease {
 impl Contract for ContentManifest {
     const NAME: &'static str = "content-manifest";
     const VERSION: SchemaVersion = PUBLICATION_CONTRACT_VERSION;
+    const ALSO_READS: &'static [u16] = &[INDEXED_PUBLICATION_CONTRACT_VERSION.major];
 
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
@@ -401,6 +450,13 @@ impl Contract for ContentManifest {
         check_digest("chunk_profile.digest", &self.chunk_profile.digest)?;
         check_digest("retrieval_policy_digest", &self.retrieval_policy_digest)?;
         check_schema(&self.attributes).map_err(|error| format!("attributes: {error}"))?;
+        check_indexes(&self.attributes, &self.attribute_indexes)
+            .map_err(|error| format!("attribute_indexes: {error}"))?;
+        if !self.attribute_indexes.is_empty()
+            && self.schema_version.major != INDEXED_PUBLICATION_CONTRACT_VERSION.major
+        {
+            return Err("attribute index options need the indexed manifest version".into());
+        }
         if !self.indexes.iter().any(|index| index.column == "readers") {
             // A publication lacking the readers index is refused.
             return Err("the readers index is missing".into());
