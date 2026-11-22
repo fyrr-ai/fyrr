@@ -29,7 +29,11 @@ const MAX_HEADER_BYTES: usize = 32 * 1024;
 const MAX_BEARER_BYTES: usize = 16 * 1024;
 const MAX_CONNECTIONS: usize = 64;
 /// Namespaces opened by request path besides the configured one. The least
-/// recently used one is closed when another needs the place.
+/// recently used one is closed when another needs the place. Each has an
+/// eighth of the mirror budget, so the count also keeps the mirrors of all of
+/// them inside `reader.mirror_max_bytes`.
+// shortcut: a fixed share of the mirror per namespace; share it by size when
+// namespaces too large for an eighth must be served by path.
 const MAX_OPEN_NAMESPACES: usize = 8;
 const MAX_REQUESTS_IN_FLIGHT: usize = 64;
 const MAX_CONTROLS_IN_FLIGHT: usize = 8;
@@ -102,7 +106,9 @@ impl Served {
 /// The namespaces a request path can name: the configured one, always, and
 /// others opened on their first request. At most `MAX_OPEN_NAMESPACES` others
 /// are open, each with an eighth of the reader's mirror and subject-cache
-/// budgets, inside the configured reader's memory envelope.
+/// budgets, inside the configured reader's memory envelope. A namespace that
+/// the envelope cannot fund in full closes the least recently used idle one
+/// and opens again.
 struct Namespaces {
     /// The configuration the file holds, to which a namespace's name is added.
     process: Arc<Config>,
@@ -112,6 +118,8 @@ struct Namespaces {
     open: std::sync::Mutex<Open<Served>>,
     /// One per live namespace, held by its scheduler until it ends.
     slots: Arc<Semaphore>,
+    /// Woken when a namespace has ended and returned what it held.
+    closed: Arc<tokio::sync::Notify>,
     /// How many namespaces have been opened: each has a mirror of its own.
     opened: std::sync::atomic::AtomicU64,
     /// Where those mirrors are: the directory of this process, made on the
@@ -123,11 +131,14 @@ struct Namespaces {
 /// filled with it, so the mirrors on disk are those of the live namespaces.
 struct Slot {
     mirror: std::path::PathBuf,
+    closed: Arc<tokio::sync::Notify>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 impl Drop for Slot {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.mirror);
+        // The scheduler's readers, and the memory they held, are gone by now.
+        self.closed.notify_waiters();
     }
 }
 /// A directory of this process for the mirrors of namespaces opened by request
@@ -179,6 +190,21 @@ fn own_mirrors(configured: std::path::PathBuf) -> Result<(std::path::PathBuf, st
 /// concurrent requests share, so a namespace is opened once.
 type Open<T> = VecDeque<(String, Arc<tokio::sync::OnceCell<Arc<T>>>)>;
 
+/// Closes the least recently used namespace that nothing but `open` holds: not
+/// one that is opening or serving a request. Whether there was one.
+fn close_idle<T>(open: &mut Open<T>) -> bool {
+    let Some(idle) = open.iter().position(|(_, cell)| {
+        Arc::strong_count(cell) == 1
+            && cell
+                .get()
+                .is_none_or(|served| Arc::strong_count(served) == 1)
+    }) else {
+        return false;
+    };
+    open.remove(idle);
+    true
+}
+
 /// The place of `name` in `open`, made most recent. A name without one gets it
 /// only with `create`, by closing the least recently used namespace that
 /// nothing but `open` holds: not one that is opening or serving a request.
@@ -196,17 +222,8 @@ fn place<T>(
     let entry = match held {
         Some(entry) => entry,
         None if create => {
-            if open.len() >= capacity {
-                let idle = open
-                    .iter()
-                    .position(|(_, cell)| {
-                        Arc::strong_count(cell) == 1
-                            && cell
-                                .get()
-                                .is_none_or(|served| Arc::strong_count(served) == 1)
-                    })
-                    .ok_or(Busy)?;
-                open.remove(idle);
+            if open.len() >= capacity && !close_idle(open) {
+                return Err(Busy);
             }
             (name.to_owned(), Arc::default())
         }
@@ -230,6 +247,7 @@ impl Namespaces {
             configured,
             open: std::sync::Mutex::default(),
             slots: Arc::new(Semaphore::new(MAX_OPEN_NAMESPACES)),
+            closed: Arc::default(),
             opened: std::sync::atomic::AtomicU64::new(0),
             mirrors: tokio::sync::OnceCell::new(),
         }
@@ -251,6 +269,17 @@ impl Namespaces {
             create,
             MAX_OPEN_NAMESPACES,
         )
+    }
+    /// Closes the namespace used least recently that serves nothing, for the
+    /// memory it holds. Whether there was one.
+    fn close_idle(&self) -> bool {
+        let closed = close_idle(&mut crate::sync::lock(&self.open));
+        if closed {
+            crate::telemetry::emit(format_args!(
+                "telemetry namespace=closed reason=memory_budget"
+            ));
+        }
+        closed
     }
     /// The namespace `name`, opened if it is not; `None` when it has no head
     /// or no content. A namespace that cannot be served costs one read of its
@@ -305,17 +334,37 @@ impl Namespaces {
                 config.reader.mirror_path = Some(mirror.to_string_lossy().into_owned());
                 let slot = Slot {
                     mirror,
+                    closed: this.closed.clone(),
                     _permit: permit,
                 };
-                let reader = crate::search::PreparedReader::open_in(
-                    &config,
-                    this.budget.clone(),
-                    crate::search::AUTHORIZATION_CACHE_MAX_BYTES / MAX_OPEN_NAMESPACES,
-                )
-                .await?;
+                let reader = loop {
+                    let reader = crate::search::PreparedReader::open_in(
+                        &config,
+                        this.budget.clone(),
+                        crate::search::AUTHORIZATION_CACHE_MAX_BYTES / MAX_OPEN_NAMESPACES,
+                    )
+                    .await?;
+                    let funded = reader.readiness_state();
+                    if funded.state != crate::generation::GenerationState::Cold
+                        && !funded.cache_degraded
+                    {
+                        break reader;
+                    }
+                    // The envelope is shared by every open namespace: one it
+                    // cannot fund in full takes the memory of the least
+                    // recently used one that serves nothing, once that has ended.
+                    let closed = this.closed.notified();
+                    tokio::pin!(closed);
+                    closed.as_mut().enable();
+                    if !this.close_idle() {
+                        break reader;
+                    }
+                    drop(reader);
+                    let _ = tokio::time::timeout(IO_TIMEOUT, closed).await;
+                };
                 let config = reader.config.clone();
                 let admission = Served::admission_of(&reader, this.api_keys.clone());
-                let service = crate::serve::start_guarded(reader, slot).await?;
+                let service = crate::serve::start_guarded(reader, slot, true).await?;
                 Ok(Arc::new(Served {
                     config,
                     admission,

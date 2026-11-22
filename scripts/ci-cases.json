@@ -1600,13 +1600,21 @@
       },
       "full:fyrr:test:dense_path/storage_budget::an_http_reader_with_api_keys_reads_them_once_per_version_check": {
         "tier": "full",
-        "seconds": 30.0
+        "seconds": 40.0
       },
       "full:fyrr:test:dense_path/mirror_identity::reader_paused_past_its_version_check_answers_from_the_new_publication": {
         "tier": "full",
         "seconds": 15.0
       },
       "full:fyrr:test:dense_path/storage_budget::an_attribute_costs_a_reader_a_bounded_number_of_storage_requests": {
+        "tier": "full",
+        "seconds": 90.0
+      },
+      "full:fyrr:test:dense_path/api_keys::an_idle_namespace_answers_from_a_head_read_after_its_request": {
+        "tier": "full",
+        "seconds": 40.0
+      },
+      "full:fyrr:test:dense_path/api_keys::namespaces_opened_by_path_stay_inside_the_memory_budget": {
         "tier": "full",
         "seconds": 90.0
       }
