@@ -286,12 +286,15 @@ impl Namespaces {
                 let (mirrors, _) = this
                     .mirrors
                     .get_or_try_init(|| async {
-                        own_mirrors(
-                            this.configured
-                                .config
-                                .mirror_directory(&ProcessEnvironment)
-                                .ok_or(StorageConfigurationInvalid)?,
-                        )
+                        let configured = this
+                            .configured
+                            .config
+                            .mirror_directory(&ProcessEnvironment)
+                            .ok_or(StorageConfigurationInvalid)?;
+                        // It locks and sweeps: not on the runtime's thread.
+                        tokio::task::spawn_blocking(move || own_mirrors(configured))
+                            .await
+                            .map_err(|_| StorageUnavailable)?
                     })
                     .await?;
                 let mirror = mirrors.join(format!(
@@ -666,10 +669,22 @@ async fn authenticate_mcp(
             if subject.api_key.is_none() && name != state.config.namespace.name {
                 return Err(unbound);
             }
-            state.namespaces.get(name).await?.ok_or(unbound)
+            // What opening it does is answered apart from admission: when
+            // its storage is unavailable, so is the namespace.
+            Ok(state
+                .namespaces
+                .get(name)
+                .await
+                .and_then(|served| served.ok_or(unbound)))
         })
         .await?
-        .map_err(refuse)?;
+        .map_err(refuse)?
+        .map_err(|code| match code {
+            StorageUnavailable | StorageConfigurationInvalid => {
+                error(StatusCode::SERVICE_UNAVAILABLE, StorageUnavailable)
+            }
+            _ => refuse(code),
+        })?;
         Some(found)
     } else {
         None
