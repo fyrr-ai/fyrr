@@ -11,9 +11,7 @@ use chrono::DateTime;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::limits::{
-    MAX_SCHEMA_ATTRIBUTE_NAME_BYTES, MAX_SCHEMA_ATTRIBUTE_VALUE_BYTES, MAX_SCHEMA_ATTRIBUTES,
-};
+use crate::limits::schema::{MAX_ATTRIBUTES, MAX_NAME_BYTES, MAX_VALUE_BYTES};
 
 /// The columns of the table that are not attributes. An attribute cannot take
 /// one of these names; `prepare::schema` in the writer is held to this list.
@@ -51,6 +49,18 @@ pub enum AttributeType {
 }
 
 impl AttributeType {
+    /// The type of the attribute's column.
+    pub fn arrow_type(self) -> arrow_schema::DataType {
+        use arrow_schema::{DataType, TimeUnit};
+        match self {
+            Self::String => DataType::Utf8,
+            Self::Int => DataType::Int64,
+            Self::Float => DataType::Float64,
+            Self::Bool => DataType::Boolean,
+            Self::Datetime => DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        }
+    }
+
     /// The kind of the attribute's scalar index: a bitmap for `bool`, a B-tree
     /// for every other type.
     pub fn index_kind(self) -> &'static str {
@@ -114,14 +124,14 @@ impl AttributeError {
 }
 
 /// A name is a lowercase letter followed by lowercase letters, digits and `_`,
-/// at most [`MAX_SCHEMA_ATTRIBUTE_NAME_BYTES`]: a Lance column name that needs
+/// at most [`MAX_NAME_BYTES`]: a Lance column name that needs
 /// no quoting. A built-in column name or a leading `_` is reserved.
 pub fn check_name(name: &str) -> Result<(), AttributeError> {
     if name.starts_with('_') || BUILT_IN_COLUMNS.contains(&name) {
         return Err(AttributeError::NameReserved);
     }
     let mut bytes = name.bytes();
-    if name.len() > MAX_SCHEMA_ATTRIBUTE_NAME_BYTES
+    if name.len() > MAX_NAME_BYTES
         || !bytes.next().is_some_and(|b| b.is_ascii_lowercase())
         || !bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
     {
@@ -132,7 +142,7 @@ pub fn check_name(name: &str) -> Result<(), AttributeError> {
 
 /// Checks a schema as a whole: names and the bound on its size.
 pub fn check_schema(schema: &AttributeSchema) -> Result<(), AttributeError> {
-    if schema.len() > MAX_SCHEMA_ATTRIBUTES {
+    if schema.len() > MAX_ATTRIBUTES {
         return Err(AttributeError::TooMany);
     }
     schema.keys().try_for_each(|name| check_name(name))
@@ -160,13 +170,13 @@ pub fn resolve(
         _ => return Err(AttributeError::ValueInvalid),
     };
     let declared = schema.get(name).copied();
-    if declared.is_none() && schema.len() >= MAX_SCHEMA_ATTRIBUTES {
+    if declared.is_none() && schema.len() >= MAX_ATTRIBUTES {
         return Err(AttributeError::TooMany);
     }
     let kind = declared.unwrap_or(inferred);
     let typed = match (kind, value) {
         (AttributeType::String, Value::String(text)) => {
-            if text.len() > MAX_SCHEMA_ATTRIBUTE_VALUE_BYTES {
+            if text.len() > MAX_VALUE_BYTES {
                 return Err(AttributeError::ValueTooLarge);
             }
             AttributeValue::String(text.clone())
@@ -180,7 +190,7 @@ pub fn resolve(
         }
         (AttributeType::Bool, Value::Bool(flag)) => AttributeValue::Bool(*flag),
         (AttributeType::Datetime, Value::String(text)) => {
-            if text.len() > MAX_SCHEMA_ATTRIBUTE_VALUE_BYTES {
+            if text.len() > MAX_VALUE_BYTES {
                 return Err(AttributeError::ValueTooLarge);
             }
             let time =
@@ -312,7 +322,7 @@ mod tests {
 
     #[test]
     fn the_name_bound_holds_at_its_edge() {
-        let at = "a".repeat(MAX_SCHEMA_ATTRIBUTE_NAME_BYTES);
+        let at = "a".repeat(MAX_NAME_BYTES);
         assert_eq!(check_name(&at), Ok(()));
         assert_eq!(
             check_name(&format!("{at}a")),
@@ -323,7 +333,7 @@ mod tests {
     #[test]
     fn the_value_bound_holds_at_its_edge() {
         let mut schema = schema(&[("a", AttributeType::String)]);
-        let at = "x".repeat(MAX_SCHEMA_ATTRIBUTE_VALUE_BYTES);
+        let at = "x".repeat(MAX_VALUE_BYTES);
         assert!(resolve(&mut schema, "a", &json!(at)).is_ok());
         assert_eq!(
             resolve(&mut schema, "a", &json!(format!("{at}x"))),
@@ -333,7 +343,7 @@ mod tests {
 
     #[test]
     fn the_attribute_count_holds_at_its_edge() {
-        let mut full: AttributeSchema = (0..MAX_SCHEMA_ATTRIBUTES)
+        let mut full: AttributeSchema = (0..MAX_ATTRIBUTES)
             .map(|n| (format!("a{n}"), AttributeType::Int))
             .collect();
         assert_eq!(check_schema(&full), Ok(()));
@@ -343,7 +353,7 @@ mod tests {
             resolve(&mut full, "extra", &json!(1)),
             Err(AttributeError::TooMany)
         );
-        assert_eq!(full.len(), MAX_SCHEMA_ATTRIBUTES);
+        assert_eq!(full.len(), MAX_ATTRIBUTES);
         full.insert("extra".into(), AttributeType::Int);
         assert_eq!(check_schema(&full), Err(AttributeError::TooMany));
     }

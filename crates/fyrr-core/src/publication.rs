@@ -235,11 +235,12 @@ fn check_unique(field: &str, ids: &[String]) -> Result<(), String> {
 
 impl ContentManifest {
     /// Whether this publication was built with the settings its namespace
-    /// records: the embedding profile and the vector index.
+    /// records: the embedding profile, the vector index and the attributes.
     pub fn built_with(&self, settings: &NamespaceSettings) -> bool {
         self.embedding == settings.embedding
             && self.dense_rq_bits == settings.dense_rq_bits
             && self.dense_partition_rows == settings.dense_partition_rows
+            && self.attributes == settings.attributes
     }
 }
 

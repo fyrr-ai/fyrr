@@ -970,6 +970,10 @@
       "full:fyrr-writer:lib:fyrr_writer/prepare::tests::the_table_holds_exactly_the_reserved_built_in_columns": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::open_tests::an_attribute_must_be_a_nullable_column_of_its_type_with_its_index_on_it": {
+        "tier": "quick",
+        "seconds": 0.0
       }
     },
     "children": {

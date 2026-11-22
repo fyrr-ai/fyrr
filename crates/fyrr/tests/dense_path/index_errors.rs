@@ -232,6 +232,33 @@ async fn declared_attributes_are_nullable_columns_with_an_index_each_on_storage(
         .await
         .expect("the reader verifies an index for every attribute");
 
+    // A publication that leaves an attribute out of its schema is not the
+    // namespace's: the reader refuses it, and so does `writer verify`.
+    let (head, published) = super::coordination::publication(&config).await;
+    let (store, path) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let mut tampered = published.clone();
+    tampered.attributes.remove("priority");
+    object_store::ObjectStoreExt::put(
+        store.as_ref(),
+        &object_store::path::Path::from(format!("{path}/{}", head.content.unwrap().manifest)),
+        write_contract(&tampered).into(),
+    )
+    .await
+    .unwrap();
+    let refused = fyrr_reader::search::PreparedReader::open(&loaded.config).await;
+    assert!(
+        matches!(refused, Err(fyrr_reader::ReaderError::IncompatibleIndex)),
+        "{:?}",
+        refused.map(|_| ())
+    );
+    let output = super::coordination::host_command(&config)
+        .args(["writer", "verify"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("error: incompatible_index"), "{error}");
+
     // The attributes are fixed with the namespace: another file serves it with
     // its own, and creating it again with others is refused.
     let other = root.join("other-attributes.toml");

@@ -533,6 +533,9 @@ pub async fn verify_indices(
         .iter()
         .map(|f| coverage_fragment(f.id))
         .collect();
+    if !attribute_columns_match(dataset.schema(), &manifest.attributes, &indexes) {
+        return Err(IndexVerificationError::IncompatibleIndex);
+    }
     verify_loaded_indices(
         &indexes,
         &fragments,
@@ -548,6 +551,26 @@ pub async fn verify_indices(
     )
     .await?;
     Ok(indexes)
+}
+
+/// Every attribute is a nullable column of its type, and its indexes are built
+/// on that column: an index of the right kind says nothing about what it indexes.
+fn attribute_columns_match(
+    schema: &lance::datatypes::Schema,
+    attributes: &AttributeSchema,
+    indexes: &[lance_table::format::IndexMetadata],
+) -> bool {
+    attributes.iter().all(|(name, kind)| {
+        let index = fyrr_core::attributes::index_name(name);
+        schema.field(name).is_some_and(|field| {
+            field.nullable
+                && field.data_type() == kind.arrow_type()
+                && indexes
+                    .iter()
+                    .filter(|i| i.name == index)
+                    .all(|i| i.fields == [field.id])
+        })
+    })
 }
 
 /// The checks of `verify_indices` over loaded index metadata. Opening is the

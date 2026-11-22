@@ -12,7 +12,6 @@ use arrow_array::{
     TimestampMicrosecondArray, UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema};
-use fyrr_core::attributes::AttributeType;
 use fyrr_core::config::{Config, PermissionsMode, ProcessEnvironment};
 use fyrr_core::connector::{
     CONNECTOR_CONTRACT_VERSION, ChangeOp, ConnectorBatch, CursorState, DocumentChange, SyncKind,
@@ -58,19 +57,6 @@ pub fn schema(dimensions: u32) -> Arc<Schema> {
         ),
         Field::new("attributes", strings, true),
     ]))
-}
-
-/// The column type of an attribute.
-pub fn attribute_type(kind: AttributeType) -> DataType {
-    match kind {
-        AttributeType::String => DataType::Utf8,
-        AttributeType::Int => DataType::Int64,
-        AttributeType::Float => DataType::Float64,
-        AttributeType::Bool => DataType::Boolean,
-        AttributeType::Datetime => {
-            DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into()))
-        }
-    }
 }
 
 pub fn store_params(config: &Config) -> Result<ObjectStoreParams> {

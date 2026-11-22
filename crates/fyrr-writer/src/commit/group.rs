@@ -557,9 +557,7 @@ async fn add_attribute_columns(
         .namespace
         .attributes
         .iter()
-        .map(|(name, kind)| {
-            arrow_schema::Field::new(name, crate::prepare::attribute_type(*kind), true)
-        })
+        .map(|(name, kind)| arrow_schema::Field::new(name, kind.arrow_type(), true))
         .collect();
     let before = dataset.version().version;
     native_step(

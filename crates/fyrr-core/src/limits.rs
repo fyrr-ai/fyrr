@@ -16,13 +16,6 @@ pub const MAX_CONNECTOR_MAP_BYTES: usize = 16 * 1024;
 pub const MAX_ATTRIBUTES: usize = 64;
 pub const MAX_ATTRIBUTE_KEY_BYTES: usize = 128;
 pub const MAX_ATTRIBUTE_BYTES: usize = 512;
-/// Typed attributes a namespace's schema can declare, each its own column and
-/// index.
-pub const MAX_SCHEMA_ATTRIBUTES: usize = 128;
-/// Bytes in the name of a typed attribute.
-pub const MAX_SCHEMA_ATTRIBUTE_NAME_BYTES: usize = 128;
-/// Bytes in the value of a `string` attribute.
-pub const MAX_SCHEMA_ATTRIBUTE_VALUE_BYTES: usize = 4096;
 /// Reader references per document, section, grant or group.
 pub const MAX_READERS: usize = 16_384;
 /// Opaque connector cursors (e.g. Drive page tokens).
@@ -53,6 +46,16 @@ pub mod mcp {
     pub const LIST_FILTERS_MAX_VALUES: usize = 64;
     /// Hits each query keeps while the response budget still has tail hits to drop.
     pub const RESPONSE_MIN_HITS_PER_QUERY: usize = 4;
+}
+
+/// Bounds of a namespace's typed attribute schema (not of connector documents).
+pub mod schema {
+    /// Typed attributes a namespace can declare, each its own column and index.
+    pub const MAX_ATTRIBUTES: usize = 128;
+    /// Bytes in the name of a typed attribute.
+    pub const MAX_NAME_BYTES: usize = 128;
+    /// Bytes in the value of a `string` attribute.
+    pub const MAX_VALUE_BYTES: usize = 4096;
 }
 
 /// Checks a required identifier: non-empty, no surrounding whitespace, no
