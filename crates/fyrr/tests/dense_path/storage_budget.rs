@@ -277,7 +277,6 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
         .count();
     let allowed =
         usize::try_from(started.elapsed().as_millis() / INTERVAL.as_millis()).unwrap() + 2;
-    eprintln!("budget api keys: {keys} reads (allowed {allowed})");
     assert!(
         (2..=allowed).contains(&keys),
         "the keys were read {keys} times, allowed {allowed}"

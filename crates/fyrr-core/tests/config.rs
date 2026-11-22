@@ -867,6 +867,11 @@ fn set(table: &mut toml::Table, path: &[Step], value: toml::Value) {
         .entry(key.clone())
         .or_insert_with(|| toml::Value::Table(toml::Table::new()));
     let next = match (rest.first(), slot) {
+        (Some(Step::Index(index)), toml::Value::Array(items)) if rest.len() == 1 => {
+            // A list of plain values, such as `roles`.
+            *items.get_mut(*index).expect("example has the item") = value;
+            return;
+        }
         (Some(Step::Index(index)), toml::Value::Array(items)) => {
             let item = items
                 .get_mut(*index)
@@ -929,7 +934,7 @@ fn every_schema_constraint_is_enforced() {
     let mut base: toml::Table = toml::from_str(&common::read(EXAMPLE)).expect("example TOML");
     // The example declares no API key, whose constraints the walk must reach too.
     let key: toml::Table = toml::from_str(
-        "name = \"agents\"\nkey = { env = \"FYRR_API_KEY_AGENTS\" }\nreaders = [\"grp:engineering\"]\n",
+        "name = \"agents\"\nkey = { env = \"FYRR_API_KEY_AGENTS\" }\nreaders = [\"grp:engineering\"]\nroles = [\"read\"]\n",
     )
     .expect("key TOML");
     base["identity"]

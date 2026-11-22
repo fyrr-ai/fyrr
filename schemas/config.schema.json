@@ -854,15 +854,42 @@
           "items": {
             "type": "string"
           },
-          "description": "Reader tokens (`usr:<id>`, `grp:<id>`) the key acts with, as\n`identity.stdio_readers` states them for the stdio subject."
+          "description": "Reader tokens (`usr:<id>`, `grp:<id>`) the key acts with, as\n`identity.stdio_readers` states them for the stdio subject. Required\nfor a key with the `read` role.",
+          "default": []
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApiKeyRole"
+          },
+          "description": "What the key may do: `read`, `write`, `list` and `admin`. A key without\nroles reads.",
+          "default": [
+            "read"
+          ]
+        },
+        "namespace_prefix": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Limits the key to namespaces whose name starts with this prefix."
         }
       },
       "required": [
         "name",
-        "key",
-        "readers"
+        "key"
       ],
       "description": "One API key."
+    },
+    "ApiKeyRole": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "list",
+        "admin"
+      ],
+      "description": "What an API key may do over HTTP. `list`, `write` and `admin` name roles\nof routes that do not exist yet; a key holds them so that the routes need\nno new key format."
     },
     "ReaderConfig": {
       "type": "object",

@@ -256,6 +256,14 @@ mod tests {
                 .unwrap();
             self.publish_head().await;
         }
+        async fn authorize_role(
+            &self,
+            role: ApiKeyRole,
+        ) -> Result<(String, Vec<String>, GenerationPointer), ReaderError> {
+            self.admission
+                .authorize(&self.config, &self.subject, role)
+                .await
+        }
         async fn authorize(&self) -> Result<(String, Vec<String>, GenerationPointer), ReaderError> {
             self.admission
                 .authorize(&self.config, &self.subject, ApiKeyRole::Read)
@@ -331,12 +339,10 @@ mod tests {
             roles: roles.to_vec(),
             namespace_prefix: prefix.map(str::to_owned),
         };
-        let authorize =
-            |test: &Fixture, role| test.admission.authorize(&test.config, &test.subject, role);
 
         // No published keys, no key: the identity's binding decides nothing.
         assert_eq!(
-            authorize(&test, ApiKeyRole::Read).await.unwrap_err(),
+            test.authorize_role(ApiKeyRole::Read).await.unwrap_err(),
             StorageUnavailable
         );
         // Published: the entry decides, and a request costs no read of the keys.
@@ -353,32 +359,32 @@ mod tests {
             "one read per refresh"
         );
         let before = test.mirror.totals().requests;
-        authorize(&test, ApiKeyRole::Read).await.unwrap();
-        authorize(&test, ApiKeyRole::Write).await.unwrap();
+        test.authorize_role(ApiKeyRole::Read).await.unwrap();
+        test.authorize_role(ApiKeyRole::Write).await.unwrap();
         assert_eq!(test.mirror.totals().requests - before, 2, "the head only");
         assert_eq!(
-            authorize(&test, ApiKeyRole::Admin).await.unwrap_err(),
+            test.authorize_role(ApiKeyRole::Admin).await.unwrap_err(),
             Forbidden
         );
         publish(vec![grant(&[ApiKeyRole::Read], Some("other"))]).await;
         test.admission.refresh_api_keys().await.unwrap();
         assert_eq!(
-            authorize(&test, ApiKeyRole::Read).await.unwrap_err(),
+            test.authorize_role(ApiKeyRole::Read).await.unwrap_err(),
             Forbidden
         );
         // A key the published set lacks is unknown, however the identity binds it.
         publish(Vec::new()).await;
         test.admission.refresh_api_keys().await.unwrap();
         assert_eq!(
-            authorize(&test, ApiKeyRole::Read).await.unwrap_err(),
+            test.authorize_role(ApiKeyRole::Read).await.unwrap_err(),
             Unauthorized
         );
 
         // A subject that is no API key holds `read` only.
         test.subject.api_key = None;
-        authorize(&test, ApiKeyRole::Read).await.unwrap();
+        test.authorize_role(ApiKeyRole::Read).await.unwrap();
         assert_eq!(
-            authorize(&test, ApiKeyRole::Write).await.unwrap_err(),
+            test.authorize_role(ApiKeyRole::Write).await.unwrap_err(),
             Forbidden
         );
 
@@ -390,11 +396,11 @@ mod tests {
             crate::storage::API_KEYS_FILE,
         );
         publish(vec![grant(&[ApiKeyRole::Read], None)]).await;
-        authorize(&test, ApiKeyRole::Read).await.unwrap();
+        test.authorize_role(ApiKeyRole::Read).await.unwrap();
         publish(vec![grant(&[ApiKeyRole::Write], None)]).await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(
-            authorize(&test, ApiKeyRole::Read).await.unwrap_err(),
+            test.authorize_role(ApiKeyRole::Read).await.unwrap_err(),
             Forbidden
         );
         test.remote
@@ -403,7 +409,7 @@ mod tests {
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(
-            authorize(&test, ApiKeyRole::Read).await.unwrap_err(),
+            test.authorize_role(ApiKeyRole::Read).await.unwrap_err(),
             StorageUnavailable
         );
     }

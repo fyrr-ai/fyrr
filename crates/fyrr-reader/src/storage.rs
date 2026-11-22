@@ -89,6 +89,7 @@ impl HeadCache {
         Self::for_file(config, "head.json")
     }
     /// A zero age reads the head for every check; only test suites ask for it.
+    #[cfg(test)]
     pub(crate) fn with_interval(max_age: std::time::Duration) -> Self {
         Self::with_file(max_age, "head.json")
     }
