@@ -94,11 +94,13 @@ larger tree is `invalid_argument`. The arguments `sources`, `source_types`, `pro
 `authors`, `updated_after`, `updated_before`, `attributes` and `exclude` are
 compiled to the same tree and joined with `filter` by `and`.
 
+After publishing the [quickstart handbook](quickstart.md), this search returns
+`notes/backup.md`:
+
 ```json
 {"query": "backup", "filter": {"and": [
-  {"field": "priority", "op": "gte", "value": 3},
-  {"or": [{"field": "project", "op": "eq", "value": "ops"},
-          {"not": {"field": "reviewed", "op": "eq", "value": null}}]}
+  {"field": "source_id", "op": "eq", "value": "notes"},
+  {"not": {"field": "root_id", "op": "eq", "value": "deploys.md"}}
 ]}}
 ```
 
