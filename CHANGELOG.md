@@ -101,7 +101,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   published; see [tuning](docs/tuning.md).
 - `namespace.dense_partition_rows` (32 to 4096, default 550) sets the target
   rows per partition of the vector index, recorded and fixed like
-  `dense_rq_bits`. Maintenance re-partitions the index as the namespace grows,
+  `dense_rq_bits`. `writer maintain` re-partitions the index as the namespace grows,
   without leaving it unindexed or blocking readers.
 - `writer.fts_partition_memory_mb` and `reader.fts_search_chunk` (both absent
   by default) build a full-text index of several partitions and let one query
