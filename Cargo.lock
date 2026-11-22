@@ -2604,6 +2604,7 @@ dependencies = [
  "arrow-data",
  "arrow-ipc",
  "arrow-schema",
+ "arrow-select",
  "async-trait",
  "axum",
  "chrono",

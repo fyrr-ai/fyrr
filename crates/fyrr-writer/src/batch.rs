@@ -455,7 +455,6 @@ impl<'a> Columns<'a> {
             metadata,
             attributes: list(self.attributes, "attributes")?,
             sections: self.sections(row)?,
-            typed_attributes: Default::default(),
         })
     }
 

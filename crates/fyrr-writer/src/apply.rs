@@ -10,8 +10,8 @@ pub use row_state::{
     state, state_source, states, strings, tokens,
 };
 pub(crate) use row_state::{
-    OWN_READERS, STAGED_ATTRIBUTES, effective_readers, marker_row, own_readers, with_attributes,
-    with_own_readers, with_state,
+    OWN_READERS, effective_readers, marker_row, own_readers, with_own_readers, with_state,
+    with_typed,
 };
 
 use arrow_array::types::Float16Type;

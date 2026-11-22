@@ -25,6 +25,19 @@ pub async fn content(
             return Ok((Vec::new(), Vec::new(), false));
         }
     };
+    // The one-row slices of an API envelope leave out the attribute columns,
+    // which are taken whole at the end.
+    let typed = staged.clone();
+    let staged = if envelope.source_id == fyrr_core::connector::API_SOURCE_ID {
+        let built_in = crate::prepare::schema(config.embedding.dimensions)
+            .fields()
+            .len();
+        staged
+            .project(&(0..built_in).collect::<Vec<_>>())
+            .map_err(|_| WriterError::ChangedRowsInvalid)?
+    } else {
+        staged
+    };
     let roots = payload
         .documents
         .iter()
@@ -45,6 +58,8 @@ pub async fn content(
     let mut acl_changed = false;
     let mut changed = Vec::new();
     let mut output = Vec::new();
+    let mut rows = Vec::new();
+    let mut taken = Vec::new();
     for document in &payload.documents {
         let old = previous.get(&document.root_id);
         if let Some(old) = old {
@@ -160,12 +175,21 @@ pub async fn content(
                 &mut readers,
             )?;
             acl_changed |= narrowed;
-            output.push(if api {
-                with_attributes(&batch, &config.namespace.attributes)?
+            if api {
+                rows.push(batch);
+                taken.push(crate::narrow_u32(row as u64));
             } else {
-                batch
-            });
+                output.push(batch);
+            }
         }
+    }
+    if !rows.is_empty() {
+        output.push(with_typed(
+            &rows,
+            &taken,
+            &typed,
+            &config.namespace.attributes,
+        )?);
     }
     acl_changed |= readers.iter().any(|((root, _), readers)| {
         !readers.is_empty()

@@ -264,6 +264,7 @@ pub async fn atomic(
     lease: &crate::sync_lease::CursorLease,
     base_head: Option<BaseHead>,
     cache: &mut WriterEmbedding,
+    attributes: Vec<ArrayRef>,
 ) -> Result<()> {
     let (mut rows, mut bytes) = (0u64, 16384u64);
     for change in &changes {
@@ -277,7 +278,17 @@ pub async fn atomic(
         return Err(WriterError::EnvelopeBoundsInvalid);
     }
     content_page(
-        config, source, batch, changes, state, lease, base_head, cache, false, false,
+        config,
+        source,
+        batch,
+        changes,
+        state,
+        lease,
+        base_head,
+        cache,
+        false,
+        false,
+        &attributes,
     )
     .await
     .map(|_| ())
@@ -338,6 +349,7 @@ pub async fn content(
             cache,
             last,
             permission_stream,
+            &[],
         )
         .await?;
     }
@@ -604,6 +616,88 @@ pub(crate) async fn bind_files(
         });
     }
     Ok((files, digest(&bound)))
+}
+
+/// Typed attribute columns, built row by row from the values of a request.
+pub(crate) struct AttributeColumns {
+    schema: fyrr_core::attributes::AttributeSchema,
+    columns: Vec<AttributeColumn>,
+}
+enum AttributeColumn {
+    String(arrow_array::builder::StringBuilder),
+    Int(arrow_array::builder::Int64Builder),
+    Float(arrow_array::builder::Float64Builder),
+    Bool(arrow_array::builder::BooleanBuilder),
+    Time(arrow_array::builder::TimestampMicrosecondBuilder),
+}
+impl AttributeColumns {
+    pub(crate) fn new(schema: &fyrr_core::attributes::AttributeSchema) -> Self {
+        use arrow_array::builder::{
+            BooleanBuilder, Float64Builder, Int64Builder, StringBuilder,
+            TimestampMicrosecondBuilder,
+        };
+        use fyrr_core::attributes::AttributeType;
+        Self {
+            schema: schema.clone(),
+            columns: schema
+                .values()
+                .map(|kind| match kind {
+                    AttributeType::String => AttributeColumn::String(StringBuilder::new()),
+                    AttributeType::Int => AttributeColumn::Int(Int64Builder::new()),
+                    AttributeType::Float => AttributeColumn::Float(Float64Builder::new()),
+                    AttributeType::Bool => AttributeColumn::Bool(BooleanBuilder::new()),
+                    AttributeType::Datetime => {
+                        AttributeColumn::Time(TimestampMicrosecondBuilder::new())
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// One row: each attribute of the schema takes its value from `values`, or
+    /// is null. A value that does not fit its attribute is an error and the
+    /// columns are not to be used.
+    pub(crate) fn push(
+        &mut self,
+        values: &serde_json::Map<String, serde_json::Value>,
+    ) -> std::result::Result<(), fyrr_core::attributes::AttributeError> {
+        use fyrr_core::attributes::{AttributeValue, resolve};
+        for (name, column) in self.schema.clone().keys().zip(&mut self.columns) {
+            let typed = resolve(
+                &mut self.schema,
+                name,
+                values.get(name).unwrap_or(&serde_json::Value::Null),
+            )?;
+            match (column, typed) {
+                (AttributeColumn::String(b), AttributeValue::String(v)) => b.append_value(v),
+                (AttributeColumn::Int(b), AttributeValue::Int(v)) => b.append_value(v),
+                (AttributeColumn::Float(b), AttributeValue::Float(v)) => b.append_value(v),
+                (AttributeColumn::Bool(b), AttributeValue::Bool(v)) => b.append_value(v),
+                (AttributeColumn::Time(b), AttributeValue::Datetime(v)) => b.append_value(v),
+                (AttributeColumn::String(b), _) => b.append_null(),
+                (AttributeColumn::Int(b), _) => b.append_null(),
+                (AttributeColumn::Float(b), _) => b.append_null(),
+                (AttributeColumn::Bool(b), _) => b.append_null(),
+                (AttributeColumn::Time(b), _) => b.append_null(),
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> Vec<ArrayRef> {
+        self.columns
+            .into_iter()
+            .map(|column| -> ArrayRef {
+                match column {
+                    AttributeColumn::String(mut b) => Arc::new(b.finish()),
+                    AttributeColumn::Int(mut b) => Arc::new(b.finish()),
+                    AttributeColumn::Float(mut b) => Arc::new(b.finish()),
+                    AttributeColumn::Bool(mut b) => Arc::new(b.finish()),
+                    AttributeColumn::Time(mut b) => Arc::new(b.finish().with_timezone("UTC")),
+                }
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

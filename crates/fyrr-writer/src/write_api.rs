@@ -5,6 +5,7 @@ use crate::embedding::WriterEmbedding;
 use crate::prepare::ContentChange;
 use crate::sync_lease::CursorLease;
 use crate::{Result, WriterError};
+use arrow_array::ArrayRef;
 use axum::{
     Json,
     body::Body,
@@ -13,7 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures::StreamExt;
-use fyrr_core::attributes::{AttributeSchema, resolve};
+use fyrr_core::attributes::AttributeSchema;
 use fyrr_core::config::{
     ApiKeyRole, Config, PermissionsMode, SourceConfig, SourceIntervals, is_api_key_secret,
     prefix_allows,
@@ -33,7 +34,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, Notify, OwnedMutexGuard, OwnedSemaphorePermit, watch};
 
 /// How long a request waits for its publication before the outcome is unknown.
-const ANSWER_DEADLINE: Duration = Duration::from_secs(120);
+const ANSWER_DEADLINE: Duration = Duration::from_secs(600);
 /// How long the body may stay silent while it is received.
 const BODY_IDLE: Duration = Duration::from_secs(30);
 /// How often a waiting request looks at the published history again, and asks
@@ -156,7 +157,7 @@ struct Payload {
     #[serde(default)]
     settings: Option<Value>,
     #[serde(default)]
-    upserts: Rows<Map<String, Value>>,
+    upserts: Rows<Box<serde_json::value::RawValue>>,
     #[serde(default)]
     deletes: Rows<String>,
 }
@@ -166,7 +167,6 @@ struct Upsert {
     id: String,
     readers: Vec<String>,
     text: String,
-    typed: Map<String, Value>,
 }
 
 /// Serves the route; `permit` is the listener's capacity, held until the answer.
@@ -342,64 +342,61 @@ fn api_source() -> SourceConfig {
 }
 
 /// The checked rows of the request, against the schema and the text key the
-/// namespace was created with.
+/// namespace was created with. The rows are taken from `body`, not copied.
 fn checked(
-    body: &Payload,
+    body: &mut Payload,
     attributes: &AttributeSchema,
     text_key: &str,
-) -> Result<Vec<Upsert>, ApiError> {
-    let mut ids = std::collections::BTreeSet::new();
+) -> Result<(Vec<Upsert>, Vec<ArrayRef>), ApiError> {
+    let mut ids = std::collections::HashSet::new();
     for id in &body.deletes.0 {
-        if !ids.insert(id.as_str()) {
+        if !ids.insert(id.clone()) {
             return Err(ApiError(400, "duplicate_id"));
         }
     }
     let mut rows = Vec::with_capacity(body.upserts.0.len());
-    let mut working = attributes.clone();
-    for row in &body.upserts.0 {
-        let id = row
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or(ApiError(400, "id_missing"))?;
-        if !ids.insert(id) {
+    let mut columns = crate::prepare::AttributeColumns::new(attributes);
+    for raw in std::mem::take(&mut body.upserts.0) {
+        // A row is read one at a time: the request holds the rows as text.
+        let Ok(mut row) = serde_json::from_str::<Map<String, Value>>(raw.get()) else {
+            return Err(ApiError(400, "body_invalid"));
+        };
+        drop(raw);
+        let Some(Value::String(id)) = row.remove("id") else {
+            return Err(ApiError(400, "id_missing"));
+        };
+        if !ids.insert(id.clone()) {
             return Err(ApiError(400, "duplicate_id"));
         }
-        let readers = match row.get("readers") {
+        let readers = match row.remove("readers") {
             None => Vec::new(),
             Some(Value::Array(list)) => list
-                .iter()
-                .map(|v| v.as_str().map(str::to_owned))
+                .into_iter()
+                .map(|v| match v {
+                    Value::String(reader) => Some(reader),
+                    _ => None,
+                })
                 .collect::<Option<Vec<_>>>()
                 .ok_or(ApiError(400, "readers_invalid"))?,
             Some(_) => return Err(ApiError(400, "readers_invalid")),
         };
-        let text = match row.get(text_key) {
-            Some(Value::String(text)) if !text.is_empty() => text.clone(),
+        let text = match row.remove(text_key) {
+            Some(Value::String(text)) if !text.is_empty() => text,
             _ => return Err(ApiError(400, "text_missing")),
         };
         if text.len() > crate::chunk::MAX_BYTES {
             // A row is one record: no chunking.
             return Err(ApiError(413, "text_too_large"));
         }
-        let mut typed = Map::new();
-        for (name, value) in row {
-            if matches!(name.as_str(), "id" | "readers") || name == text_key {
-                continue;
-            }
-            if !attributes.contains_key(name) {
-                return Err(ApiError(400, "attribute_undeclared"));
-            }
-            resolve(&mut working, name, value).map_err(|error| ApiError(400, error.code()))?;
-            typed.insert(name.clone(), value.clone());
+        if row.keys().any(|name| !attributes.contains_key(name)) {
+            return Err(ApiError(400, "attribute_undeclared"));
         }
-        rows.push(Upsert {
-            id: id.to_owned(),
-            readers,
-            text,
-            typed,
-        });
+        columns
+            .push(&row)
+            .map_err(|error| ApiError(400, error.code()))?;
+        rows.push(Upsert { id, readers, text });
     }
-    Ok(rows)
+    Ok((rows, columns.finish()))
 }
 
 /// Creates or confirms the namespace, prepares the request's envelope and
@@ -407,36 +404,35 @@ fn checked(
 async fn execute(
     config: &Config,
     commits: &Commits,
-    body: Payload,
+    mut body: Payload,
     slot: OwnedMutexGuard<()>,
 ) -> Result<(u64, u64), ApiError> {
-    let head = match fyrr_reader::storage::optional_head(config).await? {
-        Some(head) => head,
-        None => {
-            let settings = laid_over(
-                &crate::commit::namespace_settings(config),
-                body.settings.as_ref(),
-            )?;
-            crate::commit::create_with(config, settings).await?;
-            fyrr_reader::storage::optional_head(config)
-                .await?
-                .ok_or(ApiError(503, "unavailable"))?
-        }
-    };
     let (store, root) = fyrr_reader::storage::namespace_store(config)?;
-    // The policy that is served decides, also when another creation won.
-    let policy: PolicyArtifact =
-        fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-    if policy.settings.write_api.is_none() {
+    let existing = fyrr_reader::storage::optional_head(config).await?;
+    // The settings the request is checked against: the namespace's, or those
+    // the request would create it with. Nothing is created by a refused request.
+    let settings = match &existing {
+        Some(head) => {
+            let policy: PolicyArtifact =
+                fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+            policy.settings
+        }
+        None => laid_over(
+            &crate::commit::namespace_settings(config),
+            body.settings.as_ref(),
+        )?,
+    };
+    if settings.write_api.is_none() {
         return Err(ApiError(409, "namespace_not_writable"));
     }
-    if body.settings.is_some()
-        && laid_over(&policy.settings, body.settings.as_ref())? != policy.settings
+    if existing.is_some()
+        && body.settings.is_some()
+        && laid_over(&settings, body.settings.as_ref())? != settings
     {
         return Err(ApiError(409, "namespace_settings_fixed"));
     }
     let config = config
-        .with_settings(&policy.settings)
+        .with_settings(&settings)
         .ok_or(ApiError(503, "unavailable"))?;
     if !config.sources.is_empty() {
         return Err(ApiError(409, "api_namespace_has_sources"));
@@ -446,16 +442,34 @@ async fn execute(
         .write_api
         .as_ref()
         .map_or("text", |api| api.text_attribute.as_str());
-    let rows = checked(&body, &config.namespace.attributes, text_key)?;
+    let (rows, attributes) = checked(&mut body, &config.namespace.attributes, text_key)?;
     let counts = (rows.len() as u64, body.deletes.0.len() as u64);
-    if counts == (0, 0) {
-        if body.settings.is_none() {
-            return Err(ApiError(400, "empty_request"));
+    if counts == (0, 0) && body.settings.is_none() {
+        return Err(ApiError(400, "empty_request"));
+    }
+    let head = match existing {
+        Some(head) => head,
+        None => {
+            crate::commit::create_with(&config, settings.clone()).await?;
+            fyrr_reader::storage::optional_head(&config)
+                .await?
+                .ok_or(ApiError(503, "unavailable"))?
         }
+    };
+    // The policy that is served decides, also when another creation won.
+    let served: PolicyArtifact =
+        fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+    if served.settings.write_api.is_none() {
+        return Err(ApiError(409, "namespace_not_writable"));
+    }
+    if served.settings != settings {
+        return Err(ApiError(409, "namespace_settings_fixed"));
+    }
+    if counts == (0, 0) {
         return Ok(counts);
     }
     let mut done = commits.done.subscribe();
-    let id = prepare(&config, &head, rows, body.deletes.0, slot).await?;
+    let id = prepare(&config, &head, rows, attributes, body.deletes.0, slot).await?;
     commits.requested.notify_one();
     let deadline = tokio::time::Instant::now() + ANSWER_DEADLINE;
     loop {
@@ -509,12 +523,13 @@ async fn prepare(
     config: &Config,
     head: &fyrr_core::publication::ServingHead,
     rows: Vec<Upsert>,
+    attributes: Vec<ArrayRef>,
     deletes: Vec<String>,
     slot: OwnedMutexGuard<()>,
 ) -> Result<String, ApiError> {
     let lease = CursorLease::acquire(config, API_SOURCE_ID, SyncKind::Content).await?;
     let renewal = lease.keepalive();
-    let result = write_envelope(config, head, &lease, rows, deletes).await;
+    let result = write_envelope(config, head, &lease, rows, attributes, deletes).await;
     let stopped = renewal.stop().await;
     let released = lease.release().await;
     drop(slot);
@@ -529,6 +544,7 @@ async fn write_envelope(
     head: &fyrr_core::publication::ServingHead,
     lease: &CursorLease,
     rows: Vec<Upsert>,
+    attributes: Vec<ArrayRef>,
     deletes: Vec<String>,
 ) -> Result<String, ApiError> {
     let (store, root) = fyrr_reader::storage::namespace_store(config)?;
@@ -583,7 +599,6 @@ async fn write_envelope(
         metadata: None,
         attributes: Vec::new(),
         sections: Vec::new(),
-        typed_attributes: Map::new(),
     };
     let source = api_source();
     let mut changes = Vec::new();
@@ -617,7 +632,6 @@ async fn write_envelope(
             location: None,
             readers: None,
         }];
-        change.typed_attributes = row.typed;
         changes.push(change);
     }
     changes.extend(deletes.into_iter().map(|id| change(ChangeOp::Delete, id)));
@@ -659,6 +673,7 @@ async fn write_envelope(
         lease,
         base,
         &mut embedding,
+        attributes,
     )
     .await?;
     Ok(id)

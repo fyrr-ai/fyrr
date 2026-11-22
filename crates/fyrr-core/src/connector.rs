@@ -158,12 +158,6 @@ pub struct DocumentChange {
     /// Text sections in document order; required (non-empty) for upserts.
     #[serde(default)]
     pub sections: Vec<Section>,
-    /// Typed attribute values of a document written through the HTTP API, name
-    /// to JSON value, already checked against the namespace's schema. Never
-    /// part of a connector's batch or of the JSON form.
-    #[serde(skip)]
-    #[schemars(skip)]
-    pub typed_attributes: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Source metadata. Unknown values stay null, never inferred.
