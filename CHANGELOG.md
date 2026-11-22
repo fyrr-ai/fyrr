@@ -22,6 +22,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   attributes, over MCP and the JSON HTTP API. Values are checked against the
   attribute types; the other filter arguments compile to the same tree. See
   [Filters](docs/mcp-tools.md#filters).
+- `search` without `query` takes `order_by`: up to 4 sort keys, each a built-in
+  field or a typed attribute, ascending or descending. Missing values sort
+  first ascending and last descending, and ties are broken by the document key.
+  See [Ordering a listing](docs/mcp-tools.md#ordering-a-listing).
 - The reader serves `search` and `fetch` as plain JSON at
   `POST /v1/namespaces/{namespace}/query` and `.../fetch`, next to MCP, with
   the same authentication, scheduler, deadline and rate limits. Errors map to

@@ -149,7 +149,7 @@ pub(super) fn body(result: Value) -> Value {
     assert_eq!(result["isError"], false, "{result}");
     result["structuredContent"].clone()
 }
-fn error(result: Value, code: &str) {
+pub(super) fn error(result: Value, code: &str) {
     assert_eq!(result["isError"], true, "{result}");
     assert_eq!(result["structuredContent"]["code"], code);
     assert!(result["structuredContent"]["retryable"].is_boolean());

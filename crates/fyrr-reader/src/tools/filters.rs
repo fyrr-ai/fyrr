@@ -4,11 +4,20 @@ use chrono::{DateTime, Utc};
 use fyrr_core::attributes::{AttributeSchema, AttributeType};
 use serde_json::Value;
 
+/// The scalar type of a built-in field or of an attribute the namespace
+/// declares. An attribute name is a plain column name, and only a declared one
+/// gets here.
+fn field_type(field: &str, attributes: &AttributeSchema) -> Result<AttributeType> {
+    match field {
+        "source_id" | "root_id" | "source_type" | "project" | "author" => Ok(AttributeType::String),
+        "updated_at" => Ok(AttributeType::Datetime),
+        name => attributes.get(name).copied().ok_or(InvalidArgument),
+    }
+}
+
 fn comparison_sql(comparison: &Comparison, attributes: &AttributeSchema) -> Result<String> {
     let Comparison { field, op, value } = comparison;
     let kind = match field.as_str() {
-        "source_id" | "root_id" | "source_type" | "project" | "author" => AttributeType::String,
-        "updated_at" => AttributeType::Datetime,
         // The connector labels `key=value`: a set test and nothing else.
         "attributes" if *op == Op::In => {
             return Ok(format!(
@@ -16,8 +25,7 @@ fn comparison_sql(comparison: &Comparison, attributes: &AttributeSchema) -> Resu
                 literals(AttributeType::String, value)?
             ));
         }
-        // An attribute name is a plain column name, and only a declared one gets here.
-        name => *attributes.get(name).ok_or(InvalidArgument)?,
+        name => field_type(name, attributes)?,
     };
     // Backticks make the name a column whatever it spells: an attribute can be
     // called `true`, `null`, `case` or `not`.
@@ -201,13 +209,24 @@ impl PreparedReader {
         scan.filter(&self.request_predicate()?)
             .map_err(|_| IncompatibleIndex)?
             .with_row_id();
-        scan.order_by(Some(vec![
-            ordering("updated_at", false),
+        // `order_by` names scalar fields only: the labels are an array, so
+        // they are not a field here. The document key makes the order total.
+        let mut order = match &args.order_by {
+            Some(keys) => keys
+                .iter()
+                .map(|key| {
+                    field_type(&key.field, &self.manifest.attributes)?;
+                    Ok(ordering(&key.field, key.direction == SortDirection::Asc))
+                })
+                .collect::<Result<Vec<_>>>()?,
+            None => vec![ordering("updated_at", false)],
+        };
+        order.extend([
             ordering("source_id", true),
             ordering("root_id", true),
             ordering("record_id", true),
-        ]))
-        .map_err(|_| IncompatibleIndex)?;
+        ]);
+        scan.order_by(Some(order)).map_err(|_| IncompatibleIndex)?;
         let mut stream = scan
             .try_into_stream()
             .await

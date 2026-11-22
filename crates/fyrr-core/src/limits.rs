@@ -36,6 +36,8 @@ pub mod mcp {
     pub const MAX_EXCLUSIONS: usize = 100;
     pub const MAX_FILTER_VALUES: usize = 64;
     pub const MAX_ATTRIBUTE_FILTERS: usize = 16;
+    /// Sort keys of a listing's `order_by`.
+    pub const MAX_ORDER_KEYS: usize = 4;
     /// Nodes of a `filter` tree: every `and`, `or`, `not` and comparison counts.
     pub const MAX_FILTER_NODES: usize = 64;
     /// Levels of a `filter` tree; each is a parenthesis of the SQL, and Lance's

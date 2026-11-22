@@ -5,7 +5,9 @@
 
 mod common;
 
-use fyrr_core::limits::mcp::{MAX_FILTER_DEPTH, MAX_FILTER_NODES, MAX_FILTER_VALUES};
+use fyrr_core::limits::mcp::{
+    MAX_FILTER_DEPTH, MAX_FILTER_NODES, MAX_FILTER_VALUES, MAX_ORDER_KEYS,
+};
 use fyrr_core::mcp::{
     Comparison, ErrorCode, FetchInput, FetchOutput, Filter, ListFiltersInput, ListFiltersOutput,
     MCP_CONTRACT_VERSION, META_SCHEMA_VERSION_KEY, Op, SearchInput, SearchOutput,
@@ -280,9 +282,19 @@ fn validation_enforces_bytes_relations_and_bounds() {
         json!({"query":"a","updated_after":"2026-01-02T00:00:00Z","updated_before":"2026-01-01T00:00:00Z"}),
         json!({"query":"a","attributes":[{"key":"bad=key","values":["x"]}]}),
         json!({"query":"a","deadline_ms":0}),
+        json!({"query":"a","order_by":[{"field":"p","direction":"asc"}]}),
+        json!({"order":"updated_at","order_by":[{"field":"p","direction":"asc"}]}),
+        json!({"queries":["a","b"],"order_by":[{"field":"p","direction":"asc"}]}),
+        json!({"order_by":[]}),
+        json!({"order_by":[{"field":"","direction":"asc"}]}),
+        json!({"order_by":vec![json!({"field":"p","direction":"asc"}); MAX_ORDER_KEYS + 1]}),
     ] {
         assert!(search(value).is_err());
     }
+    assert!(
+        search(json!({"order_by":vec![json!({"field":"p","direction":"asc"}); MAX_ORDER_KEYS]}))
+            .is_ok()
+    );
     // A filter is read within its bounds or the request does not parse.
     let filter = |value: Value| {
         serde_json::from_value::<SearchInput>(json!({"query":"a","filter":value})).is_ok()

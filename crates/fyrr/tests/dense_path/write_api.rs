@@ -1,7 +1,7 @@
 //! The document write API of the real writer executable: documents written
 //! over HTTP are published whole, searched, fetched and deleted.
 use super::coordination::{host_command, worker_command};
-use super::tools::{Mcp, body};
+use super::tools::{Mcp, body, error};
 use super::*;
 use reqwest::Client;
 use std::time::{Duration, Instant};
@@ -355,6 +355,95 @@ async fn identity_write_api_open_namespace_is_read_by_every_subject_on_storage()
     let mut found = hits(&config, "blue shirt");
     found.sort();
     assert_eq!(found, ["a", "b"]);
+}
+
+/// A listing orders the documents that pass its filter by typed attributes,
+/// nulls first ascending and last descending, ties by the document key, and
+/// never lists a document the caller may not read.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_orders_a_listing_by_attributes_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let texts = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+    embed(&root, &texts);
+    let writer = Writer::start(&config, &root, address).await;
+    let row = |id: &str, text: &str, price: Option<f64>, stock: Option<i64>, readers: &str| {
+        let mut row = json!({"id": id, "text": text, "readers": [readers]});
+        row["price"] = json!(price);
+        row["stock"] = json!(stock);
+        row
+    };
+    let allow = "grp:allow";
+    let upserts = [
+        row("a", texts[0], Some(3.0), Some(2), allow),
+        row("b", texts[1], Some(1.0), Some(2), allow),
+        row("c", texts[2], Some(2.0), None, allow),
+        row("d", texts[3], None, Some(5), allow),
+        row("e", texts[4], Some(1.0), Some(1), allow),
+        // The cheapest of all, but nobody may read it.
+        row("hidden", texts[5], Some(0.5), Some(9), "usr:nobody"),
+    ];
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"settings": {"attributes": {"price": "float", "stock": "int"}}, "upserts": upserts})
+            )
+            .await,
+        (200, json!({"upserted": 6, "deleted": 0}))
+    );
+    let mut client = Mcp::open(&config);
+    let mut listed = |arguments: Value| -> Vec<String> {
+        let mut arguments = arguments;
+        arguments["output"] = json!("metadata");
+        body(client.call("search", arguments))["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let key = |field: &str, direction: &str| json!({"field": field, "direction": direction});
+    assert_eq!(
+        listed(json!({"order_by": [key("price", "asc")]})),
+        ["d", "b", "e", "c", "a"],
+        "nulls first, the tie on the document key"
+    );
+    assert_eq!(
+        listed(json!({"order_by": [key("price", "desc")]})),
+        ["a", "c", "b", "e", "d"],
+        "nulls last, the tie on the document key"
+    );
+    assert_eq!(
+        listed(json!({"order_by": [key("stock", "desc"), key("price", "asc")]})),
+        ["d", "b", "a", "e", "c"]
+    );
+    assert_eq!(
+        listed(json!({"order_by": [key("root_id", "desc")], "limit": 2})),
+        ["e", "d"]
+    );
+    assert_eq!(
+        listed(json!({
+            "order_by": [key("price", "desc")],
+            "filter": {"field": "stock", "op": "gte", "value": 2},
+        })),
+        ["a", "b", "d"],
+        "only the documents that pass the filter"
+    );
+    for arguments in [
+        json!({"order_by": [key("nope", "asc")]}),
+        json!({"order_by": [key("attributes", "asc")]}),
+        json!({"order_by": []}),
+        json!({"order_by": vec![key("price", "asc"); 5]}),
+        json!({"order_by": [{"field": "price"}]}),
+        json!({"order_by": [key("price", "asc")], "query": "alpha"}),
+        json!({"order_by": [key("price", "asc")], "order": "updated_at"}),
+    ] {
+        error(client.call("search", arguments.clone()), "invalid_argument");
+    }
 }
 
 /// The peak resident memory of a process, in bytes.
