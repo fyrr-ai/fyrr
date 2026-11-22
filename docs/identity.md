@@ -39,9 +39,9 @@ walks through it.
 | --- | --- | --- |
 | `name` | required | Unique ID like a source ID (`[a-z0-9][a-z0-9_-]{0,62}`). It names the key in this file; the artifacts hold only its hash. |
 | `key` | required | `{ env = "VAR" }`: the secret, `fyrr_key_` followed by at least 43 characters from `[A-Za-z0-9_-]`. Generate it with `echo "fyrr_key_$(openssl rand -hex 32)"`. Every key needs its own value. |
-| `readers` | required with `read` | At least one reader token (`usr:<id>`, `grp:<id>`) the key acts with, as `stdio_readers`, including source-scoped tokens for `permissions = "sync"` sources. A key without the `read` role needs none. |
+| `readers` | `[]` | Required with the `read` role: at least one reader token (`usr:<id>`, `grp:<id>`) the key acts with, as `stdio_readers`, including source-scoped tokens for `permissions = "sync"` sources. A key without the `read` role needs none. |
 | `roles` | `["read"]` | What the key may do over HTTP: `read` (search and fetch, over `/mcp` and the [JSON API](http-api.md)), `write`, `list` and `admin`. At least one. A route whose role the key lacks answers `403 forbidden`. Only `read` has routes today; the other roles are granted so that later routes need no new key. |
-| `namespace_prefix` | absent | The key acts only in namespaces whose name starts with this (1–63 characters from `[a-z0-9-]`). In any other namespace it answers `403 forbidden`. |
+| `namespace_prefix` | absent | The key acts only in namespaces whose name starts with this (at most 63 characters from `[a-z0-9-]`). In any other namespace it answers `403 forbidden`. |
 
 Only the **writer** reads the secret, so the reader needs no key in its
 environment. Every host that publishes identity needs every key's variable:
