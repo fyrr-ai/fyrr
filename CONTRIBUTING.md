@@ -185,6 +185,10 @@ not create.
   and becomes 6.0 after a breaking one. The SDK's `versions.py` must match the
   contracts it ships. The configuration schema has its own
   `x-fyrr-schema-version`, currently `6.0` (S3 and local storage).
+  `schemas/openapi.json`, the OpenAPI description of the HTTP API, is
+  generated from the request and response types of the `/v1/` routes
+  (`fyrr_core::http_api`, `fyrr_core::mcp`). A change of such a type also runs
+  `scripts/ci "--step=schema drift"`.
 - **Dependencies.** A new dependency needs a license and advisory verdict in
   `deny.toml`.
 - **Secrets and privacy.** Secrets never enter the repository, configuration

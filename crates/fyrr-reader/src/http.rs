@@ -1100,7 +1100,9 @@ async fn list_namespaces(State(state): State<HttpState>, request: Request) -> Re
         Some(_) => return error(StatusCode::BAD_REQUEST, InvalidArgument),
     };
     match state.admission.namespaces(subject, prefix).await {
-        Ok(names) => axum::Json(json!({"namespaces":names})).into_response(),
+        Ok(namespaces) => {
+            axum::Json(fyrr_core::http_api::NamespaceList { namespaces }).into_response()
+        }
         Err(TooManyNamespaces) => error(StatusCode::BAD_REQUEST, TooManyNamespaces),
         Err(StorageUnavailable) => error(StatusCode::SERVICE_UNAVAILABLE, StorageUnavailable),
         // A key removed since the boundary admitted it.
