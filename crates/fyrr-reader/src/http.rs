@@ -114,6 +114,10 @@ struct Namespaces {
     slots: Arc<Semaphore>,
     /// How many namespaces have been opened: each has a mirror of its own.
     opened: std::sync::atomic::AtomicU64,
+    /// Where those mirrors are, owned by this process through the lock on
+    /// `_lock`, which it holds until it ends.
+    mirrors: std::path::PathBuf,
+    _lock: std::fs::File,
 }
 /// A place among the live namespaces. It goes with the scheduler of the
 /// namespace, which has stopped by then, and takes the mirror that namespace
@@ -126,6 +130,26 @@ impl Drop for Slot {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.mirror);
     }
+}
+/// The directory for the mirrors of namespaces opened by request path, next to
+/// the configured mirror, which holds files only. The process owns it alone, so
+/// no other process removes its mirrors, and what an earlier process left there
+/// is removed.
+fn own_mirrors(configured: std::path::PathBuf) -> Result<(std::path::PathBuf, std::fs::File)> {
+    let mut mirrors = configured.into_os_string();
+    mirrors.push(".paths");
+    let mirrors = std::path::PathBuf::from(mirrors);
+    crate::mirror::MirrorStore::private_directory(&mirrors).map_err(|_| StorageUnavailable)?;
+    let lock = crate::mirror::MirrorStore::private_file(&mirrors.join("owner.lock"), true)
+        .map_err(|_| StorageUnavailable)?;
+    lock.try_lock().map_err(|_| StorageUnavailable)?;
+    for entry in std::fs::read_dir(&mirrors).map_err(|_| StorageUnavailable)? {
+        let entry = entry.map_err(|_| StorageUnavailable)?;
+        if entry.file_name().to_string_lossy().starts_with("path-") {
+            std::fs::remove_dir_all(entry.path()).map_err(|_| StorageUnavailable)?;
+        }
+    }
+    Ok((mirrors, lock))
 }
 /// Open namespaces, least recently used first. Each has one place that
 /// concurrent requests share, so a namespace is opened once.
@@ -174,8 +198,14 @@ impl Namespaces {
         budget: crate::generation::MemoryPool,
         api_keys: crate::storage::HeadCache<fyrr_core::identity::ApiKeysArtifact>,
         configured: Arc<Served>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        let (mirrors, _lock) = own_mirrors(
+            configured
+                .config
+                .mirror_directory(&ProcessEnvironment)
+                .ok_or(StorageConfigurationInvalid)?,
+        )?;
+        Ok(Self {
             process,
             budget,
             api_keys,
@@ -183,7 +213,9 @@ impl Namespaces {
             open: std::sync::Mutex::default(),
             slots: Arc::new(Semaphore::new(MAX_OPEN_NAMESPACES)),
             opened: std::sync::atomic::AtomicU64::new(0),
-        }
+            mirrors,
+            _lock,
+        })
     }
     /// The configuration of the namespace `name`.
     fn config(&self, name: &str) -> Config {
@@ -234,10 +266,7 @@ impl Namespaces {
                 let mut config = this.config(&name);
                 let places = u64::try_from(MAX_OPEN_NAMESPACES).unwrap_or(u64::MAX);
                 config.reader.mirror_max_bytes /= places;
-                let base = config
-                    .mirror_directory(&ProcessEnvironment)
-                    .ok_or(StorageConfigurationInvalid)?;
-                let mirror = base.join(format!(
+                let mirror = this.mirrors.join(format!(
                     "path-{}",
                     this.opened
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -938,7 +967,7 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
             admission: admission.clone(),
             service: service.clone(),
         }),
-    ));
+    )?);
     let state = HttpState {
         admission,
         service: service.clone(),

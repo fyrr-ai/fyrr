@@ -488,7 +488,7 @@ impl MirrorStore {
         Ok(())
     }
     // O_NOFOLLOW and descriptor metadata checks apply to every coordination file.
-    fn private_file(path: &std::path::Path, create: bool) -> std::io::Result<std::fs::File> {
+    pub(crate) fn private_file(path: &std::path::Path, create: bool) -> std::io::Result<std::fs::File> {
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)

@@ -37,7 +37,8 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
                 admission: admission.clone(),
                 service: service.clone(),
             }),
-        )),
+        )
+        .unwrap()),
         admission,
         service: service.clone(),
         public: config

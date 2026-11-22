@@ -48,3 +48,21 @@ fn a_slot_takes_its_mirror_with_it() {
     assert!(!mirror.exists());
     assert_eq!(slots.available_permits(), 1);
 }
+
+#[test]
+fn one_process_owns_the_mirrors_of_path_namespaces() {
+    let configured = std::env::temp_dir().join(format!("fyrr-owned-{}", std::process::id()));
+    let mirrors = std::path::PathBuf::from(format!("{}.paths", configured.display()));
+    let _ = std::fs::remove_dir_all(&mirrors);
+    let (_, first) = own_mirrors(configured.clone()).unwrap();
+    std::fs::create_dir_all(mirrors.join("path-0")).unwrap();
+    // A second owner is refused, and what the first made is not touched.
+    assert_eq!(own_mirrors(configured.clone()).unwrap_err(), StorageUnavailable);
+    assert!(mirrors.join("path-0").exists());
+    // What a process that ended left behind is removed by the next owner.
+    drop(first);
+    let (_, second) = own_mirrors(configured).unwrap();
+    assert!(!mirrors.join("path-0").exists());
+    drop(second);
+    std::fs::remove_dir_all(&mirrors).unwrap();
+}
