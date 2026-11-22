@@ -38,8 +38,12 @@ pub async fn content(
     } else {
         staged
     };
-    let roots = payload
-        .documents
+    // The filters are evaluated here, once, against the state this envelope
+    // is applied to: what the envelopes before it left.
+    let Some(documents) = with_filter_writes(config, dataset, envelope, payload).await? else {
+        return Ok((Vec::new(), Vec::new(), false));
+    };
+    let roots = documents
         .iter()
         .map(|d| d.root_id.clone())
         .collect::<Vec<_>>();
@@ -60,7 +64,7 @@ pub async fn content(
     let mut output = Vec::new();
     let mut rows = Vec::new();
     let mut taken = Vec::new();
-    for document in &payload.documents {
+    for document in documents.iter() {
         let old = previous.get(&document.root_id);
         // A patch never creates a document: one that is not there is skipped.
         if document.intent == DocumentIntent::Patch
@@ -68,29 +72,15 @@ pub async fn content(
         {
             continue;
         }
-        // A condition is tested against the document as the envelopes before this
-        // one left it. A document that is not there meets it for a replacement
-        // only; a delete of it is skipped, as a patch is.
         if let Some(condition) = &document.condition {
             let live = old.is_some_and(|old| !old.deleted && !old.content_purged);
-            let met = if live {
-                let Some(sql) = fyrr_reader::filter_sql(condition, &config.namespace.attributes)
-                else {
+            match condition_met(config, dataset, envelope, document, condition, live).await? {
+                None => {
                     reject(config, envelope, "document_invalid").await?;
                     return Ok(refused);
-                };
-                dataset
-                    .count_rows(Some(format!(
-                        "{} AND ({sql})",
-                        rows_filter(&envelope.source_id, std::slice::from_ref(&document.root_id))
-                    )))
-                    .await?
-                    > 0
-            } else {
-                document.intent == DocumentIntent::Replace
-            };
-            if !met {
-                continue;
+                }
+                Some(false) => continue,
+                Some(true) => {}
             }
         }
         if let Some(old) = old {
@@ -279,10 +269,8 @@ pub async fn content(
         // A patch writes whole rows of what is stored, a size its request could
         // not know: such an envelope is refused, not left to fail its group.
         Err(WriterError::EnvelopeBoundsInvalid)
-            if payload
-                .documents
-                .iter()
-                .any(|d| d.intent == DocumentIntent::Patch) =>
+            if payload.filter_writes.is_some()
+                || documents.iter().any(|d| d.intent == DocumentIntent::Patch) =>
         {
             reject(config, envelope, "envelope_bounds_exceeded").await?;
             return Ok(refused);
@@ -290,6 +278,178 @@ pub async fn content(
         written => written?,
     };
     Ok((changed, fragments, acl_changed))
+}
+
+/// Whether the stored document meets the condition of its change, tested
+/// against the document as the envelopes before this one left it: a document
+/// that is not there meets it for a replacement only. `None` when the condition
+/// does not hold for the namespace's schema.
+async fn condition_met(
+    config: &Config,
+    dataset: &Dataset,
+    envelope: &PreparedEnvelope,
+    document: &EnvelopeDocument,
+    condition: &fyrr_core::mcp::Filter,
+    live: bool,
+) -> Result<Option<bool>> {
+    if !live {
+        return Ok(Some(document.intent == DocumentIntent::Replace));
+    }
+    let Some(sql) = fyrr_reader::filter_sql(condition, &config.namespace.attributes) else {
+        return Ok(None);
+    };
+    let count = dataset
+        .count_rows(Some(format!(
+            "{} AND ({sql})",
+            rows_filter(&envelope.source_id, std::slice::from_ref(&document.root_id))
+        )))
+        .await?;
+    Ok(Some(count > 0))
+}
+
+/// The documents of `payload` and those its filters match in `dataset`; `None`
+/// once the envelope is refused: a filter that matches more than
+/// `MAX_FILTER_WRITE_DOCUMENTS` documents changes nothing. Only the documents of
+/// the API's source are matched, whatever their readers. The deletes come
+/// first: a patch by id of a document they delete finds it deleted. A document
+/// the envelope names is written as it says, a patch by id over the patch by
+/// filter.
+async fn with_filter_writes<'a>(
+    config: &Config,
+    dataset: &Dataset,
+    envelope: &PreparedEnvelope,
+    payload: &'a ContentPayload,
+) -> Result<Option<std::borrow::Cow<'a, [EnvelopeDocument]>>> {
+    let Some(writes) = &payload.filter_writes else {
+        return Ok(Some(std::borrow::Cow::Borrowed(&payload.documents)));
+    };
+    // A change of the envelope whose condition is not met writes nothing, and
+    // leaves the filters to write on their own. One that is met needs no test
+    // again.
+    let roots: Vec<String> = payload
+        .documents
+        .iter()
+        .filter(|d| d.condition.is_some())
+        .map(|d| d.root_id.clone())
+        .collect();
+    let (previous, _) = content_state(dataset, &envelope.source_id, &roots).await?;
+    let mut documents = Vec::with_capacity(payload.documents.len());
+    for mut document in payload.documents.iter().cloned() {
+        if let Some(condition) = document.condition.take() {
+            let live = previous
+                .get(&document.root_id)
+                .is_some_and(|old| !old.deleted && !old.content_purged);
+            match condition_met(config, dataset, envelope, &document, &condition, live).await? {
+                None => {
+                    reject(config, envelope, "document_invalid").await?;
+                    return Ok(None);
+                }
+                Some(false) => continue,
+                Some(true) => {}
+            }
+        }
+        documents.push(document);
+    }
+    let named: BTreeMap<String, usize> = documents
+        .iter()
+        .enumerate()
+        .map(|(position, d)| (d.root_id.clone(), position))
+        .collect();
+    let document = |root_id: &String, intent, patch| EnvelopeDocument {
+        root_id: root_id.clone(),
+        intent,
+        source_revision: Some(writes.source_revision.clone()),
+        revision_order: Some(writes.revision_order),
+        expected_prior_revision: None,
+        permission_revision: None,
+        records: 0,
+        patch,
+        condition: None,
+    };
+    let mut deleted = BTreeSet::new();
+    if let Some(filter) = &writes.delete {
+        deleted = match matching(config, dataset, filter).await? {
+            Ok(roots) => roots,
+            Err(reason) => {
+                reject(config, envelope, reason.as_str()).await?;
+                return Ok(None);
+            }
+        };
+        for root in &deleted {
+            match named.get(root) {
+                None => documents.push(document(root, DocumentIntent::Delete, None)),
+                Some(&at) if documents[at].intent == DocumentIntent::Patch => {
+                    documents[at].intent = DocumentIntent::Delete;
+                    documents[at].patch = None;
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    if let Some(patch) = &writes.patch {
+        let matched = match matching(config, dataset, &patch.filter).await? {
+            Ok(roots) => roots,
+            Err(reason) => {
+                reject(config, envelope, reason.as_str()).await?;
+                return Ok(None);
+            }
+        };
+        for root in matched.difference(&deleted) {
+            match named.get(root) {
+                None => documents.push(document(
+                    root,
+                    DocumentIntent::Patch,
+                    Some(patch.values.clone()),
+                )),
+                Some(&at) => {
+                    if let Some(explicit) = documents[at].patch.as_mut() {
+                        let mut values = (*patch.values).clone();
+                        values.readers = explicit.readers.take().or(values.readers);
+                        values.attributes.append(&mut explicit.attributes);
+                        values.text = explicit.text.take();
+                        values.vector = explicit.vector.take();
+                        **explicit = values;
+                    }
+                }
+            }
+        }
+    }
+    Ok(Some(std::borrow::Cow::Owned(documents)))
+}
+
+/// The roots of the documents of the API's source that pass `filter`, or why
+/// the filter is refused.
+async fn matching(
+    config: &Config,
+    dataset: &Dataset,
+    filter: &fyrr_core::mcp::Filter,
+) -> Result<std::result::Result<BTreeSet<String>, WriterError>> {
+    use fyrr_core::limits::write::MAX_FILTER_WRITE_DOCUMENTS;
+    let Some(filter) = fyrr_reader::filter_sql(filter, &config.namespace.attributes) else {
+        return Ok(Err(WriterError::FilterInvalid));
+    };
+    // One document of the API is one record: a row past the bound is a document past it.
+    let batch = dataset
+        .scan()
+        .project(&["root_id"])
+        .map_err(|_| WriterError::ChangedRowsInvalid)?
+        .filter(&format!(
+            "source_id = {} AND ({filter})",
+            sql(fyrr_core::connector::API_SOURCE_ID)
+        ))
+        .map_err(|_| WriterError::ChangedRowsInvalid)?
+        .limit(i64::try_from(MAX_FILTER_WRITE_DOCUMENTS + 1).ok(), None)
+        .map_err(|_| WriterError::ChangedRowsInvalid)?
+        .try_into_batch()
+        .await
+        .map_err(|_| WriterError::ChangedRowScanFailed)?;
+    if batch.num_rows() > MAX_FILTER_WRITE_DOCUMENTS {
+        return Ok(Err(WriterError::FilterMatchesTooMany));
+    }
+    let roots = strings(&batch, "root_id")?;
+    Ok(Ok((0..batch.num_rows())
+        .map(|row| roots.value(row).to_owned())
+        .collect()))
 }
 
 type RecordReaders = BTreeMap<(String, String), Vec<String>>;

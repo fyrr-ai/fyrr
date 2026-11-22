@@ -2009,6 +2009,14 @@
         "tier": "full",
         "seconds": 40
       },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_deletes_and_patches_the_documents_that_match_a_filter_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_refuses_a_filter_that_matches_too_many_documents_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
       "full:fyrr:test:dense_path/write_api::identity_write_api_applies_a_change_only_when_its_condition_holds_on_storage": {
         "tier": "full",
         "seconds": 40
