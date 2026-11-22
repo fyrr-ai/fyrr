@@ -68,7 +68,7 @@ impl PreparedReader {
     /// The columns `fields` returns: the attributes it includes, or every one
     /// of the namespace but those it excludes. An included name the namespace
     /// does not declare is invalid; `vector` is always one to name.
-    fn returned_columns(&self, fields: Option<&ReturnFields>) -> Result<Vec<String>> {
+    pub(super) fn returned_columns(&self, fields: Option<&ReturnFields>) -> Result<Vec<String>> {
         let declared = &self.manifest.attributes;
         match fields {
             Some(ReturnFields {
@@ -465,7 +465,7 @@ impl PreparedReader {
     }
 }
 
-/// A vector as numbers: the shortest decimal of each 32-bit value.
+/// A vector as numbers; every 16-bit value is exact as a 64-bit one.
 fn vector_json(array: &ArrayRef, row: usize) -> Result<Value> {
     let list = array
         .as_any()
@@ -476,18 +476,13 @@ fn vector_json(array: &ArrayRef, row: usize) -> Result<Value> {
         .as_any()
         .downcast_ref::<Float16Array>()
         .ok_or(PublicationRowsInvalid)?;
-    items
-        .values()
-        .iter()
-        .map(|item| {
-            item.to_f32()
-                .to_string()
-                .parse()
-                .map(Value::Number)
-                .map_err(|_| PublicationRowsInvalid)
-        })
-        .collect::<Result<_>>()
-        .map(Value::Array)
+    Ok(Value::Array(
+        items
+            .values()
+            .iter()
+            .map(|item| item.to_f64().into())
+            .collect(),
+    ))
 }
 
 /// A typed attribute's value, as the JSON type of its kind.

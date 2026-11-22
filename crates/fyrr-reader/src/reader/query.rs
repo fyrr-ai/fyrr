@@ -51,6 +51,8 @@ impl PreparedReader {
             |queries| queries.iter().map(String::as_str).collect(),
         );
         let (total, before, telemetry, _pin) = self.request_prologue().await?;
+        // An unknown included attribute is refused even when nothing matches.
+        self.returned_columns(args.fields.as_ref())?;
         let deadline = deadline.unwrap_or_else(|| {
             total
                 + std::time::Duration::from_millis(u64::from(

@@ -807,6 +807,13 @@ async fn identity_write_api_returns_the_attributes_vectors_and_scores_a_query_as
             "{fields}"
         );
     }
+    // Also when no row matches, so nothing is hydrated.
+    let mut nothing = search(json!({"include": ["nope"]}));
+    nothing["filter"] = json!({"field": "root_id", "op": "eq", "value": "none"});
+    assert_eq!(
+        ask(nothing).await,
+        (400, json!({"error": "invalid_argument"}))
+    );
     let fetch = reader
         .client
         .post(format!("{}/v1/namespaces/dense-fixture/fetch", reader.base))
