@@ -28,6 +28,33 @@ and the other `[reader]` and `[writer]` keys in
 | `composition` | see below | Document slots of a search response. |
 | `retrieval` | see below | Candidate depths, fusion weight and output bounds. |
 | `rerank` | absent | Optional hosted reranker; absent makes no reranker calls. |
+| `attributes` | `{}` | Typed attributes of the namespace: name to type, see below. |
+
+### `[namespace.attributes]`
+
+```toml
+[namespace.attributes]
+created = "datetime"
+priority = "int"
+```
+
+A namespace can declare up to 128 typed attributes when it is created. The
+types are `string`, `int` (64-bit signed), `float` (64-bit), `bool` and
+`datetime` (UTC microseconds, like `updated_at`). The first content publication
+creates a nullable column for each declaration. These columns currently contain
+only nulls. Search's `attributes` filter matches the `key=value` string labels
+supplied by connectors. See [connector documents](connectors/authoring.md#documents)
+and [search](mcp-tools.md#search).
+
+A `string`, number or `datetime` attribute gets a B-tree index and a `bool` a
+bitmap index. A reader opens each index: about two storage requests per
+attribute when it opens a namespace (1.8 measured with 64 attributes; the
+storage request budget test holds it).
+
+A name is a lowercase letter followed by lowercase letters, digits and `_`, at
+most 128 bytes; a built-in column name or a name starting with `_` is refused.
+The schema is recorded in the namespace and in every content manifest, and like
+the other settings it is fixed for the life of the namespace.
 
 ### `[namespace.composition]`
 

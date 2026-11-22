@@ -165,6 +165,14 @@
           "description": "Target rows per partition of the dense vector index.",
           "maximum": 4096,
           "default": 550
+        },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/AttributeType"
+          },
+          "description": "Typed attributes declared for a new namespace: name to `string`, `int`,\n`float`, `bool` or `datetime`. Each is a nullable column with its own\nindex.",
+          "default": {}
         }
       },
       "required": [
@@ -406,6 +414,33 @@
         }
       },
       "description": "Operator composition; its values are bound into the retrieval policy identity."
+    },
+    "AttributeType": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "string",
+            "bool"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "int",
+          "description": "64-bit signed integer."
+        },
+        {
+          "type": "string",
+          "const": "float",
+          "description": "64-bit float."
+        },
+        {
+          "type": "string",
+          "const": "datetime",
+          "description": "An RFC 3339 string in requests, stored as UTC microseconds."
+        }
+      ],
+      "description": "The type of an attribute."
     },
     "StorageConfig": {
       "type": "object",
@@ -855,15 +890,42 @@
           "items": {
             "type": "string"
           },
-          "description": "Reader tokens (`usr:<id>`, `grp:<id>`) the key acts with, as\n`identity.stdio_readers` states them for the stdio subject."
+          "description": "Reader tokens (`usr:<id>`, `grp:<id>`) the key acts with, as\n`identity.stdio_readers` states them for the stdio subject. Required\nfor a key with the `read` role.",
+          "default": []
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApiKeyRole"
+          },
+          "description": "What the key may do: `read`, `write`, `list` and `admin`. A key without\nroles reads.",
+          "default": [
+            "read"
+          ]
+        },
+        "namespace_prefix": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Limits the key to namespaces whose name starts with this prefix."
         }
       },
       "required": [
         "name",
-        "key",
-        "readers"
+        "key"
       ],
       "description": "One API key."
+    },
+    "ApiKeyRole": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "list",
+        "admin"
+      ],
+      "description": "What an API key may do over HTTP. `list`, `write` and `admin` name roles\nof routes that do not exist yet; a key holds them so that the routes need\nno new key format."
     },
     "ReaderConfig": {
       "type": "object",

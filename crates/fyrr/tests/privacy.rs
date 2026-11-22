@@ -197,6 +197,7 @@ fn http_reader_configuration_and_startup_keep_identity_and_credentials_private()
     let loaded = fyrr_core::config::load(&config).expect("the configuration parses");
     for hash in [
         fyrr_reader::storage::api_key_subject(&loaded.config, &shared).unwrap(),
+        fyrr_reader::storage::api_key_deployment_hash(&loaded.config, &shared).unwrap(),
         fyrr_reader::storage::api_key_principal(&loaded.config, &one).unwrap(),
     ] {
         sentinels.plant(&hash, "api-key-hash");
@@ -218,9 +219,11 @@ fn http_reader_configuration_and_startup_keep_identity_and_credentials_private()
         vec!["reader", "check"],
     ];
     #[cfg(feature = "writer")]
-    let commands = commands
-        .into_iter()
-        .chain([vec!["writer", "status"], vec!["writer", "commit"]]);
+    let commands = commands.into_iter().chain([
+        vec!["writer", "status"],
+        vec!["writer", "commit"],
+        vec!["writer", "keys"],
+    ]);
     for args in commands {
         let mut command = vec!["--config", config.to_str().expect("config path")];
         command.extend(args);
@@ -288,6 +291,7 @@ fn dense_reader_and_namespace_paths_keep_identity_and_query_values_private() {
         vec!["writer", "serve", "--jobs", query.as_str()],
         vec!["writer", "serve", "--timeout", "0s"],
         vec!["writer", "directory", "--snapshot", query.as_str()],
+        vec!["writer", "keys"],
         vec!["writer", "sync", "--directory"],
         vec![
             "writer",

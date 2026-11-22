@@ -45,53 +45,76 @@ pub(crate) type ArtifactCache<T> = Arc<tokio::sync::Mutex<Option<(GenerationPoin
 /// the one whose read started last, so a slower, older read never replaces a
 /// newer one, and a generation opened from a fresh read never meets an older
 /// head here.
+///
+/// The deployment's published API keys are held the same way, with the same
+/// ages and reads: a removed key is refused within two intervals, a held copy
+/// older than that is read again, and only a failed read refuses callers.
 #[derive(Debug, Clone)]
-pub(crate) struct HeadCache {
+pub(crate) struct HeadCache<T = fyrr_core::publication::ServingHead> {
     max_age: std::time::Duration,
-    state: Arc<std::sync::Mutex<HeadState>>,
+    /// The object read under the root given to each call.
+    file: &'static str,
+    state: Arc<std::sync::Mutex<HeadState<T>>>,
 }
-#[derive(Debug, Default)]
-struct HeadState {
-    held: Option<HeldHead>,
+#[derive(Debug)]
+struct HeadState<T> {
+    held: Option<HeldHead<T>>,
     /// When the latest finished read started, whether it succeeded or not:
     /// a read that started earlier is never held or handed out after it.
     latest: Option<tokio::time::Instant>,
     /// The shared read in flight and when it was started. Its task removes
     /// it when it ends, so a finished read is never handed to a later check.
-    reading: Option<(tokio::time::Instant, SharedHeadRead)>,
+    reading: Option<(tokio::time::Instant, SharedHeadRead<T>)>,
+}
+impl<T> Default for HeadState<T> {
+    fn default() -> Self {
+        Self {
+            held: None,
+            latest: None,
+            reading: None,
+        }
+    }
 }
 #[derive(Debug, Clone)]
-struct HeldHead {
+struct HeldHead<T> {
     started: tokio::time::Instant,
     started_at: chrono::DateTime<chrono::Utc>,
-    head: fyrr_core::publication::ServingHead,
+    head: T,
 }
 /// A head read and the instant it started.
-type HeadRead = (
-    tokio::time::Instant,
-    Result<fyrr_core::publication::ServingHead, StorageError>,
-);
-type SharedHeadRead = futures::future::Shared<futures::future::BoxFuture<'static, HeadRead>>;
+type HeadRead<T> = (tokio::time::Instant, Result<T, StorageError>);
+type SharedHeadRead<T> = futures::future::Shared<futures::future::BoxFuture<'static, HeadRead<T>>>;
 impl HeadCache {
+    pub(crate) fn new(config: &Config) -> Self {
+        Self::for_file(config, "head.json")
+    }
+    /// A zero age reads the head for every check; only test suites ask for it.
+    #[cfg(test)]
+    pub(crate) fn with_interval(max_age: std::time::Duration) -> Self {
+        Self::with_file(max_age, "head.json")
+    }
+}
+impl<T: Contract + Clone + Send + Sync + 'static> HeadCache<T> {
     /// The scheduler checks for a new version at least every 30 s.
     const CHECK_INTERVAL_MAX: std::time::Duration = std::time::Duration::from_secs(30);
 
-    pub(crate) fn new(config: &Config) -> Self {
+    /// A cache of `file`, aged as the head is.
+    pub(crate) fn for_file(config: &Config, file: &'static str) -> Self {
         #[cfg(feature = "test-store")]
         if test_store::head_check_every() {
-            return Self::with_interval(std::time::Duration::ZERO);
+            return Self::with_file(std::time::Duration::ZERO, file);
         }
         let interval = config.reader.version_check_interval.as_duration();
-        Self::with_interval(2 * interval.min(Self::CHECK_INTERVAL_MAX))
+        Self::with_file(2 * interval.min(Self::CHECK_INTERVAL_MAX), file)
     }
-    /// A zero age reads the head for every check; only test suites ask for it.
-    pub(crate) fn with_interval(max_age: std::time::Duration) -> Self {
+    pub(crate) fn with_file(max_age: std::time::Duration, file: &'static str) -> Self {
         Self {
             max_age,
+            file,
             state: Arc::default(),
         }
     }
-    fn young(&self, held: &HeldHead) -> bool {
+    fn young(&self, held: &HeldHead<T>) -> bool {
         let wall = fyrr_core::clock::now().signed_duration_since(held.started_at);
         held.started.elapsed() < self.max_age && wall.to_std().is_ok_and(|age| age < self.max_age)
     }
@@ -101,9 +124,9 @@ impl HeadCache {
         &self,
         store: &Arc<dyn ObjectStore>,
         root: &Path,
-    ) -> Result<fyrr_core::publication::ServingHead, StorageError> {
+    ) -> Result<T, StorageError> {
         if self.max_age.is_zero() {
-            return read_contract(store.as_ref(), &root.clone().join("head.json")).await;
+            return read_contract(store.as_ref(), &root.clone().join(self.file)).await;
         }
         let reading = {
             let mut state = crate::sync::lock(&self.state);
@@ -171,14 +194,13 @@ impl HeadCache {
         &self,
         store: &dyn ObjectStore,
         root: &Path,
-    ) -> Result<fyrr_core::publication::ServingHead, StorageError> {
+    ) -> Result<T, StorageError> {
         self.fresh(store, root).await.1
     }
     /// `read_fresh` with the instant its read started.
-    async fn fresh(&self, store: &dyn ObjectStore, root: &Path) -> HeadRead {
+    async fn fresh(&self, store: &dyn ObjectStore, root: &Path) -> HeadRead<T> {
         let (started, started_at) = (tokio::time::Instant::now(), fyrr_core::clock::now());
-        let outcome: Result<fyrr_core::publication::ServingHead, _> =
-            read_contract(store, &root.clone().join("head.json")).await;
+        let outcome: Result<T, _> = read_contract(store, &root.clone().join(self.file)).await;
         if self.max_age.is_zero() {
             return (started, outcome);
         }
@@ -501,6 +523,16 @@ pub async fn read_contract<T: Contract>(
     parse_contract(&bytes).map_err(|_| StorageError::PublicationInvalid)
 }
 
+/// The object that holds a deployment's API keys, under [`deployment_root`].
+pub const API_KEYS_FILE: &str = "api-keys.json";
+
+/// The storage root above `namespaces/`: what the namespaces of a deployment
+/// share, so every reader and writer of it finds the same keys.
+pub fn deployment_root(namespace_root: &Path) -> Path {
+    let parts: Vec<_> = namespace_root.parts().collect();
+    Path::from_iter(parts[..parts.len().saturating_sub(2)].iter().cloned())
+}
+
 pub async fn optional_head(
     config: &Config,
 ) -> Result<Option<fyrr_core::publication::ServingHead>, StorageError> {
@@ -523,6 +555,17 @@ fn namespace_mac(
     kind: &str,
     value: &str,
 ) -> Result<hmac::Hmac<sha2::Sha256>, StorageError> {
+    keyed_mac(config, config.namespace.name.as_str(), kind, value)
+}
+
+/// The MAC of `value` in `kind` under the hashing key, scoped to `scope`: a
+/// namespace name, or empty for what every namespace of a deployment shares.
+fn keyed_mac(
+    config: &Config,
+    scope: &str,
+    kind: &str,
+    value: &str,
+) -> Result<hmac::Hmac<sha2::Sha256>, StorageError> {
     use hmac::{KeyInit, Mac};
     let key = config
         .identity
@@ -533,7 +576,7 @@ fn namespace_mac(
         .map_err(|_| StorageError::AuthorizationUnavailable)?;
     let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(key.expose().as_bytes())
         .map_err(|_| StorageError::AuthorizationUnavailable)?;
-    for part in ["fyrr-hmac-2", config.namespace.name.as_str(), kind, value] {
+    for part in ["fyrr-hmac-2", scope, kind, value] {
         mac.update(&(part.len() as u64).to_be_bytes());
         mac.update(part.as_bytes());
     }
@@ -541,15 +584,16 @@ fn namespace_mac(
 }
 
 pub fn hash_principal(config: &Config, prefix: &str, value: &str) -> Result<String, StorageError> {
-    hash_in_domain(config, prefix, prefix, value)
+    hash_in_domain(config, &config.namespace.name, prefix, prefix, value)
 }
 
-/// `<prefix>:<hex>` of the HMAC of `value` in its own MAC domain. `namespace_mac`
-/// frames every part with its length, so two different domains never yield the
-/// same MAC input, whatever the values: a hash in one domain cannot equal one in
-/// another except by an HMAC-SHA256 collision.
+/// `<prefix>:<hex>` of the HMAC of `value` in its own MAC domain and `scope`.
+/// `keyed_mac` frames every part with its length, so two different domains or
+/// scopes never yield the same MAC input, whatever the values: a hash in one
+/// cannot equal one in another except by an HMAC-SHA256 collision.
 fn hash_in_domain(
     config: &Config,
+    scope: &str,
     prefix: &str,
     domain: &str,
     value: &str,
@@ -558,7 +602,7 @@ fn hash_in_domain(
     Ok(format!(
         "{prefix}:{}",
         hex::encode(
-            namespace_mac(config, domain, value)?
+            keyed_mac(config, scope, domain, value)?
                 .finalize()
                 .into_bytes()
         )
@@ -569,13 +613,27 @@ fn hash_in_domain(
 /// not the one of `hash_principal(config, "key", …)` (directory users, the
 /// stdio subject, OIDC subjects), so no value of those can produce it.
 pub fn api_key_subject(config: &Config, secret: &str) -> Result<String, StorageError> {
-    hash_in_domain(config, "key", "api-key-secret", secret)
+    hash_in_domain(
+        config,
+        &config.namespace.name,
+        "key",
+        "api-key-secret",
+        secret,
+    )
+}
+
+/// The hash of an API-key secret that names no namespace: the same in every
+/// namespace that shares a hashing key, so the one published set of keys
+/// (`API_KEYS_FILE`) can name a key for all of them. Only that set holds it;
+/// each namespace's identity binds [`api_key_subject`].
+pub fn api_key_deployment_hash(config: &Config, secret: &str) -> Result<String, StorageError> {
+    hash_in_domain(config, "", "key", "api-key-secret", secret)
 }
 
 /// The principal key an API key acts as: the hash of its name in a domain of
 /// its own, apart from every user and from the secret domain.
 pub fn api_key_principal(config: &Config, name: &str) -> Result<String, StorageError> {
-    hash_in_domain(config, "key", "api-key-name", name)
+    hash_in_domain(config, &config.namespace.name, "key", "api-key-name", name)
 }
 
 pub(crate) fn verify_hash(

@@ -24,9 +24,18 @@ pub(crate) async fn publish(
     let actual = dataset.load_indices().await?;
     let mut indexes = Vec::new();
     for index in actual.iter() {
-        let Some(&(column, _, _, kind)) =
+        let (column, kind) = if let Some(&(column, _, _, kind)) =
             INDEXES.iter().find(|(_, name, _, _)| *name == index.name)
-        else {
+        {
+            (column, kind)
+        } else if let Some((column, kind)) = config
+            .namespace
+            .attributes
+            .iter()
+            .find(|(name, _)| fyrr_core::attributes::index_name(name) == index.name)
+        {
+            (column.as_str(), kind.index_kind())
+        } else {
             continue;
         };
         indexes.push(IndexIdentity {
@@ -137,6 +146,7 @@ pub(crate) async fn publish(
         dense_partition_rows: config.namespace.dense_partition_rows,
         retrieval_policy_digest: config.namespace.retrieval_digest(),
         indexes,
+        attributes: config.namespace.attributes.clone(),
         files,
         envelope_ids: receipts,
         lineage: lineage.clone(),

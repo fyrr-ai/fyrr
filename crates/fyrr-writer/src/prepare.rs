@@ -564,6 +564,12 @@ pub(crate) async fn bind_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_table_holds_exactly_the_reserved_built_in_columns() {
+        let schema = schema(8);
+        let names: Vec<_> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, fyrr_core::attributes::BUILT_IN_COLUMNS);
+    }
     #[tokio::test]
     async fn generation_pointer_reads_the_immutable_object_and_checks_its_digest() {
         let store = object_store::memory::InMemory::new();

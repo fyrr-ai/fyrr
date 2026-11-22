@@ -9,7 +9,10 @@ agents must do on top of it.
 
 1. Run `scripts/doctor` before the first work in a checkout.
 2. Make the change. Code, comments, docs, commit messages and PR text are in
-   English.
+   English. Follow the [commit template](.gitmessage) and the
+   [pull request template](.github/pull_request_template.md) when writing
+   messages from the command line, too. To load the commit template in your
+   Git editor, run `git config --local commit.template .gitmessage`.
 3. Follow [Contributing: Verifying](CONTRIBUTING.md#verifying) for CI tiers,
    required checks and per-step summary reporting.
 
@@ -41,6 +44,11 @@ this file and CONTRIBUTING.md, not in issues.
 
 - Use rustup's Cargo (`~/.cargo/bin` first on `PATH`) with this checkout's
   own `target/`.
+- Builds and test cases of every checkout share the mbx scheduler, and it
+  divides the cores. Do not throttle `scripts/ci` with `--jobs`, `taskset`,
+  `nice` or `CARGO_BUILD_JOBS` to make room for another checkout. Use one
+  mbx store (`MBX_CACHE_DIR`) for every command in a checkout; a second one
+  recompiles the whole dependency graph.
 - Start and stop the fixtures only with `scripts/s3-fixture` and
   `scripts/keycloak-fixture`; build images only with `scripts/images`.
 - Never prune Docker or touch containers, images or data you did not create.

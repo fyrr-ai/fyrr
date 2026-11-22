@@ -77,6 +77,10 @@ fn contract_fixtures() -> Vec<GeneratedFile> {
             "fixtures/contracts/identity-artifact/artifact.json"
         ),
         fixture!(
+            fyrr_core::identity::ApiKeysArtifact,
+            "fixtures/contracts/api-keys-artifact/artifact.json"
+        ),
+        fixture!(
             ConnectorBatch,
             "fixtures/contracts/connector-batch/document-changes.json"
         ),

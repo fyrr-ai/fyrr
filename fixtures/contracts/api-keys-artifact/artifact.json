@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "keys": [
+    {
+      "subject": "key:3f1c7a5e9b2d4608a1c3e5f70912b4d6e8a0c2f4163850a7b9d1e3f5a7c9b0d2",
+      "roles": [
+        "read",
+        "write"
+      ],
+      "namespace_prefix": "team-"
+    },
+    {
+      "subject": "key:9a8b7c6d5e4f30211203f4e5d6c7b8a99a8b7c6d5e4f30211203f4e5d6c7b8a9",
+      "roles": [
+        "read",
+        "list",
+        "admin"
+      ]
+    }
+  ]
+}

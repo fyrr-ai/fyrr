@@ -19,7 +19,9 @@ pub(crate) use validation::{
     namespace_settings as check_namespace, rerank_settings as check_rerank,
 };
 
-pub use api_key::{API_KEY_PREFIX, ApiKeyConfig, is_api_key_secret};
+pub use api_key::{
+    API_KEY_PREFIX, ApiKeyConfig, ApiKeyRole, is_api_key_secret, is_namespace_prefix, prefix_allows,
+};
 pub use storage::StorageBackend;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -162,6 +164,11 @@ pub struct NamespaceConfig {
     #[serde(default = "default_dense_partition_rows")]
     #[schemars(range(min = DENSE_PARTITION_ROWS_MIN, max = DENSE_PARTITION_ROWS_MAX))]
     pub dense_partition_rows: u32,
+    /// Typed attributes declared for a new namespace: name to `string`, `int`,
+    /// `float`, `bool` or `datetime`. Each is a nullable column with its own
+    /// index.
+    #[serde(default)]
+    pub attributes: crate::attributes::AttributeSchema,
 }
 
 /// Optional reranking after fusion; absent configuration makes no provider calls.
@@ -1478,6 +1485,7 @@ impl Config {
         namespace.fts_ascii_folding = settings.fts.ascii_folding;
         namespace.dense_rq_bits = settings.dense_rq_bits;
         namespace.dense_partition_rows = settings.dense_partition_rows;
+        namespace.attributes.clone_from(&settings.attributes);
         namespace.retrieval = (&settings.retrieval).into();
         namespace.composition = (&settings.composition).into();
         namespace.rerank = match (&settings.rerank, &self.namespace.rerank) {
