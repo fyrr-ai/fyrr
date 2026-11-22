@@ -1643,7 +1643,10 @@ async fn identity_write_api_aggregates_the_documents_a_caller_reads_on_storage()
     let ask = async |reader: &super::http_mcp::Reader, body: Value| -> (u16, Value) {
         let response = reader
             .client
-            .post(format!("{}/v1/namespaces/dense-fixture/aggregate", reader.base))
+            .post(format!(
+                "{}/v1/namespaces/dense-fixture/aggregate",
+                reader.base
+            ))
             .bearer_auth(secret(READ_KEY))
             .json(&body)
             .send()
@@ -1706,7 +1709,13 @@ async fn identity_write_api_aggregates_the_documents_a_caller_reads_on_storage()
         json!([{"key": [2, "red"], "values": [2]}])
     );
     assert_eq!(
-        groups(ask(&reader, json!({"group_by": ["root_id"], "aggregations": [count]})).await),
+        groups(
+            ask(
+                &reader,
+                json!({"group_by": ["root_id"], "aggregations": [count]})
+            )
+            .await
+        ),
         json!([
             {"key": ["a"], "values": [1]},
             {"key": ["b"], "values": [1]},

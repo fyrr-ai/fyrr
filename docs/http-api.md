@@ -163,7 +163,7 @@ curl -H "Authorization: Bearer $FYRR_KEY" \
 
 ## Consistency
 
-Both routes take one more member besides the arguments of the tool,
+`query`, `fetch` and `aggregate` take one more member besides the arguments of the tool,
 `consistency`. It is no argument of the tool and `/mcp` has no such member.
 
 | Value | Answer |

@@ -35,7 +35,8 @@ impl ToolCall {
             Self::Search(args) => args.validate().map_err(|_| InvalidArgument)?,
             Self::Fetch(args) => args.validate().map_err(|_| InvalidArgument)?,
             Self::ListFilters(args) => args.validate().map_err(|_| InvalidArgument)?,
-            Self::Report => {}
+            // `aggregate` validated its own arguments.
+            Self::Aggregate(_) | Self::Report => {}
         }
         Ok(call)
     }

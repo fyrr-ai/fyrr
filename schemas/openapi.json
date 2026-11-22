@@ -3,7 +3,7 @@
   "info": {
     "title": "fyrr HTTP API",
     "version": "4.0",
-    "description": "The /v1/ routes of the reader (query, fetch, report, list) and of the writer (documents, delete). The version is that of the MCP contract the query and fetch bodies follow."
+    "description": "The /v1/ routes of the reader (query, fetch, aggregate, report, list) and of the writer (documents, delete). The version is that of the MCP contract the query and fetch bodies follow."
   },
   "tags": [
     {
@@ -196,6 +196,46 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/FetchRequest"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/v1/namespaces/{namespace}/aggregate": {
+      "post": {
+        "tags": [
+          "reader"
+        ],
+        "summary": "Aggregate the documents the key may read: count, sum, average, minimum and maximum, optionally per group",
+        "description": "Needs an API key with the `read` role, or an OIDC user.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/namespace"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AggregateOutput"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "description": "The request body.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AggregateRequest"
               }
             }
           },
@@ -975,6 +1015,101 @@
           "start"
         ],
         "description": "A codepoint span of a record: start..end, or start with context on both sides."
+      },
+      "AggregateRequest": {
+        "type": "object",
+        "description": "The body of `POST /v1/namespaces/{namespace}/aggregate`: the aggregate\narguments and `consistency`.",
+        "properties": {
+          "aggregations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Aggregation"
+            },
+            "description": "The aggregates to compute, in the order of every group's `values`.",
+            "minItems": 1,
+            "maxItems": 16
+          },
+          "group_by": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Scalar fields to group by; without any, the whole selection is one group.",
+            "minItems": 1,
+            "maxItems": 4
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Filter"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The documents to aggregate, as in `search`."
+          },
+          "deadline_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 1,
+            "description": "Deadline in milliseconds; default 10000.",
+            "maximum": 300000
+          },
+          "consistency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Consistency"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Defaults to `cached`."
+          }
+        },
+        "required": [
+          "aggregations"
+        ]
+      },
+      "Aggregation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "$ref": "#/components/schemas/AggregateOp"
+          },
+          "field": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "description": "One aggregate: `count` takes an optional field, the others need one."
+      },
+      "AggregateOp": {
+        "type": "string",
+        "enum": [
+          "count",
+          "sum",
+          "avg",
+          "min",
+          "max"
+        ]
       },
       "WriteRequest": {
         "type": "object",
@@ -2312,6 +2447,43 @@
           "text"
         ],
         "description": "One record's text."
+      },
+      "AggregateOutput": {
+        "type": "object",
+        "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AggregateGroup"
+            }
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/ResponseMetadata"
+          }
+        },
+        "required": [
+          "groups",
+          "metadata"
+        ],
+        "description": "The `aggregate` result: groups in key order."
+      },
+      "AggregateGroup": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "array",
+            "items": true
+          },
+          "values": {
+            "type": "array",
+            "items": true
+          }
+        },
+        "required": [
+          "key",
+          "values"
+        ],
+        "description": "One group: its values of the `group_by` fields and its aggregates, both in\nrequest order. A `null` aggregate is one over no value."
       },
       "WriteResponse": {
         "type": "object",

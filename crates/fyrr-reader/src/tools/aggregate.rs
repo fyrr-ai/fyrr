@@ -63,18 +63,18 @@ impl Cell {
                     .value(row)
                     .to_owned(),
             ),
-            AttributeType::Int => Self::Int(
-                column::<Int64Array>(batch, name, PublicationRowsInvalid)?.value(row),
-            ),
-            AttributeType::Uint => Self::Uint(
-                column::<UInt64Array>(batch, name, PublicationRowsInvalid)?.value(row),
-            ),
+            AttributeType::Int => {
+                Self::Int(column::<Int64Array>(batch, name, PublicationRowsInvalid)?.value(row))
+            }
+            AttributeType::Uint => {
+                Self::Uint(column::<UInt64Array>(batch, name, PublicationRowsInvalid)?.value(row))
+            }
             AttributeType::Float => Self::Float(Float(
                 column::<Float64Array>(batch, name, PublicationRowsInvalid)?.value(row),
             )),
-            AttributeType::Bool => Self::Bool(
-                column::<BooleanArray>(batch, name, PublicationRowsInvalid)?.value(row),
-            ),
+            AttributeType::Bool => {
+                Self::Bool(column::<BooleanArray>(batch, name, PublicationRowsInvalid)?.value(row))
+            }
             AttributeType::Datetime => Self::Time(
                 column::<TimestampMicrosecondArray>(batch, name, PublicationRowsInvalid)?
                     .value(row),
@@ -124,9 +124,8 @@ impl Measure {
                     AggregateOp::Count => field_type(field, attributes)?,
                     AggregateOp::Min | AggregateOp::Max => scalar_type(field, attributes)?,
                     AggregateOp::Sum | AggregateOp::Avg => match scalar_type(field, attributes)? {
-                        kind @ (AttributeType::Int | AttributeType::Uint | AttributeType::Float) => {
-                            kind
-                        }
+                        kind
+                        @ (AttributeType::Int | AttributeType::Uint | AttributeType::Float) => kind,
                         _ => return Err(InvalidArgument),
                     },
                 };
@@ -187,7 +186,9 @@ impl Measure {
                     .unwrap_or_else(|_| float_json(acc.int as f64)),
             },
             AggregateOp::Avg => float_json((acc.int as f64 + acc.float) / acc.count as f64),
-            AggregateOp::Min | AggregateOp::Max => acc.best.as_ref().map_or(Value::Null, Cell::json),
+            AggregateOp::Min | AggregateOp::Max => {
+                acc.best.as_ref().map_or(Value::Null, Cell::json)
+            }
         }
     }
 }
