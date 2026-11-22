@@ -31,13 +31,18 @@ done
 [[ -n "$OUT" ]] || die "--out is required"
 ((${#INPUTS[@]})) || die "name at least one platform directory"
 
-DIR="${OUT%/}/fyrr-$VERSION"
+DESTINATION="${OUT%/}/fyrr-$VERSION"
 for input in "${INPUTS[@]}"; do
-  [[ "$input" != "$DIR" && "$input" != "$DIR/"* ]] ||
+  [[ "$input" != "$DESTINATION" && "$input" != "$DESTINATION/"* ]] ||
     die "output directory would overwrite input: $input"
 done
-rm -rf "$DIR"
-mkdir -p "$DIR"
+
+# Keep the previous bundle until the new one passes every check.
+mkdir -p -- "$OUT"
+STAGING="$(mktemp -d -- "$DESTINATION.tmp.XXXXXXXXXX")"
+trap 'rm -rf -- "$STAGING"' EXIT
+DIR="$STAGING/release"
+mkdir -- "$DIR"
 platforms=()
 commit=""
 for input in "${INPUTS[@]}"; do
@@ -76,5 +81,7 @@ done
   done
 } >"$DIR/manifest.txt"
 (cd "$DIR" && sha256sum -- * >SHA256SUMS && sha256sum --check --quiet SHA256SUMS)
-log "done: ${DIR} (${#platforms[@]} platform(s), $(grep -c . "$DIR/SHA256SUMS") files, SHA256SUMS verified); nothing was published"
-cat "$DIR/manifest.txt"
+rm -rf -- "$DESTINATION"
+mv -T -- "$DIR" "$DESTINATION"
+log "done: ${DESTINATION} (${#platforms[@]} platform(s), $(grep -c . "$DESTINATION/SHA256SUMS") files, SHA256SUMS verified); nothing was published"
+cat "$DESTINATION/manifest.txt"
