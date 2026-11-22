@@ -41,6 +41,11 @@ this file and CONTRIBUTING.md, not in issues.
 
 - Use rustup's Cargo (`~/.cargo/bin` first on `PATH`) with this checkout's
   own `target/`.
+- Builds and test cases of every checkout share the mbx scheduler, and it
+  divides the cores. Do not throttle `scripts/ci` with `--jobs`, `taskset`,
+  `nice` or `CARGO_BUILD_JOBS` to make room for another checkout. Use one
+  mbx store (`MBX_CACHE_DIR`) for every command in a checkout; a second one
+  recompiles the whole dependency graph.
 - Start and stop the fixtures only with `scripts/s3-fixture` and
   `scripts/keycloak-fixture`; build images only with `scripts/images`.
 - Never prune Docker or touch containers, images or data you did not create.
