@@ -49,8 +49,9 @@ maintain` runs in lease-held steps: it publishes pending permission changes,
 removes unreadable rows, compacts fragments, updates indexes and deletes
 retired versions, applied envelopes and the publication manifests and
 checkpoints that only older versions named. `fyrr writer serve` runs it when
-the served version has fragments with deletions, an index with more than 64
-segments, or has gone `writer.purge_window` minus `writer.version_grace` (or
+the served version has an index with more than 64 segments, has fragments
+with deletions and `writer.version_grace` has passed since the last
+maintenance, or has gone `writer.purge_window` minus `writer.version_grace` (or
 `writer.max_envelope_age`, if shorter) without it; `writer.serve.maintenance =
 false` turns that off. That cadence does not bound how long deleted content
 stays in retained old versions: run `writer maintain` often enough that it

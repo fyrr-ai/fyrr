@@ -664,7 +664,7 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
 const SEGMENT_CAP: usize = 64;
 
 /// A service that only serves keeps its namespace bounded: it compacts a
-/// fragment with deletions, and two more commits than the cap leave at most
+/// fragment with deletions once the grace has passed, and two more commits than the cap leave at most
 /// the cap of segments per index and few fragments, with no `writer maintain`
 /// run after the service started.
 #[tokio::test]
@@ -735,6 +735,9 @@ async fn a_writer_service_maintains_the_namespace_it_serves() {
     // A replaced document leaves a deletion in its fragment: the service compacts it.
     texts[0].1 = "ledger entry zero, revised".to_owned();
     sync(&texts);
+    // Deletions wait for `writer.version_grace` after the last maintenance, so
+    // that steady upserts do not run it on every publication.
+    fyrr_core::clock::advance(Duration::from_secs(2 * 3600)).unwrap();
     wait("maintenance of a deletion", &|| events("maintained") >= 1);
     let (_, manifest) = super::coordination::publication(&config).await;
     assert!(

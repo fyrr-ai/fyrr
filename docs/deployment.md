@@ -233,8 +233,9 @@ the directory on its interval, and commits every
 `writer.commit.coalescing_timer` (60 s). `SIGINT` or `SIGTERM` stops the
 workers, finishes the current commit group or maintenance run and releases the
 lease. It also runs `fyrr writer maintain` when the served version needs it
-(fragments with deletions, too many index segments, retired versions or applied
-envelopes past their windows); set `writer.serve.maintenance = false` to
+(too many index segments, fragments with deletions, or no maintenance for
+longer than the windows after which retired versions and applied envelopes are
+deleted); set `writer.serve.maintenance = false` to
 schedule `fyrr writer maintain` yourself, as below.
 
 Sync, directory pulls and commits can also run from cron (a SCIM directory
