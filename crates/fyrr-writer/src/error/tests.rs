@@ -100,6 +100,7 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
         ("source_unavailable", false),
         ("source_unknown", false),
         ("stale_cursor", false),
+        ("too_many_namespaces", false),
         ("tombstone_invalid", false),
         ("worker_failure", false),
         ("cleanup_branch_unavailable", false),
@@ -111,6 +112,8 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
         ("document_invalid", false),
         ("document_revision_missing", false),
         ("conditional_delete_unsupported", false),
+        ("filter_invalid", false),
+        ("filter_matches_too_many", false),
         ("export_invalid", false),
         ("delete_confirmation_invalid", false),
         ("namespace_deleting", false),
@@ -194,6 +197,11 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
             "authorization_unavailable",
         ),
         (S::StaleCursor, WriterError::StaleCursor, "stale_cursor"),
+        (
+            S::TooManyNamespaces,
+            WriterError::TooManyNamespaces,
+            "too_many_namespaces",
+        ),
         (
             S::PublicationUnavailable,
             WriterError::PublicationUnavailable,

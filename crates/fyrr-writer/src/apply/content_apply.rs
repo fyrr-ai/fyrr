@@ -371,7 +371,7 @@ async fn with_filter_writes<'a>(
         deleted = match matching(config, dataset, filter).await? {
             Ok(roots) => roots,
             Err(reason) => {
-                reject(config, envelope, reason).await?;
+                reject(config, envelope, reason.as_str()).await?;
                 return Ok(None);
             }
         };
@@ -390,7 +390,7 @@ async fn with_filter_writes<'a>(
         let matched = match matching(config, dataset, &patch.filter).await? {
             Ok(roots) => roots,
             Err(reason) => {
-                reject(config, envelope, reason).await?;
+                reject(config, envelope, reason.as_str()).await?;
                 return Ok(None);
             }
         };
@@ -423,10 +423,10 @@ async fn matching(
     config: &Config,
     dataset: &Dataset,
     filter: &fyrr_core::mcp::Filter,
-) -> Result<std::result::Result<BTreeSet<String>, &'static str>> {
-    use fyrr_core::limits::MAX_FILTER_WRITE_DOCUMENTS;
+) -> Result<std::result::Result<BTreeSet<String>, WriterError>> {
+    use fyrr_core::limits::write::MAX_FILTER_WRITE_DOCUMENTS;
     let Some(filter) = fyrr_reader::filter_sql(filter, &config.namespace.attributes) else {
-        return Ok(Err("filter_invalid"));
+        return Ok(Err(WriterError::FilterInvalid));
     };
     // One document of the API is one record: a row past the bound is a document past it.
     let batch = dataset
@@ -444,7 +444,7 @@ async fn matching(
         .await
         .map_err(|_| WriterError::ChangedRowScanFailed)?;
     if batch.num_rows() > MAX_FILTER_WRITE_DOCUMENTS {
-        return Ok(Err("filter_matches_too_many"));
+        return Ok(Err(WriterError::FilterMatchesTooMany));
     }
     let roots = strings(&batch, "root_id")?;
     Ok(Ok((0..batch.num_rows())

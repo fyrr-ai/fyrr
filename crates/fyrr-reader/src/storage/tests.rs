@@ -443,3 +443,55 @@ impl ObjectStore for SlowReads {
         self.inner.copy_opts(from, to, options).await
     }
 }
+
+#[tokio::test]
+async fn namespaces_are_listed_in_name_order_within_every_prefix_up_to_the_limit() {
+    let store = object_store::memory::InMemory::new();
+    let root = Path::from("fyrr");
+    for name in ["beta", "alpha-2", "alpha-1", "gamma"] {
+        store
+            .put(
+                &root.clone().join("namespaces").join(name).join("head.json"),
+                "{}".into(),
+            )
+            .await
+            .unwrap();
+    }
+    // An object beside the namespaces is no namespace.
+    store
+        .put(&root.clone().join("namespaces").join("stray"), "{}".into())
+        .await
+        .unwrap();
+    let list = |prefixes: &'static [&'static str]| {
+        let (store, root) = (&store, &root);
+        async move { list_namespaces(store, root, prefixes).await }
+    };
+    assert_eq!(
+        list(&[]).await.unwrap(),
+        ["alpha-1", "alpha-2", "beta", "gamma"]
+    );
+    assert_eq!(list(&["alpha"]).await.unwrap(), ["alpha-1", "alpha-2"]);
+    // Both prefixes apply: a name outside either is never listed.
+    assert_eq!(list(&["alpha", "alpha-2"]).await.unwrap(), ["alpha-2"]);
+    assert!(list(&["alpha", "b"]).await.unwrap().is_empty());
+    // The limit counts the names that match, not those a prefix leaves out.
+    let limit = fyrr_core::limits::listing::MAX_NAMESPACES;
+    for i in 0..limit {
+        store
+            .put(
+                &root
+                    .clone()
+                    .join("namespaces")
+                    .join(format!("n{i}"))
+                    .join("head.json"),
+                "{}".into(),
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(list(&["n"]).await.unwrap().len(), limit);
+    assert_eq!(
+        list(&[]).await.unwrap_err(),
+        StorageError::TooManyNamespaces
+    );
+}

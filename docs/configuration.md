@@ -89,6 +89,9 @@ Use local storage for one host and user:
 - Back up the whole root with its extended attributes and coordination file;
   never edit its objects. To move between local storage and S3, sync into a
   fresh namespace on the other storage.
+- The filesystem keeps a directory after its last object is deleted, where S3
+  has no empty prefix, so the [namespace list](http-api.md#listing-namespaces)
+  can still show the name of a namespace that was deleted completely.
 
 See [local storage mechanics](architecture.md#local-storage) for coordination,
 cleanup and mirror behavior. The configuration schema is revision `6.0`.
@@ -104,7 +107,7 @@ a connector section's `vector`).
 | --- | --- | --- |
 | `endpoint` | `""` | Base URL of the embeddings API (`…/v1`). Empty, a document without a vector is refused. |
 | `model` | `BAAI/bge-m3` | 1–512 UTF-8 bytes. |
-| `dimensions` | `1024` | 1–8192; must match the model. |
+| `dimensions` | `1024` | 1–8192; must match the model. A new namespace needs a multiple of 8, which the dense index requires. |
 | `send_dimensions` | `false` | Send `dimensions` in the request. |
 | `prefix` | `""` | At most 4096 UTF-8 bytes, applied to documents and queries alike. |
 | `roles.document.prefix`, `roles.query.prefix` | absent | Role-specific prefix of at most 4096 UTF-8 bytes, after the shared one. |

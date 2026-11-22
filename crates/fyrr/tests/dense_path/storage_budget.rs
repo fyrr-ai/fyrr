@@ -550,6 +550,91 @@ async fn a_namespace_report_reads_at_most_the_head_and_one_manifest() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// `GET /v1/namespaces` is one delimited listing of `namespaces/`, 1 LIST
+/// request per 1,000 names, and nothing else: no head, no manifest.
+const LIST_REQUESTS: usize = 1;
+
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn listing_namespaces_is_one_delimited_listing() {
+    let (config, root) = setup_on(Backend::Local);
+    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    assert_eq!(endpoint, "local-storage", "owned by the local CI row");
+    let key = format!("fyrr_key_{:064}", 7);
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("# fyrr-test-head-check = every", "")
+        .replace("[reader]", "[reader]\nversion_check_interval = '30s'");
+    let text = format!(
+        "{text}\n[[identity.api_keys]]\nname='budget'\nkey={{env='FYRR_BUDGET_KEY'}}\nroles=['list']\n"
+    );
+    std::fs::write(&config, &text).unwrap();
+    let namespace = fyrr_core::config::load(&config)
+        .unwrap()
+        .config
+        .namespace
+        .name;
+    success(&config, &["writer", "namespace", "create"]);
+    let writer = |args: &[&str]| {
+        let output = super::coordination::host_command(&config)
+            .args(args)
+            .env("FYRR_BUDGET_KEY", &key)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", report(&output));
+    };
+    sync_texts(&config, &root, &[("kept.txt", KEPT)]);
+    writer(&["writer", "commit"]);
+    writer(&["writer", "keys"]);
+
+    let seen = Seen::default();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), seen.hook());
+    let observed_config = root.join("observed.toml");
+    std::fs::write(&observed_config, text.replace(&endpoint, &observed)).unwrap();
+    let mut reader =
+        super::http_mcp::Reader::start_appended(&observed_config, &root, |address, base| {
+            format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+        })
+        .await;
+    let ask = || {
+        reader
+            .client
+            .get(format!("{}/v1/namespaces", reader.base))
+            .bearer_auth(&key)
+            .send()
+    };
+    // The first request may wait for the reader's first version check.
+    let response = ask().await.unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    seen.settle();
+    let mark = seen.len();
+    for _ in 0..5 {
+        let response = ask().await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["namespaces"], json!([namespace]), "{body}");
+    }
+    let (heads, others) = seen.since(mark);
+    let others: Vec<_> = others
+        .into_iter()
+        .filter(|read| !read.ends_with("/api-keys.json"))
+        .collect();
+    assert!(
+        others.iter().all(|request| request.contains("LISTDIR")),
+        "5 listings made {heads} head reads and {others:?}"
+    );
+    within(
+        "5 namespace listings",
+        (heads, others),
+        5 * LIST_REQUESTS,
+        0,
+    );
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    reader.stop().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// What a strong read adds to the budgets above: one `GET` of the head when it
 /// has not moved. A cached read adds none.
 const STRONG_HEAD_READS: usize = 1;

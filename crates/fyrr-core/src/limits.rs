@@ -25,12 +25,6 @@ pub const MAX_REVISION_BYTES: usize = 256;
 /// Reader and member references (`usr:<id>` / `grp:<id>`).
 pub const MAX_READER_REF_BYTES: usize = 600;
 
-/// The most documents one write filter may match, `delete_where` and
-/// `patch_where` each. A filter that matches more fails its request and changes
-/// nothing. The committer rewrites a matched document as a record of the
-/// envelope, so the bound keeps one envelope far below `writer.commit`'s limits.
-pub const MAX_FILTER_WRITE_DOCUMENTS: usize = 10_000;
-
 /// Public request contract.
 pub mod mcp {
     pub const MAX_QUERY_BYTES: usize = 4096;
@@ -68,6 +62,22 @@ pub mod mcp {
     pub const LIST_FILTERS_MAX_VALUES: usize = 64;
     /// Hits each query keeps while the response budget still has tail hits to drop.
     pub const RESPONSE_MIN_HITS_PER_QUERY: usize = 4;
+}
+
+/// Bounds of the write API (not of connector documents).
+pub mod write {
+    /// The most documents one write filter may match, `delete_where` and
+    /// `patch_where` each. A filter that matches more fails its request and
+    /// changes nothing. The committer rewrites a matched document as a record
+    /// of the envelope, so the bound keeps one envelope far below
+    /// `writer.commit`'s limits.
+    pub const MAX_FILTER_WRITE_DOCUMENTS: usize = 10_000;
+}
+
+/// Bounds of the namespace listing (not of connector documents).
+pub mod listing {
+    /// Namespaces one listing returns: more names than this match, and it fails.
+    pub const MAX_NAMESPACES: usize = 10_000;
 }
 
 /// Bounds of a namespace's typed attribute schema (not of connector documents).

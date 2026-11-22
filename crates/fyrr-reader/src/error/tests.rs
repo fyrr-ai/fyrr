@@ -40,6 +40,11 @@ fn every_reader_error_preserves_legacy_mcp_mapping() {
         ),
         (S::StaleCursor, ReaderError::StaleCursor, "stale_cursor"),
         (
+            S::TooManyNamespaces,
+            ReaderError::TooManyNamespaces,
+            "too_many_namespaces",
+        ),
+        (
             S::PublicationUnavailable,
             ReaderError::PublicationUnavailable,
             "publication_unavailable",

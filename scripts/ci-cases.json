@@ -875,6 +875,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/storage::tests::namespaces_are_listed_in_name_order_within_every_prefix_up_to_the_limit": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
       "full:fyrr-reader:lib:fyrr_reader/storage::tests::authorization_checks_share_one_head_read_per_interval": {
         "tier": "quick",
         "seconds": 0.05
@@ -1674,6 +1678,10 @@
         "tier": "full",
         "seconds": 40.0
       },
+      "full:fyrr:test:dense_path/storage_budget::listing_namespaces_is_one_delimited_listing": {
+        "tier": "full",
+        "seconds": 40.0
+      },
       "full:fyrr:test:dense_path/mirror_identity::reader_paused_past_its_version_check_answers_from_the_new_publication": {
         "tier": "full",
         "seconds": 15.0
@@ -1689,6 +1697,10 @@
       "full:fyrr:test:dense_path/api_keys::a_namespace_report_needs_the_admin_or_list_role": {
         "tier": "quick",
         "seconds": 30.0
+      },
+      "full:fyrr:test:dense_path/api_keys::namespaces_are_listed_within_the_prefix_of_the_key": {
+        "tier": "quick",
+        "seconds": 40.0
       },
       "full:fyrr:test:dense_path/api_keys::namespaces_opened_by_path_stay_inside_the_memory_budget": {
         "tier": "full",
@@ -1966,6 +1978,10 @@
         "seconds": 40
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_stores_the_vectors_a_caller_supplies_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_ends_a_first_publication_of_identical_vectors_on_storage": {
         "tier": "full",
         "seconds": 40
       },

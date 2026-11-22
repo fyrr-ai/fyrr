@@ -543,6 +543,19 @@ async fn interrupted_delete_finishes_when_run_again_on_local_storage() {
     );
     let kept: Vec<_> = store.list(Some(&namespace)).try_collect().await.unwrap();
     assert_eq!(kept.len(), left.len());
+    // The namespace is listed while any object remains under it.
+    let listed = |prefix: &str| {
+        let output = delete_command(&commit, &["list", "--prefix", prefix]);
+        assert!(output.status.success(), "{}", report(&output));
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    assert_eq!(listed(&name), json!({"namespaces":[name]}));
+    assert_eq!(listed(&format!("{name}-")), json!({"namespaces":[]}));
+    assert!(
+        !delete_command(&commit, &["list", "--prefix", ""])
+            .status
+            .success()
+    );
     for _ in 0..2 {
         let resumed = delete_command(&commit, &["delete", "--delete-data", &name]);
         assert!(resumed.status.success(), "{}", report(&resumed));

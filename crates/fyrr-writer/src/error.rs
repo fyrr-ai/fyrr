@@ -119,6 +119,7 @@ writer_errors! {
     SourceUnavailable => ("source_unavailable", false),
     SourceUnknown => ("source_unknown", false),
     StaleCursor => ("stale_cursor", false),
+    TooManyNamespaces => ("too_many_namespaces", false),
     TombstoneInvalid => ("tombstone_invalid", false),
     WorkerFailure => ("worker_failure", false),
     CleanupBranchUnavailable => ("cleanup_branch_unavailable", false),
@@ -130,6 +131,8 @@ writer_errors! {
     DocumentInvalid => ("document_invalid", false),
     DocumentRevisionMissing => ("document_revision_missing", false),
     ConditionalDeleteUnsupported => ("conditional_delete_unsupported", false),
+    FilterInvalid => ("filter_invalid", false),
+    FilterMatchesTooMany => ("filter_matches_too_many", false),
     ExportInvalid => ("export_invalid", false),
     DeleteConfirmationInvalid => ("delete_confirmation_invalid", false),
     NamespaceDeleting => ("namespace_deleting", false),
@@ -215,6 +218,7 @@ impl From<fyrr_reader::storage::StorageError> for WriterError {
             S::AuthorizationUnavailable => Self::AuthorizationUnavailable,
             S::StaleCursor => Self::StaleCursor,
             S::PublicationUnavailable => Self::PublicationUnavailable,
+            S::TooManyNamespaces => Self::TooManyNamespaces,
         }
     }
 }
