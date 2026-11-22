@@ -136,11 +136,11 @@ request was accepted does not cancel it.
 
 | Code | Status | When |
 | --- | --- | --- |
-| `unauthorized` | `401` | No API key, an unknown key, or no published keys. |
+| `unauthorized` | `401` | No API key, or a key that is not among the published keys. |
 | `forbidden` | `403` | The key lacks the `write` role or its `namespace_prefix` excludes the namespace. |
 | `not_found` | `404` | Another namespace, or the process has no `[namespace.write_api]`. |
 | `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
 | `body_too_large`, `too_many_rows`, `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
 | `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `document_invalid`, `settings_invalid`, `attribute_undeclared` and the attribute codes of [tuning](tuning.md#namespaceattributes) | `400` | The body, a row or the settings are invalid. |
 | `namespace_settings_fixed`, `namespace_not_writable`, `api_namespace_has_sources`, `envelope_expired`, `rejected` | `409` | The namespace has other settings, takes its documents from connectors, or the committer refused the request (nothing of it is applied). |
-| `busy`, `unavailable`, `outcome_unknown` | `503` | The writer is busy or storage cannot be used; `Retry-After` is 1. |
+| `busy`, `unavailable`, `outcome_unknown` | `503` | The writer is busy, storage or the published keys cannot be read, or the answer did not come within 10 minutes; `Retry-After` is 1. |

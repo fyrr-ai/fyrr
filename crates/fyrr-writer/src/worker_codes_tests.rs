@@ -81,9 +81,14 @@ impl<'ast> Visit<'ast> for Literals<'_> {
         }
     }
     fn visit_expr_call(&mut self, expr: &'ast syn::ExprCall) {
-        // SCIM's typed protocol errors use a different response channel.
+        // SCIM's and the write API's typed protocol errors use a different
+        // response channel.
         if let Expr::Path(path) = expr.func.as_ref()
-            && path.path.segments.iter().any(|s| s.ident == "ScimError")
+            && path
+                .path
+                .segments
+                .iter()
+                .any(|s| s.ident == "ScimError" || s.ident == "ApiError")
         {
             return;
         }
