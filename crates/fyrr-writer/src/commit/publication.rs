@@ -70,20 +70,6 @@ pub(crate) async fn publish(
         .iter()
         .map(|fragment| fyrr_reader::storage::fragment_extent(fragment, &sizes))
         .fold((0, 0), |(rows, bytes), (r, b)| (rows + r, bytes + b));
-    let stats = PublicationStats {
-        rows,
-        logical_bytes,
-        // A chain published before 4.1 has no first publication time to carry.
-        first_published_at: previous_manifest.as_ref().map_or_else(
-            || Some(fyrr_core::clock::now()),
-            |previous| {
-                previous
-                    .stats
-                    .as_ref()
-                    .and_then(|stats| stats.first_published_at)
-            },
-        ),
-    };
     let durable: BTreeSet<_> = previous_manifest
         .iter()
         .flat_map(|manifest| manifest.files.iter())
@@ -146,6 +132,7 @@ pub(crate) async fn publish(
         sequence,
     )
     .await?;
+    let committed_at = fyrr_core::clock::now();
     let manifest = ContentManifest {
         schema_version: PUBLICATION_CONTRACT_VERSION,
         namespace: config.namespace.name.clone(),
@@ -153,7 +140,7 @@ pub(crate) async fn publish(
         sequence,
         previous_publication_id: head.content.as_ref().map(|p| p.publication_id.clone()),
         lance_version: dataset.version().version,
-        committed_at: fyrr_core::clock::now(),
+        committed_at,
         maintenance_completed_at: if maintenance_completed {
             Some(fyrr_core::clock::now())
         } else {
@@ -178,7 +165,19 @@ pub(crate) async fn publish(
         cursor_rewinds,
         incarnation: head.incarnation.clone(),
         envelope_evidence: Some(evidence),
-        stats: Some(stats),
+        stats: Some(PublicationStats {
+            rows,
+            logical_bytes,
+            // A chain published before 4.1 has no first publication time to carry.
+            first_published_at: previous_manifest
+                .as_ref()
+                .map_or(Some(committed_at), |previous| {
+                    previous
+                        .stats
+                        .as_ref()
+                        .and_then(|stats| stats.first_published_at)
+                }),
+        }),
     };
     let manifest_path = format!("publications/{publication_id}.json");
     put_immutable(

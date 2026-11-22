@@ -882,6 +882,10 @@ async fn a_namespace_report_needs_the_admin_or_list_role() {
             assert!(body["logical_bytes"].as_u64().unwrap() > 0, "{body}");
             assert!(body["first_published_at"].is_string(), "{body}");
             assert!(body["last_write_at"].is_string(), "{body}");
+            if namespace == &second {
+                // The sibling has exactly one content publication.
+                assert_eq!(body["first_published_at"], body["last_write_at"]);
+            }
             assert_eq!(body["schema"], json!({}));
             assert!(body["settings"]["embedding"]["model"].is_string(), "{body}");
             assert_eq!(body["unindexed"], json!({"rows":0,"logical_bytes":0}));
