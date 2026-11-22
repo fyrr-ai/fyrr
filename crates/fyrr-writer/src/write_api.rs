@@ -39,7 +39,7 @@ const ANSWER_DEADLINE: Duration = Duration::from_secs(600);
 const BODY_IDLE: Duration = Duration::from_secs(30);
 /// The most a row, or the settings of a request, may take of the body before it
 /// is read as a tree: a row holds a text of 16 KiB and attributes of 4 KiB each.
-const ROW_MAX_BYTES: usize = 1 << 20;
+pub(crate) const ROW_MAX_BYTES: usize = 1 << 20;
 const SETTINGS_MAX_BYTES: usize = 64 << 10;
 /// Requests the write API holds at once, waiting for their turn or their answer.
 const IN_FLIGHT: usize = 8;

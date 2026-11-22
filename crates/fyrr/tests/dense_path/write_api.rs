@@ -344,7 +344,8 @@ async fn identity_write_api_patches_a_document_and_keeps_what_it_does_not_name_o
     let post = async |body: Value| writer.post(WRITE_KEY, "dense-fixture", &body).await;
     assert_eq!(
         post(json!({
-            "settings": {"attributes": {"price": "float", "stock": "int"}},
+            "settings": {"attributes": {"price": "float", "stock": "int", "count": "uint",
+                "uid": "uuid", "blob": "bytes", "tags": {"array": "string"}}},
             "upserts": [
                 {"id": "a1", "text": "blue shirt", "price": 12.5, "stock": 3, "readers": ["grp:allow"]},
                 {"id": "a2", "text": "red hat", "price": 4.0, "readers": ["usr:nobody"]},
@@ -380,6 +381,27 @@ async fn identity_write_api_patches_a_document_and_keeps_what_it_does_not_name_o
     );
     assert_eq!(stored(&config, "root_id = 'zz'").await.num_rows(), 0);
     assert_eq!(hits(&config, "blue shirt"), ["a1"], "the readers stayed");
+
+    // The attributes of every type are written, with the value of its column's type.
+    assert_eq!(
+        post(
+            json!({"patches": [{"id": "a1", "count": 7, "blob": "aGk=", "tags": ["x", "y"],
+            "uid": "123e4567-e89b-12d3-a456-426614174000"}]})
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        stored(
+            &config,
+            "root_id = 'a1' AND count = 7 AND price = 9.0 AND blob IS NOT NULL \
+             AND uid IS NOT NULL AND array_length(tags) = 2"
+        )
+        .await
+        .num_rows(),
+        1
+    );
 
     // `null` clears an attribute; readers named by a patch replace the stored ones.
     assert_eq!(
