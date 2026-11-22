@@ -38,6 +38,7 @@ pub mod commit;
 pub mod directory;
 mod embedding;
 pub mod envelopes;
+pub mod keys;
 pub mod lease;
 pub mod maintenance;
 pub mod membership;

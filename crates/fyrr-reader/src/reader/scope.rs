@@ -136,7 +136,7 @@ mod tests {
             key: "issuer:subject".into(),
             expires: i64::MAX,
             identity: Some(identity.clone()),
-            api_key: false,
+            api_key: None,
         };
         let mut scope = RequestScope::new(true);
         assert!(scope.http_key().is_none());
@@ -168,7 +168,7 @@ mod tests {
             key: "issuer:subject".into(),
             expires: i64::MAX,
             identity: None,
-            api_key: false,
+            api_key: None,
         });
         assert!(http.identity_for_refresh().is_none());
         http.resolve("principal".into());

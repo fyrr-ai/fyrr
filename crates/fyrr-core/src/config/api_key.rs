@@ -24,6 +24,22 @@ pub fn is_api_key_secret(text: &str) -> bool {
     })
 }
 
+/// What an API key may do over HTTP. `list`, `write` and `admin` name roles
+/// of routes that do not exist yet; a key holds them so that the routes need
+/// no new key format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiKeyRole {
+    Read,
+    Write,
+    List,
+    Admin,
+}
+
+fn default_roles() -> Vec<ApiKeyRole> {
+    vec![ApiKeyRole::Read]
+}
+
 /// One API key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -36,8 +52,31 @@ pub struct ApiKeyConfig {
     /// 43 characters from `[A-Za-z0-9_-]`. Only the writer reads the variable.
     pub key: SecretRef,
     /// Reader tokens (`usr:<id>`, `grp:<id>`) the key acts with, as
-    /// `identity.stdio_readers` states them for the stdio subject.
+    /// `identity.stdio_readers` states them for the stdio subject. Required
+    /// for a key with the `read` role.
+    #[serde(default)]
     pub readers: Vec<String>,
+    /// What the key may do: `read`, `write`, `list` and `admin`. A key without
+    /// roles reads.
+    #[serde(default = "default_roles")]
+    pub roles: Vec<ApiKeyRole>,
+    /// Limits the key to namespaces whose name starts with this prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace_prefix: Option<String>,
+}
+
+/// Whether a key limited to `prefix` (none: unlimited) may act in the namespace `name`.
+pub fn prefix_allows(prefix: Option<&str>, name: &str) -> bool {
+    prefix.is_none_or(|prefix| name.starts_with(prefix))
+}
+
+/// A namespace prefix: what namespace names are made of, without their
+/// start rule, since a prefix may end in `-`.
+pub fn is_namespace_prefix(text: &str) -> bool {
+    (1..=63).contains(&text.len())
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 impl LoadedConfig {
@@ -85,10 +124,23 @@ pub(super) fn validate(config: &Config, error: &mut impl FnMut(&str, String)) {
         } else if !names.insert(key.name.as_str()) {
             error(&at("name"), "duplicate name".into());
         }
-        if key.readers.is_empty() {
+        if key.roles.is_empty() {
+            error(&at("roles"), "must name at least one role".into());
+        }
+        if key.roles.contains(&ApiKeyRole::Read) && key.readers.is_empty() {
             error(&at("readers"), "must name at least one reader".into());
         } else if let Err(message) = check_readers("readers", &key.readers) {
             error(&at("readers"), message);
+        }
+        if key
+            .namespace_prefix
+            .as_deref()
+            .is_some_and(|prefix| !is_namespace_prefix(prefix))
+        {
+            error(
+                &at("namespace_prefix"),
+                "must be 1 to 63 characters from [a-z0-9-]".into(),
+            );
         }
     }
 }

@@ -1,6 +1,8 @@
 //! Immutable membership/container inputs, referenced by the published identity generation.
 use crate::{Result, WriterError};
-use fyrr_core::config::{Config, ProcessEnvironment, is_api_key_secret};
+use fyrr_core::config::{
+    ApiKeyConfig, ApiKeyRole, Config, ProcessEnvironment, is_api_key_secret, prefix_allows,
+};
 use fyrr_core::connector::{BatchBody, ConnectorBatch, PrincipalSnapshotPart};
 use fyrr_core::envelope::{EnvelopePayload, MembersPayload, PermissionsPayload, PreparedEnvelope};
 use fyrr_core::identity::{
@@ -9,7 +11,9 @@ use fyrr_core::identity::{
 use fyrr_core::publication::ServingHead;
 use fyrr_core::write_contract;
 use fyrr_reader::embedding::digest;
-use fyrr_reader::storage::{api_key_principal, api_key_subject, hash_principal, namespace_store};
+use fyrr_reader::storage::{
+    api_key_deployment_hash, api_key_principal, api_key_subject, hash_principal, namespace_store,
+};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -351,15 +355,12 @@ fn operator_grants(config: &Config, readers: &[String]) -> Result<BTreeSet<Strin
     Ok(tokens)
 }
 
-/// A subject binding per API key, and the key's own principal with its grants.
-/// Only keyed hashes are published: the subject is the HMAC of the secret, the
-/// principal the HMAC of the name, each in a MAC domain of its own.
-///
-/// A key whose secret is missing or malformed gets no binding, so the reader
-/// refuses it, and one bad variable does not stop the identity of every other
-/// key. Two keys with one secret fail the build: either could act as the other.
-fn api_key_bindings(config: &Config, grants: &mut UserTokens) -> Result<Vec<SubjectBinding>> {
-    let mut bound: Vec<SubjectBinding> = Vec::new();
+/// Each API key whose secret is set and well formed, with its subject hash in
+/// this namespace and its deployment-wide hash. A key without a usable secret
+/// is left out, so the reader refuses it and one bad variable does not stop the
+/// others. Two keys with one secret fail: either could act as the other.
+pub(crate) fn usable_api_keys(config: &Config) -> Result<Vec<(&ApiKeyConfig, String, String)>> {
+    let mut usable: Vec<(&ApiKeyConfig, String, String)> = Vec::new();
     for key in &config.identity.api_keys {
         let Ok(secret) = key.key.resolve(&ProcessEnvironment) else {
             continue;
@@ -368,8 +369,27 @@ fn api_key_bindings(config: &Config, grants: &mut UserTokens) -> Result<Vec<Subj
             continue;
         }
         let subject = api_key_subject(config, secret.expose())?;
-        if bound.iter().any(|binding| binding.subject == subject) {
+        if usable.iter().any(|(_, other, _)| *other == subject) {
             return Err(WriterError::ConfigurationInvalid);
+        }
+        let deployment = api_key_deployment_hash(config, secret.expose())?;
+        usable.push((key, subject, deployment));
+    }
+    Ok(usable)
+}
+
+/// A subject binding per API key that reads in this namespace, and the key's
+/// own principal with its grants. Only keyed hashes are published: the subject
+/// is the HMAC of the secret, the principal the HMAC of the name, each in a
+/// MAC domain of its own. A key without the `read` role, or limited to other
+/// namespaces, has no grants here.
+fn api_key_bindings(config: &Config, grants: &mut UserTokens) -> Result<Vec<SubjectBinding>> {
+    let mut bound: Vec<SubjectBinding> = Vec::new();
+    for (key, subject, _) in usable_api_keys(config)? {
+        if !key.roles.contains(&ApiKeyRole::Read)
+            || !prefix_allows(key.namespace_prefix.as_deref(), &config.namespace.name)
+        {
+            continue;
         }
         let principal = api_key_principal(config, &key.name)?;
         grants

@@ -69,6 +69,7 @@ The writer runs every provider in isolated `__worker` child processes. The
 | `writer rollback` | Restores the preceding retained publication. |
 | `writer source retire SOURCE` | Denies the source to every reader from its next version check on and rejects its further envelopes. Final; kept by restore. |
 | `writer source purge SOURCE [--confirm]` | Without `--confirm` prints the plan (rows, envelopes, cursors). With it retires the source and deletes its rows, state, envelopes and cursors; each step is idempotent, so an interrupted purge is run again. |
+| `writer keys` | Publishes the configured [API keys](identity.md#identityapi_keys) of the deployment as one artifact under the storage root, written by compare-and-swap: each key's keyed hash with its roles and namespace prefix, never a secret, name or reader token. The artifact replaces the published set and is not written again when current; a key whose secret is unset or malformed is left out, and two keys with one secret fail. A competing publisher exits 75 (`committer_busy`). Needs no namespace and no lease. |
 | `writer directory --snapshot FILE` | Publishes a complete hashed directory snapshot under the namespace lease. |
 | `writer credential --name NAME --from-env VARIABLE` | Stores the variable's value as an encrypted credential record under the namespace lease; `[writer.credentials]` maps a provider's environment reference to it. |
 

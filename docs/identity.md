@@ -39,7 +39,9 @@ walks through it.
 | --- | --- | --- |
 | `name` | required | Unique ID like a source ID (`[a-z0-9][a-z0-9_-]{0,62}`). It names the key in this file; the artifacts hold only its hash. |
 | `key` | required | `{ env = "VAR" }`: the secret, `fyrr_key_` followed by at least 43 characters from `[A-Za-z0-9_-]`. Generate it with `echo "fyrr_key_$(openssl rand -hex 32)"`. Every key needs its own value. |
-| `readers` | required | At least one reader token (`usr:<id>`, `grp:<id>`) the key acts with, as `stdio_readers`, including source-scoped tokens for `permissions = "sync"` sources. |
+| `readers` | `[]` | Required with the `read` role: at least one reader token (`usr:<id>`, `grp:<id>`) the key acts with, as `stdio_readers`, including source-scoped tokens for `permissions = "sync"` sources. A key without the `read` role needs none. |
+| `roles` | `["read"]` | What the key may do over HTTP: `read` (search and fetch, over `/mcp` and the [JSON API](http-api.md)), `write`, `list` and `admin`. At least one. A route whose role the key lacks answers `403 forbidden`. Only `read` has routes today; the other roles are granted so that later routes need no new key. |
+| `namespace_prefix` | absent | The key acts only in namespaces whose name starts with this (at most 63 characters from `[a-z0-9-]`). In any other namespace it answers `403 forbidden`. |
 
 Only the **writer** reads the secret, so the reader needs no key in its
 environment. Every host that publishes identity needs every key's variable:
@@ -48,6 +50,25 @@ check` reports a variable that is unset, a secret of the wrong shape and two
 keys with the same secret; `config check --no-env` skips that. The writer
 skips a key whose secret is missing or malformed and publishes every other
 key; two keys with the same secret stop its commit.
+
+`fyrr writer keys` publishes the keys of the configuration, each as a keyed
+hash with its roles and prefix, in one object under the storage root
+(`api-keys.json`, above `namespaces/`) by compare-and-swap; it writes nothing
+when the object is current. It is a required step: a reader that declares
+keys refuses every API key (`503 authorization_unavailable`) until it can read
+the object, and refuses a key that is not in it (`401`). The object is the
+deployment's whole key set, so run the command from a configuration that
+declares every key, on a host that has all their variables; a key whose
+variable is unset or malformed fails the run. The hash in it names no
+namespace, so the namespaces of a deployment share one `hashing_key`.
+
+What a key may read still comes from `readers` in each namespace's identity,
+published by `writer commit` (a key is bound only where it holds `read` and
+its prefix matches the namespace name), so declare the key in the
+configuration of every namespace where it reads. A reader reads the object
+when it starts and at every version check interval (`POST /admin/refresh`
+too), one more `GET` each, and again when its copy is older than two
+intervals; it refuses every key while it cannot read it.
 
 `reader serve` over HTTP needs `[identity.oidc]`, an API key or both, and
 refuses to start without them; `config check` warns about it. The writer does

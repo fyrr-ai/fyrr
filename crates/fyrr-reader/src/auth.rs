@@ -17,10 +17,12 @@ pub(crate) struct AuthenticatedSubject {
     pub key: String,
     pub expires: i64,
     pub identity: Option<fyrr_core::publication::GenerationPointer>,
-    /// The subject is the hash of an API-key secret. The secret proves nothing
-    /// until the published identity binds it, so admission looks it up even
-    /// for requests that skip admission for OIDC subjects.
-    pub api_key: bool,
+    /// The subject is the hash of an API-key secret, and this is its
+    /// deployment-wide hash, which the published keys name. The secret proves
+    /// nothing until those keys list it and the published identity binds the
+    /// subject, so admission looks it up even for requests that skip
+    /// admission for OIDC subjects.
+    pub api_key: Option<String>,
 }
 /// RFC 7519 §4.1.3: `aud` is one string or an array of strings.
 #[derive(Deserialize)]
@@ -64,7 +66,7 @@ pub(crate) fn api_key(config: &Config, token: &str) -> Result<AuthenticatedSubje
         key: crate::storage::api_key_subject(config, token)?,
         expires: i64::MAX,
         identity: None,
-        api_key: true,
+        api_key: Some(crate::storage::api_key_deployment_hash(config, token)?),
     })
 }
 #[derive(Clone)]
@@ -238,7 +240,7 @@ impl Authenticator {
             key,
             expires: claims.exp,
             identity: None,
-            api_key: false,
+            api_key: None,
         })
     }
     async fn fetch_keys(&self) -> Result<JwkSet> {
