@@ -143,7 +143,9 @@ and lists every name.
 
 A name is listed while any object exists under it, so a namespace whose
 [deletion](cli.md#namespace-deletion-failures) has not finished is listed, and
-so is one that was never created but holds a stray object. One call is one
+so is one that was never created but holds a stray object. On
+[local storage](configuration.md#local-storage) the directory of a deleted
+namespace can remain, empty, and its name is then still listed. One call is one
 delimited listing of `namespaces/`: 1 LIST request per 1,000 names in the
 storage root, and no other request. More than 10,000 matching names answer
 `400 too_many_namespaces` (`error: too_many_namespaces` on the command line);

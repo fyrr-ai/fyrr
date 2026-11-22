@@ -89,6 +89,9 @@ Use local storage for one host and user:
 - Back up the whole root with its extended attributes and coordination file;
   never edit its objects. To move between local storage and S3, sync into a
   fresh namespace on the other storage.
+- The filesystem keeps a directory after its last object is deleted, where S3
+  has no empty prefix, so the [namespace list](http-api.md#listing-namespaces)
+  can still show the name of a namespace that was deleted completely.
 
 See [local storage mechanics](architecture.md#local-storage) for coordination,
 cleanup and mirror behavior. The configuration schema is revision `6.0`.

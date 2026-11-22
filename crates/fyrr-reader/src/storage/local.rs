@@ -220,30 +220,6 @@ impl Place {
     fn parent(&self) -> &Directory {
         self.chain.last().expect("the chain starts at the root")
     }
-
-    /// Removes the directories below the root that an object's removal left
-    /// empty, as an object store has no empty prefix, and returns the one that
-    /// remains. A write that opened one meanwhile makes it again.
-    fn without_empty_directories(&self) -> &Directory {
-        let mut kept = self.chain.len() - 1;
-        while kept > 0
-            && self.chain[kept]
-                .path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    rustix::fs::unlinkat(
-                        &self.chain[kept - 1].file,
-                        name,
-                        rustix::fs::AtFlags::REMOVEDIR,
-                    )
-                    .is_ok()
-                })
-        {
-            kept -= 1;
-        }
-        &self.chain[kept]
-    }
 }
 
 fn is_symlink(entry: &rustix::fs::Stat) -> bool {
@@ -441,19 +417,10 @@ impl LocalStore {
             };
             let opened = match open() {
                 Err(rustix::io::Errno::NOENT) if create => {
-                    // A delete that empties a directory removes it, also between
-                    // this `mkdirat` and the `open`: make it once more.
-                    let mut made = Err(rustix::io::Errno::NOENT);
-                    for _ in 0..2 {
-                        made = match rustix::fs::mkdirat(&above.file, name.as_str(), Mode::RWXU) {
-                            Ok(()) | Err(rustix::io::Errno::EXIST) => open(),
-                            Err(error) => Err(error),
-                        };
-                        if !matches!(made, Err(rustix::io::Errno::NOENT)) {
-                            break;
-                        }
+                    match rustix::fs::mkdirat(&above.file, name.as_str(), Mode::RWXU) {
+                        Ok(()) | Err(rustix::io::Errno::EXIST) => open(),
+                        Err(error) => Err(error),
                     }
-                    made
                 }
                 opened => opened,
             };
@@ -547,31 +514,23 @@ impl LocalStore {
             .map_err(|error| failure(&self.root_path, error))?;
         self.hand_over(&root)
             .map_err(|error| failure(&self.root_path.join(LOCK), error))?;
-        // A delete removes the directories it empties, also those this write
-        // has just opened: it then writes again, once, into new ones.
-        let mut again = true;
-        loop {
-            let place = self.place(location, true)?;
-            let io = |error| failure(&place.path, error);
-            if !self.reaped.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                self.reap(&root).map_err(io)?;
-            }
-            // A write that cannot succeed is refused before it stages anything.
-            self.admit(&place, &mode, None)?;
-            let stage = self.stage(&root).map_err(io)?;
-            let result = self.publish(&place, &stage, &payload, &mode);
-            if result.is_err() {
-                let _ = stage.directory.unlink(&stage.name);
-            }
-            if matches!(result, Err(Error::NotFound { .. })) && std::mem::take(&mut again) {
-                continue;
-            }
-            #[cfg(feature = "test-store")]
-            if result.is_ok() {
-                super::test_store::sync::acknowledged("put", &place.path).map_err(io)?;
-            }
-            return result;
+        let place = self.place(location, true)?;
+        let io = |error| failure(&place.path, error);
+        if !self.reaped.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            self.reap(&root).map_err(io)?;
         }
+        // A write that cannot succeed is refused before it stages anything.
+        self.admit(&place, &mode, None)?;
+        let stage = self.stage(&root).map_err(io)?;
+        let result = self.publish(&place, &stage, &payload, &mode);
+        if result.is_err() {
+            let _ = stage.directory.unlink(&stage.name);
+        }
+        #[cfg(feature = "test-store")]
+        if result.is_ok() {
+            super::test_store::sync::acknowledged("put", &place.path).map_err(io)?;
+        }
+        result
     }
 
     /// Whether `mode` can apply to the object as it is now. `locked` is the
@@ -1097,7 +1056,7 @@ impl LocalStore {
             drop(key);
             #[cfg(feature = "test-store")]
             super::test_store::sync::unlinked(&place.path).map_err(io)?;
-            place.without_empty_directories().sync().map_err(io)?;
+            parent.sync().map_err(io)?;
             #[cfg(feature = "test-store")]
             super::test_store::sync::acknowledged("delete", &place.path).map_err(io)?;
             Ok(())
@@ -1152,7 +1111,6 @@ impl LocalStore {
         tests::pause("removed");
         #[cfg(feature = "test-store")]
         super::test_store::sync::unlinked(&place.path).map_err(io)?;
-        let parent = place.without_empty_directories();
         if let Some(directories) = &self.cleanup_directories {
             let directory = parent.file.try_clone().map_err(io)?;
             directories
