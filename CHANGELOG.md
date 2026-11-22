@@ -9,10 +9,24 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `search` takes one `filter` argument, a tree of `and`, `or`, `not` and
+  comparisons (`eq`, `ne`, `in`, `not_in`, `lt`, `lte`, `gt`, `gte`) of
+  at most 64 nodes and 16 levels over the built-in fields and the namespace's typed
+  attributes, over MCP and the JSON HTTP API. Values are checked against the
+  attribute types; the other filter arguments compile to the same tree. See
+  [Filters](docs/mcp-tools.md#filters).
 - The reader serves `search` and `fetch` as plain JSON at
   `POST /v1/namespaces/{namespace}/query` and `.../fetch`, next to MCP, with
   the same authentication, scheduler, deadline and rate limits. Errors map to
   HTTP statuses, and 429 and 503 answers carry `Retry-After`. See
+  [HTTP JSON API](docs/http-api.md).
+- The JSON routes serve the namespace the request path names, not only
+  `namespace.name`: the reader opens it on its first request, after the
+  caller's API key role and `namespace_prefix` have admitted it, and keeps up
+  to 8 such namespaces open. OIDC users read the configured namespace only. A
+  namespace that does not exist costs one read of its head and is answered as
+  one that does not bind the caller (previously `404`). `/mcp` still serves the
+  configured namespace. See
   [HTTP JSON API](docs/http-api.md).
 - The Jira connector indexes the custom fields listed in the new
   `scope.fields` (rich text, string or number values) as `field` sections
@@ -281,6 +295,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   manifest and one checkpoint are enough. The first publication after the
   upgrade still walks the older chain once. `fyrr writer maintain` deletes
   checkpoints that no retained manifest names.
+- `fyrr writer maintain` deletes the publication manifests and envelope
+  checkpoints that no publication inside `writer.purge_window` names, so
+  these no longer grow with the number of commits. `fyrr writer commit
+  --receipt` still tells that an envelope of the deleted part was applied,
+  without its publication (`publication_id` is null). The oldest manifest it
+  keeps is recorded first in the `history-cut` object (additive to the
+  unreleased 4.0 publication contract); a walk of the history ends there, and
+  a manifest missing anywhere else is `publication_invalid`.
 
 ### Security
 

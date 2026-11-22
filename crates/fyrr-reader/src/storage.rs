@@ -186,6 +186,26 @@ impl<T: Contract + Clone + Send + Sync + 'static> HeadCache<T> {
             _ => outcome,
         }
     }
+    /// The held copy while it is younger than two intervals, and never a read
+    /// of storage: the version check's loop is what keeps it, so a request with
+    /// no young copy is refused, as a failed read would. Test suites that ask
+    /// for a read at every check get one.
+    pub(crate) async fn held(
+        &self,
+        store: &dyn ObjectStore,
+        root: &Path,
+    ) -> Result<T, StorageError> {
+        if self.max_age.is_zero() {
+            return read_contract(store, &root.clone().join(self.file)).await;
+        }
+        let state = crate::sync::lock(&self.state);
+        state
+            .held
+            .as_ref()
+            .filter(|held| self.young(held))
+            .map(|held| held.head.clone())
+            .ok_or(StorageError::StorageUnavailable)
+    }
     /// Reads the head from storage and holds it for the checks of requests.
     /// A version check, a refresh, SIGHUP and the opening of a generation
     /// read here, so requests never see an older head than they did. A
@@ -779,6 +799,57 @@ pub async fn read_manifest(
 ) -> Result<fyrr_core::publication::ContentManifest, StorageError> {
     read_contract(store, &Path::from(format!("{root}/{relative}"))).await
 }
+/// An older publication of a walk that read `cut`. A manifest that is gone is
+/// `PublicationInvalid`, unless the cut has moved since: a concurrent
+/// maintenance deleted it, and the walk ends here (`None`).
+pub async fn read_older_manifest(
+    store: &dyn ObjectStore,
+    root: &Path,
+    relative: &str,
+    cut: Option<&String>,
+) -> Result<Option<fyrr_core::publication::ContentManifest>, StorageError> {
+    let bytes = match store.get(&Path::from(format!("{root}/{relative}"))).await {
+        Ok(object) => object
+            .bytes()
+            .await
+            .map_err(|_| StorageError::StorageUnavailable)?,
+        Err(object_store::Error::NotFound { .. }) => {
+            return if history_cut(store, root).await?.as_ref() == cut {
+                Err(StorageError::PublicationInvalid)
+            } else {
+                Ok(None)
+            };
+        }
+        Err(_) => return Err(StorageError::StorageUnavailable),
+    };
+    parse_contract(&bytes)
+        .map(Some)
+        .map_err(|_| StorageError::PublicationInvalid)
+}
+
+/// The oldest publication the namespace keeps, once maintenance cut the
+/// history there; a walk of the chain ends at it.
+pub async fn history_cut(
+    store: &dyn ObjectStore,
+    root: &Path,
+) -> Result<Option<String>, StorageError> {
+    let path = root
+        .clone()
+        .join(fyrr_core::publication::HISTORY_CUT_OBJECT);
+    match store.get(&path).await {
+        Ok(object) => {
+            let bytes = object
+                .bytes()
+                .await
+                .map_err(|_| StorageError::StorageUnavailable)?;
+            parse_contract::<fyrr_core::publication::HistoryCut>(&bytes)
+                .map(|cut| Some(cut.publication_id))
+                .map_err(|_| StorageError::PublicationInvalid)
+        }
+        Err(object_store::Error::NotFound { .. }) => Ok(None),
+        Err(_) => Err(StorageError::StorageUnavailable),
+    }
+}
 pub fn manifest_chain(
     store: Arc<dyn ObjectStore>,
     root: Path,
@@ -788,25 +859,44 @@ pub fn manifest_chain(
     Result<fyrr_core::publication::ContentManifest, StorageError>,
 > {
     use futures::StreamExt;
-    futures::stream::try_unfold((first, None), move |(path, newer_sequence)| {
+    // The state: the next path, the sequence of the manifest before it, and
+    // the cut, read when the walk starts.
+    futures::stream::try_unfold((first, None, None), move |(path, newer_sequence, cut)| {
         let store = store.clone();
         let root = root.clone();
         async move {
             let Some(path) = path else {
                 return Ok(None);
             };
-            let manifest = read_manifest(store.as_ref(), &root, &path).await?;
+            let cut = match cut {
+                Some(cut) => cut,
+                None => history_cut(store.as_ref(), &root).await?,
+            };
+            let manifest = if newer_sequence.is_some() {
+                let Some(manifest) =
+                    read_older_manifest(store.as_ref(), &root, &path, cut.as_ref()).await?
+                else {
+                    return Ok(None);
+                };
+                manifest
+            } else {
+                read_manifest(store.as_ref(), &root, &path).await?
+            };
             // Every publication advances sequence. A backward walk must decrease,
             // so corrupt cycles terminate without retaining paths or capping history.
             if newer_sequence.is_some_and(|sequence| manifest.sequence >= sequence) {
                 return Err(StorageError::PublicationInvalid);
             }
             let sequence = manifest.sequence;
-            let previous = manifest
-                .previous_publication_id
-                .as_ref()
-                .map(|id| format!("publications/{id}.json"));
-            Ok(Some((manifest, (previous, Some(sequence)))))
+            let previous = if cut.as_ref() == Some(&manifest.publication_id) {
+                None
+            } else {
+                manifest
+                    .previous_publication_id
+                    .as_ref()
+                    .map(|id| format!("publications/{id}.json"))
+            };
+            Ok(Some((manifest, (previous, Some(sequence), Some(cut)))))
         }
     })
     .boxed()

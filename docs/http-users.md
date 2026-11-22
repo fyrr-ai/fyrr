@@ -294,7 +294,7 @@ requests get `503 authorization_unavailable`.
   versions on their own every `reader.version_check_interval`.
 - `POST /v1/namespaces/{namespace}/query` and `.../fetch` are the
   [HTTP JSON API](http-api.md) for `search` and `fetch`; they pass the same
-  checks as `/mcp`.
+  checks as `/mcp` and serve the namespace the path names.
 
 ### Other directories
 

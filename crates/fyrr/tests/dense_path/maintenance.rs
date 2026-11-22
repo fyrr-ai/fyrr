@@ -1384,7 +1384,7 @@ fn age_observations(request: &str, response: &mut Vec<u8>, expired: Option<&str>
     }
     super::corrections::rewrite_ok_body(response, |body| {
         let mut changed = false;
-        if request.contains("/publications/") {
+        if request.contains("/publications/") && !request.contains("list-type=") {
             if let Ok(mut value) = serde_json::from_slice::<Value>(body) {
                 value["committed_at"] =
                     json!((fyrr_core::clock::now() - chrono::Duration::hours(25)).to_rfc3339());
@@ -1537,4 +1537,191 @@ async fn maintenance_purge_window_and_restore_horizon_on_storage() {
     );
     drop(mcp);
     drop(guard);
+}
+
+/// Objects the namespace holds under one control prefix.
+async fn control_objects(config: &Path, prefix: &str) -> usize {
+    use futures::TryStreamExt;
+    let loaded = fyrr_core::config::load(config).unwrap();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    store
+        .list(Some(&namespace.join(prefix)))
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap()
+        .len()
+}
+
+/// One round of the history: new content and a new member, so the publication
+/// is a publication of its own.
+fn history_round(worker: &Path, root: &Path, round: u64) {
+    let mut users = vec![
+        json!({"id":"u","email":"fixture@example.test","email_verification":"verified_corporate","active":true}),
+    ];
+    users.extend((2..=round).map(|n| json!({"id":format!("u{n}"),"email":format!("u{n}@example.test"),"email_verification":"verified_corporate","active":true})));
+    input(
+        root,
+        json!({"epoch":round,
+            "content":[[replacement("a", &format!("r{round}"), &format!("r{}", round - 1), &format!("fixture document {round}"))]],
+            "members":[{"users":users,"groups":[{"id":"child","members":["usr:u"]},{"id":"group","members":["grp:child"]}]}]}),
+    );
+    worker_sync(
+        worker,
+        &["incremental", "--kind", "content", "--kind", "members"],
+    );
+}
+
+#[tokio::test]
+#[ignore = "real CLI and storage; scripts/ci"]
+async fn maintenance_deletes_history_outside_the_purge_window_on_storage() {
+    use futures::TryStreamExt;
+    let (worker, commit, root) = fixture();
+    publish_initial(&worker, &commit, &root);
+    for round in 2..=10 {
+        history_round(&worker, &root, round);
+        publish(&commit);
+    }
+    let loaded = fyrr_core::config::load(&commit).unwrap();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let (head, _) = publication(&commit).await;
+    let chain = fyrr_reader::storage::manifest_chain(
+        store.clone(),
+        namespace.clone(),
+        head.content.as_ref().map(|p| p.manifest.clone()),
+    )
+    .try_collect::<Vec<_>>()
+    .await
+    .unwrap();
+    assert!(chain.len() >= 10, "{} publications", chain.len());
+    let oldest = chain
+        .iter()
+        .rev()
+        .find_map(|m| m.envelope_ids.first().cloned())
+        .unwrap();
+    let pending = command(&commit, &["writer", "status"])["pending_envelopes"].clone();
+    // A manifest lost inside the window is not where the history ends:
+    // maintenance refuses and deletes nothing.
+    let lost = chain[3].publication_id.clone();
+    let path =
+        |id: &str| object_store::path::Path::from(format!("{namespace}/publications/{id}.json"));
+    let bytes = store
+        .get(&path(&lost))
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    store.delete(&path(&lost)).await.unwrap();
+    let envelopes = control_objects(&commit, "envelopes").await;
+    let refused = host_command(&commit)
+        .args(["writer", "maintain"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert_eq!(control_objects(&commit, "envelopes").await, envelopes);
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("publication_invalid"));
+    // So does every other reader of the chain, `writer status` among them.
+    let status = host_command(&commit)
+        .args(["writer", "status"])
+        .output()
+        .unwrap();
+    assert!(!status.status.success());
+    assert!(String::from_utf8_lossy(&status.stderr).contains("publication_invalid"));
+    for manifest in chain.iter().filter(|m| m.publication_id != lost) {
+        store.head(&path(&manifest.publication_id)).await.unwrap();
+    }
+    store.put(&path(&lost), bytes.into()).await.unwrap();
+    // Inside the window nothing is deleted, and every receipt is there.
+    command(&commit, &["writer", "maintain"]);
+    assert!(control_objects(&commit, "publications").await >= 10);
+    assert!(
+        command(&commit, &["writer", "commit", "--receipt", &oldest])["publication_id"].is_string()
+    );
+
+    // Past the window, but not past the age the envelopes are kept for.
+    fyrr_core::clock::advance(Duration::from_secs(25 * 3600)).unwrap();
+    command(&commit, &["writer", "maintain"]);
+    command(&commit, &["writer", "maintain"]);
+    // Every maintenance step publishes, so those manifests are retained.
+    let (head, _) = publication(&commit).await;
+    let kept = fyrr_reader::storage::manifest_chain(
+        store.clone(),
+        namespace.clone(),
+        head.content.as_ref().map(|p| p.manifest.clone()),
+    )
+    .try_collect::<Vec<_>>()
+    .await
+    .unwrap();
+    let publications = control_objects(&commit, "publications").await;
+    assert_eq!(kept.len(), publications, "unreachable manifests remain");
+    // Past the window only the cut stays, kept for the grace after its
+    // retirement: the history before it, the original publications
+    // included, is gone.
+    let window = chrono::Duration::hours(24);
+    let outside: Vec<_> = kept
+        .iter()
+        .filter(|m| fyrr_core::clock::now() - m.committed_at >= window)
+        .map(|m| m.publication_id.clone())
+        .collect();
+    assert_eq!(outside.len(), 1, "{outside:?}");
+    for old in &chain {
+        assert!(
+            !kept.iter().any(|m| m.publication_id == old.publication_id),
+            "{} remains",
+            old.publication_id
+        );
+    }
+    let checkpoints = control_objects(&commit, "evidence").await;
+    assert!(
+        checkpoints <= publications,
+        "{checkpoints} checkpoints for {publications} retained publications"
+    );
+    // Retained publications keep their receipts; the deleted part answers from
+    // the evidence, without its publication; an envelope never applied does not.
+    for id in kept.iter().flat_map(|m| &m.envelope_ids) {
+        assert!(
+            command(&commit, &["writer", "commit", "--receipt", id])["publication_id"].is_string()
+        );
+    }
+    let lost = command(&commit, &["writer", "commit", "--receipt", &oldest]);
+    assert!(lost["publication_id"].is_null());
+    assert_eq!(lost["envelope_ids"], json!([oldest]));
+    let unknown = host_command(&commit)
+        .args([
+            "writer",
+            "commit",
+            "--receipt",
+            &format!("env-{}", "0".repeat(32)),
+        ])
+        .output()
+        .unwrap();
+    assert!(!unknown.status.success());
+    // The envelopes still in the log are still known to have been applied.
+    assert_eq!(
+        command(&commit, &["writer", "status"])["pending_envelopes"],
+        pending
+    );
+
+    // The window moved on: the cut moves to the oldest manifest it keeps.
+    fyrr_core::clock::advance(Duration::from_secs(2 * 3600)).unwrap();
+    command(&commit, &["writer", "maintain"]);
+    assert!(matches!(
+        store.head(&path(&outside[0])).await,
+        Err(object_store::Error::NotFound { .. })
+    ));
+    // A longer window than the history left is no lost manifest: the walks end
+    // at the cut.
+    let mut text = std::fs::read_to_string(&commit).unwrap();
+    text.push_str("\n[writer]\npurge_window='7d'\n");
+    text.parse::<toml::Table>().expect("one [writer] table");
+    std::fs::write(&commit, text).unwrap();
+    command(&commit, &["writer", "maintain"]);
+    command(&commit, &["writer", "status"]);
+
+    // A fresh writer, restore and rollback work from what is left.
+    history_round(&worker, &root, 11);
+    publish(&commit);
+    command(&commit, &["writer", "rollback"]);
+    assert_eq!(command(&commit, &["writer", "verify"])["verified"], true);
+    std::fs::remove_dir_all(root).unwrap();
 }

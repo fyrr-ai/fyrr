@@ -224,6 +224,35 @@ impl Contract for EnvelopeCheckpoint {
     }
 }
 
+/// Where `writer maintain` cut the publication chain: the manifests before
+/// `publication_id` are deleted, and a walk of the chain ends at that
+/// manifest. A manifest missing anywhere else was lost.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct HistoryCut {
+    pub schema_version: SchemaVersion,
+    pub namespace: String,
+    /// The oldest publication the namespace keeps.
+    pub publication_id: String,
+    /// Its sequence: the cut only moves to a higher one.
+    pub sequence: u64,
+}
+
+/// The object that holds the [`HistoryCut`], in the namespace root.
+pub const HISTORY_CUT_OBJECT: &str = "history-cut.json";
+
+impl Contract for HistoryCut {
+    const NAME: &'static str = "history-cut";
+    const VERSION: SchemaVersion = PUBLICATION_CONTRACT_VERSION;
+    fn validate(&self) -> Result<(), String> {
+        check_id("namespace", &self.namespace)?;
+        check_id("publication_id", &self.publication_id)?;
+        if self.sequence == 0 {
+            return Err("sequence must be positive".into());
+        }
+        Ok(())
+    }
+}
+
 fn check_unique(field: &str, ids: &[String]) -> Result<(), String> {
     let mut seen = BTreeSet::new();
     if ids.iter().all(|id| seen.insert(id)) {

@@ -37,6 +37,7 @@ fn handover_reclaims_session_cache_and_admits_a_larger_publication() {
         crate::generation::MemoryPool {
             cap: 256 * mib,
             permits: pool.clone(),
+            spent: Default::default(),
         },
         (186 * mib * 4 / 5, 0),
         old.warm_bytes(),
@@ -58,6 +59,7 @@ fn handover_reclaims_session_cache_and_admits_a_larger_publication() {
         crate::generation::MemoryPool {
             cap: 256 * mib,
             permits: pool.clone(),
+            spent: Default::default(),
         },
         (200 * mib, 0),
         new.warm_bytes(),

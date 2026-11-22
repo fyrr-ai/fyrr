@@ -213,6 +213,16 @@
             "maxItems": 100,
             "minItems": 1
           },
+          "filter": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Filter"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deadline_ms": {
             "type": [
               "integer",
@@ -220,6 +230,82 @@
             ],
             "maximum": 300000,
             "minimum": 1
+          }
+        },
+        "$defs": {
+          "Filter": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "and": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/Filter"
+                    }
+                  }
+                },
+                "required": [
+                  "and"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "or": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/Filter"
+                    }
+                  }
+                },
+                "required": [
+                  "or"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "not": {
+                    "$ref": "#/$defs/Filter"
+                  }
+                },
+                "required": [
+                  "not"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "field": {
+                    "type": "string"
+                  },
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "eq",
+                      "ne",
+                      "in",
+                      "not_in",
+                      "lt",
+                      "lte",
+                      "gt",
+                      "gte"
+                    ]
+                  },
+                  "value": true
+                },
+                "required": [
+                  "field",
+                  "op",
+                  "value"
+                ]
+              }
+            ]
           }
         }
       },

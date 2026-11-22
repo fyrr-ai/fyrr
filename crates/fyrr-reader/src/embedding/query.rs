@@ -50,14 +50,23 @@ impl QueryWork {
 }
 
 impl QueryEmbeddings {
+    #[cfg(test)]
     pub(crate) fn new(config: &EmbeddingConfig, memory: Arc<Semaphore>) -> Result<Arc<Self>> {
+        Self::charging(config, memory, Arc::default())
+    }
+    /// A cache whose live calls are charged to `spent`, shared with other caches.
+    pub(crate) fn charging(
+        config: &EmbeddingConfig,
+        memory: Arc<Semaphore>,
+        spent: Arc<std::sync::atomic::AtomicU64>,
+    ) -> Result<Arc<Self>> {
         if config.reader_live && config.spend.is_none() {
             return Err(EmbeddingSpendLimitRequired);
         }
         Ok(Arc::new(Self {
             config: config.clone(),
             profile_fingerprint: identity(config).fingerprint,
-            client: EmbeddingClient::new(config, Some(memory.clone()))?,
+            client: EmbeddingClient::new(config, Some(memory.clone()))?.charging(spent),
             memory,
             capacity: Arc::new(Semaphore::new(
                 (config.query_cache_max_bytes / crate::generation::PAGE_BYTES) as usize,
