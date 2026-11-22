@@ -282,12 +282,12 @@ pub async fn delete(
     }
     let (store, root) = namespace_store(config)?;
     let published = fyrr_reader::storage::optional_head(config).await?.is_some();
-    // Without a head, only a fence marks a deletion that is still under way.
-    if !published
-        && deletion_fence(config, store.as_ref(), &root)
-            .await?
-            .is_none()
-    {
+    let fenced = deletion_fence(config, store.as_ref(), &root)
+        .await?
+        .is_some();
+    // Without a head, a fence marks a deletion that is still under way, and
+    // objects without one are the debris of an interrupted creation.
+    if !published && !fenced && store.list(Some(&root)).try_next().await?.is_none() {
         return Ok(serde_json::json!({"deleted":true}));
     }
     if export.is_none() && confirm.is_none() {
@@ -295,6 +295,9 @@ pub async fn delete(
         return Ok(
             serde_json::json!({"dry_run":true,"objects":objects.len(),"bytes":objects.iter().map(|object|object.size).sum::<u64>()}),
         );
+    }
+    if !published && !fenced {
+        fence_debris(config, store.as_ref(), &root).await?;
     }
     let verified = if published {
         unpublish(config, store.clone(), &root, export).await?
@@ -305,6 +308,30 @@ pub async fn delete(
     };
     purge(config, store.as_ref(), &root, verified.as_ref()).await?;
     Ok(serde_json::json!({"deleted":true}))
+}
+
+/// Debris has no head to hold a lease with: its fence names no incarnation, so
+/// that the deletion can be run again like any other.
+async fn fence_debris(config: &Config, store: &dyn ObjectStore, root: &Path) -> Result<()> {
+    let mut holder = [0; 16];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut holder)
+        .map_err(|_| WriterError::RuntimeUnavailable)?;
+    let fence = DeleteFence {
+        version: 1,
+        namespace: config.namespace.name.clone(),
+        incarnation: String::new(),
+        holder: format!("holder-{}", hex::encode(holder)),
+        epoch: 0,
+    };
+    let bytes = serde_json::to_vec(&fence).map_err(|_| WriterError::LeaseInvalid)?;
+    store
+        .put_opts(
+            &root.clone().join(DELETE_FENCE),
+            bytes.into(),
+            object_store::PutMode::Create.into(),
+        )
+        .await?;
+    Ok(())
 }
 
 /// Fences the sources, checks the export when there is one and removes the

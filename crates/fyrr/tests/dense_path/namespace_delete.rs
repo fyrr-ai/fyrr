@@ -471,7 +471,11 @@ async fn delete_data_removes_every_object_and_the_name_is_created_again_on_local
         "{}",
         report(&refused)
     );
-    store.delete(&stray).await.unwrap();
+    // With no head and no fence, the deletion still removes what remains.
+    let cleaned = delete_command(&commit, &["delete", "--delete-data", &name]);
+    assert!(cleaned.status.success(), "{}", report(&cleaned));
+    let left: Vec<_> = store.list(Some(&namespace)).try_collect().await.unwrap();
+    assert!(left.is_empty(), "{left:?}");
     let created = delete_command(&commit, &["create"]);
     assert!(created.status.success(), "{}", report(&created));
     let after = fyrr_reader::storage::optional_head(&config)
