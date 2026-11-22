@@ -369,7 +369,6 @@ impl PreparedReader {
                 .policy
                 .row_acl_sequence
                 .is_some_and(|sequence| self.manifest.sequence < sequence)
-            || self.policy.retrieval_policy_digest != self.manifest.retrieval_policy_digest
         {
             return Err(AuthorizationUnavailable);
         }

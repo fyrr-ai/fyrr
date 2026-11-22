@@ -73,19 +73,26 @@ async fn provider(
     }
 }
 
+/// The fixture's configuration with a reranker, for a namespace of its own: a
+/// namespace keeps the retrieval settings it is created with. `extra` adds keys
+/// to the `[namespace.rerank]` table.
 fn configured(
     config: &Path,
     provider: &Provider,
     weight: f64,
     cap: u64,
     deadline: &str,
+    extra: &str,
 ) -> PathBuf {
+    let name = format!("rerank-{weight}-{cap}-{deadline}");
     let text = std::fs::read_to_string(config)
         .unwrap()
-        .replace("[reader]\n", "[reader]\nconcurrency=1\n");
-    let path = config.with_file_name(format!("rerank-{weight}-{cap}-{deadline}.toml"));
-    std::fs::write(&path, format!("{text}\n[namespace.rerank]\nendpoint='{}'\nmodel='fixture-rerank'\napi_key={{env='FYRR_TEST_SECRET'}}\ncandidates=10\nweight={weight}\ndeadline='{deadline}'\nspend_limit_microusd={cap}\nmax_call_cost_microusd=10\n", provider.endpoint)).unwrap();
-    // Retrieval settings are publication policy, including optional reranking.
+        .replace("[reader]\n", "[reader]\nconcurrency=1\n")
+        .replace("name = \"dense-fixture\"", &format!("name = \"{name}\""));
+    let path = config.with_file_name(format!("{name}.toml"));
+    std::fs::write(&path, format!("{text}\n[namespace.rerank]\nendpoint='{}'\nmodel='fixture-rerank'\napi_key={{env='FYRR_TEST_SECRET'}}\ncandidates=10\nweight={weight}\ndeadline='{deadline}'\nspend_limit_microusd={cap}\nmax_call_cost_microusd=10\n{extra}", provider.endpoint)).unwrap();
+    success(&path, &["writer", "namespace", "create"]);
+    super::tools::sync_fixture(&path);
     success(&path, &["writer", "commit"]);
     path
 }
@@ -106,12 +113,11 @@ fn roots(body: &Value) -> Vec<String> {
 async fn tools_rerank_text_window_and_response_budget_are_authorized_on_storage() {
     let provider = Provider::open().await;
     let (config, root, _) = tools::fixture();
-    let configured = configured(&config, &provider, 1.0, 1000, "5s");
+    let configured = configured(&config, &provider, 1.0, 1000, "5s", "text_chars=200\n");
     let text = std::fs::read_to_string(&configured)
         .unwrap()
         .replace("[reader]\n", "[reader]\nmax_response_bytes=4096\n");
-    std::fs::write(&configured, format!("{text}\ntext_chars=200\n")).unwrap();
-    success(&configured, &["writer", "commit"]);
+    std::fs::write(&configured, text).unwrap();
     let log = root.join("bounded-rerank.log");
     let mut reader = Mcp::open_logged(&configured, &log);
     for output in ["metadata", "excerpt", "content"] {
@@ -165,7 +171,7 @@ async fn tools_rerank_default_and_success_on_storage() {
         json!({"query":"exactneedle","limit":10,"output":"metadata"}),
     ));
     let log = root.join("rerank.log");
-    let mut enabled = Mcp::open_logged(&configured(&config, &provider, 1.0, 1000, "5s"), &log);
+    let mut enabled = Mcp::open_logged(&configured(&config, &provider, 1.0, 1000, "5s", ""), &log);
     for mode in [0, 4] {
         provider.state.mode.store(mode, Ordering::SeqCst);
         let ranked = body(enabled.call("search", query()));
@@ -194,7 +200,7 @@ async fn tools_rerank_default_and_success_on_storage() {
             extended["hits"].as_array().unwrap().len()
         );
     }
-    let mut zero = Mcp::open(&configured(&config, &provider, 0.0, 1000, "5s"));
+    let mut zero = Mcp::open(&configured(&config, &provider, 0.0, 1000, "5s", ""));
     assert_eq!(body(zero.call("search", query()))["hits"], baseline["hits"]);
     drop(enabled);
     let log = std::fs::read_to_string(log).unwrap();
@@ -216,7 +222,7 @@ async fn tools_rerank_default_and_success_on_storage() {
 async fn tools_rerank_denied_and_listing_make_no_calls_on_storage() {
     let provider = Provider::open().await;
     let (config, root, _) = tools::fixture();
-    let enabled = configured(&config, &provider, 1.0, 1000, "5s");
+    let enabled = configured(&config, &provider, 1.0, 1000, "5s", "");
     let mut client = Mcp::open(&enabled);
     assert!(
         body(client.call("search", json!({"order":"updated_at","limit":5})))["hits"].is_array()
@@ -305,7 +311,7 @@ async fn tools_rerank_revoke_before_body_emission_sends_no_text_on_storage() {
     // revocation is synchronized and committed, however slow the runner is.
     // An expired request deadline before that commit is a correct
     // deadline_exceeded, not the refusal this case verifies.
-    let enabled = configured(&config, &provider, 1.0, 1000, "300s");
+    let enabled = configured(&config, &provider, 1.0, 1000, "300s", "");
     let stop = Arc::new(AtomicBool::new(false));
     let resume = Arc::new(AtomicBool::new(false));
     let held = Arc::new(tokio::sync::Notify::new());
@@ -392,7 +398,7 @@ async fn tools_rerank_revoke_before_body_emission_sends_no_text_on_storage() {
 async fn tools_rerank_refresh_preserves_rebuilt_admission_on_storage() {
     let provider = Provider::open().await;
     let (config, root, _) = tools::fixture();
-    let config = configured(&config, &provider, 1.0, 1000, "5s");
+    let config = configured(&config, &provider, 1.0, 1000, "5s", "");
     let binary =
         std::env::var_os("FYRR_ROUTING_TEST_BINARY").expect("reader libtest built by scripts/ci");
     let output = Command::new(binary)

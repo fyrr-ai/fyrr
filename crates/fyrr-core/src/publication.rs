@@ -15,6 +15,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::config::{Composition, RerankConfig, RetrievalConfig};
 use crate::envelope::{ChunkProfileIdentity, EmbeddingIdentity, FileRef};
 use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
@@ -22,13 +23,37 @@ use crate::version::{Contract, SchemaVersion};
 /// The publication contract version (manifest and head) written by this build.
 pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
 
+/// The index and retrieval settings a namespace is created with and keeps for
+/// its life. The process configuration only supplies them when the namespace is
+/// created; every reader and writer afterwards takes them from the namespace's
+/// policy artifact, which each content manifest pins.
+///
+/// shortcut: the reranker is recorded whole, with its credential reference and
+/// spend caps; split those off when a deployment must change a cap without a
+/// new namespace.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NamespaceSettings {
+    pub embedding: EmbeddingIdentity,
+    pub fts: FtsSettings,
+    /// RaBitQ bits per dimension of the vector index.
+    pub dense_rq_bits: u8,
+    /// Target rows per partition of the vector index.
+    pub dense_partition_rows: u32,
+    pub retrieval: RetrievalConfig,
+    pub composition: Composition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank: Option<RerankConfig>,
+}
+
 /// Immutable policy generation used by the reader's admission path.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PolicyArtifact {
     pub schema_version: SchemaVersion,
     pub namespace: String,
     pub generation: u64,
-    pub retrieval_policy_digest: String,
+    /// Fixed for the life of the namespace: every generation repeats the
+    /// settings the namespace was created with.
+    pub settings: NamespaceSettings,
     /// Source-wide fixed grants: the hashed reader tokens of every source with
     /// `permissions = "fixed"`. Rows of other sources carry their own readers.
     pub fixed_grants: BTreeMap<String, Vec<String>>,
@@ -55,7 +80,7 @@ pub struct RetiredSource {
 
 impl Contract for PolicyArtifact {
     const NAME: &'static str = "policy-artifact";
-    const VERSION: SchemaVersion = SchemaVersion::new(2, 2);
+    const VERSION: SchemaVersion = SchemaVersion::new(3, 0);
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
         if self.retired_sources.len() > MAX_RETIRED_SOURCES {
@@ -67,7 +92,7 @@ impl Contract for PolicyArtifact {
                 return Err("retired_sources: purged before retired".into());
             }
         }
-        check_digest("retrieval_policy_digest", &self.retrieval_policy_digest)?;
+        self.settings.embedding.validate_profile()?;
         for (source, tokens) in &self.fixed_grants {
             check_id("fixed_grants.source", source)?;
             if tokens

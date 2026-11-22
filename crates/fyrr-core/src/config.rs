@@ -119,7 +119,9 @@ pub struct Config {
     pub sources: Vec<SourceConfig>,
 }
 
-/// The namespace this deployment serves and writes: one Lance dataset.
+/// The namespace this deployment serves and writes: one Lance dataset. Every
+/// key but `name` is the default for a namespace created from this file; an
+/// existing namespace keeps the settings it was created with.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NamespaceConfig {
@@ -135,28 +137,24 @@ pub struct NamespaceConfig {
     /// Namespace ID: lowercase letters, digits and `-`, at most 63 bytes.
     #[schemars(regex(pattern = NAMESPACE_PATTERN))]
     pub name: String,
-    /// Native FTS `max_token_length`; part of the publication identity.
+    /// Native FTS `max_token_length`.
     #[serde(default = "default_fts_max_token_length")]
     #[schemars(range(min = 1, max = FTS_MAX_TOKEN_LENGTH_MAX))]
     pub fts_max_token_length: u32,
-    /// Publication-level English stemming; changing it rebuilds the FTS index.
+    /// English stemming.
     #[serde(default)]
     pub fts_stem: bool,
-    /// Publication-level stop-word removal; changing it rebuilds the FTS index.
+    /// Stop-word removal.
     #[serde(default)]
     pub fts_remove_stop_words: bool,
-    /// Publication-level ASCII folding; changing it rebuilds the FTS index.
+    /// ASCII folding.
     #[serde(default)]
     pub fts_ascii_folding: bool,
-    /// RaBitQ bits per dimension of the dense vector index. Fixed when the
-    /// namespace is first published; a writer with another value refuses to
-    /// extend the index.
+    /// RaBitQ bits per dimension of the dense vector index.
     #[serde(default = "default_dense_rq_bits")]
     #[schemars(range(min = 1, max = DENSE_RQ_BITS_MAX))]
     pub dense_rq_bits: u8,
-    /// Target rows per partition of the dense vector index. Fixed when the
-    /// namespace is first published; a writer with another value refuses to
-    /// extend the index.
+    /// Target rows per partition of the dense vector index.
     #[serde(default = "default_dense_partition_rows")]
     #[schemars(range(min = DENSE_PARTITION_ROWS_MIN, max = DENSE_PARTITION_ROWS_MAX))]
     pub dense_partition_rows: u32,
@@ -1283,6 +1281,42 @@ impl DirectoryConfig {
 }
 
 impl Config {
+    /// This configuration with the settings the namespace was created with in
+    /// place of the defaults the file supplies for a new namespace. What stays
+    /// is process configuration: the embedding endpoint, credentials, spend and
+    /// timeouts, and everything outside `[namespace]` and the embedding profile.
+    #[must_use]
+    pub fn with_settings(&self, settings: &crate::publication::NamespaceSettings) -> Self {
+        let mut config = self.clone();
+        let embedding = &settings.embedding;
+        config.embedding.model.clone_from(&embedding.model);
+        config.embedding.dimensions = embedding.dimensions;
+        config
+            .embedding
+            .prefix
+            .clone_from(&embedding.settings.prefix);
+        config.embedding.send_dimensions = embedding.settings.send_dimensions;
+        let role = |role: &crate::envelope::EmbeddingRole| EmbeddingRole {
+            prefix: role.prefix.clone(),
+            input_type: role.input_type.clone(),
+        };
+        config.embedding.roles = EmbeddingRoles {
+            document: role(&embedding.settings.roles.document),
+            query: role(&embedding.settings.roles.query),
+        };
+        let namespace = &mut config.namespace;
+        namespace.fts_max_token_length = settings.fts.max_token_length;
+        namespace.fts_stem = settings.fts.stem;
+        namespace.fts_remove_stop_words = settings.fts.remove_stop_words;
+        namespace.fts_ascii_folding = settings.fts.ascii_folding;
+        namespace.dense_rq_bits = settings.dense_rq_bits;
+        namespace.dense_partition_rows = settings.dense_partition_rows;
+        namespace.retrieval.clone_from(&settings.retrieval);
+        namespace.composition.clone_from(&settings.composition);
+        namespace.rerank.clone_from(&settings.rerank);
+        config
+    }
+
     /// The reader's mirror directory: `reader.mirror_path`, or
     /// `$XDG_CACHE_HOME/fyrr/<namespace>`, else `$HOME/.cache/fyrr/<namespace>`.
     /// `None` when it is not configured and neither variable is an absolute path.

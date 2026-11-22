@@ -363,21 +363,23 @@ async fn refresh_identity(
     Ok(pointer_changed)
 }
 
-/// The configured policy, when it differs from the one published.
+/// The configured policy, when it differs from the one published. The
+/// namespace's settings never change: a configuration that does not carry
+/// them (the writer takes them from the namespace) is refused.
 fn configured_policy(
     config: &Config,
     current_policy: &PolicyArtifact,
 ) -> Result<Option<PolicyArtifact>> {
+    if current_policy.settings != namespace_settings(config) {
+        return Err(WriterError::NamespaceSettingsFixed);
+    }
     let source_grants = fixed_grants(config)?;
-    if current_policy.retrieval_policy_digest == config.namespace.retrieval_digest()
-        && current_policy.fixed_grants == source_grants
-    {
+    if current_policy.fixed_grants == source_grants {
         return Ok(None);
     }
     let mut policy = current_policy.clone();
     policy.schema_version = <PolicyArtifact as fyrr_core::Contract>::VERSION;
     policy.fixed_grants = source_grants;
-    policy.retrieval_policy_digest = config.namespace.retrieval_digest();
     Ok(Some(policy))
 }
 

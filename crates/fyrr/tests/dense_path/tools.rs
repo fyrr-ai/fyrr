@@ -198,7 +198,7 @@ pub(super) fn fixture() -> (PathBuf, FixtureRoot, String) {
     success(&config, &["writer", "commit"]);
     (config, root, text)
 }
-fn sync_fixture(config: &Path) {
+pub(super) fn sync_fixture(config: &Path) {
     let result = super::coordination::worker_command(config)
         .args(["writer", "sync", "--full"])
         .output()

@@ -37,10 +37,34 @@ pub(crate) fn configured_identity(config: &Config, generation: u64) -> Result<Id
     })
 }
 
+/// The settings `config` asks for: what a new namespace is created with, and
+/// what an existing one must already have for a request to repeat its creation.
+pub(crate) fn namespace_settings(config: &Config) -> NamespaceSettings {
+    let namespace = &config.namespace;
+    NamespaceSettings {
+        embedding: identity(&config.embedding),
+        fts: namespace.fts_settings(),
+        dense_rq_bits: namespace.dense_rq_bits,
+        dense_partition_rows: namespace.dense_partition_rows,
+        retrieval: namespace.retrieval.clone(),
+        composition: namespace.composition.clone(),
+        rerank: namespace.rerank.clone(),
+    }
+}
+
 pub async fn create(config: &Config) -> Result<()> {
     let (store, root) = namespace_store(config)?;
-    if fyrr_reader::storage::optional_head(config).await?.is_some() {
-        return Ok(());
+    let settings = namespace_settings(config);
+    if let Some(head) = fyrr_reader::storage::optional_head(config).await? {
+        // The settings are fixed for the life of the namespace: creating it
+        // again changes nothing, and asking for other settings is refused.
+        let policy: PolicyArtifact =
+            fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+        return if policy.settings == settings {
+            Ok(())
+        } else {
+            Err(WriterError::NamespaceSettingsFixed)
+        };
     }
     let now = fyrr_core::clock::now();
     let mut incarnation = [0; 16];
@@ -54,7 +78,7 @@ pub async fn create(config: &Config) -> Result<()> {
         schema_version: <PolicyArtifact as fyrr_core::Contract>::VERSION,
         namespace: config.namespace.name.clone(),
         generation: 1,
-        retrieval_policy_digest: config.namespace.retrieval_digest(),
+        settings,
     };
     let identity_pointer =
         crate::prepare::put_generation(store.as_ref(), &root, "identity", 1, &identity).await?;

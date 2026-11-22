@@ -31,6 +31,7 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
         ("chunk_profile_mismatch", false),
         ("dense_rq_bits_mismatch", false),
         ("dense_partition_rows_mismatch", false),
+        ("namespace_settings_fixed", false),
         ("embedding_local_cache_configuration_invalid", false),
         ("embedding_local_cache_unavailable", true),
         ("embedding_local_cache_invalid", true),

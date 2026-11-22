@@ -21,8 +21,9 @@ rejected, and error messages name the key path without quoting a value.
 The default `[namespace.retrieval]` policy gives the dense lane weight `0.5`
 and retains `200` lexical candidates and `75` dense candidates per query.
 Dense rescoring stays in `legacy` mode. These settings enter the published
-retrieval-policy digest; see [upgrades](operations.md#upgrades) when changing
-an existing deployment from the previous defaults.
+retrieval-policy digest. They are defaults for a namespace created from this
+file: the namespace keeps the settings it was created with, whatever a
+process's file says ([upgrades](operations.md#upgrades)).
 
 ## Secrets
 
@@ -116,8 +117,9 @@ The [provider](architecture.md#terms) must implement the OpenAI-compatible embed
 
 The writer declares its spend before every call and reserves
 `max_call_microusd` even for an ambiguous timeout. The model, dimensions, prefixes,
-roles and `send_dimensions` bind the namespace:
-a change needs a fresh namespace ([upgrades](operations.md#upgrades)).
+roles and `send_dimensions` are recorded when the namespace is created and bind
+it for its life: a process whose file differs serves the namespace with its own
+profile, and a change needs a fresh namespace ([upgrades](operations.md#upgrades)).
 
 ## `[[sources]]`
 

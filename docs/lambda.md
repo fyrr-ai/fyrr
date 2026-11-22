@@ -16,9 +16,9 @@ release image names. Resolve and pin their digests before deploying. Replace
 Use one region, here `eu-central-1`, and a private SSE-S3 bucket.
 
 Publish content and an identity directory binding your OIDC subjects with the
-external writer. Match its embedding profile and retrieval settings exactly.
-Configuration schema `4.0` defaults to `dense_weight = 0.5` and
-`lexical_candidates = 200`. An older publication may use different settings.
+external writer. The reader takes the embedding profile and the retrieval
+settings from the namespace; the file supplies the embedding endpoint,
+credentials and spend.
 See [upgrades](operations.md#upgrades) and [HTTP users](http-users.md).
 
 Save this as `reader.toml` in the container build context. `FUNCTION_URL` is

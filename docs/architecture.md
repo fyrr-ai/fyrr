@@ -77,7 +77,7 @@ restored; see [operations](operations.md#restore-and-rollback).
 Every artifact carries a `major.minor` contract version. An unknown major
 is refused with `publication_invalid` at startup or
 `authorization_unavailable` on a live request. A publication whose indexes
-or retrieval policy do not match is refused with `incompatible_index`. The exact formats are generated into `schemas/`
+does not match its recorded settings is refused with `incompatible_index`. The exact formats are generated into `schemas/`
 and `fixtures/`.
 
 ## Local storage
@@ -173,7 +173,9 @@ around the query terms; `fetch` returns whole documents or a window of one
 record.
 
 Fusion weights, depths, analyzer settings and composition enter one
-retrieval-policy digest that is published with each version, so readers and
-writers cannot silently disagree about ranking. The tuning keys are in
+retrieval-policy digest that is published with each version. They, the
+embedding profile and the vector index settings are recorded in the
+namespace's policy artifact when it is created and fixed for its life, so
+readers and writers cannot disagree about ranking. The tuning keys are in
 [tuning](tuning.md); the tool arguments and outputs are in
 [MCP tools](mcp-tools.md).

@@ -4,9 +4,10 @@
 >
 > - `[namespace]` names the deployment (`name` is the one required key) and
 >   holds the full-text, composition, retrieval and reranker settings.
-> - Composition and retrieval changes publish a new retrieval policy without
->   rewriting text; an analyzer change rebuilds the lexical index at the next
->   commit.
+> - Every key but `name` is the default for a namespace created from this
+>   file. `writer namespace create` records them in the namespace, which keeps
+>   them for its life: a process with another file serves it with the
+>   namespace's own settings. To change one, create a new namespace.
 > - The keys under Advanced tuning are best left at their defaults unless a
 >   measurement says otherwise.
 
@@ -85,8 +86,8 @@ rescores them with their stored float16 vectors.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `dense_rq_bits` | `1` | 1–9: RaBitQ bits per dimension of the vector index. More bits make the index candidates closer to the exact order at the cost of a larger index. The value is recorded in each publication and fixed once the namespace has one: a writer configured with another value fails with `dense_rq_bits_mismatch` instead of extending the index. To change it, publish into a new namespace. |
-| `dense_partition_rows` | `550` | 32–4096: target rows per partition of the vector index. Smaller partitions scan fewer rows per probe but give more centroids to route over and a costlier index build; larger ones do the opposite. The value is recorded in each publication and fixed once the namespace has one: a writer configured with another value fails with `dense_partition_rows_mismatch` instead of extending the index. To change it, publish into a new namespace. |
+| `dense_rq_bits` | `1` | 1–9: RaBitQ bits per dimension of the vector index. More bits make the index candidates closer to the exact order at the cost of a larger index. The value is recorded when the namespace is created and fixed for its life. To change it, create a new namespace. |
+| `dense_partition_rows` | `550` | 32–4096: target rows per partition of the vector index. Smaller partitions scan fewer rows per probe but give more centroids to route over and a costlier index build; larger ones do the opposite. The value is recorded when the namespace is created and fixed for its life. To change it, create a new namespace. |
 
 ### `[reader]` search and memory
 
