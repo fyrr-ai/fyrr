@@ -479,6 +479,23 @@ fn strong_read(arguments: &mut serde_json::Value) -> Result<bool, ReaderError> {
     }
 }
 
+/// Takes `fields` off the arguments of a JSON `query` call, where it is no
+/// argument of the tool: the attributes and scores a hit returns.
+fn returned_fields(
+    arguments: &mut serde_json::Value,
+) -> Result<Option<fyrr_core::mcp::ReturnFields>, ReaderError> {
+    let Some(fields) = arguments
+        .as_object_mut()
+        .and_then(|arguments| arguments.remove("fields"))
+    else {
+        return Ok(None);
+    };
+    let fields: fyrr_core::mcp::ReturnFields =
+        serde_json::from_value(fields).map_err(|_| InvalidArgument)?;
+    fields.validate().map_err(|_| InvalidArgument)?;
+    Ok(Some(fields))
+}
+
 /// What a request asks of its caller: the role its route needs and, for a
 /// route that names one, the namespace.
 struct Needs<'a> {
@@ -580,7 +597,16 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                     if strong_read(&mut arguments)? {
                         parts.extensions.insert(StrongRead);
                     }
-                    crate::serve::ToolCall::parse(name, arguments)
+                    let fields = if name == "search" {
+                        returned_fields(&mut arguments)?
+                    } else {
+                        None
+                    };
+                    let mut call = crate::serve::ToolCall::parse(name, arguments)?;
+                    if let crate::serve::ToolCall::Search(search) = &mut call {
+                        search.fields = fields;
+                    }
+                    Ok(call)
                 });
             (None, Some(call))
         } else {

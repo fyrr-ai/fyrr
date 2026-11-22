@@ -11,6 +11,9 @@ pub(crate) struct Candidate {
     pub root: String,
     pub record: String,
     pub score: f64,
+    /// The raw lexical score and vector distance, kept for `fields.scores`.
+    pub lexical: Option<f64>,
+    pub distance: Option<f64>,
 }
 impl Candidate {
     fn key(&self) -> (&str, &str, &str) {
@@ -50,7 +53,11 @@ fn documents(rows: Vec<Candidate>) -> Vec<Candidate> {
 /// A search without text has one lane, so the documents keep its order by
 /// distance: no fusion weight may reorder or zero them.
 pub(crate) fn dense_only(dense: Vec<Candidate>, limit: usize) -> Result<Vec<Candidate>> {
-    let mut rows = documents(ranked(dense)?);
+    let mut rows = ranked(dense)?;
+    for row in &mut rows {
+        row.distance = Some(-row.score);
+    }
+    let mut rows = documents(rows);
     rows.truncate(limit);
     Ok(rows)
 }
@@ -63,6 +70,13 @@ pub(crate) fn compose(
 ) -> Result<Vec<Candidate>> {
     let mut dense = ranked(dense)?;
     let mut lexical = ranked(lexical)?;
+    // The lane scores are normalized below; the hit reports the raw ones.
+    for row in &mut dense {
+        row.distance = Some(-row.score);
+    }
+    for row in &mut lexical {
+        row.lexical = Some(row.score);
+    }
     normalize(&mut dense);
     normalize(&mut lexical);
     let mut union: BTreeMap<(String, String, String), Candidate> = BTreeMap::new();
@@ -77,6 +91,8 @@ pub(crate) fn compose(
                 ..row.clone()
             });
             entry.score += row.score * weight;
+            entry.lexical = entry.lexical.or(row.lexical);
+            entry.distance = entry.distance.or(row.distance);
         }
     }
     let fusion = documents(ranked(union.values().cloned().collect())?);
@@ -118,10 +134,12 @@ pub(crate) fn compose(
     }
     for row in &mut selected {
         // Reserved slots retain the union score, rather than exposing lane normalization.
-        row.score = union
+        let fused = union
             .get(&(row.source.clone(), row.root.clone(), row.record.clone()))
-            .ok_or(StorageUnavailable)?
-            .score;
+            .ok_or(StorageUnavailable)?;
+        row.score = fused.score;
+        row.lexical = fused.lexical;
+        row.distance = fused.distance;
     }
     selected.truncate(limit);
     Ok(selected)

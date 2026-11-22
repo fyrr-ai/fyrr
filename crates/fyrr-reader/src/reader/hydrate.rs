@@ -1,10 +1,16 @@
 use super::*;
+use arrow_array::{ArrayRef, BooleanArray, FixedSizeListArray, Float16Array, Float64Array};
+use arrow_array::{Int64Array, TimestampMicrosecondArray};
+use fyrr_core::attributes::AttributeType;
+use serde_json::Value;
 
 /// Common metadata with the record revision and its text length in bytes.
 type RowMetadata = (fyrr_core::connector::DocumentMetadata, (String, u64));
 type ExcerptJob = (usize, usize, Arc<crate::excerpt::Terms>, u32);
 struct HydrationRows {
     metadata: BTreeMap<u64, RowMetadata>,
+    /// The attributes `fields` asks for, by row.
+    attributes: BTreeMap<u64, serde_json::Map<String, Value>>,
     text_batch: Option<RecordBatch>,
     text_rows: BTreeMap<u64, usize>,
 }
@@ -59,12 +65,70 @@ impl PreparedReader {
         Ok(batch)
     }
 
+    /// The columns `fields` returns: the attributes it includes, or every one
+    /// of the namespace but those it excludes. An included name the namespace
+    /// does not declare is invalid; `vector` is always one to name.
+    pub(super) fn returned_columns(&self, fields: Option<&ReturnFields>) -> Result<Vec<String>> {
+        let declared = &self.manifest.attributes;
+        match fields {
+            Some(ReturnFields {
+                include: Some(names),
+                ..
+            }) => {
+                let mut columns: Vec<String> = Vec::new();
+                for name in names {
+                    if name != "vector" && !declared.contains_key(name) {
+                        return Err(InvalidArgument);
+                    }
+                    if !columns.contains(name) {
+                        columns.push(name.clone());
+                    }
+                }
+                Ok(columns)
+            }
+            Some(ReturnFields {
+                exclude: Some(names),
+                ..
+            }) => Ok(declared
+                .keys()
+                .filter(|name| !names.contains(name))
+                .cloned()
+                .collect()),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    /// One row's values of the returned columns; a missing value is `null`.
+    fn row_attributes(
+        &self,
+        batch: &RecordBatch,
+        row: usize,
+        columns: &[String],
+    ) -> Result<serde_json::Map<String, Value>> {
+        columns
+            .iter()
+            .map(|name| {
+                let array = batch.column_by_name(name).ok_or(PublicationRowsInvalid)?;
+                let value = if array.is_null(row) {
+                    Value::Null
+                } else if name == "vector" {
+                    vector_json(array, row)?
+                } else {
+                    let kind = self.manifest.attributes.get(name);
+                    scalar_json(array, *kind.ok_or(PublicationRowsInvalid)?, row)?
+                };
+                Ok((name.clone(), value))
+            })
+            .collect()
+    }
+
     pub(crate) async fn hydrate_selected(
         &self,
         selected: Vec<SelectedHit<'_>>,
         degraded: Vec<Lane>,
         mut telemetry: Telemetry,
         recency_text: Option<(u32, OutputMode)>,
+        fields: Option<&ReturnFields>,
     ) -> Result<SearchOutput> {
         let start = Instant::now();
         let before = self.mirror.counters();
@@ -79,10 +143,14 @@ impl PreparedReader {
         let mut hits = Vec::new();
         let mut omitted_bytes = 0u64;
         if !selected.is_empty() {
-            let (selected, mut rows) = self.hydration_rows(selected, recency_text).await?;
+            let columns = self.returned_columns(fields)?;
+            let (selected, mut rows) = self
+                .hydration_rows(selected, recency_text, &columns)
+                .await?;
             self.stage(&mut telemetry, "hydration", start, before);
             let start = Instant::now();
-            let mut rendered = self.render_hits(selected, &mut rows)?;
+            let scores = fields.is_some_and(|fields| fields.scores);
+            let mut rendered = self.render_hits(selected, &mut rows, scores)?;
             if !rendered.excerpt_jobs.is_empty() {
                 let selection_start = Instant::now();
                 let text = strings(
@@ -158,6 +226,7 @@ impl PreparedReader {
         &self,
         mut selected: Vec<SelectedHit<'q>>,
         recency_text: Option<(u32, OutputMode)>,
+        returned: &[String],
     ) -> Result<(Vec<SelectedHit<'q>>, HydrationRows)> {
         let row_ids: Vec<_> = selected.iter().map(|r| r.candidate.row_id).collect();
         // Private per-record metadata permits projection without any text.
@@ -176,10 +245,12 @@ impl PreparedReader {
         if all_text {
             columns.push("searchable_text");
         }
+        columns.extend(returned.iter().map(String::as_str));
         let batch = self
             .rows_by_id(&row_ids, &columns, PublicationInvalid)
             .await?;
         let mut metadata = BTreeMap::new();
+        let mut attributes = BTreeMap::new();
         let rows: BTreeMap<_, _> = ids(&batch)?
             .values()
             .iter()
@@ -203,6 +274,12 @@ impl PreparedReader {
                 candidate.row_id,
                 (common.ok_or(PublicationRowsInvalid)?, private),
             );
+            if !returned.is_empty() {
+                attributes.insert(
+                    candidate.row_id,
+                    self.row_attributes(&batch, row, returned)?,
+                );
+            }
         }
         if recency_text.is_some() {
             selected.sort_by(|a, b| {
@@ -266,6 +343,7 @@ impl PreparedReader {
             selected,
             HydrationRows {
                 metadata,
+                attributes,
                 text_batch,
                 text_rows,
             },
@@ -276,9 +354,11 @@ impl PreparedReader {
         &self,
         selected: Vec<SelectedHit<'_>>,
         rows: &mut HydrationRows,
+        scores: bool,
     ) -> Result<RenderedHits> {
         let HydrationRows {
             metadata,
+            attributes,
             text_batch,
             text_rows,
         } = rows;
@@ -370,6 +450,9 @@ impl PreparedReader {
                 score: candidate.score,
                 excerpt,
                 content,
+                attributes: attributes.remove(&candidate.row_id),
+                lexical_score: candidate.lexical.filter(|_| scores),
+                distance: candidate.distance.filter(|_| scores),
             });
         }
         Ok(RenderedHits {
@@ -380,4 +463,61 @@ impl PreparedReader {
             selection_us,
         })
     }
+}
+
+/// A vector as numbers; every 16-bit value is exact as a 64-bit one.
+fn vector_json(array: &ArrayRef, row: usize) -> Result<Value> {
+    let list = array
+        .as_any()
+        .downcast_ref::<FixedSizeListArray>()
+        .ok_or(PublicationRowsInvalid)?;
+    let items = list.value(row);
+    let items = items
+        .as_any()
+        .downcast_ref::<Float16Array>()
+        .ok_or(PublicationRowsInvalid)?;
+    Ok(Value::Array(
+        items
+            .values()
+            .iter()
+            .map(|item| item.to_f64().into())
+            .collect(),
+    ))
+}
+
+/// A typed attribute's value, as the JSON type of its kind.
+fn scalar_json(array: &ArrayRef, kind: AttributeType, row: usize) -> Result<Value> {
+    let any = array.as_any();
+    Ok(match kind {
+        AttributeType::String => Value::String(
+            any.downcast_ref::<StringArray>()
+                .ok_or(PublicationRowsInvalid)?
+                .value(row)
+                .to_owned(),
+        ),
+        AttributeType::Int => any
+            .downcast_ref::<Int64Array>()
+            .ok_or(PublicationRowsInvalid)?
+            .value(row)
+            .into(),
+        AttributeType::Float => any
+            .downcast_ref::<Float64Array>()
+            .ok_or(PublicationRowsInvalid)?
+            .value(row)
+            .into(),
+        AttributeType::Bool => any
+            .downcast_ref::<BooleanArray>()
+            .ok_or(PublicationRowsInvalid)?
+            .value(row)
+            .into(),
+        AttributeType::Datetime => {
+            let micros = any
+                .downcast_ref::<TimestampMicrosecondArray>()
+                .ok_or(PublicationRowsInvalid)?
+                .value(row);
+            let time =
+                chrono::DateTime::from_timestamp_micros(micros).ok_or(PublicationRowsInvalid)?;
+            Value::String(McpTime(time).to_string())
+        }
+    })
 }
