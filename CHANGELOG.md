@@ -289,6 +289,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   manifest and one checkpoint are enough. The first publication after the
   upgrade still walks the older chain once. `fyrr writer maintain` deletes
   checkpoints that no retained manifest names.
+- `fyrr writer maintain` deletes the publication manifests and envelope
+  checkpoints that no publication inside `writer.purge_window` names, so
+  these no longer grow with the number of commits. `fyrr writer commit
+  --receipt` still tells that an envelope of the deleted part was applied,
+  without its publication (`publication_id` is null). The oldest manifest it
+  keeps is recorded first in the `history-cut` object (additive to the
+  unreleased 4.0 publication contract); a walk of the history ends there, and
+  a manifest missing anywhere else is `publication_invalid`.
 
 ### Security
 

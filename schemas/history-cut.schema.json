@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "publication_id": {
+      "type": "string",
+      "description": "The oldest publication the namespace keeps."
+    },
+    "sequence": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "description": "Its sequence: the cut only moves to a higher one."
+    }
+  },
+  "required": [
+    "schema_version",
+    "namespace",
+    "publication_id",
+    "sequence"
+  ],
+  "description": "Where `writer maintain` cut the publication chain: the manifests before\n`publication_id` are deleted, and a walk of the chain ends at that\nmanifest. A manifest missing anywhere else was lost.",
+  "title": "HistoryCut",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SchemaVersion": {
+      "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    }
+  },
+  "x-fyrr-contract": "history-cut",
+  "x-fyrr-schema-version": "4.0"
+}

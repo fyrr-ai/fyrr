@@ -30,16 +30,37 @@ async fn applied_page(
         .collect();
     // Extra manifest passes buy bounded receipt memory: retain only this page's IDs.
     let mut chain = fyrr_reader::storage::manifest_chain(
-        store,
+        store.clone(),
         root.clone(),
         head.content.as_ref().map(|p| p.manifest.clone()),
     );
+    let mut evidence = None;
+    let mut cut = false;
     while let Some(publication) = chain.try_next().await? {
+        cut = publication.previous_publication_id.is_some();
+        evidence = evidence.or(publication.envelope_evidence);
         applied.extend(
             publication
                 .envelope_ids
                 .into_iter()
                 .chain(publication.rejected_envelope_ids)
+                .filter(|id| ids.contains(id)),
+        );
+    }
+    // The chain ends where maintenance deleted it; the newest evidence tells
+    // the rest.
+    if cut
+        && let Some(evidence) = evidence
+        && let Some(checkpoint) =
+            crate::commit::read_checkpoint(store.as_ref(), root, &evidence.checkpoint).await?
+    {
+        applied.extend(
+            checkpoint
+                .applied_envelope_ids
+                .into_iter()
+                .chain(checkpoint.rejected_envelope_ids)
+                .chain(evidence.applied_since)
+                .chain(evidence.rejected_since)
                 .filter(|id| ids.contains(id)),
         );
     }
@@ -268,6 +289,7 @@ pub(crate) async fn cleanup_held(
     config: &Config,
     lease: &crate::lease::LeaseGuard,
 ) -> Result<usize> {
+    crate::maintenance::verify_history(config, &lease.head().await?).await?;
     discard_purged(config, lease).await?;
     let head = lease.head().await?;
     let (store, _, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;

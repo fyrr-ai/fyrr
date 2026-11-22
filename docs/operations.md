@@ -47,7 +47,8 @@ Published versions are kept for `writer.purge_window` (one day) and at least
 `writer.version_grace` (one hour) after they stop serving. `fyrr writer
 maintain` runs in lease-held steps: it publishes pending permission changes,
 removes unreadable rows, compacts fragments, updates indexes and deletes
-retired versions and applied envelopes. Run it often enough that deleted
+retired versions, applied envelopes and the publication manifests and
+checkpoints that only older versions named. Run it often enough that deleted
 content physically leaves namespace storage within the purge window; until then it remains
 in retained old versions. Physical purge removes one revoked document root
 per bounded step and publishes that step before continuing. A large revoke
@@ -75,7 +76,8 @@ fyrr writer rollback                    # the preceding retained publication
 `fyrr reader check` prints the `publication_id` serving now, and every
 `fyrr writer commit` prints the latest one; keep those to restore an earlier
 point within the retention window. `fyrr writer commit --receipt ENVELOPE_ID`
-finds the publication that applied an envelope.
+finds the publication that applied an envelope; for an envelope of a publication
+older than the retention window it only says that the envelope was applied.
 
 Both publish a new version under the namespace lease, with the **current**
 policy, identity, permissions and tombstones: a restore never revives a
