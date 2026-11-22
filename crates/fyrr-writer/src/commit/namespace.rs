@@ -78,12 +78,6 @@ pub async fn create(config: &Config) -> Result<()> {
     if let Some(head) = fyrr_reader::storage::optional_head(config).await? {
         return repeat_create(store.as_ref(), &root, &head, &settings).await;
     }
-    // A deletion that removed the head may still be removing objects, and a
-    // new head would be removed with them: run the deletion again first. Any
-    // object left under the prefix, the fence included, refuses the creation.
-    if store.list(Some(&root)).try_next().await?.is_some() {
-        return Err(WriterError::NamespaceDeleting);
-    }
     match create_new(config, store.as_ref(), &root, settings.clone()).await {
         // A concurrent creation won: judge its settings as a repeated one.
         Err(WriterError::ImmutableObjectConflict) => {
@@ -116,6 +110,26 @@ async fn create_new(
         generation: 1,
         settings,
     };
+    // A deletion that removed the head may still be removing objects, and a new
+    // head would be removed with them: run the deletion again first. Any other
+    // object under the prefix, the fence included, refuses the creation. The
+    // objects of this creation are tolerated, so that it can be repeated after
+    // an interruption or run concurrently.
+    let own: Vec<_> = [
+        crate::prepare::generation_object("identity", 1, &identity).0,
+        crate::prepare::generation_object("policy", 1, &policy).0,
+        "head.json".into(),
+    ]
+    .into_iter()
+    .map(|object| Path::from(format!("{root}/{object}")))
+    .collect();
+    let mut present = store.list(Some(root));
+    while let Some(object) = present.try_next().await? {
+        if !own.contains(&object.location) {
+            return Err(WriterError::NamespaceDeleting);
+        }
+    }
+    drop(present);
     let identity_pointer =
         crate::prepare::put_generation(store, root, "identity", 1, &identity).await?;
     let policy_pointer = crate::prepare::put_generation(store, root, "policy", 1, &policy).await?;

@@ -484,6 +484,20 @@ async fn delete_data_removes_every_object_and_the_name_is_created_again_on_local
         .unwrap()
         .incarnation;
     assert_ne!(before, after);
+    // A creation interrupted before its head leaves only identity and policy:
+    // repeating it succeeds.
+    store
+        .delete(&namespace.clone().join("head.json"))
+        .await
+        .unwrap();
+    let repeated = delete_command(&commit, &["create"]);
+    assert!(repeated.status.success(), "{}", report(&repeated));
+    assert!(
+        fyrr_reader::storage::optional_head(&config)
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]

@@ -505,6 +505,19 @@ async fn non_content_page(
     lease.write(state.clone()).await
 }
 
+/// The key, relative to the namespace root, and the digest of a generation.
+pub(crate) fn generation_object<T: Contract>(
+    kind: &str,
+    generation: u64,
+    value: &T,
+) -> (String, String) {
+    let digest = digest(&write_contract(value));
+    (
+        format!("{kind}/{generation}-{}.json", &digest[7..]),
+        digest,
+    )
+}
+
 pub(crate) async fn put_generation<T: Contract>(
     store: &dyn ObjectStore,
     root: &Path,
@@ -512,8 +525,7 @@ pub(crate) async fn put_generation<T: Contract>(
     generation: u64,
     value: &T,
 ) -> Result<fyrr_core::publication::GenerationPointer> {
-    let digest = digest(&write_contract(value));
-    let object = format!("{kind}/{generation}-{}.json", &digest[7..]);
+    let (object, digest) = generation_object(kind, generation, value);
     put_immutable(store, &Path::from(format!("{root}/{object}")), value).await?;
     Ok(fyrr_core::publication::GenerationPointer {
         generation,
