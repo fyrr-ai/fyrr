@@ -153,7 +153,11 @@ impl WriterEmbedding {
     }
 
     /// Verify the provider even when all documents are unchanged or cached.
+    /// Without one, every document brings its vector and there is nothing to verify.
     pub async fn start(&mut self) -> Result<()> {
+        if self.config.endpoint.is_empty() {
+            return Ok(());
+        }
         initialize_client(&self.config, self.cap, &mut self.client)?
             .verify_model(&mut self.stats)
             .await
@@ -169,6 +173,9 @@ fn initialize_client<'a>(
     match slot {
         Some(client) => Ok(client),
         slot @ None => {
+            if config.endpoint.is_empty() {
+                return Err(WriterError::EmbeddingConfigurationInvalid);
+            }
             let mut config = config.clone();
             let spend = config
                 .spend

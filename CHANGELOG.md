@@ -16,6 +16,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   the `write` role authenticates it. A namespace takes its documents from
   connectors or from the API, as it was created. See
   [HTTP write API](docs/http-api.md#write-documents).
+- A row of the write API may carry its own `vector`, and so may a section of a
+  connector document (the optional `vector` column of the document-change
+  contract, version 1.4). Such a row is stored with that vector and its text is
+  not embedded. A vector of another dimension, with a non-finite element or
+  all zeros is refused as `vector_invalid`. A creating request declares the
+  namespace's vector `model` and `dimensions` in `settings.embedding`, and a
+  deployment whose documents all carry vectors needs no `[embedding]` table.
+  See [HTTP write API](docs/http-api.md#write-documents).
 - `search` takes one `filter` argument, a tree of `and`, `or`, `not` and
   comparisons (`eq`, `ne`, `in`, `not_in`, `lt`, `lte`, `gt`, `gte`) of
   at most 64 nodes and 16 levels over the built-in fields and the namespace's typed

@@ -193,10 +193,16 @@ pub fn quarantine_reason(
         .collect::<std::collections::BTreeSet<_>>();
     if change.validate().is_err()
         || sections.len() != change.sections.len()
-        || change
-            .sections
-            .iter()
-            .any(|s| s.text.is_empty() || s.text.contains('\0'))
+        || change.sections.iter().any(|s| {
+            s.text.is_empty()
+                || s.text.contains('\0')
+                // A vector is the record of one chunk, of the namespace's dimension.
+                || s.vector.as_ref().is_some_and(|vector| {
+                    crate::chunk::chunks(&s.text).len() != 1
+                        || fyrr_reader::embedding::validate(vector, config.embedding.dimensions)
+                            .is_err()
+                })
+        })
     {
         return Some(WriterError::DocumentInvalid.as_str());
     }

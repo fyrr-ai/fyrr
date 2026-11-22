@@ -41,7 +41,7 @@ use crate::limits::{
 use crate::version::{Contract, ContractError, SchemaVersion, check_compatible};
 
 /// The connector contract version written by this build.
-pub const CONNECTOR_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(1, 3);
+pub const CONNECTOR_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(1, 4);
 
 /// Arrow schema metadata key naming the contract part.
 pub const ARROW_CONTRACT_KEY: &str = "fyrr.contract";
@@ -200,6 +200,11 @@ pub struct Section {
     /// different readers never share a record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub readers: Option<Vec<String>>,
+    /// The section's own vector, stored as its record in place of an embedding
+    /// of the text. It has the namespace's dimension, finite elements and a
+    /// nonzero length, and the text is one chunk (at most 16 KiB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector: Option<Vec<f32>>,
 }
 
 /// Where a section sits in its source document.
@@ -572,6 +577,11 @@ pub fn document_changes_arrow_schema() -> Schema {
         Field::new("location_label", DataType::Utf8, true),
         Field::new("location_index", DataType::UInt32, true),
         Field::new("readers", utf8_list(false), true),
+        Field::new(
+            "vector",
+            DataType::List(Arc::new(Field::new("item", DataType::Float32, false))),
+            true,
+        ),
     ]));
     let fields = vec![
         Field::new("op", DataType::Utf8, false),
@@ -652,16 +662,28 @@ pub fn check_document_changes_schema(schema: &Schema) -> Result<SchemaVersion, C
         .parse()
         .map_err(|_| ContractError::MalformedVersion { contract: NAME })?;
     check_compatible(NAME, CONNECTOR_CONTRACT_VERSION, version)?;
+    // Minor 1.3 had no section vector: its batches are read without one.
+    let absent_ok: &[&str] = if version < SchemaVersion::new(1, 4) {
+        &["sections[].vector"]
+    } else {
+        &[]
+    };
     check_fields(
         document_changes_arrow_schema().fields(),
         schema.fields(),
         "",
+        absent_ok,
     )
     .map_err(invalid)?;
     Ok(version)
 }
 
-fn check_fields(expected: &Fields, found: &Fields, prefix: &str) -> Result<(), String> {
+fn check_fields(
+    expected: &Fields,
+    found: &Fields,
+    prefix: &str,
+    absent_ok: &[&str],
+) -> Result<(), String> {
     let path = |name: &str| {
         if prefix.is_empty() {
             name.to_owned()
@@ -670,10 +692,13 @@ fn check_fields(expected: &Fields, found: &Fields, prefix: &str) -> Result<(), S
         }
     };
     for wanted in expected {
-        let (_, present) = found
-            .find(wanted.name())
-            .ok_or_else(|| format!("missing field {}", path(wanted.name())))?;
-        check_field(wanted, present, &path(wanted.name()))?;
+        let Some((_, present)) = found.find(wanted.name()) else {
+            if absent_ok.contains(&path(wanted.name()).as_str()) {
+                continue;
+            }
+            return Err(format!("missing field {}", path(wanted.name())));
+        };
+        check_field(wanted, present, &path(wanted.name()), absent_ok)?;
     }
     for (ordinal, present) in found.iter().enumerate() {
         if expected.find(present.name()).is_none() && !present.is_nullable() {
@@ -685,16 +710,21 @@ fn check_fields(expected: &Fields, found: &Fields, prefix: &str) -> Result<(), S
     Ok(())
 }
 
-fn check_field(expected: &Field, found: &Field, path: &str) -> Result<(), String> {
+fn check_field(
+    expected: &Field,
+    found: &Field,
+    path: &str,
+    absent_ok: &[&str],
+) -> Result<(), String> {
     if found.is_nullable() && !expected.is_nullable() {
         return Err(format!("field {path} must not be nullable"));
     }
     match (expected.data_type(), found.data_type()) {
         (DataType::Struct(wanted), DataType::Struct(present)) => {
-            check_fields(wanted, present, path)
+            check_fields(wanted, present, path, absent_ok)
         }
         (DataType::List(wanted), DataType::List(present)) => {
-            check_field(wanted, present, &format!("{path}[]"))
+            check_field(wanted, present, &format!("{path}[]"), absent_ok)
         }
         (wanted, present) if wanted == present => Ok(()),
         (_, _) => Err(format!("field {path} has an incompatible type")),

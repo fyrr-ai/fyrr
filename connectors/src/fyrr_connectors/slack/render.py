@@ -110,12 +110,14 @@ def document(identity, channel, kind, anchor, messages, users, channels, limit):
         updated_at=date(max(m.edited or m.ts for m in eligible)),
         connector_map={"channel_id": channel.id, "conversation_ts": str(anchor)},
     )
+    # The revision covers what a section was before it could carry a vector.
+    parts = [{k: v for k, v in asdict(s).items() if k != "vector"} for s in sections]
     revision = hashlib.sha256(
         json.dumps(
             [
                 FORMAT,
                 asdict(metadata),
-                [asdict(s) for s in sections],
+                parts,
                 [[m.ts, m.edited] for m in eligible],
             ],
             sort_keys=True,

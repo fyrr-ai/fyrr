@@ -53,7 +53,12 @@
               "path": [
                 "Description"
               ]
-            }
+            },
+            "vector": [
+              0.25,
+              -0.5,
+              1.0
+            ]
           },
           {
             "text": "Security review notes stay restricted to the security team.",

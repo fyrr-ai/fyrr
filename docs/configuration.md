@@ -96,10 +96,13 @@ cleanup and mirror behavior. The configuration schema is revision `6.0`.
 ## `[embedding]`
 
 The [provider](architecture.md#terms) must implement the OpenAI-compatible embeddings protocol.
+The table is optional: without it no document is embedded, and every document
+carries its own vector (the [write API](http-api.md#write-documents)'s `vector`,
+a connector section's `vector`).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `endpoint` | required | Base URL of the embeddings API (`…/v1`). |
+| `endpoint` | `""` | Base URL of the embeddings API (`…/v1`). Empty, a document without a vector is refused. |
 | `model` | `BAAI/bge-m3` | 1–512 UTF-8 bytes. |
 | `dimensions` | `1024` | 1–8192; must match the model. |
 | `send_dimensions` | `false` | Send `dimensions` in the request. |

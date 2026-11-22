@@ -1,6 +1,6 @@
 [
   {
-    "schema_version": "1.3",
+    "schema_version": "1.4",
     "source_id": "testkit-source",
     "kind": "permissions",
     "cursor": {
@@ -24,7 +24,7 @@
     }
   },
   {
-    "schema_version": "1.3",
+    "schema_version": "1.4",
     "source_id": "testkit-source",
     "kind": "permissions",
     "cursor": {

@@ -156,9 +156,18 @@ The body is one JSON object (`application/json`, no `Content-Encoding`):
 
 | Key | Meaning |
 | --- | --- |
-| `upserts` | Rows. A row is an object with an `id` (string, its key in the namespace), its text under the key `text_attribute`, `readers` (`usr:<id>` or `grp:<id>`; ignored by an open namespace) and a value for any declared [attribute](tuning.md#namespaceattributes). A row replaces the document with that `id`, readers included. |
+| `upserts` | Rows. A row is an object with an `id` (string, its key in the namespace), its text under the key `text_attribute`, `readers` (`usr:<id>` or `grp:<id>`; ignored by an open namespace), optionally its `vector` (a list of numbers) and a value for any declared [attribute](tuning.md#namespaceattributes). A row replaces the document with that `id`, readers included. |
 | `deletes` | IDs to delete. An ID that does not exist is a delete of nothing. |
 | `settings` | The [settings](tuning.md#namespace) of a namespace that does not exist yet, laid over the process defaults. For an existing namespace it must not change any: `409 namespace_settings_fixed`. |
+
+A row that carries a `vector` is stored with it, and its text is not
+embedded. The vector has the dimension of the namespace, finite float32
+elements and a length above zero, or the request is `400 vector_invalid`. A
+row without a vector is embedded by the [`[embedding]`](configuration.md#embedding)
+provider; without one it is `400 embedding_not_configured`. A creating request
+declares the vectors of the namespace in `settings.embedding` (`model` and
+`dimensions`, which default to the process's); a request whose rows all carry
+vectors makes 0 embedding calls and needs no `[embedding]` table. The profile `settings.embedding.fingerprint` is derived from them unless the request sends it; a fingerprint that does not match is `400 settings_invalid` for a new namespace and `409 namespace_settings_fixed` for an existing one.
 
 The namespace is created by the first request, with its settings, and a
 request with only `settings` creates it. A row is one record: its text is at
@@ -185,6 +194,6 @@ request was accepted does not cancel it.
 | `not_found` | `404` | Another namespace, or the process has no `[namespace.write_api]`. |
 | `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
 | `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
-| `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `document_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
+| `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `embedding_not_configured`, `document_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
 | `namespace_settings_fixed`, `namespace_not_writable`, `namespace_not_empty`, `namespace_changed`, `rejected` | `409` | The namespace has other settings, takes its documents from connectors, is to be created over envelopes that a deleted namespace left, was replaced by another while the request was prepared, or the committer refused the request (nothing of it is applied). |
 | `busy`, `unavailable`, `outcome_unknown` | `503` | The writer is busy, storage or the published keys cannot be read, or the answer did not come within 10 minutes; `Retry-After` is 1. |

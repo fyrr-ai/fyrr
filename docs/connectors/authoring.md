@@ -138,6 +138,13 @@ Upsert(
   readable one. Several sections with the same location are refused.
 - `Section.readers` narrows a restricted part (a comment with its own
   audience). A part must never be wider than its document.
+- `Section.vector` is the section's own embedding. It is stored in place of
+  one computed from the text, so the section's text must be one chunk (at
+  most 16 KiB) and the vector must have the namespace's dimension, finite
+  elements and a nonzero length; a document with another vector is
+  quarantined as invalid. Sections without one are embedded by the
+  `[embedding]` provider; a deployment whose sections all carry vectors needs
+  none.
 - Unknown metadata stays `None`; never substitute the ingest time.
 - `source_revision` must change whenever text, sections or metadata
   change. `revision_order` is optional and lets fyrr order edits that

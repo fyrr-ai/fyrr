@@ -6,7 +6,7 @@
 
 use crate::{Result, WriterError};
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Int64Type, TimestampMicrosecondType, UInt32Type};
+use arrow_array::types::{Float32Type, Int64Type, TimestampMicrosecondType, UInt32Type};
 use arrow_array::{Array, ArrayRef, ListArray, RecordBatch, StringArray, StructArray};
 use arrow_schema::DataType;
 use chrono::{DateTime, Utc};
@@ -335,6 +335,21 @@ fn string_list(
         .map(Some)
 }
 
+/// The numbers of a nullable list cell of float32, whose items are never null.
+fn float_list(array: &ListArray, row: usize, field: &str) -> Result<Option<Vec<f32>>, String> {
+    if array.is_null(row) {
+        return Ok(None);
+    }
+    let values = array.value(row);
+    let items = values
+        .as_primitive_opt::<Float32Type>()
+        .ok_or_else(|| format!("field {field} is not float32"))?;
+    if items.null_count() > 0 {
+        return Err(format!("field {field}[] is not nullable but holds a null"));
+    }
+    Ok(Some(items.values().to_vec()))
+}
+
 struct Columns<'a> {
     op: &'a StringArray,
     root_id: &'a StringArray,
@@ -482,6 +497,11 @@ impl<'a> Columns<'a> {
         )?;
         let index = field("location_index")?.as_primitive::<UInt32Type>();
         let readers = lists(field("readers")?.as_ref(), "sections[].readers")?;
+        // Absent in a batch of contract minor 1.3.
+        let vectors = items
+            .column_by_name("vector")
+            .map(|column| lists(column.as_ref(), "sections[].vector"))
+            .transpose()?;
         (0..items.len())
             .map(|at| {
                 let location = match optional(kind, at) {
@@ -501,6 +521,10 @@ impl<'a> Columns<'a> {
                     text: required(text, at, "sections[].text")?,
                     location,
                     readers: string_list(readers, at, "sections[].readers", true)?,
+                    vector: vectors
+                        .map(|vectors| float_list(vectors, at, "sections[].vector"))
+                        .transpose()?
+                        .flatten(),
                 })
             })
             .collect()
@@ -527,7 +551,7 @@ mod tests {
     use arrow_array::{Int64Array, TimestampMicrosecondArray, UInt32Array};
     use arrow_schema::Schema;
     use arrow_schema::{Field, Fields};
-    use fyrr_core::connector::document_changes_arrow_schema;
+    use fyrr_core::connector::{ARROW_VERSION_KEY, document_changes_arrow_schema};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -611,6 +635,10 @@ mod tests {
             Arc::new(StringArray::new_null(count)),
             Arc::new(UInt32Array::new_null(count)),
             Arc::new(ListArray::new_null(item(), count)),
+            Arc::new(ListArray::new_null(
+                Arc::new(Field::new("item", DataType::Float32, false)),
+                count,
+            )),
         ];
         let structs = StructArray::try_new(fields, children, None).expect("sections");
         Arc::new(ListArray::new(
@@ -703,6 +731,47 @@ mod tests {
             "30 bytes exceed document_max_bytes 20"
         );
         assert!(checker.stats.cursor_advanced);
+    }
+
+    /// `batch` as a producer of contract minor `version` without the section
+    /// vector column writes it.
+    fn without_section_vector(batch: &RecordBatch, version: &str) -> RecordBatch {
+        let schema = batch.schema();
+        let at = schema.index_of("sections").expect("sections");
+        let list = batch.column(at).as_list::<i32>();
+        let (fields, mut children, _) = list.values().as_struct().clone().into_parts();
+        let kept = fields.len() - 1;
+        children.truncate(kept);
+        let fields: Fields = fields.iter().take(kept).cloned().collect();
+        let structs = StructArray::try_new(fields.clone(), children, None).expect("sections");
+        let item = Arc::new(Field::new("item", DataType::Struct(fields), false));
+        let sections: ArrayRef = Arc::new(ListArray::new(
+            item.clone(),
+            list.offsets().clone(),
+            Arc::new(structs),
+            None,
+        ));
+        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
+        fields[at] = Arc::new(Field::new("sections", DataType::List(item), false));
+        let mut metadata = schema.metadata().clone();
+        metadata.insert(ARROW_VERSION_KEY.into(), version.into());
+        let mut columns = batch.columns().to_vec();
+        columns[at] = sections;
+        RecordBatch::try_new(
+            Arc::new(Schema::new(fields).with_metadata(metadata)),
+            columns,
+        )
+        .expect("batch without the vector column")
+    }
+
+    #[test]
+    fn a_contract_1_3_batch_has_no_vector_column() {
+        let rows = build(&[Row::default()]);
+        let changes = document_changes(&without_section_vector(&rows, "1.3")).expect("1.3 batch");
+        assert_eq!(changes[0].sections[0].vector, None);
+        // From 1.4 the column is part of the contract.
+        let error = document_changes(&without_section_vector(&rows, "1.4")).expect_err("1.4");
+        assert!(error.contains("sections[].vector"), "{error}");
     }
 
     #[test]

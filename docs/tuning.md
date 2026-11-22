@@ -84,7 +84,7 @@ defaults of a new namespace, recorded in it and fixed for its life.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `text_attribute` | `"text"` | The key of a row that holds its text, which is embedded, full-text indexed and returned as the content of its record. Not one of `attributes`. |
+| `text_attribute` | `"text"` | The key of a row that holds its text, which is embedded when the row carries no `vector`, full-text indexed and returned as the content of its record. Not one of `attributes`. |
 | `open` | `false` | `false`: a row is readable by the reader tokens it names and a row without any by nobody. `true`: every authenticated subject of the deployment reads every row. |
 
 ### `[namespace.composition]`

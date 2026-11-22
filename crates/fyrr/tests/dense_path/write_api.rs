@@ -304,6 +304,146 @@ async fn identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_stor
     assert!(!events.contains("blue shirt"), "no text in the log");
 }
 
+/// A vector of `dimensions` numbers that no other `n` shares.
+fn vector(n: usize, dimensions: usize) -> Vec<f32> {
+    (0..dimensions)
+        .map(|d| (((n + 3000) * (d + 5)) as f32).sin())
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_stores_the_vectors_a_caller_supplies_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let writer = Writer::start(&config, &root, address).await;
+    let namespace = "dense-fixture";
+    let rows = json!({"upserts": [
+        {"id": "a", "text": "alpha", "vector": vector(0, 1024)},
+        {"id": "b", "text": "bravo", "vector": vector(1, 1024)},
+        {"id": "c", "text": "charlie", "vector": vector(2, 1024)},
+    ]});
+    // A row that carries its vector makes no embedding call, though a provider is configured.
+    assert_eq!(
+        writer.post(WRITE_KEY, namespace, &rows).await,
+        (200, json!({"upserted": 3, "deleted": 0}))
+    );
+    assert_eq!(root.embedding.calls(), 0);
+
+    // The stored vector is the caller's: a query that embeds to it finds its row first.
+    root.embedding.insert_both("vector query", vector(1, 1024));
+    assert_eq!(hits(&config, "vector query")[0], "b");
+
+    // A vector of another dimension, a number that is not a finite float32, a
+    // zero vector and a value that is no list are refused with a named error.
+    let mut short = vector(3, 1024);
+    short.pop();
+    for bad in [
+        json!(short),
+        json!(vec![0.0; 1024]),
+        json!(["x"]),
+        json!("x"),
+        json!(
+            std::iter::once(1e39)
+                .chain(std::iter::repeat_n(1.0, 1023))
+                .collect::<Vec<_>>()
+        ),
+    ] {
+        assert_eq!(
+            writer
+                .post(
+                    WRITE_KEY,
+                    namespace,
+                    &json!({"upserts": [{"id": "x", "text": "alpha", "vector": bad}]})
+                )
+                .await,
+            (400, json!({"error": "vector_invalid"}))
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let text = std::fs::read_to_string(&config).unwrap();
+    let (from, to) = (
+        text.find("[embedding]").unwrap(),
+        text.find("[identity]").unwrap(),
+    );
+    std::fs::write(&config, format!("{}{}", &text[..from], &text[to..])).unwrap();
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let writer = Writer::start(&config, &root, address).await;
+    let namespace = "dense-fixture";
+
+    // The creating request declares the dimension of the namespace's vectors. A
+    // fingerprint it sends must be that of what it declares.
+    let row = json!({"id": "a", "text": "alpha", "vector": vector(0, 16)});
+    let wrong = format!("sha256:{}", "0".repeat(64));
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"settings": {"embedding": {"dimensions": 16, "fingerprint": wrong}}, "upserts": [row]})
+            )
+            .await,
+        (400, json!({"error": "settings_invalid"}))
+    );
+    let fingerprint = fyrr_core::envelope::EmbeddingSettings {
+        api_style: fyrr_core::envelope::EmbeddingApiStyle::OpenaiCompatible,
+        prefix: String::new(),
+        roles: Default::default(),
+        send_dimensions: false,
+    }
+    .fingerprint("BAAI/bge-m3", 16);
+    let create = json!({
+        "settings": {"embedding": {"dimensions": 16, "fingerprint": fingerprint}},
+        "upserts": [
+            {"id": "a", "text": "alpha", "vector": vector(0, 16)},
+            {"id": "b", "text": "bravo", "vector": vector(1, 16)},
+        ],
+    });
+    assert_eq!(
+        writer.post(WRITE_KEY, namespace, &create).await,
+        (200, json!({"upserted": 2, "deleted": 0}))
+    );
+    let fetched = body(Mcp::open(&config).call("fetch", json!({"source_id":"_api","root_id":"b"})));
+    assert!(fetched.to_string().contains("bravo"));
+    // The settings are fixed, a fingerprint that differs from the namespace's included.
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"settings": {"embedding": {"fingerprint": wrong}}, "upserts": [row]})
+            )
+            .await,
+        (409, json!({"error": "namespace_settings_fixed"}))
+    );
+
+    // Nothing embeds the text of a row without a vector, and the dimension is the namespace's.
+    for (row, code) in [
+        (
+            json!({"id": "x", "text": "alpha"}),
+            "embedding_not_configured",
+        ),
+        (
+            json!({"id": "x", "text": "alpha", "vector": vector(2, 1024)}),
+            "vector_invalid",
+        ),
+    ] {
+        assert_eq!(
+            writer
+                .post(WRITE_KEY, namespace, &json!({"upserts": [row]}))
+                .await,
+            (400, json!({"error": code}))
+        );
+    }
+}
+
 #[tokio::test]
 #[ignore = "real writer executable on local storage; scripts/ci"]
 async fn identity_write_api_refuses_whole_and_keeps_connector_namespaces_apart_on_storage() {

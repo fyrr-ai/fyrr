@@ -413,7 +413,7 @@ fn arrow_nested_additions_follow_the_minor_rule() {
     );
     let required = with_section_field(Field::new("page_number", DataType::UInt32, false));
     let error = check_document_changes_schema(&required).expect_err("non-nullable nested addition");
-    assert!(error.to_string().contains("sections[][5]"), "{error}");
+    assert!(error.to_string().contains("sections[][6]"), "{error}");
 
     let mut fields: Vec<Field> = schema
         .fields()

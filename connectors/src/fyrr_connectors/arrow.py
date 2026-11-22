@@ -42,6 +42,7 @@ def _arrow_type(data_type: Any) -> pa.DataType:
     simple = {
         "Utf8": pa.string(),
         "Int64": pa.int64(),
+        "Float32": pa.float32(),
         "UInt32": pa.uint32(),
         "Boolean": pa.bool_(),
     }
@@ -75,11 +76,15 @@ class Location:
 
 @dataclass(frozen=True, kw_only=True)
 class Section:
-    """Document text in order; `readers` narrows a restricted part."""
+    """Document text in order; `readers` narrows a restricted part. `vector`
+    is the section's own embedding: it is stored in place of one computed from
+    the text, so the text must be one chunk (at most 16 KiB) and the vector has
+    the namespace's dimension, finite elements and a nonzero length."""
 
     text: str
     location: Location | None = None
     readers: Sequence[str] | None = None
+    vector: Sequence[float] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -175,6 +180,7 @@ def _row(change: Upsert | Delete) -> dict[str, Any]:
                 "location_label": section.location.label if section.location else None,
                 "location_index": section.location.index if section.location else None,
                 "readers": None if section.readers is None else list(section.readers),
+                "vector": None if section.vector is None else list(section.vector),
             }
             for section in change.sections
         ],
@@ -326,6 +332,8 @@ def rows_to_json(batch: pa.RecordBatch) -> list[dict[str, Any]]:
                 entry["location"] = location
             if section.get("readers") is not None:
                 entry["readers"] = section["readers"]
+            if section.get("vector") is not None:
+                entry["vector"] = section["vector"]
             sections.append(entry)
         change["sections"] = sections
         changes.append(change)

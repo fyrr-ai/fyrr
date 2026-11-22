@@ -45,6 +45,7 @@ def _from_fixture(change: dict) -> Upsert | Delete:
             text=section["text"],
             location=Location(**section["location"]) if "location" in section else None,
             readers=section.get("readers"),
+            vector=section.get("vector"),
         )
         for section in change["sections"]
     ]

@@ -343,6 +343,10 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-writer:lib:fyrr_writer/batch::tests::a_contract_1_3_batch_has_no_vector_column": {
+        "tier": "quick",
+        "seconds": 0.002
+      },
       "full:fyrr-writer:lib:fyrr_writer/batch::tests::contract_rows_convert_and_count": {
         "tier": "quick",
         "seconds": 0.01
@@ -1882,6 +1886,14 @@
         "seconds": 15.0
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_stores_the_vectors_a_caller_supplies_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_without_embedding_settings_takes_only_vectors_on_storage": {
         "tier": "full",
         "seconds": 40
       },
