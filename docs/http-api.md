@@ -141,7 +141,7 @@ takes `{"read_only": true}` to freeze the namespace and `{"read_only": false}`
 to thaw it, and answers `{"namespace","read_only","changed"}`; `changed` is
 `false` when the namespace was already so. It needs an API key with the `admin`
 role whose `namespace_prefix` allows the namespace. The CLI does the same:
-`fyrr writer namespace read-only true|false`.
+`fyrr writer namespace read-only true` (or `false`).
 
 While the namespace is frozen it stays readable, and:
 

@@ -1215,14 +1215,8 @@ async fn identity_write_api_freezes_a_namespace_and_commits_what_it_accepted_bef
         );
         lease.release().await.unwrap();
     };
-    let (accepted, ()) = tokio::join!(
-        writer.post(
-            WRITE_KEY,
-            namespace,
-            &json!({"upserts": [{"id": "d2", "text": "red hat"}]})
-        ),
-        switch
-    );
+    let request = json!({"upserts": [{"id": "d2", "text": "red hat"}]});
+    let (accepted, ()) = tokio::join!(writer.post(WRITE_KEY, namespace, &request), switch);
     assert_eq!(accepted, (200, json!({"upserted": 1, "deleted": 0})));
     assert_eq!(stored(&config, "root_id = 'd2'").await.num_rows(), 1);
 
