@@ -938,6 +938,50 @@
       "full:fyrr-writer:lib:fyrr_writer/commit::namespace::tests::settings_round_trip_through_a_configuration": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::a_null_is_valid_and_infers_nothing": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::an_undeclared_attribute_takes_the_type_of_its_first_value": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::a_declared_attribute_keeps_its_type": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::every_error_has_a_distinct_code": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::reserved_and_malformed_names_are_refused": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::structured_values_are_refused": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::the_name_bound_holds_at_its_edge": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::the_value_bound_holds_at_its_edge": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::the_attribute_count_holds_at_its_edge": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/prepare::tests::the_table_holds_exactly_the_reserved_built_in_columns": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::open_tests::an_attribute_must_be_a_nullable_column_of_its_type_with_its_index_on_it": {
+        "tier": "quick",
+        "seconds": 0.0
       }
     },
     "children": {
@@ -1133,6 +1177,10 @@
       "full:fyrr-core:test:config/http_without_a_login_method_stays_valid_for_the_writer_and_the_check_warns": {
         "tier": "quick",
         "seconds": 0.01
+      },
+      "full:fyrr-core:test:config/namespace_attributes_are_declared_by_name_and_type": {
+        "tier": "quick",
+        "seconds": 0.01
       }
     }
   },
@@ -1191,6 +1239,10 @@
       "full:fyrr-core:test:contracts/provider_version_cases": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "full:fyrr-core:test:contracts/a_manifest_and_a_policy_hold_only_valid_attribute_schemas": {
+        "tier": "quick",
+        "seconds": 0.002
       }
     }
   },
@@ -1517,6 +1569,10 @@
       "full:fyrr:test:dense_path/mirror_identity::reader_paused_past_its_version_check_answers_from_the_new_publication": {
         "tier": "full",
         "seconds": 15.0
+      },
+      "full:fyrr:test:dense_path/storage_budget::an_attribute_costs_a_reader_a_bounded_number_of_storage_requests": {
+        "tier": "full",
+        "seconds": 90.0
       }
     },
     "backend": "local"
@@ -4866,7 +4922,7 @@
       },
       "full:fyrr:test:writer_provider/prepared_timeout_names_flag_and_rerun_preserves_durable_work_on_storage": {
         "tier": "quick",
-        "seconds": 8.0
+        "seconds": 33.0
       }
     }
   },
@@ -4937,6 +4993,10 @@
       "full:fyrr:test:dense_path/index_errors::a_namespace_keeps_its_own_settings_on_storage": {
         "tier": "full",
         "seconds": 7.977
+      },
+      "full:fyrr:test:dense_path/index_errors::declared_attributes_are_nullable_columns_with_an_index_each_on_storage": {
+        "tier": "full",
+        "seconds": 10.0
       }
     }
   },

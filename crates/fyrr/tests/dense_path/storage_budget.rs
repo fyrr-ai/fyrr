@@ -215,6 +215,75 @@ async fn a_running_reader_stays_within_its_storage_request_budget() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// Attributes of the namespace that measures the cost of one more.
+const ATTRIBUTES: usize = 64;
+/// Storage requests one declared attribute adds to opening a reader on an
+/// empty mirror and warming it: reads of its index files (1.8 measured with
+/// 64 attributes). Raise it only on purpose.
+const ATTRIBUTE_OPEN_BUDGET: usize = 2;
+
+/// The storage requests, other than the version check's, of a reader that
+/// opens a one-document namespace declaring `attributes` attributes, answers
+/// its first search and warms the generation.
+async fn open_requests(attributes: usize) -> usize {
+    let (config, root) = setup_on(Backend::Local);
+    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    let kinds = ["string", "int", "float", "bool", "datetime"];
+    let declared: Vec<_> = (0..attributes)
+        .map(|n| (format!("attribute_{n}"), kinds[n % kinds.len()]))
+        .collect();
+    let declared: Vec<_> = declared.iter().map(|(n, k)| (n.as_str(), *k)).collect();
+    let text = super::index_errors::declare(&config, &declared)
+        .replace("# fyrr-test-head-check = every", "")
+        .replace("[reader]", "[reader]\nversion_check_interval = '1s'");
+    std::fs::write(&config, &text).unwrap();
+    let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
+    root.embedding.insert_both("ledger", vector);
+    success(&config, &["writer", "namespace", "create"]);
+    sync_texts(&config, &root, &[("kept.txt", KEPT)]);
+    success(&config, &["writer", "commit"]);
+    let seen = Seen::default();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), seen.hook());
+    let reader = root.join("observed.toml");
+    std::fs::write(&reader, text.replace(&endpoint, &observed)).unwrap();
+    let started = std::time::Instant::now();
+    let mut client = super::tools::Mcp::open(&reader);
+    served(&mut client).unwrap();
+    seen.settle();
+    let allowed = head_reads_allowed(started.elapsed(), 1);
+    let opened = seen.since(0);
+    let requests = opened.1.len();
+    within(
+        &format!("open with {attributes} attributes"),
+        opened,
+        usize::MAX,
+        allowed,
+    );
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    drop(client);
+    std::fs::remove_dir_all(root).unwrap();
+    requests
+}
+
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+#[allow(clippy::print_stderr)]
+async fn an_attribute_costs_a_reader_a_bounded_number_of_storage_requests() {
+    let without = open_requests(0).await;
+    let with = open_requests(ATTRIBUTES).await;
+    let added = with.saturating_sub(without);
+    eprintln!(
+        "budget attributes: {without} requests without, {with} with {ATTRIBUTES}: {added} added, {:.2} per attribute",
+        added as f64 / ATTRIBUTES as f64
+    );
+    assert!(
+        added <= ATTRIBUTES * ATTRIBUTE_OPEN_BUDGET,
+        "{ATTRIBUTES} attributes added {added} storage requests, budget {} each",
+        ATTRIBUTE_OPEN_BUDGET
+    );
+}
+
 /// What a reader that declares API keys adds to the budgets above: one `GET`
 /// of the published keys when it starts and one per version check, and nothing
 /// per request.

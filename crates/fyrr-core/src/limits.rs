@@ -48,6 +48,16 @@ pub mod mcp {
     pub const RESPONSE_MIN_HITS_PER_QUERY: usize = 4;
 }
 
+/// Bounds of a namespace's typed attribute schema (not of connector documents).
+pub mod schema {
+    /// Typed attributes a namespace can declare, each its own column and index.
+    pub const MAX_ATTRIBUTES: usize = 128;
+    /// Bytes in the name of a typed attribute.
+    pub const MAX_NAME_BYTES: usize = 128;
+    /// Bytes in the value of a `string` attribute.
+    pub const MAX_VALUE_BYTES: usize = 4096;
+}
+
 /// Checks a required identifier: non-empty, no surrounding whitespace, no
 /// control characters, at most [`MAX_ID_BYTES`]. The message names the field,
 /// never the value.
