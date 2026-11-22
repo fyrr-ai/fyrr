@@ -107,7 +107,13 @@ pub struct WriteRow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WriteRequest {
-    /// Part of the settings of a namespace that does not exist yet, laid over the process defaults.
+    /// Part of the settings of a namespace that does not exist yet, laid over the
+    /// process defaults. For a namespace that is published, a request with
+    /// `settings` alone and only `attributes` and `attribute_indexes` in them
+    /// changes its schema: attributes are added and indexes set; another type
+    /// or a removed attribute is `attribute_type_change_refused` or
+    /// `attribute_removal_refused`, rows with it `schema_change_with_rows`, and a
+    /// namespace with no publication yet `namespace_not_published`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<Map<String, Value>>,
     /// Rows that replace the documents with their ids.

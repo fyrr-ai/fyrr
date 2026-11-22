@@ -7,7 +7,9 @@
 > - Every key but `name` is the default for a namespace created from this
 >   file. `writer namespace create` records them in the namespace, which keeps
 >   them for its life: a process with another file serves it with the
->   namespace's own settings. To change one, create a new namespace.
+>   namespace's own settings. To change one, create a new namespace; only the
+>   attributes and their indexes can change, by a
+>   [write request](http-api.md#changing-the-schema).
 > - The keys under Advanced tuning are best left at their defaults unless a
 >   measurement says otherwise.
 
@@ -29,6 +31,7 @@ and the other `[reader]` and `[writer]` keys in
 | `retrieval` | see below | Candidate depths, fusion weight and output bounds. |
 | `rerank` | absent | Optional hosted reranker; absent makes no reranker calls. |
 | `attributes` | `{}` | Typed attributes of the namespace: name to type, see below. |
+| `attribute_indexes` | `{}` | The attributes whose indexes are not the default: `index = false`, `full_text` and `ngram`, see below. |
 | `write_api` | absent | Serves the [document write API](http-api.md#write-documents) and creates API namespaces, see below. |
 
 ### `[namespace.attributes]`
@@ -63,10 +66,43 @@ no index: it is stored, and cannot be filtered or sorted by. A reader opens each
 attribute when it opens a namespace (1.8 measured with 64 attributes; the
 storage request budget test holds it).
 
+### `[namespace.attribute_indexes]`
+
+```toml
+[namespace.attribute_indexes.note]
+index = false
+ngram = true
+```
+
+An attribute has the index of its type unless the table says otherwise. The
+keys of an entry are `index` (default `true`: the index above), and, for a
+`string` attribute only, `full_text` and `ngram` (default `false`: a full-text
+or an n-gram index on the column). An entry names a declared attribute, differs
+from the default and asks only for what the type can have, else the schema is
+refused (`settings_invalid` over HTTP). Each index is one more storage request
+or two when a reader opens the namespace, and one more index to build and to
+update with every publication.
+
+An attribute without an index is still filtered and sorted by: the reader
+scans its column, fragment by fragment, and the request deadline (`deadline_ms`,
+10 s by default) bounds the scan like any other work of the request. That is
+cheap on a small namespace and costs the time of reading the column on a large
+one, so leave `index = false` to attributes that are rarely filtered. The full-text and n-gram indexes are
+built and kept; no filter operator reads them yet.
+
+A new namespace's first publication builds every index its schema asks for.
+After that the attributes and their indexes change by a
+[schema request](http-api.md#changing-the-schema): the manifest of a publication
+records the indexes that are built, and the next maintenance builds the ones
+that were switched on since.
+
 A name is a lowercase letter followed by lowercase letters, digits and `_`, at
 most 128 bytes; a built-in column name or a name starting with `_` is refused.
-The schema is recorded in the namespace and in every content manifest, and like
-the other settings it is fixed for the life of the namespace.
+The schema is recorded in the namespace and in every content manifest. Like the
+other settings it is fixed for the life of the namespace, but for new attributes
+and the indexes of attributes, which a
+[write request](http-api.md#changing-the-schema) changes on a namespace that
+exists. A type is never changed and an attribute is never removed.
 
 The document write API refuses an undeclared attribute with
 `attribute_undeclared`, and a value that does not fit its type with a named

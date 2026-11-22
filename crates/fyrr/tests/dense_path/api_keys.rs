@@ -889,7 +889,8 @@ async fn a_namespace_report_needs_the_admin_or_list_role() {
         }
     }
 
-    // A frozen namespace reports it, once the reader has checked its version.
+    // A frozen namespace reports it, once the reader has taken its policy: at
+    // the next search, which checks the authorization.
     let mut freeze = worker_command(&deployment.root.join("report.toml"));
     for key in all {
         freeze.env(key.variable, &key.secret);
@@ -901,6 +902,7 @@ async fn a_namespace_report_needs_the_admin_or_list_role() {
     assert!(frozen.status.success(), "{}", report(&frozen));
     let until = std::time::Instant::now() + Duration::from_secs(60);
     loop {
+        path_query(&reader, &reads.secret, &second).await;
         let (status, body) = report_of(&reader, &admins.secret, &second).await;
         assert_eq!(status, 200, "{body}");
         if body["read_only"] == true {

@@ -3,6 +3,9 @@ use super::*;
 use lance::dataset::NewColumnTransform;
 
 mod native;
+mod schema;
+
+pub(crate) use schema::{change_schema, check_schema_change};
 
 #[allow(clippy::print_stderr)]
 pub(crate) async fn commit_one(
@@ -31,8 +34,9 @@ pub(crate) async fn commit_one(
     };
     let current_policy: PolicyArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-    // The namespace's settings never change: a configuration that does not
-    // carry them judges no batch, rather than rejecting it for good.
+    // The namespace's settings change only by a schema request: a configuration
+    // that does not carry the ones the policy holds now judges no batch, rather
+    // than rejecting it for good.
     if current_policy.settings != namespace_settings(config) {
         return Err(WriterError::NamespaceSettingsFixed);
     }
@@ -389,8 +393,8 @@ fn configured_policy(
         return Ok(None);
     }
     let mut policy = current_policy.clone();
-    policy.stamp_version();
     policy.fixed_grants = source_grants;
+    policy.schema_version = policy.current_version();
     Ok(Some(policy))
 }
 
@@ -502,14 +506,7 @@ async fn build_indexes(
     );
     let scalar = ScalarIndexParams::default();
     let fts = fts_params(config);
-    let indexes = INDEXES
-        .iter()
-        .map(|&(column, name, kind, _)| (column.to_owned(), name.to_owned(), kind))
-        .chain(fyrr_reader::search::attribute_indexes(
-            &config.namespace.attributes,
-        ));
-    for (column, name, kind) in indexes {
-        let name = name.as_str();
+    for &(column, name, kind, _) in INDEXES {
         if (name == "fts_idx" && !fts_changed) || (name != "fts_idx" && !first) {
             continue;
         }
@@ -522,7 +519,7 @@ async fn build_indexes(
         let before = dataset.version().version;
         native_step(
             lease,
-            dataset.create_index(&[column.as_str()], kind, Some(name.into()), params, true),
+            dataset.create_index(&[column], kind, Some(name.into()), params, true),
             WriterError::IndexBuildFailed,
         )
         .await
@@ -533,6 +530,10 @@ async fn build_indexes(
         })?;
         record_transaction(dataset, lineage, before).await?;
         stage(stage_timings, name, start);
+    }
+    if first {
+        // Boxed for the same reason.
+        Box::pin(build_attribute_indexes(config, lease, dataset, lineage)).await?;
     }
     if config.writer.commit.merge_fts_segments {
         let start = std::time::Instant::now();
@@ -551,10 +552,51 @@ async fn build_indexes(
     Ok(())
 }
 
+/// Builds the indexes the attributes are to have that the table does not have
+/// yet: all of them in a first publication, the ones switched on since in
+/// maintenance. Until one is built, a filter on its attribute is a scan.
+pub(crate) async fn build_attribute_indexes(
+    config: &Config,
+    lease: &LeaseGuard,
+    dataset: &mut Dataset,
+    lineage: &mut CommitLineage,
+) -> Result<()> {
+    let built: BTreeSet<_> = dataset
+        .load_indices()
+        .await?
+        .iter()
+        .map(|index| index.name.clone())
+        .collect();
+    let scalar = ScalarIndexParams::default();
+    let fts = fts_params(config);
+    for (column, name, kind) in fyrr_reader::search::attribute_indexes(
+        &config.namespace.attributes,
+        &config.namespace.attribute_indexes,
+    ) {
+        if built.contains(&name) {
+            continue;
+        }
+        let params: &dyn lance_index::IndexParams = if kind == IndexType::Inverted {
+            &fts
+        } else {
+            &scalar
+        };
+        let before = dataset.version().version;
+        native_step(
+            lease,
+            dataset.create_index(&[column.as_str()], kind, Some(name), params, true),
+            WriterError::IndexBuildFailed,
+        )
+        .await?;
+        record_transaction(dataset, lineage, before).await?;
+    }
+    Ok(())
+}
+
 /// Adds a nullable column for each declared attribute. Lance records it in the
 /// table's metadata: no data file is written, and rows read as null until a
 /// value is written.
-async fn add_attribute_columns(
+pub(crate) async fn add_attribute_columns(
     config: &Config,
     lease: &LeaseGuard,
     dataset: &mut Dataset,

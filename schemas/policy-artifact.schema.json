@@ -14,7 +14,7 @@
     },
     "settings": {
       "$ref": "#/$defs/NamespaceSettings",
-      "description": "Fixed for the life of the namespace: every generation repeats the\nsettings the namespace was created with."
+      "description": "Fixed for the life of the namespace but its attributes and their\nindexes, which only grow and change by a schema request."
     },
     "fixed_grants": {
       "type": "object",
@@ -44,7 +44,7 @@
     },
     "read_only": {
       "type": "boolean",
-      "description": "The namespace is frozen: API writes and connector syncs are refused\nwhile it stays readable. An envelope that was prepared before the\nswitch is still committed. Set only in a policy of major 4, which a\nbuild that does not know the switch refuses instead of writing."
+      "description": "The namespace is frozen: API writes and connector syncs are refused\nwhile it stays readable. An envelope that was prepared before the\nswitch is still committed. A policy that sets it is written as version\n4.0, which a build that does not know the switch refuses instead of\nwriting."
     }
   },
   "required": [
@@ -106,7 +106,14 @@
           "additionalProperties": {
             "$ref": "#/$defs/AttributeType"
           },
-          "description": "The typed attributes the namespace declares when it is created. Each is\na nullable column with its own index from the first publication."
+          "description": "The typed attributes the namespace declares. Each is a nullable column;\na request that changes the schema adds attributes and never changes or\nremoves one."
+        },
+        "attribute_indexes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/AttributeIndex"
+          },
+          "description": "The indexes the attributes are to have where they are not the default.\nAn index switched on is built by the next maintenance; the manifest\nrecords the ones that are built."
         },
         "write_api": {
           "anyOf": [
@@ -502,6 +509,25 @@
         "uuid"
       ],
       "description": "The type of the elements of an array: every scalar type but `bytes`."
+    },
+    "AttributeIndex": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "type": "boolean",
+          "default": true
+        },
+        "full_text": {
+          "type": "boolean",
+          "default": false
+        },
+        "ngram": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "description": "The indexes an attribute has: the scalar one unless it says otherwise, and a\nfull-text or an n-gram index when it asks for one. An attribute without an\nindex is still filtered and sorted: by a scan of the table."
     },
     "WriteApiSettings": {
       "type": "object",

@@ -8,11 +8,19 @@ impl PreparedReader {
     pub(crate) fn report(&self) -> Result<serde_json::Value> {
         let manifest = &self.manifest;
         let stats = manifest.stats.as_ref();
+        // The policy may be newer than the manifest, when an authorization
+        // refresh took a later generation before the reader moved to the later
+        // publication. The schema is one generation: the manifest's.
+        let mut settings = self.policy.settings.clone();
+        settings.attributes.clone_from(&manifest.attributes);
+        settings
+            .attribute_indexes
+            .retain(|name, _| manifest.attributes.contains_key(name));
         serde_json::to_value(NamespaceReport {
             namespace: manifest.namespace.clone(),
             publication_id: manifest.publication_id.clone(),
             schema: manifest.attributes.clone(),
-            settings: self.policy.settings.clone(),
+            settings,
             read_only: self.policy.read_only,
             rows: stats.map(|stats| stats.rows),
             logical_bytes: stats.map(|stats| stats.logical_bytes),

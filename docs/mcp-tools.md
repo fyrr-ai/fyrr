@@ -119,6 +119,11 @@ operator is `invalid_argument`. A `uint` is a non-negative whole number and a
 `uuid` a string of 8-4-4-4-12 hexadecimal digits. A `bytes` attribute cannot be
 filtered: any comparison, even with `null`, is `invalid_argument`.
 
+A filter or a sort on an attribute that has no index, because its schema says
+`index = false` or because the index is not built yet, is answered by a scan of
+the column, bounded by the request's `deadline_ms`
+([indexes](tuning.md#namespaceattribute_indexes)).
+
 An array attribute takes `eq` or `ne` with `null` and the five operators below,
 and a scalar attribute takes none of the five. `contains` and `not_contains`
 take one value of the element type, and `contains_any`, `contains_all` and

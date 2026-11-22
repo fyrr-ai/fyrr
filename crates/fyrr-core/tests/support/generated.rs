@@ -9,7 +9,8 @@ use fyrr_core::directory::DirectorySnapshot;
 use fyrr_core::envelope::{PreparedEnvelope, RejectionMarker};
 use fyrr_core::http_api::{
     DeleteNamespaceRequest, DeleteNamespaceResponse, ErrorBody, FetchRequest, NamespaceList,
-    NamespaceReport, PatchNamespaceRequest, PatchNamespaceResponse, QueryRequest, WriteRequest, WriteResponse,
+    NamespaceReport, PatchNamespaceRequest, PatchNamespaceResponse, QueryRequest, WriteRequest,
+    WriteResponse,
 };
 use fyrr_core::identity::{ApiKeysArtifact, IdentityArtifact};
 use fyrr_core::mcp::{
@@ -162,7 +163,7 @@ fn openapi() -> Value {
         )},
         "/v1/namespaces/{namespace}/documents": {"post": operation(
             "writer",
-            "Upsert, patch and delete documents, all or none",
+            "Upsert, patch and delete documents, all or none; or change the schema",
             "an API key with the `write` role",
             "Error",
             Some(requests.subschema_for::<WriteRequest>()),

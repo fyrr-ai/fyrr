@@ -92,8 +92,47 @@ fn a_manifest_and_a_policy_hold_only_valid_attribute_schemas() {
     }
 }
 
+/// Index options are read only from the versions an older build refuses: it
+/// would ignore them and build or expect the default index of each attribute.
+#[test]
+fn attribute_index_options_need_the_version_an_older_build_refuses() {
+    let options = json!({"title": {"index": false, "full_text": true}});
+    let mut manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
+    manifest["attributes"] = json!({"title": "string", "count": "bytes"});
+    assert!(parse::<ContentManifest>(&manifest).is_ok());
+    manifest["attribute_indexes"] = options.clone();
+    assert!(parse::<ContentManifest>(&manifest).is_err());
+    manifest["schema_version"] = json!("5.0");
+    assert!(parse::<ContentManifest>(&manifest).is_ok());
+    let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
+    policy["settings"]["attributes"] = json!({"title": "string", "count": "bytes"});
+    assert!(parse::<PolicyArtifact>(&policy).is_ok());
+    policy["settings"]["attribute_indexes"] = options;
+    assert!(parse::<PolicyArtifact>(&policy).is_err());
+    policy["schema_version"] = json!("4.0");
+    assert!(parse::<PolicyArtifact>(&policy).is_ok());
+    // An option is of a declared attribute, differs from the default and is one
+    // its type can have: a `bytes` has no index and a number no text index.
+    for (name, option) in [
+        ("undeclared", json!({"index": false})),
+        ("title", json!({})),
+        ("title", json!({"index": true, "full_text": false})),
+        ("title", json!({"fulltext": true})),
+        ("count", json!({"index": false})),
+        ("count", json!({"ngram": true})),
+    ] {
+        policy["settings"]["attribute_indexes"] = json!({ name: option });
+        assert!(parse::<PolicyArtifact>(&policy).is_err(), "{name} {option}");
+        manifest["attribute_indexes"] = json!({ name: option });
+        assert!(
+            parse::<ContentManifest>(&manifest).is_err(),
+            "{name} {option}"
+        );
+    }
+}
+
 /// A build that does not know the switch would ignore it and write, so a frozen
-/// policy is a version that it refuses, and only a frozen one is.
+/// policy is a version that it refuses.
 #[test]
 fn a_frozen_policy_is_a_version_that_an_older_build_refuses() {
     let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
@@ -105,17 +144,12 @@ fn a_frozen_policy_is_a_version_that_an_older_build_refuses() {
     policy["schema_version"] = json!("4.0");
     let frozen = parse::<PolicyArtifact>(&policy).unwrap();
     assert!(frozen.read_only);
-    policy["read_only"] = json!(false);
-    assert!(
-        parse::<PolicyArtifact>(&policy).is_err(),
-        "4.0 without the flag"
-    );
     // Written as the content decides, and read back.
     let mut stamped = frozen.clone();
-    stamped.stamp_version();
+    stamped.schema_version = stamped.current_version();
     assert_eq!(stamped.schema_version.to_string(), "4.0");
     stamped.read_only = false;
-    stamped.stamp_version();
+    stamped.schema_version = stamped.current_version();
     assert_eq!(
         stamped.schema_version,
         <PolicyArtifact as Contract>::VERSION

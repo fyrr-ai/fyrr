@@ -77,7 +77,14 @@
       "additionalProperties": {
         "$ref": "#/$defs/AttributeType"
       },
-      "description": "The typed attributes of this version: each is a nullable column with an\nindex of its own among `indexes`."
+      "description": "The typed attributes of this version: each is a nullable column."
+    },
+    "attribute_indexes": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/AttributeIndex"
+      },
+      "description": "The attributes whose built indexes are not the default: each attribute\nhas the scalar index of its type unless it says `index: false`, and the\ntext indexes it asks for, among `indexes`."
     },
     "files": {
       "type": "array",
@@ -431,6 +438,25 @@
         "uuid"
       ],
       "description": "The type of the elements of an array: every scalar type but `bytes`."
+    },
+    "AttributeIndex": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "type": "boolean",
+          "default": true
+        },
+        "full_text": {
+          "type": "boolean",
+          "default": false
+        },
+        "ngram": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "description": "The indexes an attribute has: the scalar one unless it says otherwise, and a\nfull-text or an n-gram index when it asks for one. An attribute without an\nindex is still filtered and sorted: by a scan of the table."
     },
     "FileRef": {
       "type": "object",

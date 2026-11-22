@@ -29,7 +29,9 @@ pub(crate) mod history;
 mod namespace;
 mod publication;
 
-pub(crate) use group::commit_one;
+pub(crate) use group::{
+    add_attribute_columns, build_attribute_indexes, change_schema, check_schema_change, commit_one,
+};
 pub(crate) use history::RestoreHistory;
 pub(crate) use namespace::configured_identity;
 pub(crate) use namespace::namespace_settings;
