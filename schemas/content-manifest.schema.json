@@ -131,6 +131,17 @@
         }
       ],
       "description": "Which envelopes this publication and every older one committed or\nrejected, so that the newest manifest is enough to tell. Absent from\nmanifests written before it existed: a reader then walks the chain."
+    },
+    "stats": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PublicationStats"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "What the version holds. Absent from manifests written before 4.1."
     }
   },
   "required": [
@@ -507,8 +518,36 @@
         "rejected_since"
       ],
       "description": "The envelope outcomes of a publication chain up to one manifest: an\nimmutable checkpoint of the older ones, and the few since."
+    },
+    "PublicationStats": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Live rows, deleted ones not counted."
+        },
+        "logical_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Bytes of the data files of those rows, indexes and deletion files not counted."
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The first content publication of the namespace, carried forward by every later one."
+        }
+      },
+      "required": [
+        "rows",
+        "logical_bytes",
+        "created_at"
+      ],
+      "description": "The size of a published version and when its namespace was first published."
     }
   },
   "x-fyrr-contract": "content-manifest",
-  "x-fyrr-schema-version": "4.0"
+  "x-fyrr-schema-version": "4.1"
 }

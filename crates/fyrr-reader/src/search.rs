@@ -477,6 +477,8 @@ mod open;
 mod query;
 #[path = "reader/recall.rs"]
 mod recall;
+#[path = "reader/report.rs"]
+mod report;
 #[path = "reader/routing.rs"]
 mod routing;
 

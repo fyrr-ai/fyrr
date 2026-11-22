@@ -478,7 +478,10 @@ impl Scheduler {
             self.running.push(tokio::task::spawn_blocking(move || {
                 tokio::runtime::Handle::current().block_on(async move {
                     let _pin = pin;
-                    if let Some(subject) = &job.subject {
+                    // The report reads no rows: it needs no principal.
+                    if let Some(subject) = &job.subject
+                        && !matches!(job.request, ToolCall::Report)
+                    {
                         let bound = bounded(&timing, reader.bind_subject(subject)).await;
                         if let Err(code) = bound {
                             let Err(code) = settle::<()>(&mut reader, Err(code)).await else {

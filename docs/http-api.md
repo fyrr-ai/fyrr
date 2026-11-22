@@ -8,6 +8,9 @@
 > - They take the arguments of the [MCP tools](mcp-tools.md) and return their
 >   structured results. Authentication, permissions, deadlines, rate limits
 >   and the scheduler are those of `/mcp`.
+> - `GET /v1/namespaces/{namespace}` [reports](#namespace-report) a
+>   namespace's schema, settings, size and index state to an API key with the
+>   `admin` or `list` role.
 > - [API errors](#errors) carry an HTTP status and `{"error":"<code>"}`.
 >   `429` and `503` carry `Retry-After`. The HTTP parser can return `431`
 >   with an empty body.
@@ -18,6 +21,7 @@
 | --- | --- | --- |
 | `POST /v1/namespaces/{namespace}/query` | The arguments of [`search`](mcp-tools.md#search) | The `search` result |
 | `POST /v1/namespaces/{namespace}/fetch` | The arguments of [`fetch`](mcp-tools.md#fetch) | The `fetch` result |
+| `GET /v1/namespaces/{namespace}` | None | The [namespace report](#namespace-report) |
 
 `{namespace}` names the namespace to read: any namespace under
 `<storage root>/namespaces/`, not only `namespace.name`. The reader opens it
@@ -47,7 +51,7 @@ spend limits are per process: every namespace charges the same counters.
 `/mcp`, `/readyz` and `/admin/refresh` keep serving the configured namespace
 alone. `list_filters` has no JSON route.
 
-Both routes, like `/mcp`, need the `read` role of an
+`query` and `fetch`, like `/mcp`, need the `read` role of an
 [API key](identity.md#identityapi_keys); users signed in through OIDC hold
 `read` only. Other namespaces than the configured one are for API keys: an OIDC
 user reads the configured namespace through the path and answers `503
@@ -88,6 +92,35 @@ read of `head.json`; nothing is kept for the name. A key whose prefix allows a
 namespace can tell by the time the answer takes whether it exists. A name that is not a namespace name (lowercase letters,
 digits and `-`, at most 63 characters, not starting with `-`) answers `404
 invalid_argument`.
+
+## Namespace report
+
+`GET /v1/namespaces/{namespace}` answers what the reader holds of the
+namespace's published version, with no storage request of its own:
+
+| Field | Meaning |
+| --- | --- |
+| `namespace`, `publication_id` | The namespace and the content publication the answer describes. |
+| `schema` | The typed attributes of the version, name to type; `{}` when it has none. |
+| `settings` | The namespace's [settings](configuration.md), as its policy records them. |
+| `rows` | Live rows (a document is one or more rows). `null` for a version published before contract 4.1. |
+| `logical_bytes` | Bytes of the data files of those rows, without indexes. `null` as `rows`. |
+| `created_at` | When the namespace was first published. `null` as `rows`. |
+| `last_write_at` | When the version was published. |
+| `unindexed` | `rows` and `logical_bytes` of the data that an index of the version does not cover yet; `0` and `0` when every index covers it. |
+
+`rows` and `logical_bytes` are as of the publication the reader serves, so
+they follow a write when the reader checks its version. The numbers are not
+filtered by row permissions, so the route needs an API key with the `admin` or
+`list` role; a key that holds `read` only, and users signed in through OIDC,
+answer `403 forbidden`. Like the other routes it is for a namespace the key's
+`namespace_prefix` allows. A key with these roles alone is not bound to any
+reader tokens and reads no rows.
+
+```sh
+curl -H "Authorization: Bearer $FYRR_KEY" \
+  https://fyrr.example.com/v1/namespaces/acme
+```
 
 ## Consistency
 

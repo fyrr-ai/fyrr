@@ -9,6 +9,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `GET /v1/namespaces/{namespace}` on the reader reports the namespace's
+  schema, settings, approximate row count and logical bytes, creation time,
+  last write time, and the rows and bytes no index covers yet. It is answered
+  from the manifest the reader holds, and needs an API key with the `admin` or
+  `list` role, because its numbers are not filtered by row permissions. The
+  content manifest gains `stats` (publication contract 4.1). See
+  [Namespace report](docs/http-api.md#namespace-report).
 - `fyrr writer serve` serves `POST /v1/namespaces/{namespace}/documents` when
   `[namespace.write_api]` is set: upserts (rows with an `id`, a text and typed
   attributes) and deletes by id, one request published whole or refused whole.

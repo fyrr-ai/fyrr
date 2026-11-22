@@ -37,5 +37,5 @@
     }
   },
   "x-fyrr-contract": "envelope-checkpoint",
-  "x-fyrr-schema-version": "4.0"
+  "x-fyrr-schema-version": "4.1"
 }

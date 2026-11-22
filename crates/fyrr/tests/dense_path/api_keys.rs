@@ -832,6 +832,101 @@ async fn a_reader_serves_the_namespace_its_path_names() {
     reader.stop().await;
 }
 
+/// What a caller is told with `token` on the report route of `namespace`.
+async fn report_of(reader: &Reader, token: &str, namespace: &str) -> (u16, Value) {
+    let response = reader
+        .client
+        .get(format!("{}/v1/namespaces/{namespace}", reader.base))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    (
+        response.status().as_u16(),
+        response.json().await.unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+#[ignore = "real writer, HTTP reader executable and local storage; scripts/ci"]
+async fn a_namespace_report_needs_the_admin_or_list_role() {
+    let mut deployment = Deployment::new().await;
+    deployment.without_directory();
+    let reads = Key::new("nm-reads-r5k", "FYRR_TEST_API_KEY_READS", 71, "usr:u1");
+    let lists = Key {
+        extra: "roles=['list']".into(),
+        ..Key::new("nm-lists-r5k", "FYRR_TEST_API_KEY_LISTS", 72, "")
+    };
+    let admins = Key {
+        extra: "roles=['admin']".into(),
+        ..Key::new("nm-admin-r5k", "FYRR_TEST_API_KEY_ADMIN", 73, "")
+    };
+    let elsewhere = Key {
+        extra: "roles=['admin']\nnamespace_prefix='zz'".into(),
+        ..Key::new("nm-else-r5k", "FYRR_TEST_API_KEY_ELSE", 74, "")
+    };
+    let all = [&reads, &lists, &admins, &elsewhere];
+    let published = deployment.publish(&all, &all, "");
+    assert!(published.status.success(), "{}", report(&published));
+    let second = deployment.sibling("report", &all);
+    let mut reader = Reader::start_appended(&deployment.worker, &deployment.root, key_http).await;
+
+    // A key with `list` or `admin` reads the report of a namespace it may act
+    // in: the configured one and one its path names.
+    for key in [&lists, &admins] {
+        for namespace in [&deployment.namespace, &second] {
+            let (status, body) = report_of(&reader, &key.secret, namespace).await;
+            assert_eq!(status, 200, "{body}");
+            assert_eq!(body["namespace"], *namespace);
+            assert!(body["rows"].as_u64().unwrap() >= 4, "{body}");
+            assert!(body["logical_bytes"].as_u64().unwrap() > 0, "{body}");
+            assert!(body["created_at"].is_string(), "{body}");
+            assert!(body["last_write_at"].is_string(), "{body}");
+            assert_eq!(body["schema"], json!({}));
+            assert!(body["settings"]["embedding"]["model"].is_string(), "{body}");
+            assert_eq!(body["unindexed"], json!({"rows":0,"logical_bytes":0}));
+        }
+    }
+
+    // A key that reads, or acts in other namespaces only, is refused; so is a
+    // secret nobody published, a caller without one, and a write to the route.
+    let forbidden = (403, json!({"error":"forbidden"}));
+    assert_eq!(
+        report_of(&reader, &reads.secret, &deployment.namespace).await,
+        forbidden
+    );
+    assert_eq!(
+        report_of(&reader, &elsewhere.secret, &deployment.namespace).await,
+        forbidden
+    );
+    assert_eq!(
+        report_of(&reader, &secret(99), &deployment.namespace).await,
+        (401, json!({"error":"unauthorized"}))
+    );
+    let anonymous = reader
+        .client
+        .get(format!("{}/v1/namespaces/{}", reader.base, deployment.namespace))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), 401);
+    let post = reader
+        .client
+        .post(format!("{}/v1/namespaces/{}", reader.base, deployment.namespace))
+        .bearer_auth(&admins.secret)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(post.status(), 405);
+    // A namespace that does not exist is one the key is not bound in.
+    let missing = format!("{}-missing", deployment.namespace);
+    assert_eq!(
+        report_of(&reader, &admins.secret, &missing).await,
+        (401, json!({"error":"unauthorized"}))
+    );
+    reader.stop().await;
+}
+
 /// The root IDs a JSON route answered with.
 fn hits_of(body: &Value) -> Vec<String> {
     body["hits"]

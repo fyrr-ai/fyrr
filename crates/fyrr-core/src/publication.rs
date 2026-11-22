@@ -22,7 +22,7 @@ use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
 
 /// The publication contract version (manifest and head) written by this build.
-pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
+pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 1);
 
 /// The index and retrieval settings a namespace is created with and keeps for
 /// its life. The process configuration only supplies them when the namespace is
@@ -194,6 +194,20 @@ pub struct ContentManifest {
     /// manifests written before it existed: a reader then walks the chain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub envelope_evidence: Option<EnvelopeEvidence>,
+    /// What the version holds. Absent from manifests written before 4.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<PublicationStats>,
+}
+
+/// The size of a published version and when its namespace was first published.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PublicationStats {
+    /// Live rows, deleted ones not counted.
+    pub rows: u64,
+    /// Bytes of the data files of those rows, indexes and deletion files not counted.
+    pub logical_bytes: u64,
+    /// The first content publication of the namespace, carried forward by every later one.
+    pub created_at: DateTime<Utc>,
 }
 
 /// The envelope outcomes of a publication chain up to one manifest: an

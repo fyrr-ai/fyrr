@@ -440,22 +440,29 @@ fn retry_after(mut response: Response) -> Response {
         .insert(header::RETRY_AFTER, seconds.into());
     response
 }
-/// The tool a `POST /v1/namespaces/{namespace}/query` or `.../fetch` runs, the
-/// role an API key needs for it and the namespace the path names. `/mcp` needs
-/// `read` as well. A key without the role of a route gets 403 `forbidden`;
+/// The tool a JSON route runs, the roles an API key needs one of for it and the
+/// namespace the path names: `POST /v1/namespaces/{namespace}/query` and
+/// `.../fetch` need `read`, `GET /v1/namespaces/{namespace}` needs `admin` or
+/// `list`, because its numbers are not filtered by row permissions. `/mcp`
+/// needs `read` as well. A key without a role of a route gets 403 `forbidden`;
 /// `/readyz` and `/admin/refresh` take no API key.
-fn json_tool(request: &Request) -> Option<(&'static str, ApiKeyRole, String)> {
+fn json_tool(request: &Request) -> Option<(&'static str, &'static [ApiKeyRole], String)> {
+    let path = request.uri().path().strip_prefix("/v1/namespaces/")?;
+    if request.method() == Method::GET {
+        return (!path.contains('/')).then(|| {
+            (
+                "report",
+                &[ApiKeyRole::Admin, ApiKeyRole::List][..],
+                path.to_owned(),
+            )
+        });
+    }
     if request.method() != Method::POST {
         return None;
     }
-    match request
-        .uri()
-        .path()
-        .strip_prefix("/v1/namespaces/")?
-        .split_once('/')?
-    {
-        (namespace, "query") => Some(("search", ApiKeyRole::Read, namespace.to_owned())),
-        (namespace, "fetch") => Some(("fetch", ApiKeyRole::Read, namespace.to_owned())),
+    match path.split_once('/')? {
+        (namespace, "query") => Some(("search", &[ApiKeyRole::Read][..], namespace.to_owned())),
+        (namespace, "fetch") => Some(("fetch", &[ApiKeyRole::Read][..], namespace.to_owned())),
         _ => None,
     }
 }
@@ -496,10 +503,14 @@ fn returned_fields(
     Ok(Some(fields))
 }
 
-/// What a request asks of its caller: the role its route needs and, for a
-/// route that names one, the namespace.
+/// What a request asks of its caller: the roles its route accepts, one of which
+/// the caller needs, and, for a route that names one, the namespace.
 struct Needs<'a> {
-    role: ApiKeyRole,
+    roles: &'a [ApiKeyRole],
+    /// Whether the caller acts as a principal of the identity artifact, whose
+    /// reader tokens filter the rows it reads. A key with no `read` role has
+    /// none, and the route that takes it reads no rows.
+    principal: bool,
     namespace: Option<&'a str>,
 }
 fn bearer(request: &Request) -> Result<&str, ()> {
@@ -553,9 +564,10 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
     let route = json_tool(&request);
     let tool = route.as_ref().map(|(tool, _, _)| *tool);
     let needs = Needs {
-        role: route
+        roles: route
             .as_ref()
-            .map_or(ApiKeyRole::Read, |(_, role, _)| *role),
+            .map_or(&[ApiKeyRole::Read][..], |(_, roles, _)| *roles),
+        principal: tool != Some("report"),
         namespace: route.as_ref().map(|(_, _, namespace)| namespace.as_str()),
     };
     let _permit = if request.uri().path() != "/mcp" && tool.is_none() {
@@ -590,7 +602,9 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                     return error(StatusCode::REQUEST_TIMEOUT, DeadlineExceeded);
                 }
             };
-        let (message, parsed) = if let Some(name) = tool {
+        let (message, parsed) = if tool == Some("report") {
+            (None, Some(Ok(crate::serve::ToolCall::Report)))
+        } else if let Some(name) = tool {
             let call = serde_json::from_slice(&bytes)
                 .map_err(|_| InvalidArgument)
                 .and_then(|mut arguments| {
@@ -755,7 +769,7 @@ async fn authenticate_mcp(
     // answered as a caller its identity does not bind.
     let served = if let Some(name) = needs.namespace {
         let found = timeout_at(deadline, async {
-            state.admission.grant(&subject, needs.role, name).await?;
+            state.admission.grant(&subject, needs.roles, name).await?;
             spend(state, subject.api_key.as_deref().unwrap_or(&subject.key)).await?;
             let unbound = if subject.api_key.is_some() {
                 Unauthorized
@@ -795,7 +809,7 @@ async fn authenticate_mcp(
         });
     // The lookup of an API key precedes everything else, a cancellation included.
     let admit = || async {
-        timeout_at(deadline, admission.authorize(config, &subject, needs.role))
+        timeout_at(deadline, admission.authorize(config, &subject, needs.roles))
             .await?
             .map_err(refuse)
     };
@@ -813,6 +827,9 @@ async fn authenticate_mcp(
             state.service.cancel(&subject.key, id);
         }
         return Err(StatusCode::ACCEPTED.into_response());
+    }
+    if !needs.principal {
+        return Ok((subject, served));
     }
     let (principal, groups, identity) = admit().await?;
     subject.identity = Some(identity);
@@ -1151,7 +1168,8 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     }
     router = router
         .route("/v1/namespaces/{namespace}/query", post(tool_json))
-        .route("/v1/namespaces/{namespace}/fetch", post(tool_json));
+        .route("/v1/namespaces/{namespace}/fetch", post(tool_json))
+        .route("/v1/namespaces/{namespace}", get(tool_json));
     if h.operator_credential.is_some() {
         router = router.route("/admin/refresh", post(refresh));
     }
