@@ -2,13 +2,13 @@
 use crate::error::*;
 use axum::{
     Router,
-    extract::{Path, Request, State},
+    extract::{Request, State},
     http::{Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use fyrr_core::config::{ApiKeyRole, Config, ProcessEnvironment};
+use fyrr_core::config::{ApiKeyRole, Config, ProcessEnvironment, is_namespace_name};
 use fyrr_core::mcp::ErrorCode;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -16,7 +16,7 @@ use rmcp::transport::streamable_http_server::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -28,6 +28,9 @@ const MAX_HEADERS: usize = 64;
 const MAX_HEADER_BYTES: usize = 32 * 1024;
 const MAX_BEARER_BYTES: usize = 16 * 1024;
 const MAX_CONNECTIONS: usize = 64;
+/// Namespaces opened by request path besides the configured one. The least
+/// recently used one is closed when another needs the place.
+const MAX_OPEN_NAMESPACES: usize = 8;
 const MAX_REQUESTS_IN_FLIGHT: usize = 64;
 const MAX_CONTROLS_IN_FLIGHT: usize = 8;
 const MAX_CONTROL_KEYS: usize = 1024;
@@ -51,6 +54,7 @@ const CLIENT_CLOSED_REQUEST: StatusCode = match StatusCode::from_u16(499) {
 struct HttpState {
     admission: Arc<admission::Admission>,
     service: crate::serve::McpService,
+    namespaces: Arc<Namespaces>,
     config: Config,
     public: reqwest::Url,
     /// Absent when only API keys authenticate callers.
@@ -70,6 +74,260 @@ impl HttpState {
     }
     fn oidc(&self) -> Option<&fyrr_core::config::OidcConfig> {
         self.config.identity.oidc.as_ref()
+    }
+}
+
+/// A namespace this reader serves: its configuration, admission and scheduler.
+struct Served {
+    config: Config,
+    admission: Arc<admission::Admission>,
+    service: crate::serve::McpService,
+}
+impl Served {
+    /// The admission of `reader`; every namespace shares the deployment's API keys.
+    fn admission_of(
+        reader: &crate::search::PreparedReader,
+        api_keys: crate::storage::HeadCache<fyrr_core::identity::ApiKeysArtifact>,
+    ) -> Arc<admission::Admission> {
+        Arc::new(admission::Admission::new(
+            reader.control_store.clone(),
+            reader.control_root.clone(),
+            reader.identity_cache.clone(),
+            reader.head_cache.clone(),
+            api_keys,
+        ))
+    }
+}
+
+/// The namespaces a request path can name: the configured one, always, and
+/// others opened on their first request. At most `MAX_OPEN_NAMESPACES` others
+/// are open, each with an eighth of the reader's mirror and subject-cache
+/// budgets, inside the configured reader's memory envelope.
+struct Namespaces {
+    /// The configuration the file holds, to which a namespace's name is added.
+    process: Arc<Config>,
+    budget: crate::generation::MemoryPool,
+    api_keys: crate::storage::HeadCache<fyrr_core::identity::ApiKeysArtifact>,
+    configured: Arc<Served>,
+    open: std::sync::Mutex<Open<Served>>,
+    /// One per live namespace, held by its scheduler until it ends.
+    slots: Arc<Semaphore>,
+    /// How many namespaces have been opened: each has a mirror of its own.
+    opened: std::sync::atomic::AtomicU64,
+    /// Where those mirrors are: the directory of this process, made on the
+    /// first request for one, whose lock the process holds until it ends.
+    mirrors: tokio::sync::OnceCell<(std::path::PathBuf, std::fs::File)>,
+}
+/// A place among the live namespaces. It goes with the scheduler of the
+/// namespace, which has stopped by then, and takes the mirror that namespace
+/// filled with it, so the mirrors on disk are those of the live namespaces.
+struct Slot {
+    mirror: std::path::PathBuf,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.mirror);
+    }
+}
+/// A directory of this process for the mirrors of namespaces opened by request
+/// path, among those of other processes next to the configured mirror, which
+/// holds files only. A lock on its `owner.lock` shows that the process lives.
+/// The directories of processes that ended are removed, best effort.
+fn own_mirrors(configured: std::path::PathBuf) -> Result<(std::path::PathBuf, std::fs::File)> {
+    use crate::mirror::MirrorStore;
+    let mut root = configured.into_os_string();
+    root.push(".paths");
+    let root = std::path::PathBuf::from(root);
+    MirrorStore::private_directory(&root).map_err(|_| StorageUnavailable)?;
+    // Held while a directory is made and locked, so that no sweep finds it
+    // between the two. It is released when `sweep` goes.
+    let sweep = MirrorStore::private_file(&root.join("sweep.lock"), true)
+        .map_err(|_| StorageUnavailable)?;
+    sweep.lock().map_err(|_| StorageUnavailable)?;
+    let nanos = fyrr_core::clock::now().timestamp_nanos_opt().unwrap_or(0);
+    let own = root.join(format!("{}-{nanos}", std::process::id()));
+    MirrorStore::private_directory(&own).map_err(|_| StorageUnavailable)?;
+    let lock =
+        MirrorStore::private_file(&own.join("owner.lock"), true).map_err(|_| StorageUnavailable)?;
+    lock.try_lock().map_err(|_| StorageUnavailable)?;
+    for entry in std::fs::read_dir(&root)
+        .into_iter()
+        .flatten()
+        .filter_map(std::result::Result::ok)
+    {
+        let name = entry.file_name();
+        let is_owner_directory = name.to_str().is_some_and(|name| {
+            name.split_once('-').is_some_and(|(pid, nanos)| {
+                [pid, nanos]
+                    .iter()
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+            })
+        }) && std::fs::symlink_metadata(entry.path())
+            .is_ok_and(|meta| meta.is_dir());
+        if is_owner_directory
+            && let Ok(other) = MirrorStore::private_file(&entry.path().join("owner.lock"), false)
+            && other.try_lock().is_ok()
+        {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+    drop(sweep);
+    Ok((own, lock))
+}
+/// Open namespaces, least recently used first. Each has one place that
+/// concurrent requests share, so a namespace is opened once.
+type Open<T> = VecDeque<(String, Arc<tokio::sync::OnceCell<Arc<T>>>)>;
+
+/// The place of `name` in `open`, made most recent. A name without one gets it
+/// only with `create`, by closing the least recently used namespace that
+/// nothing but `open` holds: not one that is opening or serving a request.
+/// `Busy` when there is none.
+fn place<T>(
+    open: &mut Open<T>,
+    name: &str,
+    create: bool,
+    capacity: usize,
+) -> Result<Option<Arc<tokio::sync::OnceCell<Arc<T>>>>> {
+    let held = open
+        .iter()
+        .position(|(held, _)| held == name)
+        .and_then(|index| open.remove(index));
+    let entry = match held {
+        Some(entry) => entry,
+        None if create => {
+            if open.len() >= capacity {
+                let idle = open
+                    .iter()
+                    .position(|(_, cell)| {
+                        Arc::strong_count(cell) == 1
+                            && cell
+                                .get()
+                                .is_none_or(|served| Arc::strong_count(served) == 1)
+                    })
+                    .ok_or(Busy)?;
+                open.remove(idle);
+            }
+            (name.to_owned(), Arc::default())
+        }
+        None => return Ok(None),
+    };
+    let cell = entry.1.clone();
+    open.push_back(entry);
+    Ok(Some(cell))
+}
+impl Namespaces {
+    fn new(
+        process: Arc<Config>,
+        budget: crate::generation::MemoryPool,
+        api_keys: crate::storage::HeadCache<fyrr_core::identity::ApiKeysArtifact>,
+        configured: Arc<Served>,
+    ) -> Self {
+        Self {
+            process,
+            budget,
+            api_keys,
+            configured,
+            open: std::sync::Mutex::default(),
+            slots: Arc::new(Semaphore::new(MAX_OPEN_NAMESPACES)),
+            opened: std::sync::atomic::AtomicU64::new(0),
+            mirrors: tokio::sync::OnceCell::new(),
+        }
+    }
+    /// The configuration of the namespace `name`.
+    fn config(&self, name: &str) -> Config {
+        let mut config = (*self.process).clone();
+        name.clone_into(&mut config.namespace.name);
+        config
+    }
+    fn cell(
+        &self,
+        name: &str,
+        create: bool,
+    ) -> Result<Option<Arc<tokio::sync::OnceCell<Arc<Served>>>>> {
+        place(
+            &mut crate::sync::lock(&self.open),
+            name,
+            create,
+            MAX_OPEN_NAMESPACES,
+        )
+    }
+    /// The namespace `name`, opened if it is not; `None` when it has no head
+    /// or no content. A namespace that cannot be served costs one read of its
+    /// head and nothing is kept for it. The open outlives a request that gives
+    /// up on it.
+    async fn get(self: &Arc<Self>, name: &str) -> Result<Option<Arc<Served>>> {
+        if name == self.configured.config.namespace.name {
+            return Ok(Some(self.configured.clone()));
+        }
+        if let Some(served) = self.cell(name, false)?.and_then(|cell| cell.get().cloned()) {
+            return Ok(Some(served));
+        }
+        if crate::storage::optional_head(&self.config(name))
+            .await?
+            .is_none_or(|head| head.content.is_none())
+        {
+            return Ok(None);
+        }
+        let Some(cell) = self.cell(name, true)? else {
+            unreachable!("a place is made on request");
+        };
+        let (this, name) = (self.clone(), name.to_owned());
+        tokio::spawn(async move {
+            cell.get_or_try_init(|| async move {
+                // A namespace that is closing holds its place until it is gone.
+                let permit = tokio::time::timeout(IO_TIMEOUT, this.slots.clone().acquire_owned())
+                    .await
+                    .map_err(|_| Busy)?
+                    .map_err(|_| Busy)?;
+                let mut config = this.config(&name);
+                let places = u64::try_from(MAX_OPEN_NAMESPACES).unwrap_or(u64::MAX);
+                config.reader.mirror_max_bytes /= places;
+                let (mirrors, _) = this
+                    .mirrors
+                    .get_or_try_init(|| async {
+                        let configured = this
+                            .configured
+                            .config
+                            .mirror_directory(&ProcessEnvironment)
+                            .ok_or(StorageConfigurationInvalid)?;
+                        // It locks and sweeps: not on the runtime's thread.
+                        tokio::task::spawn_blocking(move || own_mirrors(configured))
+                            .await
+                            .map_err(|_| StorageUnavailable)?
+                    })
+                    .await?;
+                let mirror = mirrors.join(format!(
+                    "path-{}",
+                    this.opened
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                ));
+                config.reader.mirror_path = Some(mirror.to_string_lossy().into_owned());
+                let slot = Slot {
+                    mirror,
+                    _permit: permit,
+                };
+                let reader = crate::search::PreparedReader::open_in(
+                    &config,
+                    this.budget.clone(),
+                    crate::search::AUTHORIZATION_CACHE_MAX_BYTES / MAX_OPEN_NAMESPACES,
+                )
+                .await?;
+                let config = reader.config.clone();
+                let admission = Served::admission_of(&reader, this.api_keys.clone());
+                let service = crate::serve::start_guarded(reader, slot).await?;
+                Ok(Arc::new(Served {
+                    config,
+                    admission,
+                    service,
+                }))
+            })
+            .await
+            .cloned()
+        })
+        .await
+        .map_err(|_| StorageUnavailable)?
+        .map(Some)
     }
 }
 
@@ -133,11 +391,11 @@ fn retry_after(mut response: Response) -> Response {
         .insert(header::RETRY_AFTER, seconds.into());
     response
 }
-/// The tool a `POST /v1/namespaces/{namespace}/query` or `.../fetch` runs and
-/// the role an API key needs for it. `/mcp` needs `read` as well. A key without
-/// the role of a route gets 403 `forbidden`; `/readyz` and `/admin/refresh`
-/// take no API key.
-fn json_tool(request: &Request) -> Option<(&'static str, ApiKeyRole)> {
+/// The tool a `POST /v1/namespaces/{namespace}/query` or `.../fetch` runs, the
+/// role an API key needs for it and the namespace the path names. `/mcp` needs
+/// `read` as well. A key without the role of a route gets 403 `forbidden`;
+/// `/readyz` and `/admin/refresh` take no API key.
+fn json_tool(request: &Request) -> Option<(&'static str, ApiKeyRole, String)> {
     if request.method() != Method::POST {
         return None;
     }
@@ -147,10 +405,17 @@ fn json_tool(request: &Request) -> Option<(&'static str, ApiKeyRole)> {
         .strip_prefix("/v1/namespaces/")?
         .split_once('/')?
     {
-        (_, "query") => Some(("search", ApiKeyRole::Read)),
-        (_, "fetch") => Some(("fetch", ApiKeyRole::Read)),
+        (namespace, "query") => Some(("search", ApiKeyRole::Read, namespace.to_owned())),
+        (namespace, "fetch") => Some(("fetch", ApiKeyRole::Read, namespace.to_owned())),
         _ => None,
     }
+}
+
+/// What a request asks of its caller: the role its route needs and, for a
+/// route that names one, the namespace.
+struct Needs<'a> {
+    role: ApiKeyRole,
+    namespace: Option<&'a str>,
 }
 fn bearer(request: &Request) -> Result<&str, ()> {
     let mut values = request.headers().get_all(header::AUTHORIZATION).iter();
@@ -201,8 +466,13 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
         return error(StatusCode::FORBIDDEN, HostMismatch);
     }
     let route = json_tool(&request);
-    let tool = route.map(|(tool, _)| tool);
-    let role = route.map_or(ApiKeyRole::Read, |(_, role)| role);
+    let tool = route.as_ref().map(|(tool, _, _)| *tool);
+    let needs = Needs {
+        role: route
+            .as_ref()
+            .map_or(ApiKeyRole::Read, |(_, role, _)| *role),
+        namespace: route.as_ref().map(|(_, _, namespace)| namespace.as_str()),
+    };
     let _permit = if request.uri().path() != "/mcp" && tool.is_none() {
         match state.permits.clone().try_acquire_owned() {
             Ok(p) => Some(p),
@@ -291,13 +561,16 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
         let Ok(_mcp_permit) = permits.try_acquire_owned() else {
             return error(StatusCode::SERVICE_UNAVAILABLE, Busy);
         };
-        let subject =
-            match authenticate_mcp(&state, h, token, &message, deadline, &expected, role).await {
-                Ok(subject) => subject,
+        let (subject, served) =
+            match authenticate_mcp(&state, h, token, &message, deadline, &expected, &needs).await {
+                Ok(admitted) => admitted,
                 Err(response) => return response,
             };
         request = Request::from_parts(parts, axum::body::Body::from(bytes));
         request.extensions_mut().insert(subject);
+        if let Some(served) = served {
+            request.extensions_mut().insert(served);
+        }
     }
     if foreign_host {
         return next.run(request).await.status().into_response();
@@ -320,8 +593,8 @@ async fn authenticate_mcp(
     message: &Option<rmcp::model::ClientJsonRpcMessage>,
     deadline: tokio::time::Instant,
     expected: &str,
-    role: ApiKeyRole,
-) -> Result<crate::auth::AuthenticatedSubject, Response> {
+    needs: &Needs<'_>,
+) -> Result<(crate::auth::AuthenticatedSubject, Option<Arc<Served>>), Response> {
     let cancellation = match message {
         Some(rmcp::model::ClientJsonRpcMessage::Notification(notification)) => {
             match &notification.notification {
@@ -338,6 +611,15 @@ async fn authenticate_mcp(
             return Err(error(StatusCode::TOO_MANY_REQUESTS, RateLimited));
         }
     }
+    // An API key is hashed in the namespace it acts in, as that identity binds it.
+    let scoped;
+    let config = match needs.namespace {
+        Some(name) if name != state.config.namespace.name => {
+            scoped = state.namespaces.config(name);
+            &scoped
+        }
+        _ => &state.config,
+    };
     let authenticated = timeout_at(deadline, async {
         match (token, &state.auth) {
             // Only a reader whose own configuration declares API keys takes
@@ -346,7 +628,7 @@ async fn authenticate_mcp(
                 if !state.config.identity.api_keys.is_empty()
                     && token.starts_with(fyrr_core::config::API_KEY_PREFIX) =>
             {
-                crate::auth::api_key(&state.config, &token)
+                crate::auth::api_key(config, &token)
             }
             (Ok(token), Some(auth)) => auth.authenticate(&token).await,
             _ => Err(Unauthorized),
@@ -357,18 +639,66 @@ async fn authenticate_mcp(
         Ok(s) => s,
         Err(code) => return Err(authentication_failure(state, code, expected)),
     };
+    let refuse = |code| match code {
+        Unauthorized => authentication_failure(state, code, expected),
+        Forbidden => error(StatusCode::FORBIDDEN, Forbidden),
+        InvalidArgument => error(StatusCode::NOT_FOUND, InvalidArgument),
+        RateLimited => error(StatusCode::TOO_MANY_REQUESTS, RateLimited),
+        Busy => error(StatusCode::SERVICE_UNAVAILABLE, Busy),
+        _ => error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable),
+    };
+    // A route that names a namespace reads nothing of it, and opens none,
+    // before what the deployment holds has admitted the caller: the role and
+    // prefix of an API key in the published keys, and the caller's request
+    // counted. OIDC users read the configured namespace only: no identity of
+    // another is consulted for them. Whatever then keeps a caller out of a
+    // namespace, including that it does not exist or has no content, is
+    // answered as a caller its identity does not bind.
+    let served = if let Some(name) = needs.namespace {
+        let found = timeout_at(deadline, async {
+            state.admission.grant(&subject, needs.role, name).await?;
+            spend(state, subject.api_key.as_deref().unwrap_or(&subject.key)).await?;
+            let unbound = if subject.api_key.is_some() {
+                Unauthorized
+            } else {
+                AuthorizationUnavailable
+            };
+            if !is_namespace_name(name) {
+                return Err(InvalidArgument);
+            }
+            if subject.api_key.is_none() && name != state.config.namespace.name {
+                return Err(unbound);
+            }
+            // What opening it does is answered apart from admission: when
+            // its storage is unavailable, so is the namespace.
+            Ok(state
+                .namespaces
+                .get(name)
+                .await
+                .and_then(|served| served.ok_or(unbound)))
+        })
+        .await?
+        .map_err(refuse)?
+        .map_err(|code| match code {
+            StorageUnavailable | StorageConfigurationInvalid => {
+                error(StatusCode::SERVICE_UNAVAILABLE, StorageUnavailable)
+            }
+            _ => refuse(code),
+        })?;
+        Some(found)
+    } else {
+        None
+    };
+    let (config, admission) = served
+        .as_ref()
+        .map_or((&state.config, &state.admission), |served| {
+            (&served.config, &served.admission)
+        });
     // The lookup of an API key precedes everything else, a cancellation included.
     let admit = || async {
-        timeout_at(
-            deadline,
-            state.admission.authorize(&state.config, &subject, role),
-        )
-        .await?
-        .map_err(|code| match code {
-            Unauthorized => authentication_failure(state, code, expected),
-            Forbidden => error(StatusCode::FORBIDDEN, Forbidden),
-            _ => error(StatusCode::SERVICE_UNAVAILABLE, AuthorizationUnavailable),
-        })
+        timeout_at(deadline, admission.authorize(config, &subject, needs.role))
+            .await?
+            .map_err(refuse)
     };
     // Authenticated control traffic has its own concurrency bound and never
     // spends a user's or group's request allowance. IDs remain subject-scoped.
@@ -415,7 +745,24 @@ async fn authenticate_mcp(
         count.1 += 1;
     }
     drop(limits);
-    Ok(subject)
+    Ok((subject, served))
+}
+
+/// Counts a request of the caller `id`, a deployment-wide hash of an API key or
+/// an OIDC subject, against the per-user limit.
+async fn spend(state: &HttpState, id: &str) -> Result<(), ReaderError> {
+    let mut limits = state.limits.lock().await;
+    limits.retain(|_, (t, _)| t.elapsed() < RATE_WINDOW);
+    let key = format!("subject:{id}");
+    if !limits.contains_key(&key) && limits.len() >= MAX_TRACKED_RATE_KEYS {
+        return Err(AuthorizationUnavailable);
+    }
+    let count = limits.entry(key).or_insert((Instant::now(), 0));
+    if count.1 >= state.http().user_requests_per_minute {
+        return Err(RateLimited);
+    }
+    count.1 += 1;
+    Ok(())
 }
 
 /// 401 for an unauthenticated caller and 503 when authentication cannot be
@@ -538,32 +885,26 @@ async fn readiness(State(state): State<HttpState>) -> Response {
 }
 /// Runs the parsed call the boundary authenticated through the scheduler that
 /// serves MCP and answers its output as plain JSON.
-async fn tool_json(
-    State(state): State<HttpState>,
-    Path(namespace): Path<String>,
-    request: Request,
-) -> Response {
+async fn tool_json(request: Request) -> Response {
     let extensions = request.extensions();
-    let (Some(arrived), Some(parsed), Some(claims)) = (
+    let (Some(arrived), Some(parsed), Some(claims), Some(served)) = (
         extensions.get::<tokio::time::Instant>().copied(),
         extensions.get::<Result<crate::serve::ToolCall>>().cloned(),
         extensions
             .get::<Arc<crate::serve::ResponseClaims>>()
             .cloned(),
+        extensions.get::<Arc<Served>>().cloned(),
     ) else {
-        unreachable!("the HTTP boundary parses and accounts a JSON call before routing it");
+        unreachable!("the HTTP boundary parses, admits and accounts a JSON call before routing it");
     };
     let subject = extensions
         .get::<crate::auth::AuthenticatedSubject>()
         .cloned();
-    if namespace != state.config.namespace.name {
-        return error(StatusCode::NOT_FOUND, InvalidArgument);
-    }
     let call = match parsed {
         Ok(call) => call,
         Err(code) => return error(StatusCode::BAD_REQUEST, code),
     };
-    let result = state
+    let result = served
         .service
         .call_json(call, subject, arrived, claims)
         .await;
@@ -635,13 +976,12 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&h.listen)
         .await
         .map_err(|_| TransportUnavailable)?;
-    let admission = Arc::new(admission::Admission::new(
-        reader.control_store.clone(),
-        reader.control_root.clone(),
-        reader.identity_cache.clone(),
-        reader.head_cache.clone(),
-        crate::storage::HeadCache::for_file(&config, crate::storage::API_KEYS_FILE),
-    ));
+    let api_keys = crate::storage::HeadCache::for_file(&config, crate::storage::API_KEYS_FILE);
+    let admission = Served::admission_of(&reader, api_keys.clone());
+    let (process, budget) = (
+        reader.process_config.clone(),
+        reader.preparation_budget.clone(),
+    );
     // Only a reader that declares API keys takes bearers for them, so only it
     // reads the published ones: at start and at each version check. Until
     // they are read, API-key requests are refused and OIDC ones are not.
@@ -661,9 +1001,20 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
         });
     }
     let service = crate::serve::start(reader).await?;
+    let namespaces = Arc::new(Namespaces::new(
+        process,
+        budget,
+        api_keys,
+        Arc::new(Served {
+            config: config.clone(),
+            admission: admission.clone(),
+            service: service.clone(),
+        }),
+    ));
     let state = HttpState {
         admission,
         service: service.clone(),
+        namespaces,
         config: config.clone(),
         public: public.clone(),
         auth,
@@ -780,6 +1131,10 @@ mod response_memory_tests;
 #[cfg(test)]
 #[path = "http/scheduler_tests.rs"]
 mod scheduler_tests;
+
+#[cfg(test)]
+#[path = "http/place_tests.rs"]
+mod place_tests;
 
 #[path = "http/admission.rs"]
 mod admission;

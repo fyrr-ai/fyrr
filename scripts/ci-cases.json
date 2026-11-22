@@ -95,6 +95,22 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/http::place_tests::a_place_is_made_by_closing_an_idle_namespace_only": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/http::place_tests::a_slot_takes_its_mirror_with_it": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/http::place_tests::a_process_owns_a_directory_for_the_mirrors_of_path_namespaces": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/rerank::tests::clients_that_share_a_counter_share_the_limit": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/http::response_memory_tests::response_frame_keeps_claim_after_body_drop": {
         "tier": "quick",
         "seconds": 0.0
@@ -1832,6 +1848,10 @@
       "full:fyrr:test:dense_path/api_keys::deployment_keys_carry_roles_and_a_namespace_prefix": {
         "tier": "quick",
         "seconds": 15.0
+      },
+      "full:fyrr:test:dense_path/api_keys::a_reader_serves_the_namespace_its_path_names": {
+        "tier": "quick",
+        "seconds": 25.0
       }
     }
   },

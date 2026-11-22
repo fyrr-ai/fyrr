@@ -20,10 +20,15 @@ const MAX_IN_FLIGHT: usize = 4;
 #[derive(Debug)]
 pub(crate) struct Reranker {
     client: reqwest::Client,
-    spent: AtomicU64,
+    spent: Arc<AtomicU64>,
 }
 impl Reranker {
+    #[cfg(test)]
     pub(crate) fn new() -> Result<Self> {
+        Self::charging(Arc::default())
+    }
+    /// A client whose calls are charged to `spent`, shared with other clients.
+    pub(crate) fn charging(spent: Arc<AtomicU64>) -> Result<Self> {
         Ok(Self {
             client: reqwest::Client::builder()
                 .http1_only()
@@ -31,7 +36,7 @@ impl Reranker {
                 .retry(reqwest::retry::never())
                 .build()
                 .map_err(|_| RerankProviderFailed)?,
-            spent: AtomicU64::new(0),
+            spent,
         })
     }
 

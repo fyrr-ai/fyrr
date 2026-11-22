@@ -1,6 +1,17 @@
 //! Outbound provider calls (OIDC keys, embeddings, reranking): bounded
 //! response bodies and fail-closed spend reservations.
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
+/// The paid calls a reader process has reserved, whichever namespace makes them:
+/// the spend limits are per process.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Spent {
+    pub(crate) embedding: Arc<AtomicU64>,
+    pub(crate) rerank: Arc<AtomicU64>,
+}
 
 /// Why an outbound client could not read a bounded response body.
 pub(crate) enum BodyError {

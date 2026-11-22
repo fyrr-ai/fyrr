@@ -12,7 +12,8 @@ pub(super) struct Admission {
     cached_identity: crate::storage::ArtifactCache<IdentityArtifact>,
     heads: crate::storage::HeadCache,
     /// The deployment's published API keys, held as the head is: read at each
-    /// version check, and again when the held copy is older than two intervals.
+    /// version check, by the loop that makes it, and by nothing else; a request
+    /// with no copy younger than two intervals is refused without a read.
     api_keys: crate::storage::HeadCache<ApiKeysArtifact>,
     keys_root: Path,
 }
@@ -80,10 +81,32 @@ impl Admission {
         *cached = Some((pointer.clone(), identity.clone()));
         Ok(identity)
     }
-    /// Admits `subject` to a route that needs `role`. An API key holds the roles
-    /// of its entry in the published keys, and is unknown without one, also
-    /// while the keys cannot be read; any other subject holds `read`. A key
-    /// that lacks the role, or may not act in this namespace, is `Forbidden`.
+    /// Whether `subject` may use a route that needs `role` in the namespace
+    /// `name`, from the published keys alone, before anything of the namespace
+    /// is read. An API key holds the roles of its entry in the published keys,
+    /// and is unknown without one, also while the keys cannot be read; any
+    /// other subject holds `read`. A key that lacks the role, or may not act in
+    /// the namespace, is `Forbidden`.
+    pub(super) async fn grant(
+        &self,
+        subject: &crate::auth::AuthenticatedSubject,
+        role: ApiKeyRole,
+        name: &str,
+    ) -> Result<(), ReaderError> {
+        let allowed = if let Some(hash) = &subject.api_key {
+            let keys = self
+                .api_keys
+                .held(self.store.as_ref(), &self.keys_root)
+                .await?;
+            let grant = keys.grant(hash).ok_or(Unauthorized)?;
+            grant.roles.contains(&role) && prefix_allows(grant.namespace_prefix.as_deref(), name)
+        } else {
+            role == ApiKeyRole::Read
+        };
+        if allowed { Ok(()) } else { Err(Forbidden) }
+    }
+    /// Admits `subject` to a route that needs `role` in the namespace this
+    /// admission serves (see [`Self::grant`]).
     pub(super) async fn authorize(
         &self,
         config: &Config,
@@ -99,17 +122,7 @@ impl Admission {
     > {
         let head = self.head().await?;
         let now = fyrr_core::clock::now();
-        let allowed = if let Some(hash) = &subject.api_key {
-            let keys = self.api_keys.read(&self.store, &self.keys_root).await?;
-            let grant = keys.grant(hash).ok_or(Unauthorized)?;
-            grant.roles.contains(&role)
-                && prefix_allows(grant.namespace_prefix.as_deref(), &config.namespace.name)
-        } else {
-            role == ApiKeyRole::Read
-        };
-        if !allowed {
-            return Err(Forbidden);
-        }
+        self.grant(subject, role, &config.namespace.name).await?;
         let live = head.namespace == config.namespace.name && subject.expires > now.timestamp();
         // An API-key secret proves nothing until the identity binds it, so its
         // lookup comes before the namespace and expiry checks: an unbound
@@ -390,17 +403,28 @@ mod tests {
             Forbidden
         );
 
-        // A copy older than two intervals is read again, so a change reaches
-        // the next request; only a failed read refuses the key.
+        // A copy older than two intervals is never read for a request: it is
+        // refused without a read of storage until the loop reads again.
         test.subject.api_key = Some(hash.clone());
         test.admission.api_keys = crate::storage::HeadCache::with_file(
             std::time::Duration::from_millis(10),
             crate::storage::API_KEYS_FILE,
         );
         publish(vec![grant(&[ApiKeyRole::Read], None)]).await;
+        test.admission.refresh_api_keys().await.unwrap();
         test.authorize_role(ApiKeyRole::Read).await.unwrap();
         publish(vec![grant(&[ApiKeyRole::Write], None)]).await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let before = test.mirror.totals().requests;
+        assert_eq!(
+            test.admission
+                .grant(&test.subject, ApiKeyRole::Read, "acme")
+                .await
+                .unwrap_err(),
+            StorageUnavailable
+        );
+        assert_eq!(test.mirror.totals().requests, before, "no read of storage");
+        test.admission.refresh_api_keys().await.unwrap();
         assert_eq!(
             test.authorize_role(ApiKeyRole::Read).await.unwrap_err(),
             Forbidden
@@ -409,7 +433,7 @@ mod tests {
             .delete(&Path::from("api-keys.json"))
             .await
             .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(test.admission.refresh_api_keys().await.is_err());
         assert_eq!(
             test.authorize_role(ApiKeyRole::Read).await.unwrap_err(),
             StorageUnavailable
