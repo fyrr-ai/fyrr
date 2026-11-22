@@ -93,11 +93,16 @@ resolved from the checkout root.
 Build helpers use pinned mr-boxington (`mbx`) with rustup's Cargo first on
 `PATH`. Each test feature set is built once; cases execute preserved full
 and reader-only artifacts in a bounded pool. Set `--jobs=N` or
-`FYRR_CI_JOBS=N` to bound concurrency. Each case owns its fixtures; failed
+`FYRR_CI_JOBS=N` to bound concurrency. Every case also reserves two cores
+from the mbx scheduler, which the builds of every checkout on the machine
+share, so concurrent runs in several worktrees wait for cores instead of
+slowing each other's cases past their deadlines. Do not lower `--jobs` to
+make room for another checkout. Each case owns its fixtures; failed
 fixtures and all logs remain for diagnosis (`FYRR_CI_KEEP_FIXTURES=1` also
 keeps successful fixtures). Never share a writable `CARGO_TARGET_DIR` or
 run two top-level CI processes in one checkout. Compiler actions can be
-shared across worktrees; their Cargo outputs stay private.
+shared across worktrees; their Cargo outputs stay private. The shared store
+is kept under 40 GiB (`MBX_GC_MAX_SIZE`).
 
 `scripts/ci-cases.json` owns the cases and their `quick`/`full` tiers; the
 ownership gate checks all cases, including those excluded from the selected tier.
