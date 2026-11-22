@@ -135,11 +135,14 @@ after parsing, it returns `431` with `{"error":"invalid_argument"}`.
 
 A scan by the document key lists every document the token may read once, in
 pages of at most 1000 ([how it works](mcp-tools.md#paging-and-scanning)). The
-script needs `curl` and `jq`, and writes one hit per line; read the text of a
-document with [`fetch`](mcp-tools.md#fetch).
+script needs `curl`, `jq` and `mktemp`. A completed scan replaces
+`export.jsonl` with one hit per line. If a request fails, any previous export
+stays in place. Read the text of a document with [`fetch`](mcp-tools.md#fetch).
 
 ```sh
 url=https://fyrr.example.com/v1/namespaces/main/query
+output=$(mktemp ./export.jsonl.XXXXXX) || exit 1
+trap 'rm -f "$output"' EXIT
 last=null
 while :; do
   body=$(jq -n --argjson last "$last" '
@@ -148,13 +151,15 @@ while :; do
     + ($last | if . == null then {} else {filter: {or: [
         {field: "source_id", op: "gt", value: .source_id},
         {and: [{field: "source_id", op: "eq", value: .source_id},
-               {field: "root_id", op: "gt", value: .root_id}]}]}} end)')
+               {field: "root_id", op: "gt", value: .root_id}]}]}} end)') || exit 1
   page=$(curl -sf "$url" -H "Authorization: Bearer $ACCESS_TOKEN" \
     -H "Content-Type: application/json" -d "$body") || exit 1
-  [ "$(printf '%s\n' "$page" | jq '.hits | length')" -gt 0 ] || break
-  printf '%s\n' "$page" | jq -c '.hits[]' >> export.jsonl
-  last=$(printf '%s\n' "$page" | jq -c '.hits[-1] | {source_id, root_id}')
-done
+  count=$(printf '%s\n' "$page" | jq -e '.hits | arrays | length') || exit 1
+  [ "$count" -gt 0 ] || break
+  printf '%s\n' "$page" | jq -c '.hits[]' || exit 1
+  last=$(printf '%s\n' "$page" | jq -c '.hits[-1] | {source_id, root_id}') || exit 1
+done > "$output" || exit 1
+mv -f "$output" export.jsonl
 ```
 
 With `reader.max_response_bytes` set, a page can hold fewer hits than `limit`;
