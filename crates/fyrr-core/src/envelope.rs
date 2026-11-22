@@ -14,6 +14,10 @@ use crate::version::{Contract, SchemaVersion};
 
 /// The envelope contract version written by this build.
 pub const ENVELOPE_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
+/// The version of an envelope with a document condition. A committer that
+/// does not know conditions would apply the change without it, so it must
+/// refuse the envelope: it reads only major 5, and this build reads both.
+pub const CONDITIONAL_ENVELOPE_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(6, 0);
 
 /// A prepared envelope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -305,6 +309,7 @@ pub struct ReconcilePayload {
 impl Contract for PreparedEnvelope {
     const NAME: &'static str = "prepared-envelope";
     const VERSION: SchemaVersion = ENVELOPE_CONTRACT_VERSION;
+    const ALSO_READS: &'static [u16] = &[CONDITIONAL_ENVELOPE_CONTRACT_VERSION.major];
 
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
@@ -355,6 +360,11 @@ impl Contract for PreparedEnvelope {
                             )?;
                         }
                         (DocumentIntent::Delete, None) => {}
+                    }
+                    if document.condition.is_some()
+                        && self.schema_version.major != CONDITIONAL_ENVELOPE_CONTRACT_VERSION.major
+                    {
+                        return Err("a condition needs the conditional envelope version".into());
                     }
                     if document.intent != DocumentIntent::Replace && document.records != 0 {
                         return Err("only a replace writes records".into());

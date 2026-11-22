@@ -321,6 +321,11 @@ request of the same publication replaces or deletes counts as skipped.
 
 ### Conditions
 
+Setting conditions needs an [API key](identity.md#identityapi_keys) with the
+`admin` role besides `write`: whether a condition holds tells something about
+a document that the key may not be allowed to read. A request with `conditions`
+from a key without `admin` is `403 forbidden`.
+
 The committer tests a condition against the stored document with that `id` when
 it applies the change, in the order of publication, so it sees what every
 request published before it left, also those it publishes in the same round.
@@ -371,7 +376,7 @@ request was accepted does not cancel it.
 | Code | Status | When |
 | --- | --- | --- |
 | `unauthorized` | `401` | No API key, or a key that is not among the published keys. |
-| `forbidden` | `403` | The key lacks the `write` role or its `namespace_prefix` excludes the namespace. |
+| `forbidden` | `403` | The key lacks the `write` role or its `namespace_prefix` excludes the namespace, or the request sets `conditions` and the key lacks the `admin` role. |
 | `not_found` | `404` | `{namespace}` is not a namespace name, or the process has no `[namespace.write_api]`. |
 | `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
 | `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |

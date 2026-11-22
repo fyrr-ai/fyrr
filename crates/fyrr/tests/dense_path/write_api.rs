@@ -13,6 +13,8 @@ fn secret(n: usize) -> String {
 }
 pub(super) const WRITE_KEY: usize = 41;
 const READ_KEY: usize = 42;
+/// May write and, with `admin`, set conditions.
+const ADMIN_KEY: usize = 44;
 /// May write the namespaces whose names start with `shop-`.
 const SCOPED_KEY: usize = 43;
 
@@ -27,6 +29,7 @@ pub(super) fn configure(config: &Path, address: &std::net::SocketAddr, extra: &s
             "{base}\n[namespace.write_api]\n{extra}\n\
              [[identity.api_keys]]\nname='writer'\nkey={{env='FYRR_TEST_WRITE_KEY'}}\nroles=['write']\n\
              [[identity.api_keys]]\nname='reader'\nkey={{env='FYRR_TEST_READ_KEY'}}\nreaders=['usr:x']\n\
+             [[identity.api_keys]]\nname='admin-writer'\nkey={{env='FYRR_TEST_ADMIN_KEY'}}\nroles=['write','admin']\n\
              [[identity.api_keys]]\nname='scoped'\nkey={{env='FYRR_TEST_SCOPED_KEY'}}\nroles=['write']\nnamespace_prefix='shop-'\n\
              [writer.commit]\ncoalescing_timer='10m'\n\
              [writer.serve.admin]\nlisten='{address}'\noperator_token={{env='FYRR_TEST_OPERATOR'}}\n"
@@ -64,6 +67,7 @@ impl Writer {
             .env("FYRR_TEST_WRITE_KEY", secret(WRITE_KEY))
             .env("FYRR_TEST_READ_KEY", secret(READ_KEY))
             .env("FYRR_TEST_SCOPED_KEY", secret(SCOPED_KEY))
+            .env("FYRR_TEST_ADMIN_KEY", secret(ADMIN_KEY))
             .output()
             .unwrap();
         assert!(keys.status.success(), "{}", report(&keys));
@@ -72,6 +76,7 @@ impl Writer {
             .env("FYRR_TEST_WRITE_KEY", secret(WRITE_KEY))
             .env("FYRR_TEST_READ_KEY", secret(READ_KEY))
             .env("FYRR_TEST_SCOPED_KEY", secret(SCOPED_KEY))
+            .env("FYRR_TEST_ADMIN_KEY", secret(ADMIN_KEY))
             .env("FYRR_TEST_OPERATOR", OPERATOR)
             .stdout(std::fs::File::create(root.join("service.stdout")).unwrap())
             .stderr(std::fs::File::create(root.join("service.stderr")).unwrap())
@@ -529,7 +534,7 @@ async fn identity_write_api_applies_a_change_only_when_its_condition_holds_on_st
     configure(&config, &address, "");
     embed(&root, &["blue shirt", "red hat", "green coat"]);
     let writer = Writer::start(&config, &root, address).await;
-    let post = async |body: Value| writer.post(WRITE_KEY, "dense-fixture", &body).await;
+    let post = async |body: Value| writer.post(ADMIN_KEY, "dense-fixture", &body).await;
     let newer = json!({"field": "modified", "op": "lt", "value": {"row": "modified"}});
     assert_eq!(
         post(json!({
@@ -676,12 +681,25 @@ async fn identity_write_api_applies_a_change_only_when_its_condition_holds_on_st
         assert_eq!(post(body).await, (400, json!({"error": code})));
     }
 
+    // A condition tells whether a document holds a value, so a key that only
+    // writes is refused: it may not read it.
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"deletes": ["a1"], "conditions": {"a1": {"field": "version", "op": "eq", "value": 1}}})
+            )
+            .await,
+        (403, json!({"error": "forbidden"}))
+    );
+
     // Conditional deletes alone on a namespace that holds nothing are answered
     // at once, skipped.
     let empty = tokio::time::timeout(
         Duration::from_secs(60),
         writer.post(
-            WRITE_KEY,
+            ADMIN_KEY,
             "shop-empty",
             &json!({
                 "settings": {"attributes": {"version": "int"}},
@@ -758,7 +776,7 @@ async fn identity_write_api_lets_one_of_many_unpublished_requests_win_its_condit
                 "conditions": {"d1": {"field": "owner", "op": "eq", "value": null}},
             });
             let writer = &writer;
-            async move { writer.post(WRITE_KEY, "dense-fixture", &request).await }
+            async move { writer.post(ADMIN_KEY, "dense-fixture", &request).await }
         })),
         release,
     );
