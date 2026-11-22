@@ -1,0 +1,10 @@
+{
+  "schema_version": "4.0",
+  "namespace": "acme",
+  "applied_envelope_ids": [
+    "env-ab0dc87cb67ccdbb62a36a806c0cd6c5"
+  ],
+  "rejected_envelope_ids": [
+    "env-c0ffee00c0ffee00c0ffee00c0ffee00"
+  ]
+}

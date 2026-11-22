@@ -569,7 +569,7 @@ mod sequence_tests {
             fyrr_reader::storage::read_contract(store.as_ref(), &root.clone().join("head.json"))
                 .await
                 .unwrap();
-        let template: ContentManifest = fyrr_reader::storage::read_contract(
+        let mut template: ContentManifest = fyrr_reader::storage::read_contract(
             store.as_ref(),
             &Path::from(format!(
                 "{root}/{}",
@@ -579,6 +579,8 @@ mod sequence_tests {
         .await
         .unwrap();
         assert_eq!(template.sequence, 1);
+        // A summary ends a walk before it can join the cached history.
+        template.envelope_evidence = None;
         let mut cached = template.clone();
         cached.publication_id = "pub-00000000000000000000000000881000".into();
         cached.sequence = 2;

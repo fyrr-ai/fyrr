@@ -149,7 +149,7 @@ async fn maintain_held(
             .map_err(|_| WriterError::MaintenanceStepDeadline)??;
     let staging = local_staging::plan(config).await?;
     removed += local_staging::remove(config, lease, staging).await?;
-    boundary(config, lease, history).await?;
+    removed += superseded_checkpoints(config, lease, history).await?;
     envelopes += crate::envelopes::cleanup_held(config, lease).await?;
     let head = boundary(config, lease, history).await?;
     if head.content.is_some() {
@@ -330,6 +330,63 @@ async fn retained(config: &Config, head: &ServingHead) -> Result<Vec<ContentMani
         keep.push(manifest);
     }
     Ok(keep)
+}
+
+/// Delete the envelope checkpoints that no retained manifest names. A walk
+/// that starts at a manifest older than the window finds its checkpoint gone
+/// and reads the manifests instead. Like the other steps, the pass is bounded
+/// by `step_max_duration`, listing included, and meets the revocation boundary
+/// every 64 deletes; what it leaves, the next `writer maintain` removes.
+async fn superseded_checkpoints(
+    config: &Config,
+    lease: &LeaseGuard,
+    history: &mut commit::RestoreHistory,
+) -> Result<usize> {
+    let limit = config.writer.maintenance.step_max_duration.as_duration();
+    let start = std::time::Instant::now();
+    tokio::time::timeout(limit, async {
+        let head = boundary(config, lease, history).await?;
+        if head.content.is_none() {
+            return Ok(0);
+        }
+        let named: BTreeSet<_> = retained(config, &head)
+            .await?
+            .into_iter()
+            .filter_map(|manifest| manifest.envelope_evidence)
+            .map(|evidence| evidence.checkpoint.object)
+            .collect();
+        let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
+        let listed: Vec<_> = store
+            .list(Some(&root.clone().join("evidence")))
+            .try_collect()
+            .await?;
+        let mut deleted = 0;
+        for object in listed {
+            if named.contains(&fyrr_reader::storage::relative_path(
+                &object.location,
+                &root,
+            )) {
+                continue;
+            }
+            if start.elapsed() >= limit {
+                break;
+            }
+            if deleted % 64 == 0 {
+                boundary(config, lease, history).await?;
+            } else {
+                lease.head().await?;
+            }
+            match store.delete(&object.location).await {
+                Ok(()) => deleted += 1,
+                Err(object_store::Error::NotFound { .. }) => {}
+                Err(_) => return Err(WriterError::StorageUnavailable),
+            }
+        }
+        durability.finish().await?;
+        Ok(deleted)
+    })
+    .await
+    .map_err(|_| WriterError::MaintenanceStepDeadline)?
 }
 
 async fn cleanup_versions(

@@ -1,0 +1,41 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "applied_envelope_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rejected_envelope_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "namespace",
+    "applied_envelope_ids",
+    "rejected_envelope_ids"
+  ],
+  "description": "Every envelope a publication chain committed or rejected, up to one\npublication. The committer rewrites it now and then, so the manifests\nnever carry more than a few ids.",
+  "title": "EnvelopeCheckpoint",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SchemaVersion": {
+      "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    }
+  },
+  "x-fyrr-contract": "envelope-checkpoint",
+  "x-fyrr-schema-version": "4.0"
+}

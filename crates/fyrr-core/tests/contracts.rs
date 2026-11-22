@@ -16,7 +16,7 @@ use fyrr_core::directory::DirectorySnapshot;
 use fyrr_core::envelope::PreparedEnvelope;
 use fyrr_core::identity::IdentityArtifact;
 use fyrr_core::provider::ProviderInfo;
-use fyrr_core::publication::{ContentManifest, PolicyArtifact, ServingHead};
+use fyrr_core::publication::{ContentManifest, EnvelopeCheckpoint, PolicyArtifact, ServingHead};
 use fyrr_core::{Contract, ContractError, SchemaVersion, parse_contract, write_contract};
 use serde_json::{Value, json};
 
@@ -46,6 +46,21 @@ fn publication_lineage_refuses_gaps_and_wrong_endpoints() {
     let mut endpoint = value;
     endpoint["lance_version"] = json!(122);
     assert!(parse::<ContentManifest>(&endpoint).is_err());
+    // Evidence names each envelope once.
+    for field in ["applied_since", "rejected_since"] {
+        let mut duplicated = common::read_json("fixtures/contracts/content-manifest/manifest.json");
+        let ids = duplicated["envelope_evidence"][field]
+            .as_array_mut()
+            .unwrap();
+        ids.push(ids[0].clone());
+        assert!(parse::<ContentManifest>(&duplicated).is_err(), "{field}");
+    }
+    for field in ["applied_envelope_ids", "rejected_envelope_ids"] {
+        let mut duplicated = common::read_json("fixtures/contracts/envelope-checkpoint/valid.json");
+        let ids = duplicated[field].as_array_mut().unwrap();
+        ids.push(ids[0].clone());
+        assert!(parse::<EnvelopeCheckpoint>(&duplicated).is_err(), "{field}");
+    }
     // A manifest of another major is refused before its body is read.
     let mut other = common::read_json("fixtures/contracts/content-manifest/manifest.json");
     other["schema_version"] = json!("1.0");
@@ -65,6 +80,7 @@ macro_rules! for_each_contract {
         fixtures += $check::<ContentManifest>("content-manifest");
         fixtures += $check::<ServingHead>("serving-head");
         fixtures += $check::<PolicyArtifact>("policy-artifact");
+        fixtures += $check::<EnvelopeCheckpoint>("envelope-checkpoint");
         fixtures += $check::<IdentityArtifact>("identity-artifact");
         fixtures += $check::<DirectorySnapshot>("directory-snapshot");
         fixtures += $check::<fyrr_core::secret::EncryptedSecret>("encrypted-secret");

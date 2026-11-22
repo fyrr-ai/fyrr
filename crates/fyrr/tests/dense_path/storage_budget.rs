@@ -426,3 +426,96 @@ async fn an_idle_writer_service_stays_within_its_storage_request_budget() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// Publications a namespace has when a sync worker is first measured, and
+/// when it is measured again after its history has grown.
+const HISTORY: [usize; 2] = [4, 12];
+/// Reads of publication manifests by one `writer sync` run (4 measured): the
+/// newest manifest, again and again. A walk of the history would read one
+/// more for every publication.
+const SYNC_MANIFESTS: usize = 4;
+
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn a_sync_worker_reads_no_more_manifests_as_the_history_grows() {
+    let (config, root) = setup_on(Backend::Local);
+    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    assert_eq!(endpoint, "local-storage", "owned by the local CI row");
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("# fyrr-test-head-check = every", "");
+    std::fs::write(&config, &text).unwrap();
+    let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
+    root.embedding.insert_both("ledger", vector);
+    success(&config, &["writer", "namespace", "create"]);
+
+    // Only the sync workers run behind the observer.
+    let seen = Seen::default();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), seen.hook());
+    let worker = root.join("worker.toml");
+    std::fs::write(&worker, text.replace(&endpoint, &observed)).unwrap();
+
+    let mut texts = Vec::new();
+    for history in HISTORY {
+        while texts.len() < history {
+            texts.push((
+                format!("{}.txt", texts.len()),
+                format!("ledger entry {}", texts.len()),
+            ));
+            let shown: Vec<_> = texts
+                .iter()
+                .map(|(n, t)| (n.as_str(), t.as_str()))
+                .collect();
+            sync_texts(&config, &root, &shown);
+            success(&config, &["writer", "commit"]);
+        }
+        // New worker processes: nothing they know survives from the last run.
+        let mark = seen.len();
+        let sync = run(&worker, &["writer", "sync"]);
+        assert!(sync.status.success(), "{}", report(&sync));
+        let manifests: Vec<_> = seen
+            .all(mark)
+            .into_iter()
+            .filter(|request| request.starts_with("GET publications/"))
+            .collect();
+        within(
+            &format!("sync workers, {history} publications"),
+            (0, manifests),
+            SYNC_MANIFESTS,
+            0,
+        );
+    }
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // Maintenance deletes the checkpoints no retained manifest names, and only
+    // those: the publication that is served keeps its own.
+    use futures::TryStreamExt;
+    let loaded = fyrr_core::config::load(&config).unwrap();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let evidence = namespace.clone().join("evidence");
+    let named: Vec<_> = store.list(Some(&evidence)).try_collect().await.unwrap();
+    assert_eq!(named.len(), 1, "one checkpoint for a history this short");
+    // More than the 64 deletes between two revocation boundaries.
+    let strays: Vec<_> = (0..130)
+        .map(|i| {
+            evidence
+                .clone()
+                .join(format!("{i}-{}.json", "0".repeat(64)))
+        })
+        .collect();
+    for stray in &strays {
+        store.put(stray, "{}".into()).await.unwrap();
+    }
+    success(&config, &["writer", "maintain"]);
+    for stray in &strays {
+        assert!(matches!(
+            store.head(stray).await,
+            Err(object_store::Error::NotFound { .. })
+        ));
+    }
+    let kept: Vec<_> = store.list(Some(&evidence)).try_collect().await.unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].location, named[0].location);
+    std::fs::remove_dir_all(root).unwrap();
+}

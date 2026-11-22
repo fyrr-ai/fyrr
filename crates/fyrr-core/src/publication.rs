@@ -126,6 +126,53 @@ pub struct ContentManifest {
     /// The incarnation of the namespace that published this version, copied
     /// from the serving head.
     pub incarnation: String,
+    /// Which envelopes this publication and every older one committed or
+    /// rejected, so that the newest manifest is enough to tell. Absent from
+    /// manifests written before it existed: a reader then walks the chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub envelope_evidence: Option<EnvelopeEvidence>,
+}
+
+/// The envelope outcomes of a publication chain up to one manifest: an
+/// immutable checkpoint of the older ones, and the few since.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct EnvelopeEvidence {
+    /// The [`EnvelopeCheckpoint`] of an older publication.
+    pub checkpoint: GenerationPointer,
+    /// Envelopes committed after the checkpoint, this publication's included.
+    pub applied_since: Vec<String>,
+    /// Envelopes rejected after the checkpoint, this publication's included.
+    pub rejected_since: Vec<String>,
+}
+
+/// Every envelope a publication chain committed or rejected, up to one
+/// publication. The committer rewrites it now and then, so the manifests
+/// never carry more than a few ids.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct EnvelopeCheckpoint {
+    pub schema_version: SchemaVersion,
+    pub namespace: String,
+    pub applied_envelope_ids: Vec<String>,
+    pub rejected_envelope_ids: Vec<String>,
+}
+
+impl Contract for EnvelopeCheckpoint {
+    const NAME: &'static str = "envelope-checkpoint";
+    const VERSION: SchemaVersion = PUBLICATION_CONTRACT_VERSION;
+    fn validate(&self) -> Result<(), String> {
+        check_id("namespace", &self.namespace)?;
+        check_unique("applied_envelope_ids", &self.applied_envelope_ids)?;
+        check_unique("rejected_envelope_ids", &self.rejected_envelope_ids)
+    }
+}
+
+fn check_unique(field: &str, ids: &[String]) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    if ids.iter().all(|id| seen.insert(id)) {
+        Ok(())
+    } else {
+        Err(format!("{field} has duplicates"))
+    }
 }
 
 /// Publication-local fencing evidence, immutable with the content manifest.
@@ -240,6 +287,10 @@ impl Contract for ContentManifest {
         let mut seen = BTreeSet::new();
         if !self.envelope_ids.iter().all(|id| seen.insert(id)) {
             return Err("envelope_ids has duplicates".into());
+        }
+        if let Some(evidence) = &self.envelope_evidence {
+            check_unique("envelope_evidence.applied_since", &evidence.applied_since)?;
+            check_unique("envelope_evidence.rejected_since", &evidence.rejected_since)?;
         }
         let mut rewind_paths = BTreeSet::new();
         for path in &self.cursor_rewinds {

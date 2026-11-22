@@ -10,7 +10,7 @@ use fyrr_core::envelope::{PreparedEnvelope, RejectionMarker};
 use fyrr_core::identity::IdentityArtifact;
 use fyrr_core::mcp::{ToolError, error_codes, tools_list};
 use fyrr_core::provider::{ProviderInfo, SDK_SERIES};
-use fyrr_core::publication::{ContentManifest, PolicyArtifact, ServingHead};
+use fyrr_core::publication::{ContentManifest, EnvelopeCheckpoint, PolicyArtifact, ServingHead};
 use fyrr_core::schemas::config_schema;
 use fyrr_core::version::Contract;
 
@@ -147,6 +147,20 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
                 fixed_grants: Default::default(),
                 row_acl_sequence: None,
                 retired_sources: Default::default(),
+            }))
+            .unwrap_or_else(|_| unreachable!("JSON serialization is UTF-8")),
+        },
+        GeneratedFile {
+            path: "schemas/envelope-checkpoint.schema.json",
+            contents: pretty(&contract_schema::<EnvelopeCheckpoint>()),
+        },
+        GeneratedFile {
+            path: "fixtures/contracts/envelope-checkpoint/valid.json",
+            contents: String::from_utf8(fyrr_core::write_contract(&EnvelopeCheckpoint {
+                schema_version: <EnvelopeCheckpoint as Contract>::VERSION,
+                namespace: "acme".into(),
+                applied_envelope_ids: vec!["env-ab0dc87cb67ccdbb62a36a806c0cd6c5".into()],
+                rejected_envelope_ids: vec!["env-c0ffee00c0ffee00c0ffee00c0ffee00".into()],
             }))
             .unwrap_or_else(|_| unreachable!("JSON serialization is UTF-8")),
         },
