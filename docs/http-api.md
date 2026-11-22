@@ -294,7 +294,7 @@ elements and a length above zero, or the request is `400 vector_invalid`. A
 row without a vector is embedded by the [`[embedding]`](configuration.md#embedding)
 provider; without one it is `400 embedding_not_configured`. A creating request
 declares the vectors of the namespace in `settings.embedding` (`model` and
-`dimensions`, which default to the process's); a request whose rows all carry
+`dimensions`, which default to the process's; the dimension is a multiple of 8 or the request is `400 settings_invalid`); a request whose rows all carry
 vectors makes 0 embedding calls and needs no `[embedding]` table. The profile `settings.embedding.fingerprint` is derived from them unless the request sends it; a fingerprint that does not match is `400 settings_invalid` for a new namespace and `409 namespace_settings_fixed` for an existing one.
 
 `{namespace}` names the namespace to write: any namespace under

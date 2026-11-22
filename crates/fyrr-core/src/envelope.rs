@@ -222,6 +222,7 @@ impl EmbeddingIdentity {
             || self.model.len() > 512
             || self.dimensions == 0
             || u64::from(self.dimensions) > crate::config::DIMENSIONS_MAX
+            || !u64::from(self.dimensions).is_multiple_of(crate::config::DIMENSIONS_MULTIPLE)
         {
             return Err("embedding profile invalid".into());
         }

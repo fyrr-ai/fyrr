@@ -28,7 +28,7 @@ pub(super) fn configure(config: &Path, address: &std::net::SocketAddr, extra: &s
              [[identity.api_keys]]\nname='writer'\nkey={{env='FYRR_TEST_WRITE_KEY'}}\nroles=['write']\n\
              [[identity.api_keys]]\nname='reader'\nkey={{env='FYRR_TEST_READ_KEY'}}\nreaders=['usr:x']\n\
              [[identity.api_keys]]\nname='scoped'\nkey={{env='FYRR_TEST_SCOPED_KEY'}}\nroles=['write']\nnamespace_prefix='shop-'\n\
-             [writer.commit]\ncoalescing_timer='10m'\n\
+             [writer]\nthreads=2\n[writer.commit]\ncoalescing_timer='10m'\n\
              [writer.serve.admin]\nlisten='{address}'\noperator_token={{env='FYRR_TEST_OPERATOR'}}\n"
         ),
     )
@@ -741,6 +741,18 @@ async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_sto
                 WRITE_KEY,
                 namespace,
                 &json!({"settings": {"embedding": {"dimensions": 16, "fingerprint": wrong}}, "upserts": [row]})
+            )
+            .await,
+        (400, json!({"error": "settings_invalid"}))
+    );
+    // A dimension the dense index cannot be built over is refused before the
+    // namespace exists; the 16-dimension creation below is accepted.
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"settings": {"embedding": {"dimensions": 4}}, "upserts": [{"id": "a", "text": "alpha", "vector": vector(0, 4)}]})
             )
             .await,
         (400, json!({"error": "settings_invalid"}))

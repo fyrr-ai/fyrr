@@ -104,7 +104,7 @@ a connector section's `vector`).
 | --- | --- | --- |
 | `endpoint` | `""` | Base URL of the embeddings API (`…/v1`). Empty, a document without a vector is refused. |
 | `model` | `BAAI/bge-m3` | 1–512 UTF-8 bytes. |
-| `dimensions` | `1024` | 1–8192; must match the model. |
+| `dimensions` | `1024` | 8–8192, a multiple of 8 (the dense index cannot be built otherwise); must match the model. |
 | `send_dimensions` | `false` | Send `dimensions` in the request. |
 | `prefix` | `""` | At most 4096 UTF-8 bytes, applied to documents and queries alike. |
 | `roles.document.prefix`, `roles.query.prefix` | absent | Role-specific prefix of at most 4096 UTF-8 bytes, after the shared one. |

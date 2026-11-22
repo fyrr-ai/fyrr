@@ -1277,6 +1277,30 @@ fn dense_rq_bits_defaults_to_one_bit_and_is_bounded_without_changing_the_digest(
     }
 }
 #[test]
+fn embedding_dimensions_must_be_a_multiple_of_what_the_index_builds() {
+    for good in ["8", "16", "1024", "8192"] {
+        let configured = parse(&MINIMAL.replace(
+            "[embedding]",
+            &format!("[embedding]\ndimensions={good}"),
+        ))
+        .unwrap();
+        assert!(errors(&configured).is_empty(), "{good}");
+    }
+    for bad in ["4", "1023"] {
+        let rejected = parse(&MINIMAL.replace(
+            "[embedding]",
+            &format!("[embedding]\ndimensions={bad}"),
+        ))
+        .unwrap();
+        assert!(
+            errors(&rejected)
+                .iter()
+                .any(|error| error.contains("embedding.dimensions")),
+            "{bad}"
+        );
+    }
+}
+#[test]
 fn dense_partition_rows_defaults_to_550_and_is_bounded_without_changing_the_digest() {
     let legacy = parse(MINIMAL).unwrap().config.namespace;
     assert_eq!(legacy.dense_partition_rows, 550);
