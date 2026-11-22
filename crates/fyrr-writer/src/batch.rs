@@ -757,8 +757,11 @@ mod tests {
         metadata.insert(ARROW_VERSION_KEY.into(), version.into());
         let mut columns = batch.columns().to_vec();
         columns[at] = sections;
-        RecordBatch::try_new(Arc::new(Schema::new(fields).with_metadata(metadata)), columns)
-            .expect("batch without the vector column")
+        RecordBatch::try_new(
+            Arc::new(Schema::new(fields).with_metadata(metadata)),
+            columns,
+        )
+        .expect("batch without the vector column")
     }
 
     #[test]
