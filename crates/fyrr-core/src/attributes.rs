@@ -125,10 +125,9 @@ impl AttributeError {
 
 /// A name is a lowercase letter followed by lowercase letters, digits and `_`,
 /// at most [`MAX_NAME_BYTES`]: a Lance column name that needs
-/// no quoting. A built-in column name, `id` (the key of a document written
-/// through the HTTP API) or a leading `_` is reserved.
+/// no quoting. A built-in column name or a leading `_` is reserved.
 pub fn check_name(name: &str) -> Result<(), AttributeError> {
-    if name.starts_with('_') || name == "id" || BUILT_IN_COLUMNS.contains(&name) {
+    if name.starts_with('_') || BUILT_IN_COLUMNS.contains(&name) {
         return Err(AttributeError::NameReserved);
     }
     let mut bytes = name.bytes();

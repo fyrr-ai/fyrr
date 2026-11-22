@@ -31,12 +31,18 @@ use serde_json::{Map, Value, json};
 use std::cell::Cell;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, Notify, OwnedMutexGuard, OwnedSemaphorePermit, watch};
+use tokio::sync::{Mutex, Notify, OwnedMutexGuard, Semaphore, watch};
 
 /// How long a request waits for its publication before the outcome is unknown.
 const ANSWER_DEADLINE: Duration = Duration::from_secs(600);
 /// How long the body may stay silent while it is received.
 const BODY_IDLE: Duration = Duration::from_secs(30);
+/// The most a row, or the settings of a request, may take of the body before it
+/// is read as a tree: a row holds a text of 16 KiB and attributes of 4 KiB each.
+const ROW_MAX_BYTES: usize = 1 << 20;
+const SETTINGS_MAX_BYTES: usize = 64 << 10;
+/// Requests the write API holds at once, waiting for their turn or their answer.
+const IN_FLIGHT: usize = 8;
 /// How often a waiting request looks at the published history again, and asks
 /// the committer for a round when its envelope is not in it.
 const RECHECK: Duration = Duration::from_millis(500);
@@ -63,12 +69,16 @@ pub(crate) struct WriteApi {
     /// One request receives its body and prepares its envelope at a time, so
     /// that one body is in memory and the source's sequence is single.
     slot: Arc<Mutex<()>>,
+    /// Its own capacity: a request that waits for its answer for minutes does
+    /// not take the listener's, which SCIM and administration share.
+    capacity: Arc<Semaphore>,
 }
 impl WriteApi {
     pub(crate) fn new(commits: Arc<Commits>) -> Self {
         Self {
             commits,
             slot: Arc::new(Mutex::new(())),
+            capacity: Arc::new(Semaphore::new(IN_FLIGHT)),
         }
     }
 }
@@ -94,7 +104,6 @@ impl From<WriterError> for ApiError {
         match error {
             WriterError::EnvelopeBoundsInvalid => Self(413, "request_too_large"),
             WriterError::NamespaceSettingsFixed => Self(409, "namespace_settings_fixed"),
-            WriterError::ApiNamespaceHasSources => Self(409, "api_namespace_has_sources"),
             WriterError::PublicationInvalid => Self(400, "settings_invalid"),
             WriterError::DocumentInvalid => Self(400, "document_invalid"),
             WriterError::SyncBusy => Self(503, "busy"),
@@ -155,7 +164,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Rows<T> {
 struct Payload {
     /// Settings of a new namespace, laid over the process defaults.
     #[serde(default)]
-    settings: Option<Value>,
+    settings: Option<Box<serde_json::value::RawValue>>,
     #[serde(default)]
     upserts: Rows<Box<serde_json::value::RawValue>>,
     #[serde(default)]
@@ -169,14 +178,9 @@ struct Upsert {
     text: String,
 }
 
-/// Serves the route; `permit` is the listener's capacity, held until the answer.
-pub(crate) async fn handle(
-    api: &WriteApi,
-    config: &Config,
-    request: Request,
-    permit: OwnedSemaphorePermit,
-) -> Response {
-    match accept(api, config, request, permit).await {
+/// Serves the route.
+pub(crate) async fn handle(api: &WriteApi, config: &Config, request: Request) -> Response {
+    match accept(api, config, request).await {
         Ok(reply) => reply,
         Err(error) => error.response(),
     }
@@ -186,7 +190,6 @@ async fn accept(
     api: &WriteApi,
     config: &Config,
     request: Request,
-    permit: OwnedSemaphorePermit,
 ) -> Result<Response, ApiError> {
     let namespace = request
         .uri()
@@ -203,6 +206,11 @@ async fn accept(
     // The key is checked as the request arrives; a key revoked afterwards does
     // not cancel an envelope that was already accepted.
     authorize(config, request.headers()).await?;
+    let permit = api
+        .capacity
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError(503, "busy"))?;
     let headers = request.headers();
     if !headers
         .get(header::CONTENT_TYPE)
@@ -228,11 +236,13 @@ async fn accept(
     let bytes = read_body(request.into_body(), length, max).await?;
     let rows = config.writer.envelope_max_rows;
     // Parsed off the runtime; the body's bytes are gone once its rows exist.
-    let (parsed, exceeded) = tokio::task::spawn_blocking(move || {
+    // The slot goes with the parse and comes back with it: a caller that goes
+    // away does not let the next body in while this one is still in memory.
+    let (parsed, exceeded, slot) = tokio::task::spawn_blocking(move || {
         ROWS_LEFT.set(rows);
         ROWS_EXCEEDED.set(false);
         let parsed = serde_json::from_slice::<Payload>(&bytes);
-        (parsed, ROWS_EXCEEDED.get())
+        (parsed, ROWS_EXCEEDED.get(), slot)
     })
     .await
     .map_err(|_| ApiError(503, "unavailable"))?;
@@ -357,7 +367,10 @@ fn checked(
     let mut rows = Vec::with_capacity(body.upserts.0.len());
     let mut columns = crate::prepare::AttributeColumns::new(attributes);
     for raw in std::mem::take(&mut body.upserts.0) {
-        // A row is read one at a time: the request holds the rows as text.
+        // A row is read one at a time, as a tree only when it is of a size a row can be.
+        if raw.get().len() > ROW_MAX_BYTES {
+            return Err(ApiError(413, "row_too_large"));
+        }
         let Ok(mut row) = serde_json::from_str::<Map<String, Value>>(raw.get()) else {
             return Err(ApiError(400, "body_invalid"));
         };
@@ -399,6 +412,93 @@ fn checked(
     Ok((rows, columns.finish()))
 }
 
+/// The request's documents as the changes of one envelope, checked as the
+/// connector path checks what it quarantines: a request is refused whole.
+fn changes(
+    config: &Config,
+    rows: Vec<Upsert>,
+    deletes: Vec<String>,
+) -> Result<Vec<ContentChange>, ApiError> {
+    let open = config
+        .namespace
+        .write_api
+        .as_ref()
+        .is_some_and(|api| api.open);
+    let change = |op, root_id: String| DocumentChange {
+        op,
+        root_id,
+        // The revision is set with the sequence of the envelope.
+        source_revision: (op == ChangeOp::Upsert).then(|| "pending".to_owned()),
+        revision_order: None,
+        expected_prior_revision: None,
+        permission_revision: None,
+        readers: Vec::new(),
+        containers: Vec::new(),
+        metadata: None,
+        attributes: Vec::new(),
+        sections: Vec::new(),
+    };
+    let source = api_source();
+    let mut changes = Vec::with_capacity(rows.len() + deletes.len());
+    for row in rows {
+        let mut change = change(ChangeOp::Upsert, row.id.clone());
+        if !open {
+            change.readers = row.readers;
+        }
+        change.metadata = Some(DocumentMetadata {
+            source_uri: row.id,
+            source_type: "api".into(),
+            title: None,
+            author: None,
+            team: None,
+            project: None,
+            status: None,
+            labels: Vec::new(),
+            created_at: None,
+            updated_at: None,
+            connector_map: None,
+        });
+        change.sections = vec![Section {
+            text: row.text,
+            location: None,
+            readers: None,
+        }];
+        changes.push(change);
+    }
+    changes.extend(deletes.into_iter().map(|id| change(ChangeOp::Delete, id)));
+    for change in &changes {
+        match crate::prepare::quarantine_reason(config, &source, change) {
+            None => {}
+            Some("document_oversized") => return Err(ApiError(413, "document_too_large")),
+            Some(_) => return Err(ApiError(400, "document_invalid")),
+        }
+    }
+    let changes: Vec<_> = changes
+        .into_iter()
+        .map(|change| ContentChange::Write(Box::new(change)))
+        .collect();
+    crate::prepare::check_atomic(config, &changes)?;
+    Ok(changes)
+}
+
+/// The namespace is not to be created over what a deleted one left: its
+/// envelopes would be published into the new one.
+async fn leftovers(store: &dyn object_store::ObjectStore, root: &object_store::path::Path) -> Result<(), ApiError> {
+    match store.list(Some(&root.clone().join("envelopes"))).next().await {
+        None => Ok(()),
+        Some(Ok(_)) => Err(ApiError(409, "namespace_not_empty")),
+        Some(Err(_)) => Err(ApiError(503, "unavailable")),
+    }
+}
+
+/// Every success answer follows what was written being durable.
+async fn durable(config: &Config) -> Result<(), ApiError> {
+    fyrr_reader::storage::observed_durability(config)?
+        .persist()
+        .await
+        .map_err(|_| ApiError(503, "unavailable"))
+}
+
 /// Creates or confirms the namespace, prepares the request's envelope and
 /// waits for the head to serve it. Returns the rows upserted and deleted.
 async fn execute(
@@ -407,36 +507,52 @@ async fn execute(
     mut body: Payload,
     slot: OwnedMutexGuard<()>,
 ) -> Result<(u64, u64), ApiError> {
+    let requested = match &body.settings {
+        None => None,
+        Some(raw) if raw.get().len() > SETTINGS_MAX_BYTES => {
+            return Err(ApiError(413, "settings_too_large"));
+        }
+        Some(raw) => Some(
+            serde_json::from_str::<Value>(raw.get())
+                .map_err(|_| ApiError(400, "settings_invalid"))?,
+        ),
+    };
     let (store, root) = fyrr_reader::storage::namespace_store(config)?;
-    let existing = fyrr_reader::storage::optional_head(config).await?;
-    // The settings the request is checked against: the namespace's, or those
-    // the request would create it with. Nothing is created by a refused request.
-    let settings = match &existing {
+    let existing = match fyrr_reader::storage::optional_head(config).await? {
         Some(head) => {
             let policy: PolicyArtifact =
                 fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-            policy.settings
+            Some((head, policy))
         }
-        None => laid_over(
-            &crate::commit::namespace_settings(config),
-            body.settings.as_ref(),
-        )?,
+        None => None,
+    };
+    // The settings the request is checked against: the namespace's, or those
+    // the request would create it with. Nothing is created by a refused request.
+    let settings = match &existing {
+        Some((_, policy)) => policy.settings.clone(),
+        None => {
+            let settings = laid_over(&crate::commit::namespace_settings(config), requested.as_ref())?;
+            // `id` is the key of a row in the request.
+            if settings.attributes.contains_key("id")
+                || settings
+                    .write_api
+                    .as_ref()
+                    .is_some_and(|api| api.text_attribute == "id")
+            {
+                return Err(ApiError(400, "settings_invalid"));
+            }
+            settings
+        }
     };
     if settings.write_api.is_none() {
         return Err(ApiError(409, "namespace_not_writable"));
     }
-    if existing.is_some()
-        && body.settings.is_some()
-        && laid_over(&settings, body.settings.as_ref())? != settings
-    {
+    if existing.is_some() && laid_over(&settings, requested.as_ref())? != settings {
         return Err(ApiError(409, "namespace_settings_fixed"));
     }
     let config = config
         .with_settings(&settings)
         .ok_or(ApiError(503, "unavailable"))?;
-    if !config.sources.is_empty() {
-        return Err(ApiError(409, "api_namespace_has_sources"));
-    }
     let text_key = config
         .namespace
         .write_api
@@ -444,21 +560,24 @@ async fn execute(
         .map_or("text", |api| api.text_attribute.as_str());
     let (rows, attributes) = checked(&mut body, &config.namespace.attributes, text_key)?;
     let counts = (rows.len() as u64, body.deletes.0.len() as u64);
-    if counts == (0, 0) && body.settings.is_none() {
+    if counts == (0, 0) && requested.is_none() {
         return Err(ApiError(400, "empty_request"));
     }
-    let head = match existing {
-        Some(head) => head,
+    let changes = changes(&config, rows, body.deletes.0)?;
+    let (head, served) = match existing {
+        Some(existing) => existing,
         None => {
+            leftovers(store.as_ref(), &root).await?;
             crate::commit::create_with(&config, settings.clone()).await?;
-            fyrr_reader::storage::optional_head(&config)
+            let head = fyrr_reader::storage::optional_head(&config)
                 .await?
-                .ok_or(ApiError(503, "unavailable"))?
+                .ok_or(ApiError(503, "unavailable"))?;
+            // The policy that is served decides, also when another creation won.
+            let policy: PolicyArtifact =
+                fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+            (head, policy)
         }
     };
-    // The policy that is served decides, also when another creation won.
-    let served: PolicyArtifact =
-        fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
     if served.settings.write_api.is_none() {
         return Err(ApiError(409, "namespace_not_writable"));
     }
@@ -466,10 +585,11 @@ async fn execute(
         return Err(ApiError(409, "namespace_settings_fixed"));
     }
     if counts == (0, 0) {
+        durable(&config).await?;
         return Ok(counts);
     }
     let mut done = commits.done.subscribe();
-    let id = prepare(&config, &head, rows, attributes, body.deletes.0, slot).await?;
+    let id = prepare(&config, &head, changes, attributes, slot).await?;
     commits.requested.notify_one();
     let deadline = tokio::time::Instant::now() + ANSWER_DEADLINE;
     loop {
@@ -480,9 +600,10 @@ async fn execute(
             && let Ok((applied, rejected)) = crate::commit::published_ids(&config, &current).await
         {
             if rejected.contains(&id) {
-                return Err(refusal(&config, &id).await);
+                return Err(ApiError(409, "rejected"));
             }
             if applied.contains(&id) {
+                durable(&config).await?;
                 return Ok(counts);
             }
         }
@@ -496,40 +617,18 @@ async fn execute(
     }
 }
 
-/// The named reason a refused envelope carries.
-async fn refusal(config: &Config, id: &str) -> ApiError {
-    let reason = async {
-        let (store, root) = fyrr_reader::storage::namespace_store(config).ok()?;
-        let marker: fyrr_core::envelope::RejectionMarker = fyrr_reader::storage::read_contract(
-            store.as_ref(),
-            &root.join("rejections").join(format!("{id}.json")),
-        )
-        .await
-        .ok()?;
-        Some(marker.reason)
-    }
-    .await;
-    match reason.as_deref() {
-        Some("namespace_takes_connectors") => ApiError(409, "namespace_not_writable"),
-        Some("envelope_expired") => ApiError(409, "envelope_expired"),
-        Some("envelope_bounds_exceeded") => ApiError(413, "request_too_large"),
-        _ => ApiError(409, "rejected"),
-    }
-}
-
 /// Writes the request's envelope under the source's cursor lease and returns
 /// its ID. The slot is released when the envelope is durable.
 async fn prepare(
     config: &Config,
     head: &fyrr_core::publication::ServingHead,
-    rows: Vec<Upsert>,
+    changes: Vec<ContentChange>,
     attributes: Vec<ArrayRef>,
-    deletes: Vec<String>,
     slot: OwnedMutexGuard<()>,
 ) -> Result<String, ApiError> {
     let lease = CursorLease::acquire(config, API_SOURCE_ID, SyncKind::Content).await?;
     let renewal = lease.keepalive();
-    let result = write_envelope(config, head, &lease, rows, attributes, deletes).await;
+    let result = write_envelope(config, head, &lease, changes, attributes).await;
     let stopped = renewal.stop().await;
     let released = lease.release().await;
     drop(slot);
@@ -543,9 +642,8 @@ async fn write_envelope(
     config: &Config,
     head: &fyrr_core::publication::ServingHead,
     lease: &CursorLease,
-    rows: Vec<Upsert>,
+    mut changes: Vec<ContentChange>,
     attributes: Vec<ArrayRef>,
-    deletes: Vec<String>,
 ) -> Result<String, ApiError> {
     let (store, root) = fyrr_reader::storage::namespace_store(config)?;
     let mut state = lease.state().await?;
@@ -577,8 +675,18 @@ async fn write_envelope(
             Err(_) => return Err(ApiError(503, "unavailable")),
         }
     }
-    if sequence != state.sequence {
+    // A restore moves the boundary that an envelope of the source must have been
+    // prepared after, as it does for a connector's cursor.
+    let boundary = crate::commit::rejection_markers(config, head)
+        .await?
+        .iter()
+        .filter(|m| m.source_id == API_SOURCE_ID && m.kind == SyncKind::Content)
+        .map(|m| m.restore_sequence)
+        .max()
+        .unwrap_or(0);
+    if sequence != state.sequence || boundary > state.restore_sequence {
         state.sequence = sequence;
+        state.restore_sequence = state.restore_sequence.max(boundary);
         lease.write(state.clone()).await?;
     }
     let sequence = sequence
@@ -587,60 +695,12 @@ async fn write_envelope(
     let id = id_of(sequence);
     // Every revision of the source is newer than the one before it.
     let revision = i64::try_from(sequence).map_err(|_| WriterError::CursorSequenceOverflow)?;
-    let change = |op, root_id: String| DocumentChange {
-        op,
-        root_id,
-        source_revision: (op == ChangeOp::Upsert).then(|| format!("rev-{sequence}")),
-        revision_order: Some(revision),
-        expected_prior_revision: None,
-        permission_revision: None,
-        readers: Vec::new(),
-        containers: Vec::new(),
-        metadata: None,
-        attributes: Vec::new(),
-        sections: Vec::new(),
-    };
-    let source = api_source();
-    let mut changes = Vec::new();
-    for row in rows {
-        let mut change = change(ChangeOp::Upsert, row.id.clone());
-        change.readers = if config
-            .namespace
-            .write_api
-            .as_ref()
-            .is_some_and(|api| api.open)
-        {
-            Vec::new()
-        } else {
-            row.readers
-        };
-        change.metadata = Some(DocumentMetadata {
-            source_uri: row.id,
-            source_type: "api".into(),
-            title: None,
-            author: None,
-            team: None,
-            project: None,
-            status: None,
-            labels: Vec::new(),
-            created_at: None,
-            updated_at: None,
-            connector_map: None,
-        });
-        change.sections = vec![Section {
-            text: row.text,
-            location: None,
-            readers: None,
-        }];
-        changes.push(change);
-    }
-    changes.extend(deletes.into_iter().map(|id| change(ChangeOp::Delete, id)));
-    // The connector path quarantines what it refuses; a request is refused whole.
-    for change in &changes {
-        match crate::prepare::quarantine_reason(config, &source, change) {
-            None => {}
-            Some("document_oversized") => return Err(ApiError(413, "document_too_large")),
-            Some(_) => return Err(ApiError(400, "document_invalid")),
+    for change in &mut changes {
+        if let ContentChange::Write(change) = change {
+            change.revision_order = Some(revision);
+            if change.op == ChangeOp::Upsert {
+                change.source_revision = Some(format!("rev-{sequence}"));
+            }
         }
     }
     let batch = ConnectorBatch {
@@ -663,12 +723,9 @@ async fn write_envelope(
     let mut embedding = WriterEmbedding::open(config, API_SOURCE_ID).await?;
     crate::prepare::atomic(
         config,
-        &source,
+        &api_source(),
         &batch,
-        changes
-            .into_iter()
-            .map(|change| ContentChange::Write(Box::new(change)))
-            .collect(),
+        changes,
         &mut state,
         lease,
         base,

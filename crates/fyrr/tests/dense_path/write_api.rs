@@ -190,6 +190,16 @@ async fn identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_stor
         writer.post(WRITE_KEY, namespace, &duplicate).await,
         (400, json!({"error": "duplicate_id"}))
     );
+    // A document that is refused after the settings are read (a NUL in its
+    // text) must not leave the namespace created, with the mode it asked for.
+    let invalid = json!({
+        "settings": {"write_api": {"open": true}},
+        "upserts": [{"id": "d", "text": "red\u0000hat"}],
+    });
+    assert_eq!(
+        writer.post(WRITE_KEY, namespace, &invalid).await,
+        (400, json!({"error": "document_invalid"}))
+    );
     let loaded = fyrr_core::config::load(&config).unwrap();
     assert!(
         fyrr_reader::storage::optional_head(&loaded.config)

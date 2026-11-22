@@ -97,15 +97,11 @@ fn reply(status: u16, value: Value) -> Response {
 async fn handle(State(state): State<Arc<AdminState>>, request: Request) -> Response {
     let path = request.uri().path().to_owned();
     if path.starts_with("/v1/") {
-        // Its own authentication: an API key with the `write` role.
-        let (Some(api), Ok(permit)) = (&state.write, state.capacity.clone().try_acquire_owned())
-        else {
-            return error(ScimError::new(
-                if state.write.is_some() { 503 } else { 404 },
-                "notFound",
-            ));
+        // Its own authentication (an API key with the `write` role) and its own capacity.
+        return match &state.write {
+            Some(api) => crate::write_api::handle(api, &state.config, request).await,
+            None => error(ScimError::new(404, "notFound")),
         };
-        return crate::write_api::handle(api, &state.config, request, permit).await;
     }
     let expected = if path.starts_with("/scim/v2/") {
         state.scim.as_ref()

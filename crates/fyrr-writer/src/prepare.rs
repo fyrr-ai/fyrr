@@ -168,24 +168,11 @@ pub fn quarantine_reason(
         .iter()
         .map(|s| s.text.len() as u64)
         .sum::<u64>();
-    let work = if change.op == ChangeOp::Delete {
-        1
-    } else {
-        change
-            .sections
-            .iter()
-            .map(|s| crate::chunk::chunks(&s.text).len() as u64)
-            .sum()
-    };
-    let Ok(bytes) = serde_json::to_vec(change) else {
+    let Ok((work, estimate)) = weigh_change(config, change) else {
         return Some(WriterError::DocumentInvalid.as_str());
     };
-    let bytes = bytes.len() as u64;
     if work > config.writer.commit.group_max_rows
-        || bytes
-            .saturating_add(work.saturating_mul(2048 + u64::from(config.embedding.dimensions) * 2))
-            .saturating_add(16384)
-            > config.writer.commit.group_max_bytes.as_u64()
+        || estimate.saturating_add(16384) > config.writer.commit.group_max_bytes.as_u64()
         || text_bytes
             > source
                 .document_max_bytes
@@ -233,22 +220,51 @@ impl std::fmt::Debug for ContentChange {
 
 /// The records one change writes and its estimated size, the unit of an envelope's bounds.
 fn weigh(config: &Config, change: &ContentChange) -> Result<(u64, u64)> {
-    let work = match change {
-        ContentChange::Present(_) => 1,
-        ContentChange::Write(change) if change.op == ChangeOp::Delete => 1,
-        ContentChange::Write(change) => change
+    match change {
+        ContentChange::Write(change) => weigh_change(config, change),
+        ContentChange::Present(document) => {
+            let encoded = serde_json::to_vec(document).map_err(|_| WriterError::DocumentInvalid)?;
+            Ok((1, encoded.len() as u64 + record_estimate(config)))
+        }
+    }
+}
+
+fn weigh_change(config: &Config, change: &DocumentChange) -> Result<(u64, u64)> {
+    let work = if change.op == ChangeOp::Delete {
+        1
+    } else {
+        change
             .sections
             .iter()
             .map(|s| crate::chunk::chunks(&s.text).len() as u64)
-            .sum::<u64>(),
+            .sum::<u64>()
     };
-    let encoded = match change {
-        ContentChange::Write(change) => serde_json::to_vec(change),
-        ContentChange::Present(document) => serde_json::to_vec(document),
-    };
-    let estimate = encoded.map_err(|_| WriterError::DocumentInvalid)?.len() as u64
-        + work.saturating_mul(2048 + u64::from(config.embedding.dimensions) * 2);
-    Ok((work, estimate))
+    let encoded = serde_json::to_vec(change).map_err(|_| WriterError::DocumentInvalid)?;
+    Ok((
+        work,
+        encoded.len() as u64 + work.saturating_mul(record_estimate(config)),
+    ))
+}
+
+/// What a record adds to the size of an envelope besides its change.
+fn record_estimate(config: &Config) -> u64 {
+    2048 + u64::from(config.embedding.dimensions) * 2
+}
+
+/// Whether `changes` fit the bounds of a single page, which one envelope must.
+pub fn check_atomic(config: &Config, changes: &[ContentChange]) -> Result<()> {
+    let (mut rows, mut bytes) = (0u64, 16384u64);
+    for change in changes {
+        let (work, estimate) = weigh(config, change)?;
+        rows = rows.saturating_add(work);
+        bytes = bytes.saturating_add(estimate);
+    }
+    if rows > config.writer.commit.group_max_rows
+        || bytes > config.writer.commit.group_max_bytes.as_u64()
+    {
+        return Err(WriterError::EnvelopeBoundsInvalid);
+    }
+    Ok(())
 }
 
 /// One envelope for all of `changes`, which must fit the bounds of a single
@@ -266,17 +282,7 @@ pub async fn atomic(
     cache: &mut WriterEmbedding,
     attributes: Vec<ArrayRef>,
 ) -> Result<()> {
-    let (mut rows, mut bytes) = (0u64, 16384u64);
-    for change in &changes {
-        let (work, estimate) = weigh(config, change)?;
-        rows = rows.saturating_add(work);
-        bytes = bytes.saturating_add(estimate);
-    }
-    if rows > config.writer.commit.group_max_rows
-        || bytes > config.writer.commit.group_max_bytes.as_u64()
-    {
-        return Err(WriterError::EnvelopeBoundsInvalid);
-    }
+    check_atomic(config, &changes)?;
     content_page(
         config,
         source,

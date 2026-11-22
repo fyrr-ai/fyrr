@@ -130,7 +130,9 @@ or `group_max_bytes` is `413 request_too_large`.
 A request is published whole or refused whole. The answer comes after the
 publication that holds it is the served head. An answer `503 outcome_unknown`
 or `503 unavailable` says nothing about the outcome: the request may still be
-published, and repeating it upserts and deletes the same documents again. A
+published, and repeating it upserts and deletes the same documents again. Requests
+are applied in the order they are published, the last one wins: a repeat can
+overwrite a later change to the same IDs. A
 request that was answered `200` is never refused later. A key revoked after a
 request was accepted does not cancel it.
 
@@ -140,7 +142,7 @@ request was accepted does not cancel it.
 | `forbidden` | `403` | The key lacks the `write` role or its `namespace_prefix` excludes the namespace. |
 | `not_found` | `404` | Another namespace, or the process has no `[namespace.write_api]`. |
 | `unsupported_media_type` | `415` | Not `application/json`, or a `Content-Encoding`. |
-| `body_too_large`, `too_many_rows`, `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
+| `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
 | `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `document_invalid`, `settings_invalid`, `attribute_undeclared` and the attribute codes of [tuning](tuning.md#namespaceattributes) | `400` | The body, a row or the settings are invalid. |
-| `namespace_settings_fixed`, `namespace_not_writable`, `api_namespace_has_sources`, `envelope_expired`, `rejected` | `409` | The namespace has other settings, takes its documents from connectors, or the committer refused the request (nothing of it is applied). |
+| `namespace_settings_fixed`, `namespace_not_writable`, `namespace_not_empty`, `rejected` | `409` | The namespace has other settings, takes its documents from connectors, is to be created over envelopes that a deleted namespace left, or the committer refused the request (nothing of it is applied). |
 | `busy`, `unavailable`, `outcome_unknown` | `503` | The writer is busy, storage or the published keys cannot be read, or the answer did not come within 10 minutes; `Retry-After` is 1. |
