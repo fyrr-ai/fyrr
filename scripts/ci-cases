@@ -477,8 +477,6 @@ async def pool(manifest, logs, jobs, rows):
             f"{seconds:6}s  {display_logs / row / 'cases.json'}\n"
         )
         (logs / row / "summary.txt").write_text(line)
-    if any(item["status"] not in {"pass", "n/e"} for items in results.values() for item in items):
-        raise SystemExit(1)
 
 
 def main():

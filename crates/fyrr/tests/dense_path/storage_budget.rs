@@ -298,7 +298,8 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
         .replace("# fyrr-test-head-check = every", "")
         .replace("[reader]", "[reader]\nversion_check_interval = '1s'");
     let text = format!(
-        "{text}\n[[identity.api_keys]]\nname='budget'\nkey={{env='FYRR_BUDGET_KEY'}}\nreaders=['usr:budget']\n"
+        "{text}\n[[identity.api_keys]]\nname='budget'\nkey={{env='FYRR_BUDGET_KEY'}}\nreaders=['usr:budget']\n\
+         [[identity.api_keys]]\nname='outside'\nkey={{env='FYRR_BUDGET_OUTSIDE'}}\nreaders=['usr:out']\nnamespace_prefix='zz'\n"
     );
     std::fs::write(&config, &text).unwrap();
     let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
@@ -309,9 +310,25 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
     let keys = super::coordination::host_command(&config)
         .args(["writer", "keys"])
         .env("FYRR_BUDGET_KEY", format!("fyrr_key_{:064}", 6))
+        .env("FYRR_BUDGET_OUTSIDE", format!("fyrr_key_{:064}", 8))
         .output()
         .unwrap();
     assert!(keys.status.success(), "{}", report(&keys));
+    // A second namespace of the deployment, which a request path can name.
+    let second = root.join("second.toml");
+    std::fs::write(
+        &second,
+        text.replace("name = \"dense-fixture\"", "name = \"dense-fixture-two\""),
+    )
+    .unwrap();
+    success(&second, &["writer", "namespace", "create"]);
+    sync_texts(&second, &root, &[("kept.txt", KEPT)]);
+    let committed = super::coordination::host_command(&second)
+        .args(["writer", "commit"])
+        .env("FYRR_BUDGET_KEY", format!("fyrr_key_{:064}", 6))
+        .output()
+        .unwrap();
+    assert!(committed.status.success(), "{}", report(&committed));
 
     let seen = Seen::default();
     let stop = Arc::new(AtomicBool::new(false));
@@ -349,6 +366,78 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
     assert!(
         (2..=allowed).contains(&keys),
         "the keys were read {keys} times, allowed {allowed}"
+    );
+
+    // A namespace that does not exist costs one read of its head and nothing
+    // else; one that does opens within the budget of any namespace. Reads of
+    // the published keys belong to the version checks, so they are set apart.
+    let post_as = |key: usize, namespace: String| {
+        reader
+            .client
+            .post(format!("{}/v1/namespaces/{namespace}/query", reader.base))
+            .bearer_auth(format!("fyrr_key_{key:064}"))
+            .json(&json!({"query":"ledger"}))
+            .send()
+    };
+    let phase = |from: usize| {
+        let reads = seen.all(from);
+        let heads = reads.iter().filter(|read| *read == "GET head.json").count();
+        let others: Vec<_> = reads
+            .into_iter()
+            .filter(|read| read != "GET head.json" && !read.ends_with("/api-keys.json"))
+            .collect();
+        (heads, others)
+    };
+    let post = |namespace: String| post_as(6, namespace);
+    // A key outside its prefix reads no head: nothing of a namespace is read
+    // before the published keys admit the caller.
+    let (mark, started) = (seen.len(), std::time::Instant::now());
+    for i in 0..20 {
+        let response = post_as(8, format!("missing-{i}")).await.unwrap();
+        assert_eq!(response.status(), 403);
+    }
+    let intervals = usize::try_from(started.elapsed().as_millis() / INTERVAL.as_millis()).unwrap();
+    within("a key outside its prefix", phase(mark), 0, intervals + 2);
+    let (mark, started) = (seen.len(), std::time::Instant::now());
+    for i in 0..20 {
+        let response = post(format!("missing-{i}")).await.unwrap();
+        assert_eq!(response.status(), 401);
+    }
+    let (heads, others) = phase(mark);
+    assert!(heads >= 20, "the observer saw {heads} head reads");
+    // Two readers check their version: allow both their reads.
+    let intervals = usize::try_from(started.elapsed().as_millis() / INTERVAL.as_millis()).unwrap();
+    within(
+        "a namespace that does not exist",
+        (heads, others),
+        0,
+        20 + 2 * intervals + 2,
+    );
+    let (mark, started) = (seen.len(), std::time::Instant::now());
+    let response = post("dense-fixture-two".to_owned()).await.unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let mut quiet = 0;
+    while quiet < 2 {
+        let before = seen.len();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        quiet = if phase(before).1.is_empty() {
+            quiet + 1
+        } else {
+            0
+        };
+        assert!(
+            std::time::Instant::now() < deadline,
+            "storage reads never settled"
+        );
+    }
+    let (heads, others) = phase(mark);
+    let intervals = usize::try_from(started.elapsed().as_millis() / INTERVAL.as_millis()).unwrap();
+    within(
+        "a namespace opened by its path",
+        (heads, others),
+        OPEN_BUDGET,
+        2 * intervals + 10,
     );
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     reader.stop().await;

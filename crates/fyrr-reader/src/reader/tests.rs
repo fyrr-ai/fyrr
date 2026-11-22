@@ -330,6 +330,7 @@ fn pruning_old_admissions_releases_only_unheld_reservations() {
         crate::generation::MemoryPool {
             cap: capacity as u64 * 4096,
             permits: pool.clone(),
+            spent: Default::default(),
         },
         (0, 0),
         0,

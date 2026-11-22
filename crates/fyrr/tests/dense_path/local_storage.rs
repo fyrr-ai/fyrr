@@ -258,7 +258,7 @@ async fn lifetime_history_keeps_maintenance_restore_and_receipts_available() {
 
     let fixture_dir = std::env::var_os("FYRR_TEST_HISTORY_TMPDIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_TARGET_TMPDIR")));
+        .unwrap_or_else(crate::common::target_tmp);
     let setup = setup_at_on(
         fixture_dir.join(format!(
             "fyrr-history-{}-{}",

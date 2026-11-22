@@ -192,6 +192,55 @@ impl Deployment {
             .unwrap()
     }
 
+    /// Removes the `[identity.directory]` the fixture adds, so that the
+    /// configuration has no identity provider (`provider = "none"`).
+    fn without_directory(&mut self) {
+        for text in [&mut self.base_worker, &mut self.base_commit] {
+            let start = text.find("\n[identity.directory]\n").unwrap();
+            let end = start
+                + text[start..].find("sync_interval='5m'\n").unwrap()
+                + "sync_interval='5m'\n".len();
+            text.replace_range(start..end, "");
+            assert!(!text.contains("identity.directory"));
+        }
+    }
+
+    /// Publishes the namespace `<namespace>-<suffix>` in the same storage: the
+    /// documents of the fixture, readable by the same users, with exactly
+    /// `keys` declared. Returns its name.
+    fn sibling(&self, suffix: &str, keys: &[&Key]) -> String {
+        let name = format!("{}-{suffix}", self.namespace);
+        let tables: String = keys.iter().map(|key| key.table()).collect();
+        let config = self.root.join(format!("{suffix}.toml"));
+        let text = self.base_worker.replace(
+            &format!("name = \"{}\"", self.namespace),
+            &format!("name = \"{name}\""),
+        );
+        assert_ne!(text, self.base_worker);
+        std::fs::write(&config, format!("{text}{tables}")).unwrap();
+        for args in [
+            &["writer", "namespace", "create"][..],
+            &[
+                "writer",
+                "sync",
+                "incremental",
+                "--kind",
+                "content",
+                "--kind",
+                "permissions",
+            ],
+            &["writer", "commit"],
+        ] {
+            let mut command = worker_command(&config);
+            for key in keys {
+                command.env(key.variable, &key.secret);
+            }
+            let output = command.args(args).output().unwrap();
+            assert!(output.status.success(), "{args:?}: {}", report(&output));
+        }
+        name
+    }
+
     fn doc(&self, i: usize) -> String {
         format!("{}-http-{i}", self.namespace)
     }
@@ -216,16 +265,8 @@ fn search() -> Value {
 #[ignore = "real HTTP MCP executable and local storage; scripts/ci"]
 async fn roles_are_isolated_without_oidc() {
     let mut deployment = Deployment::new().await;
-    // Keys and no identity provider at all: the configuration has no
-    // `[identity.directory]` (`provider = "none"`), which the fixture adds.
-    for text in [&mut deployment.base_worker, &mut deployment.base_commit] {
-        let start = text.find("\n[identity.directory]\n").unwrap();
-        let end = start
-            + text[start..].find("sync_interval='5m'\n").unwrap()
-            + "sync_interval='5m'\n".len();
-        text.replace_range(start..end, "");
-        assert!(!text.contains("identity.directory"));
-    }
+    // Keys and no identity provider at all.
+    deployment.without_directory();
     // A document larger than one fetch page (64 KiB), readable by usr:u1. The
     // fixture caps documents at 64 bytes and knows no vector for new text.
     for text in [&mut deployment.base_worker, &mut deployment.base_commit] {
@@ -704,5 +745,89 @@ async fn deployment_keys_carry_roles_and_a_namespace_prefix() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert_eq!(refusal(&reader, &both.secret).await.0, 200);
+    reader.stop().await;
+}
+
+/// What a caller is told with `token` on the JSON route of `namespace`.
+async fn path_query(reader: &Reader, token: &str, namespace: &str) -> (u16, Value) {
+    let response = reader
+        .client
+        .post(format!("{}/v1/namespaces/{namespace}/query", reader.base))
+        .bearer_auth(token)
+        .json(&search())
+        .send()
+        .await
+        .unwrap();
+    (
+        response.status().as_u16(),
+        response.json().await.unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+#[ignore = "real writer, HTTP reader executable and local storage; scripts/ci"]
+async fn a_reader_serves_the_namespace_its_path_names() {
+    let mut deployment = Deployment::new().await;
+    deployment.without_directory();
+    let both = Key::new("nm-both-p4z", "FYRR_TEST_API_KEY_BOTH", 61, "usr:u1");
+    let only = Key::new("nm-only-p4z", "FYRR_TEST_API_KEY_ONLY", 62, "usr:u2");
+    let elsewhere = Key {
+        extra: "namespace_prefix='zz'".into(),
+        ..Key::new("nm-else-p4z", "FYRR_TEST_API_KEY_ELSE", 63, "usr:u1")
+    };
+    let all = [&both, &only, &elsewhere];
+    let published = deployment.publish(&all, &all, "");
+    assert!(published.status.success(), "{}", report(&published));
+    // `only` is declared for the first namespace alone.
+    let second = deployment.sibling("two", &[&both, &elsewhere]);
+    let mut reader = Reader::start_appended(&deployment.worker, &deployment.root, key_http).await;
+    let roots = |body: &Value| -> Vec<String> {
+        body["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // The namespace the path names is opened on its first request, and the
+    // key reads there what its readers say; the configured one still serves.
+    let (status, body) = path_query(&reader, &both.secret, &second).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(roots(&body), [deployment.doc(1)]);
+    let (status, body) = path_query(&reader, &both.secret, &deployment.namespace).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(roots(&body), [deployment.doc(1)]);
+
+    // A key declared for the first namespace alone does not read the other.
+    let unbound = path_query(&reader, &only.secret, &second).await;
+    assert_eq!(unbound, (401, json!({"error":"unauthorized"})));
+    // A namespace that does not exist answers a caller that may read there as
+    // one that is not bound, and a caller that may not read it as it does
+    // for one that exists, whatever the name looks like.
+    let missing = format!("{}-missing", deployment.namespace);
+    assert_eq!(path_query(&reader, &only.secret, &missing).await, unbound);
+    assert_eq!(path_query(&reader, &both.secret, &missing).await, unbound);
+    let forbidden = (403, json!({"error":"forbidden"}));
+    for name in [second.as_str(), missing.as_str(), "Bad_Name", "a%2Fb", ""] {
+        assert_eq!(
+            path_query(&reader, &elsewhere.secret, name).await,
+            forbidden,
+            "{name:?}"
+        );
+    }
+    for name in ["Bad_Name", "a%2Fb", ""] {
+        assert_eq!(
+            path_query(&reader, &both.secret, name).await,
+            (404, json!({"error":"invalid_argument"})),
+            "{name:?}"
+        );
+    }
+
+    // MCP keeps serving the configured namespace only.
+    assert_eq!(
+        roots(&reader.call(&both.secret, 1, "search", search()).await["structuredContent"]),
+        [deployment.doc(1)]
+    );
     reader.stop().await;
 }

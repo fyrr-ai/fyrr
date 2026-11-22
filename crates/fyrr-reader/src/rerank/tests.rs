@@ -174,3 +174,28 @@ async fn payload_and_deadline_skip_before_spend_or_http() {
     );
     assert_eq!(reranker.spent.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn clients_that_share_a_counter_share_the_limit() {
+    let config: RerankConfig =
+        serde_json::from_value(serde_json::json!({"endpoint":"http://127.0.0.1/rerank",
+        "model":"test",
+        "candidates":1,
+        "weight":1.0,
+        "deadline":"1s",
+        "spend_limit_microusd":30,
+        "max_call_cost_microusd":10}))
+        .unwrap();
+    let spent = Arc::new(AtomicU64::new(0));
+    let (first, second) = (
+        Reranker::charging(spent.clone()).unwrap(),
+        Reranker::charging(spent).unwrap(),
+    );
+    assert!(first.reserve(&config).is_ok());
+    assert!(second.reserve(&config).is_ok());
+    assert!(first.reserve(&config).is_ok());
+    assert_eq!(
+        second.reserve(&config),
+        Err(ReaderError::RerankSpendExhausted)
+    );
+}

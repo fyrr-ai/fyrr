@@ -17,6 +17,8 @@ pub(crate) fn pages(bytes: usize) -> u32 {
 pub(crate) struct MemoryPool {
     pub(crate) cap: u64,
     pub(crate) permits: Arc<tokio::sync::Semaphore>,
+    /// What every namespace served from this envelope has spent.
+    pub(crate) spent: crate::provider::Spent,
 }
 impl MemoryPool {
     pub(crate) fn try_claim(&self, bytes: u64) -> Option<tokio::sync::OwnedSemaphorePermit> {
@@ -183,6 +185,7 @@ impl PreparationReservation {
         Ok(MemoryPool {
             cap: permits as u64 * PAGE_BYTES,
             permits: Arc::new(tokio::sync::Semaphore::new(permits)),
+            spent: crate::provider::Spent::default(),
         })
     }
     pub(crate) fn rss() -> Result<u64> {

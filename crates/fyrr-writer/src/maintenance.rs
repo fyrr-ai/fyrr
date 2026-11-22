@@ -10,9 +10,12 @@ mod restore_fragments;
 mod restore_index;
 use chrono::Utc;
 use futures::TryStreamExt;
+use fyrr_core::Contract;
 use fyrr_core::config::Config;
 use fyrr_core::envelope::{EnvelopePayload, RejectionMarker};
-use fyrr_core::publication::{CommitLineage, ContentManifest, PolicyArtifact, ServingHead};
+use fyrr_core::publication::{
+    CommitLineage, ContentManifest, HISTORY_CUT_OBJECT, HistoryCut, PolicyArtifact, ServingHead,
+};
 use fyrr_reader::storage::{dataset_uri, namespace_store, pinned, read_contract};
 use lance::Dataset;
 use lance::dataset::cleanup::CleanupPolicy;
@@ -20,7 +23,7 @@ use lance::dataset::optimize::{CompactionOptions, plan_compaction};
 use lance::dataset::transaction::{Operation, RewriteGroup};
 use lance::index::DatasetIndexExt;
 use lance_index::optimize::OptimizeOptions;
-use object_store::{ObjectStoreExt, path::Path};
+use object_store::{ObjectStoreExt, PutMode, path::Path};
 use std::collections::{BTreeMap, BTreeSet};
 
 // Bound catalog-wide index opens; merge half the budget to amortize each consolidation.
@@ -172,15 +175,30 @@ async fn maintain_held(
             }
         }
     }
-    boundary(config, lease, history).await?;
-    let (mut removed, protected, unverified_protected) =
-        tokio::time::timeout(limit, cleanup_versions(config, lease, history))
+    // One retained set for both cleanups: a manifest goes only with the
+    // version files that this set protects.
+    let head = boundary(config, lease, history).await?;
+    let kept = if head.content.is_some() {
+        tokio::time::timeout(limit, retained(config, &head))
             .await
-            .map_err(|_| WriterError::MaintenanceStepDeadline)??;
+            .map_err(|_| WriterError::MaintenanceStepDeadline)??
+    } else {
+        Vec::new()
+    };
+    let (mut removed, protected, unverified_protected, cleaned) = tokio::time::timeout(
+        limit,
+        cleanup_versions(config, lease, history, &head, &kept),
+    )
+    .await
+    .map_err(|_| WriterError::MaintenanceStepDeadline)??;
     let staging = local_staging::plan(config).await?;
     removed += local_staging::remove(config, lease, staging).await?;
-    removed += superseded_checkpoints(config, lease, history).await?;
     envelopes += crate::envelopes::cleanup_held(config, lease).await?;
+    // A manifest is the proof that its version's files were removed: it goes
+    // only once the version cleanup of this run has left none behind.
+    if cleaned && protected == 0 {
+        removed += superseded_history(config, lease, history, &head, &kept).await?;
+    }
     let head = boundary(config, lease, history).await?;
     if head.content.is_some() {
         let dataset = pinned(config, &head).await?;
@@ -362,54 +380,149 @@ async fn retained(config: &Config, head: &ServingHead) -> Result<Vec<ContentMani
     Ok(keep)
 }
 
-/// Delete the envelope checkpoints that no retained manifest names. A walk
-/// that starts at a manifest older than the window finds its checkpoint gone
-/// and reads the manifests instead. Like the other steps, the pass is bounded
-/// by `step_max_duration`, listing included, and meets the revocation boundary
-/// every 64 deletes; what it leaves, the next `writer maintain` removes.
-async fn superseded_checkpoints(
+/// Walk the whole chain, so a manifest missing before the cut is found before
+/// anything is deleted: cleanup reads the evidence of the head only.
+pub(crate) async fn verify_history(config: &Config, head: &ServingHead) -> Result<()> {
+    let (store, root) = namespace_store(config)?;
+    let mut chain = fyrr_reader::storage::manifest_chain(
+        store,
+        root,
+        head.content.as_ref().map(|p| p.manifest.clone()),
+    );
+    while chain.try_next().await?.is_some() {}
+    Ok(())
+}
+
+/// Delete the publication manifests and envelope checkpoints that no retained
+/// manifest names. The oldest retained manifest is recorded as the cut first:
+/// the walks of the chain end there, and a manifest missing anywhere else is a
+/// lost one. A walk that starts at a manifest older than the window finds its
+/// checkpoint gone and reads the manifests instead, so what is deleted is
+/// history no restore or receipt reaches. Like the other steps, the pass is
+/// bounded by `step_max_duration`, listing included, meets the revocation
+/// boundary every 64 deletes and ends when the head publishes; what it leaves,
+/// the next `writer maintain` removes.
+async fn superseded_history(
     config: &Config,
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
+    head: &ServingHead,
+    kept: &[ContentManifest],
 ) -> Result<usize> {
     let limit = config.writer.maintenance.step_max_duration.as_duration();
     let start = std::time::Instant::now();
     tokio::time::timeout(limit, async {
-        let head = boundary(config, lease, history).await?;
-        if head.content.is_none() {
+        // The cut manifest's evidence stands for the manifests deleted before
+        // it; a manifest older than the evidence has none to stand for.
+        if head.content.is_none()
+            || kept
+                .last()
+                .is_none_or(|manifest| manifest.envelope_evidence.is_none())
+        {
             return Ok(0);
         }
-        let named: BTreeSet<_> = retained(config, &head)
-            .await?
-            .into_iter()
-            .filter_map(|manifest| manifest.envelope_evidence)
-            .map(|evidence| evidence.checkpoint.object)
+        let named: BTreeSet<_> = kept
+            .iter()
+            .flat_map(|manifest| {
+                [format!("publications/{}.json", manifest.publication_id)]
+                    .into_iter()
+                    .chain(
+                        manifest
+                            .envelope_evidence
+                            .iter()
+                            .map(|evidence| evidence.checkpoint.object.clone()),
+                    )
+            })
             .collect();
-        let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
-        let listed: Vec<_> = store
-            .list(Some(&root.clone().join("evidence")))
-            .try_collect()
-            .await?;
-        let mut deleted = 0;
-        for object in listed {
-            if named.contains(&fyrr_reader::storage::relative_path(
-                &object.location,
-                &root,
-            )) {
-                continue;
+        // Record the cut before anything goes: a crash leaves older manifests
+        // that the next pass deletes, never a chain with a hole.
+        if let Some(oldest) = kept.last()
+            && oldest.previous_publication_id.is_some()
+        {
+            let (store, root) = namespace_store(config)?;
+            // The cut manifest's evidence stands for the manifests before it:
+            // an earlier pass with a shorter window may have deleted it, and a
+            // checkpoint that does not read is no stand-in either.
+            if let Some(evidence) = &oldest.envelope_evidence
+                && commit::read_checkpoint(store.as_ref(), &root, &evidence.checkpoint)
+                    .await?
+                    .is_none()
+            {
+                return Ok(0);
             }
-            if start.elapsed() >= limit {
-                break;
-            }
-            if deleted % 64 == 0 {
-                boundary(config, lease, history).await?;
-            } else {
-                lease.head().await?;
-            }
-            match store.delete(&object.location).await {
-                Ok(()) => deleted += 1,
-                Err(object_store::Error::NotFound { .. }) => {}
+            let path = root.join(HISTORY_CUT_OBJECT);
+            // Read with its version: the write replaces exactly this cut, so a
+            // writer that lost the lease cannot move a newer one back.
+            let (current, mode) = match store.get(&path).await {
+                Ok(object) => {
+                    let version = crate::lease::version_of(&object.meta);
+                    let bytes = object
+                        .bytes()
+                        .await
+                        .map_err(|_| WriterError::StorageUnavailable)?;
+                    let cut: HistoryCut = fyrr_core::parse_contract(&bytes)
+                        .map_err(|_| WriterError::PublicationInvalid)?;
+                    (Some(cut), PutMode::Update(version))
+                }
+                Err(object_store::Error::NotFound { .. }) => (None, PutMode::Create),
                 Err(_) => return Err(WriterError::StorageUnavailable),
+            };
+            // The cut only moves forward; a pass that knows less deletes nothing.
+            if current
+                .as_ref()
+                .is_some_and(|cut| cut.sequence > oldest.sequence)
+            {
+                return Ok(0);
+            }
+            if current.as_ref().map(|cut| &cut.publication_id) != Some(&oldest.publication_id) {
+                let cut = HistoryCut {
+                    schema_version: <HistoryCut as Contract>::VERSION,
+                    namespace: config.namespace.name.as_str().to_owned(),
+                    publication_id: oldest.publication_id.clone(),
+                    sequence: oldest.sequence,
+                };
+                lease.head().await?;
+                match crate::lease::cas_put(store.as_ref(), &path, &cut, mode).await {
+                    Ok(_) => {}
+                    // Another writer moved the cut: delete nothing from here.
+                    Err(
+                        object_store::Error::Precondition { .. }
+                        | object_store::Error::AlreadyExists { .. },
+                    ) => return Ok(0),
+                    Err(_) => return Err(WriterError::StorageUnavailable),
+                }
+            }
+        }
+        let (store, root, durability) = fyrr_reader::storage::cleanup_namespace_store(config)?;
+        let served = head.content.as_ref().map(|p| p.publication_id.clone());
+        let mut deleted = 0;
+        for prefix in ["publications", "evidence"] {
+            let mut listing = store.list(Some(&root.clone().join(prefix)));
+            while let Some(object) = listing.try_next().await? {
+                if named.contains(&fyrr_reader::storage::relative_path(
+                    &object.location,
+                    &root,
+                )) {
+                    continue;
+                }
+                if start.elapsed() >= limit {
+                    break;
+                }
+                let current = if deleted % 64 == 0 {
+                    boundary(config, lease, history).await?
+                } else {
+                    lease.head().await?
+                };
+                // The references above are those of the head this pass began with.
+                if current.content.as_ref().map(|p| &p.publication_id) != served.as_ref() {
+                    durability.finish().await?;
+                    return Ok(deleted);
+                }
+                match store.delete(&object.location).await {
+                    Ok(()) => deleted += 1,
+                    Err(object_store::Error::NotFound { .. }) => {}
+                    Err(_) => return Err(WriterError::StorageUnavailable),
+                }
             }
         }
         durability.finish().await?;
@@ -423,17 +536,14 @@ async fn cleanup_versions(
     config: &Config,
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
-) -> Result<(usize, usize, usize)> {
-    let head = boundary(config, lease, history).await?;
+    head: &ServingHead,
+    kept: &[ContentManifest],
+) -> Result<(usize, usize, usize, bool)> {
     if head.content.is_none() {
-        return Ok((0, 0, 0));
+        return Ok((0, 0, 0, true));
     }
-    let dataset = pinned(config, &head).await?;
-    let versions: BTreeSet<_> = retained(config, &head)
-        .await?
-        .iter()
-        .map(|m| m.lance_version)
-        .collect();
+    let dataset = pinned(config, head).await?;
+    let versions: BTreeSet<_> = kept.iter().map(|m| m.lance_version).collect();
     let oldest = *versions
         .first()
         .ok_or(WriterError::PublicationUnavailable)?;
@@ -450,7 +560,7 @@ async fn cleanup_versions(
         unresolved,
         envelopes,
         ..
-    } = commit::cleanup_evidence(config, &head).await?;
+    } = commit::cleanup_evidence(config, head).await?;
     let mut protected = BTreeSet::new();
     for (_, envelope) in envelopes {
         if applied.contains(&envelope.envelope_id) && !unresolved.contains(&envelope.envelope_id) {
@@ -476,6 +586,8 @@ async fn cleanup_versions(
     }
     let dataset_root = root.join("dataset.lance");
     let start = std::time::Instant::now();
+    // The plan lists at most 100,000 files; a full list may be a cut one.
+    let listed_all = plan.candidate_files.len() < 100_000;
     let mut removed = 0;
     let mut protected_count = 0;
     let mut unverified_protected = 0;
@@ -538,7 +650,13 @@ async fn cleanup_versions(
         }
     }
     durability.finish().await?;
-    Ok((removed, protected_count, unverified_protected))
+    // Complete: nothing the plan found remains, protected files aside.
+    Ok((
+        removed,
+        protected_count,
+        unverified_protected,
+        listed_all && removed == candidates.len(),
+    ))
 }
 
 /// Explicit full-content scan; ordinary commits still verify only changed rows.
@@ -724,16 +842,27 @@ pub(crate) async fn purge_warnings(
             .collect::<Result<_, _>>()?;
         let mut probes = 0;
         let files: BTreeSet<_> = current.files.iter().map(|f| f.path.clone()).collect();
-        let mut previous = current.previous_publication_id;
+        let cut = fyrr_reader::storage::history_cut(store.as_ref(), &root).await?;
+        let mut previous = if cut.as_ref() == Some(&current.publication_id) {
+            None
+        } else {
+            current.previous_publication_id
+        };
         for _ in 0..64 {
             let Some(id) = previous else {
                 return Ok(false);
             };
-            let manifest: ContentManifest = read_contract(
+            // A maintenance that cut the history meanwhile ends the walk.
+            let Some(manifest) = fyrr_reader::storage::read_older_manifest(
                 store.as_ref(),
-                &Path::from(format!("{root}/publications/{id}.json")),
+                &root,
+                &format!("publications/{id}.json"),
+                cut.as_ref(),
             )
-            .await?;
+            .await?
+            else {
+                return Ok(false);
+            };
             if old(manifest.committed_at) {
                 if revoked_at.contains(&manifest.sequence) {
                     return Ok(true);
@@ -755,7 +884,12 @@ pub(crate) async fn purge_warnings(
                     }
                 }
             }
-            previous = manifest.previous_publication_id;
+            // Maintenance deleted the history before the cut.
+            previous = if cut.as_ref() == Some(&manifest.publication_id) {
+                None
+            } else {
+                manifest.previous_publication_id
+            };
         }
         // More history than the bounded probe can certify is conservatively warned.
         Ok::<_, WriterError>(previous.is_some())
