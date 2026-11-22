@@ -2381,11 +2381,22 @@ async fn identity_write_api_keeps_the_columns_of_added_attributes_in_table_order
             .extend(more.as_object().unwrap().clone());
         row
     };
+    // Created with its schema alone: until rows are published the schema stays,
+    // as the table is created from the settings its rows were prepared with.
     assert_eq!(
-        post(json!({"settings": {"attributes": {"z": "int"}},
-                    "upserts": [row("r1", "alpha", json!({"z": 7}))]}))
-        .await
-        .0,
+        post(json!({"settings": {"attributes": {"z": "int"}}}))
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        post(json!({"settings": {"attributes": {"a": "string"}}})).await,
+        (409, json!({"error": "namespace_not_published"}))
+    );
+    assert_eq!(
+        post(json!({"upserts": [row("r1", "alpha", json!({"z": 7}))]}))
+            .await
+            .0,
         200
     );
     // Added after `z`, and sorted before it.

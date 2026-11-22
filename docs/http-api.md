@@ -367,7 +367,9 @@ The answer is `{"upserted":0,"deleted":0}` once the head that readers serve
 holds the new schema; readers keep the version they serve until then. The
 settings are laid over the ones the namespace has when the change is made, so
 two changes at once both apply. A request for a namespace that was replaced
-meanwhile is `409 namespace_changed`.
+meanwhile is `409 namespace_changed`. A namespace that has no publication yet
+(created with `settings` alone) keeps its schema until its first rows are
+published: `409 namespace_not_published`.
 
 - A new attribute is a nullable column: it reads `null` for every document
   written before it, and a filter with `{"op": "eq", "value": null}` finds them.
@@ -455,5 +457,5 @@ request was accepted does not cancel it.
 | `body_too_large`, `too_many_rows`, `row_too_large` (1 MiB), `settings_too_large` (64 KiB), `text_too_large`, `document_too_large`, `request_too_large` | `413` | A limit above. |
 | `schema_change_with_rows`, `body_invalid`, `empty_request`, `id_missing`, `duplicate_id`, `text_missing`, `readers_invalid`, `vector_invalid`, `vector_not_patchable`, `text_not_patchable`, `embedding_not_configured`, `document_invalid`, `condition_invalid`, `settings_invalid`, `attribute_undeclared` and the value codes of [tuning](tuning.md#namespaceattributes) (`attribute_type_mismatch`, `attribute_value_invalid`, `attribute_value_too_large`) | `400` | The body or a row is invalid, or the settings of a namespace to be created are (a schema that is too large or has a bad name included: `settings_invalid`). |
 | `namespace_settings_fixed`, `namespace_not_writable`, `namespace_not_empty`, `namespace_changed`, `rejected` | `409` | The namespace has other settings, takes its documents from connectors, is to be created over envelopes that a deleted namespace left, was replaced by another while the request was prepared, or the committer refused the request (nothing of it is applied). |
-| `attribute_type_change_refused`, `attribute_removal_refused` | `409` | The settings give an attribute of the namespace another type, or remove it. |
+| `attribute_type_change_refused`, `attribute_removal_refused`, `namespace_not_published` | `409` | The settings give an attribute of the namespace another type, or remove it, or change the schema of a namespace that has no publication yet. |
 | `busy`, `unavailable`, `outcome_unknown` | `503` | The writer is busy, storage or the published keys cannot be read, or the answer did not come within 10 minutes; `Retry-After` is 1. |

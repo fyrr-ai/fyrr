@@ -52,6 +52,7 @@ writer_errors! {
     AttributeTypeChange => ("attribute_type_change_refused", false),
     AttributeRemoval => ("attribute_removal_refused", false),
     NamespaceChanged => ("namespace_changed", false),
+    NamespaceNotPublished => ("namespace_not_published", false),
     EmbeddingLocalCacheConfigurationInvalid => ("embedding_local_cache_configuration_invalid", false),
     EmbeddingLocalCacheUnavailable => ("embedding_local_cache_unavailable", true),
     EmbeddingLocalCacheInvalid => ("embedding_local_cache_invalid", true),

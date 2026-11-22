@@ -155,6 +155,7 @@ impl From<WriterError> for ApiError {
             WriterError::AttributeTypeChange => Self(409, "attribute_type_change_refused"),
             WriterError::AttributeRemoval => Self(409, "attribute_removal_refused"),
             WriterError::NamespaceChanged => Self(409, "namespace_changed"),
+            WriterError::NamespaceNotPublished => Self(409, "namespace_not_published"),
             WriterError::CommitterBusy => Self(503, "busy"),
             WriterError::PublicationInvalid => Self(400, "settings_invalid"),
             WriterError::DocumentInvalid => Self(400, "document_invalid"),
@@ -1013,7 +1014,15 @@ async fn execute(
         .write_api
         .as_ref()
         .map_or("text", |api| api.text_attribute.as_str());
-    let order = attribute_order(&config, existing.as_ref().map(|(head, _)| head)).await?;
+    // Only an upsert builds a fragment, so only it needs the table's columns.
+    let order = attribute_order(
+        &config,
+        existing
+            .as_ref()
+            .map(|(head, _)| head)
+            .filter(|_| !body.upserts.0.is_empty()),
+    )
+    .await?;
     let (rows, attributes, patches, conditions) = checked(&mut body, &config, text_key, order)?;
     let (upserted, deleted) = (rows.len() as u64, body.deletes.0.len() as u64);
     if upserted + deleted + patches.len() as u64 == 0 && requested.is_none() {

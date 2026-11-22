@@ -45,6 +45,11 @@ pub(crate) async fn change_schema(
         let mut head = lease.head().await?;
         let current: PolicyArtifact =
             fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+        // Before the first publication every envelope that waits was prepared
+        // with the settings the table is to be created from: they stay fixed.
+        if head.content.is_none() {
+            return Err(WriterError::NamespaceNotPublished);
+        }
         let next = change(&head, &current.settings)?;
         check_schema_change(&current.settings, &next)?;
         if current.settings == next {
@@ -69,11 +74,6 @@ pub(crate) async fn change_schema(
             &policy,
         )
         .await?;
-        if head.content.is_none() {
-            // The first publication creates the columns and the indexes.
-            head.updated_at = fyrr_core::clock::now();
-            return lease.publish(head).await;
-        }
         let mut work = native::ContentWork::open(config, &lease, &head, false).await?;
         let dataset = work
             .dataset
