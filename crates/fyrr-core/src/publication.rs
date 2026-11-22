@@ -15,6 +15,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::attributes::{AttributeSchema, check_schema};
 use crate::config::{CompositionSettings, NamespaceConfig, RerankSettings, RetrievalSettings};
 use crate::envelope::{ChunkProfileIdentity, EmbeddingIdentity, FileRef};
 use crate::limits::{check_digest, check_id};
@@ -39,6 +40,10 @@ pub struct NamespaceSettings {
     pub composition: CompositionSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerank: Option<RerankSettings>,
+    /// The typed attributes the namespace declares when it is created. Each is
+    /// a nullable column with its own index from the first publication.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attributes: AttributeSchema,
 }
 
 impl NamespaceSettings {
@@ -57,6 +62,7 @@ impl NamespaceSettings {
             fts_ascii_folding: self.fts.ascii_folding,
             dense_rq_bits: self.dense_rq_bits,
             dense_partition_rows: self.dense_partition_rows,
+            attributes: self.attributes.clone(),
         };
         let mut issues = Vec::new();
         let mut issue = |path: &str, message: String| issues.push(format!("{path}: {message}"));
@@ -157,6 +163,10 @@ pub struct ContentManifest {
     /// Digest of the retrieval policy, including the result composition.
     pub retrieval_policy_digest: String,
     pub indexes: Vec<IndexIdentity>,
+    /// The typed attributes of this version: each is a nullable column with an
+    /// index of its own among `indexes`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attributes: AttributeSchema,
     /// Immutable files of this version, relative to the dataset root.
     pub files: Vec<FileRef>,
     /// Envelopes this publication committed.
@@ -338,6 +348,7 @@ impl Contract for ContentManifest {
         self.embedding.validate_profile()?;
         check_digest("chunk_profile.digest", &self.chunk_profile.digest)?;
         check_digest("retrieval_policy_digest", &self.retrieval_policy_digest)?;
+        check_schema(&self.attributes).map_err(|error| format!("attributes: {error}"))?;
         if !self.indexes.iter().any(|index| index.column == "readers") {
             // A publication lacking the readers index is refused.
             return Err("the readers index is missing".into());

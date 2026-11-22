@@ -104,3 +104,150 @@ async fn a_namespace_keeps_its_own_settings_on_storage() {
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+const ATTRIBUTES: [(&str, &str); 5] = [
+    ("created", "datetime"),
+    ("priority", "int"),
+    ("score", "float"),
+    ("done", "bool"),
+    ("team", "string"),
+];
+
+pub(super) fn declare(config: &Path, attributes: &[(&str, &str)]) -> String {
+    let declared: String = attributes
+        .iter()
+        .map(|(name, kind)| format!("{name} = \"{kind}\"\n"))
+        .collect();
+    let text = std::fs::read_to_string(config).unwrap().replacen(
+        "[namespace]",
+        &format!("[namespace.attributes]\n{declared}[namespace]"),
+        1,
+    );
+    std::fs::write(config, &text).unwrap();
+    text
+}
+
+async fn open(config: &fyrr_core::config::Config, version: u64) -> lance::Dataset {
+    fyrr_reader::storage::open_version(
+        &fyrr_reader::storage::dataset_uri(config),
+        config
+            .storage
+            .object_store_options(&fyrr_core::config::ProcessEnvironment)
+            .unwrap(),
+        version,
+        None,
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "local storage publication and writer CLI"]
+async fn declared_attributes_are_nullable_columns_with_an_index_each_on_storage() {
+    use super::mirror_identity::{EXTRA, KEPT, sync_texts};
+    use arrow_array::Array;
+    let (config, root) = setup_on(Backend::Local);
+    declare(&config, &ATTRIBUTES);
+    success(&config, &["writer", "namespace", "create"]);
+    sync_texts(&config, &root, &[("kept.txt", KEPT)]);
+    success(&config, &["writer", "commit"]);
+
+    let (head, manifest) = super::coordination::publication(&config).await;
+    let kinds: Vec<_> = manifest
+        .attributes
+        .iter()
+        .map(|(name, kind)| (name.as_str(), kind.index_kind()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("created", "btree"),
+            ("done", "bitmap"),
+            ("priority", "btree"),
+            ("score", "btree"),
+            ("team", "btree"),
+        ]
+    );
+    for (name, kind) in &manifest.attributes {
+        let index = manifest
+            .indexes
+            .iter()
+            .find(|index| index.name == format!("attr_{name}_idx"))
+            .unwrap_or_else(|| panic!("no index for {name}"));
+        assert_eq!(
+            (index.column.as_str(), index.kind.as_str()),
+            (name.as_str(), kind.index_kind())
+        );
+    }
+
+    // Every attribute is a nullable column of its own type, null for the rows
+    // that carry no value, and its index answers a comparison.
+    let loaded = fyrr_core::config::load(&config).unwrap();
+    let dataset = open(&loaded.config, head.content.as_ref().unwrap().lance_version).await;
+    let rows = dataset.count_rows(None).await.unwrap();
+    assert!(rows > 0);
+    for (name, arrow) in [
+        ("created", "Timestamp(µs, \"UTC\")"),
+        ("priority", "Int64"),
+        ("score", "Float64"),
+        ("done", "Boolean"),
+        ("team", "Utf8"),
+    ] {
+        let batch = dataset
+            .scan()
+            .project(&[name])
+            .unwrap()
+            .try_into_batch()
+            .await
+            .unwrap();
+        let field = batch.schema().field(0).clone();
+        assert!(field.is_nullable(), "{name}");
+        assert_eq!(field.data_type().to_string(), arrow, "{name}");
+        assert_eq!(batch.column(0).null_count(), batch.num_rows(), "{name}");
+    }
+    for filter in ["priority > 3", "score < 0.5", "done = true", "team = 'a'"] {
+        assert_eq!(dataset.count_rows(Some(filter.into())).await.unwrap(), 0);
+    }
+
+    // A later publication adds rows without the columns; the indexes cover them.
+    sync_texts(&config, &root, &[("kept.txt", KEPT), ("extra.txt", EXTRA)]);
+    success(&config, &["writer", "commit"]);
+    let (head, later) = super::coordination::publication(&config).await;
+    assert_ne!(later.publication_id, manifest.publication_id);
+    assert_eq!(later.attributes, manifest.attributes);
+    assert_eq!(
+        super::coordination::command(&config, &["writer", "verify"])["verified"],
+        true
+    );
+    let dataset = open(&loaded.config, head.content.unwrap().lance_version).await;
+    assert!(dataset.count_rows(None).await.unwrap() > rows);
+    assert_eq!(
+        dataset
+            .count_rows(Some("priority > 3".into()))
+            .await
+            .unwrap(),
+        0
+    );
+    fyrr_reader::search::PreparedReader::open(&loaded.config)
+        .await
+        .expect("the reader verifies an index for every attribute");
+
+    // The attributes are fixed with the namespace: another file serves it with
+    // its own, and creating it again with others is refused.
+    let other = root.join("other-attributes.toml");
+    std::fs::write(
+        &other,
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .replace("priority = \"int\"", "priority = \"float\""),
+    )
+    .unwrap();
+    let output = super::coordination::host_command(&other)
+        .args(["writer", "namespace", "create"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("error: namespace_settings_fixed"), "{error}");
+    std::fs::remove_dir_all(root).unwrap();
+}

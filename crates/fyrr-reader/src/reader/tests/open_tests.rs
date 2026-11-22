@@ -175,9 +175,10 @@ async fn verify(
         .map(|(column, name, kind)| (*column, (*name, *kind)))
         .collect();
     let start = tokio::time::Instant::now();
-    let result = verify_loaded_indices(indexes, &[0, 1], fts_compatible, |column, _| {
+    let expected = expected_indexes(&Default::default());
+    let result = verify_loaded_indices(indexes, &[0, 1], fts_compatible, &expected, |column, _| {
         let store = store.clone();
-        let (name, kind) = by_column[column];
+        let (name, kind) = by_column[column.as_str()];
         let outcome = if fail.contains(&name) {
             Err(IndexVerificationError::StorageUnavailable)
         } else if wrong.contains(&name) {

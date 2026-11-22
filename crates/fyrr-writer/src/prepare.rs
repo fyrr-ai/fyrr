@@ -12,6 +12,7 @@ use arrow_array::{
     TimestampMicrosecondArray, UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema};
+use fyrr_core::attributes::AttributeType;
 use fyrr_core::config::{Config, PermissionsMode, ProcessEnvironment};
 use fyrr_core::connector::{
     CONNECTOR_CONTRACT_VERSION, ChangeOp, ConnectorBatch, CursorState, DocumentChange, SyncKind,
@@ -57,6 +58,19 @@ pub fn schema(dimensions: u32) -> Arc<Schema> {
         ),
         Field::new("attributes", strings, true),
     ]))
+}
+
+/// The column type of an attribute.
+pub fn attribute_type(kind: AttributeType) -> DataType {
+    match kind {
+        AttributeType::String => DataType::Utf8,
+        AttributeType::Int => DataType::Int64,
+        AttributeType::Float => DataType::Float64,
+        AttributeType::Bool => DataType::Boolean,
+        AttributeType::Datetime => {
+            DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into()))
+        }
+    }
 }
 
 pub fn store_params(config: &Config) -> Result<ObjectStoreParams> {
@@ -564,6 +578,12 @@ pub(crate) async fn bind_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_table_holds_exactly_the_reserved_built_in_columns() {
+        let schema = schema(8);
+        let names: Vec<_> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, fyrr_core::attributes::BUILT_IN_COLUMNS);
+    }
     #[tokio::test]
     async fn generation_pointer_reads_the_immutable_object_and_checks_its_digest() {
         let store = object_store::memory::InMemory::new();

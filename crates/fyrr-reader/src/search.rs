@@ -12,6 +12,7 @@ use crate::routing::{CentroidRouter, RoutingFallback, strategy, take_probes};
 use crate::storage::*;
 use arrow_array::{Array, Float32Array, RecordBatch, StringArray, UInt32Array, UInt64Array};
 use futures::TryStreamExt;
+use fyrr_core::attributes::AttributeSchema;
 use fyrr_core::config::{Config, ProcessEnvironment, RoutingStrategy};
 use fyrr_core::identity::IdentityArtifact;
 use fyrr_core::mcp::*;
@@ -490,6 +491,30 @@ const INDEX_KINDS: [(&str, &str, IndexType); 8] = [
     ("attributes", "attributes_idx", IndexType::LabelList),
 ];
 
+/// The index of each attribute, as column, name and kind: a bitmap for `bool`,
+/// a B-tree for every other type.
+pub fn attribute_indexes(
+    attributes: &AttributeSchema,
+) -> impl Iterator<Item = (String, String, IndexType)> {
+    attributes.iter().map(|(name, kind)| {
+        let index = match kind.index_kind() {
+            "bitmap" => IndexType::Bitmap,
+            _ => IndexType::BTree,
+        };
+        (name.clone(), fyrr_core::attributes::index_name(name), index)
+    })
+}
+
+/// The indexes a namespace carries, as column, name and kind, in the order
+/// they are verified: the built-in ones, then one per attribute.
+pub fn expected_indexes(attributes: &AttributeSchema) -> Vec<(String, String, IndexType)> {
+    INDEX_KINDS
+        .iter()
+        .map(|&(column, name, kind)| (column.to_owned(), name.to_owned(), kind))
+        .chain(attribute_indexes(attributes))
+        .collect()
+}
+
 /// Verify native index kinds and coverage without opening a query embedding cache.
 pub async fn verify_indices(
     dataset: &Dataset,
@@ -512,9 +537,10 @@ pub async fn verify_indices(
         &indexes,
         &fragments,
         fts_compatible,
+        &expected_indexes(&manifest.attributes),
         |column, index| async move {
             dataset
-                .open_generic_index(column, &index.uuid, &NoOpMetricsCollector)
+                .open_generic_index(&column, &index.uuid, &NoOpMetricsCollector)
                 .await
                 .map(|opened| opened.index_type())
                 .map_err(|_| IndexVerificationError::StorageUnavailable)
@@ -534,21 +560,22 @@ async fn verify_loaded_indices<F, Fut>(
     indexes: &[lance_table::format::IndexMetadata],
     fragments: &[u32],
     fts_compatible: bool,
+    expected: &[(String, String, IndexType)],
     open: F,
 ) -> Result<(), IndexVerificationError>
 where
-    F: Fn(&'static str, lance_table::format::IndexMetadata) -> Fut,
+    F: Fn(String, lance_table::format::IndexMetadata) -> Fut,
     Fut: std::future::Future<Output = Result<IndexType, IndexVerificationError>>,
 {
     use futures::StreamExt;
     let mut queued = std::collections::VecDeque::new();
-    for (column, name, _) in INDEX_KINDS {
-        for index in indexes.iter().filter(|i| i.name == name) {
-            queued.push_back((column, index.clone()));
+    for (column, name, _) in expected {
+        for index in indexes.iter().filter(|i| i.name == *name) {
+            queued.push_back((column.clone(), index.clone()));
         }
     }
     let mut opened = futures::stream::FuturesOrdered::new();
-    for (column, name, kind) in INDEX_KINDS {
+    for (column, name, kind) in expected {
         let error = if column == "readers" {
             IndexVerificationError::ReadersIndexMissing
         } else {
@@ -557,7 +584,7 @@ where
         if name == Layout::FTS_INDEX && !fts_compatible {
             return Err(IndexVerificationError::IncompatibleIndex);
         }
-        for _ in indexes.iter().filter(|i| i.name == name) {
+        for _ in indexes.iter().filter(|i| i.name == *name) {
             while opened.len() < INDEX_OPEN_CONCURRENCY
                 && let Some((column, index)) = queued.pop_front()
             {
@@ -566,7 +593,7 @@ where
             let Some(actual) = opened.next().await else {
                 unreachable!("one open is queued for every index of every kind");
             };
-            if actual? != kind {
+            if actual? != *kind {
                 return Err(error);
             }
         }

@@ -1,5 +1,6 @@
 use super::publication::previous_manifest;
 use super::*;
+use lance::dataset::NewColumnTransform;
 
 mod native;
 
@@ -480,6 +481,10 @@ async fn build_indexes(
     } else {
         0
     };
+    if first {
+        // Boxed: the build's future is already at the compiler's depth limit.
+        Box::pin(add_attribute_columns(config, lease, dataset, lineage)).await?;
+    }
     let vector = vector_index_params(
         count,
         config.namespace.dense_rq_bits,
@@ -487,7 +492,14 @@ async fn build_indexes(
     );
     let scalar = ScalarIndexParams::default();
     let fts = fts_params(config);
-    for &(column, name, kind, _) in INDEXES {
+    let indexes = INDEXES
+        .iter()
+        .map(|&(column, name, kind, _)| (column.to_owned(), name.to_owned(), kind))
+        .chain(fyrr_reader::search::attribute_indexes(
+            &config.namespace.attributes,
+        ));
+    for (column, name, kind) in indexes {
+        let name = name.as_str();
         if (name == "fts_idx" && !fts_changed) || (name != "fts_idx" && !first) {
             continue;
         }
@@ -500,7 +512,7 @@ async fn build_indexes(
         let before = dataset.version().version;
         native_step(
             lease,
-            dataset.create_index(&[column], kind, Some(name.into()), params, true),
+            dataset.create_index(&[column.as_str()], kind, Some(name.into()), params, true),
             WriterError::IndexBuildFailed,
         )
         .await
@@ -527,6 +539,40 @@ async fn build_indexes(
         stage(stage_timings, "fts_merge", start);
     }
     Ok(())
+}
+
+/// Adds a nullable column for each declared attribute. Lance records it in the
+/// table's metadata: no data file is written, and rows read as null until a
+/// value is written.
+async fn add_attribute_columns(
+    config: &Config,
+    lease: &LeaseGuard,
+    dataset: &mut Dataset,
+    lineage: &mut CommitLineage,
+) -> Result<()> {
+    if config.namespace.attributes.is_empty() {
+        return Ok(());
+    }
+    let fields: Vec<_> = config
+        .namespace
+        .attributes
+        .iter()
+        .map(|(name, kind)| {
+            arrow_schema::Field::new(name, crate::prepare::attribute_type(*kind), true)
+        })
+        .collect();
+    let before = dataset.version().version;
+    native_step(
+        lease,
+        dataset.add_columns(
+            NewColumnTransform::AllNulls(Arc::new(arrow_schema::Schema::new(fields))),
+            None,
+            None,
+        ),
+        WriterError::IndexBuildFailed,
+    )
+    .await?;
+    record_transaction(dataset, lineage, before).await
 }
 
 /// Parameters of the full-text index. The partition size
