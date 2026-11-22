@@ -237,15 +237,9 @@ pub struct ChunkProfileIdentity {
 /// A permission sync's per-document readers and container grants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PermissionsPayload {
-    /// True only on the empty envelope that ends a read. The envelopes of the
-    /// sequences `first_sequence` to this one are committable only once it
-    /// exists, so a read that fails publishes none of its change. Ending a read
-    /// that replaces a rejected generation, it also consumes the rejection
-    /// markers.
+    /// True only on the empty envelope that ends a read replacing a rejected
+    /// generation; it alone consumes the rejection markers.
     pub complete_read: bool,
-    /// On the complete-read envelope, the sequence of the first envelope of the
-    /// read it ends; 0 on every other envelope.
-    pub first_sequence: u64,
     pub documents: Vec<DocumentPermission>,
     pub container_grants: Vec<ContainerGrant>,
 }

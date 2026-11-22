@@ -314,9 +314,14 @@ pub(crate) async fn cleanup_held(
             }
         }
     }
+    let unpublished: Vec<_> = envelopes
+        .iter()
+        .map(|(_, e)| e)
+        .filter(|e| !applied.contains(&e.envelope_id))
+        .collect();
     let abandoned = crate::commit::permission_reads::abandoned(
-        &envelopes.iter().map(|(_, e)| e).collect::<Vec<_>>(),
-        &applied,
+        &unpublished,
+        &crate::commit::permission_reads::cursors(config, &unpublished).await?,
     );
     let mut retired = Vec::new();
     for (path, envelope) in envelopes {

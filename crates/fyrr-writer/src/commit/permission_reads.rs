@@ -1,105 +1,119 @@
-//! A permission read is published whole or not at all: its envelopes are
-//! committable only once the complete-read envelope that ends it exists, and
-//! only the envelopes of the sequences that envelope names.
+//! A permission read is published whole or not at all. The worker that holds a
+//! source's permission cursor lease ends a read in the same cursor write that
+//! names its sequences (`CursorState::completed_from` to `completed_through`),
+//! so a worker that lost its lease cannot end a read. The committer publishes
+//! only those sequences.
 
+use crate::Result;
+use fyrr_core::config::Config;
 use fyrr_core::connector::SyncKind;
-use fyrr_core::envelope::{EnvelopePayload, PreparedEnvelope};
+use fyrr_core::envelope::PreparedEnvelope;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The sequence of the first envelope of the read that `envelope` ends.
-pub(crate) fn ended(envelope: &PreparedEnvelope) -> Option<u64> {
-    match &envelope.payload {
-        EnvelopePayload::Permissions(p) if p.complete_read => Some(p.first_sequence),
-        _ => None,
-    }
+/// What the permission cursor of a source says about its reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Reads {
+    /// The first sequence of the read in progress.
+    pub read_start: u64,
+    pub completed_from: u64,
+    pub completed_through: u64,
 }
 
-/// Keeps the permission envelopes of the reads that have ended, and every
-/// other envelope. A read's envelopes are the ones of its source with the
-/// sequences from the first one that its complete-read envelope names to that
-/// envelope. They are held for the next listing when one of those sequences is
-/// missing or stands for several envelopes. What no ended read names (the
-/// envelopes of a read that failed and was abandoned by a `--full` read, or
-/// that is still running) is not released.
-pub(crate) fn keep_ended_reads(envelopes: &mut Vec<PreparedEnvelope>) {
-    let mut sources: BTreeMap<&str, BTreeMap<u64, Vec<&PreparedEnvelope>>> = BTreeMap::new();
-    for envelope in envelopes.iter().filter(|e| e.kind == SyncKind::Permissions) {
-        sources
-            .entry(&envelope.source_id)
-            .or_default()
-            .entry(envelope.sequence)
-            .or_default()
-            .push(envelope);
-    }
-    let mut released = BTreeSet::new();
-    for sequences in sources.values() {
-        for (&last, ended_by) in sequences {
-            let [marker] = ended_by.as_slice() else {
-                continue;
-            };
-            let Some(first) = ended(marker).filter(|first| *first <= last) else {
-                continue;
-            };
-            let read: Vec<_> = sequences.range(first..=last).collect();
-            // shortcut: a read that a commit group split has its first envelopes
-            // published already, so the run starts at the first one still pending.
-            // Upgrade: the complete-read envelope records the read's envelope count.
-            let Some((lowest, _)) = read.first() else {
-                continue;
-            };
-            let lowest = **lowest;
-            if read.len() as u64 == last - lowest + 1 && read.iter().all(|(_, e)| e.len() == 1) {
-                released.extend(read.iter().map(|(_, e)| e[0].envelope_id.clone()));
-            }
+pub(crate) type Cursors = BTreeMap<String, Reads>;
+
+/// The permission cursors of the sources that have permission envelopes among
+/// `envelopes`: one read each, and none when nothing waits.
+pub(crate) async fn cursors(config: &Config, envelopes: &[&PreparedEnvelope]) -> Result<Cursors> {
+    let sources: BTreeSet<&str> = envelopes
+        .iter()
+        .filter(|e| e.kind == SyncKind::Permissions)
+        .map(|e| e.source_id.as_str())
+        .collect();
+    let mut found = Cursors::new();
+    for source in sources {
+        if let Some(state) =
+            crate::sync_lease::CursorLease::peek(config, source, SyncKind::Permissions).await?
+        {
+            found.insert(
+                source.to_owned(),
+                Reads {
+                    read_start: state.read_start,
+                    completed_from: state.completed_from,
+                    completed_through: state.completed_through,
+                },
+            );
         }
     }
-    envelopes.retain(|e| e.kind != SyncKind::Permissions || released.contains(&e.envelope_id));
+    Ok(found)
 }
 
-/// The envelopes of reads that were abandoned: not published, they are older
-/// than the newest complete-read envelope of their source and no ended read
-/// names them. Nothing will ever release them.
-pub(crate) fn abandoned(
-    envelopes: &[&PreparedEnvelope],
-    published: &BTreeSet<String>,
-) -> BTreeSet<String> {
-    let mut sources: BTreeMap<&str, Vec<&PreparedEnvelope>> = BTreeMap::new();
-    for envelope in envelopes.iter().filter(|e| e.kind == SyncKind::Permissions) {
-        sources
-            .entry(&envelope.source_id)
-            .or_default()
-            .push(envelope);
+/// Whether `read` names the permission envelope `e`.
+fn named(read: &Reads, e: &PreparedEnvelope) -> bool {
+    (read.completed_from..=read.completed_through).contains(&e.sequence)
+}
+
+/// Keeps every envelope but the permission envelopes that the cursor of their
+/// source does not name as a completed read. The envelopes of a read that is
+/// running or failed are newer than `completed_through`; those of a read that
+/// a `--full` read abandoned are older than `completed_from`. The named
+/// envelopes are held for the next tick when one of their sequences is missing
+/// (the listing is behind the cursor) or stands for several envelopes.
+pub(crate) fn keep_completed_reads(envelopes: &mut Vec<PreparedEnvelope>, cursors: &Cursors) {
+    let mut found: BTreeMap<&str, BTreeMap<u64, usize>> = BTreeMap::new();
+    for e in envelopes.iter().filter(|e| e.kind == SyncKind::Permissions) {
+        if cursors.get(&e.source_id).is_some_and(|read| named(read, e)) {
+            *found
+                .entry(&e.source_id)
+                .or_default()
+                .entry(e.sequence)
+                .or_default() += 1;
+        }
     }
-    let mut abandoned = BTreeSet::new();
-    for source in sources.values() {
-        let reads: Vec<_> = source
-            .iter()
-            .filter_map(|e| ended(e).map(|first| (first, e.sequence)))
-            .collect();
-        let Some(newest) = reads.iter().map(|(_, last)| *last).max() else {
-            continue;
-        };
-        abandoned.extend(
-            source
-                .iter()
-                .filter(|e| {
-                    e.sequence < newest
-                        && !published.contains(&e.envelope_id)
-                        && !reads
-                            .iter()
-                            .any(|(first, last)| (*first..=*last).contains(&e.sequence))
-                })
-                .map(|e| e.envelope_id.clone()),
-        );
-    }
-    abandoned
+    let complete: BTreeSet<String> = found
+        .into_iter()
+        .filter(|(source, sequences)| {
+            // shortcut: a read that a commit group split has its first envelopes
+            // published already, so the run starts at the first one still pending.
+            // Upgrade: record the read's envelope count in the cursor.
+            let (Some((lowest, _)), Some((highest, _))) =
+                (sequences.first_key_value(), sequences.last_key_value())
+            else {
+                return false;
+            };
+            *highest == cursors[*source].completed_through
+                && sequences.len() as u64 == highest - lowest + 1
+                && sequences.values().all(|count| *count == 1)
+        })
+        .map(|(source, _)| source.to_owned())
+        .collect();
+    envelopes.retain(|e| {
+        e.kind != SyncKind::Permissions
+            || (complete.contains(&e.source_id)
+                && cursors.get(&e.source_id).is_some_and(|read| named(read, e)))
+    });
+}
+
+/// The unpublished permission envelopes that no read will ever publish: they
+/// precede the read in progress and are not the completed one. Cleanup retires
+/// them.
+pub(crate) fn abandoned(envelopes: &[&PreparedEnvelope], cursors: &Cursors) -> BTreeSet<String> {
+    envelopes
+        .iter()
+        .filter(|e| e.kind == SyncKind::Permissions)
+        .filter(|e| {
+            cursors.get(&e.source_id).is_some_and(|read| {
+                e.sequence < read.read_start && !named(read, e)
+            })
+        })
+        .map(|e| e.envelope_id.clone())
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn envelope(source: &str, sequence: u64, ends: Option<u64>) -> PreparedEnvelope {
+    fn envelope(source: &str, sequence: u64) -> PreparedEnvelope {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/contracts/prepared-envelope/permissions.json");
         let mut envelope: PreparedEnvelope =
@@ -107,88 +121,94 @@ mod tests {
         envelope.source_id = source.into();
         envelope.sequence = sequence;
         envelope.envelope_id = format!("env-{source}-{sequence}");
-        let EnvelopePayload::Permissions(payload) = &mut envelope.payload else {
-            unreachable!()
-        };
-        payload.complete_read = ends.is_some();
-        payload.first_sequence = ends.unwrap_or(0);
         envelope
     }
 
-    fn kept(envelopes: Vec<PreparedEnvelope>) -> Vec<u64> {
-        let mut envelopes = envelopes;
-        keep_ended_reads(&mut envelopes);
+    fn at(read_start: u64, completed: (u64, u64)) -> Cursors {
+        Cursors::from([(
+            "s".to_owned(),
+            Reads {
+                read_start,
+                completed_from: completed.0,
+                completed_through: completed.1,
+            },
+        )])
+    }
+
+    fn kept(sequences: &[u64], cursors: &Cursors) -> Vec<u64> {
+        let mut envelopes: Vec<_> = sequences.iter().map(|n| envelope("s", *n)).collect();
+        keep_completed_reads(&mut envelopes, cursors);
         envelopes.iter().map(|e| e.sequence).collect()
     }
 
-    #[test]
-    fn a_read_is_released_only_with_its_complete_read_envelope() {
-        let read = |last: bool| {
-            let mut read = vec![envelope("s", 4, None), envelope("s", 5, None)];
-            if last {
-                read.push(envelope("s", 6, Some(4)));
-            }
-            read
-        };
-        assert_eq!(kept(read(false)), Vec::<u64>::new());
-        assert_eq!(kept(read(true)), [4, 5, 6]);
-    }
-
-    #[test]
-    fn a_missing_sequence_holds_the_read() {
-        let read = vec![
-            envelope("s", 4, None),
-            envelope("s", 6, None),
-            envelope("s", 7, Some(4)),
-        ];
-        assert_eq!(kept(read), Vec::<u64>::new());
-        let duplicated = vec![
-            envelope("s", 4, None),
-            envelope("s", 4, None),
-            envelope("s", 5, Some(4)),
-        ];
-        assert_eq!(kept(duplicated), Vec::<u64>::new());
-    }
-
-    #[test]
-    fn the_envelopes_of_an_abandoned_read_are_never_released() {
-        // Sequences 4 and 5 belong to a read that failed; a --full read began at 6.
-        let envelopes = vec![
-            envelope("s", 4, None),
-            envelope("s", 5, None),
-            envelope("s", 6, None),
-            envelope("s", 7, Some(6)),
-            envelope("other", 4, None),
-        ];
-        assert_eq!(kept(envelopes.clone()), [6, 7]);
+    fn abandoned_of(sequences: &[u64], cursors: &Cursors) -> Vec<u64> {
+        let envelopes: Vec<_> = sequences.iter().map(|n| envelope("s", *n)).collect();
         let refs: Vec<_> = envelopes.iter().collect();
-        let gone = abandoned(&refs, &BTreeSet::from(["env-s-7".to_owned()]));
-        assert_eq!(
-            gone,
-            BTreeSet::from(["env-s-4".to_owned(), "env-s-5".to_owned()])
-        );
+        let gone = abandoned(&refs, cursors);
+        sequences
+            .iter()
+            .copied()
+            .filter(|n| gone.contains(&format!("env-s-{n}")))
+            .collect()
     }
 
     #[test]
-    fn a_resumed_read_releases_what_the_failed_one_wrote() {
-        // The read failed after 4 and 5; the one that resumed it ended at 7.
-        let envelopes = vec![
-            envelope("s", 4, None),
-            envelope("s", 5, None),
-            envelope("s", 6, None),
-            envelope("s", 7, Some(4)),
-        ];
-        assert_eq!(kept(envelopes.clone()), [4, 5, 6, 7]);
-        let refs: Vec<_> = envelopes.iter().collect();
-        assert!(abandoned(&refs, &BTreeSet::new()).is_empty());
+    fn a_read_is_released_only_when_the_cursor_names_it() {
+        // 4 to 6 were written; the cursor has not recorded the end of the read.
+        assert_eq!(kept(&[4, 5, 6], &at(4, (0, 0))), Vec::<u64>::new());
+        assert_eq!(kept(&[4, 5, 6], &at(4, (4, 6))), [4, 5, 6]);
+        // No cursor: nothing is released.
+        assert_eq!(kept(&[4, 5, 6], &Cursors::new()), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn a_missing_or_duplicated_sequence_holds_the_read() {
+        assert_eq!(kept(&[4, 6], &at(4, (4, 6))), Vec::<u64>::new());
+        assert_eq!(kept(&[4, 5], &at(4, (4, 6))), Vec::<u64>::new());
+        assert_eq!(kept(&[4, 5, 5, 6], &at(4, (4, 6))), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn a_read_running_beside_a_completed_one_is_not_released() {
+        // The first read is complete at 4 to 6; the second began at 7 and its
+        // first envelope is not in the listing yet.
+        assert_eq!(kept(&[4, 5, 6, 8], &at(7, (4, 6))), [4, 5, 6]);
+        assert!(abandoned_of(&[4, 5, 6, 8], &at(7, (4, 6))).is_empty());
+    }
+
+    #[test]
+    fn a_read_that_a_full_read_abandoned_is_never_released() {
+        // The read that wrote 4 and 5 failed; the --full read that began at 6
+        // completed at 7. A marker or envelope the old worker writes later
+        // changes nothing: only the cursor names a read.
+        assert_eq!(kept(&[4, 5, 6, 7], &at(6, (6, 7))), [6, 7]);
+        assert_eq!(abandoned_of(&[4, 5, 6, 7], &at(6, (6, 7))), [4, 5]);
+        // A second envelope with a published sequence holds the read.
+        assert_eq!(kept(&[4, 6, 6, 7], &at(6, (6, 7))), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn a_resumed_read_does_not_take_in_the_envelopes_before_a_full_read() {
+        // Sequence 4 was written by a read that failed, 5 by a --full read that
+        // failed; the read that continued the second one ended at 6.
+        assert_eq!(kept(&[4, 5, 6], &at(5, (5, 6))), [5, 6]);
+        assert_eq!(abandoned_of(&[4, 5, 6], &at(5, (5, 6))), [4]);
     }
 
     #[test]
     fn a_split_read_continues_from_its_first_pending_envelope() {
-        // 4 and 5 are published; the read's remaining envelopes are still pending.
+        // 4 and 5 are published; the rest of the read still waits.
+        assert_eq!(kept(&[6, 7], &at(4, (4, 7))), [6, 7]);
+    }
+
+    #[test]
+    fn other_kinds_and_sources_are_untouched() {
+        let mut envelopes = vec![envelope("s", 9), envelope("other", 4)];
+        envelopes[1].kind = SyncKind::Members;
+        keep_completed_reads(&mut envelopes, &at(4, (4, 6)));
         assert_eq!(
-            kept(vec![envelope("s", 6, None), envelope("s", 7, Some(4))]),
-            [6, 7]
+            envelopes.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+            [4]
         );
     }
 }

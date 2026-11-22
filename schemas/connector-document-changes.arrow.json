@@ -278,6 +278,6 @@
   ],
   "metadata": {
     "fyrr.contract": "connector.document_changes",
-    "fyrr.schema_version": "1.3"
+    "fyrr.schema_version": "1.4"
   }
 }

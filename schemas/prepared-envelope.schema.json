@@ -560,13 +560,7 @@
       "properties": {
         "complete_read": {
           "type": "boolean",
-          "description": "True only on the empty envelope that ends a read. The envelopes of the\nsequences `first_sequence` to this one are committable only once it\nexists, so a read that fails publishes none of its change. Ending a read\nthat replaces a rejected generation, it also consumes the rejection\nmarkers."
-        },
-        "first_sequence": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0,
-          "description": "On the complete-read envelope, the sequence of the first envelope of the\nread it ends; 0 on every other envelope."
+          "description": "True only on the empty envelope that ends a read replacing a rejected\ngeneration; it alone consumes the rejection markers."
         },
         "documents": {
           "type": "array",
@@ -583,7 +577,6 @@
       },
       "required": [
         "complete_read",
-        "first_sequence",
         "documents",
         "container_grants"
       ],

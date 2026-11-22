@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.3",
+  "schema_version": "1.4",
   "namespace": "acme",
   "source_id": "gdrive-main",
   "kind": "content",
@@ -7,5 +7,8 @@
   "sequence": 42,
   "rejection_generation": 1,
   "restore_sequence": 0,
-  "updated_at": "2026-09-30T10:00:05Z"
+  "updated_at": "2026-09-30T10:00:05Z",
+  "read_start": 0,
+  "completed_from": 0,
+  "completed_through": 0
 }

@@ -577,5 +577,5 @@
     }
   },
   "x-fyrr-contract": "connector-batch",
-  "x-fyrr-schema-version": "1.3"
+  "x-fyrr-schema-version": "1.4"
 }

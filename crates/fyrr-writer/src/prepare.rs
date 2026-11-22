@@ -312,6 +312,9 @@ pub fn initial_cursor(config: &Config, source: &str, kind: SyncKind) -> CursorSt
         // No read has completed yet: the kind is due at once.
         updated_at: chrono::DateTime::UNIX_EPOCH,
         lease: None,
+        read_start: 0,
+        completed_from: 0,
+        completed_through: 0,
     }
 }
 
@@ -322,13 +325,12 @@ pub async fn non_content(
     state: &mut CursorState,
     lease: &crate::sync_lease::CursorLease,
     base: Option<BaseHead>,
-    // The sequence of the first envelope of the read that this envelope ends.
-    complete_read: Option<u64>,
+    complete_read: bool,
 ) -> Result<()> {
     use fyrr_core::connector::BatchBody;
     // A permission read that changes nothing publishes nothing: only the cursor
     // moves. Replaying its window after a lost cursor is harmless.
-    if complete_read.is_none()
+    if !complete_read
         && let BatchBody::PermissionChanges {
             documents,
             container_grants,
@@ -378,7 +380,7 @@ pub async fn non_content(
                 lease,
                 base.clone(),
                 complete_read,
-                advances && complete_read.is_none(),
+                advances && !complete_read,
             )
             .await?;
         }
@@ -392,7 +394,7 @@ pub async fn non_content(
         lease,
         base,
         complete_read,
-        complete_read.is_none(),
+        !complete_read,
     )
     .await
 }
@@ -405,7 +407,7 @@ async fn non_content_page(
     state: &mut CursorState,
     lease: &crate::sync_lease::CursorLease,
     base: Option<BaseHead>,
-    complete_read: Option<u64>,
+    complete_read: bool,
     advances_cursor: bool,
 ) -> Result<()> {
     use fyrr_core::connector::BatchBody;
@@ -440,8 +442,7 @@ async fn non_content_page(
                     .collect::<Result<_, _>>()?;
             }
             EnvelopePayload::Permissions(PermissionsPayload {
-                complete_read: complete_read.is_some(),
-                first_sequence: complete_read.unwrap_or(0),
+                complete_read,
                 documents,
                 container_grants,
             })
@@ -458,7 +459,7 @@ async fn non_content_page(
             )
             .await?;
             EnvelopePayload::Members(MembersPayload {
-                complete_read: complete_read.is_some(),
+                complete_read,
                 snapshot_id: part.snapshot_id.clone(),
                 snapshot_object: object,
                 snapshot_digest: hash,

@@ -231,23 +231,22 @@ impl Preparation<'_> {
             let mut checker =
                 BatchChecker::new(&self.source.id, self.kind, limits, state.cursor.clone());
             let cursor = state.cursor.clone();
-            // The sequence of the first envelope of the read that ends here: a
-            // read resumed from its cursor continues the one that did not end,
-            // any other (a first or a --full read) starts a new one, and
-            // the envelopes the abandoned read left are never released.
-            let written = state.sequence;
-            let first_sequence = match pending.permissions_open {
-                Some((first, generation))
-                    if self.kind == SyncKind::Permissions
-                        && state.cursor.is_some()
-                        && generation == state.rejection_generation =>
-                {
-                    first
-                }
-                _ => written
+            // A permission read is published whole or not at all: the committer
+            // publishes only the envelopes that the cursor names as a completed
+            // read. A first read, a `--full` read and a read after a completed
+            // one start a new read; one resumed from its cursor continues the
+            // unfinished read. The first envelope of a new read is written only
+            // after the cursor records where the read starts.
+            let mut unrecorded = false;
+            if self.kind == SyncKind::Permissions
+                && !(state.cursor.is_some() && state.read_start > state.completed_through)
+            {
+                state.read_start = state
+                    .sequence
                     .checked_add(1)
-                    .ok_or(WriterError::CursorSequenceOverflow)?,
-            };
+                    .ok_or(WriterError::CursorSequenceOverflow)?;
+                unrecorded = true;
+            }
             let request = Request {
                 source_json: &source_json,
                 kind: self.kind,
@@ -283,6 +282,15 @@ impl Preparation<'_> {
                         held.push(batch);
                         Ok(())
                     } else {
+                        if unrecorded
+                            && matches!(&batch.body, fyrr_core::connector::BatchBody::PermissionChanges {
+                                documents,
+                                container_grants,
+                            } if !documents.is_empty() || !container_grants.is_empty())
+                        {
+                            self.rt.block_on(self.lease.write(state.clone()))?;
+                            unrecorded = false;
+                        }
                         self.rt.block_on(crate::prepare::non_content(
                             self.config,
                             &self.source.id,
@@ -290,7 +298,7 @@ impl Preparation<'_> {
                             state,
                             self.lease,
                             base.clone(),
-                            None,
+                            false,
                         ))
                     }
                 },
@@ -309,13 +317,9 @@ impl Preparation<'_> {
             {
                 return Err(WriterError::MembershipSnapshotIncomplete);
             }
-            // A permission read is published whole or not at all: it ends with a
-            // complete-read envelope that names its first envelope, and the
-            // committer holds back the read's envelopes until it exists. The read
-            // that replaces a rejected generation always ends with one, which
-            // also consumes the rejection markers. Any other read ends with one
-            // only when it wrote an envelope or left an earlier read's envelopes
-            // unreleased: a read that changed nothing writes nothing.
+            // Only the read that replaces a rejected generation ends with a
+            // complete-read envelope: it alone consumes the rejection markers.
+            // Any other read writes nothing beyond its own changes.
             if !held.is_empty() {
                 // Only a whole snapshot read here, parts 0 to last, can be
                 // compared; a read resumed after an earlier part was written
@@ -356,15 +360,13 @@ impl Preparation<'_> {
                             state,
                             self.lease,
                             base.clone(),
-                            None,
+                            false,
                         ))?;
                     }
                 }
             }
-            if (replaces_rejection
-                && (self.kind == SyncKind::Permissions || self.kind == SyncKind::Members))
-                || (self.kind == SyncKind::Permissions
-                    && (state.sequence != written || pending.permissions_open.is_some()))
+            if replaces_rejection
+                && (self.kind == SyncKind::Permissions || self.kind == SyncKind::Members)
             {
                 let batch = ConnectorBatch {
                     schema_version: fyrr_core::connector::CONNECTOR_CONTRACT_VERSION,
@@ -398,8 +400,15 @@ impl Preparation<'_> {
                     state,
                     self.lease,
                     base.clone(),
-                    Some(first_sequence),
+                    true,
                 ))?;
+            }
+            // The read ends with the cursor write that follows: it names the
+            // sequences of the read, so that the committer publishes them. A read
+            // that wrote no envelope leaves the last completed read as it was.
+            if self.kind == SyncKind::Permissions && state.sequence >= state.read_start {
+                state.completed_from = state.read_start;
+                state.completed_through = state.sequence;
             }
             Ok(checker.stats)
         })();

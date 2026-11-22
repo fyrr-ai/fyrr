@@ -106,22 +106,6 @@ impl RestoreHistory {
         config: &Config,
         authorization: bool,
     ) -> Result<Vec<PreparedEnvelope>> {
-        let mut pending = self.list_pending(config, authorization).await?;
-        // As `commit::pending`: list again once an ended permission read shows.
-        if pending
-            .iter()
-            .any(|e| super::permission_reads::ended(e).is_some())
-        {
-            pending = self.list_pending(config, authorization).await?;
-        }
-        super::permission_reads::keep_ended_reads(&mut pending);
-        Ok(pending)
-    }
-    async fn list_pending(
-        &mut self,
-        config: &Config,
-        authorization: bool,
-    ) -> Result<Vec<PreparedEnvelope>> {
         let (store, root) = namespace_store(config)?;
         let prefix = root.join("envelopes");
         let mut listing = store.list(Some(&prefix));
@@ -199,6 +183,9 @@ impl RestoreHistory {
             }
         }
         pending.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
+        let cursors =
+            super::permission_reads::cursors(config, &pending.iter().collect::<Vec<_>>()).await?;
+        super::permission_reads::keep_completed_reads(&mut pending, &cursors);
         Ok(pending)
     }
     pub(crate) fn summaries(&self) -> impl Iterator<Item = &RejectionMarker> {

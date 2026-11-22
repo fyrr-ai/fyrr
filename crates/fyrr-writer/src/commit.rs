@@ -38,19 +38,6 @@ pub use namespace::{create, delete};
 pub(crate) use publication::publish;
 
 pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<PreparedEnvelope>> {
-    let mut result = list_pending(config, head).await?;
-    // A listing is not a snapshot: an envelope written while it ran can fall in
-    // a page already read, and the complete-read envelope that follows it in a
-    // later one. Listing again, after the marker is known to exist, shows every
-    // envelope of the read it ends.
-    if result.iter().any(|e| permission_reads::ended(e).is_some()) {
-        result = list_pending(config, head).await?;
-    }
-    permission_reads::keep_ended_reads(&mut result);
-    Ok(result)
-}
-
-async fn list_pending(config: &Config, head: &ServingHead) -> Result<Vec<PreparedEnvelope>> {
     let mut result = Vec::new();
     let (paths, applied) = envelope_paths(config, head).await?;
     let paths: Vec<_> = paths
@@ -69,6 +56,8 @@ async fn list_pending(config: &Config, head: &ServingHead) -> Result<Vec<Prepare
         result.push(envelope);
     }
     result.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
+    let cursors = permission_reads::cursors(config, &result.iter().collect::<Vec<_>>()).await?;
+    permission_reads::keep_completed_reads(&mut result, &cursors);
     Ok(result)
 }
 

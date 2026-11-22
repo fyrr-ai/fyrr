@@ -37,7 +37,7 @@ use crate::limits::{
 use crate::version::{Contract, ContractError, SchemaVersion, check_compatible};
 
 /// The connector contract version written by this build.
-pub const CONNECTOR_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(1, 3);
+pub const CONNECTOR_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(1, 4);
 
 /// Arrow schema metadata key naming the contract part.
 pub const ARROW_CONTRACT_KEY: &str = "fyrr.contract";
@@ -317,6 +317,21 @@ pub struct CursorState {
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease: Option<crate::publication::Lease>,
+    /// Permissions only: the sequence of the first envelope of the read in
+    /// progress. A first read, a `--full` read and a read after a completed one
+    /// start a new read; a read resumed from `cursor` continues the unfinished one.
+    #[serde(default)]
+    pub read_start: u64,
+    /// Permissions only: the sequences `completed_from` to `completed_through`
+    /// are the envelopes of the last completed read. They are written in the
+    /// same cursor write that ends the read, which only the holder of the cursor
+    /// lease can make, and they are the only permission envelopes the committer
+    /// publishes. Envelopes of an earlier read that never completed are never
+    /// published.
+    #[serde(default)]
+    pub completed_from: u64,
+    #[serde(default)]
+    pub completed_through: u64,
 }
 
 impl Contract for ConnectorBatch {

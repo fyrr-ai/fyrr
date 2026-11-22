@@ -862,12 +862,6 @@ async fn rejected_authorization(kind: SyncKind) {
         late.rejection_generation,
         late.cursor.start.as_deref(),
     );
-    // The holder finishes its read: the committer holds a permission envelope
-    // back until its read ends, and only then reaches the rejection.
-    if let EnvelopePayload::Permissions(payload) = &mut late.payload {
-        payload.complete_read = true;
-        payload.first_sequence = late.sequence;
-    }
     store
         .put(
             &ns.clone()
@@ -878,12 +872,20 @@ async fn rejected_authorization(kind: SyncKind) {
         .await
         .unwrap();
     publish(&commit);
-    assert!(
+    // Permission envelopes are published only as a read that the cursor names.
+    // The holder's envelope is none, whatever its generation: it never reapplies.
+    let (applied, rejected) =
         fyrr_writer::commit::published_ids(&loaded.config, &publication(&worker).await.0)
             .await
-            .unwrap()
-            .1
-            .contains(&late.envelope_id)
+            .unwrap();
+    assert!(
+        kind != SyncKind::Permissions
+            || !(applied.contains(&late.envelope_id) || rejected.contains(&late.envelope_id)),
+        "a stale permission envelope is not part of a read"
+    );
+    assert!(
+        kind == SyncKind::Permissions || rejected.contains(&late.envelope_id),
+        "a stale members envelope is rejected"
     );
     let denied = super::tools::Mcp::open(&worker)
         .call("fetch", json!({"source_id":"incremental","root_id":"a"}));

@@ -265,11 +265,11 @@ fn arrow_document_changes_schema_is_checked_before_rows() {
     fields.push(Arc::new(Field::new("attachment_of", DataType::Utf8, true)));
     let newer = with_metadata(
         &Schema::new(fields).with_metadata(schema.metadata().clone()),
-        "1.3",
+        "1.4",
     );
     assert_eq!(
         check_document_changes_schema(&newer),
-        Ok(SchemaVersion::new(1, 3))
+        Ok(SchemaVersion::new(1, 4))
     );
 
     // Removed, retyped or weakened fields are refused.

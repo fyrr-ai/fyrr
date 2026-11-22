@@ -51,6 +51,26 @@
           "type": "null"
         }
       ]
+    },
+    "read_start": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "default": 0,
+      "description": "Permissions only: the sequence of the first envelope of the read in\nprogress. A first read, a `--full` read and a read after a completed one\nstart a new read; a read resumed from `cursor` continues the unfinished one."
+    },
+    "completed_from": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "default": 0,
+      "description": "Permissions only: the sequences `completed_from` to `completed_through`\nare the envelopes of the last completed read. They are written in the\nsame cursor write that ends the read, which only the holder of the cursor\nlease can make, and they are the only permission envelopes the committer\npublishes. Envelopes of an earlier read that never completed are never\npublished."
+    },
+    "completed_through": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "default": 0
     }
   },
   "required": [
@@ -109,5 +129,5 @@
     }
   },
   "x-fyrr-contract": "connector-cursor",
-  "x-fyrr-schema-version": "1.3"
+  "x-fyrr-schema-version": "1.4"
 }
