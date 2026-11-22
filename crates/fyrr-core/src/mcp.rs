@@ -725,7 +725,33 @@ fn tool_schema<T: JsonSchema>(serialize: bool) -> Value {
     let mut value = schema.to_value();
     compact_tool_schema(&mut value);
     strip_numeric_formats(&mut value);
+    reference_definitions(&mut value);
     value
+}
+
+/// A recursive type is both inlined where it is used and kept in `$defs`;
+/// points the inlined copy at the definition instead, to keep `tools/list` small.
+fn reference_definitions(root: &mut Value) {
+    fn walk(value: &mut Value, defs: &serde_json::Map<String, Value>) {
+        let children: Vec<&mut Value> = match value {
+            Value::Object(object) => object
+                .iter_mut()
+                .filter(|(key, _)| key.as_str() != "$defs")
+                .map(|(_, child)| child)
+                .collect(),
+            Value::Array(items) => items.iter_mut().collect(),
+            _ => return,
+        };
+        for child in children {
+            match defs.iter().find(|(_, definition)| *definition == &*child) {
+                Some((name, _)) => *child = json!({ "$ref": format!("#/$defs/{name}") }),
+                None => walk(child, defs),
+            }
+        }
+    }
+    if let Some(defs) = root.get("$defs").and_then(Value::as_object).cloned() {
+        walk(root, &defs);
+    }
 }
 
 /// Tool descriptions state semantics and units once; nested schemas retain constraints.
