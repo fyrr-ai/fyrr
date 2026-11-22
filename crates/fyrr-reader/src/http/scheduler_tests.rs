@@ -14,7 +14,7 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
     let subject = crate::auth::AuthenticatedSubject {
         key: std::env::var("FYRR_TEST_SCHEDULER_SUBJECT").unwrap(),
         identity: Some(reader.head.identity.clone()),
-        api_key: false,
+        api_key: None,
         expires: fyrr_core::clock::now().timestamp() + 600,
     };
     let admission = Arc::new(admission::Admission::new(
@@ -22,7 +22,7 @@ async fn readiness_refuses_failed_scheduler_on_storage() {
         reader.control_root.clone(),
         reader.identity_cache.clone(),
         reader.head_cache.clone(),
-        admission::ApiKeys::new(Duration::from_secs(30)),
+        crate::storage::HeadCache::for_file(&config, crate::storage::API_KEYS_FILE),
     ));
     let service = crate::serve::start(reader).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -11,7 +11,9 @@ use fyrr_core::identity::{
 use fyrr_core::publication::ServingHead;
 use fyrr_core::write_contract;
 use fyrr_reader::embedding::digest;
-use fyrr_reader::storage::{api_key_principal, api_key_subject, hash_principal, namespace_store};
+use fyrr_reader::storage::{
+    api_key_deployment_hash, api_key_principal, api_key_subject, hash_principal, namespace_store,
+};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -353,12 +355,12 @@ fn operator_grants(config: &Config, readers: &[String]) -> Result<BTreeSet<Strin
     Ok(tokens)
 }
 
-/// Each API key whose secret is set and well formed, with its subject hash. A
-/// key without a usable secret is left out, so the reader refuses it and one
-/// bad variable does not stop the others. Two keys with one secret fail: either
-/// could act as the other.
-pub(crate) fn usable_api_keys(config: &Config) -> Result<Vec<(&ApiKeyConfig, String)>> {
-    let mut usable: Vec<(&ApiKeyConfig, String)> = Vec::new();
+/// Each API key whose secret is set and well formed, with its subject hash in
+/// this namespace and its deployment-wide hash. A key without a usable secret
+/// is left out, so the reader refuses it and one bad variable does not stop the
+/// others. Two keys with one secret fail: either could act as the other.
+pub(crate) fn usable_api_keys(config: &Config) -> Result<Vec<(&ApiKeyConfig, String, String)>> {
+    let mut usable: Vec<(&ApiKeyConfig, String, String)> = Vec::new();
     for key in &config.identity.api_keys {
         let Ok(secret) = key.key.resolve(&ProcessEnvironment) else {
             continue;
@@ -367,10 +369,11 @@ pub(crate) fn usable_api_keys(config: &Config) -> Result<Vec<(&ApiKeyConfig, Str
             continue;
         }
         let subject = api_key_subject(config, secret.expose())?;
-        if usable.iter().any(|(_, other)| *other == subject) {
+        if usable.iter().any(|(_, other, _)| *other == subject) {
             return Err(WriterError::ConfigurationInvalid);
         }
-        usable.push((key, subject));
+        let deployment = api_key_deployment_hash(config, secret.expose())?;
+        usable.push((key, subject, deployment));
     }
     Ok(usable)
 }
@@ -382,7 +385,7 @@ pub(crate) fn usable_api_keys(config: &Config) -> Result<Vec<(&ApiKeyConfig, Str
 /// namespaces, has no grants here.
 fn api_key_bindings(config: &Config, grants: &mut UserTokens) -> Result<Vec<SubjectBinding>> {
     let mut bound: Vec<SubjectBinding> = Vec::new();
-    for (key, subject) in usable_api_keys(config)? {
+    for (key, subject, _) in usable_api_keys(config)? {
         if !key.roles.contains(&ApiKeyRole::Read)
             || !prefix_allows(key.namespace_prefix.as_deref(), &config.namespace.name)
         {

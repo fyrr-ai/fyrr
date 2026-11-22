@@ -1,55 +1,9 @@
 //! HTTP principal admission shares the reader's control store.
 use super::*;
 use fyrr_core::config::{ApiKeyRole, prefix_allows};
-use fyrr_core::identity::{ApiKeyGrant, ApiKeysArtifact, IdentityArtifact};
+use fyrr_core::identity::{ApiKeysArtifact, IdentityArtifact};
 use fyrr_core::publication::{GenerationPointer, ServingHead};
 use object_store::{ObjectStore, path::Path};
-
-/// The deployment's published API keys as this reader last read them, and
-/// when: `None` inside while no writer has published any, which leaves every
-/// key to the namespace identity.
-///
-/// The reader reads the object at start and at each version check interval.
-/// A copy older than two intervals (on the monotonic clock and on the wall
-/// clock, as the head's) is not used: callers get `authorization_unavailable`,
-/// so a removed key stays usable for at most two intervals, and a reader that
-/// cannot read the keys refuses every key.
-#[derive(Debug)]
-pub(super) struct ApiKeys {
-    max_age: std::time::Duration,
-    held: std::sync::Mutex<Option<HeldKeys>>,
-}
-#[derive(Debug)]
-struct HeldKeys {
-    started: tokio::time::Instant,
-    started_at: chrono::DateTime<chrono::Utc>,
-    keys: Option<ApiKeysArtifact>,
-}
-impl ApiKeys {
-    pub(super) fn new(interval: std::time::Duration) -> Self {
-        Self {
-            max_age: 2 * interval,
-            held: std::sync::Mutex::default(),
-        }
-    }
-    /// What the keys say about `subject`: `Ok(None)` while none are published.
-    /// A key missing from published keys is unknown.
-    fn grant(&self, subject: &str) -> Result<Option<ApiKeyGrant>, ReaderError> {
-        let held = crate::sync::lock(&self.held);
-        let held = held
-            .as_ref()
-            .filter(|held| {
-                let wall = fyrr_core::clock::now().signed_duration_since(held.started_at);
-                held.started.elapsed() < self.max_age
-                    && wall.to_std().is_ok_and(|age| age < self.max_age)
-            })
-            .ok_or(AuthorizationUnavailable)?;
-        match &held.keys {
-            None => Ok(None),
-            Some(keys) => keys.grant(subject).cloned().map(Some).ok_or(Unauthorized),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub(super) struct Admission {
@@ -57,7 +11,10 @@ pub(super) struct Admission {
     root: Path,
     cached_identity: crate::storage::ArtifactCache<IdentityArtifact>,
     heads: crate::storage::HeadCache,
-    api_keys: ApiKeys,
+    /// The deployment's published API keys, held as the head is: read at each
+    /// version check, and again when the held copy is older than two intervals.
+    api_keys: crate::storage::HeadCache<ApiKeysArtifact>,
+    keys_root: Path,
 }
 impl Admission {
     pub(super) fn new(
@@ -65,26 +22,23 @@ impl Admission {
         root: Path,
         cached_identity: crate::storage::ArtifactCache<IdentityArtifact>,
         heads: crate::storage::HeadCache,
-        api_keys: ApiKeys,
+        api_keys: crate::storage::HeadCache<ApiKeysArtifact>,
     ) -> Self {
+        let keys_root = crate::storage::deployment_root(&root);
         Self {
             store,
             root,
             cached_identity,
             heads,
             api_keys,
+            keys_root,
         }
     }
-    /// Reads the published API keys. A failed read keeps the held copy, which
-    /// then ages out.
+    /// Reads the published API keys now.
     pub(super) async fn refresh_api_keys(&self) -> Result<(), ReaderError> {
-        let (started, started_at) = (tokio::time::Instant::now(), fyrr_core::clock::now());
-        let keys = crate::storage::api_keys(self.store.as_ref(), &self.root).await?;
-        *crate::sync::lock(&self.api_keys.held) = Some(HeldKeys {
-            started,
-            started_at,
-            keys,
-        });
+        self.api_keys
+            .read_fresh(self.store.as_ref(), &self.keys_root)
+            .await?;
         Ok(())
     }
     pub(super) async fn head(&self) -> Result<ServingHead, ReaderError> {
@@ -127,9 +81,9 @@ impl Admission {
         Ok(identity)
     }
     /// Admits `subject` to a route that needs `role`. An API key holds the roles
-    /// of its published entry, `read` when none is published; any other subject
-    /// holds `read`. A key that lacks the role, or may not act in this
-    /// namespace, is `Forbidden`.
+    /// of its entry in the published keys, and is unknown without one, also
+    /// while the keys cannot be read; any other subject holds `read`. A key
+    /// that lacks the role, or may not act in this namespace, is `Forbidden`.
     pub(super) async fn authorize(
         &self,
         config: &Config,
@@ -145,14 +99,11 @@ impl Admission {
     > {
         let head = self.head().await?;
         let now = fyrr_core::clock::now();
-        let allowed = if subject.api_key {
-            match self.api_keys.grant(&subject.key)? {
-                Some(grant) => {
-                    grant.roles.contains(&role)
-                        && prefix_allows(grant.namespace_prefix.as_deref(), &config.namespace.name)
-                }
-                None => role == ApiKeyRole::Read,
-            }
+        let allowed = if let Some(hash) = &subject.api_key {
+            let keys = self.api_keys.read(&self.store, &self.keys_root).await?;
+            let grant = keys.grant(hash).ok_or(Unauthorized)?;
+            grant.roles.contains(&role)
+                && prefix_allows(grant.namespace_prefix.as_deref(), &config.namespace.name)
         } else {
             role == ApiKeyRole::Read
         };
@@ -163,18 +114,19 @@ impl Admission {
         // An API-key secret proves nothing until the identity binds it, so its
         // lookup comes before the namespace and expiry checks: an unbound
         // key is `Unauthorized` whatever their state.
-        if !live && !subject.api_key {
+        if !live && subject.api_key.is_none() {
             return Err(AuthorizationUnavailable);
         }
         let identity = self.identity(config, &head.identity).await?;
         let live = live && crate::storage::directory_published(config, &identity);
-        let principal = identity
-            .principal_for_subject(&subject.key)
-            .ok_or(if subject.api_key {
-                Unauthorized
-            } else {
-                AuthorizationUnavailable
-            })?;
+        let principal =
+            identity
+                .principal_for_subject(&subject.key)
+                .ok_or(if subject.api_key.is_some() {
+                    Unauthorized
+                } else {
+                    AuthorizationUnavailable
+                })?;
         if !live {
             return Err(AuthorizationUnavailable);
         }
@@ -201,6 +153,7 @@ impl Admission {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fyrr_core::identity::ApiKeyGrant;
     use fyrr_core::{Contract, parse_contract, write_contract};
     use lance_io::object_store::WrappingObjectStore;
     use object_store::ObjectStoreExt;
@@ -255,7 +208,10 @@ mod tests {
                 Path::from("namespace"),
                 Arc::default(),
                 crate::storage::HeadCache::with_interval(std::time::Duration::ZERO),
-                ApiKeys::new(std::time::Duration::from_secs(30)),
+                crate::storage::HeadCache::with_file(
+                    std::time::Duration::from_secs(60),
+                    crate::storage::API_KEYS_FILE,
+                ),
             );
             let mut test = Self {
                 config,
@@ -268,7 +224,7 @@ mod tests {
                 subject: crate::auth::AuthenticatedSubject {
                     key,
                     identity: None,
-                    api_key: false,
+                    api_key: None,
                     expires: fyrr_core::clock::now().timestamp() + 600,
                 },
             };
@@ -329,7 +285,10 @@ mod tests {
             test.admission.root.clone(),
             test.admission.cached_identity.clone(),
             test.admission.heads.clone(),
-            ApiKeys::new(std::time::Duration::from_secs(30)),
+            crate::storage::HeadCache::with_file(
+                std::time::Duration::from_secs(60),
+                crate::storage::API_KEYS_FILE,
+            ),
         );
         let before = test.mirror.totals().requests;
         let identity = shared
@@ -352,7 +311,8 @@ mod tests {
     #[tokio::test]
     async fn published_api_keys_decide_roles_namespaces_and_age() {
         let mut test = Fixture::new().await;
-        test.subject.api_key = true;
+        let hash = format!("key:{}", "8".repeat(64));
+        test.subject.api_key = Some(hash.clone());
         let publish = |keys: Vec<ApiKeyGrant>| {
             let bytes = write_contract(&ApiKeysArtifact {
                 schema_version: fyrr_core::identity::API_KEYS_CONTRACT_VERSION,
@@ -367,18 +327,24 @@ mod tests {
             }
         };
         let grant = |roles: &[ApiKeyRole], prefix: Option<&str>| ApiKeyGrant {
-            subject: test.subject.key.clone(),
+            subject: hash.clone(),
             roles: roles.to_vec(),
             namespace_prefix: prefix.map(str::to_owned),
         };
-        let authorize = |role| test.admission.authorize(&test.config, &test.subject, role);
+        let authorize =
+            |test: &Fixture, role| test.admission.authorize(&test.config, &test.subject, role);
 
-        // Keys that were never read are no keys: nothing is decided without them.
+        // No published keys, no key: the identity's binding decides nothing.
         assert_eq!(
-            authorize(ApiKeyRole::Read).await.unwrap_err(),
-            AuthorizationUnavailable
+            authorize(&test, ApiKeyRole::Read).await.unwrap_err(),
+            StorageUnavailable
         );
-        // Nothing published: a key reads, as it did before roles.
+        // Published: the entry decides, and a request costs no read of the keys.
+        publish(vec![grant(
+            &[ApiKeyRole::Read, ApiKeyRole::Write],
+            Some("ac"),
+        )])
+        .await;
         let before = test.mirror.totals().requests;
         test.admission.refresh_api_keys().await.unwrap();
         assert_eq!(
@@ -386,55 +352,59 @@ mod tests {
             1,
             "one read per refresh"
         );
-        authorize(ApiKeyRole::Read).await.unwrap();
-        assert_eq!(authorize(ApiKeyRole::Write).await.unwrap_err(), Forbidden);
-
-        // Published: the entry decides, and a request costs no read of the keys.
-        publish(vec![grant(
-            &[ApiKeyRole::Read, ApiKeyRole::Write],
-            Some("ac"),
-        )])
-        .await;
-        test.admission.refresh_api_keys().await.unwrap();
         let before = test.mirror.totals().requests;
-        authorize(ApiKeyRole::Read).await.unwrap();
-        authorize(ApiKeyRole::Write).await.unwrap();
+        authorize(&test, ApiKeyRole::Read).await.unwrap();
+        authorize(&test, ApiKeyRole::Write).await.unwrap();
         assert_eq!(test.mirror.totals().requests - before, 2, "the head only");
-        assert_eq!(authorize(ApiKeyRole::Admin).await.unwrap_err(), Forbidden);
+        assert_eq!(
+            authorize(&test, ApiKeyRole::Admin).await.unwrap_err(),
+            Forbidden
+        );
         publish(vec![grant(&[ApiKeyRole::Read], Some("other"))]).await;
         test.admission.refresh_api_keys().await.unwrap();
-        assert_eq!(authorize(ApiKeyRole::Read).await.unwrap_err(), Forbidden);
+        assert_eq!(
+            authorize(&test, ApiKeyRole::Read).await.unwrap_err(),
+            Forbidden
+        );
         // A key the published set lacks is unknown, however the identity binds it.
         publish(Vec::new()).await;
         test.admission.refresh_api_keys().await.unwrap();
-        assert_eq!(authorize(ApiKeyRole::Read).await.unwrap_err(), Unauthorized);
+        assert_eq!(
+            authorize(&test, ApiKeyRole::Read).await.unwrap_err(),
+            Unauthorized
+        );
 
         // A subject that is no API key holds `read` only.
-        test.subject.api_key = false;
-        test.admission
-            .authorize(&test.config, &test.subject, ApiKeyRole::Read)
-            .await
-            .unwrap();
+        test.subject.api_key = None;
+        authorize(&test, ApiKeyRole::Read).await.unwrap();
         assert_eq!(
-            test.admission
-                .authorize(&test.config, &test.subject, ApiKeyRole::Write)
-                .await
-                .unwrap_err(),
+            authorize(&test, ApiKeyRole::Write).await.unwrap_err(),
             Forbidden
         );
 
-        // Keys older than two intervals are not used.
-        test.subject.api_key = true;
-        test.admission.api_keys = ApiKeys::new(std::time::Duration::from_millis(10));
+        // A copy older than two intervals is read again, so a change reaches
+        // the next request; only a failed read refuses the key.
+        test.subject.api_key = Some(hash.clone());
+        test.admission.api_keys = crate::storage::HeadCache::with_file(
+            std::time::Duration::from_millis(10),
+            crate::storage::API_KEYS_FILE,
+        );
         publish(vec![grant(&[ApiKeyRole::Read], None)]).await;
-        test.admission.refresh_api_keys().await.unwrap();
+        authorize(&test, ApiKeyRole::Read).await.unwrap();
+        publish(vec![grant(&[ApiKeyRole::Write], None)]).await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(
-            test.admission
-                .authorize(&test.config, &test.subject, ApiKeyRole::Read)
-                .await
-                .unwrap_err(),
-            AuthorizationUnavailable
+            authorize(&test, ApiKeyRole::Read).await.unwrap_err(),
+            Forbidden
+        );
+        test.remote
+            .delete(&Path::from("api-keys.json"))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            authorize(&test, ApiKeyRole::Read).await.unwrap_err(),
+            StorageUnavailable
         );
     }
 

@@ -125,7 +125,7 @@ fn cache_subjects(
         .map(|i| crate::auth::AuthenticatedSubject {
             key: hash_principal(config, "key", &format!("cache-subject-{i}")).unwrap(),
             identity: Some(identity.clone()),
-            api_key: false,
+            api_key: None,
             expires: fyrr_core::clock::now().timestamp() + 3600,
         })
         .collect()

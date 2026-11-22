@@ -47,7 +47,9 @@ role, with the reader tokens that role may read. Use one key per role.
    public_url = "https://fyrr.example.com/mcp"
    ```
 
-3. Publish with `fyrr writer commit` (or let `writer serve` do it) and start
+3. Publish with `fyrr writer commit` (or let `writer serve` do it), then
+   publish the keys with `fyrr writer keys` (a required step: readers refuse
+   every API key until it has run), and start
    `fyrr reader serve` behind a TLS-terminating proxy as in
    [step 3](#3-start-the-writer-and-the-reader). The reader needs the
    namespace `hashing_key`, but no key's secret variable; on a reader host,
@@ -76,26 +78,23 @@ To revoke a key:
    commit` jobs pick up the file. A running `writer serve` keeps the
    configuration it started with and republishes a removed key at its next
    commit.
-3. Publish: run `fyrr writer commit`, or wait for the restarted service's
-   next commit (after `writer.commit.coalescing_timer`, default 60 s, unless
-   `writer.serve.committer = false`). A commit rebuilds the identity from the
-   configuration even when no content changed, so no other change is needed.
+3. Publish: run `fyrr writer keys`, which is what readers check first, and
+   `fyrr writer commit` (or wait for the restarted service's next commit,
+   after `writer.commit.coalescing_timer`, default 60 s, unless
+   `writer.serve.committer = false`) to drop the key's grants. A commit
+   rebuilds the identity from the configuration even when no content changed.
 4. Send `POST /admin/refresh` to each reader; without that, a reader refuses
-   the key within two `reader.version_check_interval`s.
+   the key within two `reader.version_check_interval`s of `writer keys`.
 
-When the keys are published for the whole deployment with `fyrr writer keys`,
-run it after step 1 instead of steps 2 and 4: a removed key is refused by
-every reader within two `reader.version_check_interval`s, whatever each
-namespace's identity still binds. Run `writer commit` as well to drop its
-grants. [Identity](identity.md#identityapi_keys) describes the roles and the
+[Identity](identity.md#identityapi_keys) describes the roles and the
 namespace prefix a key can carry.
 
 A reader that holds a usable head and identity answers an unknown, malformed
 or removed key with `401`, and without OIDC the challenge is a bare
 `WWW-Authenticate: Bearer`. When the reader cannot read the head or the
 identity, every caller gets `503 authorization_unavailable`. A key with a
-missing or malformed secret on the writer is left out of the identity and the
-other keys are published as usual. See [security](security.md#api-keys) for
+missing or malformed secret is left out of the identity by `writer commit`,
+which publishes the other keys as usual, and fails `writer keys`. See [security](security.md#api-keys) for
 what a key grants.
 
 With `[identity.oidc]` as well, the reader accepts both: a bearer that

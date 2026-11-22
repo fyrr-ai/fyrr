@@ -197,6 +197,7 @@ fn http_reader_configuration_and_startup_keep_identity_and_credentials_private()
     let loaded = fyrr_core::config::load(&config).expect("the configuration parses");
     for hash in [
         fyrr_reader::storage::api_key_subject(&loaded.config, &shared).unwrap(),
+        fyrr_reader::storage::api_key_deployment_hash(&loaded.config, &shared).unwrap(),
         fyrr_reader::storage::api_key_principal(&loaded.config, &one).unwrap(),
     ] {
         sentinels.plant(&hash, "api-key-hash");

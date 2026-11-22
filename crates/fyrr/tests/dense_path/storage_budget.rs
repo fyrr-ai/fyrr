@@ -217,8 +217,7 @@ async fn a_running_reader_stays_within_its_storage_request_budget() {
 
 /// What a reader that declares API keys adds to the budgets above: one `GET`
 /// of the published keys when it starts and one per version check, and nothing
-/// per request. The object is absent in this test, so each of them is a miss; a
-/// published set is read the same way.
+/// per request.
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
 async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
@@ -229,12 +228,21 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
         .unwrap()
         .replace("# fyrr-test-head-check = every", "")
         .replace("[reader]", "[reader]\nversion_check_interval = '1s'");
+    let text = format!(
+        "{text}\n[[identity.api_keys]]\nname='budget'\nkey={{env='FYRR_BUDGET_KEY'}}\nreaders=['usr:budget']\n"
+    );
     std::fs::write(&config, &text).unwrap();
     let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
     root.embedding.insert_both("ledger", vector);
     success(&config, &["writer", "namespace", "create"]);
     sync_texts(&config, &root, &[("kept.txt", KEPT)]);
     success(&config, &["writer", "commit"]);
+    let keys = super::coordination::host_command(&config)
+        .args(["writer", "keys"])
+        .env("FYRR_BUDGET_KEY", format!("fyrr_key_{:064}", 6))
+        .output()
+        .unwrap();
+    assert!(keys.status.success(), "{}", report(&keys));
 
     let seen = Seen::default();
     let stop = Arc::new(AtomicBool::new(false));
@@ -242,17 +250,12 @@ async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
     let observed_config = root.join("observed.toml");
     std::fs::write(&observed_config, text.replace(&endpoint, &observed)).unwrap();
     let started = std::time::Instant::now();
-    let mut reader = super::http_mcp::Reader::start_appended(
-        &observed_config,
-        &root,
-        |address, base| {
-            format!(
-                "\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n[[identity.api_keys]]\nname='budget'\nkey={{env='FYRR_BUDGET_KEY'}}\nreaders=['usr:budget']\n"
-            )
-        },
-    )
-    .await;
-    // Requests that carry a key, answered 401 here, read no keys.
+    let mut reader =
+        super::http_mcp::Reader::start_appended(&observed_config, &root, |address, base| {
+            format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+        })
+        .await;
+    // Requests that carry a key nobody published read no keys.
     let secret = format!("fyrr_key_{:064}", 7);
     for _ in 0..20 {
         let response = reader

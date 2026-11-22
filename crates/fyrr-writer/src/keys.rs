@@ -6,19 +6,25 @@ use crate::{Result, WriterError};
 use fyrr_core::config::Config;
 use fyrr_core::identity::{API_KEYS_CONTRACT_VERSION, ApiKeyGrant, ApiKeysArtifact};
 use fyrr_core::write_contract;
-use fyrr_reader::storage::{api_keys_path, namespace_store};
+use fyrr_reader::storage::{API_KEYS_FILE, deployment_root, namespace_store};
 use object_store::{ObjectStoreExt, PutMode};
 
 /// Publishes the configured keys with their roles and namespace prefixes as
 /// keyed hashes; no secret, name or reader token leaves the writer. The
-/// artifact is the deployment's whole key set: a key missing from it is
-/// refused by every reader that finds it. Written by compare-and-swap, and not
-/// at all when it is current, so a repeated run is harmless; a competing
-/// publisher fails the run as `committer_busy`.
+/// artifact is the deployment's whole key set, and a reader that declares keys
+/// refuses every key without it: a key missing from it is refused. So a key
+/// whose secret is unset or malformed fails the run, instead of being revoked
+/// silently everywhere. Written by compare-and-swap, and not at all when it is
+/// current, so a repeated run is harmless; a competing publisher fails the run
+/// as `committer_busy`.
 pub async fn publish(config: &Config) -> Result<serde_json::Value> {
-    let keys: Vec<_> = usable_api_keys(config)?
+    let usable = usable_api_keys(config)?;
+    if usable.len() != config.identity.api_keys.len() {
+        return Err(WriterError::ConfigurationInvalid);
+    }
+    let keys: Vec<_> = usable
         .into_iter()
-        .map(|(key, subject)| ApiKeyGrant {
+        .map(|(key, _, subject)| ApiKeyGrant {
             subject,
             roles: key.roles.clone(),
             namespace_prefix: key.namespace_prefix.clone(),
@@ -30,7 +36,7 @@ pub async fn publish(config: &Config) -> Result<serde_json::Value> {
         keys,
     };
     let (store, root) = namespace_store(config)?;
-    let path = api_keys_path(&root);
+    let path = deployment_root(&root).join(API_KEYS_FILE);
     let mode = match store.get(&path).await {
         Ok(current) => {
             let version = version_of(&current.meta);

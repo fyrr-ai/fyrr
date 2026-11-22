@@ -373,7 +373,7 @@ async fn authenticate_mcp(
     // Authenticated control traffic has its own concurrency bound and never
     // spends a user's or group's request allowance. IDs remain subject-scoped.
     if let Some(cancel) = cancellation {
-        if subject.api_key {
+        if subject.api_key.is_some() {
             admit().await?;
         }
         let mut limits = timeout_at(deadline, state.control_limits.lock()).await?;
@@ -614,10 +614,8 @@ async fn refresh(State(state): State<HttpState>, request: Request) -> Response {
         return error(StatusCode::TOO_MANY_REQUESTS, RateLimited);
     }
     *refresh = Some(Instant::now());
-    if !state.config.identity.api_keys.is_empty()
-        && let Err(code) = state.admission.refresh_api_keys().await
-    {
-        return error(StatusCode::SERVICE_UNAVAILABLE, code);
+    if !state.config.identity.api_keys.is_empty() {
+        let _ = state.admission.refresh_api_keys().await;
     }
     match state.service.refresh().await {
         Ok(p) => axum::Json(p).into_response(),
@@ -637,27 +635,25 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&h.listen)
         .await
         .map_err(|_| TransportUnavailable)?;
-    // The keys are read at the version check's interval.
-    let interval = config
-        .reader
-        .version_check_interval
-        .as_duration()
-        .min(Duration::from_secs(30));
     let admission = Arc::new(admission::Admission::new(
         reader.control_store.clone(),
         reader.control_root.clone(),
         reader.identity_cache.clone(),
         reader.head_cache.clone(),
-        admission::ApiKeys::new(interval),
+        crate::storage::HeadCache::for_file(&config, crate::storage::API_KEYS_FILE),
     ));
-    // Only a reader that declares API keys takes bearers for them, so only
-    // it reads the published ones.
+    // Only a reader that declares API keys takes bearers for them, so only it
+    // reads the published ones: at start and at each version check. Until
+    // they are read, API-key requests are refused and OIDC ones are not.
     if !config.identity.api_keys.is_empty() {
-        admission.refresh_api_keys().await?;
+        let interval = config
+            .reader
+            .version_check_interval
+            .as_duration()
+            .min(Duration::from_secs(30));
         let admission = admission.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(interval);
-            tick.tick().await;
             loop {
                 tick.tick().await;
                 let _ = admission.refresh_api_keys().await;

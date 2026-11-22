@@ -51,21 +51,24 @@ keys with the same secret; `config check --no-env` skips that. The writer
 skips a key whose secret is missing or malformed and publishes every other
 key; two keys with the same secret stop its commit.
 
-A key is the same subject in every namespace of a deployment that shares one
-`hashing_key`. `fyrr writer keys` publishes the keys of the configuration,
-each as its keyed hash with its roles and prefix, in one object under the
-storage root (`api-keys.json`, above `namespaces/`) by compare-and-swap, and
-writes nothing when it is current. Run it from a configuration that declares
-every key of the deployment, on a host that has their variables. While no such
-object exists a key acts as declared in the namespace's own configuration,
-with `read`. Once it exists it is the deployment's whole key set: a reader that
-declares keys refuses a key that is not in it, and takes each key's roles and
-prefix from it. What a key may read still comes from `readers` in each
-namespace's identity, so declare the key in the configuration of every
-namespace where it reads (the writer binds it only where its prefix matches).
-A reader reads the object when it starts and at every version check interval
-(`POST /admin/refresh` too), one more `GET` each; it refuses every key when it
-cannot read it or holds a copy older than two intervals.
+`fyrr writer keys` publishes the keys of the configuration, each as a keyed
+hash with its roles and prefix, in one object under the storage root
+(`api-keys.json`, above `namespaces/`) by compare-and-swap; it writes nothing
+when the object is current. It is a required step: a reader that declares
+keys refuses every API key (`503 authorization_unavailable`) until it can read
+the object, and refuses a key that is not in it (`401`). The object is the
+deployment's whole key set, so run the command from a configuration that
+declares every key, on a host that has all their variables; a key whose
+variable is unset or malformed fails the run. The hash in it names no
+namespace, so the namespaces of a deployment share one `hashing_key`.
+
+What a key may read still comes from `readers` in each namespace's identity,
+published by `writer commit` (a key is bound only where it holds `read` and
+its prefix matches the namespace name), so declare the key in the
+configuration of every namespace where it reads. A reader reads the object
+when it starts and at every version check interval (`POST /admin/refresh`
+too), one more `GET` each, and again when its copy is older than two
+intervals; it refuses every key while it cannot read it.
 
 `reader serve` over HTTP needs `[identity.oidc]`, an API key or both, and
 refuses to start without them; `config check` warns about it. The writer does

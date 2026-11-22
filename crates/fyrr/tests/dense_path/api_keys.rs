@@ -157,13 +157,37 @@ impl Deployment {
     }
 
     /// Declares exactly `keys` in both configurations, plus `extra` in the
-    /// writer's, and commits the identity with the secrets of `present`.
+    /// writer's, and commits the identity with the secrets of `present`. When
+    /// every key has a usable secret the deployment's keys are published too, as
+    /// a reader that declares keys needs them.
     fn publish(&self, keys: &[&Key], present: &[&Key], extra: &str) -> Output {
         let tables: String = keys.iter().map(|key| key.table()).collect();
         std::fs::write(&self.worker, format!("{}{tables}", self.base_worker)).unwrap();
         std::fs::write(&self.commit, format!("{}{tables}{extra}", self.base_commit)).unwrap();
-        writer(&self.commit, present)
+        let committed = writer(&self.commit, present)
             .args(["writer", "commit"])
+            .output()
+            .unwrap();
+        let usable = keys.iter().all(|key| {
+            present.iter().any(|set| set.variable == key.variable)
+                && fyrr_core::config::is_api_key_secret(&key.secret)
+        });
+        if usable && committed.status.success() {
+            let published = writer(&self.commit, present)
+                .args(["writer", "keys"])
+                .output()
+                .unwrap();
+            assert!(published.status.success(), "{}", report(&published));
+        }
+        committed
+    }
+
+    /// Publishes exactly `keys` as the deployment's keys.
+    fn keys(&self, keys: &[&Key]) -> Output {
+        let tables: String = keys.iter().map(|key| key.table()).collect();
+        std::fs::write(&self.commit, format!("{}{tables}", self.base_commit)).unwrap();
+        writer(&self.commit, keys)
+            .args(["writer", "keys"])
             .output()
             .unwrap()
     }
@@ -455,6 +479,15 @@ async fn bad_secret_does_not_block_revocation() {
         stderr.contains("identity.api_keys[2].key") && stderr.contains("identity.api_keys[3].key")
     );
     assert!(!report(&check).contains("fyrr_key_too-short"));
+    // The deployment's keys are all or nothing: an unset or malformed secret
+    // would otherwise revoke its key everywhere without a word.
+    let refused = writer(&deployment.commit, &present)
+        .args(["writer", "keys"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success(), "{}", report(&refused));
+    let keyed = deployment.keys(&[&good, &other]);
+    assert!(keyed.status.success(), "{}", report(&keyed));
 
     let mut reader =
         Reader::start_appended(&deployment.shipped(), &deployment.root, key_http).await;
@@ -468,6 +501,8 @@ async fn bad_secret_does_not_block_revocation() {
     // The bad variables do not stop the revocation of another key.
     let revoked = deployment.publish(&[&good, &malformed, &unset], &present, "");
     assert!(revoked.status.success(), "{}", report(&revoked));
+    let keyed = deployment.keys(&[&good]);
+    assert!(keyed.status.success(), "{}", report(&keyed));
     refresh(&reader).await;
     assert_eq!(refusal(&reader, &other.secret).await, wrong, "revoked");
     assert_eq!(refusal(&reader, &good.secret).await.0, 200);
@@ -589,14 +624,8 @@ async fn deployment_keys_carry_roles_and_a_namespace_prefix() {
     )
     .unwrap();
     let mut reader = Reader::start_appended(&fast, &deployment.root, key_http).await;
-    // Nothing is published yet: a key reads in the namespace that binds it.
-    assert_eq!(refusal(&reader, &reads.secret).await.0, 200);
-    assert_eq!(refusal(&reader, &both.secret).await.0, 200);
-
     let output = keys(&all);
     assert!(output.status.success(), "{}", report(&output));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("\"changed\":true"));
-    let output = keys(&all);
     assert!(
         String::from_utf8_lossy(&output.stdout).contains("\"changed\":false"),
         "a current artifact is not written again: {}",
@@ -608,14 +637,6 @@ async fn deployment_keys_carry_roles_and_a_namespace_prefix() {
         assert_eq!(status, 403);
         assert_eq!(body, "{\"error\":\"forbidden\"}");
     };
-    let deadline = std::time::Instant::now() + Duration::from_secs(6);
-    while refusal(&reader, &writes.secret).await.0 != 403 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "keys never reached the reader"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
     for key in [&writes, &elsewhere] {
         let (status, body, _) = refusal(&reader, &key.secret).await;
         forbidden(status, &body);
@@ -639,12 +660,14 @@ async fn deployment_keys_carry_roles_and_a_namespace_prefix() {
     // The artifact holds hashes with roles and prefixes, nothing else of a key.
     let cfg = fyrr_core::config::load(&deployment.worker).unwrap().config;
     let (store, root) = fyrr_reader::storage::namespace_store(&cfg).unwrap();
-    let artifact = fyrr_reader::storage::api_keys(store.as_ref(), &root)
-        .await
-        .unwrap()
-        .expect("published keys");
+    let artifact: fyrr_core::identity::ApiKeysArtifact = fyrr_reader::storage::read_contract(
+        store.as_ref(),
+        &fyrr_reader::storage::deployment_root(&root).join(fyrr_reader::storage::API_KEYS_FILE),
+    )
+    .await
+    .unwrap();
     let grant = artifact
-        .grant(&api_key_subject(&cfg, &both.secret).unwrap())
+        .grant(&fyrr_reader::storage::api_key_deployment_hash(&cfg, &both.secret).unwrap())
         .expect("a grant per key");
     assert_eq!(grant.roles, [ApiKeyRole::Read, ApiKeyRole::Write]);
     assert_eq!(grant.namespace_prefix.as_deref(), Some(matching.as_str()));

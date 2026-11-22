@@ -38,9 +38,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   [HTTP login and users](docs/http-users.md#api-keys).
 - API keys carry `roles` (`read`, `write`, `list`, `admin`; default `read`)
   and an optional `namespace_prefix`. `fyrr writer keys` publishes the keys of
-  a deployment as one artifact under the storage root; readers refuse a key
-  removed from it within two version checks, and answer `403 forbidden` to a
-  key without the role a route needs. See
+  a deployment as one artifact under the storage root and is required: readers
+  refuse every API key until they can read it, refuse a key removed from it
+  within two version checks, and answer `403 forbidden` to a key without the
+  role a route needs. See
   [identity](docs/identity.md#identityapi_keys).
 - The reader sends `instructions` in the MCP `initialize` result: what
   fyrr searches and a request to search it before looking through files.
