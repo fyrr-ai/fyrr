@@ -128,6 +128,134 @@ pub fn index_name(attribute: &str) -> String {
 /// A namespace's attributes: name to type.
 pub type AttributeSchema = BTreeMap<String, AttributeType>;
 
+/// One of the indexes an attribute may have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexOption {
+    /// The index of the attribute's type: see [`AttributeType::index_kind`].
+    Scalar,
+    FullText,
+    Ngram,
+}
+
+impl IndexOption {
+    pub const ALL: [Self; 3] = [Self::Scalar, Self::FullText, Self::Ngram];
+}
+
+impl AttributeType {
+    /// Whether an attribute of this type can have the index: a `string` has the
+    /// text indexes besides its scalar one, `bytes` has none.
+    pub fn supports(self, option: IndexOption) -> bool {
+        match option {
+            IndexOption::Scalar => self.index_kind().is_some(),
+            IndexOption::FullText | IndexOption::Ngram => self == Self::String,
+        }
+    }
+}
+
+/// The indexes an attribute has: the scalar one unless it says otherwise, and a
+/// full-text or an n-gram index when it asks for one. An attribute without an
+/// index is still filtered and sorted: by a scan of the table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttributeIndex {
+    #[serde(default = "yes")]
+    pub index: bool,
+    #[serde(default)]
+    pub full_text: bool,
+    #[serde(default)]
+    pub ngram: bool,
+}
+
+const fn yes() -> bool {
+    true
+}
+
+impl Default for AttributeIndex {
+    fn default() -> Self {
+        Self {
+            index: true,
+            full_text: false,
+            ngram: false,
+        }
+    }
+}
+
+impl AttributeIndex {
+    pub fn has(&self, option: IndexOption) -> bool {
+        match option {
+            IndexOption::Scalar => self.index,
+            IndexOption::FullText => self.full_text,
+            IndexOption::Ngram => self.ngram,
+        }
+    }
+
+    fn set(&mut self, option: IndexOption, on: bool) {
+        match option {
+            IndexOption::Scalar => self.index = on,
+            IndexOption::FullText => self.full_text = on,
+            IndexOption::Ngram => self.ngram = on,
+        }
+    }
+}
+
+/// The attributes whose indexes are not the default: the entries that differ,
+/// so that a schema that sets no option is written as before.
+pub type AttributeIndexes = BTreeMap<String, AttributeIndex>;
+
+/// The name of the index of an attribute. The prefixes keep the names of the
+/// indexes of one attribute and of different attributes apart.
+pub fn attribute_index_name(attribute: &str, option: IndexOption) -> String {
+    match option {
+        IndexOption::Scalar => index_name(attribute),
+        IndexOption::FullText => format!("attrfts_{attribute}_idx"),
+        IndexOption::Ngram => format!("attrngram_{attribute}_idx"),
+    }
+}
+
+/// The kind of an index as a manifest records it.
+pub fn attribute_index_kind(kind: AttributeType, option: IndexOption) -> &'static str {
+    match option {
+        IndexOption::Scalar => kind.index_kind().unwrap_or("none"),
+        IndexOption::FullText => "inverted",
+        IndexOption::Ngram => "ngram",
+    }
+}
+
+/// Every index an attribute of the schema can have, whether it has it or not:
+/// attribute, its type, the index and the index's name.
+pub fn possible_indexes(
+    attributes: &AttributeSchema,
+) -> impl Iterator<Item = (&str, AttributeType, IndexOption, String)> {
+    attributes.iter().flat_map(|(name, kind)| {
+        IndexOption::ALL
+            .into_iter()
+            .filter(|option| kind.supports(*option))
+            .map(|option| {
+                (
+                    name.as_str(),
+                    *kind,
+                    option,
+                    attribute_index_name(name, option),
+                )
+            })
+    })
+}
+
+/// The options of the attributes of the schema that `has` an index of, as the
+/// entries that differ from the default.
+pub fn indexes_present(
+    attributes: &AttributeSchema,
+    has: impl Fn(&str) -> bool,
+) -> AttributeIndexes {
+    let mut present = AttributeIndexes::new();
+    for (name, _, option, index) in possible_indexes(attributes) {
+        let entry = present.entry(name.to_owned()).or_default();
+        entry.set(option, has(&index));
+    }
+    present.retain(|_, options| *options != AttributeIndex::default());
+    present
+}
+
 /// A value checked against its attribute's type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AttributeValue {
@@ -161,6 +289,8 @@ pub enum AttributeError {
     TypeMismatch,
     #[error("attribute_value_invalid")]
     ValueInvalid,
+    #[error("attribute_index_invalid")]
+    IndexInvalid,
 }
 
 impl AttributeError {
@@ -172,6 +302,7 @@ impl AttributeError {
             Self::ValueTooLarge => "attribute_value_too_large",
             Self::TypeMismatch => "attribute_type_mismatch",
             Self::ValueInvalid => "attribute_value_invalid",
+            Self::IndexInvalid => "attribute_index_invalid",
         }
     }
 }
@@ -199,6 +330,28 @@ pub fn check_schema(schema: &AttributeSchema) -> Result<(), AttributeError> {
         return Err(AttributeError::TooMany);
     }
     schema.keys().try_for_each(|name| check_name(name))
+}
+
+/// Checks the index options of a schema: each names a declared attribute and
+/// differs from the default, and asks only for what the attribute's type
+/// can have.
+pub fn check_indexes(
+    schema: &AttributeSchema,
+    indexes: &AttributeIndexes,
+) -> Result<(), AttributeError> {
+    indexes.iter().try_for_each(|(name, options)| {
+        let kind = schema.get(name).ok_or(AttributeError::IndexInvalid)?;
+        let differs =
+            |option: IndexOption| options.has(option) != AttributeIndex::default().has(option);
+        if *options == AttributeIndex::default()
+            || IndexOption::ALL
+                .into_iter()
+                .any(|option| differs(option) && !kind.supports(option))
+        {
+            return Err(AttributeError::IndexInvalid);
+        }
+        Ok(())
+    })
 }
 
 /// The 16 bytes of a UUID written as 8-4-4-4-12 hexadecimal digits, either case.
@@ -641,6 +794,83 @@ mod tests {
     }
 
     #[test]
+    fn an_attribute_has_the_indexes_its_type_supports() {
+        let schema = schema(&[
+            ("title", AttributeType::String),
+            ("count", AttributeType::Int),
+            ("blob", AttributeType::Bytes),
+        ]);
+        // `bytes` has none.
+        let names: Vec<_> = possible_indexes(&schema)
+            .map(|(attribute, _, _, name)| (attribute.to_owned(), name))
+            .collect();
+        let expected = [
+            ("count", "attr_count_idx"),
+            ("title", "attr_title_idx"),
+            ("title", "attrfts_title_idx"),
+            ("title", "attrngram_title_idx"),
+        ];
+        assert_eq!(
+            names,
+            expected.map(|(attribute, name)| (attribute.to_owned(), name.to_owned()))
+        );
+        // What a table has, as the options that differ from the default.
+        let built = ["attr_title_idx", "attrfts_title_idx"];
+        let present = indexes_present(&schema, |name| built.contains(&name));
+        assert_eq!(
+            present,
+            AttributeIndexes::from([
+                (
+                    "count".to_owned(),
+                    AttributeIndex {
+                        index: false,
+                        ..Default::default()
+                    }
+                ),
+                (
+                    "title".to_owned(),
+                    AttributeIndex {
+                        full_text: true,
+                        ..Default::default()
+                    }
+                ),
+            ])
+        );
+        assert_eq!(indexes_present(&schema, |_| true).len(), 1);
+    }
+
+    #[test]
+    fn index_options_name_a_declared_attribute_and_what_its_type_can_have() {
+        let schema = schema(&[
+            ("title", AttributeType::String),
+            ("blob", AttributeType::Bytes),
+        ]);
+        let options = |name: &str, options| AttributeIndexes::from([(name.to_owned(), options)]);
+        let off = AttributeIndex {
+            index: false,
+            ..Default::default()
+        };
+        let text = AttributeIndex {
+            ngram: true,
+            ..Default::default()
+        };
+        assert_eq!(check_indexes(&schema, &options("title", off)), Ok(()));
+        assert_eq!(check_indexes(&schema, &options("title", text)), Ok(()));
+        for (name, entry) in [
+            ("nope", off),
+            ("title", AttributeIndex::default()),
+            ("blob", off),
+            ("blob", text),
+        ] {
+            assert_eq!(
+                check_indexes(&schema, &options(name, entry)),
+                Err(AttributeError::IndexInvalid),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn every_error_has_a_distinct_code() {
         let errors = [
             AttributeError::NameInvalid,
@@ -649,6 +879,7 @@ mod tests {
             AttributeError::ValueTooLarge,
             AttributeError::TypeMismatch,
             AttributeError::ValueInvalid,
+            AttributeError::IndexInvalid,
         ];
         let codes: std::collections::BTreeSet<_> = errors.iter().map(|e| e.code()).collect();
         assert_eq!(codes.len(), errors.len());

@@ -1023,6 +1023,14 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::an_attribute_has_the_indexes_its_type_supports": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::index_options_name_a_declared_attribute_and_what_its_type_can_have": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-core:lib:fyrr_core/attributes::tests::every_error_has_a_distinct_code": {
         "tier": "quick",
         "seconds": 0.0
@@ -1317,6 +1325,10 @@
         "seconds": 0.0
       },
       "full:fyrr-core:test:contracts/a_manifest_and_a_policy_hold_only_valid_attribute_schemas": {
+        "tier": "quick",
+        "seconds": 0.002
+      },
+      "full:fyrr-core:test:contracts/attribute_index_options_need_the_version_an_older_build_refuses": {
         "tier": "quick",
         "seconds": 0.002
       }
@@ -2020,6 +2032,10 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_orders_a_listing_by_attributes_on_storage": {
         "tier": "full",
         "seconds": 1
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_changes_the_schema_of_a_live_namespace_on_storage": {
+        "tier": "full",
+        "seconds": 40
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_stores_filters_and_orders_the_other_attribute_types_on_storage": {
         "tier": "full",

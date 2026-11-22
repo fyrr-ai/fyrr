@@ -148,6 +148,9 @@ impl From<WriterError> for ApiError {
         match error {
             WriterError::EnvelopeBoundsInvalid => Self(413, "request_too_large"),
             WriterError::NamespaceSettingsFixed => Self(409, "namespace_settings_fixed"),
+            WriterError::AttributeTypeChange => Self(409, "attribute_type_change_refused"),
+            WriterError::AttributeRemoval => Self(409, "attribute_removal_refused"),
+            WriterError::CommitterBusy => Self(503, "busy"),
             WriterError::PublicationInvalid => Self(400, "settings_invalid"),
             WriterError::DocumentInvalid => Self(400, "document_invalid"),
             WriterError::SyncBusy => Self(503, "busy"),
@@ -462,7 +465,34 @@ fn laid_over(
     if settings.write_api.is_none() {
         return Err(ApiError(400, "settings_invalid"));
     }
+    // An option that is the default is not an entry: a schema has one spelling.
+    settings
+        .attribute_indexes
+        .retain(|_, options| *options != fyrr_core::attributes::AttributeIndex::default());
     Ok(settings)
+}
+
+/// The settings of an existing namespace with the request's `settings` laid
+/// over them. They may add attributes and set the indexes of attributes, and
+/// nothing else: a removed attribute, a changed type or any other setting is
+/// refused with its own error.
+fn changed_schema(
+    current: &NamespaceSettings,
+    request: Option<&Value>,
+) -> Result<NamespaceSettings, ApiError> {
+    // `null` is how a request says that an attribute goes.
+    if request
+        .and_then(|request| request.get("attributes")?.as_object())
+        .is_some_and(|attributes| attributes.values().any(Value::is_null))
+    {
+        return Err(WriterError::AttributeRemoval.into());
+    }
+    let next = laid_over(current, request)?;
+    crate::commit::check_schema_change(current, &next)?;
+    if next != *current && (next.validate().is_err() || next.attributes.contains_key("id")) {
+        return Err(ApiError(400, "settings_invalid"));
+    }
+    Ok(next)
 }
 
 fn api_source() -> SourceConfig {
@@ -868,10 +898,16 @@ async fn execute(
         }
         None => None,
     };
-    // The settings the request is checked against: the namespace's, or those
-    // the request would create it with. Nothing is created by a refused request.
+    // The settings the request is checked against: the namespace's with the
+    // schema the request asks for, or those the request would create it with.
+    // Nothing is created or changed by a refused request.
     let settings = match &existing {
-        Some((_, policy)) => policy.settings.clone(),
+        Some((_, policy)) => {
+            if policy.settings.write_api.is_none() {
+                return Err(ApiError(409, "namespace_not_writable"));
+            }
+            changed_schema(&policy.settings, requested.as_ref())?
+        }
         None => {
             let settings = laid_over(
                 &crate::commit::namespace_settings(config),
@@ -894,9 +930,6 @@ async fn execute(
     };
     if settings.write_api.is_none() {
         return Err(ApiError(409, "namespace_not_writable"));
-    }
-    if existing.is_some() && laid_over(&settings, requested.as_ref())? != settings {
-        return Err(ApiError(409, "namespace_settings_fixed"));
     }
     let config = config
         .with_settings(&settings)
@@ -928,7 +961,18 @@ async fn execute(
     let changes = changes(&config, rows, body.deletes.0, patches, conditions)?;
     let mut answer = json!({"upserted": upserted, "deleted": deleted});
     let (head, served) = match existing {
-        Some(existing) => existing,
+        Some((head, served)) if served.settings == settings => (head, served),
+        // The schema is published before the request's rows are accepted. The
+        // head it leaves is the one the envelope is prepared against.
+        Some(_) => {
+            crate::commit::change_schema(&config, settings.clone()).await?;
+            let head = fyrr_reader::storage::optional_head(&config)
+                .await?
+                .ok_or(ApiError(503, "unavailable"))?;
+            let policy: PolicyArtifact =
+                fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
+            (head, policy)
+        }
         None => {
             leftovers(store.as_ref(), &root).await?;
             crate::commit::create_with(&config, settings.clone()).await?;

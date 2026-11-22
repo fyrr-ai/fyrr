@@ -30,6 +30,8 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
         ("fragment_write_failed", true),
         ("chunk_profile_mismatch", false),
         ("namespace_settings_fixed", false),
+        ("attribute_type_change_refused", false),
+        ("attribute_removal_refused", false),
         ("embedding_local_cache_configuration_invalid", false),
         ("embedding_local_cache_unavailable", true),
         ("embedding_local_cache_invalid", true),

@@ -176,6 +176,11 @@ pub struct NamespaceConfig {
     /// index.
     #[serde(default)]
     pub attributes: crate::attributes::AttributeSchema,
+    /// The attributes whose indexes differ from the default (the scalar index
+    /// of the attribute's type): `index = false` leaves the attribute to a scan
+    /// of the table, `full_text` and `ngram` add a text index to a `string`.
+    #[serde(default)]
+    pub attribute_indexes: crate::attributes::AttributeIndexes,
     /// Present: the writer serves `POST /v1/namespaces/{namespace}/documents`,
     /// and a namespace created from this file or through that route takes its
     /// documents only from the API (no `[[sources]]`). The keys are the
@@ -1541,6 +1546,9 @@ impl Config {
         namespace.dense_rq_bits = settings.dense_rq_bits;
         namespace.dense_partition_rows = settings.dense_partition_rows;
         namespace.attributes.clone_from(&settings.attributes);
+        namespace
+            .attribute_indexes
+            .clone_from(&settings.attribute_indexes);
         namespace.write_api.clone_from(&settings.write_api);
         namespace.retrieval = (&settings.retrieval).into();
         namespace.composition = (&settings.composition).into();

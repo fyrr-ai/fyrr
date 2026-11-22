@@ -37,7 +37,8 @@ const INDEX_SEGMENT_LIMIT: usize = 64;
 /// not run it on every publication: then a fragment with deletions is due, and
 /// so is the span reaching the window after which a version is purgeable or an
 /// applied envelope is old. A namespace never maintained is due. `maintain`
-/// ends by recording its completion, which restarts both spans.
+/// ends by recording its completion, which restarts both spans. An attribute
+/// index that the settings ask for and the manifest does not hold is due at once.
 pub(crate) fn due(config: &Config, manifest: &ContentManifest) -> bool {
     let writer = &config.writer;
     let grace = writer.version_grace.as_duration();
@@ -50,7 +51,13 @@ pub(crate) fn due(config: &Config, manifest: &ContentManifest) -> bool {
     for index in &manifest.indexes {
         *segments.entry(&index.name).or_insert(0usize) += 1;
     }
-    if segments.values().any(|&count| count > INDEX_SEGMENT_LIMIT) {
+    if segments.values().any(|&count| count > INDEX_SEGMENT_LIMIT)
+        || fyrr_reader::search::attribute_indexes(
+            &config.namespace.attributes,
+            &config.namespace.attribute_indexes,
+        )
+        .any(|(_, name, _)| !segments.contains_key(&name))
+    {
         return true;
     }
     let deletions = manifest
@@ -222,8 +229,16 @@ async fn maintain_held(
     }
     let head = boundary(config, lease, history).await?;
     if head.content.is_some() {
-        let dataset = pinned(config, &head).await?;
-        let work = lineage(lease, &head);
+        let mut dataset = pinned(config, &head).await?;
+        let mut work = lineage(lease, &head);
+        // The attribute indexes that were switched on appear with this publication.
+        Box::pin(commit::build_attribute_indexes(
+            config,
+            lease,
+            &mut dataset,
+            &mut work,
+        ))
+        .await?;
         commit::publish(
             config,
             lease,

@@ -49,6 +49,8 @@ writer_errors! {
     FragmentWriteFailed => ("fragment_write_failed", true),
     ChunkProfileMismatch => ("chunk_profile_mismatch", false),
     NamespaceSettingsFixed => ("namespace_settings_fixed", false),
+    AttributeTypeChange => ("attribute_type_change_refused", false),
+    AttributeRemoval => ("attribute_removal_refused", false),
     EmbeddingLocalCacheConfigurationInvalid => ("embedding_local_cache_configuration_invalid", false),
     EmbeddingLocalCacheUnavailable => ("embedding_local_cache_unavailable", true),
     EmbeddingLocalCacheInvalid => ("embedding_local_cache_invalid", true),
