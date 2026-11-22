@@ -60,6 +60,9 @@ pub const DENSE_RQ_BITS_MAX: u64 = 9;
 pub const DENSE_PARTITION_ROWS_MIN: u64 = 32;
 pub const DENSE_PARTITION_ROWS_MAX: u64 = 4096;
 pub const DIMENSIONS_MAX: u64 = 8192;
+/// Lance builds an IVF_RQ index only over vectors whose dimension is a multiple
+/// of this (`vector dimension must be divisible by 8 for IVF_RQ`).
+pub const DIMENSIONS_MULTIPLE: u64 = 8;
 pub const BATCH_SIZE_MAX: u64 = 2048;
 pub const MAX_RETRIES_MAX: u64 = 10;
 /// Composed result slots and dense candidates: one MCP search page.

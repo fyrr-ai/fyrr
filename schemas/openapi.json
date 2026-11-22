@@ -1015,6 +1015,28 @@
               "$ref": "#/components/schemas/Filter"
             },
             "description": "From an id of the request to the filter that the stored document with\nthat id must meet for the change to apply. Needs the `admin` role."
+          },
+          "delete_where": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Filter"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Deletes every document that matches the filter, before the rest of the\nrequest is applied. Needs the `admin` role."
+          },
+          "patch_where": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PatchWhere"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Patches every document that matches a filter, after `delete_where` and\nbefore the rest of the request. Needs the `admin` role."
           }
         },
         "description": "The body of `POST /v1/namespaces/{namespace}/documents`."
@@ -1053,6 +1075,25 @@
         ],
         "additionalProperties": true,
         "description": "One row of `upserts` or `patches`."
+      },
+      "PatchWhere": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "filter": {
+            "$ref": "#/components/schemas/Filter"
+          },
+          "set": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "A patch row without its `id`: attributes and `readers`, never a text."
+          }
+        },
+        "required": [
+          "filter",
+          "set"
+        ],
+        "description": "The `patch_where` member of a write."
       },
       "NamespaceList": {
         "type": "object",

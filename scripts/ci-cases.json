@@ -1985,6 +1985,10 @@
         "tier": "full",
         "seconds": 40
       },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_ends_a_first_publication_of_identical_vectors_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
       "full:fyrr:test:dense_path/write_api::identity_write_api_without_embedding_settings_takes_only_vectors_on_storage": {
         "tier": "full",
         "seconds": 40
@@ -2008,6 +2012,14 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_patches_the_text_with_its_vector_on_storage": {
         "tier": "full",
         "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_deletes_and_patches_the_documents_that_match_a_filter_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_refuses_a_filter_that_matches_too_many_documents_on_storage": {
+        "tier": "full",
+        "seconds": 60
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_applies_a_change_only_when_its_condition_holds_on_storage": {
         "tier": "full",

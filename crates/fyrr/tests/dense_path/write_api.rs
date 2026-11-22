@@ -13,7 +13,7 @@ fn secret(n: usize) -> String {
 }
 pub(super) const WRITE_KEY: usize = 41;
 const READ_KEY: usize = 42;
-/// May write and, with `admin`, set conditions.
+/// May write and, with `admin`, set conditions or write by filter.
 const ADMIN_KEY: usize = 44;
 /// May write the namespaces whose names start with `shop-`.
 const SCOPED_KEY: usize = 43;
@@ -31,7 +31,7 @@ pub(super) fn configure(config: &Path, address: &std::net::SocketAddr, extra: &s
              [[identity.api_keys]]\nname='reader'\nkey={{env='FYRR_TEST_READ_KEY'}}\nreaders=['usr:x']\n\
              [[identity.api_keys]]\nname='admin-writer'\nkey={{env='FYRR_TEST_ADMIN_KEY'}}\nroles=['write','admin']\n\
              [[identity.api_keys]]\nname='scoped'\nkey={{env='FYRR_TEST_SCOPED_KEY'}}\nroles=['write']\nnamespace_prefix='shop-'\n\
-             [writer.commit]\ncoalescing_timer='10m'\n\
+             [writer]\nthreads=2\n[writer.commit]\ncoalescing_timer='10m'\n\
              [writer.serve.admin]\nlisten='{address}'\noperator_token={{env='FYRR_TEST_OPERATOR'}}\n"
         ),
     )
@@ -521,6 +521,332 @@ async fn identity_write_api_patches_a_document_and_keeps_what_it_does_not_name_o
             (400, json!({"error": code}))
         );
     }
+}
+
+/// A request deletes and patches every document that matches a filter, in the
+/// namespace it writes only and whatever the readers of the documents. The
+/// deletes come first, so one request replaces the documents of a team, and the
+/// documents the request names are written as it says.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_deletes_and_patches_the_documents_that_match_a_filter_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    embed(
+        &root,
+        &[
+            "blue shirt",
+            "red hat",
+            "green coat",
+            "black scarf",
+            "white sock",
+            "grey vest",
+        ],
+    );
+    let writer = Writer::start(&config, &root, address).await;
+    let post = async |body: Value| writer.post(ADMIN_KEY, "dense-fixture", &body).await;
+    let team = |name: &str| json!({"field": "team", "op": "eq", "value": name});
+    assert_eq!(
+        post(json!({
+            "settings": {"attributes": {"team": "string", "price": "float"}},
+            "upserts": [
+                {"id": "a1", "text": "blue shirt", "team": "t1", "price": 1.0, "readers": ["grp:allow"]},
+                {"id": "a2", "text": "red hat", "team": "t1", "price": 2.0, "readers": ["usr:nobody"]},
+                {"id": "a3", "text": "green coat", "team": "t1", "price": 3.0, "readers": ["grp:allow"]},
+                {"id": "b1", "text": "black scarf", "team": "t2", "price": 4.0, "readers": ["grp:allow"]},
+            ],
+        }))
+        .await,
+        (200, json!({"upserted": 4, "deleted": 0}))
+    );
+    // Another namespace holds a document of the same team.
+    let other = "shop-other";
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                other,
+                &json!({"settings": {"attributes": {"team": "string"}},
+                    "upserts": [{"id": "a2", "text": "red hat", "team": "t1", "readers": ["grp:allow"]}]})
+            )
+            .await
+            .0,
+        200
+    );
+
+    // The team is replaced: its documents go, whoever may read them, and the
+    // rows of the request are written after the deletes, a1 as it says.
+    assert_eq!(
+        post(json!({
+            "delete_where": team("t1"),
+            "upserts": [
+                {"id": "a1", "text": "white sock", "team": "t1", "price": 1.5, "readers": ["grp:allow"]},
+                {"id": "a4", "text": "grey vest", "team": "t1", "price": 6.0, "readers": ["grp:allow"]},
+            ],
+        }))
+        .await,
+        (200, json!({"upserted": 2, "deleted": 0}))
+    );
+    assert_eq!(
+        stored(&config, "root_id IN ('a2','a3')").await.num_rows(),
+        0
+    );
+    assert_eq!(
+        stored(
+            &config,
+            "root_id = 'a1' AND searchable_text = 'white sock' AND price = 1.5"
+        )
+        .await
+        .num_rows(),
+        1
+    );
+    assert_eq!(
+        stored(&config, "root_id IN ('a4','b1')").await.num_rows(),
+        2
+    );
+    let own = root.join(format!("{other}.toml"));
+    std::fs::write(
+        &own,
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .replace("name = \"dense-fixture\"", &format!("name = \"{other}\"")),
+    )
+    .unwrap();
+    assert_eq!(
+        stored(&own, "root_id = 'a2'").await.num_rows(),
+        1,
+        "another namespace is not matched"
+    );
+
+    // A patch by filter writes the attributes and keeps the rest as stored,
+    // the vector included, and embeds nothing.
+    let vector_before = stored(&config, "root_id = 'b1'").await["vector"].to_data();
+    let calls = root.embedding.calls();
+    assert_eq!(
+        post(json!({"patch_where": {"filter": team("t2"), "set": {"price": 9.5, "readers": ["usr:nobody"]}}}))
+            .await,
+        (200, json!({"upserted": 0, "deleted": 0}))
+    );
+    assert_eq!(root.embedding.calls(), calls);
+    let b1 = stored(
+        &config,
+        "root_id = 'b1' AND price = 9.5 AND searchable_text = 'black scarf'",
+    )
+    .await;
+    assert_eq!(b1.num_rows(), 1);
+    assert_eq!(b1["vector"].to_data(), vector_before);
+    assert!(
+        !hits(&config, "black scarf").contains(&"b1".to_owned()),
+        "its readers changed"
+    );
+    assert_eq!(
+        stored(&config, "root_id = 'a1' AND price = 1.5")
+            .await
+            .num_rows(),
+        1,
+        "a document outside the filter stayed"
+    );
+
+    // Deletes by filter come first: a patch by id of a document they delete
+    // finds it deleted. A patch by id over a patch by filter wins.
+    assert_eq!(
+        post(json!({
+            "delete_where": team("t1"),
+            "patch_where": {"filter": team("t2"), "set": {"price": 7.0}},
+            "patches": [{"id": "a1", "price": 5.0}, {"id": "b1", "price": 8.0}],
+        }))
+        .await,
+        (
+            200,
+            json!({"upserted": 0, "deleted": 0, "patched": 1, "skipped": 1})
+        )
+    );
+    assert_eq!(
+        stored(&config, "root_id IN ('a1','a4')").await.num_rows(),
+        0
+    );
+    assert_eq!(
+        stored(&config, "root_id = 'b1' AND price = 8.0")
+            .await
+            .num_rows(),
+        1
+    );
+
+    // A change of the request whose condition is not met writes nothing and
+    // does not hold the filters back: the filter patch writes its readers, and
+    // the filter delete deletes a document that a conditional upsert would replace.
+    let never = json!({"field": "price", "op": "gt", "value": 100});
+    assert_eq!(
+        post(
+            json!({"upserts": [{"id": "c1", "text": "grey vest", "team": "t3", "price": 1.0,
+            "readers": ["grp:allow"]}]})
+        )
+        .await
+        .0,
+        200
+    );
+    assert!(!hits(&config, "black scarf").contains(&"b1".to_owned()));
+    assert_eq!(
+        post(json!({
+            "patch_where": {"filter": team("t2"), "set": {"readers": ["grp:allow"]}},
+            "patches": [{"id": "b1", "price": 3.0}],
+            "delete_where": team("t3"),
+            "upserts": [{"id": "c1", "text": "grey vest", "team": "t3", "price": 2.0,
+                "readers": ["grp:allow"]}],
+            "conditions": {"b1": never, "c1": never},
+        }))
+        .await
+        .0,
+        200
+    );
+    assert!(
+        hits(&config, "black scarf").contains(&"b1".to_owned()),
+        "its readers changed"
+    );
+    assert_eq!(
+        stored(&config, "root_id = 'b1' AND price = 8.0")
+            .await
+            .num_rows(),
+        1,
+        "the patch of its price was skipped"
+    );
+    assert_eq!(stored(&config, "root_id = 'c1'").await.num_rows(), 0);
+
+    // A key without the `admin` role learns nothing from a filter: it is refused
+    // whatever the filter matches, and nothing changes.
+    for body in [
+        json!({"delete_where": team("t2")}),
+        json!({"patch_where": {"filter": team("t2"), "set": {"price": 1.0}}}),
+    ] {
+        assert_eq!(
+            writer.post(WRITE_KEY, "dense-fixture", &body).await,
+            (403, json!({"error": "forbidden"}))
+        );
+    }
+    assert_eq!(
+        stored(&config, "root_id = 'b1' AND price = 8.0")
+            .await
+            .num_rows(),
+        1
+    );
+
+    // A filter that matches nothing changes nothing.
+    assert_eq!(post(json!({"delete_where": team("none")})).await.0, 200);
+    assert_eq!(stored(&config, "root_id = 'b1'").await.num_rows(), 1);
+
+    // A filter that is not valid for the namespace, a patch of a text, or of
+    // an attribute it does not declare, is refused whole.
+    for (body, code) in [
+        (
+            json!({"delete_where": {"field": "colour", "op": "eq", "value": "red"}}),
+            "filter_invalid",
+        ),
+        (
+            json!({"delete_where": {"field": "team", "op": "eq", "value": 5}}),
+            "filter_invalid",
+        ),
+        (
+            json!({"patch_where": {"filter": team("t2"), "set": {"text": "red hat"}}}),
+            "text_not_patchable",
+        ),
+        (
+            json!({"patch_where": {"filter": team("t2"), "set": {"colour": "red"}}}),
+            "attribute_undeclared",
+        ),
+    ] {
+        assert_eq!(post(body).await, (400, json!({"error": code})));
+    }
+    assert_eq!(post(json!({"delete_where": {"and": []}})).await.0, 400);
+    assert_eq!(stored(&config, "root_id = 'b1'").await.num_rows(), 1);
+
+    // A namespace that holds nothing answers at once.
+    let empty = tokio::time::timeout(
+        Duration::from_secs(60),
+        writer.post(
+            ADMIN_KEY,
+            "shop-empty",
+            &json!({"settings": {"attributes": {"team": "string"}}, "delete_where": team("t1")}),
+        ),
+    )
+    .await
+    .expect("answered without waiting for a publication");
+    assert_eq!(empty, (200, json!({"upserted": 0, "deleted": 0})));
+}
+
+/// A filter that matches more documents than `MAX_FILTER_WRITE_DOCUMENTS`
+/// fails its request and changes nothing; one that matches exactly that many
+/// is applied.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_refuses_a_filter_that_matches_too_many_documents_on_storage() {
+    use fyrr_core::limits::write::MAX_FILTER_WRITE_DOCUMENTS as MAX;
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let writer = Writer::start(&config, &root, address).await;
+    let namespace = "dense-fixture";
+    // Vectors of 16 numbers keep the thousands of rows small. The namespace is
+    // created by a small request; the many documents come after its indexes.
+    let row = |n: usize, team: &str| {
+        json!({"id": format!("d{n}"), "text": format!("text {n}"), "team": team,
+            "vector": vector(0, 16)})
+    };
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"settings": {"embedding": {"dimensions": 16}, "attributes": {"team": "string"}},
+                    "upserts": [row(0, "keep")]})
+            )
+            .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    let mut rows: Vec<_> = (1..=MAX).map(|n| row(n, "big")).collect();
+    rows.push(row(MAX + 1, "extra"));
+    assert_eq!(
+        writer
+            .post(WRITE_KEY, namespace, &json!({"upserts": rows}))
+            .await,
+        (200, json!({"upserted": MAX + 1, "deleted": 0}))
+    );
+    let both = json!({"field": "team", "op": "in", "value": ["big", "extra"]});
+    assert_eq!(
+        writer
+            .post(ADMIN_KEY, namespace, &json!({"delete_where": both}))
+            .await,
+        (409, json!({"error": "rejected"}))
+    );
+    assert_eq!(
+        writer
+            .post(
+                ADMIN_KEY,
+                namespace,
+                &json!({"patch_where": {"filter": both, "set": {"team": "moved"}}})
+            )
+            .await,
+        (409, json!({"error": "rejected"}))
+    );
+    assert_eq!(
+        stored(&config, "team IN ('big', 'extra')").await.num_rows(),
+        MAX + 1,
+        "nothing changed"
+    );
+    let big = json!({"field": "team", "op": "eq", "value": "big"});
+    assert_eq!(
+        writer
+            .post(ADMIN_KEY, namespace, &json!({"delete_where": big}))
+            .await,
+        (200, json!({"upserted": 0, "deleted": 0}))
+    );
+    assert_eq!(
+        stored(&config, "team IN ('keep', 'extra')")
+            .await
+            .num_rows(),
+        2
+    );
+    assert_eq!(stored(&config, "team = 'big'").await.num_rows(), 0);
 }
 
 /// A change with a condition applies only to a stored document that meets it,
@@ -1035,6 +1361,18 @@ async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_sto
             .await,
         (400, json!({"error": "settings_invalid"}))
     );
+    // A dimension the dense index cannot be built over is refused before the
+    // namespace exists; the 16-dimension creation below is accepted.
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"settings": {"embedding": {"dimensions": 4}}, "upserts": [{"id": "a", "text": "alpha", "vector": vector(0, 4)}]})
+            )
+            .await,
+        (400, json!({"error": "settings_invalid"}))
+    );
     let fingerprint = fyrr_core::envelope::EmbeddingSettings {
         api_style: fyrr_core::envelope::EmbeddingApiStyle::OpenaiCompatible,
         prefix: String::new(),
@@ -1085,6 +1423,40 @@ async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_sto
             (400, json!({"error": code}))
         );
     }
+}
+
+/// A first publication of more rows than one index partition holds, all with the
+/// same vector, publishes: index training does not fail on identical vectors.
+#[tokio::test]
+#[ignore = "real writer executable on local storage; scripts/ci"]
+async fn identity_write_api_ends_a_first_publication_of_identical_vectors_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let writer = Writer::start(&config, &root, address).await;
+    let rows: Vec<Value> = (0..600)
+        .map(
+            |n| json!({"id": format!("r{n}"), "text": format!("row {n}"), "vector": vec![0.5; 16]}),
+        )
+        .collect();
+    let answer = tokio::time::timeout(
+        Duration::from_secs(180),
+        writer.post(
+            WRITE_KEY,
+            "dense-fixture",
+            &json!({"settings": {"embedding": {"dimensions": 16}}, "upserts": rows}),
+        ),
+    )
+    .await;
+    let stderr = std::fs::read_to_string(root.join("service.stderr")).unwrap();
+    assert!(
+        answer.is_ok(),
+        "the publication did not end in 180s; writer stderr: {stderr}"
+    );
+    assert_eq!(
+        answer.unwrap(),
+        (200, json!({"upserted": 600, "deleted": 0}))
+    );
 }
 
 #[tokio::test]

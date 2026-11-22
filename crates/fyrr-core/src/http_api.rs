@@ -121,6 +121,23 @@ pub struct WriteRequest {
     /// that id must meet for the change to apply. Needs the `admin` role.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub conditions: BTreeMap<String, Filter>,
+    /// Deletes every document that matches the filter, before the rest of the
+    /// request is applied. Needs the `admin` role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_where: Option<Filter>,
+    /// Patches every document that matches a filter, after `delete_where` and
+    /// before the rest of the request. Needs the `admin` role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch_where: Option<PatchWhere>,
+}
+
+/// The `patch_where` member of a write.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PatchWhere {
+    pub filter: Filter,
+    /// A patch row without its `id`: attributes and `readers`, never a text.
+    pub set: Map<String, Value>,
 }
 
 /// What a write answers: the changes that applied.
