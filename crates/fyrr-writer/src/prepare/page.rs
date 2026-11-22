@@ -30,7 +30,7 @@ pub(super) async fn content_page(
     let envelope_path = root.clone().join("envelopes").join(format!("{id}.json"));
     lease.state().await?;
     for change in &changes {
-        let ContentChange::Write(change) = change else {
+        let ContentChange::Write(change, _) = change else {
             continue;
         };
         if source.provider == "local-files"
@@ -48,7 +48,7 @@ pub(super) async fn content_page(
     let embedding_texts = changes
         .iter()
         .filter_map(|change| match change {
-            ContentChange::Write(change) => Some(change),
+            ContentChange::Write(change, _) => Some(change),
             ContentChange::Present(_) | ContentChange::Where(_) => None,
         })
         .filter(|change| {
@@ -61,7 +61,7 @@ pub(super) async fn content_page(
     let mut embedded = cache.embed(&embedding_texts).await?.into_iter();
     let mut maps = std::collections::BTreeMap::new();
     for change in &changes {
-        if let ContentChange::Write(change) = change
+        if let ContentChange::Write(change, _) = change
             && quarantine_reason(config, source, change).is_none()
             && let Some(map) = change
                 .metadata
@@ -113,8 +113,16 @@ pub(super) async fn content_page(
     }
     let fragments = rows.columns.fragments(&page).await?;
     let quarantined_count = rows.quarantined.len() as u64;
+    // Only a committer that knows conditions and filter writes may read an
+    // envelope with one.
+    let conditional =
+        rows.filter_writes.is_some() || rows.documents.iter().any(|d| d.condition.is_some());
     let envelope = PreparedEnvelope {
-        schema_version: ENVELOPE_CONTRACT_VERSION,
+        schema_version: if conditional {
+            fyrr_core::envelope::CONDITIONAL_ENVELOPE_CONTRACT_VERSION
+        } else {
+            ENVELOPE_CONTRACT_VERSION
+        },
         envelope_id: id,
         namespace: config.namespace.name.clone(),
         source_id: source.id.clone(),
@@ -211,8 +219,8 @@ impl PageRows {
     ) -> Result<()> {
         let config = page.config;
         let source = page.source;
-        let change = match change {
-            ContentChange::Write(change) => *change,
+        let (change, condition) = match change {
+            ContentChange::Write(change, condition) => (*change, condition),
             ContentChange::Present(document) => {
                 self.documents.push(document);
                 return Ok(());
@@ -245,6 +253,7 @@ impl PageRows {
             permission_revision: change.permission_revision,
             records: count,
             patch: None,
+            condition,
         });
         Ok(())
     }

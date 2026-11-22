@@ -44,3 +44,4 @@ mod telemetry;
 mod tools;
 
 pub use error::{IndexVerificationError, ReaderError};
+pub use tools::filter_sql;

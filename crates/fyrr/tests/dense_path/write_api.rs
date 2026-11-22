@@ -13,7 +13,7 @@ fn secret(n: usize) -> String {
 }
 pub(super) const WRITE_KEY: usize = 41;
 const READ_KEY: usize = 42;
-/// May write, and write by filter.
+/// May write and, with `admin`, set conditions or write by filter.
 const ADMIN_KEY: usize = 44;
 /// May write the namespaces whose names start with `shop-`.
 const SCOPED_KEY: usize = 43;
@@ -808,6 +808,291 @@ async fn identity_write_api_refuses_a_filter_that_matches_too_many_documents_on_
         2
     );
     assert_eq!(stored(&config, "team = 'big'").await.num_rows(), 0);
+}
+
+/// A change with a condition applies only to a stored document that meets it,
+/// and is skipped and counted otherwise; the other changes of its request
+/// apply. A document that is not there meets the condition of an upsert only.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_applies_a_change_only_when_its_condition_holds_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    embed(&root, &["blue shirt", "red hat", "green coat"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let post = async |body: Value| writer.post(ADMIN_KEY, "dense-fixture", &body).await;
+    let newer = json!({"field": "modified", "op": "lt", "value": {"row": "modified"}});
+    assert_eq!(
+        post(json!({
+            "settings": {"attributes": {"version": "int", "owner": "string", "modified": "datetime"}},
+            "upserts": [
+                {"id": "a1", "text": "blue shirt", "version": 1, "modified": "2026-01-01T00:00:00Z"},
+                {"id": "a2", "text": "red hat", "version": 5},
+            ],
+        }))
+        .await,
+        (200, json!({"upserted": 2, "deleted": 0}))
+    );
+
+    // An upsert that writes only if the stored `modified` is older than its own.
+    let upsert = |version: u32, modified: &str| {
+        json!({
+            "upserts": [{"id": "a1", "text": "blue shirt", "version": version, "modified": modified}],
+            "conditions": {"a1": newer},
+        })
+    };
+    assert_eq!(
+        post(upsert(2, "2026-02-01T00:00:00Z")).await,
+        (200, json!({"upserted": 1, "deleted": 0, "skipped": 0}))
+    );
+    assert_eq!(
+        post(upsert(3, "2026-01-15T00:00:00Z")).await,
+        (200, json!({"upserted": 0, "deleted": 0, "skipped": 1})),
+        "an older write is skipped and counted"
+    );
+    assert_eq!(
+        stored(&config, "root_id = 'a1' AND version = 2")
+            .await
+            .num_rows(),
+        1
+    );
+
+    // No stored document: an upsert applies, a patch or a delete is skipped.
+    assert_eq!(
+        post(json!({
+            "upserts": [{"id": "a3", "text": "green coat", "version": 1}],
+            "patches": [{"id": "zz", "version": 9}],
+            "deletes": ["yy"],
+            "conditions": {
+                "a3": {"field": "version", "op": "lt", "value": {"row": "version"}},
+                "zz": {"field": "version", "op": "eq", "value": 1},
+                "yy": {"field": "version", "op": "eq", "value": 1},
+            },
+        }))
+        .await,
+        (
+            200,
+            json!({"upserted": 1, "deleted": 0, "patched": 0, "skipped": 2})
+        )
+    );
+    assert_eq!(stored(&config, "root_id = 'a3'").await.num_rows(), 1);
+    assert_eq!(
+        stored(&config, "root_id IN ('zz', 'yy')").await.num_rows(),
+        0
+    );
+
+    // A patch that sets an owner only while there is none; the request's other
+    // changes apply whatever happens to it.
+    let claim = |owner: &str| {
+        json!({
+            "patches": [{"id": "a2", "owner": owner}],
+            "upserts": [{"id": "a1", "text": "blue shirt", "version": 4, "modified": "2026-01-01T00:00:00Z"}],
+            "conditions": {
+                "a2": {"field": "owner", "op": "eq", "value": null},
+                "a1": newer,
+            },
+        })
+    };
+    assert_eq!(
+        post(claim("ann")).await,
+        (
+            200,
+            json!({"upserted": 0, "deleted": 0, "patched": 1, "skipped": 1})
+        )
+    );
+    assert_eq!(
+        post(claim("bob")).await,
+        (
+            200,
+            json!({"upserted": 0, "deleted": 0, "patched": 0, "skipped": 2})
+        )
+    );
+    assert_eq!(
+        stored(&config, "root_id = 'a2' AND owner = 'ann' AND version = 5")
+            .await
+            .num_rows(),
+        1
+    );
+
+    // A delete that waits for the version it saw.
+    let delete = |version: u32| {
+        json!({
+            "deletes": ["a2"],
+            "conditions": {"a2": {"field": "version", "op": "eq", "value": version}},
+        })
+    };
+    assert_eq!(
+        post(delete(4)).await,
+        (200, json!({"upserted": 0, "deleted": 0, "skipped": 1}))
+    );
+    assert_eq!(stored(&config, "root_id = 'a2'").await.num_rows(), 1);
+    assert_eq!(
+        post(delete(5)).await,
+        (200, json!({"upserted": 0, "deleted": 1, "skipped": 0}))
+    );
+    assert_eq!(stored(&config, "root_id = 'a2'").await.num_rows(), 0);
+    assert_eq!(
+        post(delete(5)).await,
+        (200, json!({"upserted": 0, "deleted": 0, "skipped": 1})),
+        "a deleted document is no document"
+    );
+
+    // A condition is checked as a filter is, and names a change of its request.
+    for (body, code) in [
+        (
+            json!({"patches": [{"id": "a1", "version": 1}], "conditions": {"b9": newer}}),
+            "condition_invalid",
+        ),
+        (
+            json!({"patches": [{"id": "a1", "version": 1}], "conditions": {"a1": {"field": "colour", "op": "eq", "value": "red"}}}),
+            "condition_invalid",
+        ),
+        (
+            json!({"patches": [{"id": "a1", "version": 1}], "conditions": {"a1": {"field": "version", "op": "eq", "value": "one"}}}),
+            "condition_invalid",
+        ),
+        (
+            json!({"patches": [{"id": "a1", "version": 1}], "conditions": {"a1": {"field": "version", "op": "eq", "value": {"row": "colour"}}}}),
+            "condition_invalid",
+        ),
+        (
+            json!({"deletes": ["a1"], "conditions": {"a1": {"field": "version", "op": "eq", "value": {"row": "version"}}}}),
+            "condition_invalid",
+        ),
+        (
+            json!({"patches": [{"id": "a1", "version": 1}], "conditions": {"a1": {"all": []}}}),
+            "condition_invalid",
+        ),
+    ] {
+        assert_eq!(post(body).await, (400, json!({"error": code})));
+    }
+
+    // A condition tells whether a document holds a value, so a key that only
+    // writes is refused: it may not read it.
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"deletes": ["a1"], "conditions": {"a1": {"field": "version", "op": "eq", "value": 1}}})
+            )
+            .await,
+        (403, json!({"error": "forbidden"}))
+    );
+
+    // Conditional deletes alone on a namespace that holds nothing are answered
+    // at once, skipped.
+    let empty = tokio::time::timeout(
+        Duration::from_secs(60),
+        writer.post(
+            ADMIN_KEY,
+            "shop-empty",
+            &json!({
+                "settings": {"attributes": {"version": "int"}},
+                "deletes": ["x"],
+                "conditions": {"x": {"field": "version", "op": "eq", "value": 1}},
+            }),
+        ),
+    )
+    .await
+    .expect("answered without waiting for a publication");
+    assert_eq!(
+        empty,
+        (200, json!({"upserted": 0, "deleted": 0, "skipped": 1}))
+    );
+}
+
+/// Requests that wait unpublished, all prepared against the same stored
+/// document, cannot all apply a change that only one of them may: the committer
+/// tests each condition against what the requests before it left.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_lets_one_of_many_unpublished_requests_win_its_condition_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    embed(&root, &["blue shirt"]);
+    let writer = Writer::start(&config, &root, address).await;
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({
+                    "settings": {"attributes": {"owner": "string"}},
+                    "upserts": [{"id": "d1", "text": "blue shirt"}],
+                })
+            )
+            .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    let loaded = fyrr_core::config::load(&config).unwrap();
+    // The committer finds the lease taken and publishes nothing until it is
+    // released, so the requests below are all prepared against the same document.
+    let lease = loop {
+        match fyrr_writer::lease::LeaseGuard::acquire(&loaded.config).await {
+            Ok(lease) => break lease,
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    };
+    let owners = ["ann", "bob", "cy"];
+    let release = async {
+        loop {
+            let head = fyrr_reader::storage::optional_head(&loaded.config)
+                .await
+                .unwrap()
+                .unwrap();
+            if fyrr_writer::commit::pending(&loaded.config, &head)
+                .await
+                .unwrap()
+                .len()
+                == owners.len()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // All three are durable and none is published.
+        lease.release().await.unwrap();
+    };
+    let (replies, ()) = tokio::join!(
+        futures::future::join_all(owners.iter().map(|owner| {
+            let request = json!({
+                "patches": [{"id": "d1", "owner": owner}],
+                "conditions": {"d1": {"field": "owner", "op": "eq", "value": null}},
+            });
+            let writer = &writer;
+            async move { writer.post(ADMIN_KEY, "dense-fixture", &request).await }
+        })),
+        release,
+    );
+    let applied: Vec<_> = owners
+        .iter()
+        .zip(&replies)
+        .filter(|(_, reply)| {
+            assert_eq!(reply.0, 200, "{replies:?}");
+            reply.1["patched"] == 1
+        })
+        .map(|(owner, _)| *owner)
+        .collect();
+    assert_eq!(applied.len(), 1, "exactly one applies: {replies:?}");
+    for reply in &replies {
+        let patched = reply.1["patched"].as_u64().unwrap();
+        assert_eq!(
+            reply.1,
+            json!({"upserted": 0, "deleted": 0, "patched": patched, "skipped": 1 - patched})
+        );
+    }
+    assert_eq!(
+        stored(
+            &config,
+            &format!("root_id = 'd1' AND owner = '{}'", applied[0])
+        )
+        .await
+        .num_rows(),
+        1
+    );
 }
 
 /// A patch that changes the text brings the vector of the new text, and a

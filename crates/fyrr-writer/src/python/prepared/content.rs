@@ -148,6 +148,7 @@ impl Preparation<'_> {
                     permission_revision: change.permission_revision.clone(),
                     records: 0,
                     patch: None,
+                    condition: None,
                 }));
             }
             !unchanged
@@ -197,7 +198,7 @@ impl Preparation<'_> {
         prepared_changes.extend(
             changes
                 .into_iter()
-                .map(|change| crate::prepare::ContentChange::Write(Box::new(change))),
+                .map(|change| crate::prepare::ContentChange::Write(Box::new(change), None)),
         );
         stats.quarantined += rt.block_on(crate::prepare::content(
             config,

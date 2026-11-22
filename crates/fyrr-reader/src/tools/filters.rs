@@ -128,6 +128,12 @@ fn literal(kind: AttributeType, value: &Value) -> Result<String> {
     }
 }
 
+/// The SQL of a filter tree as a stored document is tested against it, or
+/// `None` when it does not hold for the schema: the check of a write condition.
+pub fn filter_sql(filter: &Filter, attributes: &AttributeSchema) -> Option<String> {
+    PreparedReader::filter_sql(filter, attributes).ok()
+}
+
 impl PreparedReader {
     pub(crate) fn metadata(&self, telemetry: Telemetry) -> ResponseMetadata {
         ResponseMetadata {
@@ -209,9 +215,8 @@ impl PreparedReader {
     /// attribute of the namespace and holds values of that field's type, or the
     /// request is `invalid_argument`. A comparison with a missing (null) value
     /// is never true, `ne` and `not_in` included, and `not` keeps it that way:
-    /// SQL three-valued logic, which Lance's scalar indexes follow. The write
-    /// API compiles its filters with this function as well.
-    pub fn filter_sql(filter: &Filter, attributes: &AttributeSchema) -> Result<String> {
+    /// SQL three-valued logic, which Lance's scalar indexes follow.
+    pub(crate) fn filter_sql(filter: &Filter, attributes: &AttributeSchema) -> Result<String> {
         let joined = |nodes: &[Filter], keyword: &str| -> Result<String> {
             let parts = nodes
                 .iter()

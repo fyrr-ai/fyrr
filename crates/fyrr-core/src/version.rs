@@ -94,6 +94,9 @@ pub trait Contract: Serialize + DeserializeOwned {
     const NAME: &'static str;
     /// The version this build writes. Its major is the only major it reads.
     const VERSION: SchemaVersion;
+    /// Other majors this build reads besides `VERSION`'s: a document that an
+    /// older build must refuse, written only where it needs them.
+    const ALSO_READS: &'static [u16] = &[];
 
     /// Semantic checks beyond the JSON shape. Messages must not contain
     /// document values (identities, tokens, text).
@@ -165,7 +168,9 @@ pub fn parse_contract<T: Contract>(bytes: &[u8]) -> Result<T, ContractError> {
             .map_err(|_| ContractError::MalformedVersion { contract: T::NAME })?,
         Some(_) => return Err(ContractError::MalformedVersion { contract: T::NAME }),
     };
-    check_compatible(T::NAME, T::VERSION, version)?;
+    if !T::ALSO_READS.contains(&version.major) {
+        check_compatible(T::NAME, T::VERSION, version)?;
+    }
     let document: T = serde_json::from_value(value).map_err(|error| malformed::<T>(&error))?;
     document
         .validate()

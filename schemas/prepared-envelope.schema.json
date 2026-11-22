@@ -372,6 +372,17 @@
             }
           ],
           "description": "What a `Patch` writes; present for that intent only."
+        },
+        "condition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Filter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A condition the stored document must meet when the committer applies\nthis intent, else it is skipped and writes nothing. A document that is\nnot there skips a `Patch` or a `Delete` and meets it for a `Replace`."
         }
       },
       "required": [
@@ -442,6 +453,94 @@
         "attributes"
       ],
       "description": "The values a patch writes into the stored records of a document. Every\ncolumn it does not name stays as stored, the vector unless the patch brings\none with the new text."
+    },
+    "Filter": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "and": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Filter"
+              }
+            }
+          },
+          "required": [
+            "and"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "or": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Filter"
+              }
+            }
+          },
+          "required": [
+            "or"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "not": {
+              "$ref": "#/$defs/Filter"
+            }
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "$ref": "#/$defs/Comparison"
+        }
+      ],
+      "description": "A filter tree: `and` and `or` of one or more filters, `not` of one, or a\ncomparison of a field with a value. At most [`MAX_FILTER_NODES`] nodes in\n[`MAX_FILTER_DEPTH`] levels. It is read from the request in one pass that\nstops at the first bound it exceeds."
+    },
+    "Comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/$defs/Op"
+        },
+        "value": true
+      },
+      "required": [
+        "field",
+        "op",
+        "value"
+      ],
+      "description": "A field compared with a value; `in` and `not_in` take an array of values.\nThe reader checks the field and the value against the namespace's schema."
+    },
+    "Op": {
+      "type": "string",
+      "enum": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "lt",
+        "lte",
+        "gt",
+        "gte",
+        "contains",
+        "not_contains",
+        "contains_any",
+        "contains_all",
+        "contains_none"
+      ],
+      "description": "How a field is compared with a value. The last five test the elements of an\narray attribute and apply to nothing else."
     },
     "PreparedFragment": {
       "type": "object",
@@ -551,94 +650,6 @@
         "revision_order"
       ],
       "description": "What an envelope does to the documents that match a filter. Deletes apply\nfirst, then patches, then the documents of the envelope itself, which win\nover a filter for the documents they name, except that a patch by id of a\ndocument the filter deletes finds it deleted."
-    },
-    "Filter": {
-      "anyOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "and": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Filter"
-              }
-            }
-          },
-          "required": [
-            "and"
-          ]
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "or": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Filter"
-              }
-            }
-          },
-          "required": [
-            "or"
-          ]
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "not": {
-              "$ref": "#/$defs/Filter"
-            }
-          },
-          "required": [
-            "not"
-          ]
-        },
-        {
-          "$ref": "#/$defs/Comparison"
-        }
-      ],
-      "description": "A filter tree: `and` and `or` of one or more filters, `not` of one, or a\ncomparison of a field with a value. At most [`MAX_FILTER_NODES`] nodes in\n[`MAX_FILTER_DEPTH`] levels. It is read from the request in one pass that\nstops at the first bound it exceeds."
-    },
-    "Comparison": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "field": {
-          "type": "string"
-        },
-        "op": {
-          "$ref": "#/$defs/Op"
-        },
-        "value": true
-      },
-      "required": [
-        "field",
-        "op",
-        "value"
-      ],
-      "description": "A field compared with a value; `in` and `not_in` take an array of values.\nThe reader checks the field and the value against the namespace's schema."
-    },
-    "Op": {
-      "type": "string",
-      "enum": [
-        "eq",
-        "ne",
-        "in",
-        "not_in",
-        "lt",
-        "lte",
-        "gt",
-        "gte",
-        "contains",
-        "not_contains",
-        "contains_any",
-        "contains_all",
-        "contains_none"
-      ],
-      "description": "How a field is compared with a value. The last five test the elements of an\narray attribute and apply to nothing else."
     },
     "FilterPatch": {
       "type": "object",

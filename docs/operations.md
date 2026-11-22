@@ -110,7 +110,7 @@ and cursors; each step is idempotent, so an interrupted purge is run again.
 ## Upgrades
 
 The current configuration schema is `6.0`, the MCP contract is `4.0`, the prepared-envelope and
-rejection contracts are `5.0`, and content manifests and serving heads are
+rejection contracts are `5.0` (an envelope with a write condition is `6.0`, which an older committer refuses and this build reads), and content manifests and serving heads are
 `4.0`, and policy artifacts are `3.0`. Embedding settings are required even
 for the default BGE-M3 model. Republish older namespaces before using this
 build.

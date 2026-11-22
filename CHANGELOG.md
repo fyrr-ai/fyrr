@@ -40,6 +40,15 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   write ignores row permissions and needs an API key with the `admin` role
   besides `write`. See
   [HTTP write API](docs/http-api.md#write-documents).
+- The write API takes `conditions`: a filter by the `id` of an upsert, a patch
+  or a delete that the stored document must meet when the committer applies
+  the change, which may compare it with the change's own row. A change whose
+  condition is not met writes nothing and is counted in `skipped`; a document
+  that is not there meets the condition of an upsert only. Setting conditions
+  needs an API key with the `admin` role besides `write`. An envelope with a
+  condition has contract version 6.0, which a committer that does not know
+  conditions refuses; other envelopes stay 5.0 and this build reads both. See
+  [Conditions](docs/http-api.md#conditions).
 - A row of the write API may carry its own `vector`, and so may a section of a
   connector document (the optional `vector` column of the document-change
   contract, version 1.4). Such a row is stored with that vector and its text is

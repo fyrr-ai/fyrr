@@ -14,6 +14,11 @@ use crate::version::{Contract, SchemaVersion};
 
 /// The envelope contract version written by this build.
 pub const ENVELOPE_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
+/// The version of an envelope with a document condition or a write by filter.
+/// A committer that does not know them would apply the change without the
+/// condition, or ignore the filter, so it must refuse the envelope: it reads
+/// only major 5, and this build reads both.
+pub const CONDITIONAL_ENVELOPE_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(6, 0);
 
 /// A prepared envelope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -123,6 +128,11 @@ pub struct EnvelopeDocument {
     /// What a `Patch` writes; present for that intent only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<Box<DocumentPatch>>,
+    /// A condition the stored document must meet when the committer applies
+    /// this intent, else it is skipped and writes nothing. A document that is
+    /// not there skips a `Patch` or a `Delete` and meets it for a `Replace`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<crate::mcp::Filter>,
 }
 
 /// The values a patch writes into the stored records of a document. Every
@@ -330,6 +340,7 @@ pub struct ReconcilePayload {
 impl Contract for PreparedEnvelope {
     const NAME: &'static str = "prepared-envelope";
     const VERSION: SchemaVersion = ENVELOPE_CONTRACT_VERSION;
+    const ALSO_READS: &'static [u16] = &[CONDITIONAL_ENVELOPE_CONTRACT_VERSION.major];
 
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
@@ -372,8 +383,10 @@ impl Contract for PreparedEnvelope {
                         &writes.source_revision,
                         MAX_REVISION_BYTES,
                     )?;
-                    if self.source_id != crate::connector::API_SOURCE_ID {
-                        return Err("only the write API writes by filter".into());
+                    if self.schema_version.major != CONDITIONAL_ENVELOPE_CONTRACT_VERSION.major {
+                        return Err(
+                            "a write by filter needs the conditional envelope version".into()
+                        );
                     }
                     if writes
                         .patch
@@ -397,6 +410,11 @@ impl Contract for PreparedEnvelope {
                             )?;
                         }
                         (DocumentIntent::Delete, None) => {}
+                    }
+                    if document.condition.is_some()
+                        && self.schema_version.major != CONDITIONAL_ENVELOPE_CONTRACT_VERSION.major
+                    {
+                        return Err("a condition needs the conditional envelope version".into());
                     }
                     if document.intent != DocumentIntent::Replace && document.records != 0 {
                         return Err("only a replace writes records".into());

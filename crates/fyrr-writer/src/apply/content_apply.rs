@@ -72,6 +72,31 @@ pub async fn content(
         {
             continue;
         }
+        // A condition is tested against the document as the envelopes before this
+        // one left it. A document that is not there meets it for a replacement
+        // only; a delete of it is skipped, as a patch is.
+        if let Some(condition) = &document.condition {
+            let live = old.is_some_and(|old| !old.deleted && !old.content_purged);
+            let met = if live {
+                let Some(sql) = fyrr_reader::filter_sql(condition, &config.namespace.attributes)
+                else {
+                    reject(config, envelope, "document_invalid").await?;
+                    return Ok(refused);
+                };
+                dataset
+                    .count_rows(Some(format!(
+                        "{} AND ({sql})",
+                        rows_filter(&envelope.source_id, std::slice::from_ref(&document.root_id))
+                    )))
+                    .await?
+                    > 0
+            } else {
+                document.intent == DocumentIntent::Replace
+            };
+            if !met {
+                continue;
+            }
+        }
         if let Some(old) = old {
             if document.intent == DocumentIntent::Replace
                 && old.deleted
@@ -300,6 +325,7 @@ async fn with_filter_writes<'a>(
         permission_revision: None,
         records: 0,
         patch,
+        condition: None,
     };
     let mut deleted = BTreeSet::new();
     if let Some(filter) = &writes.delete {
@@ -316,6 +342,7 @@ async fn with_filter_writes<'a>(
                 Some(&at) if documents[at].intent == DocumentIntent::Patch => {
                     documents[at].intent = DocumentIntent::Delete;
                     documents[at].patch = None;
+                    documents[at].condition = None;
                 }
                 Some(_) => {}
             }
@@ -360,9 +387,7 @@ async fn matching(
     filter: &fyrr_core::mcp::Filter,
 ) -> Result<std::result::Result<BTreeSet<String>, &'static str>> {
     use fyrr_core::limits::MAX_FILTER_WRITE_DOCUMENTS;
-    let Ok(filter) =
-        fyrr_reader::search::PreparedReader::filter_sql(filter, &config.namespace.attributes)
-    else {
+    let Some(filter) = fyrr_reader::filter_sql(filter, &config.namespace.attributes) else {
         return Ok(Err("filter_invalid"));
     };
     // One document of the API is one record: a row past the bound is a document past it.
