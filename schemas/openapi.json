@@ -1769,6 +1769,18 @@
               "string",
               "null"
             ]
+          },
+          "attributes": {
+            "type": "object",
+            "description": "Typed attributes and vector asked for in `fields`."
+          },
+          "lexical_score": {
+            "type": "number",
+            "description": "Raw lexical score, with `fields.scores`; absent when the lexical lane did not find the hit."
+          },
+          "distance": {
+            "type": "number",
+            "description": "Raw vector distance, with `fields.scores`; absent when the dense lane did not find the hit."
           }
         },
         "required": [

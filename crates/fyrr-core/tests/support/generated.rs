@@ -164,6 +164,32 @@ fn openapi() -> Value {
     let error = answers.subschema_for::<ErrorBody>();
     let mut schemas = requests.take_definitions(false);
     schemas.extend(answers.take_definitions(false));
+    // The query route also answers what `fields` asks for. The MCP schema of a
+    // hit leaves these out (`schemars(skip)`) to keep `tools/list` small.
+    let hit = schemas
+        .get_mut("SearchHit")
+        .and_then(|hit| hit.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+        .expect("SearchHit has properties");
+    for (name, schema) in [
+        (
+            "attributes",
+            json!({"type": "object", "description": "Typed attributes and vector asked for in `fields`."}),
+        ),
+        (
+            "lexical_score",
+            json!({"type": "number", "description": "Raw lexical score, with `fields.scores`; absent when the lexical lane did not find the hit."}),
+        ),
+        (
+            "distance",
+            json!({"type": "number", "description": "Raw vector distance, with `fields.scores`; absent when the dense lane did not find the hit."}),
+        ),
+    ] {
+        assert!(
+            hit.insert(name.into(), schema).is_none(),
+            "SearchHit already describes {name}: drop it from this list"
+        );
+    }
     json!({
         "openapi": "3.1.0",
         "info": {
