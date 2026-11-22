@@ -72,29 +72,15 @@ pub async fn content(
         {
             continue;
         }
-        // A condition is tested against the document as the envelopes before this
-        // one left it. A document that is not there meets it for a replacement
-        // only; a delete of it is skipped, as a patch is.
         if let Some(condition) = &document.condition {
             let live = old.is_some_and(|old| !old.deleted && !old.content_purged);
-            let met = if live {
-                let Some(sql) = fyrr_reader::filter_sql(condition, &config.namespace.attributes)
-                else {
+            match condition_met(config, dataset, envelope, document, condition, live).await? {
+                None => {
                     reject(config, envelope, "document_invalid").await?;
                     return Ok(refused);
-                };
-                dataset
-                    .count_rows(Some(format!(
-                        "{} AND ({sql})",
-                        rows_filter(&envelope.source_id, std::slice::from_ref(&document.root_id))
-                    )))
-                    .await?
-                    > 0
-            } else {
-                document.intent == DocumentIntent::Replace
-            };
-            if !met {
-                continue;
+                }
+                Some(false) => continue,
+                Some(true) => {}
             }
         }
         if let Some(old) = old {
@@ -294,6 +280,33 @@ pub async fn content(
     Ok((changed, fragments, acl_changed))
 }
 
+/// Whether the stored document meets the condition of its change, tested
+/// against the document as the envelopes before this one left it: a document
+/// that is not there meets it for a replacement only. `None` when the condition
+/// does not hold for the namespace's schema.
+async fn condition_met(
+    config: &Config,
+    dataset: &Dataset,
+    envelope: &PreparedEnvelope,
+    document: &EnvelopeDocument,
+    condition: &fyrr_core::mcp::Filter,
+    live: bool,
+) -> Result<Option<bool>> {
+    if !live {
+        return Ok(Some(document.intent == DocumentIntent::Replace));
+    }
+    let Some(sql) = fyrr_reader::filter_sql(condition, &config.namespace.attributes) else {
+        return Ok(None);
+    };
+    let count = dataset
+        .count_rows(Some(format!(
+            "{} AND ({sql})",
+            rows_filter(&envelope.source_id, std::slice::from_ref(&document.root_id))
+        )))
+        .await?;
+    Ok(Some(count > 0))
+}
+
 /// The documents of `payload` and those its filters match in `dataset`; `None`
 /// once the envelope is refused: a filter that matches more than
 /// `MAX_FILTER_WRITE_DOCUMENTS` documents changes nothing. Only the documents of
@@ -310,7 +323,33 @@ async fn with_filter_writes<'a>(
     let Some(writes) = &payload.filter_writes else {
         return Ok(Some(std::borrow::Cow::Borrowed(&payload.documents)));
     };
-    let mut documents = payload.documents.clone();
+    // A change of the envelope whose condition is not met writes nothing, and
+    // leaves the filters to write on their own. One that is met needs no test
+    // again.
+    let roots: Vec<String> = payload
+        .documents
+        .iter()
+        .filter(|d| d.condition.is_some())
+        .map(|d| d.root_id.clone())
+        .collect();
+    let (previous, _) = content_state(dataset, &envelope.source_id, &roots).await?;
+    let mut documents = Vec::with_capacity(payload.documents.len());
+    for mut document in payload.documents.iter().cloned() {
+        if let Some(condition) = document.condition.take() {
+            let live = previous
+                .get(&document.root_id)
+                .is_some_and(|old| !old.deleted && !old.content_purged);
+            match condition_met(config, dataset, envelope, &document, &condition, live).await? {
+                None => {
+                    reject(config, envelope, "document_invalid").await?;
+                    return Ok(None);
+                }
+                Some(false) => continue,
+                Some(true) => {}
+            }
+        }
+        documents.push(document);
+    }
     let named: BTreeMap<String, usize> = documents
         .iter()
         .enumerate()
@@ -342,7 +381,6 @@ async fn with_filter_writes<'a>(
                 Some(&at) if documents[at].intent == DocumentIntent::Patch => {
                     documents[at].intent = DocumentIntent::Delete;
                     documents[at].patch = None;
-                    documents[at].condition = None;
                 }
                 Some(_) => {}
             }

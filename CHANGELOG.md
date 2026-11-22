@@ -38,7 +38,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   more than 10,000 matches refuse the request and change nothing. Deletes by
   filter apply before the rest of the request, patches by filter next. A filter
   write ignores row permissions and needs an API key with the `admin` role
-  besides `write`. See
+  besides `write`. An envelope with a filter write has contract version 6.0,
+  which enters together with conditions: every committer that reads 6.0 knows
+  both. See
   [HTTP write API](docs/http-api.md#write-documents).
 - The write API takes `conditions`: a filter by the `id` of an upsert, a patch
   or a delete that the stored document must meet when the committer applies

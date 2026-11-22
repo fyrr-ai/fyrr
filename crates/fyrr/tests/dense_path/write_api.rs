@@ -674,6 +674,46 @@ async fn identity_write_api_deletes_and_patches_the_documents_that_match_a_filte
         1
     );
 
+    // A change of the request whose condition is not met writes nothing and
+    // does not hold the filters back: the filter patch writes its readers, and
+    // the filter delete deletes a document that a conditional upsert would replace.
+    let never = json!({"field": "price", "op": "gt", "value": 100});
+    assert_eq!(
+        post(
+            json!({"upserts": [{"id": "c1", "text": "grey vest", "team": "t3", "price": 1.0,
+            "readers": ["grp:allow"]}]})
+        )
+        .await
+        .0,
+        200
+    );
+    assert!(!hits(&config, "black scarf").contains(&"b1".to_owned()));
+    assert_eq!(
+        post(json!({
+            "patch_where": {"filter": team("t2"), "set": {"readers": ["grp:allow"]}},
+            "patches": [{"id": "b1", "price": 3.0}],
+            "delete_where": team("t3"),
+            "upserts": [{"id": "c1", "text": "grey vest", "team": "t3", "price": 2.0,
+                "readers": ["grp:allow"]}],
+            "conditions": {"b1": never, "c1": never},
+        }))
+        .await
+        .0,
+        200
+    );
+    assert!(
+        hits(&config, "black scarf").contains(&"b1".to_owned()),
+        "its readers changed"
+    );
+    assert_eq!(
+        stored(&config, "root_id = 'b1' AND price = 8.0")
+            .await
+            .num_rows(),
+        1,
+        "the patch of its price was skipped"
+    );
+    assert_eq!(stored(&config, "root_id = 'c1'").await.num_rows(), 0);
+
     // A key without the `admin` role learns nothing from a filter: it is refused
     // whatever the filter matches, and nothing changes.
     for body in [
