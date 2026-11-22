@@ -162,10 +162,15 @@ async fn declared_attributes_are_nullable_columns_with_an_index_each_on_storage(
         kinds,
         [
             ("created", "btree"),
+            // The columns of a connector namespace's metadata fields.
+            ("created_at", "btree"),
             ("done", "bitmap"),
+            ("labels", "label_list"),
             ("priority", "btree"),
             ("score", "btree"),
+            ("status", "btree"),
             ("team", "btree"),
+            ("title", "btree"),
         ]
     );
     for (name, kind) in &manifest.attributes {

@@ -126,11 +126,13 @@ const WARM_DELAY_SECS: u64 = 30;
 /// one-document namespace on an empty mirror, answers its first search and
 /// warms the generation: each control artifact, index file and data file
 /// once. They grow with the files of a publication. Raise a budget only on
-/// purpose: every request is paid for on an object store.
-const OPEN_BUDGET: usize = 27;
+/// purpose: every request is paid for on an object store. The five attribute
+/// columns of a connector namespace (title, team, status, labels, created_at)
+/// each have an index: 36 requests, 9 more than without them.
+const OPEN_BUDGET: usize = 36;
 /// The same for switching to a publication that adds one document, warming
-/// of the new generation included.
-const SWITCH_BUDGET: usize = 25;
+/// of the new generation included: 9 more than without the connector columns.
+const SWITCH_BUDGET: usize = 34;
 
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]

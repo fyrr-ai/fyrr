@@ -108,7 +108,10 @@ async fn incremental_connector_fields_are_typed_columns_on_storage() {
     let labels_of = |root: &str| {
         let items = labels.value(row_of(root));
         let items = items.as_any().downcast_ref::<StringArray>().unwrap();
-        items.iter().map(|v| v.unwrap().to_owned()).collect::<Vec<_>>()
+        items
+            .iter()
+            .map(|v| v.unwrap().to_owned())
+            .collect::<Vec<_>>()
     };
     assert_eq!(labels_of("a"), ["bug", "ui"]);
     assert!(labels_of("b").is_empty());
@@ -151,7 +154,10 @@ async fn incremental_connector_fields_are_typed_columns_on_storage() {
     }
     let other = client.call("fetch", json!({"source_id":"incremental","root_id":"b"}));
     let other = &other["structuredContent"]["documents"][0];
-    assert!(other["title"].is_null() && other["created_at"].is_null(), "{other}");
+    assert!(
+        other["title"].is_null() && other["created_at"].is_null(),
+        "{other}"
+    );
     assert_eq!(other["labels"], json!([]));
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -317,11 +317,8 @@ impl PreparedReader {
             let private = (stored.revision, stored.bytes);
             let common: Option<fyrr_core::connector::DocumentMetadata> =
                 serde_json::from_str(raw).map_err(|_| PublicationRowsInvalid)?;
-            let common = self.with_connector_columns(
-                &batch,
-                row,
-                common.ok_or(PublicationRowsInvalid)?,
-            )?;
+            let common =
+                self.with_connector_columns(&batch, row, common.ok_or(PublicationRowsInvalid)?)?;
             metadata.insert(candidate.row_id, (common, private));
             if !returned.is_empty() {
                 attributes.insert(
