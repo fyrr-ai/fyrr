@@ -1,0 +1,67 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "keys": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ApiKeyGrant"
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "keys"
+  ],
+  "description": "The API keys of a deployment, published once under the storage root and\nread by every reader of it. A key is the keyed hash of its secret; the\nartifact never holds a secret, a name or a reader token.",
+  "title": "ApiKeysArtifact",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SchemaVersion": {
+      "description": "Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "ApiKeyGrant": {
+      "type": "object",
+      "properties": {
+        "subject": {
+          "type": "string",
+          "description": "`key:<64 lowercase hex>`, the keyed hash of the secret. The same hash\nbinds the key in the identity artifact of each namespace."
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApiKeyRole"
+          }
+        },
+        "namespace_prefix": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The key acts only in namespaces whose name starts with this."
+        }
+      },
+      "required": [
+        "subject",
+        "roles"
+      ],
+      "description": "One published API key."
+    },
+    "ApiKeyRole": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "list",
+        "admin"
+      ],
+      "description": "What an API key may do over HTTP. `list`, `write` and `admin` name roles\nof routes that do not exist yet; a key holds them so that the routes need\nno new key format."
+    }
+  },
+  "x-fyrr-contract": "api-keys-artifact",
+  "x-fyrr-schema-version": "1.0"
+}

@@ -53,6 +53,9 @@ errors! {
     EmbeddingSpendLimitRequired => ("embedding_spend_limit_required", StorageUnavailable),
     EmbeddingTimeout => ("embedding_timeout", StorageUnavailable),
     EmbeddingUnavailable => ("embedding_unavailable", StorageUnavailable),
+    // HTTP only: the authenticated API key lacks the role the route needs, or
+    // may not act in this namespace.
+    Forbidden => ("forbidden", StorageUnavailable),
     // HTTP only: the `Host` header is not the authority of `public_url`.
     HostMismatch => ("host_mismatch", StorageUnavailable),
     IncompatibleIndex => ("incompatible_index", IncompatibleIndex),

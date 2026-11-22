@@ -9,6 +9,11 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The reader serves `search` and `fetch` as plain JSON at
+  `POST /v1/namespaces/{namespace}/query` and `.../fetch`, next to MCP, with
+  the same authentication, scheduler, deadline and rate limits. Errors map to
+  HTTP statuses, and 429 and 503 answers carry `Retry-After`. See
+  [HTTP JSON API](docs/http-api.md).
 - The Jira connector indexes the custom fields listed in the new
   `scope.fields` (rich text, string or number values) as `field` sections
   labelled with the field ID, for example acceptance criteria. See
@@ -31,6 +36,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   starts, and `config check` reports it as a warning, instead of being a
   configuration error for every command. See
   [HTTP login and users](docs/http-users.md#api-keys).
+- API keys carry `roles` (`read`, `write`, `list`, `admin`; default `read`)
+  and an optional `namespace_prefix`. `fyrr writer keys` publishes the keys of
+  a deployment as one artifact under the storage root and is required: readers
+  refuse every API key until they can read it, refuse a key removed from it
+  within two version checks, and answer `403 forbidden` to a key without the
+  role a route needs. See
+  [identity](docs/identity.md#identityapi_keys).
 - The reader sends `instructions` in the MCP `initialize` result: what
   fyrr searches and a request to search it before looking through files.
   Clients that pass instructions on tell their agent when to search.

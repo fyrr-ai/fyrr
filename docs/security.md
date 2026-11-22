@@ -128,7 +128,10 @@ in the file, as `identity.stdio_readers` does for the stdio subject, and
 nothing a directory says. The variable holds the secret and the configuration
 only names it; the writer publishes only a keyed hash of the secret and
 another of the key's name, so someone who can read the bucket learns the
-number of keys and nothing that lets them use one. A key is as strong as its
+number of keys and nothing that lets them use one. A key holds roles
+(`read`, `write`, `list`, `admin`, default `read`) and may be limited to
+namespaces by name prefix; every route of the HTTP API names the role it needs
+and answers `403 forbidden` to a key without it. A key is as strong as its
 secret: anyone who holds it can search what its readers allow, so give each
 role its own and serve it over TLS. After the next identity publication,
 every reader refuses a removed key within two version checks. A reader that

@@ -40,7 +40,10 @@ fixture_port_range() {
 # Keep output paths inside this checkout while sharing compiler actions across
 # worktrees. Never let an unrelated build collect a running test's executables.
 export MBX_TARGET_VIEWS=0
-export MBX_GC_MAX_SIZE="${MBX_GC_MAX_SIZE:-10GiB}"
+# One build stores 2-4 GiB of test executables. A store smaller than a few
+# branches' worth evicts the Lance dependency graph, and the next build of any
+# checkout recompiles it.
+export MBX_GC_MAX_SIZE="${MBX_GC_MAX_SIZE:-40GiB}"
 export MBX_GC_MIN_FREE_SIZE="${MBX_GC_MIN_FREE_SIZE:-12GiB}"
 export MBX_SUMMARY="${MBX_SUMMARY:-short}"
 # Share compiler actions across worktrees instead of private incremental state.

@@ -215,6 +215,77 @@ async fn a_running_reader_stays_within_its_storage_request_budget() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// What a reader that declares API keys adds to the budgets above: one `GET`
+/// of the published keys when it starts and one per version check, and nothing
+/// per request.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn an_http_reader_with_api_keys_reads_them_once_per_version_check() {
+    let (config, root) = setup_on(Backend::Local);
+    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    assert_eq!(endpoint, "local-storage", "owned by the local CI row");
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("# fyrr-test-head-check = every", "")
+        .replace("[reader]", "[reader]\nversion_check_interval = '1s'");
+    let text = format!(
+        "{text}\n[[identity.api_keys]]\nname='budget'\nkey={{env='FYRR_BUDGET_KEY'}}\nreaders=['usr:budget']\n"
+    );
+    std::fs::write(&config, &text).unwrap();
+    let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
+    root.embedding.insert_both("ledger", vector);
+    success(&config, &["writer", "namespace", "create"]);
+    sync_texts(&config, &root, &[("kept.txt", KEPT)]);
+    success(&config, &["writer", "commit"]);
+    let keys = super::coordination::host_command(&config)
+        .args(["writer", "keys"])
+        .env("FYRR_BUDGET_KEY", format!("fyrr_key_{:064}", 6))
+        .output()
+        .unwrap();
+    assert!(keys.status.success(), "{}", report(&keys));
+
+    let seen = Seen::default();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), seen.hook());
+    let observed_config = root.join("observed.toml");
+    std::fs::write(&observed_config, text.replace(&endpoint, &observed)).unwrap();
+    let started = std::time::Instant::now();
+    let mut reader =
+        super::http_mcp::Reader::start_appended(&observed_config, &root, |address, base| {
+            format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+        })
+        .await;
+    // Requests that carry a key nobody published read no keys.
+    let secret = format!("fyrr_key_{:064}", 7);
+    for _ in 0..20 {
+        let response = reader
+            .client
+            .post(format!("{}/mcp", reader.base))
+            .bearer_auth(&secret)
+            .header("Accept", "application/json, text/event-stream")
+            .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 401);
+    }
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let keys = seen
+        .all(0)
+        .iter()
+        .filter(|request| request.ends_with("/api-keys.json"))
+        .count();
+    let allowed =
+        usize::try_from(started.elapsed().as_millis() / INTERVAL.as_millis()).unwrap() + 2;
+    assert!(
+        (2..=allowed).contains(&keys),
+        "the keys were read {keys} times, allowed {allowed}"
+    );
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    reader.stop().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// A running writer service, stopped when dropped, also when a check fails.
 struct Service(std::process::Child, Arc<AtomicBool>);
 impl Drop for Service {

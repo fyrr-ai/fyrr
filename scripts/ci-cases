@@ -21,13 +21,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 os.environ["PATH"] = f"{Path.home() / '.cargo/bin'}:{os.environ['PATH']}"
 os.environ["MBX_TARGET_VIEWS"] = "0"
-os.environ.setdefault("MBX_GC_MAX_SIZE", "10GiB")
+os.environ.setdefault("MBX_GC_MAX_SIZE", "40GiB")
 os.environ.setdefault("MBX_GC_MIN_FREE_SIZE", "12GiB")
 os.environ.setdefault("CARGO_INCREMENTAL", "0")
 os.environ.setdefault("MBX_LEARNED_INCREMENTAL", "0")
 os.environ.setdefault("MBX_EAGER_INCREMENTAL", "0")
 MANIFEST = ROOT / "scripts/ci-cases.json"
 BUILD = ROOT / "target/ci-build/manifest.json"
+CASE_CPUS = 2
 
 
 def selected_cases(spec):
@@ -375,6 +376,14 @@ async def pool(manifest, logs, jobs, rows):
             began = time.monotonic()
             with (directory / "runner.log").open("w") as output_log:
                 process = await asyncio.create_subprocess_exec(
+                    # Builds and cases of every checkout share the machine. A
+                    # case that starts while compilers hold all cores runs
+                    # several times slower and misses its deadlines, so each
+                    # case takes its cores from the mbx scheduler first.
+                    "mbx",
+                    "reserve",
+                    f"--cpus={CASE_CPUS}",
+                    "--",
                     str(ROOT / "scripts/ci"),
                     f"--row={row}",
                     f"--case={case}",
@@ -493,9 +502,9 @@ def main():
     manifest = json.loads(MANIFEST.read_text())
     if mode == "check":
         validate(manifest, inventory())
-    elif mode == "titles":
+    elif mode == "metadata":
         for row, spec in manifest.items():
-            print(f"{row}\t{spec['title']}")
+            print(f"{row}\t{spec['kind']}\t{spec['title']}")
     elif mode == "rows":
         rows = [
             row
