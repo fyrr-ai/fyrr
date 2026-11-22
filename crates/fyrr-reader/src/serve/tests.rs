@@ -99,7 +99,24 @@ async fn event(events: &mut tokio::sync::broadcast::Receiver<Value>, key: &str) 
         }
     }
 }
-async fn reference_rows(reader: &PreparedReader, vector: &[f32]) -> Vec<(String, f32)> {
+/// Root ids of the dense candidates `search` ranks, nearest first.
+async fn dense_roots(reader: &mut PreparedReader, args: &SearchInput) -> Vec<String> {
+    reader.record_stages();
+    reader.search(args).await.unwrap();
+    let stages = reader.take_stages().unwrap();
+    let dense = stages["dense"].as_array().unwrap();
+    assert_eq!(dense.len(), 75);
+    assert!(dense.iter().all(|row| row[0] == "allowed"));
+    dense
+        .iter()
+        .map(|row| row[1].as_str().unwrap().to_owned())
+        .collect()
+}
+async fn reference_rows(
+    reader: &PreparedReader,
+    vector: &[f32],
+    rows: usize,
+) -> Vec<(String, f32)> {
     let mut scan = reader.dataset.scan();
     let query = arrow_array::FixedSizeListArray::new(
         Arc::new(arrow_schema::Field::new(
@@ -111,7 +128,7 @@ async fn reference_rows(reader: &PreparedReader, vector: &[f32]) -> Vec<(String,
         Arc::new(arrow_array::Float32Array::from(vector.to_vec())),
         None,
     );
-    scan.nearest("vector", &query, 75)
+    scan.nearest("vector", &query, rows)
         .unwrap()
         .use_index(false)
         .distance_metric(lance_linalg::distance::DistanceType::Cosine)
@@ -139,19 +156,15 @@ async fn reference_rows(reader: &PreparedReader, vector: &[f32]) -> Vec<(String,
 #[ignore = "real S3 publication supplied by the sampler fixture"]
 async fn recall_sampler_cadence_poor_ann_and_same_filtered_reference() {
     let (mut reader, args, vector) = reader().await;
-    let reference = reference_rows(&reader, &vector).await;
-    assert_eq!(reference.len(), 75);
-    reader.record_stages();
-    reader.search(&args).await.unwrap();
-    let stages = reader.take_stages().unwrap();
-    let dense = stages["dense"].as_array().unwrap();
-    assert_eq!(dense.len(), 75);
-    assert!(dense.iter().all(|row| row[0] == "allowed"));
-    let approximate: Vec<_> = dense
-        .iter()
-        .map(|row| row[1].as_str().unwrap().to_owned())
-        .collect();
-    let recall = |k: usize| {
+    // The exact order of the subject's rows: 75 for the plain request, and
+    // ten more for the request that excludes the ten nearest.
+    let exact = reference_rows(&reader, &vector, 85).await;
+    assert_eq!(exact.len(), 85);
+    let reference = &exact[..75];
+    let approximate = dense_roots(&mut reader, &args).await;
+    // `k == 75` compares the sets; a smaller `k` compares by distance, so ties
+    // at the cutoff count as found.
+    let recall = |approximate: &[String], reference: &[(String, f32)], k: usize| {
         approximate[..k]
             .iter()
             .filter(|root| {
@@ -162,10 +175,31 @@ async fn recall_sampler_cadence_poor_ann_and_same_filtered_reference() {
             .count() as f64
             / k as f64
     };
+    // The filtered index path probes until it has seen as many selected rows
+    // as an unfiltered query, so recall on this fixture is high but the
+    // RaBitQ shortlist still loses rows. The measured recall below only
+    // proves something if it is not trivially 1.
     assert!(
-        recall(75) < 0.8,
-        "fixture must deliberately have poor ANN recall: {}",
-        recall(75)
+        recall(&approximate, reference, 75) < 1.0,
+        "fixture must have imperfect ANN recall: {}",
+        recall(&approximate, reference, 75)
+    );
+    // The same request excluding the ten nearest: its reference is the same
+    // filtered scan, so the sampler must measure against `exact[10..]`.
+    let excluded: Vec<_> = exact[..10]
+        .iter()
+        .map(|(root, _)| json!({"source_id":"allowed","root_id":root}))
+        .collect();
+    let filtered: SearchInput = serde_json::from_value(
+        json!({"query":args.query,"limit":1,"sources":["allowed"],"exclude":excluded}),
+    )
+    .unwrap();
+    let filtered_approximate = dense_roots(&mut reader, &filtered).await;
+    assert!(
+        exact[..10]
+            .iter()
+            .all(|(root, _)| !filtered_approximate.contains(root)),
+        "an excluded root was returned"
     );
     let service = start(reader).await.unwrap();
     let mut events = service.sample_events.subscribe();
@@ -195,22 +229,17 @@ async fn recall_sampler_cadence_poor_ann_and_same_filtered_reference() {
     assert_eq!(measured["recall_completed"], 1);
     assert_eq!(measured["recall_coverage"], 0.01);
     for (key, k) in [("recall_at_10", 10), ("recall_at_75", 75)] {
-        assert!((measured[key].as_f64().unwrap() - recall(k)).abs() < 1e-12);
+        let expected = recall(&approximate, reference, k);
+        assert!((measured[key].as_f64().unwrap() - expected).abs() < 1e-12);
     }
-    let excluded: Vec<_> = reference[..10]
-        .iter()
-        .map(|(root, _)| json!({"source_id":"allowed","root_id":root}))
-        .collect();
-    let filtered: SearchInput = serde_json::from_value(
-        json!({"query":args.query,"limit":1,"sources":["allowed"],"exclude":excluded}),
-    )
-    .unwrap();
     hundred(&service, &filtered).await;
     let measured = event(&mut events, "recall_at_75").await;
     assert_eq!(measured["recall_successful"], 200);
     assert_eq!(measured["recall_completed"], 2);
-    assert_eq!(measured["recall_at_10"], 1.0);
-    assert_eq!(measured["recall_at_75"], 1.0);
+    for (key, k) in [("recall_at_10", 10), ("recall_at_75", 75)] {
+        let expected = recall(&filtered_approximate, &exact[10..], k);
+        assert!((measured[key].as_f64().unwrap() - expected).abs() < 1e-12);
+    }
 }
 
 #[tokio::test]
