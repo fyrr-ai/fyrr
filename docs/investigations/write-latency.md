@@ -63,11 +63,13 @@ ms (50,000 rows, p50 / maximum).
   its polling of the head while it waits for the answer.
 - **After 1,000 single-row writes** the served version has 168 data files
   (fragments) and 41 segments in each of its 12 indexes.
-- **Receiving the body is not the cost.** The 50,000-row body (about 62 MB, 128
-  dimensions) was refused with `403` after it was read and scanned in 81 ms
-  (p50 of 3) and with `400 vector_invalid` after its first 49,999 rows were
-  bound in 304 ms, against 47,462 ms for the write. JSON number parsing is 0.6 %
-  of a 50,000-row write at this dimension, so no binary vector encoding is
-  proposed.
+- **Request intake is a small share of the write.** The 50,000-row body (about
+  62 MB, 128 dimensions) was refused with `403` after it was received and
+  scanned in 81 ms (p50 of 3) and with `400 vector_invalid` after its first
+  49,999 rows were bound in 304 ms, against 47,462 ms for the write. The 304 ms
+  is a diagnostic upper bound for request intake, not a measurement of JSON
+  number parsing: it includes the transfer, authorization, state reads, parsing
+  and row validation. Intake is under 1 % of the write, so no binary vector
+  encoding issue is opened for now.
 - `read` is a strong fetch by key after the answer: the head check and a key
   lookup, 85 ms at p50 for 1,000 rows. It is not the latency of a ranked search.
