@@ -29,7 +29,7 @@ const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_HEADERS: usize = 64;
 const MAX_HEADER_BYTES: usize = 32 * 1024;
 const MAX_BEARER_BYTES: usize = 16 * 1024;
-const MAX_CONNECTIONS: usize = 64;
+pub(crate) const MAX_CONNECTIONS: usize = 64;
 /// Namespaces opened by request path besides the configured one. The least
 /// recently used one is closed when another needs the place. Each has an
 /// eighth of the mirror budget, so the count also keeps the mirrors of all of
@@ -1316,7 +1316,7 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
     Ok(())
 }
 
-async fn serve_connection(
+pub(crate) async fn serve_connection(
     socket: tokio::net::TcpStream,
     router: Router,
     drain: tokio_util::sync::CancellationToken,

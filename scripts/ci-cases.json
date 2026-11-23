@@ -35,6 +35,10 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-reader:lib:fyrr_reader/metrics::tests::histogram_buckets_are_cumulative_and_end_at_infinity": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_concurrent_calls_share_one_monotone_spend_limit": {
         "tier": "quick",
         "seconds": 0.012

@@ -47,9 +47,10 @@ every label has a few fixed values.
 | reader | `fyrr_reader_mirror_evictions_total` | Mirror files removed to make room. |
 | reader | `fyrr_reader_open_namespaces` | Namespaces held open: the configured one and those opened by request path. |
 | reader | `fyrr_reader_recall_samples_total{outcome}` | Background recall samples: `completed`, or the reason one was skipped. |
-| writer | `fyrr_writer_commit_rounds_total{outcome}` | Commit rounds: `published`, `idle`, `busy` or `failed`. |
-| writer | `fyrr_writer_commit_duration_seconds` | Histogram of the duration of the rounds that published. |
-| writer | `fyrr_writer_pending_envelopes` | Envelopes waiting, as the last commit round read them; an idle round does not read them again. |
+| writer | `fyrr_writer_publications_total` | Publications of a new head: each commit group and each maintenance run that publishes. |
+| writer | `fyrr_writer_commit_rounds_total{outcome}` | Commit rounds: `published` (at least one group), `idle`, `busy` or `failed`. |
+| writer | `fyrr_writer_commit_duration_seconds` | Histogram of the duration of the rounds that published; a round may publish several groups. |
+| writer | `fyrr_writer_pending_envelopes` | Envelopes waiting, summed over the namespaces the writer committed, each as of its last read; an idle round does not read them again. |
 | writer | `fyrr_writer_maintenance_steps_total{step}` | Maintenance steps done: `compaction` or `index_merge`. |
 | writer | `fyrr_writer_rejected_envelopes_total` | Envelopes the committer rejected. |
 

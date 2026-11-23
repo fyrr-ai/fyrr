@@ -210,6 +210,7 @@ pub(crate) async fn publish(
     #[cfg(test)]
     crate::maintenance::restore_test_publication();
     lease.publish(head).await?;
+    fyrr_reader::metrics::add(&crate::telemetry::PUBLICATIONS, &[], 1);
     Ok(manifest.lance_version)
 }
 

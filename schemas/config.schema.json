@@ -1197,6 +1197,13 @@
           "format": "uint32",
           "minimum": 1,
           "default": 120
+        },
+        "metrics_listen": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Address of an extra listener that serves `GET /metrics` in the\nPrometheus text format; absent, there is none. It has no authentication\nand carries no namespace name, identity, query or document text."
         }
       },
       "required": [
@@ -1400,6 +1407,13 @@
               "type": "null"
             }
           ]
+        },
+        "metrics_listen": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Address of an extra listener that serves `GET /metrics` in the\nPrometheus text format; absent, there is none. It has no authentication\nand carries no namespace name, identity, query or document text."
         }
       },
       "description": "The optional standing writer service."

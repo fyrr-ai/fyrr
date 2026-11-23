@@ -177,8 +177,30 @@ pub async fn listen(address: &str) -> std::io::Result<tokio::task::JoinHandle<()
             )
         }),
     );
+    // The connection limit and header bounds of the main listener.
     Ok(tokio::spawn(async move {
-        let _ = axum::serve(listener, router).await;
+        let sockets =
+            std::sync::Arc::new(tokio::sync::Semaphore::new(crate::http::MAX_CONNECTIONS));
+        let drain = tokio_util::sync::CancellationToken::new();
+        let mut connections = tokio::task::JoinSet::new();
+        loop {
+            let accepted = tokio::select! {
+                Some(_) = connections.join_next(), if !connections.is_empty() => continue,
+                accepted = listener.accept() => accepted,
+            };
+            let Ok((socket, _)) = accepted else {
+                break;
+            };
+            let Ok(permit) = sockets.clone().try_acquire_owned() else {
+                continue;
+            };
+            connections.spawn(crate::http::serve_connection(
+                socket,
+                router.clone(),
+                drain.clone(),
+                permit,
+            ));
+        }
     }))
 }
 
