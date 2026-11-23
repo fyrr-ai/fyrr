@@ -972,6 +972,16 @@ pub(super) async fn fixture_for_issuer(
     issuer_url: &str,
     backend: Backend,
 ) -> (PathBuf, PathBuf, FixtureRoot, DirectorySnapshot) {
+    fixture_with_documents(issuer_url, backend, Vec::new()).await
+}
+/// `fixture_for_issuer` with documents of its own, each an incremental document
+/// with `id`, `revision`, `texts` and `readers`; its sections must carry
+/// `section_readers` to be told apart.
+pub(super) async fn fixture_with_documents(
+    issuer_url: &str,
+    backend: Backend,
+    extra: Vec<Value>,
+) -> (PathBuf, PathBuf, FixtureRoot, DirectorySnapshot) {
     static NAMESPACE: AtomicUsize = AtomicUsize::new(0);
     let namespace = format!("http-fixture-{}", NAMESPACE.fetch_add(1, Ordering::SeqCst));
     let (worker, commit, root) =
@@ -1003,6 +1013,22 @@ pub(super) async fn fixture_for_issuer(
                     .unwrap(),
             ],
         });
+    }
+    for document in extra {
+        // The fixture knows a vector only for the text it is given.
+        for (n, text) in document["texts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let vector: Vec<f32> = (0..1024)
+                .map(|d| (((n + 2000) * (d + 7)) as f32).sin())
+                .collect();
+            root.embedding.insert_both(text.as_str().unwrap(), vector);
+        }
+        perms.push(json!({"id":document["id"],"revision":"p1","readers":document["readers"]}));
+        docs.push(document);
     }
     super::incremental::input(
         &root,

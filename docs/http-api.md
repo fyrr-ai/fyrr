@@ -447,6 +447,52 @@ curl https://fyrr.example.com/v1/namespaces/main/query \
           "origin":"2026-11-23T09:00:00Z"}]}'
 ```
 
+## Grouping and caps
+
+A document holds one or more records (chunks), and the lanes rank records. By
+default a search answers with one hit per document: the record that ranks best,
+whichever lane found it. The [composition](tuning.md#namespacecomposition)
+fills its slots with the best record of each document, a document that an
+earlier slot took is skipped, and a search by vector alone keeps the first
+record of each document in the order of distance. `source_cap` counts these
+hits. The `query` route changes two things about that. Both are no argument of
+the tool: `fetch` and `/mcp` refuse them, and a request without them is
+answered exactly as before.
+
+| Member | Meaning |
+| --- | --- |
+| `group_documents` | `false` makes every record a hit of its own, so a document that matches with several records is returned with each of them. Default `true`; sending `true` changes nothing. `source_cap` and the composition's slots then count records, not documents: a source that holds many records of one document reaches its `source_cap` sooner, and the soft cap gives back the records it skipped after the others, so the answer is not strictly best first across sources. |
+| `caps` | 1–4 caps `{"attribute": ..., "max": ...}`: at most `max` hits (1–75) for each value of the attribute, taken in rank order. `author`, `project`, `source_type` and the declared `string` attributes can be capped, each once; any other name or type is `400 invalid_argument`. A hit that has no value of the attribute is not capped. The hits of every cap count together: a hit is dropped when any value of it is at its cap. |
+
+Both work for a text ranking, a vector ranking and the two fused, and for the
+text-only answer given when the embedding provider fails. They are
+`400 invalid_argument` for a listing, which has no ranking, and with `queries`
+or `sub_queries`, which merge rankings: a cap or a record per hit would
+count over the merge, or over each list, and the request does not say which.
+(`fusion` needs one of them, so it is refused too.) `group_documents: true`
+is the default and is never refused.
+
+The request's `limit` still bounds the answer. A cap is hard, unlike
+`source_cap`: a hit over it is dropped, and the next candidate takes its place,
+but there may be no next one. The caps and the records apply to the candidates
+the lanes retrieve (the text lane's `namespace.retrieval.lexical_candidates`
+and the vector lane's `dense_candidates`, at least `limit`), so an answer can be
+shorter than `limit` when the candidates run out. Before a reranker reorders
+them, the caps and the records are applied to the composed candidates; the
+reranker never adds a hit. The values of a capped attribute are read only for
+candidates the caller may read, so a cap never reveals a value of a document
+the caller cannot read. A request with both `boosts` and `caps` boosts the
+candidates first, and then caps the boosted ranking.
+
+```sh
+curl https://fyrr.example.com/v1/namespaces/main/query \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"quarterly report","limit":20,
+       "group_documents":false,
+       "caps":[{"attribute":"author","max":3}]}'
+```
+
 ## Aggregate
 
 `POST /v1/namespaces/{namespace}/aggregate` computes aggregates over the

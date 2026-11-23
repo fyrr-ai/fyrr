@@ -1,4 +1,4 @@
-//! Complete-union logistic-z scoring, document grouping and slot composition.
+//! Complete-union logistic-z scoring, document grouping, value caps and slot composition.
 use crate::error::*;
 use fyrr_core::config::{Composition, RetrievalConfig};
 use fyrr_core::mcp::Fusion;
@@ -45,11 +45,75 @@ fn normalize(rows: &mut [Candidate]) {
         };
     }
 }
-fn documents(rows: Vec<Candidate>) -> Vec<Candidate> {
-    let mut seen = BTreeSet::new();
-    rows.into_iter()
-        .filter(|r| seen.insert((r.source.clone(), r.root.clone())))
-        .collect()
+/// What a request changes in the selection of hits beyond the namespace's
+/// composition. The default is today's: the best record of each document.
+#[derive(Debug, Default)]
+pub(crate) struct Selection {
+    /// Every record is a hit of its own, not only the best of its document.
+    pub records: bool,
+    /// The caps on the hits per value of an attribute.
+    pub caps: Vec<ValueCap>,
+}
+/// At most `max` hits per value of one attribute; a row without a value is not
+/// capped.
+#[derive(Debug)]
+pub(crate) struct ValueCap {
+    pub max: usize,
+    /// The value of each candidate row, by row id.
+    pub values: BTreeMap<u64, String>,
+}
+impl Selection {
+    /// What counts as one hit: a document, or with `records` a record.
+    fn unit(&self, row: &Candidate) -> (String, String, String) {
+        (
+            row.source.clone(),
+            row.root.clone(),
+            if self.records {
+                row.record.clone()
+            } else {
+                String::new()
+            },
+        )
+    }
+    /// The best row of each document, or with `records` every row, in the order of `rows`.
+    fn group(&self, rows: Vec<Candidate>) -> Vec<Candidate> {
+        if self.records {
+            // `ranked` already left one row per record.
+            return rows;
+        }
+        let mut seen = BTreeSet::new();
+        rows.into_iter()
+            .filter(|row| seen.insert(self.unit(row)))
+            .collect()
+    }
+}
+/// How many hits each value of each capped attribute has among those selected.
+struct Tally<'a> {
+    caps: &'a [ValueCap],
+    counts: Vec<BTreeMap<&'a str, usize>>,
+}
+impl<'a> Tally<'a> {
+    fn new(selection: &'a Selection) -> Self {
+        Self {
+            caps: &selection.caps,
+            counts: vec![BTreeMap::new(); selection.caps.len()],
+        }
+    }
+    /// Whether a value of the row already has its most hits.
+    fn full(&self, row: &Candidate) -> bool {
+        self.caps.iter().zip(&self.counts).any(|(cap, counts)| {
+            cap.values
+                .get(&row.row_id)
+                .is_some_and(|value| counts.get(value.as_str()).copied().unwrap_or(0) >= cap.max)
+        })
+    }
+    fn take(&mut self, row: &Candidate) {
+        for (cap, counts) in self.caps.iter().zip(&mut self.counts) {
+            if let Some(value) = cap.values.get(&row.row_id) {
+                *counts.entry(value.as_str()).or_default() += 1;
+            }
+        }
+    }
 }
 /// What a request's boosts add to the score of a row, by row id; a row it does
 /// not name gets nothing.
@@ -60,6 +124,7 @@ pub(crate) fn dense_only(
     dense: Vec<Candidate>,
     limit: usize,
     bonus: &Bonus,
+    selection: &Selection,
 ) -> Result<Vec<Candidate>> {
     let mut rows = ranked(dense)?;
     for row in &mut rows {
@@ -74,7 +139,16 @@ pub(crate) fn dense_only(
         }
         rows = ranked(rows)?;
     }
-    let mut rows = documents(rows);
+    let mut tally = Tally::new(selection);
+    let mut rows = selection.group(rows);
+    // A cap is hard: a hit over it is dropped, and the next one takes its place.
+    rows.retain(|row| {
+        let keep = !tally.full(row);
+        if keep {
+            tally.take(row);
+        }
+        keep
+    });
     rows.truncate(limit);
     Ok(rows)
 }
@@ -85,6 +159,7 @@ pub(crate) fn compose(
     limit: usize,
     retrieval: &RetrievalConfig,
     bonus: &Bonus,
+    selection: &Selection,
 ) -> Result<Vec<Candidate>> {
     let mut dense = ranked(dense)?;
     let mut lexical = ranked(lexical)?;
@@ -117,11 +192,12 @@ pub(crate) fn compose(
     for row in union.values_mut() {
         row.score += bonus.get(&row.row_id).copied().unwrap_or(0.0);
     }
-    let fusion = documents(ranked(union.values().cloned().collect())?);
-    let dense = documents(dense);
-    let lexical = documents(lexical);
+    let fusion = selection.group(ranked(union.values().cloned().collect())?);
+    let dense = selection.group(dense);
+    let lexical = selection.group(lexical);
     let mut selected = Vec::new();
     let mut seen = BTreeSet::new();
+    let mut tally = Tally::new(selection);
     for (rows, slots) in [
         (fusion, config.fusion),
         (dense, config.dense),
@@ -134,7 +210,7 @@ pub(crate) fn compose(
             if added == slots {
                 break;
             }
-            if seen.contains(&(row.source.clone(), row.root.clone())) {
+            if seen.contains(&selection.unit(&row)) || tally.full(&row) {
                 continue;
             }
             if retrieval.source_cap != 0
@@ -143,15 +219,25 @@ pub(crate) fn compose(
                 skipped.push(row);
                 continue;
             }
-            seen.insert((row.source.clone(), row.root.clone()));
+            seen.insert(selection.unit(&row));
+            tally.take(&row);
             *sources.entry(row.source.clone()).or_default() += 1;
             selected.push(row);
             added += 1;
         }
         // The source cap spreads each bucket's head; it never shortens the bucket.
-        for row in skipped.into_iter().take(slots - added) {
-            seen.insert((row.source.clone(), row.root.clone()));
+        // A cap on a value does: a row over it is no hit.
+        for row in skipped {
+            if added == slots {
+                break;
+            }
+            if tally.full(&row) {
+                continue;
+            }
+            seen.insert(selection.unit(&row));
+            tally.take(&row);
             selected.push(row);
+            added += 1;
         }
     }
     for row in &mut selected {

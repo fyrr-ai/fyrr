@@ -438,7 +438,7 @@
       },
       "QueryRequest": {
         "type": "object",
-        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and eight members that are no tool arguments.",
+        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and ten members that are no tool arguments.",
         "properties": {
           "query": {
             "type": [
@@ -767,6 +767,25 @@
             "description": "1-8 terms added to the relevance score of a text or vector ranking: a weight times a function of an attribute. Not with a listing, `sub_queries` or `fusion`.",
             "minItems": 1,
             "maxItems": 8
+          },
+          "group_documents": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`false` returns every matching record, not the best one of each document; default `true`. Not with a listing, `queries` or `sub_queries`."
+          },
+          "caps": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ValueCap"
+            },
+            "description": "1-4 caps of at most `max` hits per value of an attribute; the total `limit` still applies. Not with a listing, `queries` or `sub_queries`.",
+            "minItems": 1,
+            "maxItems": 4
           }
         }
       },
@@ -1250,6 +1269,30 @@
         "description": "Duration: an integer followed by ms, s, m, h or d.",
         "type": "string",
         "pattern": "^(0|[1-9][0-9]*)(ms|s|m|h|d)$"
+      },
+      "ValueCap": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "`author`, `project`, `source_type` or a declared `string` attribute.",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "max": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 1,
+            "description": "1 to 75.",
+            "maximum": 75
+          }
+        },
+        "required": [
+          "attribute",
+          "max"
+        ],
+        "description": "One member of the `caps` member of a JSON `query` request: at most `max`\nhits for each value of `attribute`. A hit that has no value of it is not\ncapped."
       },
       "FetchRequest": {
         "type": "object",

@@ -26,10 +26,15 @@ fn a_search_without_text_keeps_the_order_by_distance_whatever_the_weights() {
     };
     // One row per document, best first, scores untouched.
     assert_eq!(
-        order(dense_only(dense.clone(), 10, &Bonus::new()).unwrap()),
+        order(dense_only(dense.clone(), 10, &Bonus::new(), &Selection::default()).unwrap()),
         [("y".into(), 0.9), ("x".into(), 0.5), ("z".into(), 0.2)]
     );
-    assert_eq!(dense_only(dense, 2, &Bonus::new()).unwrap().len(), 2);
+    assert_eq!(
+        dense_only(dense, 2, &Bonus::new(), &Selection::default())
+            .unwrap()
+            .len(),
+        2
+    );
     // The fusion with a dense weight of zero loses that order.
     let none = RetrievalConfig {
         dense_weight: 0.0,
@@ -42,6 +47,7 @@ fn a_search_without_text_keeps_the_order_by_distance_whatever_the_weights() {
         10,
         &none,
         &Bonus::new(),
+        &Selection::default(),
     )
     .unwrap();
     assert!(fused.iter().all(|r| r.score == 0.0));
@@ -59,6 +65,7 @@ fn a_fused_hit_keeps_the_raw_lexical_score_and_distance_of_its_lanes() {
         10,
         &RetrievalConfig::default(),
         &Bonus::new(),
+        &Selection::default(),
     )
     .unwrap();
     let raw = |root: &str| {
@@ -120,6 +127,7 @@ fn composition_cases() {
             if expected.is_err() { 1 } else { 75 },
             &RetrievalConfig::default(),
             &Bonus::new(),
+            &Selection::default(),
         );
         match expected {
             Err(error) => assert_eq!(result.unwrap_err(), error, "{name}"),
@@ -146,6 +154,7 @@ fn composition_cases() {
         50,
         &RetrievalConfig::default(),
         &Bonus::new(),
+        &Selection::default(),
     )
     .unwrap();
     assert_eq!(single.len(), 50);
@@ -168,6 +177,7 @@ fn composition_cases() {
             limit,
             &RetrievalConfig::default(),
             &Bonus::new(),
+            &Selection::default(),
         )
         .unwrap();
         assert_eq!(result.len(), limit, "{name}");
@@ -207,7 +217,16 @@ fn composition_cases() {
             dense_weight: weight,
             ..RetrievalConfig::default()
         };
-        let result = compose(dense, lexical, &config, 75, &retrieval, &Bonus::new()).unwrap();
+        let result = compose(
+            dense,
+            lexical,
+            &config,
+            75,
+            &retrieval,
+            &Bonus::new(),
+            &Selection::default(),
+        )
+        .unwrap();
         assert_eq!(result[0].root, first, "weight={weight}");
         if weight == 0.5 {
             assert_eq!(result[0].score, result[1].score);
@@ -289,6 +308,7 @@ fn a_bonus_lifts_a_row_outside_the_limit_and_zero_bonuses_change_nothing() {
             limit,
             &capped,
             bonus,
+            &Selection::default(),
         )
         .unwrap()
     };
@@ -323,10 +343,160 @@ fn a_distance_score_is_normalized_before_a_bonus_is_added() {
     };
     let roots = |rows: &[Candidate]| rows.iter().map(|r| r.root.clone()).collect::<Vec<_>>();
     // A small bonus does not reorder, and the reported distance stays raw.
-    let small = dense_only(dense(), 3, &Bonus::from([(2, 0.05)])).unwrap();
+    let small = dense_only(dense(), 3, &Bonus::from([(2, 0.05)]), &Selection::default()).unwrap();
     assert_eq!(roots(&small), ["x", "y", "z"]);
     assert!(small.iter().all(|r| (0.0..=1.05).contains(&r.score)));
     assert_eq!(small[0].distance, Some(100.0));
-    let lifted = dense_only(dense(), 3, &Bonus::from([(2, 1.0)])).unwrap();
+    let lifted = dense_only(dense(), 3, &Bonus::from([(2, 1.0)]), &Selection::default()).unwrap();
     assert_eq!(roots(&lifted), ["z", "x", "y"]);
+}
+
+/// `(source, root, record)` rows of one lane, best first, with row ids 0, 1, ...
+fn lane(rows: &[(&str, &str, &str)]) -> Vec<Candidate> {
+    rows.iter()
+        .enumerate()
+        .map(|(id, (source, root, record))| Candidate {
+            row_id: id as u64,
+            ..row(source, root, record, 100.0 - id as f64)
+        })
+        .collect()
+}
+/// A cap of at most `max` hits per value, given by the value of each row id.
+fn cap(max: usize, values: &[Option<&str>]) -> ValueCap {
+    ValueCap {
+        max,
+        values: values
+            .iter()
+            .enumerate()
+            .filter_map(|(id, value)| Some((id as u64, (*value)?.to_owned())))
+            .collect(),
+    }
+}
+fn keys(rows: &[Candidate]) -> Vec<String> {
+    rows.iter()
+        .map(|r| format!("{}:{}", r.root, r.record))
+        .collect()
+}
+
+#[test]
+fn a_cap_per_value_drops_the_hits_over_it_whatever_selects_them() {
+    let rows = || {
+        lane(&[
+            ("a", "d0", "1"),
+            ("a", "d1", "1"),
+            ("a", "d2", "1"),
+            ("a", "d3", "1"),
+        ])
+    };
+    // Rows 0, 1 and 2 have the author x, row 3 the author y.
+    let authors = [Some("x"), Some("x"), Some("x"), Some("y")];
+    let selection = Selection {
+        records: false,
+        caps: vec![cap(2, &authors)],
+    };
+    let uncapped = RetrievalConfig {
+        source_cap: 0,
+        ..RetrievalConfig::default()
+    };
+    // The cap is hard: the limit does not bring the third hit of x back.
+    let by_text = compose(
+        vec![],
+        rows(),
+        &Composition::default(),
+        10,
+        &uncapped,
+        &Bonus::new(),
+        &selection,
+    )
+    .unwrap();
+    assert_eq!(keys(&by_text), ["d0:1", "d1:1", "d3:1"]);
+    // The source cap skips d2 and d3 first; the rows it gives back honour the
+    // cap: d2 fills the second place of x, so d3 is no hit.
+    let spread = RetrievalConfig {
+        source_cap: 2,
+        ..RetrievalConfig::default()
+    };
+    let by_source = compose(
+        vec![],
+        rows(),
+        &Composition::default(),
+        10,
+        &spread,
+        &Bonus::new(),
+        &Selection {
+            records: false,
+            caps: vec![cap(2, &[Some("x"), Some("y"), Some("x"), Some("x")])],
+        },
+    )
+    .unwrap();
+    assert_eq!(keys(&by_source), ["d0:1", "d1:1", "d2:1"]);
+    // A vector ranking is capped the same way, then cut at the limit.
+    let by_vector = dense_only(rows(), 2, &Bonus::new(), &selection).unwrap();
+    assert_eq!(keys(&by_vector), ["d0:1", "d1:1"]);
+    let deeper = dense_only(rows(), 3, &Bonus::new(), &selection).unwrap();
+    assert_eq!(keys(&deeper), ["d0:1", "d1:1", "d3:1"]);
+    // Two caps both hold, and a row with no value is under none.
+    let both = Selection {
+        records: false,
+        caps: vec![
+            cap(2, &authors),
+            cap(1, &[None, Some("p"), None, Some("p")]),
+        ],
+    };
+    let by_both = dense_only(rows(), 10, &Bonus::new(), &both).unwrap();
+    assert_eq!(keys(&by_both), ["d0:1", "d1:1"]);
+    let unvalued = Selection {
+        records: false,
+        caps: vec![cap(1, &[None, None, None, None])],
+    };
+    assert_eq!(
+        dense_only(rows(), 10, &Bonus::new(), &unvalued)
+            .unwrap()
+            .len(),
+        4
+    );
+}
+
+#[test]
+fn a_hit_is_a_record_only_when_the_request_asks_for_every_record() {
+    let rows = || {
+        lane(&[
+            ("a", "d0", "1"),
+            ("a", "d0", "2"),
+            ("a", "d1", "1"),
+            ("a", "d0", "3"),
+        ])
+    };
+    let uncapped = RetrievalConfig {
+        source_cap: 0,
+        ..RetrievalConfig::default()
+    };
+    let every = Selection {
+        records: true,
+        caps: vec![],
+    };
+    let run = |selection: &Selection| {
+        compose(
+            rows(),
+            vec![],
+            &Composition::default(),
+            10,
+            &uncapped,
+            &Bonus::new(),
+            selection,
+        )
+        .unwrap()
+    };
+    assert_eq!(keys(&run(&Selection::default())), ["d0:1", "d1:1"]);
+    assert_eq!(keys(&run(&every)), ["d0:1", "d0:2", "d1:1", "d0:3"]);
+    assert_eq!(
+        keys(&dense_only(rows(), 10, &Bonus::new(), &every).unwrap()),
+        ["d0:1", "d0:2", "d1:1", "d0:3"]
+    );
+    // A cap counts records then: two of the three records of d0, and d1.
+    let capped = Selection {
+        records: true,
+        caps: vec![cap(2, &[Some("x"), Some("x"), Some("y"), Some("x")])],
+    };
+    assert_eq!(keys(&run(&capped)), ["d0:1", "d0:2", "d1:1"]);
 }

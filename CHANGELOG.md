@@ -28,6 +28,16 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The JSON `query` route takes `group_documents` and `caps`.
+  `group_documents: false` makes every matching record a hit, not only the best
+  record of each document. `caps` limits the hits per value of 1 to 4
+  attributes (`author`, `project`, `source_type` or a declared `string`
+  attribute), for example at most 3 per author; the request's `limit` still
+  applies. Both work for text, vector and fused rankings, and read only rows
+  the caller may read. They are refused with a listing, `queries` and
+  `sub_queries`. The MCP `search` tool does not take them. See
+  [Grouping and caps](docs/http-api.md#grouping-and-caps).
+
 - The JSON `query` route takes `boosts`: 1 to 8 terms added to the relevance
   score of a text, vector or fused ranking, each a weight times an
   `attribute` function `x / (x + midpoint)` of a numeric attribute or a

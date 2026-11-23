@@ -164,6 +164,12 @@ pub struct SearchInput {
     /// Set by the HTTP query route from its `boosts` member; no tool argument.
     #[serde(skip)]
     pub boosts: Option<Vec<Boost>>,
+    /// Set by the HTTP query route from its `group_documents` member; no tool argument.
+    #[serde(skip)]
+    pub group_documents: Option<bool>,
+    /// Set by the HTTP query route from its `caps` member; no tool argument.
+    #[serde(skip)]
+    pub caps: Option<Vec<ValueCap>>,
 }
 
 /// The `query_match` member of a JSON `query` request: whether a document
@@ -268,6 +274,20 @@ impl Boost {
             && (0.0..=MAX_BOOST_WEIGHT).contains(&self.weight())
             && positive_midpoint
     }
+}
+
+/// One member of the `caps` member of a JSON `query` request: at most `max`
+/// hits for each value of `attribute`. A hit that has no value of it is not
+/// capped.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ValueCap {
+    /// `author`, `project`, `source_type` or a declared `string` attribute.
+    #[schemars(length(min = 1, max = 128))]
+    pub attribute: String,
+    /// 1 to 75.
+    #[schemars(range(min = 1, max = MAX_SEARCH_LIMIT))]
+    pub max: u32,
 }
 
 /// One member of `sub_queries` in a JSON `query` request: a search of its own
@@ -1369,6 +1389,19 @@ impl SearchInput {
                     && self.fusion.is_none()
                     && (1..=MAX_BOOSTS).contains(&boosts.len())
                     && boosts.iter().all(Boost::is_valid)
+            })
+            // A listing has no ranking to select from, and `queries` and
+            // `sub_queries` merge several of them: a cap or a record per hit would
+            // count over the merge or over each list. Grouping on is the default.
+            && (self.group_documents != Some(false) && self.caps.is_none()
+                || !listing && self.queries.is_none() && self.sub_queries.is_none())
+            && self.caps.as_ref().is_none_or(|caps| {
+                (1..=MAX_CAPS).contains(&caps.len())
+                    && caps.iter().enumerate().all(|(i, cap)| {
+                        bounded_text(&cap.attribute, 128)
+                            && (1..=MAX_SEARCH_LIMIT).contains(&cap.max)
+                            && caps[..i].iter().all(|c| c.attribute != cap.attribute)
+                    })
             })
             && self.text_hits.is_none_or(|v| {
                 self.output != Some(OutputMode::Metadata)

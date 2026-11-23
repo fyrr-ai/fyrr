@@ -1,5 +1,5 @@
 //! The JSON query and fetch routes of the real reader executable: the gates of `/mcp`, plain JSON out.
-use super::http_mcp::{Issuer, Reader, fixture};
+use super::http_mcp::{Issuer, Reader, fixture, fixture_with_documents};
 use super::*;
 
 async fn post(reader: &Reader, token: &str, path: &str, body: &Value) -> reqwest::Response {
@@ -273,4 +273,112 @@ async fn identity_http_metrics_listener_counts_requests_without_identity_on_stor
     ] {
         assert!(!body.contains(private), "{private}\n{body}");
     }
+}
+
+#[tokio::test]
+#[ignore = "real HTTP reader executable, pinned JWKS and local storage; scripts/ci"]
+async fn identity_http_json_query_returns_every_record_and_caps_the_hits_per_author_on_storage() {
+    let (_, issuer_root) = setup();
+    let issuer = Issuer::new(&issuer_root).await;
+    // `multi` has three records; `hidden` is not readable by the caller.
+    let documents = [
+        (
+            "multi",
+            vec!["alpha one", "alpha two", "alpha three"],
+            "Ada",
+            "usr:u0",
+        ),
+        ("ada", vec!["alpha four"], "Ada", "usr:u0"),
+        ("lin", vec!["alpha five"], "Lin", "usr:u0"),
+        ("hidden", vec!["alpha six"], "Ada", "usr:u1"),
+    ]
+    .map(|(id, texts, author, reader)| {
+        let mut document = super::incremental::doc(id, "r1", "");
+        document["texts"] = json!(texts);
+        document["author"] = json!(author);
+        document["readers"] = json!([reader]);
+        // Sections with a location are records of their own.
+        document["section_readers"] = json!(vec![
+            vec![reader];
+            document["texts"].as_array().unwrap().len()
+        ]);
+        document
+    });
+    let (worker, _, root, _) =
+        fixture_with_documents(&issuer.url, Backend::selected(), documents.to_vec()).await;
+    let namespace = fyrr_core::config::load(&worker)
+        .unwrap()
+        .config
+        .namespace
+        .name;
+    let reader = Reader::start(&worker, &root, &issuer, 1000, 1000).await;
+    let token = issuer.token("subject-0", json!({}), json!({}));
+    let query = format!("/v1/namespaces/{namespace}/query");
+    let ask = async |members: Value| -> Vec<(String, String)> {
+        let mut body = json!({"query": "alpha", "sources": ["incremental"], "limit": 20,
+                              "output": "metadata"});
+        for (name, member) in members.as_object().unwrap() {
+            body[name] = member.clone();
+        }
+        let response = post(&reader, &token, &query, &body).await;
+        assert_eq!(response.status(), 200, "{body}");
+        let body: Value = response.json().await.unwrap();
+        body["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| {
+                (
+                    hit["root_id"].as_str().unwrap().to_owned(),
+                    hit["record_id"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let roots = |hits: &[(String, String)]| {
+        let mut roots: Vec<_> = hits.iter().map(|hit| hit.0.as_str()).collect();
+        roots.sort_unstable();
+        roots.into_iter().map(str::to_owned).collect::<Vec<_>>()
+    };
+
+    // One hit per document: the best record of `multi`. Saying so changes nothing.
+    let grouped = ask(json!({})).await;
+    assert_eq!(roots(&grouped), ["ada", "lin", "multi"]);
+    assert_eq!(ask(json!({"group_documents": true})).await, grouped);
+    // Every record is a hit, and `hidden` is never one.
+    let every = ask(json!({"group_documents": false})).await;
+    assert_eq!(roots(&every), ["ada", "lin", "multi", "multi", "multi"]);
+    assert_eq!(
+        every
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        5,
+        "{every:?}"
+    );
+    for hit in &grouped {
+        assert!(every.contains(hit), "the best record is among them");
+    }
+    assert_eq!(
+        ask(json!({"group_documents": false, "limit": 2}))
+            .await
+            .len(),
+        2
+    );
+
+    // At most one hit per author: one of the two Ada documents, and Lin.
+    let by_author = |max: u32| json!([{"attribute": "author", "max": max}]);
+    let one = ask(json!({"caps": by_author(1)})).await;
+    assert_eq!(one.len(), 2, "{one:?}");
+    assert!(roots(&one).contains(&"lin".to_owned()));
+    // Capped records: two of the four records of Ada, and Lin.
+    let two = ask(json!({"group_documents": false, "caps": by_author(2)})).await;
+    assert_eq!(two.len(), 3, "{two:?}");
+    assert!(roots(&two).contains(&"lin".to_owned()));
+    // A cap that nothing reaches changes nothing.
+    assert_eq!(ask(json!({"caps": by_author(3)})).await, grouped);
+    assert_eq!(
+        ask(json!({"group_documents": false, "caps": by_author(4)})).await,
+        every
+    );
 }
