@@ -75,8 +75,12 @@ impl Selection {
             },
         )
     }
-    /// The best row of each hit unit, in the order of `rows`.
+    /// The best row of each document, or with `records` every row, in the order of `rows`.
     fn group(&self, rows: Vec<Candidate>) -> Vec<Candidate> {
+        if self.records {
+            // `ranked` already left one row per record.
+            return rows;
+        }
         let mut seen = BTreeSet::new();
         rows.into_iter()
             .filter(|row| seen.insert(self.unit(row)))

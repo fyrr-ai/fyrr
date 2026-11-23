@@ -297,6 +297,11 @@ async fn identity_http_json_query_returns_every_record_and_caps_the_hits_per_aut
         document["texts"] = json!(texts);
         document["author"] = json!(author);
         document["readers"] = json!([reader]);
+        // Sections with a location are records of their own.
+        document["section_readers"] = json!(vec![
+            vec![reader];
+            document["texts"].as_array().unwrap().len()
+        ]);
         document
     });
     let (worker, _, root, _) =

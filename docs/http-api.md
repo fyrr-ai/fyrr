@@ -461,7 +461,7 @@ answered exactly as before.
 
 | Member | Meaning |
 | --- | --- |
-| `group_documents` | `false` makes every record a hit of its own, so a document that matches with several records is returned with each of them, best first. Default `true`. `source_cap` and the composition's slots then count records. |
+| `group_documents` | `false` makes every record a hit of its own, so a document that matches with several records is returned with each of them. Default `true`; sending `true` changes nothing. `source_cap` and the composition's slots then count records, not documents: a source that holds many records of one document reaches its `source_cap` sooner, and the soft cap gives back the records it skipped after the others, so the answer is not strictly best first across sources. |
 | `caps` | 1–4 caps `{"attribute": ..., "max": ...}`: at most `max` hits (1–75) for each value of the attribute, taken in rank order. `author`, `project`, `source_type` and the declared `string` attributes can be capped, each once; any other name or type is `400 invalid_argument`. A hit that has no value of the attribute is not capped. The hits of every cap count together: a hit is dropped when any value of it is at its cap. |
 
 Both work for a text ranking, a vector ranking and the two fused, and for the
@@ -469,7 +469,8 @@ text-only answer given when the embedding provider fails. They are
 `400 invalid_argument` for a listing, which has no ranking, and with `queries`
 or `sub_queries`, which merge rankings: a cap or a record per hit would
 count over the merge, or over each list, and the request does not say which.
-(`fusion` needs one of them, so it is refused too.)
+(`fusion` needs one of them, so it is refused too.) `group_documents: true`
+is the default and is never refused.
 
 The request's `limit` still bounds the answer. A cap is hard, unlike
 `source_cap`: a hit over it is dropped, and the next candidate takes its place,

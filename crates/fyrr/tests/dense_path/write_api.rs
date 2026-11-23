@@ -4552,6 +4552,16 @@ async fn identity_write_api_caps_the_hits_per_attribute_value_on_storage() {
             "{members}"
         );
     }
+    // Grouping on is the default, so saying it is no refusal.
+    assert_eq!(
+        ask_with(
+            json!({"queries": ["alpha", "bravo"]}),
+            json!({"group_documents": true})
+        )
+        .await
+        .0,
+        200
+    );
     for body in [
         json!({"order": "updated_at"}),
         json!({"queries": ["alpha", "bravo"]}),

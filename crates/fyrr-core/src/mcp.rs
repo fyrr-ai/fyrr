@@ -1392,8 +1392,8 @@ impl SearchInput {
             })
             // A listing has no ranking to select from, and `queries` and
             // `sub_queries` merge several of them: a cap or a record per hit would
-            // count over the merge or over each list.
-            && (self.group_documents.is_none() && self.caps.is_none()
+            // count over the merge or over each list. Grouping on is the default.
+            && (self.group_documents != Some(false) && self.caps.is_none()
                 || !listing && self.queries.is_none() && self.sub_queries.is_none())
             && self.caps.as_ref().is_none_or(|caps| {
                 (1..=MAX_CAPS).contains(&caps.len())
