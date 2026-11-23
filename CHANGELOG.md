@@ -120,9 +120,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   index, so it travels in the contract versions that carry index options
   (content-manifest 5.0, policy-artifact 4.0). A change of it is a schema
   change: the next maintenance builds the index again and publishes it, and the
-  index it replaces serves until then. An index of an attribute no longer takes
-  the namespace's `fts_*` settings, which stay those of the text index of the
-  documents. See [Analyzer](docs/tuning.md#analyzer-of-a-full-text-index).
+  index it replaces serves until then. An index without an analyzer takes the
+  namespace's `fts_*` settings, as before. See [Analyzer](docs/tuning.md#analyzer-of-a-full-text-index).
 - The write API takes `delete_where` and `patch_where`: a filter whose matching
   documents are deleted, or patched with the attributes or readers of `set`.
   The committer evaluates it once against the state the request is applied to;

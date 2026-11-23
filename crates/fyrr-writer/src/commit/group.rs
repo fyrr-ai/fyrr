@@ -158,7 +158,7 @@ pub(crate) async fn commit_one(
         acl_changed,
         Vec::new(),
         false,
-        &[],
+        None,
     )
     .await?;
     stage(stage_timings, "publication", publication_start);
@@ -599,13 +599,16 @@ pub(crate) async fn build_attribute_indexes(
         }
         let fts;
         let params: &dyn lance_index::IndexParams = if kind == IndexType::Inverted {
-            let analyzer = config
+            // Without an analyzer of its own the index takes the namespace's settings.
+            fts = match config
                 .namespace
                 .attribute_indexes
                 .get(&column)
-                .map(|options| options.analyzer.clone())
-                .unwrap_or_default();
-            fts = attribute_fts_params(config, &analyzer)?;
+                .and_then(|options| options.analyzer.as_ref())
+            {
+                Some(analyzer) => attribute_fts_params(config, analyzer)?,
+                None => fts_params(config),
+            };
             &fts
         } else {
             &scalar
@@ -675,9 +678,9 @@ fn fts_params(config: &Config) -> lance_index::scalar::InvertedIndexParams {
     with_workers(config, fts)
 }
 
-/// Parameters of the full-text index of an attribute: its own analyzer, not
-/// the namespace's. A language stems the terms and removes its stop words; a
-/// list of stop words replaces the language's.
+/// Parameters of the full-text index of an attribute that has an analyzer of
+/// its own. A language stems the terms and removes its stop words; a list of
+/// stop words replaces the language's.
 fn attribute_fts_params(
     config: &Config,
     analyzer: &Analyzer,

@@ -3169,7 +3169,11 @@ async fn identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on
     let address = free_address();
     configure(&config, &address, "");
     // The maintenance of this test is the one it runs (`configure` builds on 2 threads).
-    let text = std::fs::read_to_string(&config).unwrap();
+    let text = std::fs::read_to_string(&config).unwrap().replacen(
+        "[namespace]\n",
+        "[namespace]\nfts_ascii_folding = true\n",
+        1,
+    );
     std::fs::write(
         &config,
         format!("{text}\n[writer.serve]\nmaintenance = false\n"),
@@ -3227,11 +3231,12 @@ async fn identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on
         json!({"note": {"index": false, "full_text": true, "ngram": false}})
     );
     assert!(params.contains("\"base_tokenizer\":\"simple\""), "{params}");
-    assert!(params.contains("\"ascii_folding\":false"), "{params}");
+    // An index without an analyzer of its own takes the namespace's settings.
+    assert!(params.contains("\"ascii_folding\":true"), "{params}");
 
     // The change is one publication that leaves the index as it was built.
     let change = json!({"settings": {"attribute_indexes": {"note": {
-        "analyzer": {"tokenizer": "unicode", "ascii_folding": true}}}}});
+        "analyzer": {"tokenizer": "unicode"}}}}});
     assert_eq!(
         post(change.clone()).await,
         (200, json!({"upserted": 0, "deleted": 0}))
@@ -3239,11 +3244,16 @@ async fn identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on
     let (changed, segments, recorded, params) = served().await;
     assert_eq!(changed, sequence + 1);
     assert_eq!(segments, old);
+    let changed_id = super::coordination::publication(&config)
+        .await
+        .1
+        .publication_id;
     assert_eq!(
         recorded,
         json!({"note": {"index": false, "full_text": true, "ngram": false}})
     );
     assert!(params.contains("\"base_tokenizer\":\"simple\""), "{params}");
+    assert!(params.contains("\"ascii_folding\":true"), "{params}");
     // The reader serves that publication, and what is stored verifies.
     assert_eq!(
         listing(
@@ -3266,11 +3276,11 @@ async fn identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on
     assert_eq!(
         recorded,
         json!({"note": {"index": false, "full_text": true, "ngram": false, "analyzer": {
-            "tokenizer": "unicode", "ascii_folding": true, "max_token_length": 40,
+            "tokenizer": "unicode", "ascii_folding": false, "max_token_length": 40,
             "ngram_min_length": 3, "ngram_max_length": 3, "prefix_only": false}}})
     );
     assert!(params.contains("\"base_tokenizer\":\"icu\""), "{params}");
-    assert!(params.contains("\"ascii_folding\":true"), "{params}");
+    assert!(params.contains("\"ascii_folding\":false"), "{params}");
     assert_eq!(
         listing(
             &config,
@@ -3283,6 +3293,23 @@ async fn identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on
     // A current index is not built again.
     run_when_free(&config, &["writer", "maintain"]).await;
     assert_eq!(served().await.1, segments);
+
+    // A restore of the publication before the rebuild brings the old index back
+    // and records the analyzer it was built with, so maintenance builds the new
+    // one again.
+    run_when_free(&config, &["writer", "restore", &changed_id]).await;
+    let (restored, segments, recorded, params) = served().await;
+    assert!(restored > rebuilt);
+    assert_eq!(
+        recorded,
+        json!({"note": {"index": false, "full_text": true, "ngram": false}})
+    );
+    assert!(params.contains("\"base_tokenizer\":\"simple\""), "{params}");
+    run_when_free(&config, &["writer", "maintain"]).await;
+    let (_, again, recorded, params) = served().await;
+    assert_ne!(again, segments);
+    assert_eq!(recorded["note"]["analyzer"]["tokenizer"], "unicode");
+    assert!(params.contains("\"base_tokenizer\":\"icu\""), "{params}");
 }
 
 /// The ids a listing of the namespace returns under `filter`, in order.

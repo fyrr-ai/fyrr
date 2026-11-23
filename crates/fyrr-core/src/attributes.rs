@@ -179,7 +179,8 @@ impl AttributeType {
 /// The indexes an attribute has: the scalar one unless it says otherwise, and a
 /// full-text or an n-gram index when it asks for one. An attribute without an
 /// index is still filtered and sorted: by a scan of the table. The settings of
-/// the analyzer belong to the full-text index and are only set with it.
+/// the analyzer belong to the full-text index and are only set with it; an
+/// index without one takes the namespace's `fts_*` settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttributeIndex {
@@ -189,8 +190,8 @@ pub struct AttributeIndex {
     pub full_text: bool,
     #[serde(default)]
     pub ngram: bool,
-    #[serde(default, skip_serializing_if = "Analyzer::is_default")]
-    pub analyzer: Analyzer,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analyzer: Option<Analyzer>,
 }
 
 const fn yes() -> bool {
@@ -203,7 +204,7 @@ impl Default for AttributeIndex {
             index: true,
             full_text: false,
             ngram: false,
-            analyzer: Analyzer::default(),
+            analyzer: None,
         }
     }
 }
@@ -271,11 +272,11 @@ pub fn possible_indexes(
 
 /// The options of the attributes of the schema that `has` an index of, as the
 /// entries that differ from the default. A full-text index that is there has
-/// the `analyzer` of its attribute.
+/// the `analyzer` that `analyzer` gives for its attribute.
 pub fn indexes_present(
     attributes: &AttributeSchema,
     has: impl Fn(&str) -> bool,
-    analyzer: impl Fn(&str) -> Analyzer,
+    analyzer: impl Fn(&str) -> Option<Analyzer>,
 ) -> AttributeIndexes {
     let mut present = AttributeIndexes::new();
     for (name, _, option, index) in possible_indexes(attributes) {
@@ -397,8 +398,8 @@ pub fn check_indexes(
             || IndexOption::ALL
                 .into_iter()
                 .any(|option| differs(option) && !kind.supports(option))
-            || !options.analyzer.is_valid()
-            || (!options.analyzer.is_default() && !options.full_text)
+            || options.analyzer.as_ref().is_some_and(|a| !a.is_valid())
+            || (options.analyzer.is_some() && !options.full_text)
         {
             return Err(AttributeError::IndexInvalid);
         }
@@ -869,11 +870,7 @@ mod tests {
         );
         // What a table has, as the options that differ from the default.
         let built = ["attr_title_idx", "attrfts_title_idx"];
-        let present = indexes_present(
-            &schema,
-            |name| built.contains(&name),
-            |_| Analyzer::default(),
-        );
+        let present = indexes_present(&schema, |name| built.contains(&name), |_| None);
         assert_eq!(
             present,
             AttributeIndexes::from([
@@ -893,10 +890,7 @@ mod tests {
                 ),
             ])
         );
-        assert_eq!(
-            indexes_present(&schema, |_| true, |_| Analyzer::default()).len(),
-            1
-        );
+        assert_eq!(indexes_present(&schema, |_| true, |_| None).len(), 1);
     }
 
     #[test]
@@ -924,7 +918,7 @@ mod tests {
         );
         let analyzed = |analyzer| AttributeIndex {
             full_text: true,
-            analyzer,
+            analyzer: Some(analyzer),
             ..Default::default()
         };
         let ngram = |min, max| Analyzer {
@@ -960,7 +954,7 @@ mod tests {
             (
                 "title",
                 AttributeIndex {
-                    analyzer: german,
+                    analyzer: Some(german),
                     ..text
                 },
             ),
@@ -1008,7 +1002,7 @@ mod tests {
         fn stale<'a>(wanted: &'a AttributeIndexes, built: &'a AttributeIndexes) -> Vec<&'a str> {
             stale_analyzers(wanted, built).collect()
         }
-        let with = |analyzer: Analyzer| {
+        let with = |analyzer: Option<Analyzer>| {
             AttributeIndexes::from([(
                 "title".to_owned(),
                 AttributeIndex {
@@ -1022,13 +1016,12 @@ mod tests {
             ascii_folding: true,
             ..Default::default()
         };
-        assert_eq!(
-            stale(&with(folded.clone()), &with(Analyzer::default())),
-            ["title"]
-        );
-        assert!(stale(&with(folded.clone()), &with(folded)).is_empty());
+        assert_eq!(stale(&with(Some(folded.clone())), &with(None)), ["title"]);
+        assert_eq!(stale(&with(None), &with(Some(folded.clone()))), ["title"]);
+        assert!(stale(&with(Some(folded.clone())), &with(Some(folded))).is_empty());
+        assert!(stale(&with(None), &with(None)).is_empty());
         // An index that is not built is built, not rebuilt.
-        assert!(stale(&with(Analyzer::default()), &AttributeIndexes::new()).is_empty());
+        assert!(stale(&with(None), &AttributeIndexes::new()).is_empty());
     }
 
     #[test]

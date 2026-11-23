@@ -1961,7 +1961,14 @@
             "default": false
           },
           "analyzer": {
-            "$ref": "#/components/schemas/Analyzer"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Analyzer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1969,7 +1976,7 @@
           "full_text",
           "ngram"
         ],
-        "description": "The indexes an attribute has: the scalar one unless it says otherwise, and a\nfull-text or an n-gram index when it asks for one. An attribute without an\nindex is still filtered and sorted: by a scan of the table. The settings of\nthe analyzer belong to the full-text index and are only set with it."
+        "description": "The indexes an attribute has: the scalar one unless it says otherwise, and a\nfull-text or an n-gram index when it asks for one. An attribute without an\nindex is still filtered and sorted: by a scan of the table. The settings of\nthe analyzer belong to the full-text index and are only set with it; an\nindex without one takes the namespace's `fts_*` settings."
       },
       "Analyzer": {
         "type": "object",

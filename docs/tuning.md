@@ -101,9 +101,9 @@ index answers the `contains` and `matches` filters on a `string`
 ([text tests](mcp-tools.md#text-tests)); the full-text index is built and kept,
 and no filter operator reads it yet.
 
-A full-text index has its own [analyzer](#analyzer-of-a-full-text-index); it does
-not take the namespace's `fts_*` keys, which are those of the text index of the
-documents.
+A full-text index takes the namespace's `fts_*` keys, as the text index of the
+documents does, unless it sets an [analyzer](#analyzer-of-a-full-text-index) of
+its own.
 
 A new namespace's first publication builds every index its schema asks for.
 After that the attributes and their indexes change by a
@@ -137,23 +137,30 @@ language = "german"
 ascii_folding = true
 ```
 
-`analyzer` sets how the full-text index of an attribute cuts a text into terms.
-It is an option of a `full_text` entry and is refused without it. A text is
-always lowercased. Every key is optional.
+`analyzer` sets how the full-text index of an attribute cuts a text into terms,
+instead of the namespace's `fts_*` keys. It is an option of a `full_text` entry
+and is refused without it; the keys it does not set have the defaults below, not
+the namespace's. A text is always lowercased. Every key is optional.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `tokenizer` | `simple` | `simple`: runs of letters and digits, so a run of Chinese, Japanese or Korean characters is one token. `whitespace`: runs of characters that are not white space. `unicode`: Unicode word segmentation, which finds the words of Chinese and Japanese text by a dictionary and cuts what it does not know into what it does. `ngram`: substrings of a token. |
+| `tokenizer` | `simple` | `simple`: runs of letters and digits, so a run of Chinese, Japanese or Korean characters is one token. `whitespace`: runs of characters that are not white space. `unicode`: Unicode word segmentation, which finds the words of Chinese and Japanese text by a dictionary and cuts what it does not know into what it does. `ngram`: substrings of the whole value, which cross spaces. |
 | `language` | absent | One of the languages below: stems the terms and removes the stop words of that language. Absent: no stemming and no stop words. |
 | `stop_words` | absent | A list of at most 1024 words of 1–64 bytes that is removed instead of the language's. A word is compared with a term after it is lowercased and stemmed. |
 | `ascii_folding` | `false` | Folds accented letters to ASCII, `é` to `e`. |
-| `max_token_length` | `40` | 1–1024: a longer token, in UTF-8 bytes, is dropped. |
+| `max_token_length` | `40` | 1–1024: a longer token, in UTF-8 bytes, is dropped; an n-gram is a token too. |
 | `ngram_min_length` | `3` | 1–16: shortest n-gram; only with `tokenizer = "ngram"`. |
 | `ngram_max_length` | `3` | `ngram_min_length`–16: longest n-gram; only with `tokenizer = "ngram"`. |
-| `prefix_only` | `false` | Only the n-grams that start a token; only with `tokenizer = "ngram"`. |
+| `prefix_only` | `false` | Only the n-grams that start the value; only with `tokenizer = "ngram"`. |
 
 The `ngram` tokenizer keeps every n-gram, so it takes no `language` and no
-`stop_words`. Dictionary tokenizers for Chinese, Japanese and Korean are not
+`stop_words`, and its index holds up to `ngram_max_length - ngram_min_length + 1`
+terms per character of the value: it is several times the size of a word index.
+With `unicode` and a `language` but no `stop_words`, the stop words removed are
+those of every language the pinned Lance knows, not only the language's; give
+`stop_words` to remove exactly the words you want.
+
+Dictionary tokenizers for Chinese, Japanese and Korean are not
 offered; `unicode` is the one that segments them.
 
 The languages are `arabic`, `danish`, `dutch`, `english`, `finnish`, `french`,

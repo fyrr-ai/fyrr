@@ -139,10 +139,6 @@ impl Default for Analyzer {
 }
 
 impl Analyzer {
-    pub fn is_default(&self) -> bool {
-        *self == Self::default()
-    }
-
     /// Whether every setting is within its bounds, and none is set that its
     /// tokenizer ignores: the n-gram ones need the `ngram` tokenizer, which in
     /// turn keeps every n-gram and so takes no stemming and no stop words.

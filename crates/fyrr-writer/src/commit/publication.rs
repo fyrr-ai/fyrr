@@ -1,10 +1,12 @@
 use super::*;
-use fyrr_core::attributes::{attribute_index_kind, indexes_present, possible_indexes};
+use fyrr_core::attributes::{
+    AttributeIndexes, attribute_index_kind, indexes_present, possible_indexes,
+};
 
 /// Publish native work through the same immutable manifest and fenced head CAS.
-/// `rebuilt` names the attributes whose full-text index this work built again
-/// with the analyzer of the settings; every other index stands as the manifest
-/// before recorded it.
+/// `carry` holds the options of the indexes that stand as they were built: the
+/// manifest before's by default. An index that is not in it was built by this
+/// work, with the analyzer of the settings.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn publish(
     config: &Config,
@@ -16,7 +18,7 @@ pub(crate) async fn publish(
     acl_changed: bool,
     mut cursor_rewinds: Vec<String>,
     maintenance_completed: bool,
-    rebuilt: &[String],
+    carry: Option<&AttributeIndexes>,
 ) -> Result<u64> {
     let (store, root) = namespace_store(config)?;
     let previous_manifest = previous_manifest(store.as_ref(), &root, &head).await?;
@@ -50,23 +52,18 @@ pub(crate) async fn publish(
     }
     // What the table has, not what the settings ask for: an index that is
     // switched on waits for maintenance, and a reader expects what is built.
-    // A full-text index that was not built again has the analyzer it was built
-    // with, which the settings may have left since. shortcut: a restore carries
-    // the analyzers of the manifest it replaces, not of the version it restores;
-    // upgrade by taking them from the restored publication's manifest.
+    // A full-text index that stands has the analyzer it was built with, which
+    // the settings may have left since.
+    let carry = carry.or(previous_manifest.as_ref().map(|m| &m.attribute_indexes));
     let attribute_indexes = indexes_present(
         &config.namespace.attributes,
         |name| indexes.iter().any(|index| index.name == name),
         |attribute| {
-            let built = previous_manifest
-                .as_ref()
-                .filter(|_| !rebuilt.iter().any(|name| name == attribute))
-                .and_then(|manifest| manifest.attribute_indexes.get(attribute))
-                .filter(|options| options.full_text);
-            built
+            carry
+                .and_then(|indexes| indexes.get(attribute))
+                .filter(|options| options.full_text)
                 .or_else(|| config.namespace.attribute_indexes.get(attribute))
-                .map(|options| options.analyzer.clone())
-                .unwrap_or_default()
+                .and_then(|options| options.analyzer.clone())
         },
     );
     let reader_coverage = fyrr_reader::storage::coverage(&actual, "readers_idx");

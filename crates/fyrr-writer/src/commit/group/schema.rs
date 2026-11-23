@@ -101,7 +101,7 @@ pub(crate) async fn change_schema(
             false,
             Vec::new(),
             false,
-            &[],
+            None,
         )
         .await?;
         Ok(())

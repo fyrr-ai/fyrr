@@ -243,7 +243,7 @@ async fn maintain_held(
         // and so do the full-text ones built again for another analyzer: the old
         // index serves until then.
         let (store, root) = namespace_store(config)?;
-        let built = commit::previous_manifest(store.as_ref(), &root, &head)
+        let mut built = commit::previous_manifest(store.as_ref(), &root, &head)
             .await?
             .map(|manifest| manifest.attribute_indexes)
             .unwrap_or_default();
@@ -255,6 +255,8 @@ async fn maintain_held(
             &built,
         ))
         .await?;
+        // What was built again carries the analyzer of the settings.
+        built.retain(|name, _| !rebuilt.contains(name));
         commit::publish(
             config,
             lease,
@@ -265,7 +267,7 @@ async fn maintain_held(
             false,
             Vec::new(),
             true,
-            &rebuilt,
+            Some(&built),
         )
         .await?;
     }
@@ -328,7 +330,7 @@ async fn merge_step(
         false,
         Vec::new(),
         false,
-        &[],
+        None,
     )
     .await?;
     Ok(true)
@@ -413,7 +415,7 @@ async fn purge_denied(config: &Config, lease: &LeaseGuard, head: &ServingHead) -
             true,
             Vec::new(),
             false,
-            &[],
+            None,
         )
         .await?;
         return Ok(true);
@@ -1151,7 +1153,7 @@ async fn compact_one(
             false,
             Vec::new(),
             false,
-            &[],
+            None,
         )
         .await
     };
