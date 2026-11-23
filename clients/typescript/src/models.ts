@@ -15,7 +15,7 @@ export interface DeleteNamespaceRequest {
 
 /**
  * The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
- * `search` tool and ten members that are no tool arguments.
+ * `search` tool and twelve members that are no tool arguments.
  */
 export interface QueryRequest {
   /** Query text, 1-4096 UTF-8 bytes. Omit only for a filter-only listing with order=updated_at or order_by. */
@@ -79,6 +79,10 @@ export interface QueryRequest {
   sub_queries?: SubQuery[] | null;
   /** With `query`: `all` ranks only the documents that hold every term; default `any`. */
   query_match?: TermMatch | null;
+  /** With `query` or `queries`: 1-8 attributes with a full-text index that the text ranking scores, each with a weight; default `searchable_text`. A string array attribute stands alone. */
+  query_attributes?: QueryAttribute[] | null;
+  /** With `query`, `queries` or a vector ranking: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like `filter`. Needs `fts_positions`. Not with a listing or `sub_queries`. */
+  phrase?: Phrase | null;
   /** Conditions on full-text attributes, each also required of a hit, like `filter`. Not with a listing. */
   contains?: Contains[] | null;
   /** 1-8 terms added to the relevance score of a text or vector ranking: a weight times a function of an attribute. Not with a listing, `sub_queries` or `fusion`. */
@@ -243,16 +247,45 @@ export interface SubQuery {
 export type TermMatch = "all" | "any";
 
 /**
+ * One member of the `query_attributes` member of a JSON `query` request: an
+ * attribute with a full-text index that the text ranking scores, and how much
+ * its score counts. A document scores the sum of the weighted scores of the
+ * attributes it matches.
+ */
+export interface QueryAttribute {
+  /**
+   * `searchable_text`, the text of the document, or a `string` or string
+   * array attribute with a full-text index.
+   */
+  attribute: string;
+  /** 0.000001 to 100; default 1. */
+  weight?: number | null;
+}
+
+/**
+ * The `phrase` member of a JSON `query` request: a condition on the text of the
+ * document, also required of a hit, like `filter`. The tokens of `text`, as the
+ * full-text analyzer cuts them, occur in the document in this order. Needs a
+ * namespace with `fts_positions`.
+ */
+export interface Phrase {
+  /** 1-4096 UTF-8 bytes. */
+  text: string;
+  /** Tokens allowed between two tokens of the phrase; only 0 (adjacent) until a newer Lance. */
+  slop?: number | null;
+}
+
+/**
  * One condition of the `contains` member of a JSON `query` request, on the
- * full-text index of a string attribute, which is not built with the `ngram`
- * tokenizer. Exactly one of `all` and `any`.
+ * full-text index of a string or string array attribute, which is not built
+ * with the `ngram` tokenizer. Exactly one of `all` and `any`.
  */
 export interface Contains {
-  /** A string attribute with a full-text index. */
+  /** A string or string array attribute with a full-text index. */
   attribute: string;
-  /** The value holds every token of this text, 1-4096 UTF-8 bytes. */
+  /** The value, or one element of an array, holds every token of this text, 1-4096 UTF-8 bytes. */
   all?: string | null;
-  /** The value holds at least one token of this text, 1-4096 UTF-8 bytes. */
+  /** The value, or one element of an array, holds at least one token of this text, 1-4096 UTF-8 bytes. */
   any?: string | null;
 }
 
@@ -582,7 +615,7 @@ export interface FtsSettings {
   stem: boolean;
   remove_stop_words: boolean;
   ascii_folding: boolean;
-  /** Positional postings; false while there is no phrase scoring. */
+  /** Positional postings, which a phrase condition needs. */
   with_position: boolean;
 }
 

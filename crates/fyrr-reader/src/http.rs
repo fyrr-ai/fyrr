@@ -519,7 +519,7 @@ fn strong_read(arguments: &mut serde_json::Value) -> Result<bool, ReaderError> {
 
 /// Takes `name` off the arguments of a JSON `query` call, where it is no
 /// argument of the tool: `fields`, `fusion`, `rerank`, `sub_queries`, `query_match`,
-/// `query_attributes`, `contains`, `boosts`, `group_documents` or `caps`.
+/// `query_attributes`, `phrase`, `contains`, `boosts`, `group_documents` or `caps`.
 fn query_member<T: serde::de::DeserializeOwned>(
     arguments: &mut serde_json::Value,
     name: &str,
@@ -680,6 +680,7 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                             let query_match = query_member(&mut arguments, "query_match")?;
                             let query_attributes =
                                 query_member(&mut arguments, "query_attributes")?;
+                            let phrase = query_member(&mut arguments, "phrase")?;
                             let contains = query_member(&mut arguments, "contains")?;
                             let boosts = query_member(&mut arguments, "boosts")?;
                             let group_documents = query_member(&mut arguments, "group_documents")?;
@@ -690,7 +691,7 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                                 fusion,
                                 rerank,
                                 sub_queries,
-                                (query_match, query_attributes, contains),
+                                (query_match, query_attributes, phrase, contains),
                                 (boosts, group_documents, caps),
                             )
                         }

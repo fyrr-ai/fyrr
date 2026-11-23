@@ -327,6 +327,152 @@ async fn positionless_native_fts_and_saving() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// The row ids of the rows a query finds, through a row mask as the reader
+/// passes one.
+async fn found_rows(
+    dataset: &Dataset,
+    query: FtsQuery,
+    allowed: Option<&RowAddrTreeMap>,
+) -> RowAddrTreeMap {
+    let mut scan = dataset.scan();
+    scan.prefilter(true).with_row_id();
+    if let Some(allowed) = allowed {
+        scan.with_row_id_prefilter(RowAddrMask::from_allowed(allowed.clone()));
+    }
+    scan.full_text_search(FullTextSearchQuery::new_query(query))
+        .unwrap();
+    let batch = scan.try_into_batch().await.unwrap();
+    batch["_rowid"]
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap()
+        .values()
+        .iter()
+        .copied()
+        .collect()
+}
+
+/// Whether `text` holds `tokens` in order, each at most `slop` positions after
+/// the position directly following the one before it: a brute-force reading of
+/// a phrase over the stored text.
+fn holds_phrase(text: &str, tokens: &[&str], slop: usize) -> bool {
+    let words: Vec<&str> = text.split(' ').collect();
+    let at =
+        |token: &str| -> Vec<usize> { (0..words.len()).filter(|n| words[*n] == token).collect() };
+    let mut ends = at(tokens[0]);
+    for token in &tokens[1..] {
+        ends = at(token)
+            .into_iter()
+            .filter(|p| ends.iter().any(|e| (e + 1..=e + 1 + slop).contains(p)))
+            .collect();
+    }
+    !ends.is_empty()
+}
+
+/// A phrase condition: the rows a phrase query finds, as a row mask, are
+/// exactly the rows whose stored text holds the tokens next to one another in
+/// order (slop 0), for phrases of two and three tokens, a repeated token and
+/// rows where the tokens recur out of order, on three segments and under
+/// another row mask. A text ranking under that mask returns the true best ten
+/// of the rows it keeps, each with the score it has without the mask. This is
+/// how the reader narrows a request, for a text and a vector ranking alike.
+///
+/// A slop above 0 is not used: Lance 14.0.3 finds only some of the rows that
+/// hold the phrase (this test records that it does not find them all), so the
+/// reader refuses it until a newer Lance (#170). This fails when Lance fixes it.
+#[tokio::test]
+async fn phrase_mask_narrows_a_ranking_to_the_true_top_10_on_three_segments_and_under_a_mask() {
+    let (dataset, texts) = segmented(
+        "phrase",
+        3000,
+        &InvertedIndexParams::default().with_position(true),
+    )
+    .await;
+    let outer = even_rows(&dataset).await;
+    let ranking =
+        FtsQuery::Match(MatchQuery::new("gamma delta".into()).with_column(Some("content".into())));
+    let unmasked = found(&dataset, ranking.clone(), None, None).await;
+    let phrase = |text: &str, slop: u32| {
+        FtsQuery::Phrase(
+            PhraseQuery::new(text.into())
+                .with_column(Some("content".into()))
+                .with_slop(slop),
+        )
+    };
+    let ids_of = |text: &str, slop: usize, allowed: Option<&RowAddrTreeMap>| -> Vec<i64> {
+        let tokens: Vec<&str> = text.split(' ').collect();
+        texts
+            .iter()
+            .enumerate()
+            .filter(|(id, row)| {
+                holds_phrase(row, &tokens, slop) && (allowed.is_none() || id % 2 == 0)
+            })
+            .map(|(id, _)| i64::try_from(id).unwrap())
+            .collect()
+    };
+    for text in [
+        "alpha beta",
+        "beta alpha",
+        "alpha alpha",
+        "alpha beta gamma",
+        "alpha beta alpha",
+        "gamma gamma gamma",
+    ] {
+        for allowed in [None, Some(&outer)] {
+            let expected = ids_of(text, 0, allowed);
+            assert!(expected.len() > 2, "the probe needs matches for {text}");
+            let rows = found_rows(&dataset, phrase(text, 0), allowed).await;
+            // Every row the phrase finds holds each of its tokens, so a match
+            // query on the distinct tokens under the mask names the rows.
+            let mut distinct: Vec<&str> = text.split(' ').collect();
+            distinct.sort_unstable();
+            distinct.dedup();
+            let named = FtsQuery::Match(
+                MatchQuery::new(distinct.join(" ")).with_column(Some("content".into())),
+            );
+            let named = found(&dataset, named, None, Some(&rows)).await;
+            assert_eq!(
+                named.keys().copied().collect::<Vec<_>>(),
+                expected,
+                "phrase {text}"
+            );
+            let every = found(&dataset, ranking.clone(), None, Some(&rows)).await;
+            let top = found(&dataset, ranking.clone(), Some(10), Some(&rows)).await;
+            assert!(every.keys().all(|id| expected.contains(id)));
+            assert_true_top_10(&top, &every);
+            for (id, score) in &every {
+                assert!((unmasked[id] - score).abs() < 1e-6, "row {id}");
+            }
+        }
+    }
+    // The tokens recur out of order in some rows that the phrase does not find.
+    assert!(
+        texts
+            .iter()
+            .any(|row| row.contains("beta alpha") && !holds_phrase(row, &["alpha", "beta"], 0))
+    );
+
+    // A slop above 0 finds rows that hold the phrase and never one that does
+    // not, but not all of them.
+    let tokens = ["alpha", "beta", "gamma"];
+    let truth = ids_of("alpha beta gamma", 1, None);
+    let rows = found_rows(&dataset, phrase("alpha beta gamma", 1), None).await;
+    let every = found(
+        &dataset,
+        FtsQuery::Match(MatchQuery::new(tokens.join(" ")).with_column(Some("content".into()))),
+        None,
+        Some(&rows),
+    )
+    .await;
+    let got: Vec<i64> = every.keys().copied().collect();
+    assert!(got.iter().all(|id| truth.contains(id)), "a false match");
+    assert!(
+        got.len() < truth.len(),
+        "Lance finds all {} rows now: allow a slop (#170)",
+        truth.len()
+    );
+}
+
 #[tokio::test]
 async fn bm25_global_statistics_deletions_merge_and_rebuild() {
     let root = directory("statistics");

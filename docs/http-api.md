@@ -351,7 +351,7 @@ curl https://fyrr.example.com/v1/namespaces/main/query \
 
 ## Matching tokens
 
-The `query` route takes three more members that decide which documents a text
+The `query` route takes four more members that decide which documents a text
 or a vector ranking may return, and by which text it scores them. None is an
 argument of the tool: `fetch` and `/mcp` refuse them, and their output does not
 change. A request without them is answered as before. None is taken together
@@ -435,6 +435,34 @@ curl https://fyrr.example.com/v1/namespaces/main/query \
   -H "Content-Type: application/json" \
   -d '{"query":"waterproof","query_match":"all",
        "contains":[{"attribute":"title","all":"red shoes"}]}'
+```
+
+`phrase` requires the tokens of its `text` to occur in the text of a hit in this
+order: `{"text":"restore a backup"}` finds the documents that hold those tokens
+next to one another. A hit meets the phrase and also the `filter`, `contains`
+and the caller's permissions, as with `filter`; it works with a text ranking
+and with a `vector`, and it narrows the lexical and the dense lane alike. The
+text is cut as the index of `searchable_text` cuts it, so with `fts_stem`
+`restoring` and `restore` are one token. It is `invalid_argument` for a
+listing, which has no ranking to narrow, and with `sub_queries`.
+
+| Member | Meaning |
+| --- | --- |
+| `text` | The phrase, 1–4096 UTF-8 bytes. |
+| `slop` | Tokens allowed between two tokens of the phrase. Only 0, the default (adjacent tokens), is accepted: Lance 14.0.3 loses matches for a larger slop, so it is `400 invalid_argument` until a newer Lance ([#170](https://github.com/fyrr-ai/fyrr/issues/170)). |
+
+A phrase needs the positions of the tokens, which a namespace stores only when
+it is created with `fts_positions = true` in `[namespace]` (see
+[tuning](tuning.md#namespace)). A phrase on a namespace without them is `400
+invalid_argument`. Positions make the full-text index larger: the
+[measured growth](tuning.md#the-size-of-the-positions) is in the tuning guide.
+The phrase reads `searchable_text` only; an attribute's index has no positions.
+
+```sh
+curl https://fyrr.example.com/v1/namespaces/main/query \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"backup","phrase":{"text":"restore a backup"}}'
 ```
 
 ## Boosts
