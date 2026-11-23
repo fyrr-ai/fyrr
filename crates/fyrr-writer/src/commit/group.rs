@@ -667,7 +667,8 @@ pub(crate) async fn build_attribute_indexes(
         }
         let mut fts;
         let params: &dyn lance_index::IndexParams = if kind == IndexType::Inverted {
-            // Without an analyzer of its own the index takes the namespace's settings.
+            // Without an analyzer of its own the index takes the namespace's
+            // settings, but not its positions: a phrase reads `searchable_text` only.
             fts = match config
                 .namespace
                 .attribute_indexes
@@ -675,7 +676,7 @@ pub(crate) async fn build_attribute_indexes(
                 .and_then(|options| options.analyzer.as_ref())
             {
                 Some(analyzer) => attribute_fts_params(config, analyzer)?,
-                None => fts_params(config),
+                None => fts_params(config).with_position(false),
             };
             // A string array has one document per element: a match never spans two.
             if matches!(

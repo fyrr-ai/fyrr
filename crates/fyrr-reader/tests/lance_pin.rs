@@ -327,6 +327,98 @@ async fn positionless_native_fts_and_saving() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// The row ids of the rows a query finds, through a row mask as the reader
+/// passes one.
+async fn found_rows(
+    dataset: &Dataset,
+    query: FtsQuery,
+    allowed: Option<&RowAddrTreeMap>,
+) -> RowAddrTreeMap {
+    let mut scan = dataset.scan();
+    scan.prefilter(true).with_row_id();
+    if let Some(allowed) = allowed {
+        scan.with_row_id_prefilter(RowAddrMask::from_allowed(allowed.clone()));
+    }
+    scan.full_text_search(FullTextSearchQuery::new_query(query))
+        .unwrap();
+    let batch = scan.try_into_batch().await.unwrap();
+    batch["_rowid"]
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap()
+        .values()
+        .iter()
+        .copied()
+        .collect()
+}
+
+/// A phrase condition: the rows a phrase query finds, as a row mask, are the
+/// rows whose tokens hold the phrase in order, adjacent or within the slop, on
+/// three segments and under another row mask; a text ranking under that mask
+/// returns the true best ten of the rows it keeps, each with the score it has
+/// without the mask. This is how the reader narrows a request, for a text and
+/// a vector ranking alike.
+#[tokio::test]
+async fn phrase_mask_narrows_a_ranking_to_the_true_top_10_on_three_segments_and_under_a_mask() {
+    let (dataset, texts) = segmented(
+        "phrase",
+        900,
+        &InvertedIndexParams::default().with_position(true),
+    )
+    .await;
+    let outer = even_rows(&dataset).await;
+    // `alpha`, then `beta` at most `slop` tokens after the next position.
+    let holds = |text: &str, slop: usize| {
+        let words: Vec<&str> = text.split(' ').collect();
+        (0..words.len()).any(|at| {
+            words[at] == "alpha"
+                && words[at + 1..]
+                    .iter()
+                    .take(slop + 1)
+                    .any(|word| *word == "beta")
+        })
+    };
+    let ranking =
+        FtsQuery::Match(MatchQuery::new("gamma delta".into()).with_column(Some("content".into())));
+    let unmasked = found(&dataset, ranking.clone(), None, None).await;
+    let mut kept = Vec::new();
+    for slop in [0_usize, 1, 3] {
+        let phrase = FtsQuery::Phrase(
+            PhraseQuery::new("alpha beta".into())
+                .with_column(Some("content".into()))
+                .with_slop(u32::try_from(slop).unwrap()),
+        );
+        for allowed in [None, Some(&outer)] {
+            let expected: Vec<i64> = texts
+                .iter()
+                .enumerate()
+                .filter(|(id, text)| holds(text, slop) && (allowed.is_none() || id % 2 == 0))
+                .map(|(id, _)| i64::try_from(id).unwrap())
+                .collect();
+            assert!(expected.len() > 5, "the probe needs matches");
+            let rows = found_rows(&dataset, phrase.clone(), allowed).await;
+            let every = found(&dataset, ranking.clone(), None, Some(&rows)).await;
+            let top = found(&dataset, ranking.clone(), Some(10), Some(&rows)).await;
+            // Every kept row holds both tokens, so a match query under the mask names them.
+            let all_terms = FtsQuery::Match(
+                MatchQuery::new("alpha beta".into()).with_column(Some("content".into())),
+            );
+            let phrase_ids = found(&dataset, all_terms, None, Some(&rows)).await;
+            assert_eq!(phrase_ids.keys().copied().collect::<Vec<_>>(), expected);
+            assert!(every.keys().all(|id| expected.contains(id)));
+            assert_true_top_10(&top, &every);
+            for (id, score) in &every {
+                assert!((unmasked[id] - score).abs() < 1e-6, "row {id}");
+            }
+            if allowed.is_none() {
+                kept.push(expected.len());
+            }
+        }
+    }
+    // The slop widens the phrase.
+    assert!(kept.windows(2).all(|pair| pair[0] < pair[1]), "{kept:?}");
+}
+
 #[tokio::test]
 async fn bm25_global_statistics_deletions_merge_and_rebuild() {
     let root = directory("statistics");

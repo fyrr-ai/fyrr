@@ -214,6 +214,7 @@ pub(crate) async fn write_manifest(
     .await?;
     let manifest = ContentManifest {
         schema_version: if attribute_indexes.is_empty()
+            && !config.namespace.fts_positions
             && !config.namespace.typed_connector_fields()
             && config.namespace.dense_metric.is_default()
             && config.namespace.dense_element.is_default()

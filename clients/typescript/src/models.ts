@@ -582,7 +582,7 @@ export interface FtsSettings {
   stem: boolean;
   remove_stop_words: boolean;
   ascii_folding: boolean;
-  /** Positional postings; false while there is no phrase scoring. */
+  /** Positional postings, which a phrase condition needs. */
   with_position: boolean;
 }
 

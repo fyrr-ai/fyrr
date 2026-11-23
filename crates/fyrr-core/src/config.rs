@@ -170,6 +170,9 @@ pub struct NamespaceConfig {
     /// ASCII folding.
     #[serde(default)]
     pub fts_ascii_folding: bool,
+    /// Token positions in the `searchable_text` index; a `phrase` condition needs them.
+    #[serde(default)]
+    pub fts_positions: bool,
     /// RaBitQ bits per dimension of the dense vector index.
     #[serde(default = "default_dense_rq_bits")]
     #[schemars(range(min = 1, max = DENSE_RQ_BITS_MAX))]
@@ -545,7 +548,7 @@ impl NamespaceConfig {
             stem: self.fts_stem,
             remove_stop_words: self.fts_remove_stop_words,
             ascii_folding: self.fts_ascii_folding,
-            with_position: false,
+            with_position: self.fts_positions,
         }
     }
     /// Includes fixed lane weights, candidate bounds, source cap, P1 and composition.
@@ -1659,6 +1662,7 @@ impl Config {
         namespace.fts_stem = settings.fts.stem;
         namespace.fts_remove_stop_words = settings.fts.remove_stop_words;
         namespace.fts_ascii_folding = settings.fts.ascii_folding;
+        namespace.fts_positions = settings.fts.with_position;
         namespace.dense_rq_bits = settings.dense_rq_bits;
         namespace.dense_partition_rows = settings.dense_partition_rows;
         namespace.dense_metric = settings.dense_metric;

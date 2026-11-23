@@ -1268,14 +1268,20 @@ fn analyzer_flags_are_publication_settings_with_legacy_defaults() {
     let legacy = parse(MINIMAL).unwrap().config.namespace;
     let explicit = parse(&MINIMAL.replace(
         "[namespace]",
-        "[namespace]\nfts_stem=false\nfts_remove_stop_words=false\nfts_ascii_folding=false",
+        "[namespace]\nfts_stem=false\nfts_remove_stop_words=false\nfts_ascii_folding=false\nfts_positions=false",
     ))
     .unwrap()
     .config
     .namespace;
     assert_eq!(legacy.retrieval_digest(), explicit.retrieval_digest());
     assert!(!legacy.fts_settings().stem && !legacy.fts_settings().remove_stop_words);
-    for flag in ["fts_stem", "fts_remove_stop_words", "fts_ascii_folding"] {
+    assert!(!legacy.fts_settings().with_position);
+    for flag in [
+        "fts_stem",
+        "fts_remove_stop_words",
+        "fts_ascii_folding",
+        "fts_positions",
+    ] {
         let configured =
             parse(&MINIMAL.replace("[namespace]", &format!("[namespace]\n{flag}=true")))
                 .unwrap()
@@ -1286,6 +1292,7 @@ fn analyzer_flags_are_publication_settings_with_legacy_defaults() {
         assert_eq!(fts.stem, flag == "fts_stem");
         assert_eq!(fts.remove_stop_words, flag == "fts_remove_stop_words");
         assert_eq!(fts.ascii_folding, flag == "fts_ascii_folding");
+        assert_eq!(fts.with_position, flag == "fts_positions");
     }
 }
 #[test]

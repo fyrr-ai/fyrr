@@ -478,7 +478,7 @@
       },
       "QueryRequest": {
         "type": "object",
-        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and eleven members that are no tool arguments.",
+        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and twelve members that are no tool arguments.",
         "properties": {
           "query": {
             "type": [
@@ -820,6 +820,17 @@
             "description": "With `query` or `queries`: 1-8 attributes with a full-text index that the text ranking scores, each with a weight; default `searchable_text`. A string array attribute stands alone.",
             "minItems": 1,
             "maxItems": 8
+          },
+          "phrase": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Phrase"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `query`, `queries` or a vector ranking: the tokens of `text` occur in the document in this order, at most `slop` tokens apart; also required of a hit, like `filter`. Needs `fts_positions`. Not with a listing or `sub_queries`."
           },
           "contains": {
             "type": [
@@ -1286,6 +1297,33 @@
           "attribute"
         ],
         "description": "One member of the `query_attributes` member of a JSON `query` request: an\nattribute with a full-text index that the text ranking scores, and how much\nits score counts. A document scores the sum of the weighted scores of the\nattributes it matches."
+      },
+      "Phrase": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "1-4096 UTF-8 bytes.",
+            "minLength": 1,
+            "maxLength": 4096,
+            "x-maxUtf8Bytes": 4096
+          },
+          "slop": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0,
+            "description": "How many tokens may stand between a token and the one before it: 0 to 16;\ndefault 0, adjacent tokens.",
+            "maximum": 16
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "description": "The `phrase` member of a JSON `query` request: a condition on the text of the\ndocument, also required of a hit, like `filter`. The tokens of `text`, as the\nfull-text analyzer cuts them, occur in the document in this order. Needs a\nnamespace with `fts_positions`."
       },
       "Contains": {
         "type": "object",
@@ -2229,7 +2267,7 @@
           },
           "with_position": {
             "type": "boolean",
-            "description": "Positional postings; false while there is no phrase scoring."
+            "description": "Positional postings, which a phrase condition needs."
           }
         },
         "required": [

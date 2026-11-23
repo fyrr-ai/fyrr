@@ -21,7 +21,7 @@ class DeleteNamespaceRequest(TypedDict):
 
 class QueryRequest(TypedDict):
     """The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
-    `search` tool and eleven members that are no tool arguments.
+    `search` tool and twelve members that are no tool arguments.
     """
     query: NotRequired[str | None]
     """Query text, 1-4096 UTF-8 bytes. Omit only for a filter-only listing with order=updated_at or order_by."""
@@ -85,6 +85,8 @@ class QueryRequest(TypedDict):
     """With `query`: `all` ranks only the documents that hold every term; default `any`."""
     query_attributes: NotRequired[list[QueryAttribute] | None]
     """With `query` or `queries`: 1-8 attributes with a full-text index that the text ranking scores, each with a weight; default `searchable_text`. A string array attribute stands alone."""
+    phrase: NotRequired[Phrase | None]
+    """With `query`, `queries` or a vector ranking: the tokens of `text` occur in the document in this order, at most `slop` tokens apart; also required of a hit, like `filter`. Needs `fts_positions`. Not with a listing or `sub_queries`."""
     contains: NotRequired[list[Contains] | None]
     """Conditions on full-text attributes, each also required of a hit, like `filter`. Not with a listing."""
     boosts: NotRequired[list[Boost] | None]
@@ -211,6 +213,20 @@ class QueryAttribute(TypedDict):
     """
     weight: NotRequired[float | None]
     """0.000001 to 100; default 1."""
+
+
+class Phrase(TypedDict):
+    """The `phrase` member of a JSON `query` request: a condition on the text of the
+    document, also required of a hit, like `filter`. The tokens of `text`, as the
+    full-text analyzer cuts them, occur in the document in this order. Needs a
+    namespace with `fts_positions`.
+    """
+    text: str
+    """1-4096 UTF-8 bytes."""
+    slop: NotRequired[int | None]
+    """How many tokens may stand between a token and the one before it: 0 to 16;
+    default 0, adjacent tokens.
+    """
 
 
 class Contains(TypedDict):
@@ -500,7 +516,7 @@ class FtsSettings(TypedDict):
     remove_stop_words: bool
     ascii_folding: bool
     with_position: bool
-    """Positional postings; false while there is no phrase scoring."""
+    """Positional postings, which a phrase condition needs."""
 
 
 class RetrievalSettings(TypedDict):

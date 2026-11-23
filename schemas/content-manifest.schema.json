@@ -347,7 +347,7 @@
         },
         "with_position": {
           "type": "boolean",
-          "description": "Positional postings; false while there is no phrase scoring."
+          "description": "Positional postings, which a phrase condition needs."
         }
       },
       "required": [

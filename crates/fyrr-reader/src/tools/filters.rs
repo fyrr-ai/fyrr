@@ -6,7 +6,7 @@ use fyrr_core::attributes::{AttributeSchema, AttributeType, parse_uuid};
 use fyrr_core::limits::mcp::{MAX_REGEX_BYTES, MAX_REGEX_PROGRAM_BYTES};
 use lance_index::scalar::{
     FullTextSearchQuery,
-    inverted::query::{FtsQuery, MatchQuery, Operator},
+    inverted::query::{FtsQuery, MatchQuery, Operator, PhraseQuery},
 };
 use serde_json::Value;
 
@@ -381,17 +381,27 @@ impl PreparedReader {
         Ok(())
     }
     /// Narrows the selection to the rows whose full-text attributes meet every
-    /// `contains` condition. Each scan takes the selection so far as its row
-    /// mask: the caller's admission and the filter bound it, and every row it
-    /// returns is checked against it. No SQL describes the result, so the
-    /// selection is marked `masked`.
-    pub(crate) async fn apply_contains(&mut self, contains: Option<&[Contains]>) -> Result<()> {
-        let Some(contains) = contains else {
+    /// `contains` condition and whose text holds the `phrase`. Each scan takes
+    /// the selection so far as its row mask: the caller's admission and the
+    /// filter bound it, and every row it returns is checked against it. No SQL
+    /// describes the result, so the selection is marked `masked`.
+    pub(crate) async fn apply_contains(
+        &mut self,
+        contains: Option<&[Contains]>,
+        phrase: Option<&Phrase>,
+    ) -> Result<()> {
+        let mut queries = Vec::new();
+        for condition in contains.unwrap_or_default() {
+            queries.push(self.contains_query(condition)?);
+        }
+        if let Some(phrase) = phrase {
+            queries.push(self.phrase_query(phrase)?);
+        }
+        if queries.is_empty() {
             return Ok(());
-        };
+        }
         let mut selected = self.selected_rows().clone();
-        for condition in contains {
-            let query = self.contains_query(condition)?;
+        for query in queries {
             let mut scan = self.dataset.scan();
             scan.project::<&str>(&[]).map_err(|_| IncompatibleIndex)?;
             scan.prefilter(true)
@@ -445,6 +455,18 @@ impl PreparedReader {
             return Err(InvalidArgument);
         }
         Ok(())
+    }
+    /// The phrase query on the index of `searchable_text`, which needs the
+    /// positions the namespace may not store.
+    fn phrase_query(&self, phrase: &Phrase) -> Result<FtsQuery> {
+        if !self.manifest.fts.with_position {
+            return Err(InvalidArgument);
+        }
+        Ok(FtsQuery::Phrase(
+            PhraseQuery::new(phrase.text.clone())
+                .with_column(Some("searchable_text".into()))
+                .with_slop(phrase.slop()),
+        ))
     }
     /// The full-text query of one condition: a match query on the attribute's
     /// index, joined by AND or OR.

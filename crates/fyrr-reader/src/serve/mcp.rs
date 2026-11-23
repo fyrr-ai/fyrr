@@ -54,6 +54,7 @@ impl ToolCall {
         matching: (
             Option<fyrr_core::mcp::TermMatch>,
             Option<Vec<fyrr_core::mcp::QueryAttribute>>,
+            Option<fyrr_core::mcp::Phrase>,
             Option<Vec<fyrr_core::mcp::Contains>>,
         ),
         ranking: (
@@ -68,7 +69,12 @@ impl ToolCall {
             search.fusion,
             search.rerank,
             search.sub_queries,
-            (search.query_match, search.query_attributes, search.contains),
+            (
+                search.query_match,
+                search.query_attributes,
+                search.phrase,
+                search.contains,
+            ),
             (search.boosts, search.group_documents, search.caps),
         ) = (fields, fusion, rerank, sub_queries, matching, ranking);
         search.validate().map_err(|_| InvalidArgument)?;

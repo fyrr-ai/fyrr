@@ -5735,3 +5735,159 @@ async fn identity_write_api_builds_a_vector_index_when_the_first_vector_arrives_
     assert!(index_names().await.contains(&"vec_image_idx".to_owned()));
     assert_eq!(query(41)[0], "r1");
 }
+
+/// A `phrase` member keeps the hits whose text holds its tokens in this order,
+/// adjacent or with at most `slop` tokens between two of them, for a text and
+/// a vector ranking alike; it is joined to the filter by AND and refused where
+/// there is no ranking to narrow.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_requires_a_phrase_of_the_text_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let text = std::fs::read_to_string(&config).unwrap().replacen(
+        "[namespace]\n",
+        "[namespace]\nfts_positions = true\n",
+        1,
+    );
+    std::fs::write(&config, text).unwrap();
+    embed(&root, &["alpha"]);
+    let writer = Writer::start(&config, &root, address).await;
+    // `d` holds the phrase but the caller may not read it; `b` holds both
+    // tokens in the other order.
+    let rows = [
+        ("a", "alpha beta gamma", "usr:x"),
+        ("b", "beta alpha gamma", "usr:x"),
+        ("c", "alpha gamma beta", "usr:x"),
+        ("d", "alpha beta", "usr:other"),
+        ("e", "alpha delta epsilon beta", "usr:x"),
+    ];
+    let upserts: Vec<Value> = rows
+        .iter()
+        .enumerate()
+        .map(|(n, (id, text, reader))| {
+            json!({"id": id, "text": text, "vector": vector(n, 1024), "readers": [reader]})
+        })
+        .collect();
+    assert_eq!(
+        writer
+            .post(WRITE_KEY, "dense-fixture", &json!({"upserts": upserts}))
+            .await,
+        (200, json!({"upserted": 5, "deleted": 0}))
+    );
+    let reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let with = |mut body: Value, phrase: Value| {
+        body["output"] = json!("metadata");
+        body["phrase"] = phrase;
+        body
+    };
+    let found = async |body: Value, phrase: Value| {
+        let mut found = roots(&ask(&reader, with(body, phrase)).await);
+        found.sort();
+        found
+    };
+    let refused = async |body: Value, phrase: Value| {
+        assert_eq!(
+            ask(&reader, with(body, phrase)).await,
+            (400, json!({"error": "invalid_argument"})),
+        );
+    };
+    let text = json!({"query": "alpha"});
+    let by_vector = json!({"vector": vector(7, 1024)});
+    for ranking in [&text, &by_vector] {
+        let phrase = |text: &str, slop: u32| json!({"text": text, "slop": slop});
+        assert_eq!(
+            found(ranking.clone(), json!({"text": "alpha beta"})).await,
+            ["a"]
+        );
+        assert_eq!(found(ranking.clone(), phrase("alpha beta", 0)).await, ["a"]);
+        assert_eq!(
+            found(ranking.clone(), phrase("alpha beta", 1)).await,
+            ["a", "c"]
+        );
+        assert_eq!(
+            found(ranking.clone(), phrase("alpha beta", 2)).await,
+            ["a", "c", "e"]
+        );
+        assert_eq!(found(ranking.clone(), phrase("beta alpha", 0)).await, ["b"]);
+        assert!(
+            found(ranking.clone(), phrase("beta gamma alpha", 0))
+                .await
+                .is_empty()
+        );
+    }
+    // The phrase and the filter are joined by AND.
+    let filtered = json!({"query": "alpha",
+                          "filter": {"field": "root_id", "op": "ne", "value": "a"}});
+    assert_eq!(
+        found(filtered, json!({"text": "alpha beta", "slop": 1})).await,
+        ["c"]
+    );
+    // A phrase has a text of at most 4096 bytes and a slop of at most 16, and
+    // it names nothing else; there is no ranking in a listing to narrow, and a
+    // sub-query has its own.
+    for phrase in [
+        json!({"text": ""}),
+        json!({"text": " "}),
+        json!({"text": "alpha beta", "slop": 17}),
+        json!({"text": "alpha beta", "slop": -1}),
+        json!({"text": "alpha beta", "attribute": "title"}),
+        json!({"slop": 1}),
+    ] {
+        refused(text.clone(), phrase).await;
+    }
+    refused(
+        json!({"order_by": [{"field": "root_id", "direction": "asc"}]}),
+        json!({"text": "alpha beta"}),
+    )
+    .await;
+    refused(
+        json!({"sub_queries": [{"query": "alpha", "limit": 3}]}),
+        json!({"text": "alpha beta"}),
+    )
+    .await;
+}
+
+/// A namespace stores no token positions unless `fts_positions` asks for them,
+/// and a phrase on one is refused, not answered by a scan.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_refuses_a_phrase_on_a_namespace_without_positions_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    embed(&root, &["alpha"]);
+    let writer = Writer::start(&config, &root, address).await;
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"upserts": [{"id": "a", "text": "alpha beta", "vector": vector(0, 1024),
+                                     "readers": ["usr:x"]}]})
+            )
+            .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    let reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let body = json!({"query": "alpha", "output": "metadata"});
+    assert_eq!(roots(&ask(&reader, body.clone()).await), ["a"]);
+    for ranking in [
+        body,
+        json!({"vector": vector(0, 1024), "output": "metadata"}),
+    ] {
+        let mut phrase = ranking.clone();
+        phrase["phrase"] = json!({"text": "alpha beta"});
+        assert_eq!(
+            ask(&reader, phrase).await,
+            (400, json!({"error": "invalid_argument"}))
+        );
+    }
+}
