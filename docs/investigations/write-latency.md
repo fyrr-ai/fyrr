@@ -97,6 +97,18 @@ complete run; the whole run took about 5.5 hours.
 
 The p99 of 50 and of 5 writes is their maximum.
 
+**How the 1-row row was computed.** The run used a version of the script that
+counted the 7 timed-out writes in `write` and `total` at their wait (about 600
+s each) and left them out of `read`. So `write` is over 1,000 writes, `read` over
+the 993 reads of the answered writes, and `total` over the 993 answered writes
+(write plus read) and the 7 timed-out ones (their wait only, no read). The
+reader's operations per read were divided by 1,000, not 993 (35.3 `GET`, about
+35.5 over the 993 reads). The raw per-write timings were not kept, so the table
+is **not recomputed**. The script now counts timed-out writes in
+`timed_out_writes` and leaves them out of every percentile and of the per-read
+counts; the percentiles of a new run are over answered writes only. The
+1,000- and 50,000-row rows had no timeout and are unaffected.
+
 - **A single-row write is about 19 times slower than on local storage** (p50
   8.4 s against 0.44 s) and **a 1,000-row write about 6 times slower** (3.6 s
   against 0.56 s). A 50,000-row write is 14 % slower (54 s against 47 s): its

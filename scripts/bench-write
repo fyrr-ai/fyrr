@@ -13,8 +13,9 @@ size it reports p50, p90 and p99 of
   total   write plus read: from the submission until a strong read finds it.
 
 A write the writer does not answer within its answer deadline (`503
-outcome_unknown`) is counted in `timed_out_writes`, at the time it waited, and
-has no read; the row may still be published.
+outcome_unknown`) is counted in `timed_out_writes` and left out of every
+percentile and of the per-read counts: it has no read, and its row may still be
+published.
 
 It also reports the object-store operations per write (the writer's own and,
 for the read, the reader's, through `FYRR_OBJECT_STORE_DIAGNOSTICS`), the
@@ -24,6 +25,7 @@ body: the same body, refused with `403` after it was read and scanned, and
 with `400 vector_invalid` after every row before the last was bound.
 
   scripts/bench-write --binary target/release/fyrr --storage local
+  export FYRR_FIXTURE_ID="bench-write-$$"   # a fixture of its own: `stop` removes it
   scripts/s3-fixture start; eval "$(scripts/s3-fixture env)"
   scripts/bench-write --storage fixture; scripts/s3-fixture stop
   FYRR_BENCH_S3_URI=s3://bucket/prefix scripts/bench-write --storage s3
@@ -318,11 +320,9 @@ def main():
                 before = maintenance_runs()
                 status, answer, elapsed = write.call("POST", path % ns, write_key, body)
                 if (status, answer) == (503, {"error": "outcome_unknown"}):
-                    # Not answered within the writer's answer deadline: counted at
-                    # that time, with no read after it. The row may still be published.
+                    # Not answered within the writer's answer deadline: counted, with
+                    # no read after it. The row may still be published.
                     timed_out += 1
-                    writes.append(elapsed)
-                    totals.append(elapsed)
                     continue
                 assert status == 200 and answer["upserted"] == batch, (
                     status,
@@ -353,7 +353,7 @@ def main():
                     m: round(c / count, 2) for m, c in sorted(ops.items())
                 },
                 "reader_object_store_ops_per_read": {
-                    m: round(c / count, 2) for m, c in sorted(reader_ops.take().items())
+                    m: round(c / len(reads), 2) for m, c in sorted(reader_ops.take().items())
                 },
             }
             if batch == PLAN[0][0]:
