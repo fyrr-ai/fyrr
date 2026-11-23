@@ -22,6 +22,15 @@ pub(crate) enum ToolCall {
     /// `GET /v1/namespaces/{namespace}`: no MCP tool, so `parse` never makes it.
     Report,
 }
+/// The members of a JSON `query` request that decide what a text matches:
+/// `query_match`, `query_attributes`, `phrase` and `contains`.
+type Matching = (
+    Option<fyrr_core::mcp::TermMatch>,
+    Option<Vec<fyrr_core::mcp::QueryAttribute>>,
+    Option<fyrr_core::mcp::Phrase>,
+    Option<Vec<fyrr_core::mcp::Contains>>,
+);
+
 impl ToolCall {
     pub(crate) fn parse(name: &str, args: Value) -> Result<Self> {
         let call = match name {
@@ -51,11 +60,7 @@ impl ToolCall {
         fusion: Option<fyrr_core::mcp::Fusion>,
         rerank: Option<fyrr_core::mcp::RerankChoice>,
         sub_queries: Option<Vec<fyrr_core::mcp::SubQuery>>,
-        matching: (
-            Option<fyrr_core::mcp::TermMatch>,
-            Option<Vec<fyrr_core::mcp::QueryAttribute>>,
-            Option<Vec<fyrr_core::mcp::Contains>>,
-        ),
+        matching: Matching,
         ranking: (
             Option<Vec<fyrr_core::mcp::Boost>>,
             Option<bool>,
@@ -68,7 +73,12 @@ impl ToolCall {
             search.fusion,
             search.rerank,
             search.sub_queries,
-            (search.query_match, search.query_attributes, search.contains),
+            (
+                search.query_match,
+                search.query_attributes,
+                search.phrase,
+                search.contains,
+            ),
             (search.boosts, search.group_documents, search.caps),
         ) = (fields, fusion, rerank, sub_queries, matching, ranking);
         search.validate().map_err(|_| InvalidArgument)?;

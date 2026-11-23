@@ -1460,6 +1460,10 @@
         "tier": "quick",
         "seconds": 0.003
       },
+      "full:fyrr-core:test:contracts/token_positions_need_the_version_an_older_build_refuses": {
+        "tier": "quick",
+        "seconds": 0.003
+      },
       "full:fyrr-core:test:contracts/a_vector_metric_and_element_type_need_the_version_an_older_build_refuses": {
         "tier": "quick",
         "seconds": 0.003
@@ -1555,6 +1559,10 @@
         "seconds": 0.1
       },
       "full:fyrr-reader:test:lance_pin/weighted_attribute_query_returns_the_true_top_10_on_three_segments_and_under_a_mask": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
+      "full:fyrr-reader:test:lance_pin/phrase_mask_narrows_a_ranking_to_the_true_top_10_on_three_segments_and_under_a_mask": {
         "tier": "quick",
         "seconds": 1.0
       },
@@ -1947,6 +1955,14 @@
         "seconds": 30
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_narrows_a_query_by_the_tokens_of_a_full_text_attribute_on_storage": {
+        "tier": "full",
+        "seconds": 30
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_requires_a_phrase_of_the_text_on_storage": {
+        "tier": "full",
+        "seconds": 30
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_refuses_a_phrase_on_a_namespace_without_positions_on_storage": {
         "tier": "full",
         "seconds": 30
       },

@@ -34,10 +34,11 @@ pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 1)
 /// typed columns of the metadata fields of connector documents (a build without
 /// them would read nulls), a vector metric or element type other than cosine
 /// and 16-bit floats (a build without them would search and write the wrong
-/// ones), or, for a policy, the `read_only` switch (a build without it would
-/// write). An older build refuses them: it reads only its own
-/// major, and this build reads both. A document with none of them keeps its
-/// version.
+/// ones), token positions in the full-text index (a build without them would
+/// search a positional index as a positionless one), or, for a policy, the
+/// `read_only` switch (a build without it would write). An older build
+/// refuses them: it reads only its own major, and this build reads both. A
+/// document with none of them keeps its version.
 pub const INDEXED_PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
 /// The policy artifact's counterpart of [`INDEXED_PUBLICATION_CONTRACT_VERSION`].
 pub const INDEXED_POLICY_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
@@ -87,10 +88,12 @@ pub struct NamespaceSettings {
 impl NamespaceSettings {
     /// Whether an older build would misread a namespace with these settings:
     /// it ignores index options, reads the connector columns as null,
-    /// searches and writes cosine and 16-bit floats and leaves out the columns
-    /// of the named vector attributes.
+    /// searches and writes cosine and 16-bit floats, leaves out the columns
+    /// of the named vector attributes and builds the full-text index without
+    /// positions.
     pub fn needs_newer_build(&self) -> bool {
         !self.attribute_indexes.is_empty()
+            || self.fts.with_position
             || (self.write_api.is_none() && has_connector_columns(&self.attributes))
             || !self.dense_metric.is_default()
             || !self.dense_element.is_default()
@@ -110,6 +113,7 @@ impl NamespaceSettings {
             fts_stem: self.fts.stem,
             fts_remove_stop_words: self.fts.remove_stop_words,
             fts_ascii_folding: self.fts.ascii_folding,
+            fts_positions: self.fts.with_position,
             dense_rq_bits: self.dense_rq_bits,
             dense_partition_rows: self.dense_partition_rows,
             dense_metric: self.dense_metric,
@@ -197,7 +201,7 @@ impl Contract for PolicyArtifact {
             && self.schema_version.major != INDEXED_POLICY_CONTRACT_VERSION.major
         {
             return Err(
-                "attribute index options, connector columns, a vector metric or element type, vector attributes and read_only need the indexed policy version"
+                "attribute index options, connector columns, a vector metric or element type, vector attributes, token positions and read_only need the indexed policy version"
                     .into(),
             );
         }
@@ -423,7 +427,7 @@ pub struct FtsSettings {
     pub stem: bool,
     pub remove_stop_words: bool,
     pub ascii_folding: bool,
-    /// Positional postings; false while there is no phrase scoring.
+    /// Positional postings, which a phrase condition needs.
     pub with_position: bool,
 }
 
@@ -513,13 +517,14 @@ impl Contract for ContentManifest {
         )
         .map_err(|error| format!("vectors: {error}"))?;
         if (!self.attribute_indexes.is_empty()
+            || self.fts.with_position
             || !self.dense_metric.is_default()
             || !self.dense_element.is_default()
             || !self.vectors.is_empty())
             && self.schema_version.major != INDEXED_PUBLICATION_CONTRACT_VERSION.major
         {
             return Err(
-                "attribute index options, a vector metric or element type and vector attributes need the indexed manifest version"
+                "attribute index options, token positions, a vector metric or element type and vector attributes need the indexed manifest version"
                     .into(),
             );
         }

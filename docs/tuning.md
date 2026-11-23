@@ -27,6 +27,7 @@ and the other `[reader]` and `[writer]` keys in
 | `fts_stem` | `false` | English stemming at publication level. |
 | `fts_remove_stop_words` | `false` | Stop-word removal. |
 | `fts_ascii_folding` | `false` | ASCII folding. |
+| `fts_positions` | `false` | Stores token positions in the full-text index of `searchable_text`, which a [`phrase`](http-api.md#matching-tokens) condition needs; the index grows, see [the size of the positions](#the-size-of-the-positions). A namespace without them answers a phrase with `400 invalid_argument`. Like the other `fts_*` settings it is fixed when the namespace is created. |
 | `composition` | see below | Document slots of a search response. |
 | `retrieval` | see below | Candidate depths, fusion weight and output bounds. |
 | `rerank` | absent | Optional hosted reranker; absent makes no reranker calls. |
@@ -34,6 +35,34 @@ and the other `[reader]` and `[writer]` keys in
 | `attribute_indexes` | `{}` | The attributes whose indexes are not the default: `index = false`, `full_text` and `ngram`, see below. |
 | `vectors` | `{}` | Named vector attributes besides the built-in `vector`: name to `dimensions` and an optional `from` or `multi`, see below. |
 | `write_api` | absent | Serves the [document write API](http-api.md#write-documents) and creates API namespaces, see below. |
+
+### The size of the positions
+
+`scripts/bench-fts-positions` builds the full-text index of the same corpus
+twice with the real `fyrr writer serve` on local storage, once without and once
+with `fts_positions = true`, and prints the bytes of the index files of each
+and the growth. The corpus is the 5,183 abstracts of BEIR SciFact
+(`BeIR/scifact` on Hugging Face), which the script fetches, with the title and
+the abstract as one text. It writes them in one request, so the index is one
+segment:
+
+```sh
+scripts/bench-fts-positions --binary target/release/fyrr
+```
+
+Measured on one laptop-class machine (20 logical CPUs), local storage, with the
+CI build of commit `c63c373b` (the index size does not depend on the build
+profile), `writer.threads = 2`: 5,183 documents of 7.77 million characters.
+
+| `fts_positions` | Files | Index bytes | Of which postings | Growth |
+| --- | --- | --- | --- | --- |
+| `false` | 4 | 2,693,359 | 2,358,519 | 1.00 |
+| `true` | 4 | 5,081,021 | 4,746,108 | 1.89 |
+
+The positions about double the full-text index of this corpus: 2.39 MB more
+for 7.77 MB of text, 31% of the size of the text. The growth follows the
+number of token occurrences, so a corpus of longer documents grows alike; turn
+the setting on only for a namespace that needs phrase queries.
 
 ### `[namespace.attributes]`
 

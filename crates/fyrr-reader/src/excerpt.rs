@@ -12,7 +12,7 @@ use std::collections::HashSet;
 pub fn fts_params(namespace: &NamespaceConfig) -> InvertedIndexParams {
     InvertedIndexParams::default()
         .base_tokenizer("simple".into())
-        .with_position(false)
+        .with_position(namespace.fts_positions)
         .max_token_length(Some(namespace.fts_max_token_length as usize))
         .lower_case(true)
         .stem(namespace.fts_stem)

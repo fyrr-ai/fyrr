@@ -208,6 +208,27 @@ fn vector_attributes_need_the_version_an_older_build_refuses() {
     assert!(written.get("vectors").is_none());
 }
 
+/// Token positions in the full-text index are read only from the versions an
+/// older build refuses: it would search the positional index as a positionless
+/// one. Without them, the manifest and the policy keep their versions.
+#[test]
+fn token_positions_need_the_version_an_older_build_refuses() {
+    let mut manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
+    manifest["fts"]["with_position"] = json!(true);
+    assert!(parse::<ContentManifest>(&manifest).is_err());
+    manifest["schema_version"] = json!("5.0");
+    assert!(parse::<ContentManifest>(&manifest).is_ok());
+    let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
+    policy["settings"]["fts"]["with_position"] = json!(true);
+    assert!(parse::<PolicyArtifact>(&policy).is_err());
+    policy["schema_version"] = json!("4.0");
+    let positional = parse::<PolicyArtifact>(&policy).unwrap();
+    assert_eq!(
+        positional.current_version(),
+        fyrr_core::publication::INDEXED_POLICY_CONTRACT_VERSION
+    );
+}
+
 /// A metric other than cosine or a 32-bit element type is read only from the
 /// versions an older build refuses: it would search and write cosine and 16-bit
 /// floats. The defaults are no entry, so that an older namespace keeps its bytes.

@@ -169,6 +169,9 @@ pub struct SearchInput {
     /// Set by the HTTP query route from its `query_attributes` member; no tool argument.
     #[serde(skip)]
     pub query_attributes: Option<Vec<QueryAttribute>>,
+    /// Set by the HTTP query route from its `phrase` member; no tool argument.
+    #[serde(skip)]
+    pub phrase: Option<Phrase>,
     /// Set by the HTTP query route from its `sub_queries` member; no tool argument.
     #[serde(skip)]
     pub sub_queries: Option<Vec<SubQuery>>,
@@ -209,6 +212,33 @@ pub struct Contains {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 4096), extend("x-maxUtf8Bytes" = 4096))]
     pub any: Option<String>,
+}
+
+/// The `phrase` member of a JSON `query` request: a condition on the text of the
+/// document, also required of a hit, like `filter`. The tokens of `text`, as the
+/// full-text analyzer cuts them, occur in the document in this order. Needs a
+/// namespace with `fts_positions`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Phrase {
+    /// 1-4096 UTF-8 bytes.
+    #[schemars(length(min = 1, max = 4096), extend("x-maxUtf8Bytes" = 4096))]
+    pub text: String,
+    /// Tokens allowed between two tokens of the phrase; only 0 (adjacent) until a newer Lance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0, max = 0))]
+    pub slop: Option<u32>,
+}
+
+impl Phrase {
+    pub fn slop(&self) -> u32 {
+        self.slop.unwrap_or(0)
+    }
+    fn is_valid(&self) -> bool {
+        bounded_text(&self.text, 4096)
+            && !self.text.trim().is_empty()
+            && (0..=MAX_PHRASE_SLOP).contains(&self.slop())
+    }
 }
 
 /// One member of the `query_attributes` member of a JSON `query` request: an
@@ -1469,6 +1499,10 @@ impl SearchInput {
                     && attributes.iter().enumerate().all(|(i, a)| {
                         a.is_valid() && attributes[..i].iter().all(|b| b.attribute != a.attribute)
                     })
+            })
+            && self.phrase.as_ref().is_none_or(|phrase| {
+                // A listing has no ranking to narrow, and a sub-query has its own filter.
+                !listing && self.sub_queries.is_none() && phrase.is_valid()
             })
             && self.contains.as_ref().is_none_or(|conditions| {
                 // A listing has no ranking to narrow, and it reads by predicate.

@@ -166,6 +166,11 @@
           "description": "ASCII folding.",
           "default": false
         },
+        "fts_positions": {
+          "type": "boolean",
+          "description": "Token positions in the `searchable_text` index; a `phrase` condition needs them.",
+          "default": false
+        },
         "dense_rq_bits": {
           "type": "integer",
           "format": "uint8",
