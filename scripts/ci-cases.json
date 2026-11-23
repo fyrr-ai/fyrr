@@ -1470,6 +1470,10 @@
     "title": "native Lance pin checks",
     "kind": "rust",
     "cases": {
+      "full:fyrr-reader:test:lance_pin/all_terms_and_prefix_queries_return_the_true_top_10_on_three_segments_and_under_a_mask": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
       "full:fyrr-reader:test:lance_pin/bm25_global_statistics_deletions_merge_and_rebuild": {
         "tier": "quick",
         "seconds": 0.062
@@ -1845,6 +1849,10 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on_storage": {
         "tier": "full",
         "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_narrows_a_query_by_the_tokens_of_a_full_text_attribute_on_storage": {
+        "tier": "full",
+        "seconds": 30
       }
     }
   },

@@ -151,7 +151,7 @@ the namespace's. A text is always lowercased. Every key is optional.
 | `max_token_length` | `40` | 1–1024: a longer token, in UTF-8 bytes, is dropped; an n-gram is a token too. |
 | `ngram_min_length` | `3` | 1–16: shortest n-gram; only with `tokenizer = "ngram"`. |
 | `ngram_max_length` | `3` | `ngram_min_length`–16: longest n-gram; only with `tokenizer = "ngram"`. |
-| `prefix_only` | `false` | Only the n-grams that start the value; only with `tokenizer = "ngram"`. |
+| `prefix_only` | `false` | Only the n-grams that start the value; only with `tokenizer = "ngram"`. A [`contains` condition](http-api.md#matching-tokens) refuses an attribute with this tokenizer. |
 
 The `ngram` tokenizer keeps every n-gram, so it takes no `language` and no
 `stop_words`, and its index holds up to `ngram_max_length - ngram_min_length + 1`

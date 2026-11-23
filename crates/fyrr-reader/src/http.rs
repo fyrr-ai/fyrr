@@ -513,7 +513,8 @@ fn strong_read(arguments: &mut serde_json::Value) -> Result<bool, ReaderError> {
 }
 
 /// Takes `name` off the arguments of a JSON `query` call, where it is no
-/// argument of the tool: `fields`, `fusion`, `rerank` or `sub_queries`.
+/// argument of the tool: `fields`, `fusion`, `rerank`, `sub_queries`, `query_match` or
+/// `contains`.
 fn query_member<T: serde::de::DeserializeOwned>(
     arguments: &mut serde_json::Value,
     name: &str,
@@ -662,12 +663,15 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                             let fusion = query_member(&mut arguments, "fusion")?;
                             let rerank = query_member(&mut arguments, "rerank")?;
                             let sub_queries = query_member(&mut arguments, "sub_queries")?;
+                            let query_match = query_member(&mut arguments, "query_match")?;
+                            let contains = query_member(&mut arguments, "contains")?;
                             crate::serve::ToolCall::query(
                                 arguments,
                                 fields,
                                 fusion,
                                 rerank,
                                 sub_queries,
+                                (query_match, contains),
                             )
                         }
                         _ => crate::serve::ToolCall::parse(name, arguments),

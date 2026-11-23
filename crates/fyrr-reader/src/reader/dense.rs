@@ -362,6 +362,9 @@ impl PreparedReader {
                 .map_err(|_| AuthorizationUnavailable)?
                 .prefilter(true)
                 .with_row_id();
+            if self.filter_selection.as_ref().is_some_and(|f| f.masked) {
+                scan.with_row_id_prefilter(self.selected_rows().clone());
+            }
             if !self.preparation_reservation.warm() {
                 scan.batch_size(256);
             }

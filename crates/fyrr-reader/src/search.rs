@@ -405,6 +405,9 @@ type SharedReaderResources = (
 pub(crate) struct FilterSelection {
     pub(crate) predicate: String,
     pub(crate) eligible: RowAddrMask,
+    /// `eligible` holds rows that `predicate` does not describe (`contains`), so
+    /// a scan by predicate must also take the mask.
+    pub(crate) masked: bool,
 }
 
 /// A content pin and the authorization artifacts used to admit its queries.

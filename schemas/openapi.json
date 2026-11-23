@@ -438,7 +438,7 @@
       },
       "QueryRequest": {
         "type": "object",
-        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and five members that are no tool arguments.",
+        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and seven members that are no tool arguments.",
         "properties": {
           "query": {
             "type": [
@@ -732,6 +732,29 @@
               "$ref": "#/components/schemas/SubQuery"
             },
             "description": "1-16 searches of their own, each with its filter, ranking and limit, instead of `query`, `queries` and `vector`."
+          },
+          "query_match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TermMatch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `query`: `all` ranks only the documents that hold every term; default `any`."
+          },
+          "contains": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Contains"
+            },
+            "description": "Conditions on full-text attributes, each also required of a hit, like `filter`. Not with a listing.",
+            "minItems": 1,
+            "maxItems": 16
           }
         }
       },
@@ -1091,6 +1114,50 @@
           "limit"
         ],
         "description": "One member of `sub_queries` in a JSON `query` request: a search of its own\nby text, by vector, or by both as in the `search` tool, with its own\nfilter and limit. The filter arguments and `filter` of the request apply to\nevery sub-query as well."
+      },
+      "TermMatch": {
+        "type": "string",
+        "enum": [
+          "all",
+          "any"
+        ],
+        "description": "The `query_match` member of a JSON `query` request: whether a document\nneeds every term of the text query or any one of them. Default `any`."
+      },
+      "Contains": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "A string attribute with a full-text index.",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "all": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The value holds every token of this text, 1-4096 UTF-8 bytes.",
+            "minLength": 1,
+            "maxLength": 4096,
+            "x-maxUtf8Bytes": 4096
+          },
+          "any": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The value holds at least one token of this text, 1-4096 UTF-8 bytes.",
+            "minLength": 1,
+            "maxLength": 4096,
+            "x-maxUtf8Bytes": 4096
+          }
+        },
+        "required": [
+          "attribute"
+        ],
+        "description": "One condition of the `contains` member of a JSON `query` request, on the\nfull-text index of a string attribute, which is not built with the `ngram`\ntokenizer. Exactly one of `all` and `any`."
       },
       "FetchRequest": {
         "type": "object",
