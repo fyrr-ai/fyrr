@@ -365,7 +365,7 @@ can without any term. It is `invalid_argument` without a text query. The
 excerpt of a hit follows the terms of the text as before.
 
 `query_attributes` names the full-text attributes a text query scores, 1–8 of
-them, each with a `weight` greater than 0 and at most 100 (default 1). Without
+them, each with a `weight` from 0.000001 to 100 (default 1). Without
 it the query scores `searchable_text`, the text of the document, as before. A
 document scores the sum of the weighted BM25 scores of the attributes it
 matches, and the best ten of that sum are the true best ten of every match.

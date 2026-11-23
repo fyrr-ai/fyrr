@@ -76,6 +76,8 @@ impl PreparedReader {
             if named.attribute != TextMatch::TEXT {
                 self.check_full_text(&named.attribute)?;
             }
+            // The weight is validated to lie in (0, 100]: no precision that matters is lost.
+            #[allow(clippy::cast_possible_truncation)]
             attributes.push((named.attribute.clone(), named.weight() as f32));
         }
         if attributes.len() > 1
@@ -134,6 +136,14 @@ impl PreparedReader {
             .saturating_mul(1024)
             .div_ceil(50)
             .max(candidates + 1);
+        // An index of one document per element returns a row once for each
+        // element that matches, so a row of many elements can fill the fetch
+        // before a second row appears. Such a fetch grows until it holds
+        // `limit + 1` distinct rows or Lance returns fewer elements than asked,
+        // bounded by the rows an exact search may score.
+        let element_bound = usize::try_from(fyrr_core::limits::mcp::MAX_EXACT_ROWS)
+            .unwrap_or(usize::MAX)
+            .max(fetch_bound);
         // One lookahead is sufficient when the cutoff is strictly above its lookahead.
         // Lance's top-k does not resolve equal scores by our logical key.
         let mut requested = limit + 1;
@@ -162,21 +172,21 @@ impl PreparedReader {
             fetched += rows.len() as u64;
             let saturated = rows.len() == requested;
             let cutoff = rows.last().map(|row| row.score);
-            // An index of one document per element returns a document once for
-            // each element that matches; the best of them ranks it.
+            // The best element ranks a row.
             let mut seen = std::collections::HashSet::new();
             rows.retain(|row| seen.insert(row.row_id));
-            let unresolved = saturated
-                && (rows.len() <= limit
-                    || cutoff
-                        .is_some_and(|cutoff| rows[limit - 1].score.total_cmp(&cutoff).is_eq()));
-            if !unresolved || requested == fetch_bound {
+            let short = saturated && rows.len() <= limit;
+            let tied = saturated
+                && !short
+                && cutoff.is_some_and(|cutoff| rows[limit - 1].score.total_cmp(&cutoff).is_eq());
+            let bound = if short { element_bound } else { fetch_bound };
+            if !(short || tied) || requested >= bound {
                 rows.truncate(limit);
                 // At the bound only the fetched subset is stable-key ordered;
                 // telemetry explicitly records incomplete cutoff-tie coverage.
-                return Ok((rows, fetched, u64::from(unresolved)));
+                return Ok((rows, fetched, u64::from(short || tied)));
             }
-            requested = (requested * 2).min(fetch_bound);
+            requested = (requested * 2).min(bound);
         }
     }
     pub(super) fn lane_rows(

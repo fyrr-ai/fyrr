@@ -359,6 +359,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::an_unindexed_tail_is_scored_flat_and_never_returns_a_row_the_caller_may_not_read": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
       "full:fyrr-reader:lib:fyrr_reader/search::tests::the_sql_prefilter_stays_unless_every_index_the_query_reads_covers_every_fragment": {
         "tier": "quick",
         "seconds": 0.05

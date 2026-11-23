@@ -94,6 +94,152 @@ async fn the_sql_prefilter_stays_unless_every_index_the_query_reads_covers_every
     assert!(prefilter(&["title", "searchable_text"]));
 }
 
+/// The text lane over attributes whose full-text index does not cover the last
+/// fragment: that fragment is scored flat, behind the SQL admission, so a row
+/// the caller may not read is no candidate and no statistic, for an array
+/// indexed per element and for several attributes alike.
+#[tokio::test]
+async fn an_unindexed_tail_is_scored_flat_and_never_returns_a_row_the_caller_may_not_read() {
+    use arrow_array::{ListArray, RecordBatchIterator};
+    use arrow_buffer::OffsetBuffer;
+    use arrow_schema::{DataType, Field, Schema};
+    use lance::dataset::{WriteMode, WriteParams};
+    use lance::index::DatasetIndexExt;
+    use lance_index::scalar::{InvertedIndexParams, inverted::DocumentGranularity};
+    let item = Arc::new(Field::new("item", DataType::Utf8, false));
+    let text = |name: &str| Field::new(name, DataType::Utf8, false);
+    let schema = Arc::new(Schema::new(vec![
+        text("source_id"),
+        text("root_id"),
+        text("record_id"),
+        Field::new("tags", DataType::List(item.clone()), false),
+        text("note"),
+        text("title"),
+    ]));
+    // A row: root, elements of the array, note and title.
+    let batch = |rows: &[(&str, &[&str], &str)]| {
+        let strings = |values: Vec<&str>| Arc::new(StringArray::from(values));
+        let elements: Vec<&str> = rows.iter().flat_map(|row| row.1.iter().copied()).collect();
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                strings(vec!["source"; rows.len()]),
+                strings(rows.iter().map(|row| row.0).collect()),
+                strings(vec!["record"; rows.len()]),
+                Arc::new(ListArray::new(
+                    item.clone(),
+                    OffsetBuffer::from_lengths(rows.iter().map(|row| row.1.len())),
+                    strings(elements),
+                    None,
+                )),
+                strings(rows.iter().map(|row| row.2).collect()),
+                strings(rows.iter().map(|row| row.2).collect()),
+            ],
+        )
+        .unwrap()
+    };
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/lance-pin")
+        .join(format!(
+            "lexical-tail-{}-{}",
+            std::process::id(),
+            fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
+        ));
+    let write = async |mode: WriteMode, rows: &[(&str, &[&str], &str)]| {
+        Dataset::write(
+            RecordBatchIterator::new(vec![Ok(batch(rows))], schema.clone()),
+            root.to_str().unwrap(),
+            Some(WriteParams {
+                mode,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap()
+    };
+    let mut dataset = write(
+        WriteMode::Create,
+        &[
+            ("ok-0", &["alpha one"], "alpha one"),
+            ("ok-1", &["beta"], "beta"),
+        ],
+    )
+    .await;
+    let index = async |dataset: &mut Dataset, column: &str, params: InvertedIndexParams| {
+        dataset
+            .create_index(
+                &[column],
+                IndexType::Inverted,
+                Some(format!("attrfts_{column}_idx")),
+                &params,
+                false,
+            )
+            .await
+            .unwrap();
+    };
+    let params = InvertedIndexParams::default().with_position(false);
+    index(
+        &mut dataset,
+        "tags",
+        params
+            .clone()
+            .document_granularity(DocumentGranularity::ListElement),
+    )
+    .await;
+    index(&mut dataset, "note", params.clone()).await;
+    // The tail: a row the caller may not read, which matches best, and one it may.
+    let mut dataset = write(
+        WriteMode::Append,
+        &[
+            ("hidden", &["alpha alpha", "alpha"], "alpha alpha"),
+            ("ok-tail", &["alpha"], "alpha"),
+        ],
+    )
+    .await;
+    // `title` is indexed after the tail was written: it covers every fragment.
+    index(&mut dataset, "title", params).await;
+    let indexes = dataset.load_indices().await.unwrap();
+    let tail = dataset.manifest().fragments.last().unwrap().id << 32;
+    let eligible = RowAddrMask::from_allowed(RowAddrTreeMap::from_iter([0, 1, tail | 1]));
+    let reads = |attributes: &[(&str, f32)]| TextMatch {
+        all_terms: false,
+        attributes: attributes
+            .iter()
+            .map(|(name, weight)| ((*name).into(), *weight))
+            .collect(),
+    };
+    assert!(!PreparedReader::fts_requires_sql_prefilter(
+        &dataset,
+        &indexes,
+        &reads(&[("title", 1.0)])
+    ));
+    for attributes in [
+        // An array of which the tail is unindexed.
+        reads(&[("tags", 1.0)]),
+        // Two attributes, of which `note` does not cover the tail.
+        reads(&[("title", 3.0), ("note", 1.0)]),
+    ] {
+        assert!(PreparedReader::fts_requires_sql_prefilter(
+            &dataset,
+            &indexes,
+            &attributes
+        ));
+        let (found, _, _) = PreparedReader::lexical(
+            &dataset,
+            &eligible,
+            Some("root_id <> 'hidden'"),
+            "alpha",
+            &attributes,
+            5,
+        )
+        .await
+        .unwrap();
+        let mut roots: Vec<_> = found.iter().map(|row| row.root.as_str()).collect();
+        roots.sort_unstable();
+        assert_eq!(roots, ["ok-0", "ok-tail"], "{attributes:?}");
+    }
+}
+
 #[tokio::test]
 async fn lexical_request_mask_precedes_topk_and_preserves_sql_scores() {
     use arrow_array::RecordBatchIterator;

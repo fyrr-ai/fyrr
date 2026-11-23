@@ -205,7 +205,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/AttributeIndex"
           },
-          "description": "The attributes whose indexes differ from the default (the scalar index\nof the attribute's type): `index = false` leaves the attribute to a scan\nof the table, `full_text` and `ngram` add a text index to a `string`,\nand `analyzer` sets how the full-text index cuts a text into terms.",
+          "description": "The attributes whose indexes differ from the default (the scalar index\nof the attribute's type): `index = false` leaves the attribute to a scan\nof the table, `full_text` and `ngram` add a text index to a `string`\n(`full_text` also to an array of strings, one document per element),\nand `analyzer` sets how the full-text index cuts a text into terms.",
           "default": {}
         },
         "vectors": {

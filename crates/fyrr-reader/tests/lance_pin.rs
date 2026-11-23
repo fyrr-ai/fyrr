@@ -37,7 +37,9 @@ use lance_index::{
         FullTextSearchQuery, InvertedIndexParams,
         inverted::{
             DocumentGranularity,
-            query::{BooleanQuery, FtsQuery, MatchQuery, Occur, Operator, PhraseQuery},
+            query::{
+                BooleanQuery, FtsQuery, MatchQuery, MultiMatchQuery, Occur, Operator, PhraseQuery,
+            },
         },
     },
 };
@@ -1272,12 +1274,16 @@ async fn string_array_indexed_per_element_never_matches_across_two_elements() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("tags", DataType::List(field.clone()), false),
+        Field::new("title", DataType::Utf8, false),
     ]));
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
             Arc::new(Int64Array::from_iter_values(0..5)),
             Arc::new(ListArray::new(field, offsets, Arc::new(values), None)),
+            Arc::new(StringArray::from(vec![
+                "alpha", "alpha", "beta", "beta", "omega",
+            ])),
         ],
     )
     .unwrap();
@@ -1297,6 +1303,16 @@ async fn string_array_indexed_per_element_never_matches_across_two_elements() {
             &InvertedIndexParams::default()
                 .with_position(false)
                 .document_granularity(DocumentGranularity::ListElement),
+            false,
+        )
+        .await
+        .unwrap();
+    dataset
+        .create_index(
+            &["title"],
+            IndexType::Inverted,
+            Some("title_fts".into()),
+            &InvertedIndexParams::default().with_position(false),
             false,
         )
         .await
@@ -1329,7 +1345,7 @@ async fn string_array_indexed_per_element_never_matches_across_two_elements() {
             .zip(scores.values().iter().copied())
             .collect::<Vec<_>>()
     };
-    let ids = |rows: Vec<(i64, f32)>| {
+    let sorted_ids = |rows: Vec<(i64, f32)>| {
         let mut ids: Vec<i64> = rows.into_iter().map(|row| row.0).collect();
         ids.sort_unstable();
         ids
@@ -1337,8 +1353,8 @@ async fn string_array_indexed_per_element_never_matches_across_two_elements() {
     // Rows 1 and 3 hold both words in one element; rows 0 and 2 only across
     // two. A row is returned once for each element that matches: row 3 twice.
     let all = rows(ask(Operator::And), None).await;
-    assert_eq!(ids(all.clone()), [1, 3, 3]);
-    let mut any = ids(rows(ask(Operator::Or), None).await);
+    assert_eq!(sorted_ids(all.clone()), [1, 3, 3]);
+    let mut any = sorted_ids(rows(ask(Operator::Or), None).await);
     any.dedup();
     assert_eq!(any, [0, 1, 2, 3]);
     // The boost of the match scales the score of each element.
@@ -1373,5 +1389,28 @@ async fn string_array_indexed_per_element_never_matches_across_two_elements() {
         }
     }
     let masked = rows(ask(Operator::And), Some(&masked)).await;
-    assert_eq!(ids(masked), [3, 3]);
+    assert_eq!(sorted_ids(masked), [3, 3]);
+
+    // One query over an index of one document per element and one of one per
+    // row is refused, as a boolean query and as a multi-match query: an array
+    // stands alone in the text ranking.
+    let leaf = |column: &str| MatchQuery::new("alpha".into()).with_column(Some(column.into()));
+    let mixed = [
+        FtsQuery::Boolean(BooleanQuery::new([
+            (Occur::Should, FtsQuery::Match(leaf("tags"))),
+            (Occur::Should, FtsQuery::Match(leaf("title"))),
+        ])),
+        FtsQuery::MultiMatch(MultiMatchQuery {
+            match_queries: vec![leaf("tags"), leaf("title")],
+        }),
+    ];
+    for query in mixed {
+        let mut scan = dataset.scan();
+        scan.prefilter(true).with_row_id();
+        let refused = match scan.full_text_search(FullTextSearchQuery::new_query(query)) {
+            Err(_) => true,
+            Ok(_) => scan.try_into_batch().await.is_err(),
+        };
+        assert!(refused);
+    }
 }

@@ -4504,25 +4504,19 @@ async fn identity_write_api_ranks_a_text_query_by_several_full_text_attributes_o
     // `d` matches every ranking best but the caller may not read it. No text
     // holds the query: only the attributes do.
     let rows = [
-        (
-            "a",
-            "alpha",
-            "beta",
-            json!(["alpha one", "alpha two", "alpha three"]),
-            "usr:x",
-        ),
+        ("a", "alpha", "beta", json!(vec!["alpha"; 60]), "usr:x"),
         (
             "b",
             "beta",
             "alpha",
-            json!(["alpha beta", "alpha delta", "alpha"]),
+            json!(["alpha beta", "alpha delta", "alpha x y"]),
             "usr:x",
         ),
         (
             "c",
             "gamma",
             "alpha alpha",
-            json!(["beta", "alpha"]),
+            json!(["beta", "alpha x y"]),
             "usr:x",
         ),
         (
@@ -4574,7 +4568,7 @@ async fn identity_write_api_ranks_a_text_query_by_several_full_text_attributes_o
     // The documents the text lane scored, best first.
     let lexical = async |query: &str, attributes: Value, query_match: &str| {
         let mut body = json!({"query": query, "output": "metadata", "fields": {"scores": true},
-                              "query_match": query_match});
+                              "query_match": query_match, "consistency": "strong"});
         if !attributes.is_null() {
             body["query_attributes"] = attributes;
         }
@@ -4636,15 +4630,11 @@ async fn identity_write_api_ranks_a_text_query_by_several_full_text_attributes_o
     // "beta": no element of `a` or `c` holds both, `b` has one that does.
     let tags = json!([{"attribute": "tags"}]);
     assert_eq!(lexical("alpha beta", tags.clone(), "all").await, ["b"]);
-    // A document with several matching elements is one candidate: the two
-    // candidates are two documents.
-    let any = lexical("alpha", tags, "any").await;
-    assert_eq!(any.len(), 2);
-    assert_ne!(any[0], any[1]);
-    assert!(
-        any.iter()
-            .all(|root| ["a", "b", "c"].contains(&root.as_str()))
-    );
+    // A document with several matching elements is one candidate. `a` has 60
+    // elements that outscore every one of `b` and `c`: more than a first fetch
+    // for two candidates holds, yet the two best documents are `a` and `b`,
+    // whose best element outscores that of `c`.
+    assert_eq!(lexical("alpha", tags.clone(), "any").await, ["a", "b"]);
     // `contains` takes an array the same way.
     let contained = ask(
         &reader,
@@ -4653,6 +4643,33 @@ async fn identity_write_api_ranks_a_text_query_by_several_full_text_attributes_o
     )
     .await;
     assert_eq!(roots(&contained), ["b"]);
+
+    // A later write is indexed by the commit as a segment of its own. `f` is
+    // readable and `g` is not, and `g` matches as well as `f` does: it is
+    // never a candidate, by an array or by several attributes.
+    let later = [
+        ("f", "alpha", "gamma", json!(["alpha"]), "usr:x"),
+        ("g", "alpha", "alpha", json!(vec!["alpha"; 5]), "usr:other"),
+    ];
+    let upserts: Vec<Value> = later
+        .iter()
+        .map(|(id, subject, body, tags, reader)| {
+            json!({"id": id, "text": "zeta", "subject": subject, "body": body,
+                   "tags": tags, "code": subject, "plain": subject, "readers": [reader]})
+        })
+        .collect();
+    assert_eq!(
+        writer
+            .post(WRITE_KEY, "dense-fixture", &json!({"upserts": upserts}))
+            .await
+            .0,
+        200
+    );
+    assert_eq!(lexical("alpha", tags, "any").await, ["a", "f"]);
+    let weighted = json!([by("subject", 3.0), by("body", 1.0)]);
+    let by_several = lexical("alpha", weighted, "any").await;
+    assert!(by_several.contains(&"f".to_owned()), "{by_several:?}");
+    assert!(!by_several.contains(&"g".to_owned()), "{by_several:?}");
 
     // Refused: an attribute with no full-text index, one of n-grams, one that is
     // not text, an unknown one, an array next to another attribute, a repeat, a
@@ -4669,6 +4686,8 @@ async fn identity_write_api_ranks_a_text_query_by_several_full_text_attributes_o
         json!([{"attribute": "subject"}, {"attribute": "subject"}]),
         json!([by("subject", 0.0)]),
         json!([by("subject", -1.0)]),
+        json!([by("subject", 1e-100)]),
+        json!([by("subject", 1e-7)]),
         json!([by("subject", 100.5)]),
         json!([]),
         json!(nine),

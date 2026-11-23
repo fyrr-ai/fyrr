@@ -218,7 +218,7 @@ pub struct QueryAttribute {
     /// array attribute with a full-text index.
     #[schemars(length(min = 1, max = 128))]
     pub attribute: String,
-    /// Greater than 0 and at most 100; default 1.
+    /// 0.000001 to 100; default 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight: Option<f64>,
 }
@@ -229,8 +229,7 @@ impl QueryAttribute {
     }
     fn is_valid(&self) -> bool {
         bounded_text(&self.attribute, 128)
-            && self.weight() > 0.0
-            && self.weight() <= MAX_QUERY_ATTRIBUTE_WEIGHT
+            && (MIN_QUERY_ATTRIBUTE_WEIGHT..=MAX_QUERY_ATTRIBUTE_WEIGHT).contains(&self.weight())
     }
 }
 
