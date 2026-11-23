@@ -62,6 +62,7 @@ annotations; PyArrow's untyped API remains covered by Arrow contract tests.
 | `crates/fyrr` | The `fyrr` binary; feature `writer` (default) is the full build. |
 | `connectors/` | Python package `fyrr-connectors`: provider API, test kit and the bundled providers. |
 | `clients/python/` | Python package `fyrr-client`: synchronous and asynchronous clients of the HTTP API, with types generated from `schemas/openapi.json`. Separate from the binary. |
+| `clients/typescript/` | npm package `fyrr-client`: a client of the HTTP API for server runtimes, with types generated from `schemas/openapi.json`. Separate from the binary; tested by the `typescript-client` workflow, not by `scripts/ci`. |
 | `examples/` | The quickstart (configuration, documents and `run`), an independently built provider wheel and a derived-image Dockerfile. |
 | `schemas/`, `fixtures/` | Generated JSON Schemas, golden contract documents and MCP goldens. |
 | `plugins/`, `.claude-plugin/` | The optional Claude Code plugin and its marketplace manifest. Raise `version` in `plugins/fyrr/.claude-plugin/plugin.json` with every change; clients cache a plugin by version. |
@@ -194,7 +195,9 @@ not create.
   (`fyrr_core::http_api`, `fyrr_core::mcp`). A change of such a type also runs
   `scripts/ci "--step=schema drift"`; the Python client's types are generated
   from it, and `scripts/ci "--step=python client"` fails until you regenerate
-  them (`cd clients/python && uv run python tools/generate_models.py`).
+  them (`cd clients/python && uv run python tools/generate_models.py`). The
+  TypeScript client's types come from it too: the `typescript-client` workflow
+  fails until you run `npm run generate` in `clients/typescript`.
 - **Dependencies.** A new dependency needs a license and advisory verdict in
   `deny.toml`.
 - **Secrets and privacy.** Secrets never enter the repository, configuration

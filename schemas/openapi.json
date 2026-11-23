@@ -478,7 +478,7 @@
       },
       "QueryRequest": {
         "type": "object",
-        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and ten members that are no tool arguments.",
+        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and eleven members that are no tool arguments.",
         "properties": {
           "query": {
             "type": [
@@ -808,6 +808,18 @@
               }
             ],
             "description": "With `query`: `all` ranks only the documents that hold every term; default `any`."
+          },
+          "query_attributes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/QueryAttribute"
+            },
+            "description": "With `query` or `queries`: 1-8 attributes with a full-text index that the text ranking scores, each with a weight; default `searchable_text`. A string array attribute stands alone.",
+            "minItems": 1,
+            "maxItems": 8
           },
           "contains": {
             "type": [
@@ -1249,13 +1261,39 @@
         ],
         "description": "The `query_match` member of a JSON `query` request: whether a document\nneeds every term of the text query or any one of them. Default `any`."
       },
+      "QueryAttribute": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "`searchable_text`, the text of the document, or a `string` or string\narray attribute with a full-text index.",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "weight": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "0.000001 to 100; default 1.",
+            "minimum": 1e-6,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "attribute"
+        ],
+        "description": "One member of the `query_attributes` member of a JSON `query` request: an\nattribute with a full-text index that the text ranking scores, and how much\nits score counts. A document scores the sum of the weighted scores of the\nattributes it matches."
+      },
       "Contains": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
           "attribute": {
             "type": "string",
-            "description": "A string attribute with a full-text index.",
+            "description": "A string or string array attribute with a full-text index.",
             "minLength": 1,
             "maxLength": 128
           },
@@ -1264,7 +1302,7 @@
               "string",
               "null"
             ],
-            "description": "The value holds every token of this text, 1-4096 UTF-8 bytes.",
+            "description": "The value, or one element of an array, holds every token of this text, 1-4096 UTF-8 bytes.",
             "minLength": 1,
             "maxLength": 4096,
             "x-maxUtf8Bytes": 4096
@@ -1274,7 +1312,7 @@
               "string",
               "null"
             ],
-            "description": "The value holds at least one token of this text, 1-4096 UTF-8 bytes.",
+            "description": "The value, or one element of an array, holds at least one token of this text, 1-4096 UTF-8 bytes.",
             "minLength": 1,
             "maxLength": 4096,
             "x-maxUtf8Bytes": 4096
@@ -1283,7 +1321,7 @@
         "required": [
           "attribute"
         ],
-        "description": "One condition of the `contains` member of a JSON `query` request, on the\nfull-text index of a string attribute, which is not built with the `ngram`\ntokenizer. Exactly one of `all` and `any`."
+        "description": "One condition of the `contains` member of a JSON `query` request, on the\nfull-text index of a string or string array attribute, which is not built\nwith the `ngram` tokenizer. Exactly one of `all` and `any`."
       },
       "Boost": {
         "oneOf": [

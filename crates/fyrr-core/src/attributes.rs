@@ -170,11 +170,15 @@ impl IndexOption {
 
 impl AttributeType {
     /// Whether an attribute of this type can have the index: a `string` has the
-    /// text indexes besides its scalar one, `bytes` has none.
+    /// text indexes besides its scalar one, an array of strings has a full-text
+    /// index with one document per element, `bytes` has none.
     pub fn supports(self, option: IndexOption) -> bool {
         match option {
             IndexOption::Scalar => self.index_kind().is_some(),
-            IndexOption::FullText | IndexOption::Ngram => self == Self::String,
+            IndexOption::FullText => {
+                matches!(self, Self::String | Self::Array(ElementType::String))
+            }
+            IndexOption::Ngram => self == Self::String,
         }
     }
 }
@@ -977,6 +981,26 @@ mod tests {
             ])
         );
         assert_eq!(indexes_present(&schema, |_| true, |_| None).len(), 1);
+    }
+
+    #[test]
+    fn an_array_of_strings_has_a_full_text_index_and_no_other_array_has() {
+        let strings = AttributeType::Array(ElementType::String);
+        assert!(strings.supports(IndexOption::FullText));
+        assert!(!strings.supports(IndexOption::Ngram));
+        assert!(strings.supports(IndexOption::Scalar));
+        for element in [ElementType::Int, ElementType::Uuid, ElementType::Datetime] {
+            assert!(!AttributeType::Array(element).supports(IndexOption::FullText));
+        }
+        let schema = schema(&[("tags", strings)]);
+        let on = AttributeIndex {
+            full_text: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            check_indexes(&schema, &AttributeIndexes::from([("tags".to_owned(), on)])),
+            Ok(())
+        );
     }
 
     #[test]

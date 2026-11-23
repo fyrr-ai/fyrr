@@ -1,11 +1,12 @@
 use super::publication::previous_manifest;
 use super::*;
 use fyrr_core::attributes::{
-    AttributeIndexes,
+    AttributeIndexes, AttributeType,
     analyzer::{Analyzer, Tokenizer},
     stale_analyzers,
 };
 use lance::dataset::NewColumnTransform;
+use lance_index::scalar::inverted::DocumentGranularity;
 
 mod native;
 mod schema;
@@ -664,7 +665,7 @@ pub(crate) async fn build_attribute_indexes(
         if present.contains(&name) && !again {
             continue;
         }
-        let fts;
+        let mut fts;
         let params: &dyn lance_index::IndexParams = if kind == IndexType::Inverted {
             // Without an analyzer of its own the index takes the namespace's settings.
             fts = match config
@@ -676,6 +677,13 @@ pub(crate) async fn build_attribute_indexes(
                 Some(analyzer) => attribute_fts_params(config, analyzer)?,
                 None => fts_params(config),
             };
+            // A string array has one document per element: a match never spans two.
+            if matches!(
+                config.namespace.attributes.get(&column),
+                Some(AttributeType::Array(_))
+            ) {
+                fts = fts.document_granularity(DocumentGranularity::ListElement);
+            }
             &fts
         } else {
             &scalar

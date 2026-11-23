@@ -424,17 +424,17 @@ impl PreparedReader {
         });
         Ok(())
     }
-    /// The full-text query of one condition: a match query on the attribute's
-    /// index, joined by AND or OR. The attribute must have a full-text index as
-    /// the manifest records it, and not one of n-grams: Lance gives every n-gram
-    /// of a value the same position and takes them as alternatives, so `all`
-    /// would find a value with any one of them (the pin test records it).
+    /// Whether a query may read the full-text index of an attribute: the
+    /// manifest records one, and it is not one of n-grams: Lance gives every
+    /// n-gram of a value the same position and takes them as alternatives, so
+    /// an `all` match would find a value with any one of them (the pin test
+    /// records it).
     /// shortcut: no prefix matching, which waits for #170.
-    fn contains_query(&self, condition: &Contains) -> Result<FtsQuery> {
+    pub(crate) fn check_full_text(&self, attribute: &str) -> Result<()> {
         let index = self
             .manifest
             .attribute_indexes
-            .get(&condition.attribute)
+            .get(attribute)
             .filter(|index| index.full_text)
             .ok_or(InvalidArgument)?;
         if index
@@ -444,6 +444,12 @@ impl PreparedReader {
         {
             return Err(InvalidArgument);
         }
+        Ok(())
+    }
+    /// The full-text query of one condition: a match query on the attribute's
+    /// index, joined by AND or OR.
+    fn contains_query(&self, condition: &Contains) -> Result<FtsQuery> {
+        self.check_full_text(&condition.attribute)?;
         let (text, all) = condition.text().ok_or(InvalidArgument)?;
         Ok(FtsQuery::Match(
             MatchQuery::new(text.into())

@@ -167,9 +167,11 @@ ngram = true
 ```
 
 An attribute has the index of its type unless the table says otherwise. The
-keys of an entry are `index` (default `true`: the index above), and, for a
-`string` attribute only, `full_text` and `ngram` (default `false`: a full-text
-or an n-gram index on the column). An entry names a declared attribute, differs
+keys of an entry are `index` (default `true`: the index above), and
+`full_text` and `ngram` (default `false`: a full-text or an n-gram index on the
+column). A `string` attribute may have both; an array of strings may have
+`full_text`, which indexes one document per element, so that a match never
+spans two elements. An entry names a declared attribute, differs
 from the default and asks only for what the type can have, else the schema is
 refused (`settings_invalid` over HTTP). Each index is one more storage request
 or two when a reader opens the namespace, and one more index to build and to

@@ -193,7 +193,8 @@ pub struct NamespaceConfig {
     pub attributes: crate::attributes::AttributeSchema,
     /// The attributes whose indexes differ from the default (the scalar index
     /// of the attribute's type): `index = false` leaves the attribute to a scan
-    /// of the table, `full_text` and `ngram` add a text index to a `string`,
+    /// of the table, `full_text` and `ngram` add a text index to a `string`
+    /// (`full_text` also to an array of strings, one document per element),
     /// and `analyzer` sets how the full-text index cuts a text into terms.
     #[serde(default)]
     pub attribute_indexes: crate::attributes::AttributeIndexes,
