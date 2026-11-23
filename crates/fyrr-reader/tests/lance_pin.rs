@@ -1433,7 +1433,10 @@ async fn multivector_query_on_ivf_rq_ranks_the_true_rows_under_a_mask() {
     use lance::index::vector::VectorIndexParams;
     use lance_index::vector::{bq::RQBuildParams, ivf::builder::IvfBuildParams};
     use lance_linalg::distance::DistanceType;
-    const DIM: i32 = 16;
+    // One-bit codes estimate a cosine with an error that shrinks as one over
+    // the square root of the dimension; at 16 dimensions it reached 0.9 in CI
+    // and reordered the planted rows, at 256 it stays well under their gaps.
+    const DIM: i32 = 256;
     const ROWS: i64 = 130;
     let axis = |pairs: &[(usize, f32)]| {
         let mut vector = vec![0.0_f32; DIM as usize];
@@ -1444,9 +1447,7 @@ async fn multivector_query_on_ivf_rq_ranks_the_true_rows_under_a_mask() {
     };
     // Rows 0 to 2 are planted with the two query vectors `e0` and `e1` at
     // cosines (1, 1), (1, 0.9) and (1, 0.5), in this order of rank. The rest
-    // hold eight vectors near the axes 8 to 15, away from both. A row whose
-    // best match to `e0` lies off the axes scores too far from its true cosine
-    // on one-bit codes to pin its rank, so every planted row holds `e0`.
+    // hold eight vectors near the axes 8 to 15, away from both.
     let planted = [
         [axis(&[(0, 1.0)]), axis(&[(1, 1.0)])],
         [axis(&[(0, 1.0)]), axis(&[(1, 0.9), (2, 0.436)])],
