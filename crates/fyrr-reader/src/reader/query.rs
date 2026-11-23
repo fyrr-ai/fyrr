@@ -147,8 +147,12 @@ impl PreparedReader {
         // the process cache. Refused arms cannot observe shared cache membership.
         self.authorization()?;
         if let Some(vector) = &args.vector {
-            embedding::validate(vector, self.config.embedding.dimensions)
-                .map_err(|_| InvalidArgument)?;
+            embedding::validate(
+                vector,
+                self.config.embedding.dimensions,
+                self.config.namespace.dense_element,
+            )
+            .map_err(|_| InvalidArgument)?;
         }
         if args.exact == Some(true) {
             super::dense::exact_scan_bound(self.selected_rows().max_len().unwrap_or(0))?;
@@ -332,8 +336,12 @@ impl PreparedReader {
             return Err(InvalidArgument);
         }
         for vector in subs.iter().filter_map(|sub| sub.vector.as_ref()) {
-            embedding::validate(vector, self.config.embedding.dimensions)
-                .map_err(|_| InvalidArgument)?;
+            embedding::validate(
+                vector,
+                self.config.embedding.dimensions,
+                self.config.namespace.dense_element,
+            )
+            .map_err(|_| InvalidArgument)?;
         }
         if self.selected_rows().max_len().unwrap_or(0) == 0 {
             return Ok(self.nothing_admitted());

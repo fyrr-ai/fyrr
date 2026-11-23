@@ -1351,6 +1351,12 @@ fn dense_metric_and_element_default_to_cosine_and_f16_and_enter_the_digest_when_
             "{bad}"
         );
     }
+    // A squared L2 or dot distance is not bounded by 2, as a cosine one is.
+    let wide = parse(&format!(
+        "{MINIMAL}\n[namespace.retrieval]\nrescore_depth={{mode='adaptive',min_candidates=75,max_candidates=300,min_gap=5.0}}"
+    ))
+    .unwrap();
+    assert!(errors(&wide).is_empty());
     for bad in ["f64", "i8", "bf16"] {
         assert!(
             parse(&MINIMAL.replace(

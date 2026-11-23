@@ -1573,17 +1573,23 @@ async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_sto
     }
 }
 
-/// A row of 1024 numbers in one of 16 clusters, with a length that differs per
-/// row, so that cosine, squared Euclidean distance and dot product rank rows
-/// differently.
-fn metric_row(n: usize) -> Vec<f32> {
-    let length = 0.25 + (n % 7) as f32 * 0.5;
+/// A direction in one of 4 clusters with a little noise, scaled to `length`.
+fn metric_vector(cluster: usize, noise: usize, length: f32) -> Vec<f32> {
     (0..1024)
         .map(|d| {
-            length * ((((n % 16) + 1) * (d + 3)) as f32 * 0.37).sin()
-                + 0.15 * (((n + 1) * (d + 11)) as f32 * 0.73).sin()
+            length
+                * ((((cluster + 1) * (d + 3)) as f32 * 0.37).sin()
+                    + 0.15 * (((noise + 1) * (d + 11)) as f32 * 0.73).sin())
         })
         .collect()
+}
+
+/// A row: 50 rows per cluster, of lengths from 0.2 to 5.1, so that within a
+/// cluster the length decides the dot product, the direction the cosine and
+/// both the squared distance to a query: the three metrics rank the rows of a
+/// cluster differently.
+fn metric_row(n: usize) -> Vec<f32> {
+    metric_vector(n % 4, n, 0.2 + (n / 4) as f32 * 0.1)
 }
 
 /// How near `row` is to `query` under `metric`: higher is nearer.
@@ -1687,9 +1693,31 @@ async fn metric_recall(metric: &str, element: &str) {
         (409, json!({"error": "namespace_settings_fixed"}))
     );
 
-    let (mut recall, mut separated) = (0.0, false);
+    // A patch with a text and a vector writes the vector in the element type.
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"patches": [{"id": "r0", "text": "alphapatched", "vector": metric_row(0)}]})
+            )
+            .await,
+        (
+            200,
+            json!({"upserted": 0, "deleted": 0, "patched": 1, "skipped": 0})
+        )
+    );
+    assert_eq!(
+        stored(&config, "searchable_text = 'alphapatched'")
+            .await
+            .num_rows(),
+        1
+    );
+
+    let mut recall = 0.0;
+    let mut other = std::collections::BTreeMap::new();
     for k in 0..QUERIES {
-        let query = metric_row(k * 5 + 1000);
+        let query = metric_vector(k % 4, 10_000 + k, 2.0);
         let text = format!("zzprobe{k}");
         root.embedding.insert_both(&text, query.clone());
         let truth = |metric: &str| {
@@ -1705,10 +1733,17 @@ async fn metric_recall(metric: &str, element: &str) {
             ranked
         };
         let expected = truth(metric);
-        // The fixture tells the metrics apart, or the test would pass for the wrong one.
-        separated |= ["cosine", "squared_l2", "dot"]
-            .into_iter()
-            .any(|other| truth(other) != expected);
+        // What the other metrics would answer, to show that the fixture tells
+        // the metrics apart: a test that any of them passes proves nothing.
+        for name in ["cosine", "squared_l2", "dot"] {
+            if name != metric {
+                *other.entry(name).or_insert(0.0) += truth(name)
+                    .iter()
+                    .filter(|row| expected.contains(row))
+                    .count() as f64
+                    / 10.0;
+            }
+        }
         let found = hits(&config, &text);
         recall += found
             .iter()
@@ -1716,7 +1751,13 @@ async fn metric_recall(metric: &str, element: &str) {
             .count() as f64
             / 10.0;
     }
-    assert!(separated, "the fixture ranks every metric alike");
+    for (name, overlap) in other {
+        let overlap = overlap / QUERIES as f64;
+        assert!(
+            overlap < 0.90,
+            "{name} would hold {overlap} of {metric}'s top ten: the fixture does not separate them"
+        );
+    }
     let recall = recall / QUERIES as f64;
     assert!(recall >= 0.90, "{metric} {element}: recall@10 {recall}");
     drop(writer);

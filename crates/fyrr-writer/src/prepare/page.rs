@@ -497,29 +497,11 @@ impl RowColumns {
         let mut fragments = Vec::new();
         if !self.records.is_empty() {
             let reader_array = string_lists(self.readers.iter().map(Vec::as_slice));
-            let dimensions = config.embedding.dimensions as i32;
-            let vector_array: ArrayRef = match config.namespace.dense_element {
-                DenseElement::F16 => {
-                    Arc::new(
-                        FixedSizeListArray::from_iter_primitive::<Float16Type, _, _>(
-                            self.vectors
-                                .iter()
-                                .map(|v| Some(v.iter().map(|x| Some(half::f16::from_f32(*x))))),
-                            dimensions,
-                        ),
-                    )
-                }
-                DenseElement::F32 => {
-                    Arc::new(
-                        FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-                            self.vectors
-                                .iter()
-                                .map(|v| Some(v.iter().copied().map(Some))),
-                            dimensions,
-                        ),
-                    )
-                }
-            };
+            let vector_array = vector_column(
+                config.namespace.dense_element,
+                config.embedding.dimensions,
+                self.vectors.iter().map(Vec::as_slice),
+            );
             let attribute_array = string_lists(self.attributes.iter().map(Vec::as_slice));
             // An API request brings its attribute columns; a connector's rows
             // take theirs from the metadata of their documents.

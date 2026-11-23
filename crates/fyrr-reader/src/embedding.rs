@@ -87,7 +87,10 @@ pub fn identity(config: &EmbeddingConfig) -> EmbeddingIdentity {
     }
 }
 
-pub fn validate(vector: &[f32], dimensions: u32) -> Result<()> {
+/// Whether `vector` is a finite, nonzero vector of `dimensions` numbers that
+/// the namespace's element type stores: a 16-bit one must also stay finite and
+/// nonzero once its numbers are rounded to 16 bits.
+pub fn validate(vector: &[f32], dimensions: u32, element: DenseElement) -> Result<()> {
     if vector.len() != dimensions as usize || vector.iter().any(|value| !value.is_finite()) {
         return Err(EmbeddingInvalid);
     }
@@ -95,9 +98,13 @@ pub fn validate(vector: &[f32], dimensions: u32) -> Result<()> {
     if norm == 0.0 || !norm.is_finite() {
         return Err(EmbeddingInvalid);
     }
-    let originals: Vec<_> = vector.iter().copied().map(half::f16::from_f32).collect();
-    if originals.iter().any(|v| !v.is_finite()) || originals.iter().all(|v| *v == half::f16::ZERO) {
-        return Err(EmbeddingInvalid);
+    if element == DenseElement::F16 {
+        let originals: Vec<_> = vector.iter().copied().map(half::f16::from_f32).collect();
+        if originals.iter().any(|v| !v.is_finite())
+            || originals.iter().all(|v| *v == half::f16::ZERO)
+        {
+            return Err(EmbeddingInvalid);
+        }
     }
     Ok(())
 }

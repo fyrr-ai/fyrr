@@ -14,7 +14,6 @@ pub(crate) use row_state::{
     with_state, with_typed,
 };
 
-use arrow_array::types::{Float16Type, Float32Type};
 use arrow_array::{
     Array, ArrayRef, FixedSizeListArray, ListArray, RecordBatch, RecordBatchIterator, StringArray,
 };

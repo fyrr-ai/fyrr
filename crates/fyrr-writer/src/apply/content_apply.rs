@@ -205,6 +205,7 @@ pub async fn content(
                     patch,
                     revision,
                     &config.namespace.attributes,
+                    config.namespace.dense_element,
                 )?);
             }
             continue;

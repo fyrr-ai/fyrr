@@ -28,6 +28,30 @@ use lance::io::{ObjectStoreParams, StorageOptionsAccessor};
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, path::Path};
 use std::sync::Arc;
 
+/// The `vector` column of `rows`, in the namespace's element type.
+pub(crate) fn vector_column<'a>(
+    element: DenseElement,
+    dimensions: u32,
+    rows: impl Iterator<Item = &'a [f32]>,
+) -> ArrayRef {
+    // The dimension is at most 8192.
+    let dimensions = dimensions as i32;
+    match element {
+        DenseElement::F16 => Arc::new(
+            FixedSizeListArray::from_iter_primitive::<Float16Type, _, _>(
+                rows.map(|v| Some(v.iter().map(|x| Some(half::f16::from_f32(*x))))),
+                dimensions,
+            ),
+        ),
+        DenseElement::F32 => Arc::new(
+            FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                rows.map(|v| Some(v.iter().copied().map(Some))),
+                dimensions,
+            ),
+        ),
+    }
+}
+
 pub fn schema(dimensions: u32, element: DenseElement) -> Arc<Schema> {
     schema_with(dimensions, element, Vec::new())
 }
@@ -208,7 +232,11 @@ pub fn quarantine_reason(
                 // A vector is the record of one chunk, of the namespace's dimension.
                 || s.vector.as_ref().is_some_and(|vector| {
                     crate::chunk::chunks(&s.text).len() != 1
-                        || fyrr_reader::embedding::validate(vector, config.embedding.dimensions)
+                        || fyrr_reader::embedding::validate(
+                            vector,
+                            config.embedding.dimensions,
+                            config.namespace.dense_element,
+                        )
                             .is_err()
                 })
         })

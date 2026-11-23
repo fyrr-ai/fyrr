@@ -86,7 +86,11 @@ impl PreparedReader {
         exact: bool,
         telemetry: &mut Telemetry,
     ) -> Result<Vec<Candidate>> {
-        embedding::validate(vector, self.config.embedding.dimensions)?;
+        embedding::validate(
+            vector,
+            self.config.embedding.dimensions,
+            self.config.namespace.dense_element,
+        )?;
         if !(1..=75).contains(&k) {
             return Err(InvalidArgument);
         }

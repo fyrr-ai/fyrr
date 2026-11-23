@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use fyrr_core::config::{Config, EmbeddingConfig};
+use fyrr_core::config::{Config, DenseElement, EmbeddingConfig};
 use fyrr_reader::embedding::{EmbeddingClient, ProviderStats, Role, cache_key, digest, validate};
 
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -233,7 +233,7 @@ fn read_vector(path: &Path, dimensions: u32) -> Result<Option<Vec<f32>>> {
         .chunks_exact(4)
         .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
         .collect::<Vec<_>>();
-    if validate(&vector, dimensions).is_err() {
+    if validate(&vector, dimensions, DenseElement::F16).is_err() {
         return Ok(None);
     }
     Ok(Some(vector))

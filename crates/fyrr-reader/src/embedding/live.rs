@@ -2,7 +2,7 @@
 use super::validate;
 use super::{EmbeddingError::*, Result};
 use crate::provider::BodyError;
-use fyrr_core::config::{EmbeddingConfig, EmbeddingRole, ProcessEnvironment};
+use fyrr_core::config::{DenseElement, EmbeddingConfig, EmbeddingRole, ProcessEnvironment};
 use serde::Deserialize;
 use std::hash::BuildHasher;
 use std::sync::{
@@ -461,7 +461,10 @@ impl EmbeddingClient {
         }
         let mut vectors = vec![None; texts.len()];
         for item in response.data {
-            validate(&item.embedding, self.config.dimensions)?;
+            // shortcut: a provider's embedding must also survive 16-bit rounding,
+            // whatever the namespace stores; relax it for a provider that returns
+            // numbers beyond ±65504 to an f32 namespace.
+            validate(&item.embedding, self.config.dimensions, DenseElement::F16)?;
             let entry = vectors
                 .get_mut(item.index)
                 .ok_or(EmbeddingResponseInvalid)?;

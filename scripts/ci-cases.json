@@ -75,6 +75,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/embedding::tests::a_32_bit_vector_is_checked_as_sent_and_a_16_bit_one_after_rounding": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-reader:lib:fyrr_reader/embedding::tests::vectors_must_be_finite_nonzero_and_profile_sized": {
         "tier": "quick",
         "seconds": 0.0
@@ -234,6 +238,10 @@
       "full:fyrr-reader:lib:fyrr_reader/routing::tests::auto_threshold_is_only_a_strategy_decision": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/routing::tests::router_ranks_a_query_of_any_length_by_euclidean_distance": {
+        "tier": "quick",
+        "seconds": 0.01
       },
       "full:fyrr-reader:lib:fyrr_reader/routing::tests::probes_stop_at_nprobes_for_full_partitions_and_widen_for_sparse_ones": {
         "tier": "quick",

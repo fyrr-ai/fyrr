@@ -582,7 +582,12 @@ fn vector_of(value: Value, config: &Config) -> Result<Vec<f32>, ApiError> {
             .map(|n| n.as_f64().map(|n| n as f32))
             .collect::<Option<Vec<_>>>()
             .filter(|vector| {
-                fyrr_reader::embedding::validate(vector, config.embedding.dimensions).is_ok()
+                fyrr_reader::embedding::validate(
+                    vector,
+                    config.embedding.dimensions,
+                    config.namespace.dense_element,
+                )
+                .is_ok()
             })
             .ok_or(ApiError(400, "vector_invalid")),
         _ => Err(ApiError(400, "vector_invalid")),
