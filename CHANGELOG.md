@@ -9,12 +9,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
-- The excerpt of a hit is chosen with the tokens of the namespace's full-text
-  analyzer (tokenizer, stemming, stop words, folding), as the lexical lane and
-  `highlights` already are. A passage whose only match is a stemmed or folded
-  word can now be the one returned; a namespace without an analyzer, stemming or
-  folding keeps its excerpts, except that `_` now separates tokens as it does
-  in the index. See [tuning](docs/tuning.md#the-analyzer-of-the-text).
+- The excerpt of a hit in a namespace with an `[namespace.analyzer]`, or with
+  `fts_stem`, `fts_remove_stop_words` or `fts_ascii_folding`, is chosen with the
+  tokens of its full-text index, as the lexical lane and `highlights` already
+  are. A passage whose only match is a stemmed or folded word can now be the
+  one returned. Any other namespace keeps its excerpts, chosen by the literal
+  words of the query. See [tuning](docs/tuning.md#the-analyzer-of-the-text).
 - A namespace created for connectors stores `title`, `team`, `status`,
   `labels` (an array of `string`) and `created_at` (`datetime`) of its
   documents as typed columns, declared with the namespace like the attributes

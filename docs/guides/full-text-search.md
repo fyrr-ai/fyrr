@@ -116,9 +116,10 @@ and the stop words of an index are its
 
 ## 4. Show what matched
 
-The excerpt of a hit is the passage with the most distinct tokens of the query,
-cut and reduced by the same analyzer, so a passage that holds a stemmed or
-folded match is the one returned.
+The excerpt of a hit is the passage with the most distinct terms of the query.
+With an analyzer, `fts_stem`, `fts_remove_stop_words` or `fts_ascii_folding`
+the terms are the tokens the index cuts, so a passage that holds a stemmed or
+folded match is the one returned; otherwise they are the words of the query.
 
 `highlights` adds the ranges of each excerpt that match the query, in the
 codepoints of the record, as the excerpt's `start` and `end` are. A matched

@@ -170,8 +170,8 @@ by default) and grouped to one hit per document. A soft per-source cap
 spreads the top of the list across sources; remaining slots may still come
 from the same source. An optional reranker (`[namespace.rerank]`) reorders
 the authorized documents. Excerpts are passages of up to 1200 codepoints
-around the query tokens, cut and reduced by the
-analyzer of the text index; `fetch` returns whole documents or a window of one
+around the query terms (the tokens of the text index when the namespace has
+an analyzer, stemming or folding); `fetch` returns whole documents or a window of one
 record.
 
 Fusion weights, depths, analyzer settings and composition enter one
