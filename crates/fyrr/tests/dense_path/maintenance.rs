@@ -1853,6 +1853,22 @@ async fn maintenance_repartitions_the_vector_index_of_a_growing_namespace_on_sto
         success(&config, &["writer", "sync"]);
         success(&config, &["writer", "commit"]);
     }
+    // The manifest's count of the vector index segments, in publication order.
+    let recorded = || async {
+        publication(&config)
+            .await
+            .1
+            .indexes
+            .into_iter()
+            .filter(|index| index.kind == "ivf_rq")
+            .map(|index| index.partitions)
+            .collect::<Vec<_>>()
+    };
+    let lance_counts = |stats: &Value| {
+        let segments = stats["indices"].as_array().unwrap();
+        let count = |segment: &Value| Some(segment["num_partitions"].as_u64().unwrap() as u32);
+        segments.iter().map(count).collect::<Vec<_>>()
+    };
     let stats = || async {
         let loaded = fyrr_core::config::load(&config).unwrap();
         let (head, _) = publication(&config).await;
@@ -1866,6 +1882,7 @@ async fn maintenance_repartitions_the_vector_index_of_a_growing_namespace_on_sto
     // Appended commits keep the partitions of the first publication.
     let before = stats().await;
     assert_eq!(before["indices"][0]["num_partitions"], 2, "{before}");
+    assert_eq!(recorded().await, lance_counts(&before), "{before}");
 
     success(&config, &["writer", "maintain"]);
     let after = stats().await;
@@ -1890,6 +1907,9 @@ async fn maintenance_repartitions_the_vector_index_of_a_growing_namespace_on_sto
         })
         .collect();
     assert_eq!(sizes.iter().sum::<usize>(), FINAL_ROWS);
+    // The publication records the count Lance rebalanced to.
+    assert_eq!(recorded().await, lance_counts(&after), "{after}");
+    assert_eq!(recorded().await, [Some(sizes.len() as u32)], "{after}");
     assert!(
         sizes.len() >= FINAL_ROWS.div_ceil(4 * PARTITION_ROWS),
         "{} partitions: {sizes:?}",

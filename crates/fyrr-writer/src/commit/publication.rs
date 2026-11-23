@@ -89,11 +89,29 @@ pub(crate) async fn write_manifest(
         } else {
             continue;
         };
+        let uuid = index.uuid.to_string();
+        let partitions = if kind == "ivf_rq" {
+            // A segment's partitions never change, so the previous manifest's
+            // count stands; only a segment it does not know is read from Lance.
+            let known = previous_manifest.as_ref().and_then(|m| {
+                m.indexes
+                    .iter()
+                    .find(|previous| previous.uuid == uuid)
+                    .and_then(|previous| previous.partitions)
+            });
+            match known {
+                Some(count) => Some(count),
+                None => Some(vector_partitions(dataset, &index.name, &uuid).await?),
+            }
+        } else {
+            None
+        };
         indexes.push(IndexIdentity {
             name: index.name.clone(),
             column: column.into(),
             kind: kind.into(),
-            uuid: index.uuid.to_string(),
+            uuid,
+            partitions,
         });
     }
     // What the table has, not what the settings ask for: an index that is
@@ -277,6 +295,24 @@ pub(crate) async fn write_manifest(
     });
     head.updated_at = fyrr_core::clock::now();
     Ok(manifest)
+}
+
+/// The partitions of one segment of the vector index `name`, from Lance's
+/// statistics, which list the segments in the order `load_indices_by_name` does.
+async fn vector_partitions(dataset: &Dataset, name: &str, uuid: &str) -> Result<u32> {
+    let position = dataset
+        .load_indices_by_name(name)
+        .await?
+        .iter()
+        .position(|index| index.uuid.to_string() == uuid)
+        .ok_or(WriterError::IndexBuildFailed)?;
+    let statistics: serde_json::Value =
+        serde_json::from_str(&dataset.index_statistics(name).await?)
+            .map_err(|_| WriterError::IndexBuildFailed)?;
+    statistics["indices"][position]["num_partitions"]
+        .as_u64()
+        .and_then(|count| u32::try_from(count).ok())
+        .ok_or(WriterError::IndexBuildFailed)
 }
 
 pub(crate) async fn previous_manifest(
