@@ -1552,7 +1552,11 @@ async fn multivector_query_on_ivf_rq_ranks_the_true_rows_under_a_mask() {
     };
     let (ids, distances, plan) = search(None, None).await;
     assert!(plan.contains("MultivectorScoring"), "{plan}");
-    assert_eq!(ids[..4], [0, 1, 2, 3], "{ids:?} {distances:?}");
+    // The quantized codes can swap rows 0 and 1, whose cosines are close: the
+    // top four are the planted rows, and 2 and 3 come after 0 and 1.
+    let mut top: Vec<_> = ids[..4].to_vec();
+    top[..2].sort_unstable();
+    assert_eq!(top, [0, 1, 2, 3], "{ids:?} {distances:?}");
     // The quantized codes score the rows, so the distances are not exact.
     assert!(distances[..4].is_sorted_by(|a, b| a < b), "{distances:?}");
     // The request predicate denies row 0, and the row mask denies row 1.
