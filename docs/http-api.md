@@ -350,11 +350,12 @@ curl https://fyrr.example.com/v1/namespaces/main/query \
 
 ## Matching tokens
 
-The `query` route takes two more members that decide which documents a text or
-a vector ranking may return. Neither is an argument of the tool: `fetch` and
-`/mcp` refuse them, and their output does not change. A request without them is
-answered as before. Neither is taken together with `sub_queries`, which have
-filters and rankings of their own: that is `400 invalid_argument`.
+The `query` route takes three more members that decide which documents a text
+or a vector ranking may return, and by which text it scores them. None is an
+argument of the tool: `fetch` and `/mcp` refuse them, and their output does not
+change. A request without them is answered as before. None is taken together
+with `sub_queries`, which have filters and rankings of their own: that is
+`400 invalid_argument`.
 
 `query_match` applies to the text of `query` or `queries`. `any`, the default,
 ranks the documents that hold at least one term; `all` ranks only the documents
@@ -363,17 +364,54 @@ a vector, a document the vector finds can come back without every term, as it
 can without any term. It is `invalid_argument` without a text query. The
 excerpt of a hit follows the terms of the text as before.
 
-`contains` is a list of 1–16 conditions on string attributes whose
-[index options](tuning.md#namespaceattributes) include `full_text`. A hit meets
+`query_attributes` names the full-text attributes a text query scores, 1–8 of
+them, each with a `weight` greater than 0 and at most 100 (default 1). Without
+it the query scores `searchable_text`, the text of the document, as before. A
+document scores the sum of the weighted BM25 scores of the attributes it
+matches, and the best ten of that sum are the true best ten of every match.
+`searchable_text` may be one of the attributes. With `query_match: "all"` each
+attribute needs every term on its own: a document that holds half of them in
+one attribute and half in another does not match. Only the scale of the
+weights between attributes counts: the lane's scores are normalized before they
+are fused with the vector lane. Each attribute is a `string` or an array of
+strings whose [index options](tuning.md#namespaceattributes) include `full_text`;
+any other, one without the index, or one whose index is built with the `ngram`
+tokenizer, is `400 invalid_argument`, as is a repeated attribute or a weight out
+of range. It is `invalid_argument` without a text query. A hit's excerpt still
+comes from the text of the document.
+
+| Member | Meaning |
+| --- | --- |
+| `attribute` | `searchable_text`, or an attribute with a full-text index. |
+| `weight` | How much the attribute's score counts. |
+
+An array is indexed with one document per element: a query that needs every
+term finds an array only if one element holds them all, never across two, and
+an array scores by its best element. An array stands alone in `query_attributes`:
+Lance takes no query over such an index and one of a whole value together, so
+an array next to another attribute is `invalid_argument` until a newer Lance
+allows it.
+
+```sh
+curl https://fyrr.example.com/v1/namespaces/main/query \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"waterproof boots",
+       "query_attributes":[{"attribute":"title","weight":3},
+                           {"attribute":"description"}]}'
+```
+
+`contains` is a list of 1–16 conditions on string and string array attributes
+whose [index options](tuning.md#namespaceattributes) include `full_text`. A hit meets
 every condition and also the `filter` and the caller's permissions, as with
 `filter`; it works with a text ranking and with a `vector`. It is
 `invalid_argument` for a listing, which has no ranking to narrow.
 
 | Member | Meaning |
 | --- | --- |
-| `attribute` | The string attribute to match; it must have a full-text index. |
-| `all` | The value holds every token of this text, cut as the attribute's index cuts a text. |
-| `any` | The value holds at least one token of this text. Exactly one of `all` and `any`. |
+| `attribute` | The string or string array attribute to match; it must have a full-text index. |
+| `all` | The value, or one element of an array, holds every token of this text, cut as the attribute's index cuts a text. |
+| `any` | The value, or one element of an array, holds at least one token of this text. Exactly one of `all` and `any`. |
 
 An attribute that does not exist or has no full-text index is `400
 invalid_argument`, and so is a condition with both or neither of `all` and
@@ -752,7 +790,7 @@ published: `409 namespace_not_published`.
   the settings ask for; `fyrr writer maintain` runs it by hand.
 - An index switched off (`"index": false`) is dropped by the publication of the
   schema, and the attribute is scanned from then on. `"index": true` switches it
-  on again. `full_text` and `ngram` ask for the text indexes of a `string`.
+  on again. `full_text` and `ngram` ask for the text indexes of a `string`, and `full_text` for an array of strings.
 - A change of the `analyzer` of a full-text index is published at once; the index
   is built again by the next maintenance, which publishes it, and the index it
   replaces serves until then ([analyzer](tuning.md#analyzer-of-a-full-text-index)).

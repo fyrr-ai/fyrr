@@ -1231,6 +1231,15 @@ async fn weighted_attribute_query_returns_the_true_top_10_on_three_segments_and_
             }
             let top = found(&dataset, weighted.clone(), Some(10), allowed).await;
             assert_true_top_10(&top, &every);
+            // One attribute alone is a match query: its boost scales the score.
+            let boosted = found(&dataset, one("title", 3.0, operator), None, allowed).await;
+            assert_eq!(
+                boosted.keys().collect::<Vec<_>>(),
+                title.keys().collect::<Vec<_>>()
+            );
+            for (id, score) in &boosted {
+                assert!((3.0 * title[id] - score).abs() < 1e-4, "row {id}");
+            }
         }
     }
     // The probe is not vacuous: the weight moves rows.
@@ -1310,17 +1319,45 @@ async fn string_array_indexed_per_element_never_matches_across_two_elements() {
         let batch = scan.try_into_batch().await.unwrap();
         assert!(batch.column_by_name("_doc_index").is_some());
         let ids = batch["id"].as_any().downcast_ref::<Int64Array>().unwrap();
-        ids.values().to_vec()
+        let scores = batch["_score"]
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .unwrap();
+        ids.values()
+            .iter()
+            .copied()
+            .zip(scores.values().iter().copied())
+            .collect::<Vec<_>>()
+    };
+    let ids = |rows: Vec<(i64, f32)>| {
+        let mut ids: Vec<i64> = rows.into_iter().map(|row| row.0).collect();
+        ids.sort_unstable();
+        ids
     };
     // Rows 1 and 3 hold both words in one element; rows 0 and 2 only across
     // two. A row is returned once for each element that matches: row 3 twice.
-    let mut all = rows(ask(Operator::And), None).await;
-    all.sort_unstable();
-    assert_eq!(all, [1, 3, 3]);
-    let mut any = rows(ask(Operator::Or), None).await;
-    any.sort_unstable();
+    let all = rows(ask(Operator::And), None).await;
+    assert_eq!(ids(all.clone()), [1, 3, 3]);
+    let mut any = ids(rows(ask(Operator::Or), None).await);
     any.dedup();
     assert_eq!(any, [0, 1, 2, 3]);
+    // The boost of the match scales the score of each element.
+    let boosted = FtsQuery::Match(
+        MatchQuery::new("alpha beta".into())
+            .with_column(Some("tags".into()))
+            .with_operator(Operator::And)
+            .with_boost(3.0),
+    );
+    let by_row = |mut rows: Vec<(i64, f32)>| {
+        rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        rows
+    };
+    let (all, boosted) = (by_row(all), by_row(rows(boosted, None).await));
+    assert_eq!(boosted.len(), all.len());
+    for ((id, score), (boosted_id, boosted_score)) in all.iter().zip(&boosted) {
+        assert_eq!(id, boosted_id);
+        assert!((3.0 * score - boosted_score).abs() < 1e-4);
+    }
     let mut masked = RowAddrTreeMap::new();
     let mut scan = dataset.scan();
     scan.project(&["id"]).unwrap().with_row_id();
@@ -1336,5 +1373,5 @@ async fn string_array_indexed_per_element_never_matches_across_two_elements() {
         }
     }
     let masked = rows(ask(Operator::And), Some(&masked)).await;
-    assert_eq!(masked, [3, 3]);
+    assert_eq!(ids(masked), [3, 3]);
 }

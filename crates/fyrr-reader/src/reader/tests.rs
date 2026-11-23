@@ -69,6 +69,31 @@ async fn lexical_mask_fixture() -> LexicalFixture {
     }
 }
 
+/// A fragment that an index the query reads does not cover is scored flat, with
+/// statistics from before the caller's mask: the SQL prefilter stays whatever
+/// the other indexes cover.
+#[tokio::test]
+async fn the_sql_prefilter_stays_unless_every_index_the_query_reads_covers_every_fragment() {
+    let LexicalFixture { dataset, .. } = lexical_mask_fixture().await;
+    let indexes = dataset.load_indices().await.unwrap();
+    let reads = |attributes: &[&str]| TextMatch {
+        all_terms: false,
+        attributes: attributes
+            .iter()
+            .map(|name| ((*name).into(), 1.0))
+            .collect(),
+    };
+    let prefilter = |attributes: &[&str]| {
+        PreparedReader::fts_requires_sql_prefilter(&dataset, &indexes, &reads(attributes))
+    };
+    // `fts_idx` of `searchable_text` covers the only fragment; no `title` index exists.
+    assert!(!prefilter(&[]));
+    assert!(!prefilter(&["searchable_text"]));
+    assert!(prefilter(&["title"]));
+    assert!(prefilter(&["searchable_text", "title"]));
+    assert!(prefilter(&["title", "searchable_text"]));
+}
+
 #[tokio::test]
 async fn lexical_request_mask_precedes_topk_and_preserves_sql_scores() {
     use arrow_array::RecordBatchIterator;
@@ -101,10 +126,18 @@ async fn lexical_request_mask_precedes_topk_and_preserves_sql_scores() {
     assert!(!PreparedReader::fts_requires_sql_prefilter(
         &dataset,
         &dataset.load_indices().await.unwrap(),
+        &TextMatch::default(),
     ));
-    let (masked, _, _) = PreparedReader::lexical(&dataset, &eligible, None, "needle", false, 2)
-        .await
-        .unwrap();
+    let (masked, _, _) = PreparedReader::lexical(
+        &dataset,
+        &eligible,
+        None,
+        "needle",
+        &TextMatch::default(),
+        2,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         masked.iter().map(|r| r.root.as_str()).collect::<Vec<_>>(),
         ["root-62", "root-63"]
@@ -144,7 +177,7 @@ async fn lexical_request_mask_precedes_topk_and_preserves_sql_scores() {
             &RowAddrMask::allow_nothing(),
             None,
             "needle",
-            false,
+            &TextMatch::default(),
             2
         )
         .await
@@ -179,14 +212,21 @@ async fn lexical_request_mask_precedes_topk_and_preserves_sql_scores() {
     assert!(PreparedReader::fts_requires_sql_prefilter(
         &dataset,
         &dataset.load_indices().await.unwrap(),
+        &TextMatch::default(),
     ));
     let tail_id = dataset.manifest().fragments.last().unwrap().id << 32;
     let eligible = RowAddrMask::from_allowed(RowAddrTreeMap::from_iter([tail_id]));
     let predicate = "root_id = 'tail-00'";
-    let (masked, _, _) =
-        PreparedReader::lexical(&dataset, &eligible, Some(predicate), "needle", false, 1)
-            .await
-            .unwrap();
+    let (masked, _, _) = PreparedReader::lexical(
+        &dataset,
+        &eligible,
+        Some(predicate),
+        "needle",
+        &TextMatch::default(),
+        1,
+    )
+    .await
+    .unwrap();
     let mut legacy = dataset.scan();
     legacy
         .project(&["source_id", "root_id", "record_id"])
@@ -217,9 +257,16 @@ async fn lexical_request_mask_precedes_topk_and_preserves_sql_scores() {
         observed(&sql),
         "tail scores preserve SQL admission"
     );
-    let (unfiltered, _, _) = PreparedReader::lexical(&dataset, &eligible, None, "needle", false, 1)
-        .await
-        .unwrap();
+    let (unfiltered, _, _) = PreparedReader::lexical(
+        &dataset,
+        &eligible,
+        None,
+        "needle",
+        &TextMatch::default(),
+        1,
+    )
+    .await
+    .unwrap();
     assert_ne!(
         masked[0].score, unfiltered[0].score,
         "regression fixture exercises denied tail statistics"

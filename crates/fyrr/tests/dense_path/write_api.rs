@@ -4489,6 +4489,218 @@ async fn identity_write_api_narrows_a_query_by_the_tokens_of_a_full_text_attribu
 
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_ranks_a_text_query_by_several_full_text_attributes_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    // Two lexical candidates: the top two documents of a ranking, whatever the
+    // number of elements of an array that match.
+    configure(
+        &config,
+        &address,
+        "[namespace.retrieval]\nlexical_candidates = 2",
+    );
+    embed(&root, &["zeta", "alpha", "alpha beta"]);
+    let writer = Writer::start(&config, &root, address).await;
+    // `d` matches every ranking best but the caller may not read it. No text
+    // holds the query: only the attributes do.
+    let rows = [
+        (
+            "a",
+            "alpha",
+            "beta",
+            json!(["alpha one", "alpha two", "alpha three"]),
+            "usr:x",
+        ),
+        (
+            "b",
+            "beta",
+            "alpha",
+            json!(["alpha beta", "alpha delta", "alpha"]),
+            "usr:x",
+        ),
+        (
+            "c",
+            "gamma",
+            "alpha alpha",
+            json!(["beta", "alpha"]),
+            "usr:x",
+        ),
+        (
+            "d",
+            "alpha",
+            "alpha",
+            json!(["alpha beta", "alpha beta"]),
+            "usr:other",
+        ),
+        ("e", "delta", "delta", json!(["delta"]), "usr:x"),
+    ];
+    let upserts: Vec<Value> = rows
+        .iter()
+        .map(|(id, subject, body, tags, reader)| {
+            json!({"id": id, "text": "zeta", "subject": subject, "body": body,
+                   "tags": tags, "code": subject, "plain": subject, "readers": [reader]})
+        })
+        .collect();
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({
+                    "settings": {
+                        "attributes": {"subject": "string", "body": "string",
+                                       "tags": {"array": "string"}, "code": "string",
+                                       "plain": "string", "price": "float"},
+                        "attribute_indexes": {
+                            "subject": {"full_text": true},
+                            "body": {"full_text": true},
+                            "tags": {"full_text": true},
+                            "code": {"full_text": true, "analyzer": {
+                                "tokenizer": "ngram", "ngram_min_length": 1,
+                                "ngram_max_length": 8, "prefix_only": true}},
+                        },
+                    },
+                    "upserts": upserts,
+                })
+            )
+            .await
+            .0,
+        200
+    );
+    let reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    // The documents the text lane scored, best first.
+    let lexical = async |query: &str, attributes: Value, query_match: &str| {
+        let mut body = json!({"query": query, "output": "metadata", "fields": {"scores": true},
+                              "query_match": query_match});
+        if !attributes.is_null() {
+            body["query_attributes"] = attributes;
+        }
+        let answer = ask(&reader, body).await;
+        assert_eq!(answer.0, 200, "{}", answer.1);
+        let mut scored: Vec<(f64, String)> = answer.1["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|hit| {
+                Some((
+                    hit.get("lexical_score")?.as_f64()?,
+                    hit["root_id"].as_str()?.to_owned(),
+                ))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        scored.into_iter().map(|(_, root)| root).collect::<Vec<_>>()
+    };
+    let by = |attribute: &str, weight: f64| json!({"attribute": attribute, "weight": weight});
+    let sorted = |mut roots: Vec<String>| {
+        roots.sort();
+        roots
+    };
+
+    // One attribute ranks by its own text: `a` alone has "alpha" in its
+    // subject, `b` and `c` in their body (`d` is not readable).
+    assert_eq!(
+        lexical("alpha", json!([by("subject", 1.0)]), "any").await,
+        ["a"]
+    );
+    assert_eq!(
+        sorted(lexical("alpha", json!([by("body", 1.0)]), "any").await),
+        ["b", "c"]
+    );
+    // Several attributes score the sum of their weighted scores, and the weights
+    // decide the top two of the three documents that match: the subject
+    // outweighs the body, or the body the subject.
+    let subject_first = lexical(
+        "alpha",
+        json!([by("subject", 10.0), by("body", 1.0)]),
+        "any",
+    )
+    .await;
+    assert_eq!(subject_first[0], "a");
+    assert_eq!(subject_first.len(), 2);
+    let body_first = lexical(
+        "alpha",
+        json!([by("subject", 1.0), by("body", 10.0)]),
+        "any",
+    )
+    .await;
+    assert_eq!(sorted(body_first), ["b", "c"]);
+    // `searchable_text` is one of the attributes, and the weight defaults to 1.
+    let with_text = json!([{"attribute": "searchable_text"}, by("subject", 2.0)]);
+    assert_eq!(lexical("alpha", with_text, "any").await, ["a"]);
+
+    // A string array has one document per element. The query holds "alpha" and
+    // "beta": no element of `a` or `c` holds both, `b` has one that does.
+    let tags = json!([{"attribute": "tags"}]);
+    assert_eq!(lexical("alpha beta", tags.clone(), "all").await, ["b"]);
+    // A document with several matching elements is one candidate: the two
+    // candidates are two documents.
+    let any = lexical("alpha", tags, "any").await;
+    assert_eq!(any.len(), 2);
+    assert_ne!(any[0], any[1]);
+    assert!(
+        any.iter()
+            .all(|root| ["a", "b", "c"].contains(&root.as_str()))
+    );
+    // `contains` takes an array the same way.
+    let contained = ask(
+        &reader,
+        json!({"query": "alpha", "output": "metadata",
+               "contains": [{"attribute": "tags", "all": "alpha beta"}]}),
+    )
+    .await;
+    assert_eq!(roots(&contained), ["b"]);
+
+    // Refused: an attribute with no full-text index, one of n-grams, one that is
+    // not text, an unknown one, an array next to another attribute, a repeat, a
+    // weight out of range, no attribute, and more than eight.
+    let nine: Vec<Value> = (0..9)
+        .map(|n| json!({"attribute": format!("a{n}")}))
+        .collect();
+    for attributes in [
+        json!([{"attribute": "plain"}]),
+        json!([{"attribute": "code"}]),
+        json!([{"attribute": "price"}]),
+        json!([{"attribute": "missing"}]),
+        json!([{"attribute": "tags"}, {"attribute": "subject"}]),
+        json!([{"attribute": "subject"}, {"attribute": "subject"}]),
+        json!([by("subject", 0.0)]),
+        json!([by("subject", -1.0)]),
+        json!([by("subject", 100.5)]),
+        json!([]),
+        json!(nine),
+    ] {
+        assert_eq!(
+            ask(
+                &reader,
+                json!({"query": "alpha", "output": "metadata", "query_attributes": attributes})
+            )
+            .await,
+            (400, json!({"error": "invalid_argument"})),
+            "{attributes}"
+        );
+    }
+    // A ranking by attributes needs a text query, and a sub-query has its own.
+    for body in [
+        json!({"vector": vector(7, 1024), "output": "metadata",
+               "query_attributes": [{"attribute": "subject"}]}),
+        json!({"order_by": [{"field": "root_id", "direction": "asc"}],
+               "query_attributes": [{"attribute": "subject"}]}),
+        json!({"sub_queries": [{"query": "alpha", "limit": 3}],
+               "query_attributes": [{"attribute": "subject"}]}),
+    ] {
+        assert_eq!(
+            ask(&reader, body).await,
+            (400, json!({"error": "invalid_argument"}))
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_storage() {
     let (config, root) = setup_on(Backend::Local);
     let address = free_address();

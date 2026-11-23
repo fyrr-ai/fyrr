@@ -497,6 +497,7 @@ mod dense;
 mod hydrate;
 #[path = "reader/lexical.rs"]
 mod lexical;
+use lexical::TextMatch;
 #[path = "reader/open.rs"]
 mod open;
 #[path = "reader/query.rs"]
