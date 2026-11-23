@@ -29,9 +29,7 @@ pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 1)
 /// ignore, and of a policy artifact that does: attribute index options, the
 /// typed columns of the metadata fields of connector documents (a build without
 /// them would read nulls), or, for a policy, the `read_only` switch (a build
-/// without it would write) or the `hash_name` of a copied namespace (a build
-/// without it would hash under the wrong name and match nobody). An older build
-/// refuses them: it reads only its own
+/// without it would write). An older build refuses them: it reads only its own
 /// major, and this build reads both. A document with none of them keeps its
 /// version.
 pub const INDEXED_PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
@@ -68,20 +66,13 @@ pub struct NamespaceSettings {
     /// connector source. Fixed with the rest of the settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_api: Option<crate::config::WriteApiSettings>,
-    /// Present in a copied namespace: the name of the namespace the keyed
-    /// hashes of its reader tokens and subjects were made under. Every reader
-    /// and writer hashes with it instead of the namespace's own name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hash_name: Option<String>,
 }
 
 impl NamespaceSettings {
     /// Whether an older build would misread a namespace with these settings:
-    /// it ignores index options and the hash name, and reads the connector
-    /// columns as null.
+    /// it ignores index options and reads the connector columns as null.
     pub fn needs_newer_build(&self) -> bool {
         !self.attribute_indexes.is_empty()
-            || self.hash_name.is_some()
             || (self.write_api.is_none() && has_connector_columns(&self.attributes))
     }
 
@@ -89,13 +80,6 @@ impl NamespaceSettings {
     /// can fail a build or a search later.
     pub fn validate(&self) -> Result<(), String> {
         self.embedding.validate_profile()?;
-        if self
-            .hash_name
-            .as_deref()
-            .is_some_and(|name| !crate::config::is_namespace_name(name))
-        {
-            return Err("hash_name is not a namespace name".into());
-        }
         let namespace = NamespaceConfig {
             rerank: None,
             retrieval: (&self.retrieval).into(),
@@ -110,7 +94,6 @@ impl NamespaceSettings {
             attributes: self.attributes.clone(),
             attribute_indexes: self.attribute_indexes.clone(),
             write_api: self.write_api.clone(),
-            hash_name: None,
         };
         let mut issues = Vec::new();
         let mut issue = |path: &str, message: String| issues.push(format!("{path}: {message}"));
@@ -169,8 +152,8 @@ impl PolicyArtifact {
     }
 
     /// The version to write: the one an older build refuses when the policy
-    /// holds index options, connector columns, the hash name or the read-only
-    /// switch, which it would ignore.
+    /// holds index options, connector columns or the read-only switch, which it
+    /// would ignore.
     pub fn current_version(&self) -> SchemaVersion {
         if !self.needs_newer_build() {
             <Self as Contract>::VERSION
@@ -190,7 +173,7 @@ impl Contract for PolicyArtifact {
             && self.schema_version.major != INDEXED_POLICY_CONTRACT_VERSION.major
         {
             return Err(
-                "attribute index options, connector columns, hash_name and read_only need the indexed policy version"
+                "attribute index options, connector columns and read_only need the indexed policy version"
                     .into(),
             );
         }

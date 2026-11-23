@@ -25,6 +25,7 @@ pub(crate) async fn publish(
         dataset,
         &mut head,
         &lineage,
+        1,
         receipts,
         acl_changed,
         cursor_rewinds,
@@ -42,13 +43,16 @@ pub(crate) async fn publish(
 
 /// Writes the immutable manifest of `dataset` and points `head` at it, without
 /// making the head visible: `publish` does that under the lease, and a copied
-/// namespace's first head is written by its copy.
+/// namespace's first head is written by its copy. `first_sequence` is the
+/// sequence of the first publication of a head that has none; a copy continues
+/// its source's, which the rows' publication sequences are compared against.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn write_manifest(
     config: &Config,
     dataset: &Dataset,
     head: &mut ServingHead,
     lineage: &CommitLineage,
+    first_sequence: u64,
     receipts: Vec<String>,
     acl_changed: bool,
     mut cursor_rewinds: Vec<String>,
@@ -153,7 +157,7 @@ pub(crate) async fn write_manifest(
             .collect(),
     )
     .await?;
-    let sequence = head.content.as_ref().map_or(Ok(1), |p| {
+    let sequence = head.content.as_ref().map_or(Ok(first_sequence), |p| {
         p.sequence
             .checked_add(1)
             .ok_or(WriterError::PublicationSequenceOverflow)

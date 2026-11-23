@@ -1372,10 +1372,6 @@
         "tier": "quick",
         "seconds": 0.003
       },
-      "full:fyrr-core:test:contracts/a_recorded_hash_name_is_a_version_that_an_older_build_refuses": {
-        "tier": "quick",
-        "seconds": 0.003
-      },
       "full:fyrr-core:test:contracts/attribute_index_options_need_the_version_an_older_build_refuses": {
         "tier": "quick",
         "seconds": 0.002
@@ -1610,7 +1606,7 @@
         "tier": "full",
         "seconds": 9.929
       },
-      "full:fyrr:test:dense_path/namespace_copy::local_copy_is_one_version_hashes_as_its_source_and_completes_after_interruption": {
+      "full:fyrr:test:dense_path/namespace_copy::local_copy_is_one_version_independent_and_completes_after_interruption": {
         "tier": "full",
         "seconds": 120.0
       },

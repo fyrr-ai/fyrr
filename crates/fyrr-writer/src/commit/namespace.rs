@@ -55,7 +55,6 @@ pub fn namespace_settings(config: &Config) -> NamespaceSettings {
         attributes: namespace.attributes.clone(),
         attribute_indexes: namespace.attribute_indexes.clone(),
         write_api: namespace.write_api.clone(),
-        hash_name: namespace.hash_name.clone(),
     }
 }
 
@@ -69,9 +68,6 @@ async fn repeat_create(
 ) -> Result<()> {
     let policy: PolicyArtifact = fyrr_reader::storage::artifact(store, root, &head.policy).await?;
     let mut asked = settings.clone();
-    // A copied namespace records the name its hashes were made under, which no
-    // file asks for.
-    asked.hash_name.clone_from(&policy.settings.hash_name);
     // A namespace created before the connector columns has none of them, and
     // a file that asks for them again still repeats its creation.
     if policy.settings.write_api.is_none()

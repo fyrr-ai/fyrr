@@ -108,8 +108,6 @@ impl Drop for Waiting<'_> {
 pub(crate) fn named(config: &Config, name: &str) -> Config {
     let mut config = config.clone();
     name.clone_into(&mut config.namespace.name);
-    // A copy's recorded hash name belongs to the namespace that recorded it.
-    config.namespace.hash_name = None;
     config
 }
 

@@ -128,47 +128,52 @@ whole pinned publication and needs only namespace storage.
 ## Backup and copy
 
 ```sh
-fyrr writer namespace copy docs docs-20261123 --to-config backup.toml
+fyrr --config prod.toml writer namespace copy --to-config backup.toml
 ```
 
-copies the namespace `docs` as the one version it serves when the command
-starts, with its access control, into the storage of `backup.toml` (another
-bucket or region; leave the flag out to copy within the storage of the
-configuration). The source is only read and can be written meanwhile. The copy is a
-namespace of its own and writable: point a reader or writer at it with
-`namespace.name = "docs-20261123"` and the storage of `backup.toml`, and it
-finds the same documents with the same readers, because the copy records the name
-its keyed hashes were made under. `identity.hashing_key` must be the same in both
-files; another key fails with `hashing_key_mismatch` and writes nothing. The head
-is written last, so a copy that was interrupted is no namespace at all; run the
-same command again and it removes what is left and starts over. The copy holds
-no history: its first version is the copied one, and `writer restore` reaches
-nothing older. What it leaves out is in the [command table](cli.md#fyrr-writer).
+copies the namespace of `prod.toml`, as the one version its head serves when the
+command starts, into the `[storage]` of `backup.toml`: another bucket or region.
+The source is only read and can be written meanwhile. The copy has the same name:
+the keyed hashes in its rows are made with it, so a copy under another name, or
+in the same storage, is not supported yet. `identity.hashing_key` must be the same
+in both files; another key fails with `hashing_key_mismatch` and writes nothing.
+The copy is a namespace of its own and writable: point a reader or writer at it
+with the storage of `backup.toml`, and it finds the same documents with the same
+access. It holds no history, so `writer restore` reaches nothing older than the
+copied version, and its connector sources read again from their start. A namespace
+whose identity holds snapshots (`permissions = "sync"` sources or a directory)
+cannot be copied (`copy_inputs_unsupported`). The head is written last, so a copy
+that was interrupted is no namespace at all; run the same command again and it
+removes what is left and starts over. A copy that finished fails with
+`namespace_exists` when run again; run one copy to a destination at a time.
 
-A backup is a scheduled copy under a new name, and its retention is deleting
-the old ones:
+A backup is a scheduled copy into a storage of its own, and its retention is
+deleting the old storages. Give `backup.toml` a `uri` ending in `DAY` and the
+namespace name of `prod.toml`:
 
 ```sh
-# every night, from a host that has both configuration files and the key
+# every night, from a host that has both files and the key
+name=docs                      # the namespace of prod.toml
 day=$(date -u +%Y%m%d)
-fyrr --config prod.toml writer namespace copy docs "docs-$day" --to-config backup.toml
-# keep seven: the names sort by date
-fyrr --config backup.toml writer namespace list --prefix docs- \
-  | jq -r '.namespaces[]' | sort | head -n -7 \
-  | while read -r old; do
-      fyrr --config backup.toml writer namespace delete --delete-data "$old"
-    done
+sed "s/DAY/$day/" backup.toml > "backup-$day.toml"
+fyrr --config prod.toml writer namespace copy --to-config "backup-$day.toml"
+# keep seven
+for old in $(ls backup-*.toml | sort | head -n -7); do
+  fyrr --config "$old" writer namespace delete --delete-data "$name" && rm "$old"
+done
 ```
 
 Do not give the bucket a lifecycle rule that expires objects by age: it would
-remove files a namespace still names. To restore, copy a backup back under a
-new name (`fyrr --config backup.toml writer namespace copy docs-20261123 docs-restored
---to-config prod.toml`), check it with `reader check` and `writer verify`, and
-switch the readers and writers to it. A version stays for `writer.version_grace` after a newer one serves, so a copy
-that takes longer than that while the source is written and maintained can fail
-with `storage_unavailable`; run it again and it copies the then-current version.
-Every object is read once and written once, so
-a copy costs its requests and, across regions, its transfer.
+remove files a namespace still names. To restore, copy a backup back with the
+two files exchanged, check the result with `reader check` and `writer verify`, and
+switch the readers and writers to it. A version stays for `writer.version_grace`
+after a newer one serves, so a copy that takes longer than that while the source
+is written and maintained can fail with `copy_incomplete` or
+`storage_unavailable`; run it again and it copies the then-current version. Every
+object is read once and written once, so a copy costs its requests and, across
+regions, its transfer.
+
+Measured throughput: @MBPS@
 
 ## Retiring and purging sources
 

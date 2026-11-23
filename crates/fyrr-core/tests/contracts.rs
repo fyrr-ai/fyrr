@@ -205,29 +205,6 @@ fn a_frozen_policy_is_a_version_that_an_older_build_refuses() {
     assert!(parse::<PolicyArtifact>(&serde_json::to_value(&stamped).unwrap()).is_ok());
 }
 
-/// A build that does not know the recorded hash name would hash under the
-/// copy's own name and match nobody, so a policy that records one is a version
-/// that it refuses.
-#[test]
-fn a_recorded_hash_name_is_a_version_that_an_older_build_refuses() {
-    let mut policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
-    policy["settings"]["hash_name"] = json!("source-namespace");
-    assert!(
-        parse::<PolicyArtifact>(&policy).is_err(),
-        "the name under 3.1"
-    );
-    policy["schema_version"] = json!("4.0");
-    let copied = parse::<PolicyArtifact>(&policy).unwrap();
-    assert_eq!(
-        copied.settings.hash_name.as_deref(),
-        Some("source-namespace")
-    );
-    assert!(copied.settings.needs_newer_build());
-    assert_eq!(copied.current_version().to_string(), "4.0");
-    policy["settings"]["hash_name"] = json!("Not A Name");
-    assert!(parse::<PolicyArtifact>(&policy).is_err());
-}
-
 #[test]
 fn api_keys_artifact_holds_only_distinct_hashed_keys_with_roles() {
     let base = common::read_json("fixtures/contracts/api-keys-artifact/artifact.json");

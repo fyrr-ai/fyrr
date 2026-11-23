@@ -630,12 +630,11 @@ fn namespace_mac(
     kind: &str,
     value: &str,
 ) -> Result<hmac::Hmac<sha2::Sha256>, StorageError> {
-    keyed_mac(config, config.namespace.hash_scope(), kind, value)
+    keyed_mac(config, config.namespace.name.as_str(), kind, value)
 }
 
-/// The MAC of `value` in `kind` under the hashing key, scoped to `scope`: the
-/// name a namespace's hashes are made under (its own, or the one a copy
-/// records), or empty for what every namespace of a deployment shares.
+/// The MAC of `value` in `kind` under the hashing key, scoped to `scope`: a
+/// namespace name, or empty for what every namespace of a deployment shares.
 fn keyed_mac(
     config: &Config,
     scope: &str,
@@ -660,7 +659,7 @@ fn keyed_mac(
 }
 
 pub fn hash_principal(config: &Config, prefix: &str, value: &str) -> Result<String, StorageError> {
-    hash_in_domain(config, config.namespace.hash_scope(), prefix, prefix, value)
+    hash_in_domain(config, &config.namespace.name, prefix, prefix, value)
 }
 
 /// `<prefix>:<hex>` of the HMAC of `value` in its own MAC domain and `scope`.
@@ -691,7 +690,7 @@ fn hash_in_domain(
 pub fn api_key_subject(config: &Config, secret: &str) -> Result<String, StorageError> {
     hash_in_domain(
         config,
-        config.namespace.hash_scope(),
+        &config.namespace.name,
         "key",
         "api-key-secret",
         secret,
@@ -709,13 +708,7 @@ pub fn api_key_deployment_hash(config: &Config, secret: &str) -> Result<String, 
 /// The principal key an API key acts as: the hash of its name in a domain of
 /// its own, apart from every user and from the secret domain.
 pub fn api_key_principal(config: &Config, name: &str) -> Result<String, StorageError> {
-    hash_in_domain(
-        config,
-        config.namespace.hash_scope(),
-        "key",
-        "api-key-name",
-        name,
-    )
+    hash_in_domain(config, &config.namespace.name, "key", "api-key-name", name)
 }
 
 pub(crate) fn verify_hash(
@@ -790,20 +783,6 @@ pub async fn with_namespace_settings(config: &Config) -> Result<Option<Config>, 
     let policy: fyrr_core::publication::PolicyArtifact =
         artifact(store.as_ref(), &root, &head.policy).await?;
     Ok(config.with_settings(&policy.settings))
-}
-
-/// `config` hashing under the name its namespace records, which only a copied
-/// namespace does. For a process that keeps the file's settings but serves the
-/// namespace.
-pub async fn with_hash_name(config: &Config) -> Result<Config, StorageError> {
-    let mut config = config.clone();
-    if let Some(head) = optional_head(&config).await? {
-        let (store, root) = namespace_store(&config)?;
-        let policy: fyrr_core::publication::PolicyArtifact =
-            artifact(store.as_ref(), &root, &head.policy).await?;
-        config.namespace.hash_name = policy.settings.hash_name;
-    }
-    Ok(config)
 }
 
 /// A reader configured with a directory provider serves only an identity that
