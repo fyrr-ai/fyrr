@@ -925,6 +925,125 @@ async fn s3_conditional_writes_and_paginated_listing_are_visible() {
     drop(guard);
 }
 
+/// Every object a create, sync and commit write is in the object-store
+/// diagnostics log, dataset files and control objects alike. With
+/// `FYRR_TEST_S3_KMS_KEY_ID` (a key ARN) set, each also answers a HEAD with that
+/// key. The RustFS fixture has no KMS, so it runs the coverage half only; the
+/// encryption half runs on real S3 under #108.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real S3; the key assertions need FYRR_TEST_S3_KMS_KEY_ID; scripts/ci"]
+#[allow(clippy::print_stderr)]
+async fn s3_every_written_object_is_logged_and_carries_the_kms_key() {
+    use futures::TryStreamExt;
+    use object_store::{aws::AmazonS3Builder, signer::Signer};
+    let key = std::env::var("FYRR_TEST_S3_KMS_KEY_ID").ok();
+    let (config, root) = setup_on(Backend::S3);
+    if let Some(key) = &key {
+        let text = std::fs::read_to_string(&config).unwrap();
+        let text = text.replacen(
+            "\n[embedding]",
+            &format!("\nkms_key_id = \"{key}\"\n[embedding]"),
+            1,
+        );
+        std::fs::write(&config, text).unwrap();
+    }
+    let log = root.join("object-store.jsonl");
+    let steps: [&[&str]; 3] = [
+        &["writer", "namespace", "create"],
+        &["writer", "sync"],
+        &["writer", "commit"],
+    ];
+    for args in steps {
+        let output = worker_command(&config)
+            .env("FYRR_OBJECT_STORE_DIAGNOSTICS", &log)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {}", report(&output));
+    }
+    let written: std::collections::HashSet<String> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|record| {
+            record["error_code"] == "ok"
+                && ["PUT", "MULTIPART_CREATE", "COPY", "RENAME"]
+                    .contains(&record["method"].as_str().unwrap())
+        })
+        .map(|record| record["key_sha256"].as_str().unwrap().to_owned())
+        .collect();
+    let loaded = fyrr_core::config::load(&config).unwrap();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let objects: Vec<_> = store.list(Some(&namespace)).try_collect().await.unwrap();
+    for suffix in ["/head.json", ".lance", ".manifest"] {
+        assert!(
+            objects
+                .iter()
+                .any(|object| object.location.as_ref().ends_with(suffix)),
+            "no {suffix} object: the run did not publish"
+        );
+    }
+    for object in &objects {
+        let hash = fyrr_core::limits::digest(object.location.as_ref().as_bytes());
+        assert!(
+            written.contains(hash.trim_start_matches("sha256:")),
+            "{} is in no write record of the diagnostics log",
+            object.location
+        );
+    }
+    let Some(key) = key else {
+        eprintln!("FYRR_TEST_S3_KMS_KEY_ID is not set: coverage checked, key not asserted");
+        return;
+    };
+    let Some(fyrr_core::config::StorageBackend::S3 { bucket, .. }) =
+        loaded.config.storage.backend()
+    else {
+        unreachable!("the fixture is S3");
+    };
+    let mut builder = AmazonS3Builder::from_env().with_bucket_name(bucket);
+    for (name, value) in loaded
+        .config
+        .storage
+        .object_store_options(&fyrr_core::config::ProcessEnvironment)
+        .unwrap()
+        .into_map()
+    {
+        builder = builder.with_config(name.parse().unwrap(), value);
+    }
+    let s3 = builder.build().unwrap();
+    let client = reqwest::Client::new();
+    for object in &objects {
+        let url = s3
+            .signed_url(
+                reqwest::Method::HEAD,
+                &object.location,
+                Duration::from_secs(300),
+            )
+            .await
+            .unwrap();
+        let response = client.head(url).send().await.unwrap();
+        assert!(response.status().is_success(), "HEAD {}", object.location);
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .map(|value| value.to_str().unwrap().to_owned())
+        };
+        assert_eq!(
+            header("x-amz-server-side-encryption").as_deref(),
+            Some("aws:kms"),
+            "{}",
+            object.location
+        );
+        assert_eq!(
+            header("x-amz-server-side-encryption-aws-kms-key-id").as_deref(),
+            Some(key.as_str()),
+            "{}",
+            object.location
+        );
+    }
+}
+
 #[test]
 #[ignore = "real CLI and RustFS; scripts/ci"]
 fn coordination_status_bounded_backlog_on_storage() {

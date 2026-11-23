@@ -345,7 +345,16 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
                 action: NamespaceAction::Copy { to_config },
             } => {
                 let to = match config::load(to_config) {
-                    Ok(loaded) => loaded.config,
+                    Ok(loaded) => {
+                        let issues = loaded.validate();
+                        for issue in &issues {
+                            eprintln!("{issue}");
+                        }
+                        if issues.iter().any(|i| i.severity == config::Severity::Error) {
+                            return ExitCode::from(exit::CONFIG);
+                        }
+                        loaded.config
+                    }
                     Err(issue) => {
                         eprintln!("{issue}");
                         return ExitCode::from(exit::CONFIG);

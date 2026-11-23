@@ -25,7 +25,8 @@ const DEBRIS: [&str; 7] = [
 /// that stops earlier leaves no namespace, and the next run clears what it left
 /// and starts over.
 pub async fn copy(from: &Config, to: &Config) -> Result<serde_json::Value> {
-    if from.storage == to.storage {
+    // The location only: the key does not make another storage.
+    if (&from.storage.uri, &from.storage.endpoint) == (&to.storage.uri, &to.storage.endpoint) {
         return Err(WriterError::CopySameStorage);
     }
     let started = std::time::Instant::now();
