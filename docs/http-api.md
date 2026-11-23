@@ -889,7 +889,7 @@ not the row permissions. The committer evaluates each filter once, against the
 documents the request is applied to, that is, after every request published
 before it, so the last request wins as it does for ids. A filter that matches
 more than 10,000 documents (`MAX_FILTER_WRITE_DOCUMENTS`) refuses the request
-(`409 rejected`) and changes nothing; the same bound holds for each of the two.
+(`409 rejected`) and changes no document; the same bound holds for each of the two. An attribute that the upserts or patches of that request [inferred](tuning.md#inferred-attributes) stays declared.
 A document the request names (`upserts`, `patches`, `deletes`) is written as
 the row says: an upsert or a delete is not changed by a filter, and a patch by
 `id` is applied over the patch by filter, except that the patch by `id` of a
