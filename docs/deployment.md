@@ -240,8 +240,23 @@ helm install fyrr deploy/helm/fyrr --values my-values.yaml
   `Host` ([HTTP boundary](http-users.md#http-boundary)).
 - **Writer.** One pod of the `fyrr` image runs `fyrr writer serve`. The
   `Deployment` has one replica and the `Recreate` strategy, so an upgrade
-  never runs two writers. Create the namespace once with
-  `kubectl exec deploy/fyrr-writer -- fyrr --config /etc/fyrr/fyrr.toml writer namespace create`.
+  never runs two writers. The readers become ready only after the first
+  content publication, and with API keys they refuse every request until
+  the keys are published. After the first install, run once, in this order
+  (release name `fyrr`; the writer's secret must hold the keys' variables):
+
+  ```sh
+  w="kubectl exec deploy/fyrr-writer -- fyrr --config /etc/fyrr/fyrr.toml writer"
+  $w namespace create
+  $w sync        # or a first write through the HTTP API
+  $w commit
+  $w keys        # required with [[identity.api_keys]]
+  ```
+
+  The running `writer serve` also syncs and commits on its own schedule, so
+  `sync` or `commit` may report that another process holds the lease; repeat
+  the command (see [Scheduling](#scheduling)). A one-off `writer sync` for a
+  large first load needs `--timeout`.
   The writer's administration listener (`writer.serve.admin`, for SCIM) has no
   `Service` in the chart.
 - **Configuration.** `config` is the `fyrr.toml` of both, mounted from a
@@ -269,6 +284,11 @@ helm install fyrr deploy/helm/fyrr --values my-values.yaml
   to `0.0.0.0:<port>` in `config`, and scrape the pods; the endpoint has no
   authentication, so the `Service` does not carry it
   ([Metrics](operations.md#metrics)).
+
+The chart's `version` and `appVersion` are the workspace version, and the
+default image tag is the `appVersion`: the release that ships this chart.
+Before that release is published, build the images with `scripts/images`
+and set `reader.image.tag` and `writer.image.tag`.
 
 `scripts/images` lints and renders the chart (`helm lint --strict` and
 `helm template`, with helm pinned in `scripts/pins.env`) before it builds

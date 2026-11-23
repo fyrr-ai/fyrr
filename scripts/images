@@ -78,6 +78,11 @@ log "linting and rendering $chart"
 "$helm" template fyrr "$chart" --set metrics.port=9090 --set reader.existingSecret=reader-env \
   --set writer.existingSecret=writer-env --set 'reader.env[0].name=EXAMPLE' --set 'reader.env[0].value=1' \
   >"$OUT/helm-options.yaml" || die "helm template failed with the options set"
+workspace_version="$(sed -n '/^\[workspace.package\]/,/^$/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+for key in version appVersion; do
+  [[ "$(sed -n "s/^$key: \"\{0,1\}\([^\"]*\)\"\{0,1\}\$/\1/p" "$chart/Chart.yaml")" == "$workspace_version" ]] ||
+    die "chart: $key in $chart/Chart.yaml is not the workspace version $workspace_version"
+done
 grep -q 'path: /readyz' "$OUT/helm-default.yaml" || die "chart: readers have no /readyz readiness probe"
 # One writer: the writer Deployment is the only one with a fixed replica count of 1.
 grep -A8 'name: fyrr-writer' "$OUT/helm-default.yaml" | grep -q 'replicas: 1' || die "chart: the writer is not a single replica"

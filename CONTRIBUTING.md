@@ -237,7 +237,9 @@ not create.
 
 ## Releasing
 
-`scripts/release` uploads nothing. Pushing a `v*` tag that matches the
+`scripts/release` uploads nothing. Raise `version` and `appVersion` in
+`deploy/helm/fyrr/Chart.yaml` with the workspace version (`scripts/images`
+fails when they differ). Pushing a `v*` tag that matches the
 workspace version in `Cargo.toml` starts `.github/workflows/release.yml`: it
 runs CI (`scripts/ci`, full tier) and, only if CI passes, runs
 `scripts/release` once per platform (linux-x86_64 and linux-aarch64). Each
