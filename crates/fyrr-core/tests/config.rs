@@ -1311,6 +1311,58 @@ fn dense_partition_rows_defaults_to_550_and_is_bounded_without_changing_the_dige
     }
 }
 #[test]
+fn dense_metric_and_element_default_to_cosine_and_f16_and_enter_the_digest_when_set() {
+    use fyrr_core::config::{DenseElement, DenseMetric};
+    let legacy = parse(MINIMAL).unwrap().config.namespace;
+    assert_eq!(legacy.dense_metric, DenseMetric::Cosine);
+    assert_eq!(legacy.dense_element, DenseElement::F16);
+    // The defaults spelled out are the legacy digest.
+    let spelled = parse(&MINIMAL.replace(
+        "[namespace]",
+        "[namespace]\ndense_metric='cosine'\ndense_element='f16'",
+    ))
+    .unwrap();
+    assert!(errors(&spelled).is_empty());
+    assert_eq!(
+        spelled.config.namespace.retrieval_digest(),
+        legacy.retrieval_digest()
+    );
+    let mut digests = vec![legacy.retrieval_digest()];
+    for (metric, element) in [
+        ("squared_l2", "f16"),
+        ("dot", "f16"),
+        ("cosine", "f32"),
+        ("dot", "f32"),
+    ] {
+        let configured = parse(&MINIMAL.replace(
+            "[namespace]",
+            &format!("[namespace]\ndense_metric='{metric}'\ndense_element='{element}'"),
+        ))
+        .unwrap();
+        assert!(errors(&configured).is_empty(), "{metric} {element}");
+        digests.push(configured.config.namespace.retrieval_digest());
+    }
+    let distinct: std::collections::BTreeSet<_> = digests.iter().collect();
+    assert_eq!(distinct.len(), digests.len(), "{digests:?}");
+    for bad in ["euclidean", "hamming", "l2"] {
+        assert!(
+            parse(&MINIMAL.replace("[namespace]", &format!("[namespace]\ndense_metric='{bad}'")))
+                .is_err(),
+            "{bad}"
+        );
+    }
+    for bad in ["f64", "i8", "bf16"] {
+        assert!(
+            parse(&MINIMAL.replace(
+                "[namespace]",
+                &format!("[namespace]\ndense_element='{bad}'")
+            ))
+            .is_err(),
+            "{bad}"
+        );
+    }
+}
+#[test]
 fn namespace_attributes_are_declared_by_name_and_type() {
     use fyrr_core::attributes::AttributeType;
     let declared = parse(&format!(

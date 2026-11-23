@@ -889,6 +889,9 @@ async fn a_namespace_report_needs_the_admin_or_list_role() {
                     "labels":{"array":"string"},"created_at":"datetime"})
             );
             assert_eq!(body["read_only"], false);
+            // The distance and the element type are reported, also the defaults.
+            assert_eq!(body["dense_metric"], "cosine");
+            assert_eq!(body["dense_element"], "f16");
             assert!(body["settings"]["embedding"]["model"].is_string(), "{body}");
             assert_eq!(body["unindexed"], json!({"rows":0,"logical_bytes":0}));
         }

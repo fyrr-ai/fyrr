@@ -18,7 +18,6 @@ use lance::index::vector::VectorIndexParams;
 use lance_index::optimize::OptimizeOptions;
 use lance_index::vector::{bq::RQBuildParams, ivf::builder::IvfBuildParams};
 use lance_index::{IndexType, scalar::ScalarIndexParams};
-use lance_linalg::distance::DistanceType;
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};

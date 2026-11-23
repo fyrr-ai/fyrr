@@ -22,15 +22,15 @@ impl FilterPlan {
         nprobes: usize,
         shortlist: usize,
         dimensions: u32,
+        element: fyrr_core::config::DenseElement,
         rq_bits: u8,
     ) -> Self {
         let admitted: u128 = maps.iter().map(|m| u128::from(m.admitted_rows())).sum();
         let selected = u128::from(selected);
         let scale = (admitted.max(selected).max(1), selected.max(1));
         let dims = u128::from(dimensions);
-        // Stored vectors are f16; a RaBitQ code has `bits` per dimension and
-        // a few f32 factors per row.
-        let vector_bytes = 2 * dims;
+        // A RaBitQ code has `bits` per dimension and a few f32 factors per row.
+        let vector_bytes = u128::from(element.bytes()) * dims;
         let code_bytes = (dims * u128::from(rq_bits)).div_ceil(8) + 16;
         let probed_rows: u128 = maps
             .iter()
@@ -113,6 +113,7 @@ impl PreparedReader {
                 self.config.reader.nprobes,
                 shortlist,
                 self.config.embedding.dimensions,
+                self.config.namespace.dense_element,
                 self.config.namespace.dense_rq_bits,
             ),
         };
@@ -248,16 +249,10 @@ impl PreparedReader {
         );
         let rescore_start = Instant::now();
         let rescore_counters = self.mirror.counters();
-        let key = Arc::new(arrow_array::Float16Array::from(
-            vector
-                .iter()
-                .copied()
-                .map(half::f16::from_f32)
-                .collect::<Vec<_>>(),
-        ));
+        let key = embedding::query_array(vector, self.config.namespace.dense_element);
         let batch = lance_index::vector::flat::compute_distance(
             key,
-            lance_linalg::distance::DistanceType::Cosine,
+            embedding::distance_type(self.config.namespace.dense_metric),
             "vector",
             batch,
         )
@@ -369,7 +364,7 @@ impl PreparedReader {
             scan.nearest("vector", query, requested)
                 .map_err(|_| EmbeddingInvalid)?
                 .use_index(use_index);
-            scan.distance_metric(lance_linalg::distance::DistanceType::Cosine);
+            scan.distance_metric(embedding::distance_type(self.config.namespace.dense_metric));
             scan.nprobes(nprobes)
                 .refine(u32::try_from((pool / requested).max(1)).map_err(|_| InvalidArgument)?);
             let batch = scan
@@ -428,6 +423,7 @@ impl PreparedReader {
             Some(Box::new(RowAdmission(self.selected_rows().clone()))),
         ));
         let mut candidates = BTreeMap::<u64, f32>::new();
+        let metric = self.config.namespace.dense_metric;
         let maps = self
             .admission
             .maps
@@ -442,16 +438,16 @@ impl PreparedReader {
             if map.admitted.len() != index.total_partitions() {
                 return Err(PartitionMapUnavailable);
             }
-            let key = arrow_array::Float16Array::from(
-                vector
-                    .iter()
-                    .copied()
-                    .map(half::f16::from_f32)
-                    .collect::<Vec<_>>(),
-            );
-            let key = lance_linalg::kernels::normalize_arrow(&key)
-                .map_err(|_| EmbeddingInvalid)?
-                .0;
+            let key = embedding::query_array(vector, self.config.namespace.dense_element);
+            // Cosine partitions are those of the normalized query; the other
+            // metrics keep the length that they measure.
+            let key = if metric == fyrr_core::config::DenseMetric::Cosine {
+                lance_linalg::kernels::normalize_arrow(key.as_ref())
+                    .map_err(|_| EmbeddingInvalid)?
+                    .0
+            } else {
+                key
+            };
             let query = Query {
                 column: "vector".into(),
                 key,
@@ -469,7 +465,7 @@ impl PreparedReader {
                 dist_q_c: 0.0,
                 approx_mode: ApproxMode::default(),
             };
-            let route = strategy(self.config.reader.routing, index.total_partitions());
+            let route = strategy(self.config.reader.routing, index.total_partitions(), metric);
             let routed = if route == RoutingStrategy::Rabitq {
                 let outcome = self
                     .centroid_routers
@@ -478,15 +474,10 @@ impl PreparedReader {
                     .ok_or(RoutingFallback::Absent)
                     .and_then(|router| router.as_ref().map_err(|reason| *reason))
                     .and_then(|router| {
-                        let normalized = query
-                            .key
-                            .as_any()
-                            .downcast_ref::<arrow_array::Float16Array>()
+                        let routed = embedding::stored_values(query.key.as_ref())
                             .ok_or(RoutingFallback::BuildFailed)?;
                         router.select(
-                            Arc::new(Float32Array::from_iter_values(
-                                normalized.values().iter().map(|v| v.to_f32()),
-                            )),
+                            Arc::new(Float32Array::from(routed)),
                             &map.admitted,
                             self.config.reader.nprobes,
                             plan.target(map, self.config.reader.nprobes),

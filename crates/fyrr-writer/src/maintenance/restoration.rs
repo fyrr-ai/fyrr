@@ -283,6 +283,7 @@ pub(super) fn restore_rows(
         }
         output.push(apply::marker_row(
             config.embedding.dimensions,
+            config.namespace.dense_element,
             source,
             root,
             &state,

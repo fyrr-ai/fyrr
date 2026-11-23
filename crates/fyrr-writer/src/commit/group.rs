@@ -462,9 +462,14 @@ pub(crate) async fn idle(
     })
 }
 
-fn vector_index_params(rows: usize, rq_bits: u8, partition_rows: u32) -> VectorIndexParams {
+fn vector_index_params(
+    rows: usize,
+    rq_bits: u8,
+    partition_rows: u32,
+    metric: fyrr_core::config::DenseMetric,
+) -> VectorIndexParams {
     VectorIndexParams::with_ivf_rq_params(
-        DistanceType::Cosine,
+        fyrr_reader::embedding::distance_type(metric),
         IvfBuildParams {
             num_partitions: Some(rows.div_ceil(partition_rows as usize).max(1)),
             target_partition_size: Some(partition_rows as usize),
@@ -509,6 +514,7 @@ async fn build_indexes(
         count,
         config.namespace.dense_rq_bits,
         config.namespace.dense_partition_rows,
+        config.namespace.dense_metric,
     );
     let scalar = ScalarIndexParams::default();
     let fts = fts_params(config);
@@ -732,30 +738,59 @@ mod fts_partition_tests;
 mod tests {
     use super::*;
     use arrow_array::Array;
-    use arrow_array::types::Float16Type;
+    use arrow_array::types::{Float16Type, Float32Type};
     use arrow_array::{ArrayRef, FixedSizeListArray, RecordBatch, RecordBatchIterator};
     use arrow_schema::{Field, Schema};
+    use fyrr_core::config::{DenseElement, DenseMetric};
 
     const DIM: i32 = 32;
     const ROWS: usize = 600;
 
     async fn index_stats(tag: &str, rq_bits: u8, partition_rows: u32) -> serde_json::Value {
-        let vectors =
-            FixedSizeListArray::from_iter_primitive::<Float16Type, _, _>(
+        index_stats_of(
+            tag,
+            rq_bits,
+            partition_rows,
+            DenseMetric::Cosine,
+            DenseElement::F16,
+        )
+        .await
+    }
+
+    async fn index_stats_of(
+        tag: &str,
+        rq_bits: u8,
+        partition_rows: u32,
+        metric: DenseMetric,
+        element: DenseElement,
+    ) -> serde_json::Value {
+        let number = |row: usize, d: usize| ((row * 7 + d * 3) % 17) as f32 - 8.0;
+        let vectors: ArrayRef = match element {
+            DenseElement::F16 => Arc::new(FixedSizeListArray::from_iter_primitive::<
+                Float16Type,
+                _,
+                _,
+            >(
                 (0..ROWS).map(|row| {
-                    Some((0..DIM as usize).map(move |d| {
-                        Some(half::f16::from_f32(((row * 7 + d * 3) % 17) as f32 - 8.0))
-                    }))
+                    Some((0..DIM as usize).map(move |d| Some(half::f16::from_f32(number(row, d)))))
                 }),
                 DIM,
-            );
+            )),
+            DenseElement::F32 => Arc::new(FixedSizeListArray::from_iter_primitive::<
+                Float32Type,
+                _,
+                _,
+            >(
+                (0..ROWS).map(|row| Some((0..DIM as usize).map(move |d| Some(number(row, d))))),
+                DIM,
+            )),
+        };
         let schema = Arc::new(Schema::new(vec![Field::new(
             "vector",
             vectors.data_type().clone(),
             false,
         )]));
-        let batch =
-            RecordBatch::try_new(schema.clone(), vec![Arc::new(vectors) as ArrayRef]).unwrap();
+        let batch = RecordBatch::try_new(schema.clone(), vec![vectors]).unwrap();
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/lance-pin")
             .join(format!("{tag}-{}", std::process::id()));
@@ -771,7 +806,7 @@ mod tests {
                 &["vector"],
                 IndexType::Vector,
                 Some("vector_idx".into()),
-                &vector_index_params(ROWS, rq_bits, partition_rows),
+                &vector_index_params(ROWS, rq_bits, partition_rows, metric),
                 true,
             )
             .await
@@ -790,6 +825,29 @@ mod tests {
                 stats["indices"][0]["sub_index"]["num_bits"], bits,
                 "{stats}"
             );
+        }
+    }
+
+    /// Every metric builds an IVF_RQ index over both element types in the
+    /// pinned Lance, and the index records the metric it was built with.
+    #[tokio::test]
+    async fn vector_index_uses_the_configured_metric_on_both_element_types() {
+        for (metric, name) in [
+            (DenseMetric::Cosine, "cosine"),
+            (DenseMetric::SquaredL2, "l2"),
+            (DenseMetric::Dot, "dot"),
+        ] {
+            for element in [DenseElement::F16, DenseElement::F32] {
+                let stats = index_stats_of(
+                    &format!("metric-{name}-{element:?}"),
+                    1,
+                    550,
+                    metric,
+                    element,
+                )
+                .await;
+                assert_eq!(stats["indices"][0]["metric_type"], name, "{stats}");
+            }
         }
     }
 

@@ -597,7 +597,17 @@ fn filtered_index_search_reads_fewer_bytes_than_the_exact_scan() {
         admitted: vec![admitted; 182],
         indexed_rows: 182 * 550,
     };
-    let plan = |maps: &[PartitionMap], selected| FilterPlan::new(maps, selected, 16, 300, 1024, 1);
+    let plan = |maps: &[PartitionMap], selected| {
+        FilterPlan::new(
+            maps,
+            selected,
+            16,
+            300,
+            1024,
+            fyrr_core::config::DenseElement::F16,
+            1,
+        )
+    };
     let full = [map(550)];
     // 16 probes of 550 rows see 8,800 rows. A filter of 1,000 rows would
     // need the whole index (14 MB of codes) against 2 MB of stored vectors.
@@ -612,7 +622,18 @@ fn filtered_index_search_reads_fewer_bytes_than_the_exact_scan() {
     // the walk would read every partition, the exact scan 1,820 vectors.
     assert!(!plan(&[map(10)], 1_820).indexed);
     // More bits per dimension make codes dearer: 9,000 rows go exact.
-    assert!(!FilterPlan::new(&full, 9_000, 16, 300, 1024, 5).indexed);
+    assert!(
+        !FilterPlan::new(
+            &full,
+            9_000,
+            16,
+            300,
+            1024,
+            fyrr_core::config::DenseElement::F16,
+            5
+        )
+        .indexed
+    );
     // No admitted row or no selection never takes the index path.
     assert!(!plan(&[map(0)], 9_000).indexed);
     assert!(!plan(&full, 0).indexed);

@@ -3,11 +3,13 @@
 use EmbeddingError::*;
 
 type Result<T> = std::result::Result<T, EmbeddingError>;
-use fyrr_core::config::EmbeddingConfig;
+use arrow_array::{Array, ArrayRef, Float16Array, Float32Array};
+use fyrr_core::config::{DenseElement, DenseMetric, EmbeddingConfig};
 use fyrr_core::envelope::{
     EmbeddingApiStyle, EmbeddingIdentity, EmbeddingRole, EmbeddingRoles, EmbeddingSettings,
 };
 pub use fyrr_core::limits::digest;
+use std::sync::Arc;
 
 mod error;
 pub use error::EmbeddingError;
@@ -98,6 +100,41 @@ pub fn validate(vector: &[f32], dimensions: u32) -> Result<()> {
         return Err(EmbeddingInvalid);
     }
     Ok(())
+}
+
+/// Lance's distance for a namespace's metric.
+pub fn distance_type(metric: DenseMetric) -> lance_linalg::distance::DistanceType {
+    use lance_linalg::distance::DistanceType;
+    match metric {
+        DenseMetric::Cosine => DistanceType::Cosine,
+        DenseMetric::SquaredL2 => DistanceType::L2,
+        DenseMetric::Dot => DistanceType::Dot,
+    }
+}
+
+/// A query as an array of the element type the namespace stores its vectors in.
+pub fn query_array(vector: &[f32], element: DenseElement) -> ArrayRef {
+    match element {
+        DenseElement::F16 => Arc::new(Float16Array::from_iter_values(
+            vector.iter().copied().map(half::f16::from_f32),
+        )),
+        DenseElement::F32 => Arc::new(Float32Array::from(vector.to_vec())),
+    }
+}
+
+/// The numbers of a stored vector. `None` when it holds a null or is of
+/// another type than the two the namespace may store.
+pub fn stored_values(vector: &dyn Array) -> Option<Vec<f32>> {
+    if vector.null_count() > 0 {
+        return None;
+    }
+    if let Some(vector) = vector.as_any().downcast_ref::<Float16Array>() {
+        return Some(vector.values().iter().map(|v| v.to_f32()).collect());
+    }
+    vector
+        .as_any()
+        .downcast_ref::<Float32Array>()
+        .map(|vector| vector.values().to_vec())
 }
 
 #[cfg(test)]

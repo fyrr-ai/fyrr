@@ -2620,7 +2620,6 @@ dependencies = [
  "jsonschema",
  "lance",
  "lance-index",
- "lance-linalg",
  "object_store 0.14.2",
  "proc-macro2",
  "regex",

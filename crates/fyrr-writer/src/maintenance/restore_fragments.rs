@@ -112,8 +112,14 @@ mod tests {
 
     #[tokio::test]
     async fn reused_ids_cannot_prove_file_identity_and_restore_mismatch_falls_back() {
-        let batch =
-            apply::marker_row(1, "source", "root", &apply::DocumentState::default()).unwrap();
+        let batch = apply::marker_row(
+            1,
+            fyrr_core::config::DenseElement::F16,
+            "source",
+            "root",
+            &apply::DocumentState::default(),
+        )
+        .unwrap();
         let dataset = Dataset::write(
             arrow_array::RecordBatchIterator::new([Ok(batch.clone())], batch.schema()),
             &format!(

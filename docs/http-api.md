@@ -115,6 +115,7 @@ namespace's published version, with no storage request of its own:
 | `namespace`, `publication_id` | The namespace and the content publication the answer describes. |
 | `schema` | The typed attributes of the version, name to type; `{}` when it has none. |
 | `settings` | The namespace's [settings](configuration.md), as its policy records them. |
+| `dense_metric`, `dense_element` | The distance (`cosine`, `squared_l2` or `dot`) and the element type (`f16` or `f32`) of the namespace's vectors, fixed when it was created. |
 | `read_only` | Whether the namespace is [frozen](#freezing-a-namespace). Unlike the rest, it is read from the current head (the one the reader's authorization checks share), because a switch is published without a new version. |
 | `rows` | Approximate live rows (a document is one or more rows). `null` for a version published before contract 4.1. |
 | `logical_bytes` | Approximate bytes of the data files of those rows, without indexes. `null` as `rows`. |

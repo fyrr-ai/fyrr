@@ -1573,6 +1573,186 @@ async fn identity_write_api_without_embedding_settings_takes_only_vectors_on_sto
     }
 }
 
+/// A row of 1024 numbers in one of 16 clusters, with a length that differs per
+/// row, so that cosine, squared Euclidean distance and dot product rank rows
+/// differently.
+fn metric_row(n: usize) -> Vec<f32> {
+    let length = 0.25 + (n % 7) as f32 * 0.5;
+    (0..1024)
+        .map(|d| {
+            length * ((((n % 16) + 1) * (d + 3)) as f32 * 0.37).sin()
+                + 0.15 * (((n + 1) * (d + 11)) as f32 * 0.73).sin()
+        })
+        .collect()
+}
+
+/// How near `row` is to `query` under `metric`: higher is nearer.
+fn nearness(metric: &str, query: &[f32], row: &[f32]) -> f32 {
+    let dot: f32 = query.iter().zip(row).map(|(q, r)| q * r).sum();
+    let norm = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    match metric {
+        "cosine" => dot / (norm(query) * norm(row)),
+        "squared_l2" => -query
+            .iter()
+            .zip(row)
+            .map(|(q, r)| (q - r).powi(2))
+            .sum::<f32>(),
+        "dot" => dot,
+        _ => unreachable!("{metric}"),
+    }
+}
+
+/// A namespace created with a metric and an element type records them, reports
+/// them and answers with the recall of that metric: the ten nearest rows by the
+/// metric are among the ten hits for at least nine in ten. Index builds run on
+/// two threads (`configure`).
+async fn metric_recall(metric: &str, element: &str) {
+    const ROWS: usize = 200;
+    const QUERIES: usize = 12;
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let text = std::fs::read_to_string(&config).unwrap();
+    // Every partition of the index is probed: the recall is that of the metric.
+    std::fs::write(&config, text.replace("nprobes = 1", "nprobes = 16")).unwrap();
+    let writer = Writer::start(&config, &root, address).await;
+    let namespace = "dense-fixture";
+    let rows: Vec<Value> = (0..ROWS)
+        .map(|n| json!({"id": format!("r{n}"), "text": format!("alpha{n}"), "vector": metric_row(n)}))
+        .collect();
+    let settings =
+        json!({"dense_metric": metric, "dense_element": element, "dense_partition_rows": 32});
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"settings": settings, "upserts": rows})
+            )
+            .await,
+        (200, json!({"upserted": ROWS, "deleted": 0}))
+    );
+    // The manifest records them, in the version an older build refuses, unless
+    // they are the defaults, which keep the old version and bytes.
+    let (_, manifest) = super::coordination::publication(&config).await;
+    assert_eq!(
+        serde_json::to_value(&manifest).unwrap()["dense_metric"]
+            .as_str()
+            .unwrap_or("cosine"),
+        metric
+    );
+    assert_eq!(
+        serde_json::to_value(&manifest).unwrap()["dense_element"]
+            .as_str()
+            .unwrap_or("f16"),
+        element
+    );
+    let default = metric == "cosine" && element == "f16";
+    assert_eq!(manifest.schema_version.major, if default { 4 } else { 5 });
+    let vectors = stored(&config, "source_id = '_api'").await;
+    let column = vectors.column_by_name("vector").unwrap();
+    let stored_type = format!("{:?}", column.data_type());
+    assert!(
+        stored_type.contains(if element == "f32" {
+            "Float32"
+        } else {
+            "Float16"
+        }),
+        "{stored_type}"
+    );
+    // A name the pinned index has no distance or element type for is refused,
+    // and another valid one is another namespace: the settings are fixed.
+    for (key, other) in [("dense_metric", "hamming"), ("dense_element", "f64")] {
+        assert_eq!(
+            writer
+                .post(
+                    WRITE_KEY,
+                    namespace,
+                    &json!({"settings": {key: other}, "upserts": [{"id": "x", "text": "x"}]})
+                )
+                .await,
+            (400, json!({"error": "settings_invalid"})),
+            "{key}"
+        );
+    }
+    let changed = if metric == "dot" { "cosine" } else { "dot" };
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                namespace,
+                &json!({"settings": {"dense_metric": changed}, "upserts": [{"id": "x", "text": "x"}]})
+            )
+            .await,
+        (409, json!({"error": "namespace_settings_fixed"}))
+    );
+
+    let (mut recall, mut separated) = (0.0, false);
+    for k in 0..QUERIES {
+        let query = metric_row(k * 5 + 1000);
+        let text = format!("zzprobe{k}");
+        root.embedding.insert_both(&text, query.clone());
+        let truth = |metric: &str| {
+            let mut ranked: Vec<usize> = (0..ROWS).collect();
+            ranked.sort_by(|&a, &b| {
+                nearness(metric, &query, &metric_row(b)).total_cmp(&nearness(
+                    metric,
+                    &query,
+                    &metric_row(a),
+                ))
+            });
+            ranked.truncate(10);
+            ranked
+        };
+        let expected = truth(metric);
+        // The fixture tells the metrics apart, or the test would pass for the wrong one.
+        separated |= ["cosine", "squared_l2", "dot"]
+            .into_iter()
+            .any(|other| truth(other) != expected);
+        let found = hits(&config, &text);
+        recall += found
+            .iter()
+            .filter(|id| expected.iter().any(|row| **id == format!("r{row}")))
+            .count() as f64
+            / 10.0;
+    }
+    assert!(separated, "the fixture ranks every metric alike");
+    let recall = recall / QUERIES as f64;
+    assert!(recall >= 0.90, "{metric} {element}: recall@10 {recall}");
+    drop(writer);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_holds_recall_under_cosine_on_storage() {
+    metric_recall("cosine", "f16").await;
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_holds_recall_under_squared_l2_on_storage() {
+    metric_recall("squared_l2", "f16").await;
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_holds_recall_under_dot_on_storage() {
+    metric_recall("dot", "f16").await;
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_holds_recall_under_squared_l2_on_32_bit_vectors_on_storage() {
+    metric_recall("squared_l2", "f32").await;
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_holds_recall_under_dot_on_32_bit_vectors_on_storage() {
+    metric_recall("dot", "f32").await;
+}
+
 /// A first publication of more rows than one index partition holds, all with the
 /// same vector, publishes: index training does not fail on identical vectors.
 #[tokio::test]

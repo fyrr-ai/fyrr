@@ -14,12 +14,11 @@ pub(crate) use row_state::{
     with_state, with_typed,
 };
 
-use arrow_array::types::Float16Type;
+use arrow_array::types::{Float16Type, Float32Type};
 use arrow_array::{
-    Array, ArrayRef, FixedSizeListArray, Float16Array, ListArray, RecordBatch, RecordBatchIterator,
-    StringArray,
+    Array, ArrayRef, FixedSizeListArray, ListArray, RecordBatch, RecordBatchIterator, StringArray,
 };
-use fyrr_core::config::Config;
+use fyrr_core::config::{Config, DenseElement};
 use fyrr_core::envelope::*;
 use fyrr_reader::embedding::digest;
 use fyrr_reader::storage::{namespace_store, sql};
@@ -114,6 +113,7 @@ async fn fragment_rows(
     if fragments.is_empty() {
         return Ok(RecordBatch::new_empty(crate::prepare::schema(
             config.embedding.dimensions,
+            config.namespace.dense_element,
         )));
     }
     dataset
@@ -138,7 +138,8 @@ pub(crate) async fn write_rows(
     // Rows with attribute columns and rows without (a document's marker) are
     // written apart: a fragment has one schema.
     let dimensions = config.embedding.dimensions;
-    let built_in = crate::prepare::schema(dimensions).fields().len();
+    let element = config.namespace.dense_element;
+    let built_in = crate::prepare::schema(dimensions, element).fields().len();
     let mut groups: Vec<(arrow_schema::SchemaRef, Vec<RecordBatch>)> = Vec::new();
     for row in rows {
         let extra: Vec<_> = row
@@ -148,7 +149,7 @@ pub(crate) async fn write_rows(
             .skip(built_in)
             .map(|f| arrow_schema::Field::new(f.name(), f.data_type().clone(), true))
             .collect();
-        let schema = crate::prepare::schema_with(dimensions, extra);
+        let schema = crate::prepare::schema_with(dimensions, element, extra);
         match groups.iter_mut().find(|(known, _)| *known == schema) {
             Some((_, batches)) => batches.push(row),
             None => groups.push((schema, vec![row])),
@@ -230,6 +231,7 @@ pub async fn initial_deletes(
         .map(|d| {
             marker_row(
                 config.embedding.dimensions,
+                config.namespace.dense_element,
                 &envelope.source_id,
                 &d.root_id,
                 &DocumentState {
@@ -272,21 +274,17 @@ pub async fn verified_staged(
         let Some(document) = documents.get(root) else {
             return Err(WriterError::ChangedRowsInvalid);
         };
-        let vector = staged
+        let values = staged
             .column_by_name("vector")
             .and_then(|a| a.as_any().downcast_ref::<FixedSizeListArray>())
             .ok_or(WriterError::ChangedRowsInvalid)?
             .value(row);
-        let values = vector
-            .as_any()
-            .downcast_ref::<Float16Array>()
-            .ok_or(WriterError::ChangedRowsInvalid)?;
         if strings(&staged, "source_id")?.value(row) != envelope.source_id
             || Some(strings(&staged, "source_revision")?.value(row))
                 != document.source_revision.as_deref()
             || document.intent != DocumentIntent::Replace
             || !keys.insert((root, strings(&staged, "record_id")?.value(row)))
-            || !valid_vector(values, config.embedding.dimensions)
+            || !valid_vector(values.as_ref(), config.embedding.dimensions)
             || strings(&staged, "searchable_text")?.value(row).is_empty()
         {
             return Err(WriterError::ChangedRowsInvalid);
@@ -392,6 +390,7 @@ pub async fn permissions(
         if rows.num_rows() == 0 {
             output.push(marker_row(
                 config.embedding.dimensions,
+                config.namespace.dense_element,
                 &envelope.source_id,
                 &document.root_id,
                 &state,
@@ -495,6 +494,7 @@ pub async fn reconcile(
                 }
                 let estimate = marker_row(
                     config.embedding.dimensions,
+                    config.namespace.dense_element,
                     &envelope.source_id,
                     root,
                     &current,
@@ -534,6 +534,7 @@ pub async fn reconcile(
         ));
         rows.push(marker_row(
             config.embedding.dimensions,
+            config.namespace.dense_element,
             &envelope.source_id,
             &root,
             &current,
@@ -583,11 +584,7 @@ pub async fn verify_publication(
                     .and_then(|a| a.as_any().downcast_ref::<FixedSizeListArray>())
                     .ok_or(WriterError::ChangedRowsInvalid)?
                     .value(row);
-                let vector = vector
-                    .as_any()
-                    .downcast_ref::<Float16Array>()
-                    .ok_or(WriterError::ChangedRowsInvalid)?;
-                if !valid_vector(vector, config.embedding.dimensions) {
+                if !valid_vector(vector.as_ref(), config.embedding.dimensions) {
                     return Err(WriterError::ChangedRowsInvalid);
                 }
                 let current = state(&batch, row)?;
@@ -643,8 +640,12 @@ pub async fn verify_publication(
     Ok(())
 }
 
-pub(crate) fn valid_vector(values: &Float16Array, dimensions: u32) -> bool {
-    values.len() == dimensions as usize
-        && values.iter().all(|v| v.is_some_and(|v| v.is_finite()))
-        && !values.iter().all(|v| v == Some(half::f16::ZERO))
+/// Whether a stored vector has the namespace's dimension, only finite
+/// numbers (of one of the two element types) and a nonzero one.
+pub(crate) fn valid_vector(values: &dyn Array, dimensions: u32) -> bool {
+    fyrr_reader::embedding::stored_values(values).is_some_and(|values| {
+        values.len() == dimensions as usize
+            && values.iter().all(|v| v.is_finite())
+            && values.iter().any(|v| *v != 0.0)
+    })
 }

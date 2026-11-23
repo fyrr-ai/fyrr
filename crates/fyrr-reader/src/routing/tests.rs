@@ -23,11 +23,20 @@ fn auto_threshold_is_only_a_strategy_decision() {
         (8191, RoutingStrategy::Exact),
         (8192, RoutingStrategy::Rabitq),
     ] {
-        assert_eq!(strategy(RoutingStrategy::Auto, n), expected);
-        assert_eq!(strategy(RoutingStrategy::Exact, n), RoutingStrategy::Exact);
+        let cosine = DenseMetric::Cosine;
+        assert_eq!(strategy(RoutingStrategy::Auto, n, cosine), expected);
         assert_eq!(
-            strategy(RoutingStrategy::Rabitq, n),
+            strategy(RoutingStrategy::Exact, n, cosine),
+            RoutingStrategy::Exact
+        );
+        assert_eq!(
+            strategy(RoutingStrategy::Rabitq, n, DenseMetric::SquaredL2),
             RoutingStrategy::Rabitq
+        );
+        // The centroid scan does not rank by a dot product: Lance routes.
+        assert_eq!(
+            strategy(RoutingStrategy::Rabitq, n, DenseMetric::Dot),
+            RoutingStrategy::Exact
         );
     }
 }

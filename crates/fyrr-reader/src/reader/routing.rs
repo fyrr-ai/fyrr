@@ -43,6 +43,7 @@ impl PreparedReader {
         }
         let routers = self.centroid_routers.clone();
         let configured = self.config.reader.routing;
+        let metric = self.config.namespace.dense_metric;
         let pool = self.preparation_budget.permits.clone();
         let reservation = self.preparation_reservation.clone();
         routers
@@ -51,7 +52,7 @@ impl PreparedReader {
                     .iter()
                     .map(|root| {
                         (
-                            strategy(configured, root.total_partitions()),
+                            strategy(configured, root.total_partitions(), metric),
                             root.ivf_model().centroids_array().cloned(),
                         )
                     })
