@@ -4022,7 +4022,7 @@ async fn identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_s
     // The vector `embed` gives the text "alpha": the documents hold it, or its
     // opposite.
     let alpha: Vec<f32> = (0..1024)
-        .map(|d: usize| (((2000 * (d + 7)) as f32).sin()))
+        .map(|d: usize| ((2000 * (d + 7)) as f32).sin())
         .collect();
     let towards = |sign: f32| alpha.iter().map(|x| x * sign).collect::<Vec<f32>>();
     // `a`, `b` and `c` match the query best, by text and by vector, and tie.
