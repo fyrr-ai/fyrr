@@ -1,0 +1,397 @@
+#!/usr/bin/env python3
+"""Measure the recall@10 of filtered vector search on the real HTTP path.
+
+The native `fyrr writer serve` and `fyrr reader serve` run on one local
+storage and this script only drives them and scores what they return. It
+writes `--rows` rows (default 100,000, 128 dimensions) of clustered vectors,
+each with two integer attributes, then asks the reader for the 10 nearest rows
+under a filter that keeps 100%, 50%, 10%, 1% and 0.1% of the rows:
+
+  spread     the attribute is a scrambled row number, so the kept rows are an
+             even sample of every cluster, hence of every vector partition;
+  clustered  the attribute is the row's place in cluster order, so the kept
+             rows are whole clusters, hence a few vector partitions.
+
+The truth of a query is the answer of the same request with `exact: true`,
+which scores every selected row. Recall@10 is the share of the truth that the
+default request returns, averaged over the queries (the queries do not depend
+on the filter).
+
+Rows read is not a counter of the reader. As a labelled diagnosis, the script
+reads `rchar` of `/proc/<reader pid>/io` around every request: the bytes the
+reader process read from files, which are the stored vectors that a request
+scored (a vector index of this size is cached in memory, so the compressed
+codes it scans are not file reads). The "rows" it prints are those bytes divided
+by the bytes of one stored vector. `dense_candidates_fetched` is the reader's
+own telemetry counter: the rows rescored.
+
+  scripts/bench-filtered-recall --binary target/release/fyrr
+
+Output is one JSON document on stdout and a table on stderr. The data is
+removed when the script ends.
+"""
+
+import argparse
+import http.client
+import json
+import math
+import os
+import platform
+import random
+import secrets
+import shutil
+import socket
+import statistics
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+DIMENSIONS = 128
+CLUSTERS = 200
+SPREAD = 0.6  # noise around a cluster centre, against centres of unit spread
+K = 10
+KEEP = (1.0, 0.5, 0.1, 0.01, 0.001)
+SCRAMBLE = (
+    48271  # coprime to 100,000: row n gets the attribute n * 48271 + 12345 mod rows
+)
+WRITE_ROWS = 50000
+NAMESPACE = "bench-filtered"
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def free_address():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return "127.0.0.1:%d" % probe.getsockname()[1]
+
+
+def machine():
+    cpu = next(
+        (
+            line.split(":", 1)[1].strip()
+            for line in Path("/proc/cpuinfo").read_text().splitlines()
+            if line.startswith("model name")
+        ),
+        "unknown",
+    )
+    memory = next(
+        int(line.split()[1]) // 1024
+        for line in Path("/proc/meminfo").read_text().splitlines()
+        if line.startswith("MemTotal")
+    )
+    return {
+        "kernel": platform.release(),
+        "cpu": cpu,
+        "logical_cpus": os.cpu_count(),
+        "memory_mib": memory,
+    }
+
+
+class Corpus:
+    """Rows in cluster order: cluster `n // per` holds rows `n`, so the
+    `clustered` attribute is the row number itself."""
+
+    def __init__(self, rows):
+        if math.gcd(SCRAMBLE, rows) != 1 or rows % CLUSTERS:
+            raise SystemExit(
+                "--rows must be a multiple of %d and coprime to %d"
+                % (CLUSTERS, SCRAMBLE)
+            )
+        self.rows = rows
+        self.per = rows // CLUSTERS
+        self.rng = random.Random(1729)
+        self.centres = [
+            [self.rng.gauss(0, 1) for _ in range(DIMENSIONS)] for _ in range(CLUSTERS)
+        ]
+
+    def vector(self, cluster):
+        gauss, centre = self.rng.gauss, self.centres[cluster]
+        return [centre[d] + gauss(0, SPREAD) for d in range(DIMENSIONS)]
+
+    def batches(self):
+        """Write bodies of WRITE_ROWS rows, generated one after the other."""
+        for first in range(0, self.rows, WRITE_ROWS):
+            rows = []
+            for n in range(first, min(first + WRITE_ROWS, self.rows)):
+                vector = ",".join("%.4f" % x for x in self.vector(n // self.per))
+                rows.append(
+                    '{"id":"r%d","text":"row %d","spread":%d,"clustered":%d,"vector":[%s]}'
+                    % (n, n, (n * SCRAMBLE + 12345) % self.rows, n, vector)
+                )
+            yield (
+                '{"settings":{"attributes":{"spread":"int","clustered":"int"}},"upserts":[%s]}'
+                % ",".join(rows)
+            ).encode()
+
+    def queries(self, count):
+        return [self.vector(self.rng.randrange(CLUSTERS)) for _ in range(count)]
+
+
+class Server:
+    def __init__(self, address):
+        self.host, port = address.split(":")
+        self.port = int(port)
+
+    def call(self, method, path, key, body=None):
+        headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
+        connection = http.client.HTTPConnection(self.host, self.port, timeout=1800)
+        started = time.perf_counter()
+        connection.request(method, path, body, headers)
+        response = connection.getresponse()
+        answer = response.read()
+        elapsed = time.perf_counter() - started
+        connection.close()
+        try:
+            answer = json.loads(answer)
+        except ValueError:
+            pass
+        return response.status, answer, elapsed
+
+
+def read_chars(pid):
+    for line in Path("/proc/%d/io" % pid).read_text().splitlines():
+        if line.startswith("rchar:"):
+            return int(line.split()[1])
+    raise SystemExit("no rchar for the reader")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--binary", default=str(ROOT / "target/release/fyrr"))
+    parser.add_argument("--rows", type=int, default=100000)
+    parser.add_argument("--queries", type=int, default=50, help="queries per case")
+    args = parser.parse_args()
+    binary = Path(args.binary).resolve()
+    corpus = Corpus(args.rows)
+
+    # Local storage refuses a path with a symlink in it, and `target` may be one.
+    work = Path(
+        tempfile.mkdtemp(prefix="filtered-recall-", dir=ROOT / "target")
+    ).resolve()
+    work.chmod(0o700)
+    write_key = "fyrr_key_" + secrets.token_hex(32)
+    read_key = "fyrr_key_" + secrets.token_hex(32)
+    writer_address, reader_address = free_address(), free_address()
+    config = work / "fyrr.toml"
+    # The vector index build uses at most 2 threads: more hard-reset the host.
+    config.write_text(
+        '[namespace]\nname = "%s"\n[storage]\nuri = "file://%s"\n'
+        '[embedding]\nendpoint = "http://127.0.0.1:9/v1"\nmodel = "caller-supplied"\n'
+        "dimensions = %d\n"
+        '[identity]\nhashing_key = { env = "FYRR_BENCH_HASHING_KEY" }\n'
+        'encryption_key = { env = "FYRR_BENCH_ENCRYPTION_KEY" }\n'
+        "[namespace.write_api]\nopen = true\n"
+        "[[identity.api_keys]]\nname = 'writer'\nkey = { env = 'FYRR_BENCH_WRITE_KEY' }\n"
+        "roles = ['write']\n"
+        "[[identity.api_keys]]\nname = 'reader'\nkey = { env = 'FYRR_BENCH_READ_KEY' }\n"
+        "readers = ['usr:bench']\n"
+        "[writer]\nthreads = 2\n"
+        "[writer.serve.admin]\nlisten = '%s'\noperator_token = { env = 'FYRR_BENCH_OPERATOR' }\n"
+        "[reader]\nmirror_path = '%s'\nmirror_max_bytes = 1073741824\n"
+        "[reader.http]\nlisten = '%s'\npublic_url = 'http://%s/mcp'\n"
+        "user_requests_per_minute = 1000000\ngroup_requests_per_minute = 1000000\n"
+        % (
+            NAMESPACE,
+            work / "storage",
+            DIMENSIONS,
+            writer_address,
+            work / "mirror",
+            reader_address,
+            reader_address,
+        )
+    )
+    env = dict(
+        os.environ,
+        FYRR_BENCH_HASHING_KEY=secrets.token_hex(32),
+        FYRR_BENCH_ENCRYPTION_KEY=secrets.token_hex(32),
+        FYRR_BENCH_WRITE_KEY=write_key,
+        FYRR_BENCH_READ_KEY=read_key,
+        FYRR_BENCH_OPERATOR=secrets.token_hex(16),
+        VIRTUAL_ENV=str(ROOT / "connectors/.venv"),
+    )
+    base = [str(binary), "--config", str(config)]
+
+    def run(command):
+        return subprocess.Popen(
+            base + command,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=(work / ("-".join(command[:2]) + ".stderr")).open("w"),
+        )
+
+    reader = writer = None
+    result = {}
+    try:
+        keys = subprocess.run(
+            [*base, "writer", "keys"], env=env, capture_output=True, text=True
+        )
+        if keys.returncode:
+            raise SystemExit("writer keys failed: " + keys.stderr)
+        writer = run(["writer", "serve", "--jobs", "1"])
+        write = Server(writer_address)
+        path = "/v1/namespaces/%s/documents" % NAMESPACE
+        written = 0
+        for body in corpus.batches():
+            for _ in range(600):
+                try:
+                    status, answer, took = write.call("POST", path, write_key, body)
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            else:
+                raise SystemExit("the writer did not come up")
+            assert status == 200, (status, answer)
+            written += answer["upserted"]
+            print(
+                "wrote %d rows (%.0f s)" % (written, took), file=sys.stderr, flush=True
+            )
+
+        # The two writes leave two index segments, as a namespace written in
+        # batches has; the planner treats each segment on its own.
+        shape = json.loads(
+            subprocess.run(
+                [*base, "writer", "status"], env=env, check=True, capture_output=True
+            ).stdout
+        )
+        result["vector_index_segments"] = shape["index_segments"].get("vector_idx")
+        result["fragments"] = shape["fragments"]
+
+        reader = run(["reader", "serve"])
+        read = Server(reader_address)
+        for _ in range(600):
+            try:
+                if read.call("GET", "/readyz", read_key)[0] == 200:
+                    break
+            except OSError:
+                pass
+            time.sleep(0.1)
+        query_path = "/v1/namespaces/%s/query" % NAMESPACE
+
+        def search(vector, keep, exact=False, strong=False):
+            body = {"vector": vector, "limit": K, "output": "metadata"}
+            if keep < 1.0:
+                body["filter"] = {
+                    "field": attribute,
+                    "op": "lt",
+                    "value": int(keep * corpus.rows),
+                }
+            if exact:
+                body["exact"] = True
+            if strong:
+                body["consistency"] = "strong"
+            before = read_chars(reader.pid)
+            status, answer, took = read.call(
+                "POST", query_path, read_key, json.dumps(body).encode()
+            )
+            used = read_chars(reader.pid) - before
+            assert status == 200, (status, answer)
+            ids = [(hit["source_id"], hit["root_id"]) for hit in answer["hits"]]
+            return ids, answer["metadata"]["telemetry"], took, used
+
+        queries = corpus.queries(args.queries)
+        attribute = "spread"
+        for vector in queries[
+            :3
+        ]:  # opens the namespace and warms the index outside the timing
+            search(vector, 1.0, strong=True)
+
+        cases = []
+        for attribute in ("spread", "clustered"):
+            for keep in KEEP:
+                if keep == 1.0 and attribute == "clustered":
+                    continue  # the same request as the unfiltered case of "spread"
+                recalls, fetched, tooks, used_bytes, exact_bytes = [], [], [], [], []
+                for vector in queries:
+                    got, telemetry, took, used = search(vector, keep)
+                    truth, _t, _took, truth_used = search(vector, keep, exact=True)
+                    recalls.append(len(set(got) & set(truth)) / len(truth))
+                    fetched.append(telemetry.get("dense_candidates_fetched", 0))
+                    tooks.append(took)
+                    used_bytes.append(used)
+                    exact_bytes.append(truth_used)
+                vector_bytes = 2 * DIMENSIONS  # f16, the default element
+                cases.append(
+                    {
+                        "values": "none" if keep == 1.0 else attribute,
+                        "keeps": keep,
+                        "selected_rows": int(keep * corpus.rows),
+                        "recall_at_10_mean": round(statistics.fmean(recalls), 4),
+                        "recall_at_10_min": round(min(recalls), 4),
+                        "queries_below_0.9": sum(1 for r in recalls if r < 0.9),
+                        "dense_candidates_fetched_p50": int(statistics.median(fetched)),
+                        "latency_p50_ms": round(statistics.median(tooks) * 1000, 1),
+                        "diagnosis_rows_read_p50": int(
+                            statistics.median(used_bytes) / vector_bytes
+                        ),
+                        "diagnosis_rows_read_exact_p50": int(
+                            statistics.median(exact_bytes) / vector_bytes
+                        ),
+                    }
+                )
+                print("%s %s done" % (attribute, keep), file=sys.stderr, flush=True)
+        result["cases"] = cases
+    finally:
+        for process in (reader, writer):
+            if process:
+                process.terminate()
+                process.wait(timeout=120)
+        shutil.rmtree(work)
+
+    version = subprocess.run(
+        [str(binary), "--version"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    commit = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    report = {
+        "storage": "local",
+        "rows": corpus.rows,
+        "dimensions": DIMENSIONS,
+        "queries_per_case": args.queries,
+        "version": version,
+        "commit": commit,
+        "machine": machine(),
+        **result,
+    }
+    print(json.dumps(report, indent=2))
+    print(
+        "%-10s %-7s %-9s %-11s %-9s %-10s %-12s %-12s"
+        % (
+            "values",
+            "keeps",
+            "recall",
+            "min recall",
+            "rescored",
+            "p50 ms",
+            "rows read*",
+            "exact rows*",
+        ),
+        file=sys.stderr,
+    )
+    for case in result["cases"]:
+        print(
+            "%-10s %-7g %-9.4f %-11.4f %-9d %-10g %-12d %-12d"
+            % (
+                case["values"],
+                case["keeps"],
+                case["recall_at_10_mean"],
+                case["recall_at_10_min"],
+                case["dense_candidates_fetched_p50"],
+                case["latency_p50_ms"],
+                case["diagnosis_rows_read_p50"],
+                case["diagnosis_rows_read_exact_p50"],
+            ),
+            file=sys.stderr,
+        )
+    print(
+        "* diagnosis: file bytes the reader read, over the bytes of one vector",
+        file=sys.stderr,
+    )
+
+
+if __name__ == "__main__":
+    main()

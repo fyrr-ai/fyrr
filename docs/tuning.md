@@ -315,6 +315,46 @@ larger and keep more selections on the exact scan. If the index returns fewer
 candidates than wanted, the request is answered by the exact scan. Rows the
 filter or the permissions exclude are never scored.
 
+##### Recall under a filter, measured
+
+`scripts/bench-filtered-recall` drives the real `fyrr writer serve` and
+`fyrr reader serve` on local storage: 100,000 rows of 128-dimension
+(`f16`, `cosine`) vectors in 200 clusters, written in two requests (two
+vector index segments), default `nprobes`, `limit` 10. A filter keeps the rows
+below a bound of an integer attribute. `spread` values are an even sample of
+every cluster; `clustered` values are whole clusters, so the kept rows sit in
+a few partitions. Recall@10 is the share of the answer of the same request
+with `exact: true` that the default request returns, averaged over 200 queries
+that do not depend on the filter. Measured on one laptop-class machine (20
+logical CPUs, 31 GiB), local storage, not object storage, at commit `d86a4236`
+plus the script's final config change:
+
+| Filter keeps | Values | Recall@10 mean | Queries under 0.90 | Lowest | Rows read | Rows read by the exact request |
+| --- | --- | --- | --- | --- | --- | --- |
+| 100% | none | 0.988 | 5 of 200 | 0.70 | 592 | 100,093 |
+| 50% | spread | 1.000 | 0 | 1.00 | 1,347 | 100,090 |
+| 10% | spread | 1.000 | 0 | 1.00 | 16,931 | 16,931 |
+| 1% | spread | 1.000 | 0 | 1.00 | 2,213 | 2,213 |
+| 0.1% | spread | 1.000 | 0 | 1.00 | 2,832 | 2,832 |
+| 50% | clustered | 0.951 | 28 of 200 | 0.40 | 611 | 50,108 |
+| 10% | clustered | 1.000 | 0 | 1.00 | 10,214 | 10,215 |
+| 1% | clustered | 1.000 | 0 | 1.00 | 1,079 | 1,079 |
+| 0.1% | clustered | 1.000 | 0 | 1.00 | 159 | 159 |
+
+Every case holds a mean of 0.90 or more, so the planner is unchanged. At 10%
+and below the request reads exactly what the exact request reads: the planner
+took the exact scan, which is exact by construction. Only the 50% filters use
+the vector index, and a filter that keeps whole clusters loses some recall
+there (0.951 against 0.988 unfiltered) with a tail of queries well below the
+mean: a filter that keeps a large share of the rows but whose values cluster
+in a few partitions can send the probes to partitions the filter excludes.
+
+"Rows read" is a diagnosis, not a counter of the reader: the median of the
+bytes the reader process read from files per request (`rchar` of
+`/proc/<pid>/io`), over the 256 bytes of one stored vector. It counts the
+stored vectors a request scored, a page at a time, so it overstates a small
+read; the compressed codes of the index are cached in memory and are not in it.
+
 Memory sizing must include private prepared readers as well as shared caches.
 The preparation accounting allows 64 bytes per physical Lance row per prepared
 reader for admission bitmaps and worst-case unindexed row sets. For `R` rows and

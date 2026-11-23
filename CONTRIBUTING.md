@@ -149,6 +149,7 @@ anything that moves image size also need `scripts/ci --images`.
 | `scripts/keycloak-fixture start\|env\|status\|stop` | A loopback Keycloak for the identity rows. |
 | `scripts/check-reader-only` | Proves the reader-only build contains no writer or provider code, and that neither build links Python. |
 | `scripts/bench-write [--storage local\|fixture\|s3]` | Measures write latency and write-to-searchable time of the real HTTP path: p50, p90 and p99 per batch size, object-store operations per write, and the fragment and index-segment counts. Results go in [docs/investigations/write-latency.md](docs/investigations/write-latency.md). |
+| `scripts/bench-filtered-recall` | Measures the recall@10 of filtered vector search on the real HTTP path, for filters that keep 50%, 10%, 1% and 0.1% of the rows with values spread evenly and clustered by partition, against the exact scan. Results go in [docs/tuning.md](docs/tuning.md#dense-search-under-a-request-filter). |
 | `scripts/images` | Builds, tests and measures both images. It compiles the binaries in the pinned builder stage, or packages existing ones with `--binaries DIR`. |
 | `scripts/release` | Assembles versioned local release artifacts with SHA-256 sums; it publishes nothing itself (see [Releasing](#releasing)). |
 
