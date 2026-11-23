@@ -2329,6 +2329,14 @@
         "tier": "full",
         "seconds": 40
       },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_infers_undeclared_attributes_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_bounds_the_inferred_attributes_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
       "full:fyrr:test:dense_path/write_api::identity_write_api_restores_a_version_from_before_an_attribute_was_added_on_storage": {
         "tier": "full",
         "seconds": 40
