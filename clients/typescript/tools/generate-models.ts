@@ -18,6 +18,8 @@ const SCALARS: Record<string, string> = {
   boolean: "boolean",
 };
 
+const SMALL_INTEGERS = new Set(["uint8", "uint16", "uint32", "int8", "int16", "int32"]);
+
 const HEADER = `\
 // Typed requests and responses of the fyrr HTTP API.
 //
@@ -31,6 +33,7 @@ type Schema = {
   const?: unknown;
   enum?: unknown[];
   type?: string | string[];
+  format?: string;
   items?: Schema;
   properties?: Record<string, Schema>;
   required?: string[];
@@ -103,7 +106,8 @@ class Generator {
     } else if (kind === "object") {
       result = this.objectType(schema, context);
     } else {
-      const scalar = SCALARS[kind];
+      // A 64-bit integer may be beyond what a `number` holds: the client then gives a `bigint`.
+      const scalar = kind === "integer" && !SMALL_INTEGERS.has(schema.format ?? "") ? "number | bigint" : SCALARS[kind];
       if (scalar === undefined) throw new Error(`unsupported type: ${kind}`);
       result = scalar;
     }

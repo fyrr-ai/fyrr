@@ -1,4 +1,7 @@
-// Client of the fyrr HTTP API, for server runtimes: it uses the `fetch` of Node.js.
+// Client of the fyrr HTTP API, for server runtimes: it uses `node:http` and `node:https`.
+
+import http from "node:http";
+import https from "node:https";
 
 import type {
   Consistency,
@@ -21,14 +24,7 @@ export const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_RETRY_AFTER_MS = 120_000;
 const MAX_BACKOFF_MS = 30_000;
 // A request that failed with one of these codes never reached the server.
-const UNSENT_CODES = new Set([
-  "ECONNREFUSED",
-  "ENOTFOUND",
-  "EAI_AGAIN",
-  "EHOSTUNREACH",
-  "ENETUNREACH",
-  "UND_ERR_CONNECT_TIMEOUT",
-]);
+const UNSENT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH"]);
 // The first character of a namespace name, in name order.
 const FIRST_CHARACTERS = "0123456789abcdefghijklmnopqrstuvwxyz";
 
@@ -64,9 +60,30 @@ export interface ClientOptions {
   maxRetries?: number;
   /** The first wait before a retry, in milliseconds; it doubles with each attempt. Default 500. */
   backoffMs?: number;
-  /** A `fetch` to use instead of the global one, for a proxy or a pool of your own. */
-  fetch?: typeof fetch;
+  /** Sends one request, once, instead of `node:http`: for a proxy of your own, or a test. */
+  transport?: Transport;
 }
+
+export interface TransportRequest {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body: string | undefined;
+  timeoutMs: number;
+}
+
+export interface TransportResponse {
+  status: number;
+  /** The `Retry-After` header, as sent. */
+  retryAfter: string | undefined;
+  text: string;
+}
+
+/**
+ * Sends a request at most once and answers with the whole response, or throws. It never repeats
+ * a request: the retry policy of the client does.
+ */
+export type Transport = (request: TransportRequest) => Promise<TransportResponse>;
 
 export interface IterDocumentsOptions {
   filter?: Filter;
@@ -88,8 +105,8 @@ interface Route {
 }
 
 /**
- * A client of the fyrr HTTP API. Connections are reused: Node.js keeps them alive in the pool of
- * its global `fetch`, so there is nothing to close.
+ * A client of the fyrr HTTP API. Connections are reused: the clients of a process share
+ * keep-alive agents, so there is nothing to close.
  *
  * A read is retried on a connection error, a timeout and 408, 429 and 5xx, up to `maxRetries`
  * times, after `backoffMs` doubling each time (jittered), or after the server's `Retry-After`.
@@ -101,7 +118,7 @@ export class Client {
   // Private fields stay out of `console.log`, `util.inspect` and `JSON.stringify`: the key too.
   readonly #urls: { reader: string; writer: string | undefined };
   readonly #authorization: string;
-  readonly #fetch: typeof fetch;
+  readonly #transport: Transport;
   readonly #timeoutMs: number;
   readonly #maxRetries: number;
   readonly #backoffMs: number;
@@ -112,7 +129,7 @@ export class Client {
       writer: options.writerUrl === undefined ? undefined : checkedUrl("writerUrl", options.writerUrl),
     };
     this.#authorization = `Bearer ${checkedKey(options.apiKey)}`;
-    this.#fetch = options.fetch ?? fetch;
+    this.#transport = options.transport ?? nodeTransport;
     this.#timeoutMs = checkedNumber("timeoutMs", options.timeoutMs ?? DEFAULT_TIMEOUT_MS, 1);
     this.#maxRetries = checkedNumber("maxRetries", options.maxRetries ?? 3, 0, true);
     this.#backoffMs = checkedNumber("backoffMs", options.backoffMs ?? 500, 0);
@@ -204,30 +221,26 @@ export class Client {
     let body: string | undefined;
     if (route.body !== undefined) {
       headers["Content-Type"] = "application/json";
-      body = JSON.stringify(route.body);
+      body = JSON.stringify(route.body, serialize);
     }
     for (let attempt = 0; ; attempt++) {
-      let response: Response | undefined;
-      let text = "";
+      let response: TransportResponse | undefined;
       let failure: unknown;
       try {
-        response = await this.#fetch(base + route.path, {
+        response = await this.#transport({
+          url: base + route.path,
           method: route.method,
           headers,
           body,
-          signal: AbortSignal.timeout(this.#timeoutMs),
-          // The API does not redirect; following one would send the key to another place.
-          redirect: "manual",
+          timeoutMs: this.#timeoutMs,
         });
-        text = await response.text();
       } catch (error) {
-        response = undefined;
         failure = error;
       }
       const delay = this.#retryDelay(route.retry, attempt, response, failure);
       if (delay === undefined) {
         if (response === undefined) throw failure;
-        return decode(response, text) as T;
+        return decode(response) as T;
       }
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
@@ -237,7 +250,7 @@ export class Client {
   #retryDelay(
     retry: Retry,
     attempt: number,
-    response: Response | undefined,
+    response: TransportResponse | undefined,
     failure: unknown,
   ): number | undefined {
     if (retry === "none" || attempt >= this.#maxRetries) return undefined;
@@ -248,7 +261,7 @@ export class Client {
       // a 5xx after the writer took the request. Only a read repeats on one.
       return undefined;
     }
-    const wait = response && retryAfterMs(response);
+    const wait = response && retryAfterMs(response.retryAfter);
     if (wait !== undefined) {
       // A longer wait is the caller's to make: raise the answer, which has `retryAfterMs`.
       return wait <= MAX_RETRY_AFTER_MS ? wait : undefined;
@@ -299,23 +312,23 @@ function isUnsent(failure: unknown): boolean {
   return isUnsent(failure.cause);
 }
 
-function retryAfterMs(response: Response): number | undefined {
-  const value = response.headers.get("Retry-After")?.trim();
+function retryAfterMs(header: string | undefined): number | undefined {
+  const value = header?.trim();
   if (!value) return undefined;
   if (/^\d+(\.\d+)?$/.test(value)) return Number(value) * 1000;
   const date = Date.parse(value);
   return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
 }
 
-function decode(response: Response, text: string): unknown {
+function decode(response: TransportResponse): unknown {
   let body: unknown;
   let parsed = true;
   try {
-    body = JSON.parse(text);
+    body = JSON.parse(response.text, revive as Parameters<typeof JSON.parse>[1]);
   } catch {
     parsed = false;
   }
-  if (response.ok) {
+  if (response.status >= 200 && response.status < 300) {
     if (!parsed) throw new FyrrError(response.status, "invalid_json");
     return body;
   }
@@ -324,8 +337,64 @@ function decode(response: Response, text: string): unknown {
     const { error, scimType } = body as { error?: unknown; scimType?: unknown };
     code = error || scimType;
   }
-  throw new FyrrError(response.status, typeof code === "string" ? code : undefined, retryAfterMs(response));
+  throw new FyrrError(response.status, typeof code === "string" ? code : undefined, retryAfterMs(response.retryAfter));
 }
+
+/** An integer that a `number` cannot hold exactly is a `bigint`; the text of the answer says. */
+function revive(_key: string, value: unknown, context?: { source?: string }): unknown {
+  if (
+    typeof value === "number" &&
+    !Number.isSafeInteger(value) &&
+    context?.source !== undefined &&
+    /^-?\d+$/.test(context.source)
+  ) {
+    return BigInt(context.source);
+  }
+  return value;
+}
+
+/** A `bigint` is written as the integer it is: `JSON.stringify` alone throws on it. */
+function serialize(_key: string, value: unknown): unknown {
+  return typeof value === "bigint" ? (JSON as unknown as RawJson).rawJSON(value.toString()) : value;
+}
+
+interface RawJson {
+  rawJSON(text: string): unknown;
+}
+
+const agents = {
+  "http:": new http.Agent({ keepAlive: true }),
+  "https:": new https.Agent({ keepAlive: true }),
+};
+
+/** One request over `node:http` or `node:https`, with no redirect and no retry of its own. */
+export const nodeTransport: Transport = (request) =>
+  new Promise((resolve, reject) => {
+    const url = new URL(request.url);
+    const protocol = url.protocol === "https:" ? "https:" : "http:";
+    const signal = AbortSignal.timeout(request.timeoutMs);
+    const headers = { ...request.headers };
+    if (request.body !== undefined) headers["Content-Length"] = String(Buffer.byteLength(request.body));
+    // A timeout destroys the request with an `AbortError`; the caller gets the `TimeoutError`.
+    const fail = (error: unknown) => reject(signal.aborted ? signal.reason : error);
+    const outgoing = (protocol === "https:" ? https : http).request(
+      url,
+      { method: request.method, headers, agent: agents[protocol], signal },
+      (response) => {
+        response.setEncoding("utf8");
+        let text = "";
+        response.on("data", (chunk: string) => (text += chunk));
+        response.on("error", fail);
+        response.on("close", () => {
+          if (!response.complete) return fail(new Error("the connection closed before the end of the answer"));
+          const retryAfter = response.headers["retry-after"];
+          resolve({ status: response.statusCode ?? 0, retryAfter, text });
+        });
+      },
+    );
+    outgoing.on("error", fail);
+    outgoing.end(request.body);
+  });
 
 function namespacePath(namespace: string): string {
   return `/v1/namespaces/${encodeURIComponent(namespace)}`;

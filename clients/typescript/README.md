@@ -3,7 +3,7 @@
 A TypeScript client of the [fyrr](https://github.com/fyrr-ai/fyrr) HTTP API:
 namespaces (list, describe, delete), writes, queries, and helpers that page
 through every namespace and every document. It has no runtime dependency: it
-uses the `fetch` of Node.js, needs Node.js 20 or newer, and is tested on
+uses `node:http` and `node:https`, needs Node.js 22 or newer, and is tested on
 24.21.0. It is a separate package: the `fyrr` binary contains no JavaScript.
 
 **Server runtimes only.** The reader refuses a request that carries an `Origin`
@@ -55,7 +55,12 @@ Requests and responses are the interfaces of `src/models.ts`, exported from the
 package and generated from
 [`schemas/openapi.json`](https://github.com/fyrr-ai/fyrr/blob/main/schemas/openapi.json).
 A request is a plain object and an answer is the decoded JSON, which is not
-validated: a server newer than the package may add fields. A row of a write
+validated: a server newer than the package may add fields.
+
+**Large integers.** An integer in an answer that a `number` cannot hold exactly
+(beyond ±2^53 − 1) is a `bigint`; every other integer is a `number`. The 64-bit
+fields are typed `number | bigint` for that reason. A `bigint` in a request is
+written as the exact integer. A row of a write
 (`WriteRow`) has `id`, `text` and any declared attribute. After a change of the
 OpenAPI file, regenerate the models and review the diff:
 
@@ -68,10 +73,12 @@ The workflow of the client fails when `src/models.ts` is stale
 
 ## Connections and timeouts
 
-Node.js keeps connections alive in the pool of its global `fetch`, which every
-client of the process shares, so there is nothing to close. Pass your own
-`fetch` (for example one made with an `undici` agent) to use a proxy or a pool
-of your own. The default `timeoutMs` is **30,000**, above the 10 seconds that
+The clients of a process share keep-alive agents of `node:http` and
+`node:https`, so connections are reused and there is nothing to close. The
+transport sends each request once: it follows no redirect and repeats nothing,
+a `421` included, so only the retry policy below ever sends a request again. Pass
+your own `transport` (a function from a request to a response, which may wrap
+the exported `nodeTransport`) to use a proxy. The default `timeoutMs` is **30,000**, above the 10 seconds that
 the server gives a read before it answers `408 deadline_exceeded`
 (`deadline_ms`), and it applies to each attempt. A request with a longer
 `deadline_ms` (at most 300,000) needs a larger `timeoutMs`. A write is answered
@@ -102,7 +109,8 @@ Every other failure, a timeout or `503 outcome_unknown` included, is raised for
 the caller to decide.
 
 The last answer is raised as `FyrrError` (`status`, `code`, `retryAfterMs`); a
-connection error or a timeout is raised as the error of `fetch`.
+connection error or a timeout is raised as the error of `node:http`, or as the
+`TimeoutError` of the timeout.
 
 ## Paging
 

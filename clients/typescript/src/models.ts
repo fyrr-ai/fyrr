@@ -471,9 +471,9 @@ export interface NamespaceReport {
   /** Whether the namespace is frozen: writes are refused while it stays readable. */
   read_only: boolean;
   /** Approximate live rows; `null` for a version published before contract 4.1. */
-  rows: number | null;
+  rows: number | bigint | null;
   /** Approximate bytes of the data files of those rows, without indexes; `null` as `rows`. */
-  logical_bytes: number | null;
+  logical_bytes: number | bigint | null;
   /** When the namespace's first content publication was committed; `null` when that is not known. */
   first_published_at: string | null;
   /** The data that an index of the version does not cover yet. */
@@ -604,10 +604,10 @@ export type DenseElement = "f16" | "f32";
 export interface RetrievalSettings {
   rescore_depth?: RescoreSettings;
   dense_weight: number;
-  dense_candidates: number;
-  lexical_candidates: number;
-  source_cap: number;
-  max_documents: number;
+  dense_candidates: number | bigint;
+  lexical_candidates: number | bigint;
+  source_cap: number | bigint;
+  max_documents: number | bigint;
 }
 
 export interface RescoreSettingsLegacy {
@@ -616,13 +616,13 @@ export interface RescoreSettingsLegacy {
 
 export interface RescoreSettingsFixed {
   mode: "fixed";
-  candidates: number;
+  candidates: number | bigint;
 }
 
 export interface RescoreSettingsAdaptive {
   mode: "adaptive";
-  min_candidates: number;
-  max_candidates: number;
+  min_candidates: number | bigint;
+  max_candidates: number | bigint;
   min_gap: number;
 }
 
@@ -631,9 +631,9 @@ export type RescoreSettings = RescoreSettingsLegacy | RescoreSettingsFixed | Res
 
 /** The persisted copy of [`Composition`]. */
 export interface CompositionSettings {
-  fusion: number;
-  dense: number;
-  lexical: number;
+  fusion: number | bigint;
+  dense: number | bigint;
+  lexical: number | bigint;
 }
 
 /**
@@ -645,11 +645,11 @@ export interface CompositionSettings {
 export interface RerankSettings {
   model: string;
   /** Authorized composed documents to rerank before the request limit. */
-  candidates: number;
+  candidates: number | bigint;
   /** Logistic population-z score blend; 1 uses raw reranker order, 0 fusion order. */
   weight: number;
   /** Per-candidate text bound in characters; absent sends the whole record. */
-  text_chars?: number | null;
+  text_chars?: number | bigint | null;
 }
 
 /**
@@ -748,8 +748,8 @@ export interface WriteApiSettings {
 
 /** `rows` and `logical_bytes` of the data that no index covers yet. */
 export interface Unindexed {
-  rows: number;
-  logical_bytes: number;
+  rows: number | bigint;
+  logical_bytes: number | bigint;
 }
 
 /** What a namespace switch answers. */
@@ -822,7 +822,7 @@ export interface Truncation {
 export interface ResponseMetadata {
   schema_version: SchemaVersion;
   publication_id: string;
-  content_version: number;
+  content_version: number | bigint;
   committed_at: McpTime;
   /** Lanes skipped by degradation (e.g. dense after a failed query embedding). */
   degraded: Lane[];
@@ -832,7 +832,7 @@ export interface ResponseMetadata {
    */
   stale_version: boolean;
   /** UTF-8 bytes omitted by clipping or the payload budget. */
-  omitted_bytes: number;
+  omitted_bytes: number | bigint;
   telemetry: Telemetry;
 }
 
@@ -845,31 +845,31 @@ export type Lane = "dense" | "lexical" | "rerank";
 /** Bounded per-request telemetry. */
 export interface Telemetry {
   /** Rerank preparation and concurrent provider wait, separate from retrieval. */
-  rerank_us?: number | null;
+  rerank_us?: number | bigint | null;
   cache: CacheState;
-  queue_wait_ms: number;
+  queue_wait_ms: number | bigint;
   /** Effective centroid route; mixed means different routes across index deltas. */
   routing_strategy?: RoutingMethod | null;
   /** First optional routing failure across index deltas, never an I/O or auth error. */
   routing_fallback?: RoutingFallback | null;
   /** Fixed stage names, microseconds; no query or identity labels. */
-  stage_us?: Record<string, number>;
+  stage_us?: Record<string, number | bigint>;
   /** Requests and bytes on the same bounded stages. */
-  stage_s3_requests?: Record<string, number>;
-  stage_s3_bytes?: Record<string, number>;
-  unindexed_rows_scanned: number;
+  stage_s3_requests?: Record<string, number | bigint>;
+  stage_s3_bytes?: Record<string, number | bigint>;
+  unindexed_rows_scanned: number | bigint;
   /** Authorized rows inspected for this call's document counts, never cached. */
-  filter_rows_scanned?: number;
+  filter_rows_scanned?: number | bigint;
   /** Lexical candidates returned, including repeated fetches for cutoff ties. */
-  lexical_candidates_fetched?: number;
+  lexical_candidates_fetched?: number | bigint;
   /** Unresolved lexical cutoff ties at the fixed fetch bound (zero or one). */
-  lexical_tie_bound_hits?: number;
+  lexical_tie_bound_hits?: number | bigint;
   /** Dense candidates read, including repeated fetches for cutoff ties. */
-  dense_candidates_fetched?: number;
+  dense_candidates_fetched?: number | bigint;
   /** Unresolved dense cutoff ties at the fixed fetch bound (zero or one). */
-  dense_tie_bound_hits?: number;
-  s3_requests: number;
-  s3_bytes: number;
+  dense_tie_bound_hits?: number | bigint;
+  s3_requests: number | bigint;
+  s3_bytes: number | bigint;
 }
 
 /** Cache state of the request. */
@@ -951,7 +951,7 @@ export interface RecallOutput {
   /** Stored vectors measured: `count`, or fewer when the selection holds fewer rows. */
   samples: number;
   /** Rows the caller may read that the filter selects: what each exact search scans. */
-  rows: number;
+  rows: number | bigint;
   /** `false` when at least one sample was answered by an exact scan, not by the vector index, as a selective `filter`, a namespace without a vector index or a caller who reads only unindexed rows brings about: that sample compares two exact answers and says nothing of an index. Also `false` without a sample. */
   approximate: boolean;
   /** The share of the ten nearest rows by an exact search that the index also found, averaged over `samples`; `null` without a sample. */
@@ -962,12 +962,12 @@ export interface RecallOutput {
 
 /** What a write answers: the changes that applied. */
 export interface WriteResponse {
-  upserted: number;
-  deleted: number;
+  upserted: number | bigint;
+  deleted: number | bigint;
   /** Present when the request has patches. */
-  patched?: number | null;
+  patched?: number | bigint | null;
   /** The patches and conditional changes that did not apply; present when the request has any. */
-  skipped?: number | null;
+  skipped?: number | bigint | null;
 }
 
 /**

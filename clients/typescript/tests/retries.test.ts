@@ -1,32 +1,34 @@
-// Retry, backoff, key and paging rules, against a `fetch` that answers as scripted.
+// Retry, backoff, key and paging rules, against a transport that answers as scripted.
 
 import assert from "node:assert/strict";
 import { inspect } from "node:util";
 import { test, type TestContext } from "node:test";
 
-import { Client, FyrrError, type WriteRequest } from "../src/index.ts";
+import {
+  Client,
+  FyrrError,
+  type Transport,
+  type TransportRequest,
+  type TransportResponse,
+  type WriteRequest,
+} from "../src/index.ts";
 
 const READER = "http://reader.test";
 const WRITER = "http://writer.test";
 
-type Answer = Response | (() => never);
-
-interface Seen {
-  url: string;
-  init: RequestInit;
-}
+type Answer = TransportResponse | (() => never);
 
 /** Answers each request with the next of `answers`; a function answer throws. */
-function script(...answers: Answer[]): { fetch: typeof fetch; seen: Seen[]; answers: Answer[] } {
-  const seen: Seen[] = [];
+function script(...answers: Answer[]): { transport: Transport; seen: TransportRequest[] } {
+  const seen: TransportRequest[] = [];
   const pending = [...answers];
-  const fake = async (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
-    seen.push({ url: String(input), init });
+  const transport: Transport = async (request) => {
+    seen.push(request);
     const answer = pending.shift();
     if (answer === undefined) throw new Error("no answer left");
     return typeof answer === "function" ? answer() : answer;
   };
-  return { fetch: fake as typeof fetch, seen, answers: pending };
+  return { transport, seen };
 }
 
 /** Records the waits instead of making them. */
@@ -40,24 +42,27 @@ function noSleep(t: TestContext): number[] {
   return waits;
 }
 
-const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
-  new Response(JSON.stringify(body), { status, headers });
+const json = (body: unknown, status = 200, headers: { "Retry-After"?: string } = {}): TransportResponse => ({
+  status,
+  retryAfter: headers["Retry-After"],
+  text: JSON.stringify(body),
+});
 
 const found = () => json({ hits: [] });
 const ok = () => json({ upserted: 1, deleted: 0 });
 
 const withCode = (code: string) => () => {
-  throw new TypeError("fetch failed", { cause: Object.assign(new Error(code), { code }) });
+  throw Object.assign(new Error(code), { code });
 };
 const refused = withCode("ECONNREFUSED");
-const connectTimeout = withCode("UND_ERR_CONNECT_TIMEOUT");
+const noRoute = withCode("EHOSTUNREACH");
 const reset = withCode("ECONNRESET");
 const timedOut = () => {
   throw new DOMException("The operation timed out", "TimeoutError");
 };
 
-function client(fake: { fetch: typeof fetch }, options: { maxRetries?: number; backoffMs?: number } = {}) {
-  return new Client({ readerUrl: READER, writerUrl: WRITER, apiKey: "k", fetch: fake.fetch, ...options });
+function client(fake: { transport: Transport }, options: { maxRetries?: number; backoffMs?: number } = {}) {
+  return new Client({ readerUrl: READER, writerUrl: WRITER, apiKey: "k", transport: fake.transport, ...options });
 }
 
 const WRITE: WriteRequest = { upserts: [{ id: "a", text: "t" }] };
@@ -88,14 +93,14 @@ for (const [name, send] of changes) {
   test(`${name} is retried only when it was not sent`, async (t) => {
     const waits = noSleep(t);
     const unreachable = () => {
-      throw new TypeError("fetch failed", {
+      throw new Error("connect failed", {
         cause: new AggregateError(
           [Object.assign(new Error("a"), { code: "ECONNREFUSED" }), Object.assign(new Error("b"), { code: "ENETUNREACH" })],
           "",
         ),
       });
     };
-    const fake = script(refused, connectTimeout, unreachable, ok());
+    const fake = script(refused, noRoute, unreachable, ok());
     await send(client(fake, { maxRetries: 3 }));
     assert.equal(fake.seen.length, 4);
     assert.equal(waits.length, 3);
@@ -125,13 +130,13 @@ test("a conditional write is never retried", async (t) => {
   await assert.rejects(client(busy).write("ns", conditional), FyrrError);
   assert.equal(busy.seen.length, 1);
   const dropped = script(refused, ok());
-  await assert.rejects(client(dropped).write("ns", conditional), TypeError);
+  await assert.rejects(client(dropped).write("ns", conditional), Error);
   assert.equal(dropped.seen.length, 1);
   assert.deepEqual(waits, []);
 });
 
 test("an answer that is not JSON is a FyrrError", async () => {
-  const fake = script(new Response("<html>"));
+  const fake = script({ status: 200, retryAfter: undefined, text: "<html>" });
   await assert.rejects(
     client(fake).query("ns", {}),
     (error: unknown) => error instanceof FyrrError && error.status === 200 && error.code === "invalid_json",
@@ -149,12 +154,11 @@ test("other errors are final", async (t) => {
 });
 
 test("a redirect is an error, not followed", async () => {
-  const fake = script(new Response(null, { status: 301, headers: { Location: "http://elsewhere.test/" } }));
+  const fake = script({ status: 301, retryAfter: undefined, text: "" });
   await assert.rejects(
     client(fake).query("ns", {}),
     (error: unknown) => error instanceof FyrrError && error.status === 301,
   );
-  assert.equal(fake.seen[0]?.init.redirect, "manual");
 });
 
 test("Retry-After is honoured until the cap", async (t) => {
@@ -200,14 +204,14 @@ test("a request has the route, the key and the JSON body of its call", async () 
     readerUrl: `${READER}//`,
     writerUrl: `${WRITER}/`,
     apiKey: " key\n",
-    fetch: fake.fetch,
+    transport: fake.transport,
   });
   await c.listNamespaces("a&b");
   await c.query("a/b", { query: "x" });
   await c.write("ns", WRITE);
   await c.deleteNamespace("ns");
   assert.deepEqual(
-    fake.seen.map(({ url, init }) => [init.method, url, init.body]),
+    fake.seen.map(({ url, method, body }) => [method, url, body]),
     [
       ["GET", `${READER}/v1/namespaces?prefix=a%26b`, undefined],
       ["POST", `${READER}/v1/namespaces/a%2Fb/query`, '{"query":"x"}'],
@@ -215,15 +219,15 @@ test("a request has the route, the key and the JSON body of its call", async () 
       ["DELETE", `${WRITER}/v1/namespaces/ns`, '{"namespace":"ns"}'],
     ],
   );
-  for (const { init } of fake.seen) {
-    assert.equal((init.headers as Record<string, string>).Authorization, "Bearer key");
+  for (const { headers } of fake.seen) {
+    assert.equal(headers.Authorization, "Bearer key");
   }
 });
 
 test("a key is stripped, checked and never shown", () => {
   const secret = "fyrr_key_secret";
   const fake = script();
-  const c = new Client({ readerUrl: READER, apiKey: `${secret}\n`, fetch: fake.fetch });
+  const c = new Client({ readerUrl: READER, apiKey: `${secret}\n`, transport: fake.transport });
   for (const shown of [inspect(c, { showHidden: true, depth: 5 }), JSON.stringify(c), String(c)]) {
     assert.ok(!shown.includes(secret), shown);
   }
@@ -239,7 +243,7 @@ test("a key is stripped, checked and never shown", () => {
 test("a key is not in the error of a failed request", async () => {
   const secret = "fyrr_key_secret";
   const fake = script(json({ error: "unauthorized" }, 401));
-  const c = new Client({ readerUrl: READER, apiKey: secret, fetch: fake.fetch });
+  const c = new Client({ readerUrl: READER, apiKey: secret, transport: fake.transport });
   await assert.rejects(c.query("ns", {}), (error: unknown) => !inspect(error, { depth: 6 }).includes(secret));
 });
 
@@ -257,7 +261,7 @@ test("a SCIM error has its type as the code, or none", async () => {
 });
 
 test("a missing writer URL refuses the writer routes", async () => {
-  const c = new Client({ readerUrl: READER, apiKey: "k", fetch: script().fetch });
+  const c = new Client({ readerUrl: READER, apiKey: "k", transport: script().transport });
   await assert.rejects(c.write("ns", WRITE), /writerUrl/);
   await assert.rejects(c.deleteNamespace("ns"), /writerUrl/);
 });
@@ -274,14 +278,14 @@ test("a URL or a number that is wrong is refused at construction", () => {
 });
 
 /** A server that lists names by prefix and refuses more than `limit` (10,000 in fyrr). */
-function listing(existing: string[], limit: number): { fetch: typeof fetch } {
-  const fake = async (input: string | URL | Request): Promise<Response> => {
-    const url = new URL(String(input));
+function listing(existing: string[], limit: number): { transport: Transport } {
+  const transport: Transport = async (request) => {
+    const url = new URL(request.url);
     assert.equal(url.pathname, "/v1/namespaces"); // the listing alone, no report
     const matching = existing.filter((name) => name.startsWith(url.searchParams.get("prefix") ?? ""));
     return matching.length > limit ? json({ error: "too_many_namespaces" }, 400) : json({ namespaces: matching });
   };
-  return { fetch: fake as typeof fetch };
+  return { transport };
 }
 
 async function collect<T>(items: AsyncIterable<T>): Promise<T[]> {
@@ -321,7 +325,7 @@ test("iterDocuments continues after the last hit of each page", async () => {
     (found) => found.root_id,
   );
   assert.deepEqual(roots, ["a", "b", "c"]);
-  const bodies = fake.seen.map(({ init }) => JSON.parse(String(init.body)) as Record<string, unknown>);
+  const bodies = fake.seen.map(({ body }) => JSON.parse(String(body)) as Record<string, unknown>);
   assert.equal(bodies[0]?.filter, undefined);
   assert.deepEqual(bodies[0], {
     order_by: [
@@ -349,7 +353,7 @@ test("iterDocuments keeps the filter of the caller on every page", async () => {
   const filter = { field: "root_id", op: "gte", value: "a" } as const;
   const fake = script(json({ hits: [{ source_id: "s", root_id: "a" }] }), json({ hits: [] }));
   await collect(client(fake).iterDocuments("ns", { filter }));
-  const second = JSON.parse(String(fake.seen[1]?.init.body)) as { filter: { and: unknown[] } };
+  const second = JSON.parse(String(fake.seen[1]?.body)) as { filter: { and: unknown[] } };
   assert.deepEqual(second.filter.and[0], filter);
   assert.equal(second.filter.and.length, 2);
 });
