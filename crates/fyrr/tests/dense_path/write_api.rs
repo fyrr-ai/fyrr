@@ -3157,6 +3157,134 @@ async fn identity_write_api_changes_the_schema_of_a_live_namespace_on_storage() 
     );
 }
 
+/// A change of the analyzer of a full-text index is a schema change: it is
+/// published at once, and the index it replaces keeps serving with its old
+/// analyzer until maintenance has built the new one and published it. Nothing
+/// is built again once the index is current.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on_storage() {
+    use lance::index::DatasetIndexExt;
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    // The maintenance of this test is the one it runs (`configure` builds on 2 threads).
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        format!("{text}\n[writer.serve]\nmaintenance = false\n"),
+    )
+    .unwrap();
+    embed(&root, &["alpha", "bravo"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let post = async |body: Value| writer.post(WRITE_KEY, "dense-fixture", &body).await;
+    // The sequence of the served publication, the segments of the index and the
+    // options its manifest records, and the parameters the index was built with.
+    let served = async || {
+        let (head, manifest) = super::coordination::publication(&config).await;
+        let mut segments: Vec<_> = manifest
+            .indexes
+            .iter()
+            .filter(|index| index.name == "attrfts_note_idx")
+            .map(|index| index.uuid.clone())
+            .collect();
+        segments.sort();
+        let loaded = fyrr_core::config::load(&config).unwrap();
+        let dataset = fyrr_reader::storage::pinned(&loaded.config, &head)
+            .await
+            .unwrap();
+        let params = dataset
+            .index_statistics("attrfts_note_idx")
+            .await
+            .unwrap()
+            .replace(' ', "");
+        (
+            head.content.as_ref().unwrap().sequence,
+            segments,
+            serde_json::to_value(&manifest.attribute_indexes).unwrap(),
+            params,
+        )
+    };
+
+    assert_eq!(
+        post(json!({
+            "settings": {
+                "attributes": {"note": "string"},
+                "attribute_indexes": {"note": {"index": false, "full_text": true}},
+            },
+            "upserts": [
+                {"id": "a", "text": "alpha", "readers": ["grp:allow"], "note": "Caf\u{e9}"},
+                {"id": "b", "text": "bravo", "readers": ["grp:allow"], "note": "na\u{ef}ve"},
+            ],
+        }))
+        .await,
+        (200, json!({"upserted": 2, "deleted": 0}))
+    );
+    let (sequence, old, recorded, params) = served().await;
+    assert_eq!(old.len(), 1);
+    assert_eq!(
+        recorded,
+        json!({"note": {"index": false, "full_text": true, "ngram": false}})
+    );
+    assert!(params.contains("\"base_tokenizer\":\"simple\""), "{params}");
+    assert!(params.contains("\"ascii_folding\":false"), "{params}");
+
+    // The change is one publication that leaves the index as it was built.
+    let change = json!({"settings": {"attribute_indexes": {"note": {
+        "analyzer": {"tokenizer": "unicode", "ascii_folding": true}}}}});
+    assert_eq!(
+        post(change.clone()).await,
+        (200, json!({"upserted": 0, "deleted": 0}))
+    );
+    let (changed, segments, recorded, params) = served().await;
+    assert_eq!(changed, sequence + 1);
+    assert_eq!(segments, old);
+    assert_eq!(
+        recorded,
+        json!({"note": {"index": false, "full_text": true, "ngram": false}})
+    );
+    assert!(params.contains("\"base_tokenizer\":\"simple\""), "{params}");
+    // The reader serves that publication, and what is stored verifies.
+    assert_eq!(
+        listing(
+            &config,
+            json!({"field": "note", "op": "eq", "value": "Caf\u{e9}"})
+        ),
+        ["a"]
+    );
+    assert_eq!(success(&config, &["writer", "verify"])["verified"], true);
+    // The same request again changes nothing.
+    assert_eq!(post(change).await.0, 200);
+    assert_eq!(served().await.0, changed);
+
+    // Maintenance builds the index again and publishes it with its analyzer.
+    run_when_free(&config, &["writer", "maintain"]).await;
+    let (rebuilt, segments, recorded, params) = served().await;
+    assert!(rebuilt > changed);
+    assert_eq!(segments.len(), 1);
+    assert_ne!(segments, old);
+    assert_eq!(
+        recorded,
+        json!({"note": {"index": false, "full_text": true, "ngram": false, "analyzer": {
+            "tokenizer": "unicode", "ascii_folding": true, "max_token_length": 40,
+            "ngram_min_length": 3, "ngram_max_length": 3, "prefix_only": false}}})
+    );
+    assert!(params.contains("\"base_tokenizer\":\"icu\""), "{params}");
+    assert!(params.contains("\"ascii_folding\":true"), "{params}");
+    assert_eq!(
+        listing(
+            &config,
+            json!({"field": "note", "op": "eq", "value": "na\u{ef}ve"})
+        ),
+        ["b"]
+    );
+    assert_eq!(success(&config, &["writer", "verify"])["verified"], true);
+
+    // A current index is not built again.
+    run_when_free(&config, &["writer", "maintain"]).await;
+    assert_eq!(served().await.1, segments);
+}
+
 /// The ids a listing of the namespace returns under `filter`, in order.
 fn listing(config: &Path, filter: Value) -> Vec<String> {
     let mut client = Mcp::open(config);

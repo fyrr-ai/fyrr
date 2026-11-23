@@ -455,6 +455,109 @@ async fn configurable_max_token_length_default_40_and_override_128() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// How the Unicode word tokenizer (Lance's `icu`) cuts Chinese and Japanese
+/// text, against the `simple` tokenizer, which takes a run of such characters
+/// as one token. Stemming and stop words are off, so that only the
+/// segmentation decides the hits. The tokenizer finds words by a dictionary
+/// that ships with Lance: a word it does not know is cut into what it does.
+#[tokio::test]
+async fn unicode_word_tokenizer_segments_chinese_and_japanese_by_dictionary() {
+    let root = directory("unicode-tokens");
+    let rows: Vec<(i64, String)> = [
+        (0, "我爱北京天安门"),
+        (1, "私は東京に住んでいます"),
+        (2, "Hello World"),
+    ]
+    .map(|(id, text)| (id, text.to_owned()))
+    .into();
+    let mut dataset = write(&root.join("cjk.lance"), &rows, WriteMode::Create).await;
+    // (tokenizer, [(query, ids of the rows that hit)])
+    let probes: [(&str, &[(&str, &[i64])]); 2] = [
+        (
+            "simple",
+            &[
+                ("我爱北京天安门", &[0]),
+                ("北京", &[]),
+                ("私は東京に住んでいます", &[1]),
+                ("東京", &[]),
+                ("hello", &[2]),
+            ],
+        ),
+        (
+            "icu",
+            &[
+                ("北京", &[0]),
+                ("天安门", &[0]),
+                ("北", &[]),
+                ("東京", &[1]),
+                ("ます", &[1]),
+                ("hello", &[2]),
+            ],
+        ),
+    ];
+    for (tokenizer, queries) in probes {
+        let params = InvertedIndexParams::default()
+            .base_tokenizer(tokenizer.into())
+            .with_position(false)
+            .stem(false)
+            .remove_stop_words(false);
+        index(&mut dataset, params, true).await;
+        for (query, hits) in queries {
+            let found: Vec<i64> = scores(&dataset, FullTextSearchQuery::new((*query).into()), None)
+                .await
+                .into_keys()
+                .collect();
+            assert_eq!(found, *hits, "{tokenizer}: {query}");
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Every language the settings offer has a stemmer and a stop-word list in the
+/// pinned Lance and is listed in `docs/tuning.md`. A language that a newer Lance
+/// adds is not offered until it is added here.
+#[test]
+fn every_language_the_settings_offer_has_a_stemmer_and_stop_words_and_is_documented() {
+    use fyrr_core::attributes::analyzer::Language;
+    use lance_index::scalar::inverted::tokenizer::Language as Lance;
+    let _: fn(Lance) = |language| match language {
+        Lance::Arabic
+        | Lance::Danish
+        | Lance::Dutch
+        | Lance::English
+        | Lance::Finnish
+        | Lance::French
+        | Lance::German
+        | Lance::Greek
+        | Lance::Hungarian
+        | Lance::Italian
+        | Lance::Norwegian
+        | Lance::Portuguese
+        | Lance::Romanian
+        | Lance::Russian
+        | Lance::Spanish
+        | Lance::Swedish
+        | Lance::Tamil
+        | Lance::Turkish => {}
+    };
+    let docs =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/tuning.md"))
+            .unwrap();
+    for language in Language::ALL {
+        let params = InvertedIndexParams::default()
+            .language(&language.lance_name())
+            .unwrap()
+            .stem(true)
+            .remove_stop_words(true);
+        params.build().unwrap();
+        let name = serde_json::to_value(language).unwrap();
+        assert!(
+            docs.contains(&format!("`{}`", name.as_str().unwrap())),
+            "{name} is not in docs/tuning.md"
+        );
+    }
+}
+
 /// The attribute types a schema offers: a scalar column and an array column of
 /// each element type, with the index kind `AttributeType` names, answer the
 /// filters the reader compiles (`=`, `array_has`, `array_has_any`,

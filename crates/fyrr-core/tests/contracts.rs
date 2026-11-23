@@ -96,7 +96,8 @@ fn a_manifest_and_a_policy_hold_only_valid_attribute_schemas() {
 /// would ignore them and build or expect the default index of each attribute.
 #[test]
 fn attribute_index_options_need_the_version_an_older_build_refuses() {
-    let options = json!({"title": {"index": false, "full_text": true}});
+    let options = json!({"title": {"index": false, "full_text": true,
+        "analyzer": {"tokenizer": "unicode", "language": "german", "ascii_folding": true}}});
     let mut manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
     manifest["attributes"] = json!({"title": "string", "count": "bytes"});
     assert!(parse::<ContentManifest>(&manifest).is_ok());
@@ -120,6 +121,31 @@ fn attribute_index_options_need_the_version_an_older_build_refuses() {
         ("title", json!({"fulltext": true})),
         ("count", json!({"index": false})),
         ("count", json!({"ngram": true})),
+        // The analyzer is the full-text index's, known by its names and bounds.
+        (
+            "title",
+            json!({"ngram": true, "analyzer": {"ascii_folding": true}}),
+        ),
+        (
+            "title",
+            json!({"full_text": true, "analyzer": {"tokenizer": "jieba"}}),
+        ),
+        (
+            "title",
+            json!({"full_text": true, "analyzer": {"language": "klingon"}}),
+        ),
+        (
+            "title",
+            json!({"full_text": true, "analyzer": {"ngram_max_length": 5}}),
+        ),
+        (
+            "title",
+            json!({"full_text": true, "analyzer": {"max_token_length": 0}}),
+        ),
+        (
+            "title",
+            json!({"full_text": true, "analyzer": {"stemming": true}}),
+        ),
     ] {
         policy["settings"]["attribute_indexes"] = json!({ name: option });
         assert!(parse::<PolicyArtifact>(&policy).is_err(), "{name} {option}");

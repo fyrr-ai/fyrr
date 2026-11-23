@@ -748,6 +748,7 @@ async fn publish_restored(
         true,
         rewinds,
         false,
+        &[],
     )
     .await?;
     // Service authorization queued during final publication under this same lease.

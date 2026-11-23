@@ -1102,6 +1102,10 @@
       "full:fyrr-reader:lib:fyrr_reader/search::open_tests::an_attribute_must_be_a_nullable_column_of_its_type_with_its_index_on_it": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::an_analyzer_that_differs_from_the_built_one_is_stale": {
+        "tier": "quick",
+        "seconds": 0.0
       }
     },
     "children": {
@@ -1469,6 +1473,14 @@
       "full:fyrr-reader:test:lance_pin/positionless_native_fts_and_saving": {
         "tier": "quick",
         "seconds": 0.069
+      },
+      "full:fyrr-reader:test:lance_pin/unicode_word_tokenizer_segments_chinese_and_japanese_by_dictionary": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-reader:test:lance_pin/every_language_the_settings_offer_has_a_stemmer_and_stop_words_and_is_documented": {
+        "tier": "quick",
+        "seconds": 0.1
       }
     }
   },
@@ -1801,6 +1813,10 @@
       "full:fyrr:test:dense_path/publication_lifecycle::serve_timer_disabled_committer_on_storage": {
         "tier": "full",
         "seconds": 96.301
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on_storage": {
+        "tier": "full",
+        "seconds": 40
       }
     }
   },

@@ -111,6 +111,18 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   and this build reads both. See
   [Changing the schema](docs/http-api.md#changing-the-schema) and
   [`[namespace.attribute_indexes]`](docs/tuning.md#namespaceattribute_indexes).
+- The full-text index of an attribute has its own `analyzer`: the tokenizer
+  (`simple`, `whitespace`, `unicode` for Unicode word segmentation, which finds
+  the words of Chinese and Japanese text by a dictionary, or `ngram` with a
+  minimum and a maximum length and a prefix-only switch), a `language` for
+  stemming and stop words (18 are offered), a custom `stop_words` list,
+  `ascii_folding` and `max_token_length`. The analyzer is an option of the
+  index, so it travels in the contract versions that carry index options
+  (content-manifest 5.0, policy-artifact 4.0). A change of it is a schema
+  change: the next maintenance builds the index again and publishes it, and the
+  index it replaces serves until then. An index of an attribute no longer takes
+  the namespace's `fts_*` settings, which stay those of the text index of the
+  documents. See [Analyzer](docs/tuning.md#analyzer-of-a-full-text-index).
 - The write API takes `delete_where` and `patch_where`: a filter whose matching
   documents are deleted, or patched with the attributes or readers of `set`.
   The committer evaluates it once against the state the request is applied to;

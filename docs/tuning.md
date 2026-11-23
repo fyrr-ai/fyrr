@@ -101,6 +101,10 @@ index answers the `contains` and `matches` filters on a `string`
 ([text tests](mcp-tools.md#text-tests)); the full-text index is built and kept,
 and no filter operator reads it yet.
 
+A full-text index has its own [analyzer](#analyzer-of-a-full-text-index); it does
+not take the namespace's `fts_*` keys, which are those of the text index of the
+documents.
+
 A new namespace's first publication builds every index its schema asks for.
 After that the attributes and their indexes change by a
 [schema request](http-api.md#changing-the-schema): the manifest of a publication
@@ -121,6 +125,49 @@ error: `attribute_type_mismatch`, `attribute_value_invalid` or
 `attribute_value_too_large` (a `string` over 4096 bytes). A schema is refused
 with `attribute_limit_exceeded` (a 129th attribute), `attribute_name_invalid` or
 `attribute_name_reserved`. A namespace that the write API creates cannot declare `id` (the key of a row) as an attribute or as its `text_attribute`.
+
+### Analyzer of a full-text index
+
+```toml
+[namespace.attribute_indexes.title]
+full_text = true
+[namespace.attribute_indexes.title.analyzer]
+tokenizer = "unicode"
+language = "german"
+ascii_folding = true
+```
+
+`analyzer` sets how the full-text index of an attribute cuts a text into terms.
+It is an option of a `full_text` entry and is refused without it. A text is
+always lowercased. Every key is optional.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `tokenizer` | `simple` | `simple`: runs of letters and digits, so a run of Chinese, Japanese or Korean characters is one token. `whitespace`: runs of characters that are not white space. `unicode`: Unicode word segmentation, which finds the words of Chinese and Japanese text by a dictionary and cuts what it does not know into what it does. `ngram`: substrings of a token. |
+| `language` | absent | One of the languages below: stems the terms and removes the stop words of that language. Absent: no stemming and no stop words. |
+| `stop_words` | absent | A list of at most 1024 words of 1–64 bytes that is removed instead of the language's. A word is compared with a term after it is lowercased and stemmed. |
+| `ascii_folding` | `false` | Folds accented letters to ASCII, `é` to `e`. |
+| `max_token_length` | `40` | 1–1024: a longer token, in UTF-8 bytes, is dropped. |
+| `ngram_min_length` | `3` | 1–16: shortest n-gram; only with `tokenizer = "ngram"`. |
+| `ngram_max_length` | `3` | `ngram_min_length`–16: longest n-gram; only with `tokenizer = "ngram"`. |
+| `prefix_only` | `false` | Only the n-grams that start a token; only with `tokenizer = "ngram"`. |
+
+The `ngram` tokenizer keeps every n-gram, so it takes no `language` and no
+`stop_words`. Dictionary tokenizers for Chinese, Japanese and Korean are not
+offered; `unicode` is the one that segments them.
+
+The languages are `arabic`, `danish`, `dutch`, `english`, `finnish`, `french`,
+`german`, `greek`, `hungarian`, `italian`, `norwegian`, `portuguese`,
+`romanian`, `russian`, `spanish`, `swedish`, `tamil` and `turkish`: the 18 that
+the pinned Lance has a stemmer and a stop-word list for.
+
+A [schema request](http-api.md#changing-the-schema) changes the analyzer of an
+index that exists. The request is published at once and the index stays as it
+was built: a reader keeps serving it. The next maintenance (`fyrr writer serve`
+starts it when the manifest records another analyzer than the settings, `fyrr
+writer maintain` runs it by hand) builds the index again and publishes it, and
+a reader moves to it with that publication. The rebuild reads every row of the
+attribute, so it takes the time of building the index of a namespace that size.
 
 ### `[namespace.write_api]`
 

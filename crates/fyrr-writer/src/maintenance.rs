@@ -11,6 +11,7 @@ mod restore_index;
 use chrono::Utc;
 use futures::TryStreamExt;
 use fyrr_core::Contract;
+use fyrr_core::attributes::stale_analyzers;
 use fyrr_core::config::Config;
 use fyrr_core::envelope::{EnvelopePayload, RejectionMarker};
 use fyrr_core::publication::{
@@ -38,7 +39,8 @@ const INDEX_SEGMENT_LIMIT: usize = 64;
 /// so is the span reaching the window after which a version is purgeable or an
 /// applied envelope is old. A namespace never maintained is due. `maintain`
 /// ends by recording its completion, which restarts both spans. An attribute
-/// index that the settings ask for and the manifest does not hold is due at once.
+/// index that the settings ask for and the manifest does not hold is due at once,
+/// and so is a full-text index the manifest records with another analyzer.
 pub(crate) fn due(config: &Config, manifest: &ContentManifest) -> bool {
     let writer = &config.writer;
     let grace = writer.version_grace.as_duration();
@@ -57,6 +59,12 @@ pub(crate) fn due(config: &Config, manifest: &ContentManifest) -> bool {
             &config.namespace.attribute_indexes,
         )
         .any(|(_, name, _)| !segments.contains_key(&name))
+        || stale_analyzers(
+            &config.namespace.attribute_indexes,
+            &manifest.attribute_indexes,
+        )
+        .next()
+        .is_some()
     {
         return true;
     }
@@ -231,12 +239,20 @@ async fn maintain_held(
     if head.content.is_some() {
         let mut dataset = pinned(config, &head).await?;
         let mut work = lineage(lease, &head);
-        // The attribute indexes that were switched on appear with this publication.
-        Box::pin(commit::build_attribute_indexes(
+        // The attribute indexes that were switched on appear with this publication,
+        // and so do the full-text ones built again for another analyzer: the old
+        // index serves until then.
+        let (store, root) = namespace_store(config)?;
+        let built = commit::previous_manifest(store.as_ref(), &root, &head)
+            .await?
+            .map(|manifest| manifest.attribute_indexes)
+            .unwrap_or_default();
+        let rebuilt = Box::pin(commit::build_attribute_indexes(
             config,
             lease,
             &mut dataset,
             &mut work,
+            &built,
         ))
         .await?;
         commit::publish(
@@ -249,6 +265,7 @@ async fn maintain_held(
             false,
             Vec::new(),
             true,
+            &rebuilt,
         )
         .await?;
     }
@@ -311,6 +328,7 @@ async fn merge_step(
         false,
         Vec::new(),
         false,
+        &[],
     )
     .await?;
     Ok(true)
@@ -395,6 +413,7 @@ async fn purge_denied(config: &Config, lease: &LeaseGuard, head: &ServingHead) -
             true,
             Vec::new(),
             false,
+            &[],
         )
         .await?;
         return Ok(true);
@@ -1132,6 +1151,7 @@ async fn compact_one(
             false,
             Vec::new(),
             false,
+            &[],
         )
         .await
     };

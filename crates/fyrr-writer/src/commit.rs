@@ -38,7 +38,7 @@ pub use namespace::namespace_settings;
 pub(crate) use namespace::sources_allowed;
 pub use namespace::{create, create_with, delete, set_read_only, set_read_only_held};
 pub(crate) use namespace::{ensure_writable, publish_policy};
-pub(crate) use publication::publish;
+pub(crate) use publication::{previous_manifest, publish};
 
 pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<PreparedEnvelope>> {
     let mut result = Vec::new();

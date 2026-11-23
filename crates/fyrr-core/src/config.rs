@@ -181,7 +181,8 @@ pub struct NamespaceConfig {
     pub attributes: crate::attributes::AttributeSchema,
     /// The attributes whose indexes differ from the default (the scalar index
     /// of the attribute's type): `index = false` leaves the attribute to a scan
-    /// of the table, `full_text` and `ngram` add a text index to a `string`.
+    /// of the table, `full_text` and `ngram` add a text index to a `string`,
+    /// and `analyzer` sets how the full-text index cuts a text into terms.
     #[serde(default)]
     pub attribute_indexes: crate::attributes::AttributeIndexes,
     /// Present: the writer serves `POST /v1/namespaces/{namespace}/documents`,
@@ -1897,7 +1898,7 @@ fn holds_table(value: &toml::Value) -> bool {
     }
 }
 
-fn default_fts_max_token_length() -> u32 {
+pub(crate) fn default_fts_max_token_length() -> u32 {
     40
 }
 fn default_dense_rq_bits() -> u8 {

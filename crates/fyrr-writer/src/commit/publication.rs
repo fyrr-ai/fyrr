@@ -2,6 +2,9 @@ use super::*;
 use fyrr_core::attributes::{attribute_index_kind, indexes_present, possible_indexes};
 
 /// Publish native work through the same immutable manifest and fenced head CAS.
+/// `rebuilt` names the attributes whose full-text index this work built again
+/// with the analyzer of the settings; every other index stands as the manifest
+/// before recorded it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn publish(
     config: &Config,
@@ -13,6 +16,7 @@ pub(crate) async fn publish(
     acl_changed: bool,
     mut cursor_rewinds: Vec<String>,
     maintenance_completed: bool,
+    rebuilt: &[String],
 ) -> Result<u64> {
     let (store, root) = namespace_store(config)?;
     let previous_manifest = previous_manifest(store.as_ref(), &root, &head).await?;
@@ -46,9 +50,25 @@ pub(crate) async fn publish(
     }
     // What the table has, not what the settings ask for: an index that is
     // switched on waits for maintenance, and a reader expects what is built.
-    let attribute_indexes = indexes_present(&config.namespace.attributes, |name| {
-        indexes.iter().any(|index| index.name == name)
-    });
+    // A full-text index that was not built again has the analyzer it was built
+    // with, which the settings may have left since. shortcut: a restore carries
+    // the analyzers of the manifest it replaces, not of the version it restores;
+    // upgrade by taking them from the restored publication's manifest.
+    let attribute_indexes = indexes_present(
+        &config.namespace.attributes,
+        |name| indexes.iter().any(|index| index.name == name),
+        |attribute| {
+            let built = previous_manifest
+                .as_ref()
+                .filter(|_| !rebuilt.iter().any(|name| name == attribute))
+                .and_then(|manifest| manifest.attribute_indexes.get(attribute))
+                .filter(|options| options.full_text);
+            built
+                .or_else(|| config.namespace.attribute_indexes.get(attribute))
+                .map(|options| options.analyzer.clone())
+                .unwrap_or_default()
+        },
+    );
     let reader_coverage = fyrr_reader::storage::coverage(&actual, "readers_idx");
     if dataset
         .manifest()
@@ -214,7 +234,7 @@ pub(crate) async fn publish(
     Ok(manifest.lance_version)
 }
 
-pub(super) async fn previous_manifest(
+pub(crate) async fn previous_manifest(
     store: &dyn ObjectStore,
     root: &Path,
     head: &ServingHead,
