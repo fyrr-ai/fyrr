@@ -17,9 +17,15 @@ config/fyrr.example.toml passes `config check --no-env`.
 docs/mcp-tools.md: every tool argument of fixtures/mcp/tools-list.json is
 documented with its schema ranges; the error table equals
 fixtures/mcp/error-codes.json.
+docs/api-reference.md: every route of schemas/openapi.json has a section that
+names the process serving it, the role it needs and its body and answer.
+docs/guarantees.md: every row names an existing test, or says `No test yet`.
+docs/limits.md: one row per constant of crates/fyrr-core/src/limits.rs, with
+its value.
 """
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -534,6 +540,87 @@ def check_namespace_delete_diagnostics():
             fail("docs/cli.md", f"unknown writer diagnostic: {code}")
 
 
+# --- API reference, guarantees, limits --------------------------------------------
+
+
+def schema_refs(node):
+    """Names of the schemas a request or answer of a route points to."""
+    return set(re.findall(r'"\$ref": "#/components/schemas/(\w+)"', json.dumps(node)))
+
+
+def check_api_reference():
+    where = "docs/api-reference.md"
+    spec = json.loads((ROOT / "schemas/openapi.json").read_text())
+    docs = sections(ROOT / where, 2)
+    routes = {
+        f"{method.upper()} {path}": op
+        for path, operations in spec["paths"].items()
+        for method, op in operations.items()
+    }
+    titles = {CODE.fullmatch(h).group(1) for h in docs if CODE.fullmatch(h)}
+    if titles != set(routes):
+        fail(where, f"route sections {sorted(titles)} != routes {sorted(routes)}")
+    for route, op in routes.items():
+        body = " ".join(docs.get(f"`{route}`", "").split())
+        served = " and ".join(op["tags"])
+        if not re.search(rf"Served by: {served}\b(?! and)", body):
+            fail(where, f"`{route}` does not say it is served by {served}")
+        for key in ("summary", "description"):
+            if op[key] not in body:
+                fail(where, f"`{route}`: {key} `{op[key]}` is not in its section")
+        named = schema_refs(op.get("requestBody")) | schema_refs(op["responses"].get("200"))
+        for name in sorted(named):
+            if f"`{name}`" not in body:
+                fail(where, f"`{route}`: schema `{name}` is not named")
+
+
+def check_guarantees():
+    where = "docs/guarantees.md"
+    for heading, body in sections(ROOT / where, 2).items():
+        rows = table(body)
+        if heading and not rows:
+            fail(where, f"`{heading}` has no table")
+        for row in rows:
+            held = row["Held by"]
+            if held == "No test yet":
+                continue
+            tests = CODE.findall(held)
+            if not tests:
+                fail(where, f"`{row['Statement'][:50]}...` names no test and is not `No test yet`")
+            for test in tests:
+                path, _, name = test.partition("::")
+                file = ROOT / path
+                attributes = r"#\[(?:tokio::)?test\][^\n]*\n(?:\s*#\[[^\n]*\n)*\s*"
+                if not file.is_file() or not re.search(
+                    rf"{attributes}(?:async )?fn {name}\b", file.read_text()
+                ):
+                    fail(where, f"`{test}` is not a test")
+
+
+def check_limits():
+    where = "docs/limits.md"
+    module, expected = None, {}
+    for line in (ROOT / "crates/fyrr-core/src/limits.rs").read_text().splitlines():
+        if m := re.match(r"pub mod (\w+) \{", line):
+            module = m.group(1)
+        elif line.startswith("}"):
+            module = None
+        elif m := re.match(r"\s*pub const (\w+): \w+ = ([\d_ *e.]+);", line):
+            name = "::".join(["limits", *([module] if module else []), m.group(1)])
+            expected[name] = math.prod(float(v.replace("_", "")) for v in m.group(2).split("*"))
+    documented = {}
+    for row in table((ROOT / where).read_text()):
+        name = CODE.fullmatch(row["Constant"]).group(1)
+        documented[name] = float(row["Value"].replace(",", ""))
+    for name in sorted(set(expected) - set(documented)):
+        fail(where, f"`{name}` is not in the table")
+    for name in sorted(set(documented) - set(expected)):
+        fail(where, f"`{name}` is in the table but not in limits.rs")
+    for name in sorted(set(expected) & set(documented)):
+        if expected[name] != documented[name]:
+            fail(where, f"`{name}`: table {documented[name]:g}, limits.rs {expected[name]:g}")
+
+
 # --- binaries -------------------------------------------------------------------
 
 
@@ -552,6 +639,9 @@ def main():
         check_configuration(str(full))
     check_mcp_tools()
     check_namespace_delete_diagnostics()
+    check_api_reference()
+    check_guarantees()
+    check_limits()
     for error in errors:
         print(f"FAIL {error}")
     if errors:
@@ -559,12 +649,15 @@ def main():
         return 1
     if static:
         print(
-            f"ok: {', '.join(CONFIG_DOCS)} and docs/mcp-tools.md "
-            "match committed schemas and fixtures"
+            f"ok: {', '.join(CONFIG_DOCS)}, docs/mcp-tools.md, docs/api-reference.md, "
+            "docs/guarantees.md and docs/limits.md match committed schemas, fixtures and sources"
         )
         print("n/e: CLI help, flag-boundary and example runtime checks (--static)")
     else:
-        print(f"ok: docs/cli.md, {', '.join(CONFIG_DOCS)} and docs/mcp-tools.md match the code")
+        print(
+            f"ok: docs/cli.md, {', '.join(CONFIG_DOCS)}, docs/mcp-tools.md, "
+            "docs/api-reference.md, docs/guarantees.md and docs/limits.md match the code"
+        )
     return 0
 
 

@@ -23,16 +23,11 @@
 [write route](#write-documents) as OpenAPI 3.1; it ships in the release as
 `fyrr-openapi-<version>.json`.
 
-| Route | Body | Answer |
-| --- | --- | --- |
-| `POST /v1/namespaces/{namespace}/query` | The arguments of [`search`](mcp-tools.md#search) | The `search` result |
-| `POST /v1/namespaces/{namespace}/fetch` | The arguments of [`fetch`](mcp-tools.md#fetch) | The `fetch` result |
-| `POST /v1/namespaces/{namespace}/aggregate` | The [aggregate request](#aggregate) | The [aggregate result](#aggregate) |
-| `POST /v1/namespaces/{namespace}/recall` | The [recall request](#recall) | The [recall result](#recall) |
-| `GET /v1/namespaces/{namespace}` | None | The [namespace report](#namespace-report) |
-| `GET /v1/namespaces?prefix=` | None | The [namespace list](#listing-namespaces) |
+The [API reference](api-reference.md) lists every route with the process that
+serves it, the role it needs, and its body and answer. This page describes the
+reader's `/v1/` routes and the write route.
 
-`GET /metrics` is not one of these routes: only the optional
+`GET /metrics` is none of these: only the optional
 [metrics listener](operations.md#metrics) serves it, on its own address and
 without a credential. The OpenAPI file describes it too.
 
