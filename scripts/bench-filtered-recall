@@ -191,6 +191,7 @@ def main():
         "[writer.serve.admin]\nlisten = '%s'\noperator_token = { env = 'FYRR_BENCH_OPERATOR' }\n"
         "[reader]\nmirror_path = '%s'\nmirror_max_bytes = 1073741824\n"
         "[reader.http]\nlisten = '%s'\npublic_url = 'http://%s/mcp'\n"
+        "user_requests_per_minute = 1000000\ngroup_requests_per_minute = 1000000\n"
         % (
             NAMESPACE,
             work / "storage",
@@ -247,20 +248,13 @@ def main():
                 "wrote %d rows (%.0f s)" % (written, took), file=sys.stderr, flush=True
             )
 
-        # Wait for the maintenance to merge the index segments of the writes.
-        shape = {}
-        for _ in range(900):
-            shape = json.loads(
-                subprocess.run(
-                    [*base, "writer", "status"],
-                    env=env,
-                    check=True,
-                    capture_output=True,
-                ).stdout
-            )
-            if shape["index_segments"].get("vector_idx") == 1:
-                break
-            time.sleep(1)
+        # The two writes leave two index segments, as a namespace written in
+        # batches has; the planner treats each segment on its own.
+        shape = json.loads(
+            subprocess.run(
+                [*base, "writer", "status"], env=env, check=True, capture_output=True
+            ).stdout
+        )
         result["vector_index_segments"] = shape["index_segments"].get("vector_idx")
         result["fragments"] = shape["fragments"]
 
