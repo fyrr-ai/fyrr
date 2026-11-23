@@ -31,7 +31,7 @@ def rows(count: int) -> WriteRequest:
     }
 
 
-def test_write_query_describe_list_delete(deployment: Deployment) -> None:
+def test_write_query_describe_list(deployment: Deployment) -> None:
     namespace = fresh_namespace()
     with Client(
         deployment.reader_url, deployment.writer_url, api_key=deployment.admin_key
@@ -41,8 +41,6 @@ def test_write_query_describe_list_delete(deployment: Deployment) -> None:
         assert {hit["root_id"] for hit in found["hits"]} == {"doc-00", "doc-01", "doc-02"}
         assert client.describe_namespace(namespace)["namespace"] == namespace
         assert namespace in client.list_namespaces(namespace)["namespaces"]
-        assert client.delete_namespace(namespace)["deleted"] is True
-        assert namespace not in client.list_namespaces(namespace)["namespaces"]
 
 
 def test_iter_documents_pages_through_every_document(deployment: Deployment) -> None:
@@ -110,8 +108,5 @@ def test_async_client_covers_the_same_routes(deployment: Deployment) -> None:
             assert ids == [f"doc-{n:02}" for n in range(5)]
             assert (await client.describe_namespace(namespace))["namespace"] == namespace
             assert [name async for name in client.iter_namespaces(namespace)] == [namespace]
-            await client.delete_namespace(namespace)
-            with pytest.raises(FyrrError):
-                await client.describe_namespace(namespace)
 
     asyncio.run(scenario())

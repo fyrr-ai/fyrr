@@ -48,6 +48,18 @@ def slept(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     return waits
 
 
+def found() -> httpx.Response:
+    return httpx.Response(200, json={"hits": []})
+
+
+def timed_out(request: httpx.Request) -> httpx.Response:
+    raise httpx.ReadTimeout("slow", request=request)
+
+
+def connect_timeout(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectTimeout("slow", request=request)
+
+
 def refused(request: httpx.Request) -> httpx.Response:
     raise httpx.ConnectError("refused", request=request)
 
@@ -66,17 +78,71 @@ def client(script: Script, max_retries: int = 3, backoff: float = 0.5) -> Client
 WRITE: WriteRequest = {"upserts": [{"id": "a", "text": "t"}]}
 
 
+def write(client: Client) -> object:
+    return client.write("ns", WRITE)
+
+
+def delete(client: Client) -> object:
+    return client.delete_namespace("ns")
+
+
 @pytest.mark.parametrize("status", [408, 429, 500, 503, 504])
-def test_retryable_statuses_are_retried(status: int, slept: list[float]) -> None:
-    script = Script(httpx.Response(status, json={"error": "busy"}), ok())
-    assert client(script).write("ns", WRITE)["upserted"] == 1
+def test_a_read_is_retried_on_the_retryable_statuses(status: int, slept: list[float]) -> None:
+    script = Script(httpx.Response(status, json={"error": "busy"}), found())
+    assert client(script).query("ns", {})["hits"] == []
     assert len(script.requests) == 2 and len(slept) == 1
 
 
-def test_connection_errors_are_retried(slept: list[float]) -> None:
-    script = Script(refused, refused, ok())
-    assert client(script).write("ns", WRITE)["upserted"] == 1
+def test_a_read_is_retried_after_a_connection_error_and_a_timeout(slept: list[float]) -> None:
+    script = Script(refused, timed_out, found())
+    assert client(script).query("ns", {})["hits"] == []
     assert len(slept) == 2
+
+
+@pytest.mark.parametrize("send", [write, delete])
+def test_a_change_is_retried_only_when_it_was_not_sent_or_refused_unread(
+    send: Callable[[Client], object], slept: list[float]
+) -> None:
+    script = Script(
+        refused,
+        connect_timeout,
+        httpx.Response(429, headers={"Retry-After": "1"}, json={"error": "rate_limited"}),
+        ok(),
+    )
+    send(client(script))
+    assert len(script.requests) == 4 and len(slept) == 3
+
+
+@pytest.mark.parametrize("send", [write, delete])
+@pytest.mark.parametrize(
+    "answer", [httpx.Response(503, json={"error": "outcome_unknown"}), timed_out]
+)
+def test_a_change_that_may_have_applied_is_not_retried(
+    send: Callable[[Client], object],
+    answer: httpx.Response | Callable[[httpx.Request], httpx.Response],
+    slept: list[float],
+) -> None:
+    script = Script(answer, ok())
+    with pytest.raises((FyrrError, httpx.TimeoutException)):
+        send(client(script))
+    assert len(script.requests) == 1 and slept == []
+
+
+def test_a_wrong_request_is_not_retried(slept: list[float]) -> None:
+    def unsupported(request: httpx.Request) -> httpx.Response:
+        raise httpx.UnsupportedProtocol("no scheme", request=request)
+
+    script = Script(unsupported, found())
+    with pytest.raises(httpx.UnsupportedProtocol):
+        client(script).query("ns", {})
+    assert len(script.requests) == 1
+
+
+def test_an_answer_that_is_not_json_is_a_fyrr_error() -> None:
+    script = Script(httpx.Response(200, text="<html>"))
+    with pytest.raises(FyrrError) as raised:
+        client(script).query("ns", {})
+    assert (raised.value.status, raised.value.code) == (200, "invalid_json")
 
 
 def test_other_errors_are_final(slept: list[float]) -> None:
@@ -89,11 +155,11 @@ def test_other_errors_are_final(slept: list[float]) -> None:
 
 def test_retry_after_is_honoured_and_capped(slept: list[float]) -> None:
     script = Script(
-        httpx.Response(429, headers={"Retry-After": "7"}, json={"error": "rate_limited"}),
+        httpx.Response(408, headers={"Retry-After": "7"}, json={"error": "deadline_exceeded"}),
         httpx.Response(503, headers={"Retry-After": "100000"}, json={"error": "busy"}),
-        ok(),
+        found(),
     )
-    client(script).write("ns", WRITE)
+    client(script).query("ns", {})
     assert slept == [7.0, client_module.MAX_RETRY_AFTER]
 
 

@@ -34,6 +34,10 @@ DEFAULT_TIMEOUT = 30.0
 MAX_RETRY_AFTER = 120.0
 MAX_BACKOFF = 30.0
 RETRY_STATUSES = frozenset({408, 429, *range(500, 600)})
+# A request that failed with one of these never reached the server.
+UNSENT = (httpx.ConnectError, httpx.ConnectTimeout)
+# A request that is wrong, not unlucky: a repeat fails the same way.
+PERMANENT = (httpx.UnsupportedProtocol, httpx.LocalProtocolError)
 # Name order of the characters of a namespace name, which cannot start with "-".
 NAME_CHARACTERS = "-0123456789abcdefghijklmnopqrstuvwxyz"
 
@@ -53,7 +57,10 @@ class _Request(NamedTuple):
     url: str
     body: Any
     params: dict[str, str] | None
-    retry: bool
+    # "all": a read, repeated on every failure the policy names. "unsent": a change, repeated
+    # only when it provably did not reach the server (a failed connect) or the server refused
+    # it unread (429). "none": never repeated.
+    retry: str
 
 
 class _Base:
@@ -84,7 +91,7 @@ class _Base:
         path: str,
         body: Any = None,
         params: dict[str, str] | None = None,
-        retry: bool = True,
+        retry: str = "all",
     ) -> _Request:
         base = self._urls[service]
         if base is None:
@@ -99,10 +106,17 @@ class _Base:
         error: httpx.TransportError | None,
     ) -> float | None:
         """Seconds to wait before the next attempt, or None when the outcome is final."""
-        if not request.retry or attempt >= self._max_retries:
+        if request.retry == "none" or attempt >= self._max_retries:
             return None
-        if response is not None and response.status_code not in RETRY_STATUSES:
-            return None
+        if response is None:
+            if isinstance(error, PERMANENT):
+                return None
+            if request.retry == "unsent" and not isinstance(error, UNSENT):
+                return None
+        else:
+            allowed = {429} if request.retry == "unsent" else RETRY_STATUSES
+            if response.status_code not in allowed:
+                return None
         if response is not None and (wait := _retry_after(response)) is not None:
             return min(wait, MAX_RETRY_AFTER)
         delay = min(self._backoff * (1 << attempt), MAX_BACKOFF)
@@ -110,12 +124,14 @@ class _Base:
 
     @staticmethod
     def _decode(response: httpx.Response) -> Any:
-        if response.is_success:
-            return response.json()
         try:
             body = response.json()
         except ValueError:
+            if response.is_success:
+                raise FyrrError(response.status_code, "invalid_json") from None
             body = None
+        if response.is_success:
+            return body
         code = None
         if isinstance(body, dict):
             code = body.get("error") or body.get("scimType") or body.get("detail")
@@ -140,8 +156,10 @@ def _namespace_path(namespace: str) -> str:
     return f"/v1/namespaces/{quote(namespace, safe='')}"
 
 
-def _is_conditional(request: WriteRequest) -> bool:
-    return bool(request.get("conditions"))
+def _write_retry(request: WriteRequest) -> str:
+    # A write that sets `conditions` tests the stored documents when it is applied, so a repeat
+    # after a lost answer can decide differently: the caller decides.
+    return "none" if request.get("conditions") else "unsent"
 
 
 def _scan_request(
@@ -190,9 +208,11 @@ class Client(_Base):
     `fyrr writer serve`, serves writes and namespace deletion; leave it out for a reader-only
     deployment. `api_key` is an API key or an OIDC access token.
 
-    A request is retried on a connection error and on 408, 429 and 5xx, up to `max_retries`
-    times, after `backoff` seconds doubling each time (jittered), or after the server's
-    `Retry-After`. A write with `conditions` is never retried: raise or repeat it yourself.
+    A read is retried on a connection error and on 408, 429 and 5xx, up to `max_retries` times,
+    after `backoff` seconds doubling each time (jittered), or after the server's `Retry-After`.
+    A write and a namespace deletion may have applied when the answer is lost, so they are
+    retried only when the connection failed (nothing was sent) or on 429 (refused unread); a
+    write with `conditions` is never retried. Raise or repeat those yourself.
     """
 
     def __init__(
@@ -277,7 +297,7 @@ class Client(_Base):
 
     def delete_namespace(self, namespace: str) -> DeleteNamespaceResponse:
         path = _namespace_path(namespace)
-        request = self._request("writer", "DELETE", path, {"namespace": namespace})
+        request = self._request("writer", "DELETE", path, {"namespace": namespace}, retry="unsent")
         return cast(DeleteNamespaceResponse, self._send(request))
 
     def query(self, namespace: str, request: QueryRequest) -> SearchOutput:
@@ -286,10 +306,8 @@ class Client(_Base):
 
     def write(self, namespace: str, request: WriteRequest) -> WriteResponse:
         path = _namespace_path(namespace) + "/documents"
-        retry = not _is_conditional(request)
-        return cast(
-            WriteResponse, self._send(self._request("writer", "POST", path, request, retry=retry))
-        )
+        sent = self._request("writer", "POST", path, request, retry=_write_retry(request))
+        return cast(WriteResponse, self._send(sent))
 
     def iter_documents(
         self,
@@ -394,7 +412,7 @@ class AsyncClient(_Base):
 
     async def delete_namespace(self, namespace: str) -> DeleteNamespaceResponse:
         path = _namespace_path(namespace)
-        request = self._request("writer", "DELETE", path, {"namespace": namespace})
+        request = self._request("writer", "DELETE", path, {"namespace": namespace}, retry="unsent")
         return cast(DeleteNamespaceResponse, await self._send(request))
 
     async def query(self, namespace: str, request: QueryRequest) -> SearchOutput:
@@ -404,8 +422,7 @@ class AsyncClient(_Base):
 
     async def write(self, namespace: str, request: WriteRequest) -> WriteResponse:
         path = _namespace_path(namespace) + "/documents"
-        retry = not _is_conditional(request)
-        sent = self._request("writer", "POST", path, request, retry=retry)
+        sent = self._request("writer", "POST", path, request, retry=_write_retry(request))
         return cast(WriteResponse, await self._send(sent))
 
     async def iter_documents(

@@ -29,6 +29,8 @@ class QueryRequest(TypedDict):
     """Alternative to query: 2–16 queries, sharing filters and deadline."""
     vector: NotRequired[list[float] | None]
     """Query vector of the namespace's dimensions, instead of an embedding of query. Without query the search is dense only and makes no embedding call."""
+    vectors: NotRequired[list[list[float]] | None]
+    """Query vectors of a multi-vector `vector_attribute`, 1-32 of its dimensions, searched as one query. Not with vector."""
     exact: NotRequired[bool | None]
     """Exact search: score every row that passes the filter and the caller's permissions instead of probing the index. Refused as invalid_argument when more rows pass than the bound of an exact search."""
     vector_attribute: NotRequired[str | None]
@@ -185,6 +187,8 @@ class SubQuery(TypedDict):
     """Query text, 1-4096 UTF-8 bytes."""
     vector: NotRequired[list[float] | None]
     """Query vector of the namespace's dimensions, instead of an embedding of query."""
+    vectors: NotRequired[list[list[float]] | None]
+    """Query vectors of a multi-vector `vector_attribute`, searched as one query. Not with vector."""
     vector_attribute: NotRequired[str | None]
     """Named vector attribute this sub-query searches; default the built-in `vector`. Text needs an attribute with `from`, else send `vector`."""
     filter: NotRequired[Filter | None]
@@ -569,7 +573,7 @@ class Analyzer(TypedDict):
     """Only with the `ngram` tokenizer: only the n-grams that start a token."""
 
 
-VectorAttribute = TypedDict("VectorAttribute", {"dimensions": "int", "from": "NotRequired[str | None]"})
+VectorAttribute = TypedDict("VectorAttribute", {"dimensions": "int", "from": "NotRequired[str | None]", "multi": "NotRequired[bool]"})
 
 
 class WriteApiSettings(TypedDict):

@@ -67,22 +67,31 @@ use it in a `with` block. The default `timeout` is **30 seconds**, above the
 10 seconds that the server gives a read before it answers
 `408 deadline_exceeded` (`deadline_ms`). A request with a longer `deadline_ms`
 (at most 300,000) needs a larger `timeout`. A write is answered when readers
-serve it, which can take longer; give a write-heavy client more time too.
+serve it, and the server may take up to 10 minutes for that before it answers
+`503 outcome_unknown`: a client that writes large batches should set a larger
+`timeout`. A timeout of a write is raised, not retried (below).
 
 ## Retries
 
-A request is retried up to `max_retries` times (default 3) on a connection
+A **read** (`query`, `list_namespaces`, `describe_namespace` and the paging
+helpers) is retried up to `max_retries` times (default 3) on a connection
 error, a timeout, and the statuses 408, 429 and 5xx. The wait is `backoff`
 seconds (default 0.5) doubling with each attempt, at most 30 seconds, with
 jitter. When the answer has `Retry-After`, the client waits that long instead
-(at most 120 seconds). The last answer is raised as `FyrrError` (`status`,
-`code`, `retry_after`); a connection error is raised as the `httpx` error.
+(at most 120 seconds). A request that is wrong, such as an unsupported URL
+scheme, is not retried.
 
-A write that sets `conditions` is **never retried**, not even after a
-connection error: it may have applied, and a repeat would test the condition
-against the changed documents. The caller decides. Any other write is retried:
-repeating its upserts and deletes is safe, though a repeat can overwrite a
-later change to the same ids ([conditions and repeats](https://github.com/fyrr-ai/fyrr/blob/main/docs/http-api.md#conditions)).
+A **write** and `delete_namespace` change data, and a lost answer does not say
+whether they applied. A repeat could overwrite a later change to the same ids,
+evaluate `delete_where` against newer documents, or delete a namespace that was
+created again ([guarantees](https://github.com/fyrr-ai/fyrr/blob/main/docs/guarantees.md)).
+They are retried only when the request provably did not reach the server (the
+connection could not be made) or the server refused it unread (`429`). A write
+that sets `conditions` is **never** retried. Every other failure, a timeout or
+`503 outcome_unknown` included, is raised for the caller to decide.
+
+The last answer is raised as `FyrrError` (`status`, `code`, `retry_after`); a
+connection error or a timeout is raised as the `httpx` error.
 
 ## Paging
 
