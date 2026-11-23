@@ -518,6 +518,15 @@
         },
         "uuid": {
           "type": "string"
+        },
+        "partitions": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The IVF partitions of a vector index (`ivf_rq`), as Lance built or\nrebalanced it; absent for every other kind."
         }
       },
       "required": [

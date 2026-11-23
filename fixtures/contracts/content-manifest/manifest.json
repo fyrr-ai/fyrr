@@ -43,7 +43,8 @@
       "name": "vector_idx",
       "kind": "ivf_rq",
       "column": "vector",
-      "uuid": "3f0c1d2e-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+      "uuid": "3f0c1d2e-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+      "partitions": 2
     },
     {
       "name": "text_fts",

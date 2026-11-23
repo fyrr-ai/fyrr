@@ -2,6 +2,8 @@ use super::*;
 use fyrr_core::attributes::{
     AttributeIndexes, attribute_index_kind, indexes_present, possible_indexes,
 };
+use lance::index::DatasetIndexInternalExt;
+use lance_index::metrics::NoOpMetricsCollector;
 
 /// Publish native work through the same immutable manifest and fenced head CAS.
 /// `carry` holds the options of the indexes that stand as they were built: the
@@ -89,11 +91,39 @@ pub(crate) async fn write_manifest(
         } else {
             continue;
         };
+        let uuid = index.uuid.to_string();
+        let partitions = if kind == "ivf_rq" {
+            // A segment's partitions never change, so the previous manifest's
+            // count stands; only a segment it does not know is read from Lance.
+            let known = previous_manifest.as_ref().and_then(|m| {
+                m.indexes
+                    .iter()
+                    .find(|previous| previous.uuid == uuid)
+                    .and_then(|previous| previous.partitions)
+            });
+            match known {
+                Some(count) => Some(count),
+                // The segment's own IVF model: no other segment is opened and no
+                // statistics are serialized.
+                None => {
+                    let segment = dataset
+                        .open_vector_index(column, &index.uuid, &NoOpMetricsCollector)
+                        .await?;
+                    Some(
+                        u32::try_from(segment.total_partitions())
+                            .map_err(|_| WriterError::IndexBuildFailed)?,
+                    )
+                }
+            }
+        } else {
+            None
+        };
         indexes.push(IndexIdentity {
             name: index.name.clone(),
             column: column.into(),
             kind: kind.into(),
-            uuid: index.uuid.to_string(),
+            uuid,
+            partitions,
         });
     }
     // What the table has, not what the settings ask for: an index that is
