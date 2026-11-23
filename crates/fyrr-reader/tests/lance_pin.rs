@@ -35,7 +35,10 @@ use lance_index::{
     optimize::OptimizeOptions,
     scalar::{
         FullTextSearchQuery, InvertedIndexParams,
-        inverted::query::{BooleanQuery, FtsQuery, MatchQuery, Occur, Operator, PhraseQuery},
+        inverted::{
+            DocumentGranularity,
+            query::{BooleanQuery, FtsQuery, MatchQuery, Occur, Operator, PhraseQuery},
+        },
     },
 };
 use std::{
@@ -1087,4 +1090,251 @@ async fn all_terms_and_prefix_queries_return_the_true_top_10_on_three_segments_a
         every.len(),
         starts.len()
     );
+}
+
+/// A table of `id`, a string column `title`, a string column `body` and a
+/// string array column `tags`, written in three parts that each text index
+/// covers as one segment.
+async fn attributes(name: &str, rows: i64) -> (Dataset, Vec<[String; 2]>) {
+    const WORDS: [&str; 8] = [
+        "alpha", "beta", "gamma", "delta", "omega", "sigma", "kappa", "theta",
+    ];
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut text = |words: i64| -> String {
+        (0..words)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                WORDS[usize::try_from(state % 8).unwrap()]
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let texts: Vec<[String; 2]> = (0..rows)
+        .map(|n| [text(1 + n % 3), text(3 + n % 6)])
+        .collect();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("title", DataType::Utf8, false),
+        Field::new("body", DataType::Utf8, false),
+    ]));
+    let path = directory(name).join("attributes.lance");
+    let part = |range: std::ops::Range<usize>| {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values(
+                    range.clone().map(|n| i64::try_from(n).unwrap()),
+                )),
+                Arc::new(StringArray::from_iter_values(
+                    range.clone().map(|n| texts[n][0].as_str()),
+                )),
+                Arc::new(StringArray::from_iter_values(
+                    range.map(|n| texts[n][1].as_str()),
+                )),
+            ],
+        )
+        .unwrap()
+    };
+    let third = texts.len() / 3;
+    let params = InvertedIndexParams::default().with_position(false);
+    let mut dataset = None;
+    for (n, range) in [0..third, third..2 * third, 2 * third..texts.len()]
+        .into_iter()
+        .enumerate()
+    {
+        let next = Dataset::write(
+            RecordBatchIterator::new(vec![Ok(part(range))], schema.clone()),
+            path.to_str().unwrap(),
+            Some(WriteParams {
+                mode: if n == 0 {
+                    WriteMode::Create
+                } else {
+                    WriteMode::Append
+                },
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+        let mut next = next;
+        if n == 0 {
+            for column in ["title", "body"] {
+                next.create_index(
+                    &[column],
+                    IndexType::Inverted,
+                    Some(format!("{column}_fts")),
+                    &params,
+                    false,
+                )
+                .await
+                .unwrap();
+            }
+        } else {
+            next.optimize_indices(&OptimizeOptions::append())
+                .await
+                .unwrap();
+        }
+        dataset = Some(next);
+    }
+    let dataset = dataset.unwrap();
+    assert_eq!(dataset.load_indices().await.unwrap().len(), 6);
+    (dataset, texts)
+}
+
+/// The text ranking over several attributes, each with its own weight: a
+/// boolean query of one match per attribute scores a row by the sum of the
+/// weighted scores of its attributes, and its best ten are those of an
+/// unlimited search, on three segments, under a row mask, for either operator.
+#[tokio::test]
+async fn weighted_attribute_query_returns_the_true_top_10_on_three_segments_and_under_a_mask() {
+    let (dataset, texts) = attributes("weighted", 900).await;
+    let mask = even_rows(&dataset).await;
+    let terms = "alpha beta";
+    let one = |column: &str, boost: f32, operator: Operator| {
+        FtsQuery::Match(
+            MatchQuery::new(terms.into())
+                .with_column(Some(column.into()))
+                .with_boost(boost)
+                .with_operator(operator),
+        )
+    };
+    for operator in [Operator::Or, Operator::And] {
+        let weighted = FtsQuery::Boolean(BooleanQuery::new([
+            (Occur::Should, one("title", 3.0, operator)),
+            (Occur::Should, one("body", 1.0, operator)),
+        ]));
+        for allowed in [None, Some(&mask)] {
+            let every = found(&dataset, weighted.clone(), None, allowed).await;
+            let title = found(&dataset, one("title", 1.0, operator), None, allowed).await;
+            let body = found(&dataset, one("body", 1.0, operator), None, allowed).await;
+            assert!(every.len() > 100, "the probe needs many matches");
+            // A row of both attributes scores the weighted sum, and a row of
+            // one attribute scores that attribute's weighted score.
+            assert_eq!(
+                every.keys().collect::<Vec<_>>(),
+                title
+                    .keys()
+                    .chain(body.keys())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            );
+            for (id, score) in &every {
+                let want = 3.0 * title.get(id).unwrap_or(&0.0) + body.get(id).unwrap_or(&0.0);
+                assert!(
+                    (want - score).abs() < 1e-4,
+                    "row {id}: {score} is not {want}"
+                );
+                assert!(allowed.is_none() || id % 2 == 0);
+            }
+            let top = found(&dataset, weighted.clone(), Some(10), allowed).await;
+            assert_true_top_10(&top, &every);
+        }
+    }
+    // The probe is not vacuous: the weight moves rows.
+    assert!(
+        texts
+            .iter()
+            .any(|[title, body]| title.contains("alpha") && !body.contains("alpha"))
+    );
+}
+
+/// A string array indexed with one document per element: a match never spans
+/// two elements, a row with several matching elements is returned once for
+/// each of them, and a row mask applies.
+#[tokio::test]
+async fn string_array_indexed_per_element_never_matches_across_two_elements() {
+    let tags: [&[&str]; 5] = [
+        &["alpha gamma", "beta delta"],
+        &["alpha beta", "gamma"],
+        &["alpha", "beta"],
+        &["beta alpha", "alpha beta alpha"],
+        &["omega"],
+    ];
+    let field = Arc::new(Field::new("item", DataType::Utf8, false));
+    let offsets = OffsetBuffer::from_lengths(tags.iter().map(|row| row.len()));
+    let values = StringArray::from(
+        tags.iter()
+            .flat_map(|row| row.iter().copied())
+            .collect::<Vec<_>>(),
+    );
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("tags", DataType::List(field.clone()), false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from_iter_values(0..5)),
+            Arc::new(ListArray::new(field, offsets, Arc::new(values), None)),
+        ],
+    )
+    .unwrap();
+    let path = directory("tags").join("tags.lance");
+    let mut dataset = Dataset::write(
+        RecordBatchIterator::new(vec![Ok(batch)], schema),
+        path.to_str().unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    dataset
+        .create_index(
+            &["tags"],
+            IndexType::Inverted,
+            Some("tags_fts".into()),
+            &InvertedIndexParams::default()
+                .with_position(false)
+                .document_granularity(DocumentGranularity::ListElement),
+            false,
+        )
+        .await
+        .unwrap();
+    let ask = |operator: Operator| {
+        FtsQuery::Match(
+            MatchQuery::new("alpha beta".into())
+                .with_column(Some("tags".into()))
+                .with_operator(operator),
+        )
+    };
+    let rows = async |query: FtsQuery, allowed: Option<&RowAddrTreeMap>| {
+        let mut scan = dataset.scan();
+        scan.prefilter(true).with_row_id();
+        if let Some(allowed) = allowed {
+            scan.with_row_id_prefilter(RowAddrMask::from_allowed(allowed.clone()));
+        }
+        scan.full_text_search(FullTextSearchQuery::new_query(query))
+            .unwrap();
+        let batch = scan.try_into_batch().await.unwrap();
+        assert!(batch.column_by_name("_doc_index").is_some());
+        let ids = batch["id"].as_any().downcast_ref::<Int64Array>().unwrap();
+        ids.values().to_vec()
+    };
+    // Rows 1 and 3 hold both words in one element; rows 0 and 2 only across
+    // two. A row is returned once for each element that matches: row 3 twice.
+    let mut all = rows(ask(Operator::And), None).await;
+    all.sort_unstable();
+    assert_eq!(all, [1, 3, 3]);
+    let mut any = rows(ask(Operator::Or), None).await;
+    any.sort_unstable();
+    any.dedup();
+    assert_eq!(any, [0, 1, 2, 3]);
+    let mut masked = RowAddrTreeMap::new();
+    let mut scan = dataset.scan();
+    scan.project(&["id"]).unwrap().with_row_id();
+    let batch = scan.try_into_batch().await.unwrap();
+    let ids = batch["id"].as_any().downcast_ref::<Int64Array>().unwrap();
+    let row_ids = batch["_rowid"]
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap();
+    for (id, row) in ids.values().iter().zip(row_ids.values()) {
+        if *id != 1 {
+            masked.insert(*row);
+        }
+    }
+    let masked = rows(ask(Operator::And), Some(&masked)).await;
+    assert_eq!(masked, [3, 3]);
 }

@@ -1522,6 +1522,14 @@
         "tier": "quick",
         "seconds": 1.0
       },
+      "full:fyrr-reader:test:lance_pin/string_array_indexed_per_element_never_matches_across_two_elements": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-reader:test:lance_pin/weighted_attribute_query_returns_the_true_top_10_on_three_segments_and_under_a_mask": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
       "full:fyrr-reader:test:lance_pin/bm25_global_statistics_deletions_merge_and_rebuild": {
         "tier": "quick",
         "seconds": 0.062
