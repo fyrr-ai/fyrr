@@ -15,6 +15,41 @@ export const navigation = [
     ]
   ],
   [
+    "Guides",
+    [
+      [
+        "guides/testing.md",
+        "Test against local storage",
+        "A fyrr on a folder, in a temp directory, gone when the test ends."
+      ],
+      [
+        "guides/vector-search.md",
+        "Vector search",
+        "Bring your own vectors. Pick the distance once."
+      ],
+      [
+        "guides/full-text-search.md",
+        "Full-text search",
+        "Words, stems and highlights."
+      ],
+      [
+        "guides/hybrid-search.md",
+        "Hybrid search with fusion",
+        "Two lanes, one ranking, and a thumb on the scale."
+      ],
+      [
+        "guides/permissions.md",
+        "Permissions on written documents",
+        "Each row names who may read it. The rest never see it."
+      ],
+      [
+        "guides/bulk-loading.md",
+        "Bulk loading",
+        "Batches in, a count out, and a safe retry."
+      ]
+    ]
+  ],
+  [
     "Run it",
     [
       [

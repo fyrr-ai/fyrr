@@ -13,8 +13,10 @@ on:
       - "!site/**"
       - "!**/*.md"
       - "!.github/ISSUE_TEMPLATE/**"
-      # Quickstart Markdown is test input.
+      # Quickstart and guide Markdown is test input.
       - "examples/quickstart/**"
+      - "examples/guides/**"
+      - "docs/guides/**"
   pull_request:
     paths:
       - "**"
@@ -23,6 +25,8 @@ on:
       - "!**/*.md"
       - "!.github/ISSUE_TEMPLATE/**"
       - "examples/quickstart/**"
+      - "examples/guides/**"
+      - "docs/guides/**"
   workflow_dispatch:
   workflow_call:
 
@@ -55,14 +59,15 @@ jobs:
           persist-credentials: false
           fetch-depth: 2
 
-      - name: Check whether the change only touches the quickstart
+      - name: Check whether the change only touches the quickstart or the guides
         id: scope
         if: (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           if [[ "$(git rev-parse --verify HEAD^1)" == "$BASE_SHA" ]] &&
-             git diff --quiet "$BASE_SHA" HEAD -- . ':(exclude,glob)examples/quickstart/**'; then
+             git diff --quiet "$BASE_SHA" HEAD -- . ':(exclude,glob)examples/quickstart/**' \
+               ':(exclude,glob)examples/guides/**' ':(exclude,glob)docs/guides/**'; then
             echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
           fi
 
@@ -128,7 +133,7 @@ jobs:
             python_lib="$(connectors/.venv/bin/python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')"
             export LD_LIBRARY_PATH="$python_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             export FYRR_CI_PREBUILT=1
-            args+=("--step=quickstart example (local storage)")
+            args+=("--step=quickstart example (local storage)" "--step=guides (local storage)")
           fi
           mkdir -p target/ci-measurements
           /usr/bin/time -v -o target/ci-measurements/ci.time scripts/ci "${args[@]}"

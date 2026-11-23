@@ -1,0 +1,78 @@
+# Starts a private fyrr for the guides in docs/guides and exports what their
+# commands use. Source it from the repository root, in bash, with `fyrr` on
+# PATH (see the quickstart), and call `fyrr_stop` when you are done:
+#
+#   source examples/guides/start
+#
+# It makes a private temporary directory for the storage, the reader mirror
+# and the logs; copies examples/guides/fyrr.toml into it with that directory
+# and three free loopback ports; makes the secrets; publishes the API keys;
+# and starts the toy embeddings service, `fyrr writer serve` and
+# `fyrr reader serve`. It exports FYRR_CONFIG, WRITER and READER (the base URLs
+# of the write and read API) and the keys WRITE_KEY, ADMIN_KEY, READ_KEY and
+# BOB_KEY. It uses no Docker and no network beyond loopback.
+#
+# shellcheck shell=bash
+
+FYRR_GUIDE_DIR="$(mktemp -d)"
+FYRR_GUIDE_PIDS=()
+fyrr_stop() {
+  # The writer finishes its commit and releases the lease on SIGTERM.
+  if ((${#FYRR_GUIDE_PIDS[@]})); then
+    kill "${FYRR_GUIDE_PIDS[@]}" 2>/dev/null || true
+    wait "${FYRR_GUIDE_PIDS[@]}" 2>/dev/null || true
+    FYRR_GUIDE_PIDS=()
+  fi
+  rm -rf "$FYRR_GUIDE_DIR"
+}
+
+# Three loopback ports that were free a moment ago.
+read -r toy_port writer_port reader_port < <(python3 - <<'PY'
+import socket
+sockets = [socket.socket() for _ in range(3)]
+for s in sockets:
+    s.bind(("127.0.0.1", 0))
+print(*(s.getsockname()[1] for s in sockets))
+PY
+)
+
+sed -e "s|file:///home/you/.local/share/fyrr/guides|file://$FYRR_GUIDE_DIR/index|" \
+  -e "s|/home/you/.cache/fyrr/guides|$FYRR_GUIDE_DIR/mirror|" \
+  -e "s|127.0.0.1:8089|127.0.0.1:$toy_port|" \
+  -e "s|127.0.0.1:8090|127.0.0.1:$reader_port|g" \
+  -e "s|127.0.0.1:8091|127.0.0.1:$writer_port|" \
+  examples/guides/fyrr.toml >"$FYRR_GUIDE_DIR/fyrr.toml"
+
+secret() { echo "fyrr_key_$(openssl rand -hex 32)"; }
+export FYRR_CONFIG="$FYRR_GUIDE_DIR/fyrr.toml"
+export FYRR_IDENTITY_KEY="$(openssl rand -hex 32)" FYRR_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+export FYRR_OPERATOR_TOKEN="$(openssl rand -hex 16)"
+export WRITE_KEY="$(secret)" ADMIN_KEY="$(secret)" READ_KEY="$(secret)" BOB_KEY="$(secret)"
+export WRITER="http://127.0.0.1:$writer_port" READER="http://127.0.0.1:$reader_port"
+
+fyrr config check >/dev/null
+fyrr writer keys >/dev/null
+
+python3 examples/quickstart/toy-embeddings.py "$toy_port" >"$FYRR_GUIDE_DIR/toy.log" &
+FYRR_GUIDE_PIDS+=("$!")
+fyrr writer serve >"$FYRR_GUIDE_DIR/writer.log" 2>&1 &
+FYRR_GUIDE_PIDS+=("$!")
+
+# The reader serves the configured namespace, so it needs a first write.
+for _ in $(seq 1 100); do
+  curl -fsS -o /dev/null "$WRITER/v1/namespaces/main/documents" \
+    -H "Authorization: Bearer $WRITE_KEY" -H "Content-Type: application/json" \
+    -d '{"upserts":[{"id":"hello","text":"A first document."}]}' 2>/dev/null && break
+  sleep 0.2
+done
+fyrr reader serve >"$FYRR_GUIDE_DIR/reader.log" 2>&1 &
+FYRR_GUIDE_PIDS+=("$!")
+for _ in $(seq 1 100); do
+  curl -fsS -o /dev/null "$READER/readyz" 2>/dev/null && break
+  sleep 0.2
+done
+curl -fsS -o /dev/null "$READER/readyz" || {
+  cat "$FYRR_GUIDE_DIR"/*.log >&2
+  echo "fyrr did not start" >&2
+  false
+}
