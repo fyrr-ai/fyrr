@@ -312,10 +312,14 @@ reader. To keep a namespace on few readers, route on the namespace.
   request on `/v1/namespaces/...` (`POST .../documents`, `PATCH` and `DELETE`
   on `/v1/namespaces/{namespace}`) to the writer listener. A rule that sends
   every non-`GET` request to the writer would send the search routes there;
-  they are `POST` and belong to the readers. Send `/mcp` to the readers.
+  they are `POST` and belong to the readers.
   `GET` and `HEAD /v1/namespaces`, the namespace list, has no namespace
   segment: send it to any reader without hashing. The writer listener answers
   it `404`.
+- **`/mcp` has no namespace in its path.** A reader serves `/mcp` from the
+  namespace in its own configuration, so never hash it into a shared pool of
+  readers. Route `/mcp` by host, or give each configured namespace its own
+  pool of readers.
 - **No coordination.** fyrr adds no router process: the hashing is the load
   balancer's. Readers never coordinate and never learn which namespaces
   another reader serves; each decides from the requests it receives.
@@ -332,6 +336,8 @@ holds only with API keys. A request authenticated with OIDC is served only for
 the namespace the reader is configured for (`namespace.name`); for any other
 namespace the reader answers `503`, so it cannot take over another reader's
 namespaces. With OIDC, route each namespace to readers configured for it.
+An OIDC caller also holds no `list` or `admin` role, so the namespace list,
+the namespace report and `recall` answer `403` at the role check.
 
 ## Scheduling
 
