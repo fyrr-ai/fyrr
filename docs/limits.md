@@ -12,10 +12,16 @@
 >   the write route and the HTTP listener) are not constants; they are in the
 >   pages listed [below the table](#limits-outside-the-table).
 
-A request over a limit is refused with `invalid_argument` (`400` over HTTP),
-and nothing is clamped, unless the meaning says otherwise. Sizes are in bytes
-unless it says codepoints. A row with `default` in its meaning is not a bound;
-it is what applies when the request names none.
+What a request over a limit gets depends on the route, and the table does not
+repeat it: the codes are in the [MCP tool errors](mcp-tools.md#errors), the
+[HTTP errors](http-api.md#errors) and the [write errors](http-api.md#write-documents).
+For example, a search argument over its limit is `400 invalid_argument`, a write
+row over its size is `413 row_too_large`, a listing of too many names is
+`400 too_many_namespaces` and a filter write that matches too many documents is
+`409 rejected`. A connector document or batch over one of the first twelve
+limits is invalid ([How fyrr works](architecture.md#publication)). Sizes are in
+bytes unless it says codepoints. A row with `default` in its meaning is not a
+bound; it is what applies when the request names none.
 
 | Constant | Value | Meaning |
 | --- | --- | --- |

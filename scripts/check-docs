@@ -590,8 +590,11 @@ def check_guarantees():
             for test in tests:
                 path, _, name = test.partition("::")
                 file = ROOT / path
-                if not file.is_file() or not re.search(rf"\bfn {name}\b", file.read_text()):
-                    fail(where, f"test `{test}` does not exist")
+                attributes = r"#\[(?:tokio::)?test\][^\n]*\n(?:\s*#\[[^\n]*\n)*\s*"
+                if not file.is_file() or not re.search(
+                    rf"{attributes}(?:async )?fn {name}\b", file.read_text()
+                ):
+                    fail(where, f"`{test}` is not a test")
 
 
 def check_limits():

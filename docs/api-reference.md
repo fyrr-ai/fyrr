@@ -11,9 +11,10 @@
 >   The reader serves it on `[reader.http]`; the writer serves it on the
 >   listener of `fyrr writer serve` that the section names.
 > - The behavior of a route is in [HTTP JSON API](http-api.md); this page is
->   the index to it. Errors are [one table](http-api.md#errors) for the reader routes and
->   [one](http-api.md#write-documents) for the write route; every `default`
->   answer of the file is `{"error":"<code>"}` with an HTTP status.
+>   the index to it. The reader routes answer errors as
+>   `{"error":"<code>"}` ([codes](http-api.md#errors)) and the write route
+>   likewise ([codes](http-api.md#write-documents)); `PATCH` and `DELETE` answer a
+>   SCIM error (`application/scim+json`).
 
 Every route but `GET /metrics` takes `Authorization: Bearer <token>`: an
 [API key](identity.md#identityapi_keys), or where a section says so an OIDC
@@ -124,7 +125,7 @@ Upsert, patch and delete documents, all or none; or change the schema
 
 Served by: writer, on the administration listener (`[writer.serve.admin]`), with `[namespace.write_api]`.
 
-Needs: Needs an API key with the `write` role.
+Needs: Needs an API key with the `write` role. A request with `conditions`, `delete_where` or `patch_where` needs the `admin` role besides `write`.
 
 Body: `WriteRequest`. Answer: `WriteResponse`. Details:
 [Write documents](http-api.md#write-documents); what the answer promises is in
