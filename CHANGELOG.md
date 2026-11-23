@@ -28,6 +28,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The JSON `query` route takes `query_match`, which makes a text ranking
+  require all of its terms, and `contains`, which requires a hit to hold all
+  or any tokens of a string attribute with a full-text index. Both work next to
+  `filter`, with a text and with a vector ranking, and under the caller's
+  permissions. An attribute indexed with the `ngram` tokenizer is refused:
+  prefix matching waits for a newer Lance. The MCP `search` tool does not take
+  them.
+
 - The `query` route of the HTTP API takes `sub_queries`: 1 to 16 searches in
   one request, each with its own `filter`, ranking (`query` text, `vector`, or
   both) and `limit`, read from one published version. Their hits follow one

@@ -48,6 +48,10 @@ impl ToolCall {
         fusion: Option<fyrr_core::mcp::Fusion>,
         rerank: Option<fyrr_core::mcp::RerankChoice>,
         sub_queries: Option<Vec<fyrr_core::mcp::SubQuery>>,
+        matching: (
+            Option<fyrr_core::mcp::TermMatch>,
+            Option<Vec<fyrr_core::mcp::Contains>>,
+        ),
     ) -> Result<Self> {
         let mut search: SearchInput = serde_json::from_value(args).map_err(|_| InvalidArgument)?;
         (
@@ -55,7 +59,8 @@ impl ToolCall {
             search.fusion,
             search.rerank,
             search.sub_queries,
-        ) = (fields, fusion, rerank, sub_queries);
+            (search.query_match, search.contains),
+        ) = (fields, fusion, rerank, sub_queries, matching);
         search.validate().map_err(|_| InvalidArgument)?;
         if let Some(fields) = &search.fields {
             fields.validate().map_err(|_| InvalidArgument)?;

@@ -35,6 +35,8 @@ pub mod mcp {
     /// page deeper than this is a scan by the document key instead.
     pub const MAX_LISTING_WINDOW: u32 = 1_000;
     pub const MAX_QUERIES: usize = 16;
+    /// The most `contains` conditions of one query.
+    pub const MAX_CONTAINS: usize = 16;
     /// The rank constant of a reciprocal rank fusion that names none.
     pub const DEFAULT_RANK_CONSTANT: u32 = 60;
     /// The largest weight of a fusion: with a rank constant of 1 the score of a

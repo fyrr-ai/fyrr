@@ -3857,6 +3857,162 @@ async fn identity_write_api_answers_sub_queries_with_their_own_filters_limits_an
 
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_narrows_a_query_by_the_tokens_of_a_full_text_attribute_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    embed(&root, &["alpha", "bravo", "alpha beta"]);
+    let writer = Writer::start(&config, &root, address).await;
+    // `d` meets every condition below but the caller may not read it.
+    let rows = [
+        ("a", "alpha", "red shoes", "red running shoes", "usr:x"),
+        ("b", "alpha", "red hat", "blue hat", "usr:x"),
+        ("c", "bravo", "blue shoes", "red shoes", "usr:x"),
+        ("d", "alpha", "red shoes", "red shoes", "usr:other"),
+        ("e", "alpha beta", "green hat", "green hat", "usr:x"),
+    ];
+    let upserts: Vec<Value> = rows
+        .iter()
+        .map(|(id, text, title, note, reader)| {
+            json!({"id": id, "text": text, "title": title, "note": note, "code": title,
+                   "readers": [reader]})
+        })
+        .collect();
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({
+                    "settings": {
+                        "attributes": {"title": "string", "note": "string", "code": "string",
+                                       "price": "float"},
+                        "attribute_indexes": {
+                            "title": {"full_text": true},
+                            "note": {"full_text": true},
+                            "code": {"full_text": true, "analyzer": {
+                                "tokenizer": "ngram", "ngram_min_length": 1,
+                                "ngram_max_length": 8, "prefix_only": true}},
+                        },
+                    },
+                    "upserts": upserts,
+                })
+            )
+            .await
+            .0,
+        200
+    );
+    let reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let with = |mut body: Value, contains: Value| {
+        body["output"] = json!("metadata");
+        body["contains"] = contains;
+        body
+    };
+    let found = async |body: Value, contains: Value| {
+        let mut found = roots(&ask(&reader, with(body, contains)).await);
+        found.sort();
+        found
+    };
+    let refused = async |body: Value, contains: Value| {
+        assert_eq!(
+            ask(&reader, with(body, contains)).await,
+            (400, json!({"error": "invalid_argument"})),
+        );
+    };
+    let text = json!({"query": "alpha"});
+    let by_vector = json!({"vector": vector(7, 1024)});
+
+    // Both rankings return the rows the caller may read that meet the
+    // conditions, and no others: not `b`, and not `d`, which is unreadable.
+    for ranking in [&text, &by_vector] {
+        let all = json!([{"attribute": "note", "all": "red shoes"}]);
+        assert_eq!(found(ranking.clone(), all).await, ["a", "c"]);
+        let any = json!([{"attribute": "note", "any": "hat shoes"}]);
+        assert_eq!(found(ranking.clone(), any).await, ["a", "b", "c", "e"]);
+        let none = json!([{"attribute": "note", "all": "hat shoes"}]);
+        assert!(found(ranking.clone(), none).await.is_empty());
+        // Conditions are joined by AND.
+        let both = json!([
+            {"attribute": "note", "any": "red"},
+            {"attribute": "title", "all": "red shoes"},
+        ]);
+        assert_eq!(found(ranking.clone(), both).await, ["a"]);
+    }
+    // A condition also narrows what a filter selects.
+    let filtered = json!({"query": "alpha",
+                          "filter": {"field": "title", "op": "starts_with", "value": "red"}});
+    assert_eq!(
+        found(filtered, json!([{"attribute": "note", "any": "shoes"}])).await,
+        ["a"]
+    );
+
+    // A text ranking can require all terms: only `e` holds both of them in its
+    // lexical lane, which is the one `query_match` narrows.
+    let lexical = async |query_match: Value| {
+        let mut body = json!({"query": "alpha beta", "output": "metadata",
+                              "fields": {"scores": true}});
+        if !query_match.is_null() {
+            body["query_match"] = query_match;
+        }
+        let answer = ask(&reader, body).await;
+        let mut lexical: Vec<String> = answer.1["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|hit| hit.get("lexical_score").is_some_and(|s| !s.is_null()))
+            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+            .collect();
+        lexical.sort();
+        lexical
+    };
+    assert_eq!(lexical(json!("all")).await, ["e"]);
+    assert_eq!(lexical(json!("any")).await, ["a", "b", "e"]);
+    assert_eq!(lexical(Value::Null).await, ["a", "b", "e"]);
+
+    // An n-gram index holds the n-grams of a value as alternatives, so it does
+    // not answer a condition on tokens; there is no `prefix` member. The
+    // attribute needs a full-text index, and a condition has one text.
+    for contains in [
+        json!([{"attribute": "code", "all": "red sh"}]),
+        json!([{"attribute": "code", "any": "red sh"}]),
+        json!([{"attribute": "note", "all": "red sh", "prefix": true}]),
+        json!([{"attribute": "price", "all": "red"}]),
+        json!([{"attribute": "missing", "all": "red"}]),
+        json!([{"attribute": "note"}]),
+        json!([{"attribute": "note", "all": "red", "any": "blue"}]),
+        json!([{"attribute": "note", "all": " "}]),
+        json!([]),
+    ] {
+        refused(text.clone(), contains).await;
+    }
+    // A listing has no ranking to narrow, `query_match` needs a text query, and
+    // a sub-query has a ranking of its own.
+    refused(
+        json!({"order_by": [{"field": "root_id", "direction": "asc"}]}),
+        json!([{"attribute": "note", "all": "red"}]),
+    )
+    .await;
+    refused(
+        json!({"sub_queries": [{"query": "alpha", "limit": 3}]}),
+        json!([{"attribute": "note", "all": "red"}]),
+    )
+    .await;
+    for body in [
+        json!({"vector": vector(7, 1024), "output": "metadata", "query_match": "all"}),
+        json!({"sub_queries": [{"query": "alpha", "limit": 3}], "query_match": "all"}),
+    ] {
+        assert_eq!(
+            ask(&reader, body).await,
+            (400, json!({"error": "invalid_argument"}))
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_reranks_as_a_query_asks_within_the_spend_limit_on_storage() {
     let provider = super::rerank::Provider::open().await;
     let (config, root) = setup_on(Backend::Local);
