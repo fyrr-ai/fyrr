@@ -1606,6 +1606,10 @@
         "tier": "full",
         "seconds": 9.929
       },
+      "full:fyrr:test:dense_path/namespace_copy::local_copy_is_one_version_independent_and_completes_after_interruption": {
+        "tier": "full",
+        "seconds": 120.0
+      },
       "full:fyrr:test:dense_path/coordination::coordination_live_holder_is_busy_then_fenced_after_expiry_on_local_storage": {
         "tier": "quick",
         "seconds": 25.262

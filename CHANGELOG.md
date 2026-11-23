@@ -28,6 +28,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `writer namespace copy --to-config FILE` copies the configured namespace, as
+  the one version it serves, into the `[storage]` of another configuration file
+  (another bucket or region) under the same name. The copy is independent and
+  writable and finds the same documents with the same access. A different
+  `identity.hashing_key` fails with `hashing_key_mismatch`; a copy in the same
+  storage, which would need another name and so other hashes, is not supported
+  (`copy_same_storage`); an interrupted copy leaves no namespace and the same
+  command completes it. See [Backup and copy](docs/operations.md#backup-and-copy).
 - `filter` tests the text of a `string` with `starts_with`, `contains`,
   `matches` (a regular expression) and the negations `not_starts_with`,
   `not_contains` and `not_matches`. A prefix is answered from the B-tree of a
