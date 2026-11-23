@@ -319,7 +319,20 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
             WriterCommand::Namespace {
                 action: NamespaceAction::Create,
             } => runtime_command(async {
-                crate::commit::create(config)
+                let mut settings = crate::commit::namespace_settings(config);
+                // A namespace created before its title had a full-text index
+                // keeps none: the index the file only derives is not asked
+                // for again, one the file sets is, and a mismatch is refused.
+                if !loaded.sets_attribute_index("title")
+                    && fyrr_reader::storage::with_namespace_settings(config)
+                        .await?
+                        .is_some_and(|recorded| {
+                            !recorded.namespace.attribute_indexes.contains_key("title")
+                        })
+                {
+                    settings.attribute_indexes.remove("title");
+                }
+                crate::commit::create_with(config, settings)
                     .await
                     .map(|()| serde_json::json!({"created":true}))
             }),

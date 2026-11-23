@@ -304,6 +304,23 @@ async fn incremental_namespace_created_before_the_connector_columns_keeps_its_la
     let (_, manifest) = publication(&worker).await;
     assert_eq!(manifest.schema_version.to_string(), "4.1");
     command(&worker, &["writer", "namespace", "create"]);
+    // A title index the file asks for is not one the namespace has.
+    let text = std::fs::read_to_string(&worker).unwrap();
+    std::fs::write(
+        &worker,
+        format!("{text}\n[namespace.attribute_indexes.title]\nfull_text = true\n"),
+    )
+    .unwrap();
+    let refused = host_command(&worker)
+        .args(["writer", "namespace", "create"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("namespace_settings_fixed"),
+        "{refused:?}"
+    );
+    std::fs::write(&worker, text).unwrap();
 
     // Filtering by the fields is what the new layout adds.
     read_fields(&worker, json!({"field":"root_id","op":"eq","value":"a"}));

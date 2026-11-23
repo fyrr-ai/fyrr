@@ -1507,6 +1507,17 @@ pub struct LoadedConfig {
     raw: toml::Table,
 }
 
+impl LoadedConfig {
+    /// Whether the file itself has an entry for `attribute` in
+    /// `[namespace.attribute_indexes]`, not a default derived from other keys.
+    pub fn sets_attribute_index(&self, attribute: &str) -> bool {
+        self.raw
+            .get("namespace")
+            .and_then(|namespace| namespace.get("attribute_indexes"))
+            .is_some_and(|indexes| indexes.get(attribute).is_some())
+    }
+}
+
 /// Where an effective value came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
