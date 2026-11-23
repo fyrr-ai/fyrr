@@ -182,6 +182,16 @@
           "maximum": 4096,
           "default": 550
         },
+        "dense_metric": {
+          "$ref": "#/$defs/DenseMetric",
+          "description": "The distance the dense index and the rescoring measure, fixed for the\nlife of the namespace: `cosine`, `squared_l2` or `dot`.",
+          "default": "cosine"
+        },
+        "dense_element": {
+          "$ref": "#/$defs/DenseElement",
+          "description": "The element type the vectors are stored in, fixed for the life of the\nnamespace: `f16` or `f32`.",
+          "default": "f16"
+        },
         "attributes": {
           "type": "object",
           "additionalProperties": {
@@ -418,7 +428,7 @@
             "max_candidates",
             "min_gap"
           ],
-          "description": "Expand when the exact cosine gap at the retained boundary is small."
+          "description": "Expand when the exact distance gap, in the units of the namespace's\nmetric, at the retained boundary is small."
         }
       ]
     },
@@ -449,6 +459,23 @@
         }
       },
       "description": "Operator composition; its values are bound into the retrieval policy identity."
+    },
+    "DenseMetric": {
+      "type": "string",
+      "enum": [
+        "cosine",
+        "squared_l2",
+        "dot"
+      ],
+      "description": "The distance of the dense index. Lance's IVF_RQ index supports all three on\n16-bit and 32-bit float vectors. Its `_distance` is lower for a nearer row:\n`cosine` is one minus the cosine similarity, `squared_l2` the squared\nEuclidean distance and `dot` one minus the dot product."
+    },
+    "DenseElement": {
+      "type": "string",
+      "enum": [
+        "f16",
+        "f32"
+      ],
+      "description": "The element type of a stored vector. A 16-bit float halves the vector\ncolumn; a 32-bit one keeps the numbers the caller sent."
     },
     "AttributeType": {
       "oneOf": [

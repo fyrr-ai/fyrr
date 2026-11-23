@@ -62,6 +62,14 @@
       "minimum": 0,
       "description": "Target rows per partition of the vector index."
     },
+    "dense_metric": {
+      "$ref": "#/$defs/DenseMetric",
+      "description": "The distance of the vector index and the rescoring; absent: cosine."
+    },
+    "dense_element": {
+      "$ref": "#/$defs/DenseElement",
+      "description": "The element type of the stored vectors; absent: 16-bit floats."
+    },
     "retrieval_policy_digest": {
       "type": "string",
       "description": "Digest of the retrieval policy, including the result composition."
@@ -345,6 +353,23 @@
         "with_position"
       ],
       "description": "FTS analyzer settings, part of the publication identity."
+    },
+    "DenseMetric": {
+      "type": "string",
+      "enum": [
+        "cosine",
+        "squared_l2",
+        "dot"
+      ],
+      "description": "The distance of the dense index. Lance's IVF_RQ index supports all three on\n16-bit and 32-bit float vectors. Its `_distance` is lower for a nearer row:\n`cosine` is one minus the cosine similarity, `squared_l2` the squared\nEuclidean distance and `dot` one minus the dot product."
+    },
+    "DenseElement": {
+      "type": "string",
+      "enum": [
+        "f16",
+        "f32"
+      ],
+      "description": "The element type of a stored vector. A 16-bit float halves the vector\ncolumn; a 32-bit one keeps the numbers the caller sent."
     },
     "IndexIdentity": {
       "type": "object",
