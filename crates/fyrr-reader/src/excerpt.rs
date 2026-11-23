@@ -20,14 +20,17 @@ pub fn fts_params(namespace: &NamespaceConfig) -> InvertedIndexParams {
         .ascii_folding(namespace.fts_ascii_folding)
 }
 
-/// Sets the match ranges of `excerpt`: its tokens, as the index analyzer cuts
-/// and reduces them, that equal a token of `query`. Selection stays literal.
+/// Sets the match ranges of `excerpt`, a passage of `record`: its tokens, as
+/// the index analyzer cuts and reduces them, that equal a token of `query`. A
+/// token the passage cuts, because the record goes on with a letter or digit,
+/// is not a token of the index and is not marked. Selection stays literal.
 /// shortcut: it still looks for the query's literal words, so a passage with
 /// only a stemmed match may not be the one chosen; make selection use the
 /// analyzer when that costs hits.
 pub(crate) fn highlight(
     tokenizer: &mut dyn LanceTokenizer,
     query: &str,
+    record: &str,
     excerpt: &mut Excerpt,
 ) -> Result<(), String> {
     let mut terms = HashSet::new();
@@ -42,12 +45,24 @@ pub(crate) fn highlight(
         };
         count
     };
+    // shortcut: the namespace's tokenizer is `simple`, which splits a token at
+    // the first character that is not alphanumeric; use the tokenizer of the
+    // index here when a namespace can choose another.
+    let before = (excerpt.start > 0)
+        .then(|| record.chars().nth(excerpt.start as usize - 1))
+        .flatten();
+    let after = record.chars().nth(excerpt.end as usize);
+    let cut_before = before.is_some_and(char::is_alphanumeric);
+    let cut_after = after.is_some_and(char::is_alphanumeric);
     let mut ranges = Vec::new();
     let mut stream = tokenizer.token_stream_for_doc(&excerpt.text);
     while ranges.len() < MAX_HIGHLIGHTS
         && let Some(token) = stream.try_next()?
     {
-        if !terms.contains(&token.text) {
+        if !terms.contains(&token.text)
+            || (token.offset_from == 0 && cut_before)
+            || (token.offset_to == excerpt.text.len() && cut_after)
+        {
             continue;
         }
         let (Some(head), Some(body)) = (

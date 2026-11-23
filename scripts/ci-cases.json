@@ -87,6 +87,18 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-reader:lib:fyrr_reader/excerpt::tests::highlights_follow_the_analyzer_in_codepoints_of_the_record": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-reader:lib:fyrr_reader/excerpt::tests::highlights_skip_a_token_the_passage_cuts": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-reader:lib:fyrr_reader/excerpt::tests::highlights_are_bounded": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-reader:lib:fyrr_reader/generation::tests::handover_reclaims_session_cache_and_admits_a_larger_publication": {
         "tier": "quick",
         "seconds": 0.001
@@ -2008,6 +2020,10 @@
       "full:fyrr:test:dense_path/rerank::tools_rerank_settings_come_from_the_namespace_on_storage": {
         "tier": "full",
         "seconds": 10.0
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_highlights_the_tokens_an_excerpt_matches_on_storage": {
+        "tier": "full",
+        "seconds": 40
       }
     },
     "children": {

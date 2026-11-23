@@ -93,51 +93,103 @@ fn excerpt_cases() {
     );
 }
 
-fn highlights(params: InvertedIndexParams, text: &str, start: u32, query: &str) -> Vec<[u32; 2]> {
-    let mut tokenizer = params
+/// The analyzer a test names in full: Lance's defaults stem, fold and drop stop words.
+fn analyzer(stem: bool, fold: bool) -> InvertedIndexParams {
+    InvertedIndexParams::default()
         .base_tokenizer("simple".into())
         .lower_case(true)
-        .build()
-        .unwrap();
+        .stem(stem)
+        .ascii_folding(fold)
+        .remove_stop_words(false)
+}
+
+/// The ranges of `query` in the passage `[start, end)` codepoints of `record`.
+fn highlights(
+    params: InvertedIndexParams,
+    record: &str,
+    (start, end): (usize, usize),
+    query: &str,
+) -> Vec<[u32; 2]> {
+    let mut tokenizer = params.build().unwrap();
     let mut excerpt = Excerpt {
-        text: text.into(),
-        start,
-        end: start + u32::try_from(text.chars().count()).unwrap(),
+        text: record.chars().skip(start).take(end - start).collect(),
+        start: u32::try_from(start).unwrap(),
+        end: u32::try_from(end).unwrap(),
         highlights: None,
     };
-    highlight(tokenizer.as_mut(), query, &mut excerpt).unwrap();
+    highlight(tokenizer.as_mut(), query, record, &mut excerpt).unwrap();
     excerpt.highlights.unwrap()
 }
 
 #[test]
 fn highlights_follow_the_analyzer_in_codepoints_of_the_record() {
-    // Codepoints: 😀 0, Runs 2-5, café 7-10, running 13-19, RUNNER 21-26; the
-    // excerpt starts at record offset 100.
-    let text = "😀 Runs café, running RUNNER";
-    let plain = InvertedIndexParams::default();
-    let stem = InvertedIndexParams::default().stem(true);
+    // Codepoints: 😀 0, Runs 2-5, café 7-10, running 13-19, RUNNER 21-26.
+    let record = "😀 Runs café, running RUNNER";
+    let all = (0, 27);
     assert_eq!(
-        highlights(stem.clone(), text, 100, "run"),
-        [[102, 106], [113, 120]]
+        highlights(analyzer(true, false), record, all, "run"),
+        [[2, 6], [13, 20]]
     );
     assert_eq!(
-        highlights(plain.clone(), text, 100, "run"),
+        highlights(analyzer(false, false), record, all, "run"),
         Vec::<[u32; 2]>::new()
     );
-    assert_eq!(highlights(plain.clone(), text, 100, "runner"), [[121, 127]]);
-    // Folding matches a multi-byte letter and keeps the offsets of the original.
-    let fold = InvertedIndexParams::default().ascii_folding(true);
     assert_eq!(
-        highlights(fold, text, 0, "cafe RUNNER"),
+        highlights(analyzer(false, false), record, all, "runner"),
+        [[21, 27]]
+    );
+    // Folding matches a multi-byte letter and keeps the offsets of the original.
+    assert_eq!(
+        highlights(analyzer(false, true), record, all, "cafe RUNNER"),
         [[7, 11], [21, 27]]
     );
-    assert_eq!(highlights(plain.clone(), text, 0, "café"), [[7, 11]]);
+    assert_eq!(
+        highlights(analyzer(false, false), record, all, "café"),
+        [[7, 11]]
+    );
+    // A passage reports offsets of the record, not of itself.
+    assert_eq!(
+        highlights(analyzer(true, false), record, (7, 27), "run"),
+        [[13, 20]]
+    );
+}
+
+#[test]
+fn highlights_skip_a_token_the_passage_cuts() {
+    let plain = || analyzer(false, false);
+    // `cat` of `catapult` is no token of the index, at either edge.
+    let record = "catapult cat";
+    assert_eq!(
+        highlights(plain(), record, (0, 3), "cat"),
+        Vec::<[u32; 2]>::new()
+    );
+    assert_eq!(highlights(plain(), record, (9, 12), "cat"), [[9, 12]]);
+    let record = "concat é";
+    assert_eq!(
+        highlights(plain(), record, (3, 6), "cat"),
+        Vec::<[u32; 2]>::new()
+    );
+    // Selection and highlight together: the first window of the record.
+    let mut excerpt = select("catapult cat", "cat", 3);
+    assert_eq!((excerpt.start, excerpt.text.as_str()), (0, "cat"));
+    highlight(
+        plain().build().unwrap().as_mut(),
+        "cat",
+        "catapult cat",
+        &mut excerpt,
+    )
+    .unwrap();
+    assert_eq!(excerpt.highlights, Some(Vec::new()));
+    // A token set off by punctuation or a space is whole.
+    let record = "a cat, b";
+    assert_eq!(highlights(plain(), record, (2, 5), "cat"), [[2, 5]]);
 }
 
 #[test]
 fn highlights_are_bounded() {
-    let text = "a ".repeat(MAX_HIGHLIGHTS + 50);
-    let ranges = highlights(InvertedIndexParams::default(), &text, 0, "a");
+    let record = "a ".repeat(MAX_HIGHLIGHTS + 50);
+    let end = record.chars().count();
+    let ranges = highlights(analyzer(false, false), &record, (0, end), "a");
     assert_eq!(ranges.len(), MAX_HIGHLIGHTS);
     assert_eq!(ranges[1], [2, 3]);
 }

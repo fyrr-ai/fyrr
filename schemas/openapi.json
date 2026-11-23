@@ -998,6 +998,11 @@
             "type": "boolean",
             "description": "Report the lexical score and the vector distance of each hit.",
             "default": false
+          },
+          "highlights": {
+            "type": "boolean",
+            "description": "Report the ranges of the query terms in each excerpt, as the index analyzer matches them.",
+            "default": false
           }
         },
         "description": "What a hit returns besides the document fields: the `fields` member of a\nJSON `query` request. `include` names the attributes to return, `exclude`\nthe ones to leave out of all of them (an empty list leaves out none). The\nvector of a row is returned only when `include` names `vector`."
@@ -2614,6 +2619,21 @@
             "type": "integer",
             "format": "uint32",
             "minimum": 0
+          },
+          "highlights": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "description": "With `fields.highlights`: the `[start, end)` ranges of the tokens that match the query, as the index analyzer cuts and reduces them, in the codepoints `start` and `end` count."
           }
         },
         "required": [
