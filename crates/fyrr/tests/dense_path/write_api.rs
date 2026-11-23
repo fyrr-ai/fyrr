@@ -2858,11 +2858,7 @@ async fn identity_write_api_highlights_the_tokens_an_excerpt_matches_on_storage(
         format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
     })
     .await;
-    let ask = async |query: &str, fields: Value| -> (u16, Value) {
-        let mut body = json!({"query": query, "vector": vector(0, 1024)});
-        if !fields.is_null() {
-            body["fields"] = fields;
-        }
+    let post = async |body: Value| -> (u16, Value) {
         let response = reader
             .client
             .post(format!("{}/v1/namespaces/dense-fixture/query", reader.base))
@@ -2875,6 +2871,13 @@ async fn identity_write_api_highlights_the_tokens_an_excerpt_matches_on_storage(
             response.status().as_u16(),
             response.json::<Value>().await.unwrap(),
         )
+    };
+    let ask = async |query: &str, fields: Value| {
+        let mut body = json!({"query": query, "vector": vector(0, 1024)});
+        if !fields.is_null() {
+            body["fields"] = fields;
+        }
+        post(body).await
     };
     let excerpt = |answer: (u16, Value)| {
         assert_eq!(answer.0, 200, "{}", answer.1);
@@ -2916,6 +2919,12 @@ async fn identity_write_api_highlights_the_tokens_an_excerpt_matches_on_storage(
         excerpt(ask("alpha", json!({"highlights": false})).await),
         plain
     );
+    // A hit without an excerpt has no text to mark and is no error.
+    let metadata = post(json!({"query": "alpha", "vector": vector(0, 1024),
+                               "output": "metadata", "fields": {"highlights": true}}))
+    .await;
+    assert_eq!(metadata.0, 200, "{}", metadata.1);
+    assert_eq!(metadata.1["hits"][0]["excerpt"], Value::Null);
     assert_eq!(
         ask("alpha", json!({"highlights": "yes"})).await,
         (400, json!({"error": "invalid_argument"}))

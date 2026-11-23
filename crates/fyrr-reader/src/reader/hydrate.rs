@@ -256,12 +256,13 @@ impl PreparedReader {
                 let mut tokenizer = crate::fts_params(&self.config.namespace)
                     .build()
                     .map_err(|_| ConfigurationInvalid)?;
-                let records = strings(
-                    rows.text_batch.as_ref().ok_or(StorageUnavailable)?,
-                    "searchable_text",
-                )?;
                 for (hit, (query, row_id)) in rendered.hits.iter_mut().zip(queries) {
+                    // A hit of another output has no text to read.
                     if let Some(excerpt) = &mut hit.excerpt {
+                        let records = strings(
+                            rows.text_batch.as_ref().ok_or(StorageUnavailable)?,
+                            "searchable_text",
+                        )?;
                         let row = rows.text_rows.get(&row_id).ok_or(StorageUnavailable)?;
                         crate::excerpt::highlight(
                             tokenizer.as_mut(),

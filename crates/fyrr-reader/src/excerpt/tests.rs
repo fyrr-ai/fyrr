@@ -97,6 +97,9 @@ fn excerpt_cases() {
 fn analyzer(stem: bool, fold: bool) -> InvertedIndexParams {
     InvertedIndexParams::default()
         .base_tokenizer("simple".into())
+        .max_token_length(Some(40))
+        .language("English")
+        .unwrap()
         .lower_case(true)
         .stem(stem)
         .ascii_folding(fold)
