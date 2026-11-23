@@ -15,7 +15,18 @@ cd "$ROOT"
 GUIDES=(testing vector-search full-text-search hybrid-search permissions bulk-loading)
 ((!$#)) || GUIDES=("$@")
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+DRIVER_PID=
+# Stop the guide's shell, whose own trap stops the services it started, then
+# remove the work directory. A signal to the runner ends in the same cleanup.
+cleanup() {
+  if [[ -n "$DRIVER_PID" ]]; then
+    kill "$DRIVER_PID" 2>/dev/null || true
+    wait "$DRIVER_PID" 2>/dev/null || true
+  fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+trap 'exit 143' TERM INT
 
 if [[ "${FYRR_CI_PREBUILT:-}" != 1 ]]; then
   cargo build --locked -p fyrr
@@ -28,12 +39,19 @@ for guide in "${GUIDES[@]}"; do
   # output with the ```text block after it.
   python3 - "$ROOT/docs/guides/$guide.md" "$WORK" <<'PY' || die "guides: $guide: cannot read the guide"
 import re
+import shlex
 import sys
 from pathlib import Path
 
 guide, work = Path(sys.argv[1]), Path(sys.argv[2])
 blocks = re.findall(r"^```(\w*)\n(.*?)^```$", guide.read_text(), re.S | re.M)
-driver = ["set -euo pipefail", "trap 'declare -F fyrr_stop >/dev/null && fyrr_stop' EXIT"]
+driver = [
+    "set -euo pipefail",
+    "trap 'declare -F fyrr_stop >/dev/null && fyrr_stop' EXIT",
+    "trap 'exit 143' TERM",
+    # A block's stdout, with a newline at the end if it lacks one.
+    'norm() { cat "$1"; [[ -z "$(tail -c1 "$1")" ]] || echo; }',
+]
 ran = 0
 for index, (language, body) in enumerate(blocks):
     if language != "sh":
@@ -41,20 +59,25 @@ for index, (language, body) in enumerate(blocks):
     ran += 1
     script, output = work / f"{ran}.sh", work / f"{ran}.out"
     script.write_text(body)
-    driver.append(f'echo "--- {guide.name} block {ran}: $(head -n 1 {script})" >&2')
-    driver.append(f"source {script} >{output}")
-    driver.append(f"cat {output}; echo")
+    q_script, q_output = shlex.quote(str(script)), shlex.quote(str(output))
+    driver.append(f'echo "--- {guide.name} block {ran}: $(head -n 1 {q_script})" >&2')
+    driver.append(f"source {q_script} >{q_output}")
+    driver.append(f"norm {q_output}")
     follows = index + 1 < len(blocks) and blocks[index + 1][0] == "text"
     if follows:
         expected = work / f"{ran}.expected"
         expected.write_text(blocks[index + 1][1])
-        driver.append(f'[[ "$(<{expected})" == "$(<{output})" ]] || {{ diff -u {expected} {output} >&2; echo "{guide.name} block {ran}: output differs" >&2; exit 1; }}')
+        driver.append(f'norm {q_output} | diff -u {shlex.quote(str(expected))} - >&2 || {{ echo "{guide.name} block {ran}: output differs" >&2; exit 1; }}')
 if not ran:
     sys.exit(f"{guide}: no sh block")
 (work / "driver").write_text("\n".join(driver) + "\n")
 PY
-  # The guide stops its own fyrr; the trap also stops it if a block fails.
-  bash -c 'source "$1"' _ "$WORK/driver" || die "guides: $guide failed"
+  # The guide stops its own fyrr; the driver's trap also stops it if a block
+  # fails or the driver is terminated.
+  bash -c 'source "$1"' _ "$WORK/driver" &
+  DRIVER_PID=$!
+  wait "$DRIVER_PID" || die "guides: $guide failed"
+  DRIVER_PID=
 done
 
 log "guides passed"

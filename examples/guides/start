@@ -50,8 +50,7 @@ export FYRR_OPERATOR_TOKEN="$(openssl rand -hex 16)"
 export WRITE_KEY="$(secret)" ADMIN_KEY="$(secret)" READ_KEY="$(secret)" BOB_KEY="$(secret)"
 export WRITER="http://127.0.0.1:$writer_port" READER="http://127.0.0.1:$reader_port"
 
-fyrr config check >/dev/null
-fyrr writer keys >/dev/null
+fyrr config check >/dev/null && fyrr writer keys >/dev/null || { fyrr_stop; return 1; }
 
 python3 examples/quickstart/toy-embeddings.py "$toy_port" >"$FYRR_GUIDE_DIR/toy.log" &
 FYRR_GUIDE_PIDS+=("$!")
@@ -74,5 +73,6 @@ done
 curl -fsS -o /dev/null "$READER/readyz" || {
   cat "$FYRR_GUIDE_DIR"/*.log >&2
   echo "fyrr did not start" >&2
-  false
+  fyrr_stop
+  return 1
 }

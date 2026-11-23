@@ -44,7 +44,8 @@ removed ([changing the schema](../http-api.md#changing-the-schema)).
 Keep the rows as JSON Lines, one row per line, and let `split` cut the file:
 
 ```sh
-rows="$(mktemp -d)"
+rows="$FYRR_GUIDE_DIR/rows"
+mkdir "$rows"
 seq 1 12 | jq -c '{id: "row-\(.)", text: "Row number \(.)", batch: ((. - 1) / 4 | floor),
                    vector: [., 1, 0, 0, 0, 0, 0, 0]}' >"$rows/all.jsonl"
 split -l 4 "$rows/all.jsonl" "$rows/part-"
@@ -55,12 +56,6 @@ for part in "$rows"/part-*; do
       --data-binary @-
   echo
 done
-```
-
-```text
-{"upserted":4,"deleted":0}
-{"upserted":4,"deleted":0}
-{"upserted":4,"deleted":0}
 ```
 
 ```text
@@ -152,28 +147,29 @@ curl -fsS "$READER/v1/namespaces/bulk/aggregate" \
 A filter write that matches more than 10,000 documents is refused whole
 (`409 rejected`), so reload a larger group in parts.
 
-## 6. Let the indexes catch up
+## 6. Check the indexes
 
-The writer builds the indexes of the namespace between writes: the vector
-index, and the indexes of the attributes you declared. `fyrr writer serve` does
-it by itself when a version has work for it, and `fyrr writer maintain` does it
-on demand, which is what a job that loads and exits runs after its last write
-([cli](../cli.md)). Until an index is built a filter on its attribute is
-answered by a scan, which is correct and slower. `fyrr writer status` lists the
-data files (`fragments`) and the segments of each index (`index_segments`) of
-the served version. This checks that it has a vector index:
+The first publication of a namespace builds every index its schema asks for,
+and a reader serves a version only when its indexes cover all its data. The
+[namespace report](../http-api.md#namespace-report) says how much data the
+indexes of the served version do not cover yet, which is nothing:
 
 ```sh
-fyrr writer status | jq -c '.index_segments | has("vector_idx")'
+curl -fsS "$READER/v1/namespaces/bulk" -H "Authorization: Bearer $ADMIN_KEY" |
+  jq -c '.unindexed'
 ```
 
 ```text
-true
+{"rows":0,"logical_bytes":0}
 ```
+
+Later writes add to the indexes, and `fyrr writer serve` merges and compacts
+them when a version has work for it ([`writer serve`](../cli.md)). Until an
+index exists for an attribute declared later, a filter on it is answered by a
+scan, which is correct and slower ([changing the schema](../http-api.md#changing-the-schema)).
 
 ## 7. Stop
 
 ```sh
-rm -rf "$rows"
 fyrr_stop
 ```

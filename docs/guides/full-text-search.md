@@ -91,7 +91,8 @@ curl -fsS "$READER/v1/namespaces/articles/query" \
 ["rollback",false]
 ```
 
-It narrows the lexical lane only. To make a word a requirement of the answer,
+It narrows the lexical lane only: the dense lane still returns the other rows,
+as the output shows. To make a word a requirement of the answer,
 use `contains` on an attribute with a `full_text` index. A hit must meet every
 condition, and so must the permissions of the caller:
 

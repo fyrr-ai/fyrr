@@ -137,8 +137,8 @@ examples have none.
 A document that many people read may deserve to rank above a slightly better
 match. `boosts` add to the relevance of a text or hybrid ranking: an
 `attribute` boost adds `weight × x / (x + midpoint)` for a numeric attribute
-`x`, so it adds half the weight at the midpoint and approaches the whole weight
-as `x` grows:
+`x` (a negative `x` counts as 0), so it adds half the weight at the midpoint and
+approaches the whole weight as `x` grows:
 
 ```sh
 curl -fsS "$READER/v1/namespaces/handbook/query" \

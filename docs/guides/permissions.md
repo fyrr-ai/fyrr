@@ -99,9 +99,9 @@ done
 
 ## 3. Grant and revoke
 
-A `patch` changes `readers` and nothing else: the text and the vector stay, and
-nothing is embedded again. Grant `salaries` to engineering, and take `holidays`
-from Ann:
+A `patch` changes only what it names, and nothing is embedded. These two name
+`readers` alone, so the text, the vector and the attributes of the rows stay.
+Grant `salaries` to engineering, and take `holidays` from Ann:
 
 ```sh
 curl -fsS "$WRITER/v1/namespaces/company/documents" \
