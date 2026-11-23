@@ -24,13 +24,19 @@ use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field, Schema};
 use lance::{
     Dataset,
-    dataset::{WriteMode, WriteParams},
+    dataset::{
+        WriteMode, WriteParams,
+        scanner::{RowAddrMask, RowAddrTreeMap},
+    },
     index::DatasetIndexExt,
 };
 use lance_index::{
     IndexType,
     optimize::OptimizeOptions,
-    scalar::{FullTextSearchQuery, InvertedIndexParams, inverted::query::PhraseQuery},
+    scalar::{
+        FullTextSearchQuery, InvertedIndexParams,
+        inverted::query::{BooleanQuery, FtsQuery, MatchQuery, Occur, Operator, PhraseQuery},
+    },
 };
 use std::{
     collections::BTreeMap,
@@ -819,4 +825,185 @@ async fn string_filters_use_the_btree_and_the_ngram_index_where_they_can() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Rows of three to eight words of a small vocabulary, written in three parts
+/// that the inverted index covers as three segments.
+async fn segmented(name: &str, rows: i64, params: &InvertedIndexParams) -> (Dataset, Vec<String>) {
+    const WORDS: [&str; 8] = [
+        "alpha", "beta", "gamma", "delta", "omega", "sigma", "kappa", "theta",
+    ];
+    let mut state = 0x2545_f491_4f6c_dd1d_u64;
+    let texts: Vec<String> = (0..rows)
+        .map(|n| {
+            (0..3 + n % 6)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    WORDS[usize::try_from(state % 8).unwrap()]
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    let path = directory(name).join("segments.lance");
+    let rows_of = |range: std::ops::Range<usize>| -> Vec<(i64, String)> {
+        range
+            .map(|n| (i64::try_from(n).unwrap(), texts[n].clone()))
+            .collect()
+    };
+    let third = texts.len() / 3;
+    let mut dataset = write(&path, &rows_of(0..third), WriteMode::Create).await;
+    index(&mut dataset, params.clone(), false).await;
+    for range in [third..2 * third, 2 * third..texts.len()] {
+        dataset = write(&path, &rows_of(range), WriteMode::Append).await;
+        dataset
+            .optimize_indices(&OptimizeOptions::append())
+            .await
+            .unwrap();
+    }
+    assert_eq!(dataset.load_indices().await.unwrap().len(), 3);
+    (dataset, texts)
+}
+/// The score of every row `query` finds, the best `limit` of them, through a
+/// row mask as the reader passes one.
+async fn found(
+    dataset: &Dataset,
+    query: FtsQuery,
+    limit: Option<i64>,
+    allowed: Option<&RowAddrTreeMap>,
+) -> BTreeMap<i64, f32> {
+    let mut scan = dataset.scan();
+    scan.prefilter(true).with_row_id();
+    if let Some(allowed) = allowed {
+        scan.with_row_id_prefilter(RowAddrMask::from_allowed(allowed.clone()));
+    }
+    scan.full_text_search(FullTextSearchQuery::new_query(query).limit(limit))
+        .unwrap();
+    let batch = scan.try_into_batch().await.unwrap();
+    let ids = batch["id"].as_any().downcast_ref::<Int64Array>().unwrap();
+    let scores = batch["_score"]
+        .as_any()
+        .downcast_ref::<Float32Array>()
+        .unwrap();
+    ids.values()
+        .iter()
+        .copied()
+        .zip(scores.values().iter().copied())
+        .collect()
+}
+/// The row ids of the rows with an even `id`.
+async fn even_rows(dataset: &Dataset) -> RowAddrTreeMap {
+    let mut scan = dataset.scan();
+    scan.project(&["id"]).unwrap().with_row_id();
+    let batch = scan.try_into_batch().await.unwrap();
+    let ids = batch["id"].as_any().downcast_ref::<Int64Array>().unwrap();
+    let rows = batch["_rowid"]
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap();
+    ids.values()
+        .iter()
+        .zip(rows.values())
+        .filter(|(id, _)| *id % 2 == 0)
+        .map(|(_, row)| *row)
+        .collect()
+}
+/// The best ten of the rows a query finds are those an unlimited search ranks
+/// first: the same ten scores, and the same score for each row.
+fn assert_true_top_10(top: &BTreeMap<i64, f32>, every: &BTreeMap<i64, f32>) {
+    let mut ranked: Vec<f32> = every.values().copied().collect();
+    ranked.sort_by(|a, b| b.total_cmp(a));
+    let mut best: Vec<f32> = top.values().copied().collect();
+    best.sort_by(|a, b| b.total_cmp(a));
+    assert_eq!(best.len(), 10.min(every.len()));
+    assert_eq!(best, ranked[..best.len()]);
+    for (id, score) in top {
+        assert!((every[id] - score).abs() < 1e-6, "row {id}");
+    }
+}
+
+#[tokio::test]
+async fn all_terms_and_prefix_queries_return_the_true_top_10_on_three_segments_and_under_a_mask() {
+    let tokens = |text: &str| text.split(' ').map(str::to_owned).collect::<Vec<_>>();
+    let (dataset, texts) = segmented(
+        "all-terms",
+        900,
+        &InvertedIndexParams::default().with_position(false),
+    )
+    .await;
+    let mask = even_rows(&dataset).await;
+    let terms = "alpha beta";
+    let holds_all: Vec<i64> = texts
+        .iter()
+        .enumerate()
+        .filter(|(_, text)| tokens(terms).iter().all(|term| tokens(text).contains(term)))
+        .map(|(id, _)| i64::try_from(id).unwrap())
+        .collect();
+    assert!(holds_all.len() > 100, "the probe needs many matches");
+    let all = || MatchQuery::new(terms.into()).with_column(Some("content".into()));
+    // A match query that needs every term, and the boolean query of one match
+    // per term that must hold: both find the rows with all terms, and their
+    // best ten are the best ten of an unlimited search.
+    let queries = [
+        FtsQuery::Match(all().with_operator(Operator::And)),
+        FtsQuery::Boolean(BooleanQuery::new(tokens(terms).into_iter().map(|term| {
+            (
+                Occur::Must,
+                FtsQuery::Match(MatchQuery::new(term).with_column(Some("content".into()))),
+            )
+        }))),
+    ];
+    for query in &queries {
+        for allowed in [None, Some(&mask)] {
+            let every = found(&dataset, query.clone(), None, allowed).await;
+            let expected: Vec<i64> = holds_all
+                .iter()
+                .copied()
+                .filter(|id| allowed.is_none() || id % 2 == 0)
+                .collect();
+            assert_eq!(every.keys().copied().collect::<Vec<_>>(), expected);
+            let top = found(&dataset, query.clone(), Some(10), allowed).await;
+            assert_true_top_10(&top, &every);
+        }
+    }
+    // The match query without the operator finds a row with any term.
+    let any = found(&dataset, FtsQuery::Match(all()), None, None).await;
+    assert!(any.len() > holds_all.len());
+
+    // An index of the n-grams of the start of a value, up to the longest
+    // n-gram: a text finds the values that start with it, spaces included.
+    let (dataset, texts) = segmented(
+        "prefix",
+        900,
+        &InvertedIndexParams::default()
+            .base_tokenizer("ngram".into())
+            .ngram_min_length(1)
+            .ngram_max_length(16)
+            .ngram_prefix_only(true)
+            .with_position(false),
+    )
+    .await;
+    let mask = even_rows(&dataset).await;
+    for (prefix, most) in [("al", true), ("alpha be", false)] {
+        let query = FtsQuery::Match(
+            MatchQuery::new(prefix.into())
+                .with_column(Some("content".into()))
+                .with_operator(Operator::And),
+        );
+        for allowed in [None, Some(&mask)] {
+            let every = found(&dataset, query.clone(), None, allowed).await;
+            let expected: Vec<i64> = texts
+                .iter()
+                .enumerate()
+                .filter(|(id, text)| text.starts_with(prefix) && (allowed.is_none() || id % 2 == 0))
+                .map(|(id, _)| i64::try_from(id).unwrap())
+                .collect();
+            assert!(!most || expected.len() > 50, "the probe needs many matches");
+            assert_eq!(every.keys().copied().collect::<Vec<_>>(), expected);
+            let top = found(&dataset, query.clone(), Some(10), allowed).await;
+            assert_true_top_10(&top, &every);
+        }
+    }
 }

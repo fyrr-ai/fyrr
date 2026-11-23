@@ -176,7 +176,7 @@ async fn report(dataset: &Dataset, delta: bool) -> String {
                     let eligible = RowAddrMask::from_allowed(RowAddrTreeMap::from_iter(
                         rows.iter().map(|&row| address(row, delta)),
                     ));
-                    PreparedReader::lexical(dataset, &eligible, None, &query, LIMIT)
+                    PreparedReader::lexical(dataset, &eligible, None, &query, false, LIMIT)
                         .await
                         .unwrap()
                         .0

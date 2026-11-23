@@ -297,6 +297,42 @@ curl https://fyrr.example.com/v1/namespaces/main/query \
        "rerank":{"query":"how do we restore a backup"}}'
 ```
 
+## Matching tokens
+
+The `query` route takes two more members that decide which documents a text or
+a vector ranking may return. Neither is an argument of the tool: `fetch` and
+`/mcp` refuse them, and their output does not change. A request without them is
+answered as before.
+
+`query_match` applies to the text of `query` or `queries`. `any`, the default,
+ranks the documents that hold at least one term; `all` ranks only the documents
+that hold every term. It is `invalid_argument` without a text query. The
+excerpt of a hit follows the terms of the text as before.
+
+`contains` is a list of 1–16 conditions on string attributes whose
+[index options](tuning.md#namespaceattributes) include `full_text`. A hit meets
+every condition and also the `filter` and the caller's permissions, as with
+`filter`; it works with a text ranking and with a `vector`. It is
+`invalid_argument` for a listing, which has no ranking to narrow.
+
+| Member | Meaning |
+| --- | --- |
+| `attribute` | The string attribute to match; it must have a full-text index. |
+| `all` | The value holds every token of this text, cut as the attribute's index cuts a text. |
+| `any` | The value holds at least one token of this text. Exactly one of `all` and `any`. |
+| `prefix` | With `all`: the text may end in part of a word. It needs the attribute's [analyzer](tuning.md#namespaceattributes) to be `tokenizer = "ngram"` with `prefix_only = true`, whose index holds the starts of a value; then the value must start with the text, up to `ngram_max_length` characters. Without such an index it is `400 invalid_argument`. |
+
+An attribute that does not exist, has no full-text index, or a condition that
+has both or neither of `all` and `any` is `400 invalid_argument`.
+
+```sh
+curl https://fyrr.example.com/v1/namespaces/main/query \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"waterproof","query_match":"all",
+       "contains":[{"attribute":"title","all":"red sho","prefix":true}]}'
+```
+
 ## Aggregate
 
 `POST /v1/namespaces/{namespace}/aggregate` computes aggregates over the

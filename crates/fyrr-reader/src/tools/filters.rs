@@ -1,8 +1,13 @@
 use super::*;
 use crate::search::FilterSelection;
 use chrono::{DateTime, Utc};
+use fyrr_core::attributes::analyzer::Tokenizer;
 use fyrr_core::attributes::{AttributeSchema, AttributeType, parse_uuid};
 use fyrr_core::limits::mcp::{MAX_REGEX_BYTES, MAX_REGEX_PROGRAM_BYTES};
+use lance_index::scalar::{
+    FullTextSearchQuery,
+    inverted::query::{FtsQuery, MatchQuery, Operator},
+};
 use serde_json::Value;
 
 /// The scalar type of a built-in field or of an attribute the namespace
@@ -306,8 +311,79 @@ impl PreparedReader {
         self.filter_selection = Some(FilterSelection {
             predicate: filter,
             eligible: RowAddrMask::from_allowed(allowed),
+            masked: false,
         });
         Ok(())
+    }
+    /// Narrows the selection to the rows whose full-text attributes meet every
+    /// `contains` condition. Each scan takes the selection so far as its row
+    /// mask: the caller's admission and the filter bound it, and every row it
+    /// returns is checked against it. No SQL describes the result, so the
+    /// selection is marked `masked`.
+    pub(crate) async fn apply_contains(&mut self, contains: Option<&[Contains]>) -> Result<()> {
+        let Some(contains) = contains else {
+            return Ok(());
+        };
+        let mut selected = self.selected_rows().clone();
+        for condition in contains {
+            let query = self.contains_query(condition)?;
+            let mut scan = self.dataset.scan();
+            scan.project::<&str>(&[]).map_err(|_| IncompatibleIndex)?;
+            scan.prefilter(true)
+                .with_row_id_prefilter(selected.clone())
+                .with_row_id();
+            scan.full_text_search(FullTextSearchQuery::new_query(query))
+                .map_err(|_| IncompatibleIndex)?;
+            let mut stream = scan
+                .try_into_stream()
+                .await
+                .map_err(|_| StorageUnavailable)?;
+            let mut allowed = RowAddrTreeMap::new();
+            while let Some(batch) = stream.try_next().await.map_err(|_| StorageUnavailable)? {
+                for id in ids(&batch)?.values() {
+                    if !selected.selected(*id) {
+                        return Err(AuthorizationUnavailable);
+                    }
+                    allowed.insert(*id);
+                }
+            }
+            selected = RowAddrMask::from_allowed(allowed);
+        }
+        self.filter_selection = Some(FilterSelection {
+            predicate: self
+                .filter_selection
+                .as_ref()
+                .map_or_else(|| "true".into(), |filter| filter.predicate.clone()),
+            eligible: selected,
+            masked: true,
+        });
+        Ok(())
+    }
+    /// The full-text query of one condition: a match query on the attribute's
+    /// index, joined by AND or OR. The attribute must have a full-text index as
+    /// the manifest records it, and `prefix` needs that index to have been built
+    /// with n-grams of the start of a token.
+    fn contains_query(&self, condition: &Contains) -> Result<FtsQuery> {
+        let index = self
+            .manifest
+            .attribute_indexes
+            .get(&condition.attribute)
+            .filter(|index| index.full_text)
+            .ok_or(InvalidArgument)?;
+        if condition.prefix
+            && !index
+                .analyzer
+                .as_ref()
+                .is_some_and(|a| a.tokenizer == Tokenizer::Ngram && a.prefix_only)
+        {
+            return Err(InvalidArgument);
+        }
+        let (text, all) = condition.text().ok_or(InvalidArgument)?;
+        Ok(FtsQuery::Match(
+            MatchQuery::new(text.into())
+                .with_column(Some(condition.attribute.clone()))
+                .with_operator(if all { Operator::And } else { Operator::Or }),
+        ))
     }
     pub(crate) async fn listing(
         &self,

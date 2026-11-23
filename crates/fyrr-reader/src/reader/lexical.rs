@@ -1,4 +1,8 @@
 use super::*;
+use lance_index::scalar::{
+    FullTextSearchQuery,
+    inverted::query::{FtsQuery, MatchQuery, Operator},
+};
 
 impl PreparedReader {
     pub(super) fn fts_requires_sql_prefilter(
@@ -24,6 +28,7 @@ impl PreparedReader {
         eligible: &RowAddrMask,
         predicate: Option<&str>,
         query: &str,
+        all_terms: bool,
         candidates: usize,
     ) -> Result<(Vec<Candidate>, u64, u64)> {
         if eligible.max_len().unwrap_or(0) == 0 {
@@ -50,11 +55,18 @@ impl PreparedReader {
             scan.prefilter(true)
                 .with_row_id_prefilter(eligible.clone())
                 .with_row_id();
+            let operator = if all_terms {
+                Operator::And
+            } else {
+                Operator::Or
+            };
             scan.full_text_search(
-                lance_index::scalar::FullTextSearchQuery::new(query.into())
-                    .with_column("searchable_text".into())
-                    .map_err(|_| IncompatibleIndex)?
-                    .limit(Some(requested as i64)),
+                FullTextSearchQuery::new_query(FtsQuery::Match(
+                    MatchQuery::new(query.into())
+                        .with_column(Some("searchable_text".into()))
+                        .with_operator(operator),
+                ))
+                .limit(Some(requested as i64)),
             )
             .map_err(|_| IncompatibleIndex)?;
             let batch = scan

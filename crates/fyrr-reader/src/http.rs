@@ -513,7 +513,7 @@ fn strong_read(arguments: &mut serde_json::Value) -> Result<bool, ReaderError> {
 }
 
 /// Takes `name` off the arguments of a JSON `query` call, where it is no
-/// argument of the tool: `fields`, `fusion` or `rerank`.
+/// argument of the tool: `fields`, `fusion`, `rerank`, `query_match` or `contains`.
 fn query_member<T: serde::de::DeserializeOwned>(
     arguments: &mut serde_json::Value,
     name: &str,
@@ -660,9 +660,11 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                             query_member(&mut arguments, "fields")?,
                             query_member(&mut arguments, "fusion")?,
                             query_member(&mut arguments, "rerank")?,
+                            query_member(&mut arguments, "query_match")?,
+                            query_member(&mut arguments, "contains")?,
                         )
                     } else {
-                        (None, None, None)
+                        (None, None, None, None, None)
                     };
                     let mut call = if name == "aggregate" {
                         crate::serve::ToolCall::aggregate(arguments)?
@@ -670,7 +672,13 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                         crate::serve::ToolCall::parse(name, arguments)?
                     };
                     if let crate::serve::ToolCall::Search(search) = &mut call {
-                        (search.fields, search.fusion, search.rerank) = members;
+                        (
+                            search.fields,
+                            search.fusion,
+                            search.rerank,
+                            search.query_match,
+                            search.contains,
+                        ) = members;
                         if let Some(fields) = &search.fields {
                             fields.validate().map_err(|_| InvalidArgument)?;
                         }

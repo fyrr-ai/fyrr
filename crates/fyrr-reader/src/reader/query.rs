@@ -131,6 +131,7 @@ impl PreparedReader {
         let stage = Instant::now();
         let filter_counters = self.mirror.counters();
         self.apply_filters(args.filter_tree().as_ref()).await?;
+        self.apply_contains(args.contains.as_deref()).await?;
         let predicate = self.request_predicate()?;
         let lexical_predicate = Self::fts_requires_sql_prefilter(&self.dataset, &self.indexes)
             .then_some(predicate.as_str());
@@ -298,6 +299,7 @@ impl PreparedReader {
                     self.selected_rows(),
                     lexical_predicate,
                     query,
+                    args.query_match == Some(TermMatch::All),
                     self.config.namespace.retrieval.lexical_candidates,
                 )
                 .await
@@ -450,6 +452,8 @@ impl PreparedReader {
                 (completion.as_mut(), vector)
                 && query_index == *completion_query
                 && completion.is_none()
+                // The recall reference scans by SQL, which `contains` is not.
+                && self.filter_selection.as_ref().is_none_or(|f| !f.masked)
             {
                 let mut rows = [0; fyrr_core::limits::mcp::MAX_SEARCH_LIMIT as usize];
                 for (id, candidate) in rows.iter_mut().zip(&dense) {

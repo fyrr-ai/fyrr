@@ -151,6 +151,64 @@ pub struct SearchInput {
     /// Set by the HTTP query route from its `rerank` member; no tool argument.
     #[serde(skip)]
     pub rerank: Option<RerankChoice>,
+    /// Set by the HTTP query route from its `query_match` member; no tool argument.
+    #[serde(skip)]
+    pub query_match: Option<TermMatch>,
+    /// Set by the HTTP query route from its `contains` member; no tool argument.
+    #[serde(skip)]
+    pub contains: Option<Vec<Contains>>,
+}
+
+/// The `query_match` member of a JSON `query` request: whether a document
+/// needs every term of the text query or any one of them. Default `any`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TermMatch {
+    All,
+    Any,
+}
+
+/// One condition of the `contains` member of a JSON `query` request, on the
+/// full-text index of a string attribute. Exactly one of `all` and `any`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Contains {
+    /// A string attribute with a full-text index.
+    #[schemars(length(min = 1, max = 128))]
+    pub attribute: String,
+    /// The value holds every token of this text, 1-4096 UTF-8 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 4096), extend("x-maxUtf8Bytes" = 4096))]
+    pub all: Option<String>,
+    /// The value holds at least one token of this text, 1-4096 UTF-8 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 4096), extend("x-maxUtf8Bytes" = 4096))]
+    pub any: Option<String>,
+    /// The last token of `all` may be a prefix: the value starts with the text.
+    /// Needs the attribute's full-text index built with the `ngram` tokenizer
+    /// and `prefix_only`, and `all`; else `invalid_argument`.
+    #[serde(default)]
+    pub prefix: bool,
+}
+
+impl Contains {
+    /// The text and whether it must hold all of its tokens.
+    pub fn text(&self) -> Option<(&str, bool)> {
+        match (&self.all, &self.any) {
+            (Some(text), None) => Some((text, true)),
+            (None, Some(text)) => Some((text, false)),
+            _ => None,
+        }
+    }
+    fn is_valid(&self) -> bool {
+        bounded_text(&self.attribute, 128)
+            // An index of the n-grams of the start of a value finds its values
+            // by all of them: any one is what every value starting alike has.
+            && (!self.prefix || self.all.is_some())
+            && self.text().is_some_and(|(text, _)| {
+                bounded_text(text, MAX_QUERY_BYTES) && !text.trim().is_empty()
+            })
+    }
 }
 
 /// The `fusion` member of a JSON `query` request with `queries`: one ranking
@@ -1187,6 +1245,13 @@ impl SearchInput {
                 })
             })
             && self.rerank.as_ref().is_none_or(|r| r.validate().is_ok())
+            && self.query_match.is_none_or(|_| self.has_text())
+            && self.contains.as_ref().is_none_or(|conditions| {
+                // A listing has no ranking to narrow, and it reads by predicate.
+                !listing
+                    && (1..=MAX_CONTAINS).contains(&conditions.len())
+                    && conditions.iter().all(Contains::is_valid)
+            })
             && self.text_hits.is_none_or(|v| {
                 self.output != Some(OutputMode::Metadata) && v <= self.effective_limit()
             })

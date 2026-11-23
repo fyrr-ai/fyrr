@@ -7,6 +7,15 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## [Unreleased]
 
+### Added
+
+- The JSON `query` route takes `query_match`, which makes a text ranking
+  require all of its terms, and `contains`, which requires a hit to hold all
+  or any tokens of a string attribute with a full-text index, or to start with
+  a text when the index is built with n-gram prefixes. Both work next to
+  `filter`, with a text and with a vector ranking, and under the caller's
+  permissions. The MCP `search` tool does not take them.
+
 ### Changed
 
 - A namespace created for connectors stores `title`, `team`, `status`,

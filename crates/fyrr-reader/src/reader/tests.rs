@@ -102,7 +102,7 @@ async fn lexical_request_mask_precedes_topk_and_preserves_sql_scores() {
         &dataset,
         &dataset.load_indices().await.unwrap(),
     ));
-    let (masked, _, _) = PreparedReader::lexical(&dataset, &eligible, None, "needle", 2)
+    let (masked, _, _) = PreparedReader::lexical(&dataset, &eligible, None, "needle", false, 2)
         .await
         .unwrap();
     assert_eq!(
@@ -139,11 +139,18 @@ async fn lexical_request_mask_precedes_topk_and_preserves_sql_scores() {
         "same BM25 scores and stable cutoff order"
     );
     assert!(
-        PreparedReader::lexical(&dataset, &RowAddrMask::allow_nothing(), None, "needle", 2)
-            .await
-            .unwrap()
-            .0
-            .is_empty()
+        PreparedReader::lexical(
+            &dataset,
+            &RowAddrMask::allow_nothing(),
+            None,
+            "needle",
+            false,
+            2
+        )
+        .await
+        .unwrap()
+        .0
+        .is_empty()
     );
     // Append after indexing: one readable row and fifty denied/filter-excluded
     // matches must not change the readable row's flat BM25 statistics.
@@ -176,9 +183,10 @@ async fn lexical_request_mask_precedes_topk_and_preserves_sql_scores() {
     let tail_id = dataset.manifest().fragments.last().unwrap().id << 32;
     let eligible = RowAddrMask::from_allowed(RowAddrTreeMap::from_iter([tail_id]));
     let predicate = "root_id = 'tail-00'";
-    let (masked, _, _) = PreparedReader::lexical(&dataset, &eligible, Some(predicate), "needle", 1)
-        .await
-        .unwrap();
+    let (masked, _, _) =
+        PreparedReader::lexical(&dataset, &eligible, Some(predicate), "needle", false, 1)
+            .await
+            .unwrap();
     let mut legacy = dataset.scan();
     legacy
         .project(&["source_id", "root_id", "record_id"])
@@ -209,7 +217,7 @@ async fn lexical_request_mask_precedes_topk_and_preserves_sql_scores() {
         observed(&sql),
         "tail scores preserve SQL admission"
     );
-    let (unfiltered, _, _) = PreparedReader::lexical(&dataset, &eligible, None, "needle", 1)
+    let (unfiltered, _, _) = PreparedReader::lexical(&dataset, &eligible, None, "needle", false, 1)
         .await
         .unwrap();
     assert_ne!(
