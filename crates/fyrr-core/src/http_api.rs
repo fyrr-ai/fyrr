@@ -12,8 +12,8 @@ use serde_json::{Map, Value};
 
 use crate::attributes::AttributeSchema;
 use crate::mcp::{
-    AggregateInput, Boost, Contains, FetchInput, Filter, Fusion, RerankChoice, ReturnFields,
-    SearchInput, SubQuery, TermMatch, ValueCap,
+    AggregateInput, Boost, Contains, FetchInput, Filter, Fusion, RecallInput, RerankChoice,
+    ReturnFields, SearchInput, SubQuery, TermMatch, ValueCap,
 };
 use crate::publication::NamespaceSettings;
 
@@ -74,6 +74,16 @@ pub struct FetchRequest {
 pub struct AggregateRequest {
     #[schemars(flatten)]
     pub aggregate: AggregateInput,
+    /// Defaults to `cached`.
+    pub consistency: Option<Consistency>,
+}
+
+/// The body of `POST /v1/namespaces/{namespace}/recall`: the recall arguments
+/// and `consistency`.
+#[derive(Debug, Clone, PartialEq, JsonSchema)]
+pub struct RecallRequest {
+    #[schemars(flatten)]
+    pub recall: RecallInput,
     /// Defaults to `cached`.
     pub consistency: Option<Consistency>,
 }

@@ -1233,6 +1233,41 @@ fn mcp_validation_errors_keep_filter_cursor_and_window_values_private() {
     }
 }
 
+#[test]
+fn recall_request_errors_and_answers_keep_filter_values_private() {
+    use fyrr_core::mcp::{ErrorCode, RecallInput, RecallOutput, ToolError};
+    let mut sentinels = Sentinels::new();
+    let sandbox = Sandbox::new("privacy-recall");
+    let filter = sentinels.mark("recall-filter");
+    let input: RecallInput = serde_json::from_value(serde_json::json!({
+        "count": 0, "filter": {"field": "author", "op": "eq", "value": filter}}))
+    .unwrap();
+    assert_eq!(input.validate(), Err("invalid_argument"));
+    let error = ToolError {
+        code: ErrorCode::InvalidArgument,
+        message: ErrorCode::InvalidArgument.meaning().into(),
+        retryable: false,
+    };
+    // The answer of a run is four numbers whatever the filter selected.
+    let answer = RecallOutput {
+        samples: 1,
+        rows: 2,
+        recall_at_10: Some(1.0),
+        recall_at_75: None,
+    };
+    for body in [
+        serde_json::to_vec(&error).unwrap(),
+        serde_json::to_vec(&answer).unwrap(),
+    ] {
+        let output = std::process::Output {
+            status: std::os::unix::process::ExitStatusExt::from_raw(0),
+            stdout: body,
+            stderr: vec![],
+        };
+        assert_clean(&sentinels, &output, &sandbox, "recall diagnostics");
+    }
+}
+
 /// Inspect the real durable objects, not just writer output. Both the connector
 /// batches and assembled membership input must be encrypted, as must raw SCIM state.
 #[cfg(feature = "writer")]

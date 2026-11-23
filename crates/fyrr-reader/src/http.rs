@@ -457,8 +457,8 @@ const LIST_ROLES: &[ApiKeyRole] = &[ApiKeyRole::Admin, ApiKeyRole::List];
 
 /// The tool a JSON route runs, the roles an API key needs one of for it and the
 /// namespace the path names: `POST /v1/namespaces/{namespace}/query`,
-/// `.../fetch` and `.../aggregate` need `read`, `GET` and `HEAD /v1/namespaces/{namespace}` and
-/// `/v1/namespaces` need `admin` or `list`. `/mcp` needs `read` as well. A key
+/// `.../fetch` and `.../aggregate` need `read`, `.../recall` needs `admin`, `GET` and
+/// `HEAD /v1/namespaces/{namespace}` and `/v1/namespaces` need `admin` or `list`. `/mcp` needs `read` as well. A key
 /// without a role of a route gets 403 `forbidden`; `/readyz` and
 /// `/admin/refresh` take no API key.
 fn json_tool(request: &Request) -> Option<(&'static str, &'static [ApiKeyRole], Option<String>)> {
@@ -487,6 +487,11 @@ fn json_tool(request: &Request) -> Option<(&'static str, &'static [ApiKeyRole], 
         (namespace, "aggregate") => Some((
             "aggregate",
             &[ApiKeyRole::Read][..],
+            Some(namespace.to_owned()),
+        )),
+        (namespace, "recall") => Some((
+            "recall",
+            &[ApiKeyRole::Admin][..],
             Some(namespace.to_owned()),
         )),
         _ => None,
@@ -658,6 +663,7 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                     }
                     match name {
                         "aggregate" => crate::serve::ToolCall::aggregate(arguments),
+                        "recall" => crate::serve::ToolCall::recall(arguments),
                         "search" => {
                             let fields = query_member(&mut arguments, "fields")?;
                             let fusion = query_member(&mut arguments, "fusion")?;
@@ -1277,6 +1283,7 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
         .route("/v1/namespaces/{namespace}/query", post(tool_json))
         .route("/v1/namespaces/{namespace}/fetch", post(tool_json))
         .route("/v1/namespaces/{namespace}/aggregate", post(tool_json))
+        .route("/v1/namespaces/{namespace}/recall", post(tool_json))
         .route("/v1/namespaces/{namespace}", get(tool_json))
         .route("/v1/namespaces", get(list_namespaces));
     if h.operator_credential.is_some() {

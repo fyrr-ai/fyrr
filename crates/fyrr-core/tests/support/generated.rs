@@ -10,12 +10,12 @@ use fyrr_core::envelope::{PreparedEnvelope, RejectionMarker};
 use fyrr_core::http_api::{
     AggregateRequest, DeleteNamespaceRequest, DeleteNamespaceResponse, ErrorBody, FetchRequest,
     NamespaceList, NamespaceReport, PatchNamespaceRequest, PatchNamespaceResponse, QueryRequest,
-    WriteRequest, WriteResponse,
+    RecallRequest, WriteRequest, WriteResponse,
 };
 use fyrr_core::identity::{ApiKeysArtifact, IdentityArtifact};
 use fyrr_core::mcp::{
-    AggregateOutput, FetchOutput, MCP_CONTRACT_VERSION, SearchOutput, ToolError, error_codes,
-    tools_list,
+    AggregateOutput, FetchOutput, MCP_CONTRACT_VERSION, RecallOutput, SearchOutput, ToolError,
+    error_codes, tools_list,
 };
 use fyrr_core::provider::{ProviderInfo, SDK_SERIES};
 use fyrr_core::publication::{
@@ -182,6 +182,14 @@ fn openapi() -> Value {
             Some(requests.subschema_for::<AggregateRequest>()),
             answers.subschema_for::<AggregateOutput>(),
         )},
+        "/v1/namespaces/{namespace}/recall": {"post": operation(
+            "reader",
+            "Measure how closely the vector index agrees with an exact search, over stored vectors the key may read",
+            "an API key with the `admin` role",
+            "Error",
+            Some(requests.subschema_for::<RecallRequest>()),
+            answers.subschema_for::<RecallOutput>(),
+        )},
         "/v1/namespaces/{namespace}/documents": {"post": operation(
             "writer",
             "Upsert, patch and delete documents, all or none; or change the schema",
@@ -225,7 +233,7 @@ fn openapi() -> Value {
         "info": {
             "title": "fyrr HTTP API",
             "version": MCP_CONTRACT_VERSION.to_string(),
-            "description": "The /v1/ routes of the reader (query, fetch, aggregate, report, list) and of \
+            "description": "The /v1/ routes of the reader (query, fetch, aggregate, recall, report, list) and of \
                 the writer (documents, delete), and `/metrics` of the optional metrics listener. The version is that of the MCP contract the \
                 query and fetch bodies follow.",
         },

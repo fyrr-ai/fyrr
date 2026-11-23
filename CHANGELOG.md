@@ -108,6 +108,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `filter` selects, optionally grouped by up to four scalar fields, in key
   order. It has no MCP tool. `list_filters` now runs the same scan. See
   [Aggregate](docs/http-api.md#aggregate).
+- `POST /v1/namespaces/{namespace}/recall` on the reader (an API key with the
+  `admin` role) measures the vector index against an exact search on up to 100
+  stored vectors, optionally under a filter, and returns `recall_at_10`,
+  `recall_at_75` and the row counts, never a document. It runs within the
+  request deadline and holds one query slot. It has no MCP tool. The background
+  recall sampler is now described too. See
+  [Recall](docs/http-api.md#recall) and
+  [Vector recall](docs/operations.md#vector-recall).
 - `fyrr writer namespace read-only true|false` and `PATCH /v1/namespaces/{namespace}`
   with `{"read_only": …}` (an API key with the `admin` role) freeze a namespace or
   thaw it. While it is frozen API writes and connector syncs are refused with

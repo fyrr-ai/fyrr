@@ -29,7 +29,7 @@ pub(super) fn configure(config: &Path, address: &std::net::SocketAddr, extra: &s
             "{base}\n[namespace.write_api]\n{extra}\n\
              [[identity.api_keys]]\nname='writer'\nkey={{env='FYRR_TEST_WRITE_KEY'}}\nroles=['write']\n\
              [[identity.api_keys]]\nname='reader'\nkey={{env='FYRR_TEST_READ_KEY'}}\nreaders=['usr:x']\n\
-             [[identity.api_keys]]\nname='admin-writer'\nkey={{env='FYRR_TEST_ADMIN_KEY'}}\nroles=['write','admin']\n\
+             [[identity.api_keys]]\nname='admin-writer'\nkey={{env='FYRR_TEST_ADMIN_KEY'}}\nroles=['write','admin']\nreaders=['usr:x']\n\
              [[identity.api_keys]]\nname='scoped'\nkey={{env='FYRR_TEST_SCOPED_KEY'}}\nroles=['write']\nnamespace_prefix='shop-'\n\
              [writer]\nthreads=2\n[writer.commit]\ncoalescing_timer='10m'\n\
              [writer.serve.admin]\nlisten='{address}'\noperator_token={{env='FYRR_TEST_OPERATOR'}}\n"
@@ -2187,6 +2187,119 @@ async fn identity_write_api_aggregates_the_documents_a_caller_reads_on_storage()
         ask(&narrow, json!({"aggregations": [count]})).await,
         (503, json!({"error": "busy"}))
     );
+}
+
+/// The JSON `recall` route measures the vector index on stored vectors of the
+/// rows a key may read: only an `admin` key may ask, a filter narrows the rows
+/// that are sampled and searched, a deadline bounds the run, and the answer
+/// holds counts and recall, never a document.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_reports_recall_to_an_admin_key_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let texts = ["alpha", "bravo", "charlie", "delta", "echo"];
+    embed(&root, &texts);
+    let writer = Writer::start(&config, &root, address).await;
+    let upserts = [
+        json!({"id": "a", "text": texts[0], "readers": ["usr:x"], "tag": "red"}),
+        json!({"id": "b", "text": texts[1], "readers": ["usr:x"], "tag": "red"}),
+        json!({"id": "c", "text": texts[2], "readers": ["usr:x"], "tag": "blue"}),
+        json!({"id": "d", "text": texts[3], "readers": ["usr:x"], "tag": "blue"}),
+        // Nobody the keys act for may read it: it is no row of any sample or count.
+        json!({"id": "hidden", "text": texts[4], "readers": ["usr:nobody"], "tag": "secret"}),
+    ];
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"settings": {"attributes": {"tag": "string"}}, "upserts": upserts})
+            )
+            .await,
+        (200, json!({"upserted": 5, "deleted": 0}))
+    );
+    let reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let ask = async |key: usize, body: Value| -> (u16, Value) {
+        let response = reader
+            .client
+            .post(format!(
+                "{}/v1/namespaces/dense-fixture/recall",
+                reader.base
+            ))
+            .bearer_auth(secret(key))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        (
+            response.status().as_u16(),
+            response.json::<Value>().await.unwrap(),
+        )
+    };
+
+    // Only the `admin` role may ask: a key that reads, or writes, is refused.
+    for key in [READ_KEY, WRITE_KEY] {
+        assert_eq!(
+            ask(key, json!({"count": 3})).await,
+            (403, json!({"error": "forbidden"}))
+        );
+    }
+
+    // The index finds every row of a namespace this small. The answer is four
+    // numbers: the hidden row is in no count, and no key, text or tag shows.
+    let (status, answer) = ask(ADMIN_KEY, json!({"count": 3})).await;
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(
+        answer,
+        json!({"samples": 3, "rows": 4, "recall_at_10": 1.0, "recall_at_75": 1.0})
+    );
+    // Fewer rows than `count`: every readable row is measured once.
+    let (status, answer) = ask(ADMIN_KEY, json!({"count": 100})).await;
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(answer["samples"], 4);
+    assert_eq!(answer["rows"], 4);
+
+    // The filter narrows both the rows that are sampled and the rows that are
+    // searched; one that selects only what the key may not read selects nothing.
+    let tag = |value: &str| json!({"field": "tag", "op": "eq", "value": value});
+    let (status, answer) = ask(ADMIN_KEY, json!({"count": 100, "filter": tag("red")})).await;
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(answer["samples"], 2);
+    assert_eq!(answer["rows"], 2);
+    assert_eq!(
+        ask(ADMIN_KEY, json!({"count": 5, "filter": tag("secret")})).await,
+        (
+            200,
+            json!({"samples": 0, "rows": 0, "recall_at_10": null, "recall_at_75": null})
+        )
+    );
+
+    // A deadline that the run cannot meet is `deadline_exceeded`, with no partial answer.
+    assert_eq!(
+        ask(ADMIN_KEY, json!({"count": 100, "deadline_ms": 1})).await,
+        (408, json!({"error": "deadline_exceeded"}))
+    );
+
+    // Arguments the schema does not take.
+    for body in [
+        json!({}),
+        json!({"count": 0}),
+        json!({"count": 101}),
+        json!({"count": 1, "deadline_ms": 0}),
+        json!({"count": 1, "unknown": true}),
+        json!({"count": 1, "filter": {"field": "nope", "op": "eq", "value": 1}}),
+    ] {
+        assert_eq!(
+            ask(ADMIN_KEY, body.clone()).await,
+            (400, json!({"error": "invalid_argument"})),
+            "{body}"
+        );
+    }
 }
 
 /// A `string` is filtered by prefix, substring and regular expression, and by
