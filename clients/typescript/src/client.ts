@@ -23,8 +23,20 @@ export const DEFAULT_TIMEOUT_MS = 30_000;
 // The server asks for 60 s after a `429`; a larger `Retry-After` is raised, not waited for.
 const MAX_RETRY_AFTER_MS = 120_000;
 const MAX_BACKOFF_MS = 30_000;
-// A request that failed with one of these codes never reached the server.
+// A request that failed with one of these codes in one of these system calls never reached the
+// server. The code alone is not enough: Linux also reports EHOSTUNREACH and ENETUNREACH from
+// `read` on a live connection, after the request was written.
 const UNSENT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH"]);
+const UNSENT_CALLS = new Set(["connect", "getaddrinfo"]);
+// A request that is wrong, not unlucky: a repeat fails the same way.
+const PERMANENT_CODES = new Set([
+  "ERR_INVALID_URL",
+  "ERR_INVALID_PROTOCOL",
+  "ERR_INVALID_CHAR",
+  "ERR_INVALID_HTTP_TOKEN",
+  "ERR_UNESCAPED_CHARACTERS",
+  "ERR_HTTP_INVALID_HEADER_VALUE",
+]);
 // The first character of a namespace name, in name order.
 const FIRST_CHARACTERS = "0123456789abcdefghijklmnopqrstuvwxyz";
 
@@ -255,7 +267,7 @@ export class Client {
   ): number | undefined {
     if (retry === "none" || attempt >= this.#maxRetries) return undefined;
     if (response === undefined) {
-      if (retry === "unsent" && !isUnsent(failure)) return undefined;
+      if (isPermanent(failure) || (retry === "unsent" && !isUnsent(failure))) return undefined;
     } else if (retry !== "all" || !(response.status === 408 || response.status === 429 || response.status >= 500)) {
       // An answer to a change does not prove that it was not applied: a proxy may send a 429 or
       // a 5xx after the writer took the request. Only a read repeats on one.
@@ -281,6 +293,10 @@ function checkedUrl(name: string, value: string): string {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new TypeError(`${name} must be an http or https URL`);
   }
+  // A password in a URL would be shown by an error or a log; the key goes in `apiKey`.
+  if (url.username || url.password || value.includes("?") || value.includes("#")) {
+    throw new TypeError(`${name} must be a base URL without credentials, query or fragment`);
+  }
   return value.replace(/\/+$/, "");
 }
 
@@ -303,13 +319,20 @@ function checkedNumber(name: string, value: number, min: number, integer = false
 /** Whether the connection could not be made, so the request was never sent. */
 function isUnsent(failure: unknown): boolean {
   if (!(failure instanceof Error)) return false;
-  const code = (failure as { code?: unknown }).code;
-  if (typeof code === "string" && UNSENT_CODES.has(code)) return true;
-  // undici wraps the system error as the `cause`; several addresses make an AggregateError.
+  const { code, syscall } = failure as { code?: unknown; syscall?: unknown };
+  if (typeof code === "string" && UNSENT_CODES.has(code) && typeof syscall === "string" && UNSENT_CALLS.has(syscall)) {
+    return true;
+  }
+  // An error may wrap the system error as its `cause`; several addresses make an AggregateError.
   if (failure instanceof AggregateError && failure.errors.length > 0 && failure.errors.every(isUnsent)) {
     return true;
   }
   return isUnsent(failure.cause);
+}
+
+function isPermanent(failure: unknown): boolean {
+  const code = (failure as { code?: unknown } | null)?.code;
+  return typeof code === "string" && PERMANENT_CODES.has(code);
 }
 
 function retryAfterMs(header: string | undefined): number | undefined {

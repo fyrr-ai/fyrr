@@ -51,8 +51,8 @@ const json = (body: unknown, status = 200, headers: { "Retry-After"?: string } =
 const found = () => json({ hits: [] });
 const ok = () => json({ upserted: 1, deleted: 0 });
 
-const withCode = (code: string) => () => {
-  throw Object.assign(new Error(code), { code });
+const withCode = (code: string, syscall = "connect") => () => {
+  throw Object.assign(new Error(code), { code, syscall });
 };
 const refused = withCode("ECONNREFUSED");
 const noRoute = withCode("EHOSTUNREACH");
@@ -95,7 +95,10 @@ for (const [name, send] of changes) {
     const unreachable = () => {
       throw new Error("connect failed", {
         cause: new AggregateError(
-          [Object.assign(new Error("a"), { code: "ECONNREFUSED" }), Object.assign(new Error("b"), { code: "ENETUNREACH" })],
+          [
+            Object.assign(new Error("a"), { code: "ECONNREFUSED", syscall: "connect" }),
+            Object.assign(new Error("b"), { code: "ENETUNREACH", syscall: "connect" }),
+          ],
           "",
         ),
       });
@@ -111,6 +114,9 @@ for (const [name, send] of changes) {
     ["429", json({ error: "rate_limited" }, 429, { "Retry-After": "1" })],
     ["a timeout", timedOut],
     ["a reset connection", reset],
+    // Linux reports these from `read` on a live connection, after the request was written.
+    ["EHOSTUNREACH from read", withCode("EHOSTUNREACH", "read")],
+    ["ENETUNREACH from read", withCode("ENETUNREACH", "read")],
   ];
   for (const [what, answer] of mayHaveApplied) {
     test(`${name} is not retried after ${what}`, async (t) => {
@@ -122,6 +128,24 @@ for (const [name, send] of changes) {
     });
   }
 }
+
+test("a read is retried after an unreachable host reported by read", async (t) => {
+  const waits = noSleep(t);
+  const fake = script(withCode("EHOSTUNREACH", "read"), found());
+  await client(fake).query("ns", {});
+  assert.equal(waits.length, 1);
+});
+
+test("a request that is wrong is not retried, even a read", async (t) => {
+  const waits = noSleep(t);
+  const invalid = () => {
+    throw Object.assign(new TypeError("Invalid character in header content"), { code: "ERR_INVALID_CHAR" });
+  };
+  const fake = script(invalid, found());
+  await assert.rejects(client(fake).query("ns", {}), TypeError);
+  assert.equal(fake.seen.length, 1);
+  assert.deepEqual(waits, []);
+});
 
 test("a conditional write is never retried", async (t) => {
   const waits = noSleep(t);
@@ -272,6 +296,13 @@ test("a URL or a number that is wrong is refused at construction", () => {
     assert.throws(() => new Client({ ...options, readerUrl }), TypeError);
   }
   assert.throws(() => new Client({ ...options, writerUrl: "nope" }), TypeError);
+  for (const readerUrl of ["http://user:pass@reader.test", "http://reader.test?a=1", "http://reader.test/#top", "http://reader.test?"]) {
+    assert.throws(
+      () => new Client({ ...options, readerUrl }),
+      (error: unknown) => error instanceof TypeError && !error.message.includes("pass"),
+    );
+  }
+  assert.doesNotThrow(() => new Client({ ...options, readerUrl: "http://reader.test:8090/base/" }));
   for (const bad of [{ timeoutMs: 0 }, { maxRetries: -1 }, { maxRetries: 1.5 }, { backoffMs: Number.NaN }]) {
     assert.throws(() => new Client({ ...options, ...bad }), RangeError);
   }

@@ -40,8 +40,9 @@ The key is stripped of surrounding whitespace, so one read from a file works;
 a key with a space, a control character or a non-ASCII character is refused
 with a `TypeError` that does not show it. The key is kept in a private field:
 `console.log(client)`, `util.inspect` and `JSON.stringify` do not show it, and
-no error carries it. A URL that is not `http` or `https`, and a timeout or retry
-count that is not a number in range, are refused when the client is made.
+no error carries it. A URL that is not a plain `http` or `https` base URL (one
+with a user or password, a query or a fragment), and a timeout or retry count that
+is not a number in range, are refused when the client is made.
 
 `writerUrl` is optional: a client without it rejects the writer routes. The API
 key (or OIDC access token) needs the role of each route
@@ -96,14 +97,17 @@ a timeout, and the statuses 408, 429 and 5xx. The wait is `backoffMs`
 milliseconds (default 500) doubling with each attempt, at most 30 seconds, with
 jitter. When the answer has `Retry-After`, the client waits that long instead
 (at most 120 seconds; a longer `Retry-After` is raised with `retryAfterMs` set,
-not waited for).
+not waited for). A request that is wrong, such as a header with an invalid character, is
+not retried.
 
 A **write** and `deleteNamespace` change data, and a lost answer does not say
 whether they applied. A repeat could overwrite a later change to the same ids,
 evaluate `delete_where` against newer documents, or delete a namespace that was
 created again ([guarantees](https://github.com/fyrr-ai/fyrr/blob/main/docs/guarantees.md)).
 They are retried only when the request provably did not reach the server (the
-connection could not be made): no answer, not even a `429` from a proxy, proves
+connection could not be made: `ECONNREFUSED`, `ENOTFOUND`, `EAI_AGAIN`,
+`EHOSTUNREACH` or `ENETUNREACH` from `connect` or `getaddrinfo`; the same codes
+from `read` come after the request was written and do not count): no answer, not even a `429` from a proxy, proves
 that it was not applied. A write that sets `conditions` is **never** retried.
 Every other failure, a timeout or `503 outcome_unknown` included, is raised for
 the caller to decide.
