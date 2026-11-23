@@ -40,7 +40,6 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   an older build refuses it; a namespace with the defaults keeps its versions,
   files and retrieval-policy digest. See
   [tuning](docs/tuning.md#namespace-vector-index).
-||||||| dd0a3350
 
 - The `query` route of the HTTP API takes `sub_queries`: 1 to 16 searches in
   one request, each with its own `filter`, ranking (`query` text, `vector`, or
