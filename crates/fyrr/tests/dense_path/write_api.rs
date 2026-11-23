@@ -290,7 +290,8 @@ async fn identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_stor
         body(Mcp::open(&config).call("fetch", json!({"source_id":"_api","root_id":"a1"})));
     assert!(fetched.to_string().contains("blue shirt"));
 
-    // The namespace's settings and schema are fixed; a row refers to what it declared.
+    // The namespace's settings are fixed; a row that names an attribute that
+    // is not declared and has no value to infer a type from (`null`) is refused.
     assert_eq!(
         writer
             .post(
@@ -303,7 +304,7 @@ async fn identity_write_api_upserts_searches_fetches_deletes_and_refuses_on_stor
     );
     for (row, code) in [
         (
-            json!({"id": "x", "text": "red hat", "colour": "red"}),
+            json!({"id": "x", "text": "red hat", "colour": null}),
             "attribute_undeclared",
         ),
         (
@@ -529,7 +530,7 @@ async fn identity_write_api_patches_a_document_and_keeps_what_it_does_not_name_o
             "vector_not_patchable",
         ),
         (json!({"id": "a1", "text": "red hat"}), "text_not_patchable"),
-        (json!({"id": "a1", "colour": "red"}), "attribute_undeclared"),
+        (json!({"id": "a1", "colour": null}), "attribute_undeclared"),
         (
             json!({"id": "a1", "price": "cheap"}),
             "attribute_type_mismatch",
@@ -3904,6 +3905,219 @@ async fn identity_write_api_keeps_the_columns_of_added_attributes_in_table_order
     assert_eq!(listing(&config, eq("z", json!(3))), ["r2"]);
     assert_eq!(listing(&config, eq("b", json!(2.5))), ["r2"]);
     assert_eq!(success(&config, &["writer", "verify"])["verified"], true);
+}
+
+/// An attribute that the schema does not declare is inferred from its first
+/// value and added to the schema of a namespace that serves, in upserts and in
+/// patches; it reads null for the rows written before it. The first type
+/// committed under a name stays, and a namespace without a publication keeps
+/// its schema.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_infers_undeclared_attributes_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    embed(&root, &["alpha", "bravo", "charlie", "delta", "echo"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let post = async |body: Value| writer.post(WRITE_KEY, "dense-fixture", &body).await;
+    let row = |id: &str, text: &str, more: Value| {
+        let mut row = json!({"id": id, "text": text, "readers": ["grp:allow"]});
+        row.as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        row
+    };
+    let eq = |field: &str, value: Value| json!({"field": field, "op": "eq", "value": value});
+    let schema = async || {
+        let (_, manifest) = super::coordination::publication(&config).await;
+        serde_json::to_value(&manifest.attributes).unwrap()
+    };
+
+    // No publication yet: the schema is what the settings say.
+    assert_eq!(
+        post(json!({"settings": {"attributes": {"price": "float"}}}))
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        post(json!({"upserts": [row("r0", "alpha", json!({"colour": "red"}))]})).await,
+        (400, json!({"error": "attribute_undeclared"}))
+    );
+    assert_eq!(
+        post(json!({"upserts": [row("r1", "alpha", json!({"price": 1.5}))]})).await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    assert_eq!(schema().await, json!({"price": "float"}));
+
+    // Published: the types come from the first values.
+    assert_eq!(
+        post(json!({"upserts": [row(
+            "r2",
+            "bravo",
+            json!({"colour": "red", "count": 3, "ratio": 0.5, "flag": true, "tags": ["a", "b"]}),
+        )]}))
+        .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    assert_eq!(
+        schema().await,
+        json!({"colour": "string", "count": "int", "flag": "bool", "price": "float",
+               "ratio": "float", "tags": {"array": "string"}})
+    );
+    // The new attributes filter as the declared ones do, and read null for the older row.
+    assert_eq!(listing(&config, eq("colour", json!("red"))), ["r2"]);
+    assert_eq!(
+        listing(&config, json!({"field": "count", "op": "gt", "value": 2})),
+        ["r2"]
+    );
+    assert_eq!(listing(&config, eq("flag", json!(true))), ["r2"]);
+    assert_eq!(listing(&config, eq("colour", Value::Null)), ["r1"]);
+
+    // A patch infers too, and the attribute is the same one for every document.
+    assert_eq!(
+        post(json!({"patches": [{"id": "r1", "grade": 4}]})).await,
+        (
+            200,
+            json!({"upserted": 0, "deleted": 0, "patched": 1, "skipped": 0})
+        )
+    );
+    assert_eq!(listing(&config, eq("grade", json!(4))), ["r1"]);
+    // A write by filter infers nothing: the committer may refuse it after the
+    // schema would be published.
+    assert_eq!(
+        writer
+            .post(
+                ADMIN_KEY,
+                "dense-fixture",
+                &json!({"patch_where": {"filter": eq("colour", json!("red")), "set": {"size": "l"}}})
+            )
+            .await,
+        (400, json!({"error": "attribute_undeclared"}))
+    );
+    assert!(schema().await.get("size").is_none());
+
+    // A name that is declared now keeps its type, and a value that has none to
+    // infer from names an attribute that is still not declared.
+    for (more, code) in [
+        (json!({"colour": 5}), "attribute_type_mismatch"),
+        (json!({"count": "many"}), "attribute_type_mismatch"),
+        (json!({"unknown": null}), "attribute_undeclared"),
+        (json!({"unknown": []}), "attribute_undeclared"),
+        (json!({"_hidden": 1}), "attribute_name_reserved"),
+        (json!({"Colour": 1}), "attribute_name_invalid"),
+        (
+            json!({"big": "x".repeat(4097)}),
+            "attribute_value_too_large",
+        ),
+    ] {
+        assert_eq!(
+            post(json!({"upserts": [row("r9", "charlie", more)]})).await,
+            (400, json!({"error": code}))
+        );
+    }
+    // Two rows that infer different types for one new name: the request is
+    // refused whole and the name is not declared.
+    assert_eq!(
+        post(json!({"upserts": [
+            row("r3", "charlie", json!({"shape": "square"})),
+            row("r4", "delta", json!({"shape": 4})),
+        ]}))
+        .await,
+        (400, json!({"error": "attribute_type_mismatch"}))
+    );
+    assert!(schema().await.get("shape").is_none());
+    // A request that the envelope would refuse declares nothing either: the
+    // empty id of a patch is checked before the schema is changed.
+    assert_eq!(
+        post(json!({"patches": [{"id": "", "hue": "x"}]})).await,
+        (400, json!({"error": "document_invalid"}))
+    );
+    assert!(schema().await.get("hue").is_none());
+
+    // Two requests at once that infer different types: the first committed
+    // wins, the other is refused, and no row has the other type.
+    let (one, two) = tokio::join!(
+        post(json!({"upserts": [row("r5", "delta", json!({"weight": 7}))]})),
+        post(json!({"upserts": [row("r6", "echo", json!({"weight": "heavy"}))]})),
+    );
+    let mut answers = [one, two];
+    answers.sort_by_key(|(status, _)| *status);
+    assert_eq!(answers[0], (200, json!({"upserted": 1, "deleted": 0})));
+    assert_eq!(
+        answers[1],
+        (400, json!({"error": "attribute_type_mismatch"}))
+    );
+    let (winner, value) = match schema().await["weight"].as_str() {
+        Some("int") => ("r5", json!(7)),
+        Some("string") => ("r6", json!("heavy")),
+        other => panic!("weight is {other:?}"),
+    };
+    assert_eq!(listing(&config, eq("weight", value)), [winner]);
+    assert_eq!(
+        listing(&config, json!({"not": eq("weight", Value::Null)})),
+        [winner]
+    );
+    assert_eq!(success(&config, &["writer", "verify"])["verified"], true);
+}
+
+/// The inferred attributes count toward the bound on the schema: one more than
+/// the bound is refused and the schema stays as it was.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_bounds_the_inferred_attributes_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    // Indexes of the attributes are not built here: that is maintenance's work.
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        format!("{text}\n[writer.serve]\nmaintenance = false\n"),
+    )
+    .unwrap();
+    embed(&root, &["alpha", "bravo", "charlie"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let post = async |body: Value| writer.post(WRITE_KEY, "dense-fixture", &body).await;
+    let row = |id: &str, text: &str, more: Value| {
+        let mut row = json!({"id": id, "text": text, "readers": ["grp:allow"]});
+        row.as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        row
+    };
+    let declared = async || {
+        let (_, manifest) = super::coordination::publication(&config).await;
+        manifest.attributes.len()
+    };
+    assert_eq!(
+        post(json!({"settings": {"attributes": {"a000": "int"}},
+                    "upserts": [row("r1", "alpha", json!({"a000": 1}))]}))
+        .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    // 126 more declared, leaving room for one inferred attribute.
+    let more: serde_json::Map<String, Value> = (1..127)
+        .map(|n| (format!("a{n:03}"), json!("int")))
+        .collect();
+    assert_eq!(post(json!({"settings": {"attributes": more}})).await.0, 200);
+    assert_eq!(declared().await, 127);
+    assert_eq!(
+        post(json!({"upserts": [row("r2", "bravo", json!({"last": 1}))]})).await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    assert_eq!(declared().await, fyrr_core::limits::schema::MAX_ATTRIBUTES);
+    assert_eq!(
+        post(json!({"upserts": [row("r3", "charlie", json!({"over": 1}))]})).await,
+        (400, json!({"error": "attribute_limit_exceeded"}))
+    );
+    assert_eq!(declared().await, fyrr_core::limits::schema::MAX_ATTRIBUTES);
+    // A row that names only attributes it has is not refused.
+    assert_eq!(
+        post(json!({"upserts": [row("r3", "charlie", json!({"last": 2}))]})).await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
 }
 
 /// A restore to a version from before an attribute was added gives the table the

@@ -79,9 +79,10 @@ types are `string`, `int` (64-bit signed), `uint` (64-bit unsigned), `float`
 (8-4-4-4-12 hexadecimal digits in requests, either case; stored in 16 bytes)
 and `bytes` (base64 in requests, at most 4096 characters). An array is
 `{ array = "<type>" }` of any type but `bytes`: a JSON array of values of that
-type, none of them `null`. These types are declared, never inferred: an
-undeclared attribute takes the type of its first value, `string`, `int`,
-`float` or `bool`, or an array of one of them. The first content publication
+type, none of them `null`. These types are declared: only a `string`, `int`,
+`float` or `bool`, or an array of one of them, is
+[inferred](#inferred-attributes) from the first value of an attribute that is not
+declared. The first content publication
 creates a nullable column for each declaration. The
 [`filter` argument](mcp-tools.md#filters) can compare those columns. The
 [document write API](http-api.md#write-documents) supplies their values.
@@ -236,12 +237,40 @@ and the indexes of attributes, which a
 [write request](http-api.md#changing-the-schema) changes on a namespace that
 exists. A type is never changed and an attribute is never removed.
 
-The document write API refuses an undeclared attribute with
-`attribute_undeclared`, and a value that does not fit its type with a named
+The document write API refuses a value that does not fit its type with a named
 error: `attribute_type_mismatch`, `attribute_value_invalid` or
 `attribute_value_too_large` (a `string` over 4096 bytes). A schema is refused
 with `attribute_limit_exceeded` (a 129th attribute), `attribute_name_invalid` or
 `attribute_name_reserved`. A namespace that the write API creates cannot declare `id` (the key of a row) as an attribute or as its `text_attribute`.
+
+### Inferred attributes
+
+An upsert or a patch written through the API to a namespace that has published may carry an
+attribute that the schema does not declare. The attribute takes the type of its
+first value: `string`, `int`, `float` or `bool`, or an array of one of them by
+its first element. A `datetime`, `uint`, `uuid` or `bytes` attribute is declared,
+as a string is never taken for a date. It is added to the schema as a
+[schema request](http-api.md#changing-the-schema) adds one, before the rows are
+published: a nullable column that reads `null` for the rows written earlier,
+with the default indexes of its type, which the next maintenance builds. The
+manifest of the publication lists it with the others.
+
+The first type committed under a name stays. A later value of another type, in
+the same request or in another, is refused with `attribute_type_mismatch`, and the
+writer makes every check of the rows before it declares the attribute: a request
+refused by those checks declares nothing. A write that the committer refuses
+later (`409 rejected`, for instance a write by filter that matches too many
+documents) or that fails for a reason of the service (the embedding provider is
+down, `503`) leaves the inferred attribute declared, nullable and empty. Another
+writer that adds attributes to the namespace at the same moment can make the
+request `503 busy` before anything of its rows is written: send it again. The bound of 128 attributes, the rules
+for a name and the limit on a value hold for inferred attributes as they do for
+declared ones. A `null` or an empty array infers nothing: such a value for an
+attribute that is not declared is `400 attribute_undeclared`, as is any
+undeclared attribute in `patch_where.set`, which infers nothing, or written to a
+namespace that has no publication yet, whose
+schema stays what its creating request declared. The filters, `order_by` and
+`include` of a query take an attribute only once it is declared.
 
 ### Analyzer of a full-text index
 

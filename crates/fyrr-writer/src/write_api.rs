@@ -14,6 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures::StreamExt;
+use fyrr_core::attributes::AttributeSchema;
 use fyrr_core::config::{
     ApiKeyRole, Config, PermissionsMode, SourceConfig, SourceIntervals, is_api_key_secret,
     is_namespace_name, prefix_allows,
@@ -652,6 +653,9 @@ fn checked_patches(
         let Some(Value::String(id)) = row.remove("id") else {
             return Err(ApiError(400, "id_missing"));
         };
+        // The check that the envelope makes of every id, made before anything is
+        // published for the request.
+        fyrr_core::limits::check_id("id", &id).map_err(|_| ApiError(400, "document_invalid"))?;
         if !ids.insert(id.clone()) {
             return Err(ApiError(400, "duplicate_id"));
         }
@@ -1081,6 +1085,148 @@ async fn leftovers(
     }
 }
 
+/// Publishes the attributes `added` to the schema of the namespace, as a request
+/// that carries only a schema does, and returns the head and the policy that
+/// serve them. The first attribute committed under a name decides its type: one
+/// that a request inferred another type for meanwhile is refused. The rows of
+/// the request were laid out in the column order `predicted`, from the schema as
+/// it was read: when another writer added columns first, the table's order
+/// differs and nothing is written (`503 busy`; the request is sent again).
+/// Boxed: the future of `execute` is at the compiler's depth limit.
+fn add_inferred<'a>(
+    process: &'a Config,
+    config: &'a Config,
+    head: &'a fyrr_core::publication::ServingHead,
+    added: &'a AttributeSchema,
+    predicted: Option<&'a [String]>,
+) -> futures::future::BoxFuture<
+    'a,
+    Result<(fyrr_core::publication::ServingHead, PolicyArtifact), ApiError>,
+> {
+    Box::pin(async move {
+        change_schema_waiting(process, &head.incarnation, |current| {
+            let mut next = current.clone();
+            for (name, kind) in added {
+                if next.attributes.entry(name.clone()).or_insert(*kind) != kind {
+                    return Err(WriterError::AttributeTypeChange);
+                }
+            }
+            // Another request may have filled the schema meanwhile.
+            if next.attributes.len() > fyrr_core::limits::schema::MAX_ATTRIBUTES {
+                return Err(WriterError::PublicationInvalid);
+            }
+            Ok(next)
+        })
+        .await
+        .map_err(|error| match error {
+            WriterError::AttributeTypeChange => ApiError(400, "attribute_type_mismatch"),
+            other => other.into(),
+        })?;
+        let (store, root) = fyrr_reader::storage::namespace_store(config)?;
+        let current = fyrr_reader::storage::optional_head(config)
+            .await?
+            .ok_or(ApiError(503, "unavailable"))?;
+        // The namespace the request was checked against is the one it is written
+        // into: it may have been deleted and created again since the lease was freed.
+        if current.incarnation != head.incarnation {
+            return Err(ApiError(409, "namespace_changed"));
+        }
+        if let Some(predicted) = predicted {
+            columns_unchanged(predicted, &attribute_order(config, Some(&current)).await?)?;
+        }
+        let policy = fyrr_reader::storage::artifact(store.as_ref(), &root, &current.policy).await?;
+        Ok((current, policy))
+    })
+}
+
+/// A fragment names its columns by position, so rows laid out in another order
+/// than the table's would put their values in the wrong attributes.
+fn columns_unchanged(predicted: &[String], actual: &[String]) -> Result<(), ApiError> {
+    if predicted == actual {
+        Ok(())
+    } else {
+        Err(ApiError(503, "busy"))
+    }
+}
+
+/// Changes the schema of the namespace under the lease. The committer holds the
+/// lease while it publishes, and a request it answered may not have released it
+/// yet: it waits for it a moment. A namespace that was replaced since `incarnation`
+/// is refused.
+/// Boxed: the future of `execute` is at the compiler's depth limit.
+fn change_schema_waiting<'a>(
+    config: &'a Config,
+    incarnation: &'a str,
+    change: impl Fn(&NamespaceSettings) -> Result<NamespaceSettings> + Send + Sync + 'a,
+) -> futures::future::BoxFuture<'a, Result<()>> {
+    Box::pin(async move {
+        let mut waited = 0;
+        loop {
+            let changed = crate::commit::change_schema(config, |held, current| {
+                if held.incarnation != incarnation {
+                    return Err(WriterError::NamespaceChanged);
+                }
+                change(current)
+            })
+            .await;
+            match changed {
+                Err(WriterError::CommitterBusy) if waited < LEASE_WAIT_TRIES => {
+                    waited += 1;
+                    tokio::time::sleep(LEASE_WAIT).await;
+                }
+                other => break other,
+            }
+        }
+    })
+}
+
+/// The attributes that the upserts and patches of the request name and the schema
+/// does not declare (not `patch_where`: the committer may refuse that write after
+/// the schema is published), each with the type of its first value (`resolve` infers it and
+/// checks the name, the bound and the value). A row that is too large or not an
+/// object is left to the check of the rows. A `null` or an empty array infers
+/// nothing: the attribute stays undeclared.
+fn inferred_attributes(
+    body: &Payload,
+    settings: &NamespaceSettings,
+) -> Result<AttributeSchema, ApiError> {
+    let text_key = settings
+        .write_api
+        .as_ref()
+        .map_or("text", |api| api.text_attribute.as_str());
+    let mut schema = settings.attributes.clone();
+    let infer = |schema: &mut AttributeSchema, name: &str, value: &Value| {
+        fyrr_core::attributes::resolve(schema, name, value)
+            .map(drop)
+            .map_err(|error| ApiError(400, error.code()))
+    };
+    let undeclared = |schema: &AttributeSchema, name: &str| {
+        !matches!(name, "id" | "readers" | "vector")
+            && name != text_key
+            && !settings.vectors.contains_key(name)
+            && !schema.contains_key(name)
+    };
+    for raw in body.upserts.0.iter().chain(&body.patches.0) {
+        if raw.get().len() > ROW_MAX_BYTES {
+            continue;
+        }
+        let Ok(row) =
+            serde_json::from_str::<BTreeMap<String, &serde_json::value::RawValue>>(raw.get())
+        else {
+            continue;
+        };
+        for (name, value) in row {
+            if undeclared(&schema, &name) {
+                let value =
+                    serde_json::from_str(value.get()).map_err(|_| ApiError(400, "body_invalid"))?;
+                infer(&mut schema, &name, &value)?;
+            }
+        }
+    }
+    schema.retain(|name, _| !settings.attributes.contains_key(name));
+    Ok(schema)
+}
+
 /// Every success answer follows what was written being durable.
 async fn durable(config: &Config) -> Result<(), ApiError> {
     fyrr_reader::storage::observed_durability(config)?
@@ -1121,7 +1267,7 @@ async fn execute(
     // The settings the request is checked against: the namespace's with the
     // schema the request asks for, or those the request would create it with.
     // Nothing is created or changed by a refused request.
-    let settings = match &existing {
+    let mut settings = match &existing {
         Some((_, policy)) => {
             if policy.settings.write_api.is_none() {
                 return Err(ApiError(409, "namespace_not_writable"));
@@ -1175,25 +1321,11 @@ async fn execute(
             return Err(ApiError(400, "schema_change_with_rows"));
         }
         // The change is made again under the lease, to the settings it finds
-        // there. The committer holds the lease while it publishes, and a request
-        // it answered may not have released it yet: wait for it a moment.
-        let mut waited = 0;
-        loop {
-            let changed = crate::commit::change_schema(config, |held, current| {
-                if held.incarnation != head.incarnation {
-                    return Err(WriterError::NamespaceChanged);
-                }
-                changed_schema(current, requested.as_ref())
-            })
-            .await;
-            match changed {
-                Err(WriterError::CommitterBusy) if waited < LEASE_WAIT_TRIES => {
-                    waited += 1;
-                    tokio::time::sleep(LEASE_WAIT).await;
-                }
-                other => break other?,
-            }
-        }
+        // there.
+        change_schema_waiting(config, &head.incarnation, |current| {
+            changed_schema(current, requested.as_ref())
+        })
+        .await?;
         return Ok(WriteResponse {
             upserted: 0,
             deleted: 0,
@@ -1201,6 +1333,15 @@ async fn execute(
             skipped: None,
         });
     }
+    // An attribute of a row that the namespace does not declare takes the type
+    // of its first value; it is added to the schema once the request is checked.
+    // A namespace without a publication keeps its schema until it has one.
+    let added = match &existing {
+        Some((head, _)) if head.content.is_some() => inferred_attributes(&body, &settings)?,
+        _ => AttributeSchema::new(),
+    };
+    settings.attributes.extend(added.clone());
+    let process = config;
     let config = config
         .with_settings(&settings)
         .ok_or(ApiError(503, "unavailable"))?;
@@ -1218,6 +1359,7 @@ async fn execute(
             .filter(|_| !body.upserts.0.is_empty()),
     )
     .await?;
+    let predicted = (!body.upserts.0.is_empty()).then(|| order.clone());
     let (rows, attributes, patches, conditions) = checked(&mut body, &config, text_key, order)?;
     let filter_writes = checked_filter_writes(&mut body, &config, text_key)?;
     let (upserted, deleted) = (rows.len() as u64, body.deletes.0.len() as u64);
@@ -1256,6 +1398,15 @@ async fn execute(
         deleted,
         patched: None,
         skipped: None,
+    };
+    // The inferred attributes are published, under the lease, before the rows
+    // that hold them are prepared: the column is there, null for every older
+    // row, when the envelope is applied.
+    let existing = match existing {
+        Some((head, _)) if !added.is_empty() => {
+            Some(add_inferred(process, &config, &head, &added, predicted.as_deref()).await?)
+        }
+        other => other,
     };
     let (head, served) = match existing {
         Some(existing) => existing,
@@ -1483,6 +1634,17 @@ async fn write_envelope(
 mod tests {
     use super::*;
     use fyrr_core::http_api::{PatchWhere, WriteRequest, WriteRow};
+
+    #[test]
+    fn rows_laid_out_in_another_column_order_than_the_tables_are_refused() {
+        let order = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert!(columns_unchanged(&order(&["a", "z"]), &order(&["a", "z"])).is_ok());
+        // Another writer added `z` first: the table holds z, a.
+        assert!(matches!(
+            columns_unchanged(&order(&["a", "z"]), &order(&["z", "a"])),
+            Err(ApiError(503, "busy"))
+        ));
+    }
 
     /// The body that `schemas/openapi.json` describes is the body the route
     /// parses: `Payload` refuses a member that `WriteRequest` has and it lacks.

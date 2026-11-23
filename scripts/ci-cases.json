@@ -439,6 +439,10 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-writer:lib:fyrr_writer/write_api::tests::rows_laid_out_in_another_column_order_than_the_tables_are_refused": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-writer:lib:fyrr_writer/threads::tests::threads_size_every_pool_and_the_full_text_workers": {
         "tier": "quick",
         "seconds": 0.001
@@ -2342,6 +2346,14 @@
         "seconds": 40
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_keeps_the_columns_of_added_attributes_in_table_order_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_infers_undeclared_attributes_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_bounds_the_inferred_attributes_on_storage": {
         "tier": "full",
         "seconds": 40
       },
