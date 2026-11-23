@@ -150,10 +150,17 @@ async fn filtered_dense(
         .unwrap();
     // The fixture's query vector is its first document's vector.
     let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
-    let rows = reader
-        .dense(&vector, k, false, &mut telemetry)
+    let (rows, by_index) = reader
+        .dense_traced(&vector, k, false, &mut telemetry)
         .await
         .unwrap();
+    // The index found the rows exactly when the search of the index ran: a
+    // recall run reports an exact scan as `approximate: false`.
+    assert_eq!(
+        by_index,
+        !rows.is_empty() && searched_index(&telemetry),
+        "{telemetry:?}"
+    );
     for row in &rows {
         // Nothing outside the authorization and the filter is returned.
         assert!(reader.selected_rows().selected(row.row_id));

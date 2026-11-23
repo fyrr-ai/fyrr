@@ -895,9 +895,18 @@ async fn authenticate_mcp(
         });
     // The lookup of an API key precedes everything else, a cancellation included.
     let admit = || async {
-        timeout_at(deadline, admission.authorize(config, &subject, needs.roles))
-            .await?
-            .map_err(refuse)
+        timeout_at(deadline, async {
+            // Every role of the route holds as the request is admitted, not
+            // only as the namespace was opened.
+            if !needs.also.is_empty() {
+                admission
+                    .grant(&subject, needs.also, &config.namespace.name)
+                    .await?;
+            }
+            admission.authorize(config, &subject, needs.roles).await
+        })
+        .await?
+        .map_err(refuse)
     };
     // Authenticated control traffic has its own concurrency bound and never
     // spends a user's or group's request allowance. IDs remain subject-scoped.

@@ -142,9 +142,15 @@ impl PreparedReader {
             {
                 routing_telemetry(telemetry, Some(RoutingFallback::Absent), false);
             }
+            // Whether the index itself found a row: the unindexed tail is
+            // scanned, whatever it holds.
+            let mut index_found = false;
             let candidates = if self.preparation_reservation.warm() && indexed {
                 match self.candidates(vector, shortlist, &plan, telemetry).await {
-                    Ok(candidates) => Some(candidates),
+                    Ok((candidates, found)) => {
+                        index_found = found;
+                        Some(candidates)
+                    }
                     Err(PartitionMapUnavailable) => None,
                     Err(error) => return Err(error),
                 }
@@ -161,7 +167,7 @@ impl PreparedReader {
                 .indexes
                 .iter()
                 .any(|index| index.name == Layout::VECTOR_INDEX);
-            let mut by_index = has_index && candidates.is_some();
+            let mut by_index = has_index && index_found;
             let mut rows = if let Some(candidates) = candidates {
                 match self
                     .refine_dense_candidates(vector, candidates, wanted, k, shortlist, telemetry)
@@ -447,7 +453,7 @@ impl PreparedReader {
         shortlist: usize,
         plan: &FilterPlan,
         telemetry: &mut Telemetry,
-    ) -> Result<BTreeSet<u64>> {
+    ) -> Result<(BTreeSet<u64>, bool)> {
         let indexes = &self.indexes;
         let prefilter = Arc::new(DatasetPreFilter::new(
             self.dataset.clone(),
@@ -572,6 +578,7 @@ impl PreparedReader {
         let mut ranked: Vec<_> = candidates.into_iter().collect();
         ranked.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
         ranked.truncate(shortlist);
+        let found = !ranked.is_empty();
         let mut result: BTreeSet<_> = ranked.into_iter().map(|(id, _)| id).collect();
         result.extend(
             self.admission
@@ -581,6 +588,6 @@ impl PreparedReader {
                 .flatten()
                 .map(u64::from),
         );
-        Ok(result)
+        Ok((result, found))
     }
 }

@@ -568,10 +568,11 @@ while it runs fails it with `503 authorization_unavailable`. Without a sample
 both recalls are `null`.
 
 A query may answer by an exact scan instead of the index, as one with a
-selective `filter` does, or one on a namespace without a vector index.
-`approximate` is `true` only when the index answered every sample; when it is
-`false` the recalls compare two exact answers and measure no index. The answer
-names no document and returns no text or vector.
+selective `filter` does, or one on a namespace without a vector index, or for a
+key that reads only rows the index does not cover yet. `approximate: false`
+means that at least one sample was answered by an exact scan: its recall
+compares two exact answers and measures no index. The answer names no document
+and returns no text or vector.
 
 The run holds one query slot and stops at the deadline with `408
 deadline_exceeded` and no partial answer. Each sample scans every selected
