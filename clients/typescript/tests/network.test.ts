@@ -1,7 +1,11 @@
 // The client over real sockets and its default transport, against small local HTTP servers.
 
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer as createSocketServer } from "node:net";
+import { promisify } from "node:util";
+import { gzipSync } from "node:zlib";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 
@@ -162,6 +166,66 @@ test("an integer beyond 2^53 is a bigint in an answer and exact in a request", a
       huge: 1e300,
       list: [18446744073709551615n],
     });
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test("a compressed answer is refused with a clear error, once", async () => {
+  const accepted: (string | undefined)[] = [];
+  const { url, server } = await serve((request, response) => {
+    accepted.push(request.headers["accept-encoding"]);
+    response.setHeader("Content-Encoding", "gzip");
+    response.end(gzipSync('{"hits":[]}'));
+  });
+  try {
+    const client = new Client({ readerUrl: url, apiKey: "k" });
+    await assert.rejects(client.query("ns", {}), /Content-Encoding gzip/);
+    assert.deepEqual(accepted, ["identity"]);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test("a 101 answer fails the request instead of hanging it", async () => {
+  let received = 0;
+  const server = createSocketServer((socket) => {
+    socket.on("data", () => {
+      received++;
+      socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r\nConnection: Upgrade\r\n\r\n");
+    });
+    socket.on("error", () => undefined);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const client = new Client({ readerUrl: url, apiKey: "k", timeoutMs: 5000 });
+    await assert.rejects(client.query("ns", {}), /switch protocols/);
+    assert.equal(received, 1);
+  } finally {
+    server.close();
+  }
+});
+
+test("NODE_DEBUG=http does not print the key", async () => {
+  const secret = "fyrr_key_debug_secret";
+  const { url, server } = await serve((request, response) => {
+    request.resume();
+    answer(response, { hits: [] });
+  });
+  try {
+    const entry = new URL("../src/index.ts", import.meta.url).href;
+    const script = `import { Client } from ${JSON.stringify(entry)};
+      await new Client({ readerUrl: ${JSON.stringify(url)}, apiKey: ${JSON.stringify(secret)} }).query("ns", {});`;
+    const { stdout, stderr } = await promisify(execFile)(
+      process.execPath,
+      ["--input-type=module", "-e", script],
+      { env: { ...process.env, NODE_DEBUG: "http" } },
+    );
+    assert.ok(stderr.includes("HTTP"), "the debug output is on"); // so the check below can fail
+    assert.ok(!(stdout + stderr).includes(secret), stderr);
   } finally {
     server.closeAllConnections();
     server.close();

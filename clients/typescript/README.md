@@ -76,7 +76,8 @@ The workflow of the client fails when `src/models.ts` is stale
 
 The clients of a process share keep-alive agents of `node:http` and
 `node:https`, so connections are reused and there is nothing to close. The
-transport sends each request once: it follows no redirect and repeats nothing,
+transport asks for `Accept-Encoding: identity` and refuses an answer with another
+`Content-Encoding`, or a `101`, with an error. It sends each request once: it follows no redirect and repeats nothing,
 a `421` included, so only the retry policy below ever sends a request again. Pass
 your own `transport` (a function from a request to a response, which may wrap
 the exported `nodeTransport`) to use a proxy. The default `timeoutMs` is **30,000**, above the 10 seconds that
@@ -97,8 +98,8 @@ a timeout, and the statuses 408, 429 and 5xx. The wait is `backoffMs`
 milliseconds (default 500) doubling with each attempt, at most 30 seconds, with
 jitter. When the answer has `Retry-After`, the client waits that long instead
 (at most 120 seconds; a longer `Retry-After` is raised with `retryAfterMs` set,
-not waited for). A request that is wrong, such as a header with an invalid character, is
-not retried.
+not waited for). A request that is wrong, such as a header with an invalid character, and
+a TLS certificate error are not retried.
 
 A **write** and `deleteNamespace` change data, and a lost answer does not say
 whether they applied. A repeat could overwrite a later change to the same ids,

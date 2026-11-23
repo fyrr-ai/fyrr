@@ -147,6 +147,16 @@ test("a request that is wrong is not retried, even a read", async (t) => {
   assert.deepEqual(waits, []);
 });
 
+test("a read is not retried after a certificate error", async (t) => {
+  const waits = noSleep(t);
+  for (const code of ["DEPTH_ZERO_SELF_SIGNED_CERT", "CERT_HAS_EXPIRED", "ERR_TLS_CERT_ALTNAME_INVALID", "UNABLE_TO_VERIFY_LEAF_SIGNATURE"]) {
+    const fake = script(withCode(code, "connect"), found());
+    await assert.rejects(client(fake).query("ns", {}), Error);
+    assert.equal(fake.seen.length, 1, code);
+  }
+  assert.deepEqual(waits, []);
+});
+
 test("a conditional write is never retried", async (t) => {
   const waits = noSleep(t);
   const conditional: WriteRequest = { ...WRITE, conditions: { a: { field: "version", op: "lt", value: 2 } } };

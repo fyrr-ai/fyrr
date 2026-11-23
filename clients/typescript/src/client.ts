@@ -36,7 +36,10 @@ const PERMANENT_CODES = new Set([
   "ERR_INVALID_HTTP_TOKEN",
   "ERR_UNESCAPED_CHARACTERS",
   "ERR_HTTP_INVALID_HEADER_VALUE",
+  "ERR_FYRR_UNSUPPORTED_ANSWER",
 ]);
+// A certificate that does not verify does not verify the next time: TLS errors are permanent.
+const TLS_CODE = /^(ERR_TLS_|CERT_|UNABLE_TO_|DEPTH_ZERO_|SELF_SIGNED_|HOSTNAME_MISMATCH)/;
 // The first character of a namespace name, in name order.
 const FIRST_CHARACTERS = "0123456789abcdefghijklmnopqrstuvwxyz";
 
@@ -332,7 +335,7 @@ function isUnsent(failure: unknown): boolean {
 
 function isPermanent(failure: unknown): boolean {
   const code = (failure as { code?: unknown } | null)?.code;
-  return typeof code === "string" && PERMANENT_CODES.has(code);
+  return typeof code === "string" && (PERMANENT_CODES.has(code) || TLS_CODE.test(code));
 }
 
 function retryAfterMs(header: string | undefined): number | undefined {
@@ -396,14 +399,23 @@ export const nodeTransport: Transport = (request) =>
     const url = new URL(request.url);
     const protocol = url.protocol === "https:" ? "https:" : "http:";
     const signal = AbortSignal.timeout(request.timeoutMs);
-    const headers = { ...request.headers };
+    const headers: Record<string, string> = { ...request.headers, "Accept-Encoding": "identity" };
     if (request.body !== undefined) headers["Content-Length"] = String(Buffer.byteLength(request.body));
     // A timeout destroys the request with an `AbortError`; the caller gets the `TimeoutError`.
     const fail = (error: unknown) => reject(signal.aborted ? signal.reason : error);
+    const refuse = (message: string) =>
+      Object.assign(new Error(message), { code: "ERR_FYRR_UNSUPPORTED_ANSWER" });
+    // The headers are set after the request is made: `NODE_DEBUG=http` prints its options,
+    // and the key must not be in them.
     const outgoing = (protocol === "https:" ? https : http).request(
       url,
-      { method: request.method, headers, agent: agents[protocol], signal },
+      { method: request.method, agent: agents[protocol], signal },
       (response) => {
+        const encoding = response.headers["content-encoding"];
+        if (encoding !== undefined && encoding.toLowerCase() !== "identity") {
+          response.destroy();
+          return fail(refuse(`the answer has Content-Encoding ${encoding}, which this client does not decode`));
+        }
         response.setEncoding("utf8");
         let text = "";
         response.on("data", (chunk: string) => (text += chunk));
@@ -415,6 +427,12 @@ export const nodeTransport: Transport = (request) =>
         });
       },
     );
+    for (const [name, value] of Object.entries(headers)) outgoing.setHeader(name, value);
+    // A `101` hands the socket over: nothing here speaks another protocol, and a promise must not hang.
+    outgoing.on("upgrade", (_response, socket) => {
+      socket.destroy();
+      fail(refuse("the server asked to switch protocols"));
+    });
     outgoing.on("error", fail);
     outgoing.end(request.body);
   });
