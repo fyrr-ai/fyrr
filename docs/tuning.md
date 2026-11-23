@@ -49,7 +49,7 @@ language = "german"
 [attribute's analyzer](#analyzer-of-a-full-text-index): the same keys, defaults
 and limits. Every use of the text index follows it: the lexical lane, a
 [`phrase`](http-api.md#matching-tokens) (with `fts_positions`), and the
-`highlights` of an excerpt. A namespace that has no analyzer keeps the
+excerpt of a hit and its `highlights`. A namespace that has no analyzer keeps the
 `simple` tokenizer and its `fts_*` keys, its index and its policy digest as
 they were, and `fts_stem` stems in English only; the analyzer's `language`
 stems in any of the 18 languages. Setting `fts_stem`, `fts_remove_stop_words`,
@@ -64,9 +64,15 @@ Unlike the analyzer of an attribute, the analyzer of the text cannot change
 once the namespace exists: it is part of the policy artifact the namespace
 was created with, as the `fts_*` keys are, and a changed `[namespace.analyzer]`
 in the file is ignored for an existing namespace. To change it, create a new
-namespace. A `highlights` range is chosen as the `simple` tokenizer would cut a
-token at the edge of an excerpt, so with another tokenizer a token cut by the
-edge of the excerpt may be marked.
+namespace.
+
+An excerpt is chosen, and its `highlights` are marked, with the tokens of the
+analyzer: the passage holds the most distinct tokens of the query, so with a
+language a passage with `Häuser` is found by `haus`. The tokenizer is not used
+for one thing: whether a passage cuts a token at its edge is judged as the
+`simple` tokenizer would, by alphanumeric characters, so with the `whitespace`
+or `unicode` tokenizer a token cut by the edge of the excerpt may be marked, or
+one left out.
 
 ### The size of the positions
 

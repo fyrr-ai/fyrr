@@ -86,7 +86,9 @@ Each hit has `source_id`, [`root_id`](architecture.md#terms), [`record_id`](arch
 `source_type`, `title`, `author`, `team`, `project`, `status`, `labels`,
 `created_at`, `updated_at`, `score`, an `excerpt` (`text`, `start`, `end` in
 codepoints of that record) or `content`, and with `queries` a
-`query_index`. An excerpt is a passage of up to 1200 codepoints whose
+`query_index`. An excerpt is a passage of up to 1200 codepoints, chosen for the
+tokens of the query as the namespace's full-text
+[analyzer](tuning.md#the-analyzer-of-the-text) reduces them, whose
 `record_id`, `revision` and offsets can be passed to `fetch` as a window.
 `truncated` reports hits and text dropped by `reader.max_response_bytes`.
 

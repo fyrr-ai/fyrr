@@ -99,6 +99,10 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-reader:lib:fyrr_reader/excerpt::tests::selection_follows_the_analyzer": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-reader:lib:fyrr_reader/generation::tests::handover_reclaims_session_cache_and_admits_a_larger_publication": {
         "tier": "quick",
         "seconds": 0.001

@@ -116,6 +116,10 @@ and the stop words of an index are its
 
 ## 4. Show what matched
 
+The excerpt of a hit is the passage with the most distinct tokens of the query,
+cut and reduced by the same analyzer, so a passage that holds a stemmed or
+folded match is the one returned.
+
 `highlights` adds the ranges of each excerpt that match the query, in the
 codepoints of the record, as the excerpt's `start` and `end` are. A matched
 token is the one the namespace's analyzer reduces to a token of the query, so

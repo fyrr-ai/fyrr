@@ -2,8 +2,33 @@ use super::*;
 use fyrr_core::limits::mcp::EXCERPT_CODEPOINTS;
 use lance_index::scalar::InvertedIndexParams;
 
+/// The tokenizer of a namespace with `extra` keys next to its name.
+fn namespace_tokenizer(extra: serde_json::Value) -> Box<dyn LanceTokenizer> {
+    let mut namespace = serde_json::json!({"name": "docs"});
+    namespace.as_object_mut().unwrap().extend(
+        extra
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+    let namespace: NamespaceConfig = serde_json::from_value(namespace).unwrap();
+    fts_params(&namespace).unwrap().build().unwrap()
+}
+fn select_with(tokenizer: &dyn LanceTokenizer, text: &str, query: &str, cap: u32) -> Excerpt {
+    Terms::new(tokenizer, query)
+        .unwrap()
+        .select(text, cap)
+        .unwrap()
+}
+/// A selection in a default namespace.
 fn select(text: &str, query: &str, cap: u32) -> Excerpt {
-    Terms::new(query).select(text, cap)
+    select_with(
+        namespace_tokenizer(serde_json::json!({})).as_ref(),
+        text,
+        query,
+        cap,
+    )
 }
 #[test]
 fn excerpt_cases() {
@@ -93,6 +118,48 @@ fn excerpt_cases() {
     );
 }
 
+#[test]
+fn selection_follows_the_analyzer() {
+    let cap = 30;
+    let text = "Die Katze schläft lange. Wir sahen viele Häuser dort. Am Ende blieb Ruhe.";
+    let german = namespace_tokenizer(serde_json::json!({"analyzer": {"language": "german"}}));
+    // Stemming: `haus` and `Häuser` share a stem.
+    let stemmed = select_with(german.as_ref(), text, "haus", cap);
+    assert_eq!(stemmed.text, "Wir sahen viele Häuser dort.");
+    assert_eq!(stemmed.start, 25);
+    // The default namespace has no stemmer: the word is not found, the prefix is taken.
+    let literal = select(text, "haus", cap);
+    assert_eq!(
+        (literal.start, literal.text.as_str()),
+        (0, "Die Katze schläft lange. Wir s")
+    );
+    // Stop words match nothing: the query is empty and the excerpt is the prefix.
+    let stop = select_with(german.as_ref(), text, "die der", cap);
+    assert_eq!(
+        (stop.start, stop.text.as_str()),
+        (0, "Die Katze schläft lange. Wir s")
+    );
+    // Folding: the accent of the query meets the plain letter of the text.
+    let folding = serde_json::json!({"fts_ascii_folding": true});
+    let text = "Prague is old. The café is closed. Bye.";
+    let folded = select_with(namespace_tokenizer(folding).as_ref(), text, "cafe", 20);
+    assert_eq!(folded.text, "The café is closed.");
+    let plain = select(text, "cafe", 20);
+    assert_eq!(
+        (plain.start, plain.text.as_str()),
+        (0, "Prague is old. The c")
+    );
+    // The hard fallback finds a match inside a sentence longer than the cap.
+    let long = format!("{} Häuser {}", "x ".repeat(100), "y ".repeat(100));
+    let hard = select_with(
+        namespace_tokenizer(serde_json::json!({"analyzer": {"language": "german"}})).as_ref(),
+        &long,
+        "haus",
+        cap,
+    );
+    assert!(hard.text.contains("Häuser"), "{hard:?}");
+}
+
 /// The analyzer a test names in full: Lance's defaults stem, fold and drop stop words.
 fn analyzer(stem: bool, fold: bool) -> InvertedIndexParams {
     InvertedIndexParams::default()
@@ -172,9 +239,10 @@ fn highlights_skip_a_token_the_passage_cuts() {
         highlights(plain(), record, (3, 6), "cat"),
         Vec::<[u32; 2]>::new()
     );
-    // Selection and highlight together: the first window of the record.
+    // Selection and highlight together: selection skips the cut `cat` of
+    // `catapult` for the whole token, which the highlight marks.
     let mut excerpt = select("catapult cat", "cat", 3);
-    assert_eq!((excerpt.start, excerpt.text.as_str()), (0, "cat"));
+    assert_eq!((excerpt.start, excerpt.text.as_str()), (9, "cat"));
     highlight(
         plain().build().unwrap().as_mut(),
         "cat",
@@ -182,7 +250,7 @@ fn highlights_skip_a_token_the_passage_cuts() {
         &mut excerpt,
     )
     .unwrap();
-    assert_eq!(excerpt.highlights, Some(Vec::new()));
+    assert_eq!(excerpt.highlights, Some(vec![[9, 12]]));
     // A token set off by punctuation or a space is whole.
     let record = "a cat, b";
     assert_eq!(highlights(plain(), record, (2, 5), "cat"), [[2, 5]]);

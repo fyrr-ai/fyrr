@@ -1,12 +1,12 @@
-//! Literal anchored excerpt passages: sentence windows over byte spans with
-//! standard-library Unicode classes; offsets and the cap count codepoints.
+//! Analyzer-anchored excerpt passages: sentence windows over byte spans, scored
+//! by the tokens of the index analyzer that the query's tokens match; offsets
+//! and the cap count codepoints.
 use fyrr_core::attributes::analyzer::{Analyzer, Tokenizer};
 use fyrr_core::config::NamespaceConfig;
 use fyrr_core::limits::mcp::MAX_HIGHLIGHTS;
 use fyrr_core::mcp::Excerpt;
 use lance_index::scalar::InvertedIndexParams;
 use lance_index::scalar::inverted::tokenizer::document_tokenizer::LanceTokenizer;
-use std::collections::HashSet;
 
 /// The analyzer of the full-text index of `searchable_text`, which the writer
 /// builds the index with and a highlight matches with: the `analyzer` of the
@@ -58,25 +58,31 @@ pub fn analyzer_params(analyzer: &Analyzer) -> lance_core::Result<InvertedIndexP
     Ok(fts)
 }
 
+/// The tokens of `query` as the index analyzer cuts and reduces them, sorted
+/// and without duplicates.
+fn query_terms(tokenizer: &mut dyn LanceTokenizer, query: &str) -> Result<Vec<String>, String> {
+    let mut terms = Vec::new();
+    let mut stream = tokenizer.token_stream_for_search(query);
+    while let Some(token) = stream.try_next()? {
+        terms.push(token.text.clone());
+    }
+    drop(stream);
+    terms.sort_unstable();
+    terms.dedup();
+    Ok(terms)
+}
+
 /// Sets the match ranges of `excerpt`, a passage of `record`: its tokens, as
 /// the index analyzer cuts and reduces them, that equal a token of `query`. A
 /// token the passage cuts, because the record goes on with a letter or digit,
-/// is not a token of the index and is not marked. Selection stays literal.
-/// shortcut: it still looks for the query's literal words, so a passage with
-/// only a stemmed match may not be the one chosen; make selection use the
-/// analyzer when that costs hits.
+/// is not a token of the index and is not marked.
 pub(crate) fn highlight(
     tokenizer: &mut dyn LanceTokenizer,
     query: &str,
     record: &str,
     excerpt: &mut Excerpt,
 ) -> Result<(), String> {
-    let mut terms = HashSet::new();
-    let mut stream = tokenizer.token_stream_for_search(query);
-    while let Some(token) = stream.try_next()? {
-        terms.insert(token.text.clone());
-    }
-    drop(stream);
+    let terms = query_terms(tokenizer, query)?;
     let codepoints = |text: &str| {
         let Ok(count) = u32::try_from(text.chars().count()) else {
             unreachable!("admitted excerpt codepoint bound");
@@ -98,7 +104,7 @@ pub(crate) fn highlight(
     while ranges.len() < MAX_HIGHLIGHTS
         && let Some(token) = stream.try_next()?
     {
-        if !terms.contains(&token.text)
+        if terms.binary_search(&token.text).is_err()
             || (token.offset_from == 0 && cut_before)
             || (token.offset_to == excerpt.text.len() && cut_after)
         {
@@ -118,66 +124,46 @@ pub(crate) fn highlight(
     Ok(())
 }
 
-fn word(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
+/// The query of an excerpt, as the tokens of the index analyzer.
 pub(crate) struct Terms {
+    /// Sorted, without duplicates; a bit of a window is the position here.
     terms: Vec<String>,
+    tokenizer: Box<dyn LanceTokenizer>,
 }
 impl Terms {
-    pub(crate) fn new(query: &str) -> Self {
-        let mut terms = query
-            .split(|c| !word(c))
-            .filter(|s| !s.is_empty())
-            .map(|s| s.chars().flat_map(char::to_lowercase).collect::<String>())
-            .collect::<Vec<_>>();
-        terms.sort_unstable();
-        terms.dedup();
-        Self { terms }
+    pub(crate) fn new(tokenizer: &dyn LanceTokenizer, query: &str) -> Result<Self, String> {
+        let mut tokenizer = tokenizer.box_clone();
+        let terms = query_terms(tokenizer.as_mut(), query)?;
+        Ok(Self { terms, tokenizer })
     }
-    fn matches(&self, token: &str) -> Option<usize> {
-        let ascii = token.is_ascii();
-        self.terms.iter().position(|term| {
-            if ascii && term.is_ascii() {
-                term.len() == token.len() && term.eq_ignore_ascii_case(token)
-            } else {
-                term.chars().eq(token.chars().flat_map(char::to_lowercase))
-            }
-        })
-    }
-    fn fill(&self, text: &str, bits: &mut [u64]) {
-        if text.is_ascii() {
-            for token in text
-                .as_bytes()
-                .split(|b| !b.is_ascii_alphanumeric() && *b != b'_')
-                .filter(|s| !s.is_empty())
-            {
-                if let Some(term) = self.terms.iter().position(|term| {
-                    term.len() == token.len() && term.as_bytes().eq_ignore_ascii_case(token)
-                }) {
-                    bits[term / 64] |= 1u64 << (term % 64);
-                }
-            }
-            return;
-        }
-        for token in text.split(|c| !word(c)).filter(|s| !s.is_empty()) {
-            if let Some(term) = self.matches(token) {
+    /// Sets the bit of every term that a token of `text` equals.
+    fn fill(
+        &self,
+        tokenizer: &mut dyn LanceTokenizer,
+        text: &str,
+        bits: &mut [u64],
+    ) -> Result<(), String> {
+        let mut stream = tokenizer.token_stream_for_doc(text);
+        while let Some(token) = stream.try_next()? {
+            if let Ok(term) = self.terms.binary_search(&token.text) {
                 bits[term / 64] |= 1u64 << (term % 64);
             }
         }
+        Ok(())
     }
-    pub(crate) fn select(&self, text: &str, cap: u32) -> Excerpt {
+    pub(crate) fn select(&self, text: &str, cap: u32) -> Result<Excerpt, String> {
         let cap = cap as usize;
+        let mut tokenizer = self.tokenizer.box_clone();
         let spans = sentence_spans(text);
         let words = self.terms.len().div_ceil(64);
         let mut matches = vec![0u64; words * spans.len()];
         for (index, span) in spans.iter().enumerate() {
             if span.end_cp - span.start_cp <= cap {
                 self.fill(
+                    tokenizer.as_mut(),
                     &text[span.start..span.end],
                     &mut matches[index * words..(index + 1) * words],
-                );
+                )?;
             }
         }
         let mut covered = vec![0u64; words];
@@ -235,16 +221,17 @@ impl Terms {
                     break;
                 }
             }
-            return passage(
+            return Ok(passage(
                 text,
                 spans[left].start,
                 spans[right].end,
                 spans[left].start_cp,
                 spans[right].end_cp,
-            );
+            ));
         }
-        // Hard windows only tokenize their candidate bytes. Offsets are needed
-        // only on this fallback, and ASCII text needs no codepoint-to-byte map.
+        // No sentence window within the cap holds a term: score windows around
+        // the tokens of the whole text. Offsets are needed only on this
+        // fallback, and ASCII text needs no codepoint-to-byte map.
         let ascii = text.is_ascii();
         let offsets = if ascii {
             Vec::new()
@@ -256,30 +243,45 @@ impl Terms {
         };
         let length = if ascii { text.len() } else { offsets.len() - 1 };
         let byte = |cp: usize| if ascii { cp } else { offsets[cp] };
+        let codepoint = |byte: usize| {
+            if ascii {
+                byte
+            } else {
+                offsets.partition_point(|at| *at < byte)
+            }
+        };
+        // The codepoint range and the term of every matching token, in order.
+        let mut found = Vec::new();
+        if !self.terms.is_empty() {
+            let mut stream = tokenizer.token_stream_for_doc(text);
+            while let Some(token) = stream.try_next()? {
+                if let Ok(term) = self.terms.binary_search(&token.text) {
+                    found.push((
+                        codepoint(token.offset_from),
+                        codepoint(token.offset_to),
+                        term,
+                    ));
+                }
+            }
+        }
+        found.sort_unstable();
         let mut starts = vec![0];
-        let mut iter = text.char_indices().enumerate().peekable();
-        while let Some((cp, (start, c))) = iter.next() {
-            if !word(c) {
-                continue;
-            }
-            let mut end = start + c.len_utf8();
-            while let Some((_, (at, c))) = iter.next_if(|(_, (_, c))| word(*c)) {
-                end = at + c.len_utf8();
-            }
-            if self.matches(&text[start..end]).is_some() {
-                starts.push(cp.saturating_sub(cap / 3).min(length.saturating_sub(cap)));
-                starts.push(cp);
-            }
+        for (from, _, _) in &found {
+            starts.push(from.saturating_sub(cap / 3).min(length.saturating_sub(cap)));
+            starts.push(*from);
         }
         starts.sort_unstable();
         starts.dedup();
         let mut best = (0usize, std::cmp::Reverse(0usize));
         for start in starts {
             covered.fill(0);
-            self.fill(
-                &text[byte(start)..byte((start + cap).min(length))],
-                &mut covered,
-            );
+            let end = (start + cap).min(length);
+            let first = found.partition_point(|(from, _, _)| *from < start);
+            for (_, to, term) in found[first..].iter().take_while(|(from, _, _)| *from < end) {
+                if *to <= end {
+                    covered[term / 64] |= 1u64 << (term % 64);
+                }
+            }
             let score = covered
                 .iter()
                 .map(|w| w.count_ones() as usize)
@@ -288,7 +290,7 @@ impl Terms {
         }
         let start = best.1.0;
         let end = (start + cap).min(length);
-        passage(text, byte(start), byte(end), start, end)
+        Ok(passage(text, byte(start), byte(end), start, end))
     }
 }
 
