@@ -147,6 +147,9 @@ reference_docs() {
 quickstart() {
   ensure_build && FYRR_CI_PREBUILT=1 FYRR_CI_BINARY_DIR="$ROOT/target/ci-build/full"     "$ROOT/examples/quickstart/run" "$@"
 }
+guides() {
+  ensure_build && FYRR_CI_PREBUILT=1 FYRR_CI_BINARY_DIR="$ROOT/target/ci-build/full" "$ROOT/examples/guides/run" "$@"
+}
 reader_link_check() { ensure_build && "$ROOT/scripts/check-reader-only"; }
 
 FIXTURE_STARTED=0
@@ -396,6 +399,7 @@ else
   not_evaluated "images (build, derived, compose)" "$reason"
 fi
 step "quickstart example (local storage)" none quickstart
+step "guides (local storage)" none guides
 cases_finish
 
 finish_summary

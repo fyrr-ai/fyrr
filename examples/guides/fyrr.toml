@@ -1,0 +1,77 @@
+# The guides' fyrr: the document write API and the HTTP read API on one
+# machine, on local storage, with no accounts. `examples/guides/start` copies
+# this file, points it at a fresh private directory and free ports, and starts
+# the processes. Copy it yourself and replace /home/you with your home
+# directory and the three loopback ports with your own.
+#
+# The storage root is private and must be on a local file system, shared by
+# no other host.
+
+[namespace]
+name = "main"
+# Defaults of every namespace this process creates. English stemming makes
+# `restore` match `restores` and `restoring` (full-text guide).
+fts_stem = true
+
+[storage]
+uri = "file:///home/you/.local/share/fyrr/guides"
+
+# The toy service from examples/quickstart/toy-embeddings.py: word matching,
+# not a semantic model. A row that carries its own vector makes no call.
+[embedding]
+endpoint = "http://127.0.0.1:8089/v1"
+model = "toy-hash-1024"
+dimensions = 1024
+reader_live = true
+
+[embedding.spend]
+limit_microusd = 100000
+max_call_microusd = 1
+
+[identity]
+hashing_key = { env = "FYRR_IDENTITY_KEY" }
+encryption_key = { env = "FYRR_ENCRYPTION_KEY" }
+
+# The write API. A namespace is created by its first write. `open = true`
+# lets every key that may read, read every row; a namespace can ask for
+# `open = false` in its first write, as the permissions guide does.
+[namespace.write_api]
+open = true
+
+[[identity.api_keys]]
+name = "writer"
+key = { env = "WRITE_KEY" }
+roles = ["write"]
+
+# Conditions, writes by filter and the namespace report need `admin`.
+[[identity.api_keys]]
+name = "admin"
+key = { env = "ADMIN_KEY" }
+roles = ["write", "admin", "read"]
+readers = ["usr:admin"]
+
+[[identity.api_keys]]
+name = "ann"
+key = { env = "READ_KEY" }
+readers = ["usr:ann", "grp:engineering"]
+
+[[identity.api_keys]]
+name = "bob"
+key = { env = "BOB_KEY" }
+readers = ["usr:bob"]
+
+[writer]
+threads = 2
+
+# Writes go to this listener.
+[writer.serve.admin]
+listen = "127.0.0.1:8091"
+operator_token = { env = "FYRR_OPERATOR_TOKEN" }
+
+[reader]
+mirror_path = "/home/you/.cache/fyrr/guides"
+
+# Reads go to this listener.
+[reader.http]
+listen = "127.0.0.1:8090"
+public_url = "http://127.0.0.1:8090/mcp"

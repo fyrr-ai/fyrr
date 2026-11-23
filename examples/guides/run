@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Runs the guides in docs/guides from the repository root and checks them.
+#
+# Every ```sh block of a guide runs, in order, in one bash session per guide,
+# with `fyrr` on PATH. The guides start their own fyrr on local storage with
+# `source examples/guides/start`. A ```text block that directly follows a
+# ```sh block is the output that block prints on stdout: a difference fails the
+# run. A block that fails fails the run. Uses local storage and loopback only,
+# with no Docker commands. Exits nonzero on any failure.
+#
+#   examples/guides/run [GUIDE...]    # default: every guide
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/lib.sh"
+cd "$ROOT"
+
+GUIDES=(testing vector-search full-text-search hybrid-search permissions bulk-loading)
+((!$#)) || GUIDES=("$@")
+WORK="$(mktemp -d)"
+DRIVER_PID=
+# Stop the guide's shell, whose own trap stops the services it started, then
+# remove the work directory. A signal to the runner ends in the same cleanup.
+cleanup() {
+  if [[ -n "$DRIVER_PID" ]]; then
+    kill "$DRIVER_PID" 2>/dev/null || true
+    wait "$DRIVER_PID" 2>/dev/null || true
+  fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+trap 'exit 143' TERM INT
+
+if [[ "${FYRR_CI_PREBUILT:-}" != 1 ]]; then
+  cargo build --locked -p fyrr
+fi
+export PATH="${FYRR_CI_BINARY_DIR:-$ROOT/target/debug}:$PATH"
+
+for guide in "${GUIDES[@]}"; do
+  log "guides: $guide"
+  # Writes $WORK/driver: one `source` of each block, and a comparison of its
+  # output with the ```text block after it.
+  python3 - "$ROOT/docs/guides/$guide.md" "$WORK" <<'PY' || die "guides: $guide: cannot read the guide"
+import re
+import shlex
+import sys
+from pathlib import Path
+
+guide, work = Path(sys.argv[1]), Path(sys.argv[2])
+blocks = re.findall(r"^```(\w*)\n(.*?)^```$", guide.read_text(), re.S | re.M)
+driver = [
+    "set -euo pipefail",
+    "trap 'declare -F fyrr_stop >/dev/null && fyrr_stop' EXIT",
+    "trap 'exit 143' TERM",
+    # A block's stdout, with a newline at the end if it lacks one.
+    'norm() { cat "$1"; [[ -z "$(tail -c1 "$1")" ]] || echo; }',
+]
+ran = 0
+for index, (language, body) in enumerate(blocks):
+    if language != "sh":
+        continue
+    ran += 1
+    script, output = work / f"{ran}.sh", work / f"{ran}.out"
+    script.write_text(body)
+    q_script, q_output = shlex.quote(str(script)), shlex.quote(str(output))
+    driver.append(f'echo "--- {guide.name} block {ran}: $(head -n 1 {q_script})" >&2')
+    driver.append(f"source {q_script} >{q_output}")
+    driver.append(f"norm {q_output}")
+    follows = index + 1 < len(blocks) and blocks[index + 1][0] == "text"
+    if follows:
+        expected = work / f"{ran}.expected"
+        expected.write_text(blocks[index + 1][1])
+        driver.append(f'norm {q_output} | diff -u {shlex.quote(str(expected))} - >&2 || {{ echo "{guide.name} block {ran}: output differs" >&2; exit 1; }}')
+if not ran:
+    sys.exit(f"{guide}: no sh block")
+(work / "driver").write_text("\n".join(driver) + "\n")
+PY
+  # The guide stops its own fyrr; the driver's trap also stops it if a block
+  # fails or the driver is terminated.
+  bash -c 'source "$1"' _ "$WORK/driver" &
+  DRIVER_PID=$!
+  wait "$DRIVER_PID" || die "guides: $guide failed"
+  DRIVER_PID=
+done
+
+log "guides passed"
