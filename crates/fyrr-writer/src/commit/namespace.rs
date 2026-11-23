@@ -82,6 +82,18 @@ async fn repeat_create(
             }
         }
     }
+    // A connector namespace created before its title had a full-text index
+    // keeps none, and a file that derives one still repeats its creation.
+    if policy.settings.write_api.is_none()
+        && !policy.settings.attribute_indexes.contains_key("title")
+        && asked.attribute_indexes.get("title")
+            == Some(&fyrr_core::attributes::AttributeIndex {
+                full_text: true,
+                ..Default::default()
+            })
+    {
+        asked.attribute_indexes.remove("title");
+    }
     if policy.settings == asked {
         Ok(())
     } else {

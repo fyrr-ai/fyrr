@@ -2540,6 +2540,10 @@
         "tier": "full",
         "seconds": 20.0
       },
+      "full:fyrr:test:dense_path/incremental::incremental_connector_title_has_a_full_text_index_on_storage": {
+        "tier": "full",
+        "seconds": 30.0
+      },
       "full:fyrr:test:dense_path/incremental::incremental_namespace_created_before_the_connector_columns_keeps_its_layout_on_storage": {
         "tier": "full",
         "seconds": 20.0
