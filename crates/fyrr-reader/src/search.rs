@@ -12,7 +12,9 @@ use crate::routing::{CentroidRouter, RoutingFallback, strategy, take_probes};
 use crate::storage::*;
 use arrow_array::{Array, Float32Array, RecordBatch, StringArray, UInt32Array, UInt64Array};
 use futures::TryStreamExt;
-use fyrr_core::attributes::{AttributeIndexes, AttributeSchema, IndexOption, possible_indexes};
+use fyrr_core::attributes::{
+    AttributeIndex, AttributeIndexes, AttributeSchema, IndexOption, possible_indexes,
+};
 use fyrr_core::config::{Config, ProcessEnvironment, RoutingStrategy};
 use fyrr_core::identity::IdentityArtifact;
 use fyrr_core::mcp::*;
@@ -516,7 +518,12 @@ pub fn attribute_indexes(
     options: &AttributeIndexes,
 ) -> impl Iterator<Item = (String, String, IndexType)> {
     possible_indexes(attributes)
-        .filter(|(name, _, option, _)| options.get(*name).copied().unwrap_or_default().has(*option))
+        .filter(|(name, _, option, _)| {
+            options.get(*name).map_or_else(
+                || AttributeIndex::default().has(*option),
+                |o| o.has(*option),
+            )
+        })
         .map(|(name, kind, option, index)| {
             let index_type = match option {
                 IndexOption::FullText => IndexType::Inverted,

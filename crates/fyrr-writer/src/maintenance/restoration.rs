@@ -686,8 +686,16 @@ pub(super) async fn restore_attempt(
         .cadence
         .drain(config, lease, attempt.history)
         .await?;
-    let (version, cadence) =
-        publish_restored(config, lease, store.as_ref(), &root, attempt, &latest).await?;
+    let (version, cadence) = publish_restored(
+        config,
+        lease,
+        store.as_ref(),
+        &root,
+        attempt,
+        &latest,
+        target,
+    )
+    .await?;
     Ok(
         serde_json::json!({"restored":true,"lance_version":version,"from_publication":target.publication_id,
             "restore_scans":{"authority":index.scans[0],"historical":index.scans[1],"verification":index.scans[2]},
@@ -706,6 +714,7 @@ async fn publish_restored(
     root: &Path,
     mut attempt: RestoreAttempt<'_>,
     latest: &BTreeMap<(String, &'static str), RejectionMarker>,
+    target: &ContentManifest,
 ) -> Result<(u64, std::time::Duration)> {
     let start = std::time::Instant::now();
 
@@ -748,6 +757,8 @@ async fn publish_restored(
         true,
         rewinds,
         false,
+        // The indexes stand as the restored publication built them.
+        Some(&target.attribute_indexes),
     )
     .await?;
     // Service authorization queued during final publication under this same lease.

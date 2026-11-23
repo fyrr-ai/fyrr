@@ -190,6 +190,7 @@ pub async fn purge(config: &Config, source: &str, confirm: bool) -> Result<serde
                 true,
                 Vec::new(),
                 false,
+                None,
             )
             .await?;
         }

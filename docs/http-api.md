@@ -509,6 +509,9 @@ published: `409 namespace_not_published`.
 - An index switched off (`"index": false`) is dropped by the publication of the
   schema, and the attribute is scanned from then on. `"index": true` switches it
   on again. `full_text` and `ngram` ask for the text indexes of a `string`.
+- A change of the `analyzer` of a full-text index is published at once; the index
+  is built again by the next maintenance, which publishes it, and the index it
+  replaces serves until then ([analyzer](tuning.md#analyzer-of-a-full-text-index)).
 - A type is never changed and an attribute is never removed, as that would change
   what the values already stored mean: another type, also an array of another
   element type, is `409 attribute_type_change_refused`, and `null` for an
