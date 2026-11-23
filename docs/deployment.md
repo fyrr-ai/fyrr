@@ -248,7 +248,7 @@ helm install fyrr deploy/helm/fyrr --values my-values.yaml
   ```sh
   w="kubectl exec deploy/fyrr-writer -- fyrr --config /etc/fyrr/fyrr.toml writer"
   $w namespace create
-  $w sync        # or a first write through the HTTP API
+  $w sync
   $w commit
   $w keys        # required with [[identity.api_keys]]
   ```
