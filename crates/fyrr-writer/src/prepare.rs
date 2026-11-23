@@ -375,16 +375,36 @@ fn weigh_change(config: &Config, change: &DocumentChange) -> Result<(u64, u64)> 
     ))
 }
 
-/// What a record adds to the size of an envelope besides its change.
+/// What a record adds to the size of an envelope besides its change. A
+/// multi-vector attribute adds none: a record holds as many vectors as it
+/// carries, which [`listed_bytes`] counts.
 fn record_estimate(config: &Config) -> u64 {
     let dimensions = u64::from(config.embedding.dimensions)
         + config
             .namespace
             .vectors
             .values()
+            .filter(|vector| !vector.multi)
             .map(|vector| u64::from(vector.dimensions))
             .sum::<u64>();
     2048 + dimensions * config.namespace.dense_element.bytes()
+}
+
+/// What the lists of the multi-vector attributes in `attributes` hold: the
+/// vectors the rows carry, not the room a null row would take.
+fn listed_bytes(config: &Config, attributes: &[(String, ArrayRef)]) -> u64 {
+    config
+        .namespace
+        .vectors
+        .iter()
+        .filter(|(_, spec)| spec.multi)
+        .filter_map(|(name, spec)| {
+            let (_, column) = attributes.iter().find(|(named, _)| named == name)?;
+            let lists = column.as_any().downcast_ref::<ListArray>()?;
+            Some(lists.values().len() as u64 * u64::from(spec.dimensions))
+        })
+        .sum::<u64>()
+        .saturating_mul(config.namespace.dense_element.bytes())
 }
 
 /// What an envelope weighs before its first change.
@@ -429,8 +449,15 @@ fn value_bytes(kind: fyrr_core::attributes::AttributeType) -> u64 {
 }
 
 /// Whether `changes` fit the bounds of a single page, which one envelope must.
-pub fn check_atomic(config: &Config, changes: &[ContentChange]) -> Result<()> {
-    let (mut rows, mut bytes) = (0u64, BASE_BYTES);
+pub fn check_atomic(
+    config: &Config,
+    changes: &[ContentChange],
+    attributes: &[(String, ArrayRef)],
+) -> Result<()> {
+    let (mut rows, mut bytes) = (
+        0u64,
+        BASE_BYTES.saturating_add(listed_bytes(config, attributes)),
+    );
     for change in changes {
         let (work, estimate) = weigh(config, change)?;
         rows = rows.saturating_add(work);
@@ -470,7 +497,7 @@ pub async fn atomic(
     cache: &mut WriterEmbedding,
     attributes: Vec<(String, ArrayRef)>,
 ) -> Result<()> {
-    check_atomic(config, &changes)?;
+    check_atomic(config, &changes, &attributes)?;
     content_page(
         config,
         source,
@@ -988,6 +1015,41 @@ mod tests {
             weigh(AttributeType::Array(ElementType::String)),
             (1 << 20) + 4 * (1 << 19)
         );
+    }
+    #[test]
+    fn a_multi_vector_attribute_weighs_the_vectors_its_rows_carry_not_the_room_of_one() {
+        let head = "[namespace]\nname='multi'\n[storage]\nuri='file:///x'\n\
+                    [embedding]\nendpoint='http://127.0.0.1:9/v1'\n[namespace.write_api]\n";
+        let declared: String = (0..16)
+            .map(|n| format!("[namespace.vectors.m{n}]\ndimensions=8192\nmulti=true\n"))
+            .collect();
+        let multi = fyrr_core::config::parse(&format!("{head}{declared}"))
+            .unwrap()
+            .config;
+        let plain = fyrr_core::config::parse(head).unwrap().config;
+        // A record with no list takes no more room than one without the attributes.
+        assert_eq!(record_estimate(&multi), record_estimate(&plain));
+        // Two rows carry vectors, two carry none, one of them an empty list.
+        let spec = &multi.namespace.vectors["m0"];
+        let flat = vec![0.5_f32; 2 * 8192];
+        let column = named_vector_column(
+            multi.namespace.dense_element,
+            spec,
+            [
+                None,
+                Some(flat.as_slice()),
+                Some(&[][..]),
+                Some(&flat[..8192]),
+            ]
+            .into_iter(),
+        );
+        let attributes = [("m0".to_owned(), column)];
+        assert_eq!(
+            listed_bytes(&multi, &attributes),
+            3 * 8192 * multi.namespace.dense_element.bytes()
+        );
+        assert_eq!(listed_bytes(&multi, &[]), 0);
+        assert_eq!(listed_bytes(&plain, &attributes), 0);
     }
     #[test]
     fn the_table_holds_exactly_the_reserved_built_in_columns() {

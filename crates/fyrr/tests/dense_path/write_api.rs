@@ -5233,14 +5233,14 @@ async fn multi_vector_case(element: &str, background: usize) {
     for (n, (id, tokens)) in planted.iter().enumerate() {
         upserts.push(json!({
             "id": id, "text": format!("row{id}"), "vector": vector(n, 1024),
-            "readers": ["grp:allow"], "tokens": tokens,
+            "readers": ["grp:allow", "usr:x"], "tokens": tokens,
         }));
     }
     upserts.push(json!({
-        "id": "e", "text": "rowe", "vector": vector(4, 1024), "readers": ["grp:allow"],
+        "id": "e", "text": "rowe", "vector": vector(4, 1024), "readers": ["grp:allow", "usr:x"],
     }));
     upserts.push(json!({
-        "id": "f", "text": "rowf", "vector": vector(5, 1024), "readers": ["grp:allow"],
+        "id": "f", "text": "rowf", "vector": vector(5, 1024), "readers": ["grp:allow", "usr:x"],
         "tokens": [],
     }));
     // As near to the query as a row can be, but nobody may read it.
@@ -5262,7 +5262,7 @@ async fn multi_vector_case(element: &str, background: usize) {
             .collect();
         upserts.push(json!({
             "id": format!("bg{n}"), "text": format!("rowbg{n}"), "vector": vector(10 + n, 1024),
-            "readers": ["grp:allow"], "tokens": tokens,
+            "readers": ["grp:allow", "usr:x"], "tokens": tokens,
         }));
     }
     let count = upserts.len();
@@ -5342,6 +5342,11 @@ async fn multi_vector_case(element: &str, background: usize) {
     for arguments in [
         json!({"vectors": [axis(&[(0, 1.0)])], "vector_attribute": "single"}),
         json!({"vectors": [vec![1.0; 8]], "vector_attribute": "tokens"}),
+        // Vectors of half the dimensions, or of twice, are not vectors of the
+        // attribute though they make as many numbers as its dimensions are.
+        json!({"vectors": [vec![1.0; 8], vec![1.0; 8]], "vector_attribute": "tokens"}),
+        json!({"vectors": [vec![1.0; 32]], "vector_attribute": "tokens"}),
+        json!({"vectors": vec![vec![1.0; 32]; 32], "vector_attribute": "tokens"}),
         json!({"vector": axis(&[(0, 1.0)]), "vector_attribute": "tokens"}),
         json!({"vectors": both}),
         json!({"vectors": both, "vector": axis(&[(0, 1.0)]), "vector_attribute": "tokens"}),
@@ -5351,6 +5356,34 @@ async fn multi_vector_case(element: &str, background: usize) {
         json!({"query": "rowa", "vector_attribute": "tokens"}),
     ] {
         error(client.call("search", arguments.clone()), "invalid_argument");
+    }
+    // A sub-query of the JSON query route takes them as `search` does, and
+    // refuses the same.
+    let reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let sub = |vectors: Value| {
+        json!({
+            "sub_queries": [{"vectors": vectors, "vector_attribute": "tokens", "limit": 10}],
+            "output": "metadata",
+        })
+    };
+    assert_eq!(
+        roots(&ask(&reader, sub(both.clone())).await)[..4],
+        ["a", "b", "c", "d"],
+        "{context}"
+    );
+    for bad in [
+        json!([vec![1.0; 8], vec![1.0; 8]]),
+        json!([vec![1.0; 32]]),
+        json!(vec![vec![1.0; 32]; 32]),
+    ] {
+        assert_eq!(
+            ask(&reader, sub(bad.clone())).await.0,
+            400,
+            "{context} {bad}"
+        );
     }
     // A row brings its vectors as a list of vectors of the attribute's
     // dimensions, and a patch keeps what is stored.

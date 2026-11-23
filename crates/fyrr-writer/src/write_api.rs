@@ -933,16 +933,25 @@ fn checked(
     if !conditions.given.is_empty() {
         return Err(ApiError(400, "condition_invalid"));
     }
-    // A null row of a vector column holds the room of a vector too. The columns
-    // are refused here, by the bound an envelope is held to, before they are
+    // A null row of a vector column holds the room of a vector too, and a row of
+    // a multi-vector column the room of the vectors it carries. The columns are
+    // refused here, by the bound an envelope is held to, before they are
     // allocated: the request's text and attributes are bounded by its body, these
     // are not.
-    let room = config.namespace.dense_element.bytes()
-        * vectors
-            .values()
-            .map(|spec| u64::from(spec.dimensions))
-            .sum::<u64>();
-    if (rows.len() as u64).saturating_mul(room) > config.writer.commit.group_max_bytes.as_u64() {
+    let numbers: u64 = vectors
+        .values()
+        .zip(&named)
+        .map(|(spec, column)| {
+            if spec.multi {
+                column.iter().flatten().map(|row| row.len() as u64).sum()
+            } else {
+                (rows.len() as u64).saturating_mul(u64::from(spec.dimensions))
+            }
+        })
+        .sum();
+    if numbers.saturating_mul(config.namespace.dense_element.bytes())
+        > config.writer.commit.group_max_bytes.as_u64()
+    {
         return Err(ApiError(413, "request_too_large"));
     }
     // The columns follow the table's: the typed ones, then the vectors.
@@ -970,6 +979,7 @@ fn changes(
     patches: Patches,
     mut conditions: BTreeMap<String, Filter>,
     filter_writes: Option<FilterWrites>,
+    attributes: &[(String, arrow_array::ArrayRef)],
 ) -> Result<Vec<ContentChange>, ApiError> {
     let open = config
         .namespace
@@ -1050,7 +1060,7 @@ fn changes(
         })
     }));
     changes.extend(filter_writes.map(|writes| ContentChange::Where(Box::new(writes))));
-    crate::prepare::check_atomic(config, &changes)?;
+    crate::prepare::check_atomic(config, &changes, attributes)?;
     Ok(changes)
 }
 
@@ -1239,6 +1249,7 @@ async fn execute(
         patches,
         conditions,
         filter_writes,
+        &attributes,
     )?;
     let mut answer = WriteResponse {
         upserted,

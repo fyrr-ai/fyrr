@@ -1547,7 +1547,8 @@ fn valid_dense_key(
         })
 }
 impl SearchInput {
-    fn has_dense(&self) -> bool {
+    /// Whether the query brings `vector` or `vectors`.
+    pub fn has_dense(&self) -> bool {
         self.vector.is_some() || self.vectors.is_some()
     }
     /// The numbers of the dense query: `vector`, or `vectors` one after the
@@ -1557,7 +1558,8 @@ impl SearchInput {
     }
 }
 impl SubQuery {
-    fn has_dense(&self) -> bool {
+    /// Whether the query brings `vector` or `vectors`.
+    pub fn has_dense(&self) -> bool {
         self.vector.is_some() || self.vectors.is_some()
     }
     /// The numbers of the dense query: `vector`, or `vectors` one after the
