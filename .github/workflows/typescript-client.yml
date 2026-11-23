@@ -1,0 +1,104 @@
+# The TypeScript client has its own workflow: scripts/ci pins no JavaScript
+# runtime. It checks the types, the generated models and the build, then runs
+# the tests against a local `file://` deployment that examples/guides/start
+# runs from the full `fyrr` binary. The binary is the one that main's CI
+# verified when the change touches no other file; otherwise it is built here.
+name: typescript-client
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "clients/typescript/**"
+      - "schemas/openapi.json"
+      - "examples/guides/**"
+      - ".github/workflows/typescript-client.yml"
+  pull_request:
+    paths:
+      - "clients/typescript/**"
+      - "schemas/openapi.json"
+      - "examples/guides/**"
+      - ".github/workflows/typescript-client.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: typescript-client-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: never
+  # See ci.yml: keeps generated build-script output in the cached target/.
+  MBX_SHARE_OUT_DIR: "0"
+
+jobs:
+  typescript-client:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: clients/typescript/.node-version
+
+      - name: Install, type check, check the generated models and build
+        working-directory: clients/typescript
+        run: |
+          node --version
+          npm ci --ignore-scripts
+          npm run typecheck
+          npm run check:models
+          npm run build
+
+      - name: Check whether the change leaves the binary as main's CI verified it
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ "$(git rev-parse --verify HEAD^1)" == "$BASE_SHA" ]] &&
+             git diff --quiet "$BASE_SHA" HEAD -- . ':(exclude,glob)clients/typescript/**' \
+               ':(exclude).github/workflows/typescript-client.yml'; then
+            echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore the verified base binary
+        id: binary
+        if: steps.scope.outputs.base != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: fyrr-quickstart-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.scope.outputs.base }}
+          path: target/ci-build/full/fyrr
+
+      - name: Install the pinned Rust toolchain
+        if: steps.binary.outputs.cache-hit != 'true'
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal
+          rustup default "$channel"
+
+      - name: Shared Cargo compilation cache
+        if: steps.binary.outputs.cache-hit != 'true'
+        uses: jdx/mr-boxington-action@88acf2bb50552c7c508cbac13e5f8c576b95b1de # v1
+        with:
+          version: '1.30.0'
+          backend: github
+
+      - name: Build the full fyrr binary
+        if: steps.binary.outputs.cache-hit != 'true'
+        run: |
+          source scripts/lib.sh
+          ensure_protoc
+          cargo build --locked -p fyrr
+          install -D target/debug/fyrr target/ci-build/full/fyrr
+
+      - name: Test against a local deployment
+        working-directory: clients/typescript
+        run: |
+          PATH="$GITHUB_WORKSPACE/target/ci-build/full:$PATH"
+          fyrr --version
+          npm test
