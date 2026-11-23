@@ -1143,6 +1143,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-writer:lib:fyrr_writer/apply::tests::stored_rows_are_held_against_the_bounds_of_an_envelope_with_their_multi_vector_lists": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-writer:lib:fyrr_writer/prepare::tests::a_multi_vector_attribute_weighs_the_vectors_its_rows_carry_not_the_room_of_one": {
         "tier": "quick",
         "seconds": 0.0
