@@ -198,9 +198,9 @@ impl<'a> ContentWork<'a> {
                             .chain(config.namespace.vectors.iter().map(|(name, vector)| {
                                 arrow_schema::Field::new(
                                     name,
-                                    crate::prepare::vector_type(
+                                    crate::prepare::named_vector_type(
                                         config.namespace.dense_element,
-                                        vector.dimensions,
+                                        vector,
                                     ),
                                     true,
                                 )

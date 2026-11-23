@@ -515,6 +515,22 @@
             },
             "description": "Query vector of the namespace's dimensions, instead of an embedding of query. Without query the search is dense only and makes no embedding call."
           },
+          "vectors": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "float"
+              }
+            },
+            "description": "Query vectors of a multi-vector `vector_attribute`, 1-32 of its dimensions, searched as one query. Not with vector.",
+            "minItems": 1,
+            "maxItems": 32
+          },
           "exact": {
             "type": [
               "boolean",
@@ -1175,6 +1191,22 @@
               "format": "float"
             },
             "description": "Query vector of the namespace's dimensions, instead of an embedding of query."
+          },
+          "vectors": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "float"
+              }
+            },
+            "description": "Query vectors of a multi-vector `vector_attribute`, searched as one query. Not with vector.",
+            "minItems": 1,
+            "maxItems": 32
           },
           "vector_attribute": {
             "type": [
@@ -2531,6 +2563,10 @@
               "null"
             ],
             "description": "A declared `string` attribute whose value the writer embeds, with the\nnamespace's embedding model, into a row that brings no vector of its\nown for this attribute. The model's dimensions must be `dimensions`.\nWithout it, rows carry the vector or leave it null."
+          },
+          "multi": {
+            "type": "boolean",
+            "description": "A row holds a list of vectors of `dimensions` numbers, not one, and a\nsearch of the attribute takes several query vectors as one query: Lance\nscores a row by the sum, over the query vectors, of the best cosine\nsimilarity to any vector of the row. Only a namespace whose `dense_metric`\nis `cosine` offers it, and a row's vectors are not embedded from text\n(no `from`)."
           }
         },
         "required": [

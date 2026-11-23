@@ -1475,6 +1475,42 @@ fn namespace_vectors_are_declared_with_dimensions_and_a_source_and_enter_the_dig
     );
 }
 #[test]
+fn a_multi_vector_attribute_needs_the_cosine_metric_and_no_source() {
+    let declared = |metric: &str, vector: &str| {
+        let head = MINIMAL.replace(
+            "[namespace]",
+            &format!("[namespace]\ndense_metric='{metric}'"),
+        );
+        parse(&format!(
+            "{head}[namespace.write_api]\n[namespace.attributes]\ntitle='string'\n\
+             [namespace.vectors.tokens]\ndimensions=1024\n{vector}"
+        ))
+        .unwrap()
+    };
+    let loaded = declared("cosine", "multi=true");
+    assert!(errors(&loaded).is_empty(), "{:?}", errors(&loaded));
+    assert!(loaded.config.namespace.vectors["tokens"].multi);
+    // A single-vector attribute keeps the digest it had, and `multi` changes it.
+    assert_ne!(
+        loaded.config.namespace.retrieval_digest(),
+        declared("cosine", "").config.namespace.retrieval_digest()
+    );
+    assert!(!declared("cosine", "").config.namespace.vectors["tokens"].multi);
+    // Lance scores a list of vectors by cosine only, and nothing embeds one
+    // from a text. The metric is refused by name.
+    for metric in ["dot", "squared_l2"] {
+        let found = errors(&declared(metric, "multi=true"));
+        assert!(
+            found
+                .iter()
+                .any(|error| error.contains("vector_attribute_metric_invalid")),
+            "{metric}: {found:?}"
+        );
+        assert!(errors(&declared(metric, "")).is_empty());
+    }
+    assert!(!errors(&declared("cosine", "multi=true\nfrom='title'")).is_empty());
+}
+#[test]
 fn namespace_attributes_are_declared_by_name_and_type() {
     use fyrr_core::attributes::AttributeType;
     let declared = parse(&format!(

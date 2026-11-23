@@ -32,7 +32,7 @@ and the other `[reader]` and `[writer]` keys in
 | `rerank` | absent | Optional hosted reranker; absent makes no reranker calls. |
 | `attributes` | `{}` | Typed attributes of the namespace: name to type, see below. |
 | `attribute_indexes` | `{}` | The attributes whose indexes are not the default: `index = false`, `full_text` and `ngram`, see below. |
-| `vectors` | `{}` | Named vector attributes besides the built-in `vector`: name to `dimensions` and an optional `from`, see below. |
+| `vectors` | `{}` | Named vector attributes besides the built-in `vector`: name to `dimensions` and an optional `from` or `multi`, see below. |
 | `write_api` | absent | Serves the [document write API](http-api.md#write-documents) and creates API namespaces, see below. |
 
 ### `[namespace.attributes]`
@@ -125,6 +125,33 @@ the request asks for is scanned again flat: the cost grows with the selection,
 as an `exact` search does. An attribute that has no vector yet has no index,
 and a search of it reads the column: the commit that brings its first vector
 builds the index.
+
+`multi = true` makes the attribute hold a list of vectors of `dimensions`
+numbers in each row, for a model that represents a document by one vector per
+token (late interaction):
+
+```toml
+[namespace.vectors.tokens]
+dimensions = 128
+multi = true
+```
+
+A row carries its vectors as a list of vectors (`"tokens": [[...], [...]]`);
+`null` or an empty list leaves it null, and a list of numbers or a vector of
+other dimensions is `400 vector_invalid`. Lance supports a list of vectors only
+under the cosine distance, so a namespace whose `dense_metric` is not `cosine`
+refuses one (`vector_attribute_metric_invalid` in the configuration, `400
+settings_invalid` from the write API), and `multi` has no `from`: the namespace's
+model embeds one text into one vector. A search takes
+[`vectors`](mcp-tools.md#search), 1 to 32 vectors of the attribute's dimensions,
+instead of `vector`, and Lance scores it as one query: a row's score is the sum,
+over the query vectors, of the best cosine similarity to any vector of the row.
+The index is built as the others, but Lance scores a list from its quantized
+codes and reads no stored vector back, so a score is approximate: the order of
+rows whose scores are close may differ from the exact one, and `exact: true`
+scans instead of probing. A namespace with fewer vectors than Lance trains an
+index from (a few hundred) is scanned. The partitions of the index are sized by
+the rows that hold vectors, not by the vectors in them.
 
 A namespace with vector attributes is
 [content-manifest](../CONTRIBUTING.md#rules-for-changes) 5.0 and its policy

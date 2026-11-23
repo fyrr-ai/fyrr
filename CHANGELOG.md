@@ -28,6 +28,18 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- A named vector attribute can be `multi`: a row holds a list of vectors of the
+  attribute's `dimensions` (`"multi": true` in `namespace.vectors`), for models
+  that represent a document by one vector per token. `search` takes `vectors`
+  (1 to 32 vectors, instead of `vector`) with such a `vector_attribute`, as does a
+  sub-query of the JSON `query` route, and Lance scores the query as one
+  multi-vector query: a row's score is the sum, over the query vectors, of the
+  best cosine similarity to any vector of the row. Only a namespace whose
+  `dense_metric` is `cosine` offers it, and a multi-vector attribute has no
+  `from`. The index is `IVF_RQ` as for the others, and the scores come from its
+  quantized codes, so they are not exact. A patch cannot change it. See
+  [tuning](docs/tuning.md#namespacevectors).
+
 - A namespace written through the document write API can declare named vector
   attributes when it is created (`namespace.vectors`, or `settings.vectors` in
   the first write): each has its own `dimensions` and its own vector index, and

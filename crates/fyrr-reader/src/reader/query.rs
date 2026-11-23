@@ -145,13 +145,17 @@ impl PreparedReader {
         let lexical_predicate = Self::fts_requires_sql_prefilter(&self.dataset, &self.indexes)
             .then_some(predicate.as_str());
         self.stage(&mut telemetry, "predicate", stage, filter_counters);
-        if !args.has_text() && args.vector.is_none() {
+        if !args.has_text() && !args.has_dense() {
             return self.listing(args, telemetry).await;
         }
         // Determine participation before preparing query vectors or consulting
         // the process cache. Refused arms cannot observe shared cache membership.
         self.authorization()?;
-        self.check_vector_attribute(args.vector_attribute.as_deref(), args.vector.as_deref())?;
+        self.check_vector_attribute(
+            args.vector_attribute.as_deref(),
+            args.vector.as_deref(),
+            args.vectors.as_deref(),
+        )?;
         if args.exact == Some(true) {
             super::dense::exact_scan_bound(self.selected_rows().max_len().unwrap_or(0))?;
         }
@@ -172,8 +176,8 @@ impl PreparedReader {
             };
         let start = Instant::now();
         let runtime = self.query_embeddings.clone();
-        let mut vectors = match &args.vector {
-            Some(vector) => embedding::QueryWork::supplied(vector.clone()),
+        let mut vectors = match args.dense_key() {
+            Some(key) => embedding::QueryWork::supplied(key.into_owned()),
             None => runtime.prepare(queries)?,
         };
         telemetry
@@ -336,7 +340,11 @@ impl PreparedReader {
             return Err(InvalidArgument);
         }
         for sub in subs {
-            self.check_vector_attribute(sub.vector_attribute.as_deref(), sub.vector.as_deref())?;
+            self.check_vector_attribute(
+                sub.vector_attribute.as_deref(),
+                sub.vector.as_deref(),
+                sub.vectors.as_deref(),
+            )?;
         }
         if self.selected_rows().max_len().unwrap_or(0) == 0 {
             return Ok(self.nothing_admitted());
@@ -350,9 +358,10 @@ impl PreparedReader {
         // requests show up under load.
         let start = Instant::now();
         let runtime = self.query_embeddings.clone();
+        let keys: Vec<_> = subs.iter().map(SubQuery::dense_key).collect();
         let texts: Vec<&str> = subs
             .iter()
-            .filter(|sub| sub.vector.is_none())
+            .filter(|sub| !sub.has_dense())
             .filter_map(|sub| sub.query.as_deref())
             .collect();
         let mut work = runtime.prepare(&texts)?;
@@ -371,9 +380,9 @@ impl PreparedReader {
         let mut embedded = work.vectors.iter_mut();
         let mut ranked = Vec::with_capacity(subs.len());
         let mut embedding_failed = false;
-        for sub in subs {
-            let vector = match &sub.vector {
-                Some(vector) => Ok(vector.clone()),
+        for (sub, key) in subs.iter().zip(keys) {
+            let vector = match key {
+                Some(key) => Ok(key.into_owned()),
                 None => embedded.next().map_or(Err(EmbeddingUnavailable), |vector| {
                     std::mem::replace(vector, Err(EmbeddingUnavailable))
                 }),
@@ -577,20 +586,32 @@ impl PreparedReader {
     }
 
     /// Refuses a vector attribute the namespace does not declare, a supplied
-    /// vector that does not fit it, and a text query of an attribute that is
-    /// not embedded from text: the namespace's model does not make its vectors.
+    /// vector that does not fit it, `vectors` of an attribute that holds one
+    /// vector in a row, a `vector` of one that holds a list, and a text query
+    /// of an attribute that is not embedded from text: the namespace's model
+    /// does not make its vectors. Each of the `vectors` is checked alone, before
+    /// they are put in one list that cannot tell where one ends.
     fn check_vector_attribute(
         &self,
         attribute: Option<&str>,
         vector: Option<&[f32]>,
+        vectors: Option<&[Vec<f32>]>,
     ) -> Result<()> {
-        let dimensions = self.vector_dimensions(attribute)?;
-        match (vector, attribute) {
-            (Some(vector), _) => {
-                embedding::validate(vector, dimensions, self.config.namespace.dense_element)
-                    .map_err(|_| InvalidArgument)
+        let dimensions = self.vector_dimensions(attribute)? as usize;
+        let invalid = |result: Result<()>| result.map_err(|_| InvalidArgument);
+        match (vector, vectors, attribute) {
+            (_, Some(_), _) | (Some(_), _, _) if vectors.is_some() != self.is_multi(attribute) => {
+                Err(InvalidArgument)
             }
-            (None, Some(name))
+            (_, Some(vectors), _) => vectors.iter().try_for_each(|each| {
+                if each.len() == dimensions {
+                    invalid(self.validate_query(attribute, each))
+                } else {
+                    Err(InvalidArgument)
+                }
+            }),
+            (Some(vector), None, _) => invalid(self.validate_query(attribute, vector)),
+            (None, None, Some(name))
                 if self
                     .config
                     .namespace
@@ -600,7 +621,7 @@ impl PreparedReader {
             {
                 Err(InvalidArgument)
             }
-            (None, _) => Ok(()),
+            (None, None, _) => Ok(()),
         }
     }
 
@@ -615,7 +636,7 @@ impl PreparedReader {
     ) -> Result<(Vec<DenseQuery>, bool)> {
         self.authorization()?;
         let attribute = args.vector_attribute.as_deref();
-        let dimensions = self.vector_dimensions(attribute)?;
+        self.vector_dimensions(attribute)?;
         let waiting = self.config.embedding.reader_live
             && self.selected_rows().max_len().unwrap_or(0) != 0
             && vectors.vectors.iter().any(Result::is_err);
@@ -661,14 +682,7 @@ impl PreparedReader {
             };
             let result = match vector {
                 // A vector from the process cache, made for another element type.
-                Ok(vector)
-                    if embedding::validate(
-                        &vector,
-                        dimensions,
-                        self.config.namespace.dense_element,
-                    )
-                    .is_err() =>
-                {
+                Ok(vector) if self.validate_query(attribute, &vector).is_err() => {
                     Ok((Vec::new(), None))
                 }
                 Ok(vector) => self

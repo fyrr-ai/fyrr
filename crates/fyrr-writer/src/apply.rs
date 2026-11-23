@@ -177,6 +177,23 @@ pub(crate) const ROW_OVERHEAD_BYTES: u64 = 16384;
 
 pub(crate) fn check_row_bounds(config: &Config, rows: &[RecordBatch]) -> Result<()> {
     let (count, bytes) = row_size(rows)?;
+    check_size(config, count, bytes)
+}
+
+/// Adds the rows of `batch`, loaded from storage, to the `(rows, bytes)` held so
+/// far, the lists of a multi-vector attribute included, and checks the total
+/// against the bounds of an envelope: rows are held until they are written, so
+/// those that are too many are refused as they are loaded.
+pub(crate) fn hold_rows(config: &Config, held: &mut (u64, u64), batch: &RecordBatch) -> Result<()> {
+    let (count, bytes) = row_size(std::slice::from_ref(batch))?;
+    held.0 = held.0.saturating_add(count);
+    held.1 = held
+        .1
+        .saturating_add(bytes.saturating_sub(ROW_OVERHEAD_BYTES));
+    check_size(config, held.0, held.1.saturating_add(ROW_OVERHEAD_BYTES))
+}
+
+fn check_size(config: &Config, count: u64, bytes: u64) -> Result<()> {
     if count > config.writer.commit.group_max_rows
         || bytes > config.writer.commit.group_max_bytes.as_u64()
     {
@@ -647,4 +664,50 @@ pub(crate) fn valid_vector(values: &dyn Array, dimensions: u32) -> bool {
             && values.iter().all(|v| v.is_finite())
             && values.iter().any(|v| *v != 0.0)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::builder::{FixedSizeListBuilder, Float32Builder, ListBuilder};
+
+    #[test]
+    fn stored_rows_are_held_against_the_bounds_of_an_envelope_with_their_multi_vector_lists() {
+        let mut config = fyrr_core::config::parse(
+            "[namespace]\nname='held'\n[storage]\nuri='file:///x'\n\
+             [embedding]\nendpoint='http://127.0.0.1:9/v1'\n",
+        )
+        .unwrap()
+        .config;
+        // One row holds a list of 64 vectors of 128 numbers: 32 KiB of numbers.
+        let mut lists = ListBuilder::new(FixedSizeListBuilder::new(Float32Builder::new(), 128));
+        for _ in 0..64 {
+            lists.values().values().append_slice(&[0.5; 128]);
+            lists.values().append(true);
+        }
+        lists.append(true);
+        let batch =
+            RecordBatch::try_from_iter([("tokens", Arc::new(lists.finish()) as ArrayRef)]).unwrap();
+        let (_, bytes) = row_size(std::slice::from_ref(&batch)).unwrap();
+        let row = bytes - ROW_OVERHEAD_BYTES;
+        assert!(row >= 64 * 128 * 4, "the list is counted: {row}");
+        // The bound admits three such rows and not a fourth, though the rows
+        // are few and the table's other columns are small.
+        config.writer.commit.group_max_bytes =
+            fyrr_core::units::ByteSize::bytes(ROW_OVERHEAD_BYTES + 3 * row + 1);
+        let mut held = (0, 0);
+        for _ in 0..3 {
+            hold_rows(&config, &mut held, &batch).unwrap();
+        }
+        assert!(matches!(
+            hold_rows(&config, &mut held, &batch),
+            Err(WriterError::EnvelopeBoundsInvalid)
+        ));
+        // The same rows in one batch are refused by the check of `write_rows`.
+        let all = vec![batch.clone(); 4];
+        assert!(matches!(
+            check_row_bounds(&config, &all),
+            Err(WriterError::EnvelopeBoundsInvalid)
+        ));
+    }
 }
