@@ -6,7 +6,7 @@
 >   any number of reader processes; S3 is the only coordination channel. A
 >   single host may keep the namespace in a local directory instead.
 > - This page covers the topology, a minimal production setup, the two
->   container images and how to schedule the writer.
+>   container images, the Helm chart and how to schedule the writer.
 > - Read it when you move from the quickstart to a real bucket and a real
 >   embeddings model.
 
@@ -219,6 +219,80 @@ docker run --rm -e FYRR_PROVIDER_WHEELS=/wheels -v "$PWD/target/example-wheels:/
 `writer providers` exits 1 when an installed provider is refused (for example
 one requiring another SDK series); a source on a refused provider fails
 `config check` with status 78.
+
+## Kubernetes
+
+`deploy/helm/fyrr` is a Helm chart for one namespace: a `Deployment` of
+readers behind a `ClusterIP` `Service`, and exactly one writer. Install it
+from a checkout (helm 3):
+
+```sh
+helm install fyrr deploy/helm/fyrr --values my-values.yaml
+```
+
+- **Readers.** `reader.replicas` pods of the `fyrr-reader` image run
+  `fyrr reader serve`. Readiness is `GET /readyz` on `reader.port`, which
+  must be the port of `reader.http.listen` in the configuration (bind
+  `0.0.0.0`). The `Service` forwards that port. The chart has no ingress
+  and no `LoadBalancer`: the reader speaks plain HTTP and refuses every
+  request with an `Origin` header, so it must not be exposed raw to
+  browsers. Put a TLS-terminating gateway in front that keeps the public
+  `Host` ([HTTP boundary](http-users.md#http-boundary)).
+- **Writer.** One pod of the `fyrr` image runs `fyrr writer serve`. The
+  `Deployment` has one replica and the `Recreate` strategy, so an upgrade
+  never runs two writers. The readers become ready only after the first
+  content publication, and with API keys they refuse every request until
+  the keys are published. After the first install, run once, in this order
+  (release name `fyrr`; the writer's secret must hold the keys' variables):
+
+  ```sh
+  w="kubectl exec deploy/fyrr-writer -- fyrr --config /etc/fyrr/fyrr.toml writer"
+  $w namespace create
+  $w sync
+  $w commit
+  $w keys        # required with [[identity.api_keys]]
+  ```
+
+  The running `writer serve` also syncs and commits on its own schedule, so
+  `sync` or `commit` may report that another process holds the lease; repeat
+  the command (see [Scheduling](#scheduling)). A one-off `writer sync` for a
+  large first load needs `--timeout`.
+  The writer's administration listener (`writer.serve.admin`, for SCIM) has no
+  `Service` in the chart.
+- **Configuration.** `config` is the `fyrr.toml` of both, mounted from a
+  `ConfigMap` at `/etc/fyrr/fyrr.toml`; a change restarts the pods. Leave
+  `reader.mirror_path` unset.
+- **Secrets.** Never put a secret in `config` or in the values: refer to
+  it as `{ env = "NAME" }` and provide `NAME` from an existing `Secret`
+  with `reader.existingSecret` and `writer.existingSecret` (every key
+  becomes a variable), or with `reader.env` and `writer.env` (Kubernetes
+  `EnvVar` entries, for example with `valueFrom.secretKeyRef`). The two
+  pods get separate secrets: give the readers read-only bucket credentials
+  (or a `serviceAccountName` that grants them), and keep provider
+  credentials and write access to the bucket with the writer.
+- **Disk.** Both pods run as the image's non-root user with a read-only
+  root file system, no capabilities and no service-account token. The
+  readers' mirror is an `emptyDir` at `/cache` (`XDG_CACHE_HOME`), sized by
+  `reader.mirrorSizeLimit`, which must exceed `reader.mirror_max_bytes`; it
+  is a read-through cache, rebuilt from S3 after a restart. The writer gets
+  `emptyDir`s at `/tmp` and `/cache` for its scratch space and vector cache;
+  a new writer pod embeds again what the cache held.
+  `FYRR_PROVIDER_WHEELS` is not available on the read-only file system:
+  [derive an image](#providers-in-the-image) instead.
+- **Metrics.** `metrics.port` opens a pod port named `metrics` on every
+  pod. Also set `reader.http.metrics_listen` and `writer.serve.metrics_listen`
+  to `0.0.0.0:<port>` in `config`, and scrape the pods; the endpoint has no
+  authentication, so the `Service` does not carry it
+  ([Metrics](operations.md#metrics)).
+
+The chart's `version` and `appVersion` are the workspace version, and the
+default image tag is the `appVersion`: the release that ships this chart.
+Before that release is published, build the images with `scripts/images`
+and set `reader.image.tag` and `writer.image.tag`.
+
+`scripts/images` lints and renders the chart (`helm lint --strict` and
+`helm template`, with helm pinned in `scripts/pins.env`) before it builds
+the images.
 
 ## Scheduling
 

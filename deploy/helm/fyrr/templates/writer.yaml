@@ -1,0 +1,70 @@
+# Exactly one writer: replicas is fixed, and Recreate never overlaps two pods.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-writer
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fyrr-writer
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fyrr-writer
+        app.kubernetes.io/instance: {{ .Release.Name }}
+      annotations:
+        checksum/config: {{ .Values.config | sha256sum }}
+    spec:
+      {{- include "fyrr.podSecurity" . | nindent 6 }}
+      terminationGracePeriodSeconds: {{ .Values.writer.terminationGracePeriodSeconds }}
+      {{- with .Values.writer.serviceAccountName }}
+      serviceAccountName: {{ . }}
+      {{- end }}
+      containers:
+        - name: writer
+          image: {{ .Values.writer.image.repository }}:{{ .Values.writer.image.tag | default .Chart.AppVersion }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config", "/etc/fyrr/fyrr.toml", "writer", "serve"]
+          {{- include "fyrr.containerSecurity" . | nindent 10 }}
+          env:
+            # The writer's vector cache defaults to $XDG_CACHE_HOME/fyrr/writer-embeddings.
+            - name: XDG_CACHE_HOME
+              value: /cache
+            {{- with .Values.writer.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.writer.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ . }}
+          {{- end }}
+          {{- with .Values.metrics.port }}
+          ports:
+            - name: metrics
+              containerPort: {{ . }}
+          {{- end }}
+          {{- with .Values.writer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/fyrr
+              readOnly: true
+            # Scratch space of maintenance and of the provider workers.
+            - name: scratch
+              mountPath: /tmp
+            - name: cache
+              mountPath: /cache
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-config
+        - name: scratch
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}

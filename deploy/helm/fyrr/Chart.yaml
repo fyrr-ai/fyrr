@@ -1,0 +1,7 @@
+apiVersion: v2
+name: fyrr
+description: fyrr readers (a replicated Deployment and Service) and one writer for one namespace
+type: application
+version: 0.1.1
+# Both versions equal the workspace version (scripts/images checks it); appVersion is the default image tag.
+appVersion: "0.1.1"
