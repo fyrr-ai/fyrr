@@ -46,13 +46,24 @@ fn copy(config: &Path, to: &Path) -> Output {
 
 fn copied(config: &Path, to: &Path) -> Value {
     let output = copy(config, to);
-    assert!(output.status.success(), "{}", report(&output));
+    assert!(
+        output.status.success(),
+        "copy to {}: {}",
+        to.display(),
+        report(&output)
+    );
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+/// `writer sync` prints a line for each source.
+fn sync(config: &Path) {
+    let output = run(config, &["writer", "sync"]);
+    assert!(output.status.success(), "{}", report(&output));
+}
+
 fn refused(output: &Output, code: &str) {
-    assert!(!output.status.success(), "{}", report(output));
-    assert!(report(output).contains(code), "{}", report(output));
+    assert!(!output.status.success(), "{code}: {}", report(output));
+    assert!(report(output).contains(code), "{code}: {}", report(output));
 }
 
 /// Every object of a namespace with its size and time of change.
@@ -112,13 +123,14 @@ fn fetched(config: &Path, root_id: &str) -> String {
     found["structuredContent"]["documents"].to_string()
 }
 
+#[allow(clippy::print_stderr)]
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
 async fn local_copy_is_one_version_independent_and_completes_after_interruption() {
     let (config, root) = setup_on(Backend::Local);
     let storage = storage_of(&config);
     success(&config, &["writer", "namespace", "create"]);
-    success(&config, &["writer", "sync"]);
+    sync(&config);
     success(&config, &["writer", "commit"]);
 
     // The same storage would need another name, and another name other hashes.
@@ -182,7 +194,7 @@ async fn local_copy_is_one_version_independent_and_completes_after_interruption(
         root.embedding.vector("fixture document 0"),
     );
     std::fs::write(root.join("sources/0.txt"), "fixture document 0 revised").unwrap();
-    success(&backup, &["writer", "sync"]);
+    sync(&backup);
     success(&backup, &["writer", "commit"]);
     assert!(
         fetched(&backup, "0.txt").contains("revised"),
@@ -226,7 +238,7 @@ async fn local_copy_is_one_version_independent_and_completes_after_interruption(
 
     // A copy that stopped before its head leaves no readable namespace, and
     // running the command again completes it.
-    let stopped = storage_of(&backup).join("namespaces/dense-fixture");
+    let stopped = storage_of(&live).join("namespaces/dense-fixture");
     std::fs::remove_file(stopped.join("head.json")).unwrap();
     let data = std::fs::read_dir(stopped.join("dataset.lance/data"))
         .unwrap()
@@ -235,20 +247,20 @@ async fn local_copy_is_one_version_independent_and_completes_after_interruption(
         .unwrap()
         .path();
     std::fs::remove_file(data).unwrap();
-    let unreadable = run(&backup, &["reader", "check"]);
+    let unreadable = run(&live, &["reader", "check"]);
     assert!(!unreadable.status.success(), "{}", report(&unreadable));
-    copied(&config, &backup);
-    success(&backup, &["reader", "check"]);
-    assert_eq!(success(&backup, &["writer", "verify"])["verified"], true);
-    visible(&backup);
-
     // What is not a copy's own debris is not removed.
-    let foreign = elsewhere(&config, "foreign", None);
-    let kept = storage_of(&foreign).join("namespaces/dense-fixture/fence/kept.json");
-    std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
-    std::fs::write(&kept, "{}").unwrap();
-    refused(&copy(&config, &foreign), "namespace_deleting");
-    assert!(kept.is_file());
+    let loaded = fyrr_core::config::load(&live).unwrap();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let kept = namespace.join("fence/kept.json");
+    store.put(&kept, "{}".into()).await.unwrap();
+    refused(&copy(&config, &live), "namespace_deleting");
+    assert!(store.head(&kept).await.is_ok());
+    store.delete(&kept).await.unwrap();
+    copied(&config, &live);
+    success(&live, &["reader", "check"]);
+    assert_eq!(success(&live, &["writer", "verify"])["verified"], true);
+    visible(&live);
 
     // A destination with another hashing key could not read the rows: refused,
     // and nothing is written there.
@@ -256,7 +268,7 @@ async fn local_copy_is_one_version_independent_and_completes_after_interruption(
     refused(&copy(&config, &other), "hashing_key_mismatch");
     assert!(!storage_of(&other).join("namespaces").exists());
 
-    for suffix in ["b", "live", "foreign", "other"] {
+    for suffix in ["b", "live", "other"] {
         let _ = std::fs::remove_dir_all(format!("{}-{suffix}", storage.display()));
     }
     std::fs::remove_dir_all(storage).unwrap();

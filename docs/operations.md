@@ -173,7 +173,13 @@ is written and maintained can fail with `copy_incomplete` or
 object is read once and written once, so a copy costs its requests and, across
 regions, its transfer.
 
-Measured throughput: @MBPS@
+Measured throughput: a namespace of 1,536 rows (4.3 MB of files, vectors of
+1,024 dimensions) copied in 0.28 to 0.31 s over four runs, 14 to 15 MB/s, by the
+native binary on local `file://` storage, source and destination on one XFS volume
+of a shared build host. The time includes the command's fixed costs, which dominate
+a copy this small, so it is a floor for local storage and says nothing about S3,
+where the object count and the round trip decide; measure a copy of your own
+namespace with the `bytes` and `seconds` it prints.
 
 ## Retiring and purging sources
 

@@ -164,6 +164,10 @@ pub async fn copy(from: &Config, to: &Config) -> Result<serde_json::Value> {
     // again from the start, never past what the copy does not hold.
     let mut cursors = source_store.list(Some(&source_root.clone().join("cursors")));
     while let Some(object) = cursors.try_next().await? {
+        // A cursor that is being written has a temporary name of its own.
+        if !object.location.as_ref().ends_with(".json") {
+            continue;
+        }
         let bytes = source_store.get(&object.location).await?.bytes().await?;
         let mut state: CursorState =
             fyrr_core::parse_contract(&bytes).map_err(|_| WriterError::CursorInvalid)?;
