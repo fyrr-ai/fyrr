@@ -28,6 +28,23 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- A namespace written through the document write API can declare named vector
+  attributes when it is created (`namespace.vectors`, or `settings.vectors` in
+  the first write): each has its own `dimensions` and its own vector index, and
+  may name a `string` attribute (`from`) that the writer embeds the vector from
+  when a row carries none. Rows may leave an attribute null, and a search of it
+  does not return them. `search` and the JSON `query` route take
+  `vector_attribute` (and a sub-query takes one) to name the attribute the dense
+  search reads; without it the built-in `vector` is searched, as before. A
+  search of a named attribute uses the same permissions and filters as one of
+  `vector`, but not its partition maps and centroid routing. At most 8 can be
+  declared (`limits::schema::MAX_VECTOR_ATTRIBUTES`). A patch keeps the stored
+  vectors and cannot change the attribute one was embedded from. The recall of
+  a namespace stays that of the built-in vector. A namespace with vector
+  attributes is content-manifest 5.0 and policy-artifact 4.0, so an older build
+  refuses it; one without keeps its versions, files and retrieval-policy
+  digest. See [tuning](docs/tuning.md#namespacevectors).
+
 - The JSON `query` route takes `group_documents` and `caps`.
   `group_documents: false` makes every matching record a hit, not only the best
   record of each document. `caps` limits the hits per value of 1 to 4

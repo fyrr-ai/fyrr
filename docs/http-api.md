@@ -112,6 +112,7 @@ namespace's published version, with no storage request of its own:
 | `schema` | The typed attributes of the version, name to type; `{}` when it has none. |
 | `settings` | The namespace's [settings](configuration.md), as its policy records them. |
 | `dense_metric`, `dense_element` | The distance (`cosine`, `squared_l2` or `dot`) and the element type (`f16` or `f32`) of the namespace's vectors, fixed when it was created. |
+| `settings.vectors` | The namespace's named [vector attributes](tuning.md#namespacevectors); absent when it has none. |
 | `read_only` | Whether the namespace is [frozen](#freezing-a-namespace). Unlike the rest, it is read from the current head (the one the reader's authorization checks share), because a switch is published without a new version. |
 | `rows` | Approximate live rows (a document is one or more rows). `null` for a version published before contract 4.1. |
 | `logical_bytes` | Approximate bytes of the data files of those rows, without indexes. `null` as `rows`. |
@@ -266,6 +267,7 @@ without it is answered as before.
 | --- | --- |
 | `query` | The text to search, 1 to 4096 bytes: a lexical search and a dense one by its embedding. |
 | `vector` | The query vector, of the namespace's dimensions, instead of an embedding of `query`. Alone it searches the dense lane only. A sub-query needs `query`, `vector` or both. |
+| `vector_attribute` | The named [vector attribute](tuning.md#namespacevectors) this sub-query searches, as for [`search`](mcp-tools.md#search); default the built-in `vector`. |
 | `filter` | A [filter tree](mcp-tools.md#filters) for this sub-query. |
 | `limit` | Required: 1 to 75 hits. |
 
@@ -291,7 +293,7 @@ one number per sub-query.
 the sub-queries. `text_hits` counts per sub-query, or with `fusion` over the
 fused ranking. A sub-query without text is
 reranked only when `rerank.query` names the text. `query`, `queries`,
-`vector`, `exact`, `order`, `order_by` and `offset` are refused with
+`vector`, `vector_attribute`, `exact`, `order`, `order_by` and `offset` are refused with
 `sub_queries`, and so is a request `limit` without `fusion`.
 
 ```sh
@@ -563,6 +565,8 @@ scan reads. The whole run uses one selection: a change of the key's permissions
 while it runs fails it with `503 authorization_unavailable`. Without a sample
 both recalls are `null`.
 
+It samples the built-in `vector` only; a [vector attribute](tuning.md#namespacevectors) has no recall report.
+
 A query may answer by an exact scan instead of the index, as one with a
 selective `filter` does, or one on a namespace without a vector index, or for a
 key that reads only rows the index does not cover yet. `approximate: false`
@@ -680,7 +684,7 @@ The body is one JSON object (`application/json`, no `Content-Encoding`):
 
 | Key | Meaning |
 | --- | --- |
-| `upserts` | Rows. A row is an object with an `id` (string, its key in the namespace), its text under the key `text_attribute`, `readers` (`usr:<id>` or `grp:<id>`; ignored by an open namespace), optionally its `vector` (a list of numbers) and a value for any declared [attribute](tuning.md#namespaceattributes). A row replaces the document with that `id`, readers included. |
+| `upserts` | Rows. A row is an object with an `id` (string, its key in the namespace), its text under the key `text_attribute`, `readers` (`usr:<id>` or `grp:<id>`; ignored by an open namespace), optionally its `vector` (a list of numbers), a value for any declared [attribute](tuning.md#namespaceattributes) and a list of numbers, or `null`, for any declared [vector attribute](tuning.md#namespacevectors). A row replaces the document with that `id`, readers included. |
 | `patches` | Rows that change a document without replacing it. A row is an object with an `id`, and the attributes to write: a declared [attribute](tuning.md#namespaceattributes) (`null` clears it), `readers`, or the text under the key `text_attribute` with its `vector`. Everything a patch does not name stays as stored, the vector included, and nothing is embedded. A patch of an `id` that does not exist when the request is published is skipped and never creates a document. |
 | `deletes` | IDs to delete. An ID that does not exist is a delete of nothing. |
 | `delete_where` | A [filter](mcp-tools.md#filters): every document that matches it is deleted. The deletes by filter apply before everything else in the request, so that one request can replace the documents of a group. |
@@ -823,7 +827,7 @@ replaces the stored one; nothing is embedded. A `vector` without the text is
 `400 vector_not_patchable`. A text without a `vector` would keep the embedding of
 the old text: it is `400 text_not_patchable` where an
 [`[embedding]`](configuration.md#embedding) provider is configured and
-`400 embedding_not_configured` where none is. A body over `writer.envelope_max_bytes` or with more rows than
+`400 embedding_not_configured` where none is. A patch keeps the stored vectors of the vector attributes, and brings none: a vector attribute in a patch is `400 vector_not_patchable`, and the `string` attribute a vector attribute is embedded from is `400 text_not_patchable`, because the stored vector would then disagree with it. Replace the document with an upsert instead. A body over `writer.envelope_max_bytes` or with more rows than
 `writer.envelope_max_rows` is `413`; the body is counted as it arrives. A
 request holds one envelope: more than `writer.commit.group_max_rows` records
 or `group_max_bytes` is `413 request_too_large`.

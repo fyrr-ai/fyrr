@@ -149,14 +149,7 @@ impl PreparedReader {
         // Determine participation before preparing query vectors or consulting
         // the process cache. Refused arms cannot observe shared cache membership.
         self.authorization()?;
-        if let Some(vector) = &args.vector {
-            embedding::validate(
-                vector,
-                self.config.embedding.dimensions,
-                self.config.namespace.dense_element,
-            )
-            .map_err(|_| InvalidArgument)?;
-        }
+        self.check_vector_attribute(args.vector_attribute.as_deref(), args.vector.as_deref())?;
         if args.exact == Some(true) {
             super::dense::exact_scan_bound(self.selected_rows().max_len().unwrap_or(0))?;
         }
@@ -340,13 +333,8 @@ impl PreparedReader {
         if args.fusion.is_none() && documents > max_documents {
             return Err(InvalidArgument);
         }
-        for vector in subs.iter().filter_map(|sub| sub.vector.as_ref()) {
-            embedding::validate(
-                vector,
-                self.config.embedding.dimensions,
-                self.config.namespace.dense_element,
-            )
-            .map_err(|_| InvalidArgument)?;
+        for sub in subs {
+            self.check_vector_attribute(sub.vector_attribute.as_deref(), sub.vector.as_deref())?;
         }
         if self.selected_rows().max_len().unwrap_or(0) == 0 {
             return Ok(self.nothing_admitted());
@@ -420,7 +408,13 @@ impl PreparedReader {
                 }
                 if let Ok(vector) = &vector {
                     dense = self
-                        .dense(vector, dense_candidates.max(limit), false, &mut telemetry)
+                        .dense_attribute(
+                            sub.vector_attribute.as_deref(),
+                            vector,
+                            dense_candidates.max(limit),
+                            false,
+                            &mut telemetry,
+                        )
                         .await?;
                 }
             }
@@ -578,6 +572,36 @@ impl PreparedReader {
         (results, elapsed, micros(arm_started.elapsed()), fallback)
     }
 
+    /// Refuses a vector attribute the namespace does not declare, a supplied
+    /// vector that does not fit it, and a text query of an attribute that is
+    /// not embedded from text: the namespace's model does not make its vectors.
+    fn check_vector_attribute(
+        &self,
+        attribute: Option<&str>,
+        vector: Option<&[f32]>,
+    ) -> Result<()> {
+        let dimensions = self.vector_dimensions(attribute)?;
+        match (vector, attribute) {
+            (Some(vector), _) => embedding::validate(
+                vector,
+                dimensions,
+                self.config.namespace.dense_element,
+            )
+            .map_err(|_| InvalidArgument),
+            (None, Some(name))
+                if self
+                    .config
+                    .namespace
+                    .vectors
+                    .get(name)
+                    .is_none_or(|spec| spec.from.is_none()) =>
+            {
+                Err(InvalidArgument)
+            }
+            (None, _) => Ok(()),
+        }
+    }
+
     async fn dense_batch(
         &self,
         args: &SearchInput,
@@ -588,6 +612,8 @@ impl PreparedReader {
         telemetry: &mut Telemetry,
     ) -> Result<(Vec<DenseQuery>, bool)> {
         self.authorization()?;
+        let attribute = args.vector_attribute.as_deref();
+        let dimensions = self.vector_dimensions(attribute)?;
         let waiting = self.config.embedding.reader_live
             && self.selected_rows().max_len().unwrap_or(0) != 0
             && vectors.vectors.iter().any(Result::is_err);
@@ -636,7 +662,7 @@ impl PreparedReader {
                 Ok(vector)
                     if embedding::validate(
                         &vector,
-                        self.config.embedding.dimensions,
+                        dimensions,
                         self.config.namespace.dense_element,
                     )
                     .is_err() =>
@@ -644,7 +670,8 @@ impl PreparedReader {
                     Ok((Vec::new(), None))
                 }
                 Ok(vector) => self
-                    .dense(
+                    .dense_attribute(
+                        attribute,
                         &vector,
                         // The request limit is the least depth that can fill it.
                         self.config

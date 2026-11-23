@@ -78,6 +78,7 @@ bound; it is what applies when the request names none.
 | `limits::schema::MAX_ATTRIBUTES` | 128 | Typed attributes a namespace can declare. |
 | `limits::schema::MAX_NAME_BYTES` | 128 | The name of a typed attribute. |
 | `limits::schema::MAX_VALUE_BYTES` | 4,096 | The value of a `string` attribute. |
+| `limits::schema::MAX_VECTOR_ATTRIBUTES` | 8 | Named vector attributes a namespace can declare. |
 
 ## Limits outside the table
 

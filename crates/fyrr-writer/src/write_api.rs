@@ -534,21 +534,27 @@ async fn attribute_order(
     config: &Config,
     head: Option<&fyrr_core::publication::ServingHead>,
 ) -> Result<Vec<String>, ApiError> {
-    let attributes = &config.namespace.attributes;
+    // The vector attributes are columns of the table too, after the typed ones
+    // it was created with.
+    let (attributes, vectors) = (&config.namespace.attributes, &config.namespace.vectors);
+    let declared = |name: &String| attributes.contains_key(name) || vectors.contains_key(name);
     let mut order = Vec::new();
-    if let Some(head) = head.filter(|head| head.content.is_some() && !attributes.is_empty()) {
+    if let Some(head) = head.filter(|head| {
+        head.content.is_some() && !(attributes.is_empty() && vectors.is_empty())
+    }) {
         let dataset = fyrr_reader::storage::pinned(config, head).await?;
         order.extend(
             dataset
                 .schema()
                 .fields
                 .iter()
-                .filter(|field| attributes.contains_key(&field.name))
+                .filter(|field| declared(&field.name))
                 .map(|field| field.name.clone()),
         );
     }
     let missing: Vec<_> = attributes
         .keys()
+        .chain(vectors.keys())
         .filter(|name| !order.contains(name))
         .cloned()
         .collect();
@@ -573,21 +579,22 @@ fn api_source() -> SourceConfig {
 }
 
 /// The vector of a row, of the namespace's dimension.
+fn vector_of(value: Value, config: &Config) -> Result<Vec<f32>, ApiError> {
+    vector_in(value, config.embedding.dimensions, config)
+}
+
+/// A vector of `dimensions` numbers, which the namespace's element type stores.
 // A vector is stored as float32: the numbers of a JSON body narrow to it.
 #[allow(clippy::cast_possible_truncation)]
-fn vector_of(value: Value, config: &Config) -> Result<Vec<f32>, ApiError> {
+fn vector_in(value: Value, dimensions: u32, config: &Config) -> Result<Vec<f32>, ApiError> {
     match value {
         Value::Array(list) => list
             .iter()
             .map(|n| n.as_f64().map(|n| n as f32))
             .collect::<Option<Vec<_>>>()
             .filter(|vector| {
-                fyrr_reader::embedding::validate(
-                    vector,
-                    config.embedding.dimensions,
-                    config.namespace.dense_element,
-                )
-                .is_ok()
+                fyrr_reader::embedding::validate(vector, dimensions, config.namespace.dense_element)
+                    .is_ok()
             })
             .ok_or(ApiError(400, "vector_invalid")),
         _ => Err(ApiError(400, "vector_invalid")),
@@ -699,6 +706,18 @@ fn patch_values(
         }
         (Some(_), None) => return Err(ApiError(400, "text_not_patchable")),
         _ => {}
+    }
+    // The stored vectors of the named vector attributes are kept as they are:
+    // a patch brings none, and one that changes the attribute a vector was
+    // embedded from would leave the two disagreeing.
+    for name in row.keys() {
+        let vectors = &config.namespace.vectors;
+        if vectors.contains_key(name) {
+            return Err(ApiError(400, "vector_not_patchable"));
+        }
+        if vectors.values().any(|v| v.from.as_deref() == Some(name)) {
+            return Err(ApiError(400, "text_not_patchable"));
+        }
     }
     let mut schema = config.namespace.attributes.clone();
     for (name, value) in &row {
@@ -814,7 +833,17 @@ fn checked(
         }
     }
     let mut rows = Vec::with_capacity(body.upserts.0.len());
-    let mut columns = crate::prepare::AttributeColumns::new(attributes, order);
+    let vectors = &config.namespace.vectors;
+    // One column of rows for each vector attribute, in name order.
+    let mut named: Vec<Vec<Option<Vec<f32>>>> = vec![Vec::new(); vectors.len()];
+    let mut columns = crate::prepare::AttributeColumns::new(
+        attributes,
+        order
+            .iter()
+            .filter(|name| attributes.contains_key(*name))
+            .cloned()
+            .collect(),
+    );
     for raw in std::mem::take(&mut body.upserts.0) {
         // A row is read one at a time, as a tree only when it is of a size a row can be.
         if raw.get().len() > ROW_MAX_BYTES {
@@ -851,6 +880,23 @@ fn checked(
         if vector.is_none() && config.embedding.endpoint.is_empty() {
             return Err(ApiError(400, "embedding_not_configured"));
         }
+        // A vector attribute left out or `null` is null. One that names the
+        // attribute it is embedded from takes the embedding of its value,
+        // which the writer makes, unless the row brings the vector.
+        for ((name, spec), column) in vectors.iter().zip(&mut named) {
+            let own = match row.remove(name) {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(vector_in(value, spec.dimensions, config)?),
+            };
+            let embedded = own.is_none()
+                && spec.from.as_ref().is_some_and(|source| {
+                    matches!(row.get(source), Some(Value::String(text)) if !text.is_empty())
+                });
+            if embedded && config.embedding.endpoint.is_empty() {
+                return Err(ApiError(400, "embedding_not_configured"));
+            }
+            column.push(own);
+        }
         if row.keys().any(|name| !attributes.contains_key(name)) {
             return Err(ApiError(400, "attribute_undeclared"));
         }
@@ -873,7 +919,20 @@ fn checked(
     if !conditions.given.is_empty() {
         return Err(ApiError(400, "condition_invalid"));
     }
-    Ok((rows, columns.finish(), patches, conditions.bound))
+    // The columns follow the table's: the typed ones, then the vectors.
+    let mut typed = columns.finish();
+    typed.extend(vectors.iter().zip(named).map(|((name, spec), column)| {
+        (
+            name.clone(),
+            crate::prepare::nullable_vector_column(
+                config.namespace.dense_element,
+                spec.dimensions,
+                column.iter().map(Option::as_deref),
+            ),
+        )
+    }));
+    typed.sort_by_key(|(name, _)| order.iter().position(|ordered| ordered == name));
+    Ok((rows, typed, patches, conditions.bound))
 }
 
 /// The request's documents as the changes of one envelope, checked as the
@@ -1043,6 +1102,7 @@ async fn execute(
             // of a row in the request.
             if settings.validate().is_err()
                 || settings.attributes.contains_key("id")
+                || settings.vectors.contains_key("id")
                 || settings
                     .write_api
                     .as_ref()

@@ -43,7 +43,11 @@ curl -fsS "$WRITER/v1/namespaces/vectors/documents" \
 
 A vector has the namespace's dimensions and finite numbers, and is not all
 zeros, or the write is `400 vector_invalid`. Each row also has a `text`, which
-is what a hit returns; it is not embedded when the row has a vector.
+is what a hit returns; it is not embedded when the row has a vector. A row can
+also carry other vectors, for example of its title or of an image, when the
+namespace declares
+[named vector attributes](../tuning.md#namespacevectors); a search names the one
+it reads.
 
 ## 2. Search by vector
 

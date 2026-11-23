@@ -584,7 +584,14 @@ pub async fn verify_indices(
         .iter()
         .map(|f| coverage_fragment(f.id))
         .collect();
-    if !attribute_columns_match(dataset.schema(), &manifest.attributes, &indexes) {
+    if !attribute_columns_match(dataset.schema(), &manifest.attributes, &indexes)
+        || !vector_columns_match(
+            dataset.schema(),
+            &manifest.vectors,
+            manifest.dense_element,
+            &indexes,
+        )
+    {
         return Err(IndexVerificationError::IncompatibleIndex);
     }
     verify_loaded_indices(
@@ -622,6 +629,38 @@ fn attribute_columns_match(
                         .filter(|i| i.name == index)
                         .all(|i| i.fields == [field.id])
                 })
+        })
+    })
+}
+
+/// Every named vector attribute is a nullable column of vectors of its
+/// dimensions in the namespace's element type, and its index, once built, is
+/// on that column.
+fn vector_columns_match(
+    schema: &lance::datatypes::Schema,
+    vectors: &fyrr_core::attributes::VectorAttributes,
+    element: fyrr_core::config::DenseElement,
+    indexes: &[lance_table::format::IndexMetadata],
+) -> bool {
+    use arrow_schema::DataType;
+    let item = match element {
+        fyrr_core::config::DenseElement::F16 => DataType::Float16,
+        fyrr_core::config::DenseElement::F32 => DataType::Float32,
+    };
+    vectors.iter().all(|(name, vector)| {
+        schema.field(name).is_some_and(|field| {
+            let index = fyrr_core::attributes::vector_index_name(name);
+            field.nullable
+                && matches!(
+                    field.data_type(),
+                    DataType::FixedSizeList(inner, dimensions)
+                        if u32::try_from(dimensions) == Ok(vector.dimensions)
+                            && *inner.data_type() == item
+                )
+                && indexes
+                    .iter()
+                    .filter(|i| i.name == index)
+                    .all(|i| i.fields == [field.id])
         })
     })
 }

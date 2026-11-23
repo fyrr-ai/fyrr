@@ -13,7 +13,10 @@ use chrono::DateTime;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::limits::schema::{MAX_ATTRIBUTES, MAX_NAME_BYTES, MAX_VALUE_BYTES};
+use crate::config::DIMENSIONS_MAX;
+use crate::limits::schema::{
+    MAX_ATTRIBUTES, MAX_NAME_BYTES, MAX_VALUE_BYTES, MAX_VECTOR_ATTRIBUTES,
+};
 
 pub mod analyzer;
 use analyzer::Analyzer;
@@ -342,6 +345,8 @@ pub enum AttributeError {
     ValueInvalid,
     #[error("attribute_index_invalid")]
     IndexInvalid,
+    #[error("vector_attribute_invalid")]
+    VectorInvalid,
 }
 
 impl AttributeError {
@@ -354,6 +359,7 @@ impl AttributeError {
             Self::TypeMismatch => "attribute_type_mismatch",
             Self::ValueInvalid => "attribute_value_invalid",
             Self::IndexInvalid => "attribute_index_invalid",
+            Self::VectorInvalid => "vector_attribute_invalid",
         }
     }
 }
@@ -404,6 +410,64 @@ pub fn check_indexes(
             return Err(AttributeError::IndexInvalid);
         }
         Ok(())
+    })
+}
+
+/// A named vector attribute: a nullable column of its own, of vectors of one
+/// dimension, with a vector index of its own. The metric, the element type and
+/// the index settings are the namespace's. The built-in `vector` column is not
+/// one: it is the default attribute of every namespace and is not declared.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VectorAttribute {
+    /// Numbers in each vector of the column, a multiple of 8 from 8 to 8192.
+    #[schemars(range(min = 1, max = DIMENSIONS_MAX))]
+    pub dimensions: u32,
+    /// A declared `string` attribute whose value the writer embeds, with the
+    /// namespace's embedding model, into a row that brings no vector of its
+    /// own for this attribute. The model's dimensions must be `dimensions`.
+    /// Without it, rows carry the vector or leave it null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
+/// A namespace's named vector attributes. They are fixed when it is created.
+pub type VectorAttributes = BTreeMap<String, VectorAttribute>;
+
+/// The name of the vector index of a named vector attribute.
+pub fn vector_index_name(attribute: &str) -> String {
+    format!("vec_{attribute}_idx")
+}
+
+/// Checks the vector attributes of a namespace: their number, their names,
+/// which no attribute or built-in column may share, their dimensions, and a
+/// `from` that is a declared `string` attribute whose embeddings have the
+/// dimensions of the namespace's embedding model.
+pub fn check_vectors(
+    attributes: &AttributeSchema,
+    vectors: &VectorAttributes,
+    embedding_dimensions: u32,
+) -> Result<(), AttributeError> {
+    if vectors.len() > MAX_VECTOR_ATTRIBUTES {
+        return Err(AttributeError::TooMany);
+    }
+    vectors.iter().try_for_each(|(name, vector)| {
+        check_name(name)?;
+        if attributes.contains_key(name)
+            || vector.dimensions == 0
+            || u64::from(vector.dimensions) > DIMENSIONS_MAX
+        {
+            return Err(AttributeError::VectorInvalid);
+        }
+        match &vector.from {
+            Some(source)
+                if attributes.get(source) != Some(&AttributeType::String)
+                    || vector.dimensions != embedding_dimensions =>
+            {
+                Err(AttributeError::VectorInvalid)
+            }
+            _ => Ok(()),
+        }
     })
 }
 

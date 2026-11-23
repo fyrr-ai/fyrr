@@ -4963,3 +4963,246 @@ async fn identity_write_api_reranks_as_a_query_asks_within_the_spend_limit_on_st
     assert_eq!(spent.1["metadata"]["degraded"], json!(["rerank"]));
     assert_eq!(provider.calls(), 5);
 }
+
+/// A namespace declares named vector attributes beside the built-in `vector`,
+/// each with its own dimensions and index: a query names the one it searches,
+/// text is embedded only for an attribute that names a `string` attribute it
+/// is embedded from, a row may leave one null, and a row nobody may read is
+/// not returned though it is the nearest one.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_searches_named_vector_attributes_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    // Two dense candidates: only the request limit can fetch more.
+    configure(
+        &config,
+        &address,
+        "[namespace.retrieval]\ndense_candidates = 2",
+    );
+    let writer = Writer::start(&config, &root, address).await;
+    let ids = ["a", "b", "c", "d", "e", "f"];
+    let mut upserts: Vec<Value> = Vec::new();
+    for (n, id) in ids.iter().enumerate() {
+        let mut row = json!({
+            "id": id,
+            "text": format!("row{id}"),
+            "vector": vector(n, 1024),
+            "readers": ["grp:allow"],
+        });
+        // Row e has no `image` and row f no caption: their vectors are null.
+        if *id != "e" {
+            row["image"] = json!(vector(10 + n, 1024));
+        }
+        if *id != "f" {
+            // The provider embeds the caption: the vector is not in the row.
+            let caption = format!("caption {id}");
+            root.embedding.insert_both(&caption, vector(20 + n, 1024));
+            row["caption"] = json!(caption);
+        }
+        if n < 3 {
+            row["small"] = json!(vector(30 + n, 16));
+        }
+        upserts.push(row);
+    }
+    // As near to every query as a row can be, but nobody may read it.
+    upserts.push(json!({
+        "id": "hidden",
+        "text": "rowhidden",
+        "vector": vector(1, 1024),
+        "image": vector(11, 1024),
+        "caption": "caption b",
+        "readers": ["usr:nobody"],
+    }));
+    let settings = json!({
+        "attributes": {"caption": "string"},
+        "vectors": {
+            "image": {"dimensions": 1024},
+            "caption_vec": {"dimensions": 1024, "from": "caption"},
+            "small": {"dimensions": 16},
+        },
+    });
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"settings": settings, "upserts": upserts})
+            )
+            .await,
+        (200, json!({"upserted": 7, "deleted": 0}))
+    );
+
+    // The manifest records them, in the version an older build refuses, with an
+    // index of each.
+    let (_, manifest) = super::coordination::publication(&config).await;
+    assert_eq!(manifest.schema_version.major, 5);
+    assert_eq!(
+        manifest.vectors.keys().collect::<Vec<_>>(),
+        ["caption_vec", "image", "small"]
+    );
+    let indexes: Vec<_> = manifest.indexes.iter().map(|i| i.name.as_str()).collect();
+    for name in ["vector_idx", "vec_image_idx", "vec_caption_vec_idx", "vec_small_idx"] {
+        assert!(indexes.contains(&name), "{name} is not among {indexes:?}");
+    }
+
+    let mut client = Mcp::open(&config);
+    let mut listed = |arguments: Value| -> Vec<String> {
+        let mut arguments = arguments;
+        arguments["output"] = json!("metadata");
+        body(client.call("search", arguments))["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let sorted = |mut ids: Vec<String>| {
+        ids.sort();
+        ids
+    };
+
+    // The default attribute is the built-in vector, as before.
+    let built_in = listed(json!({"vector": vector(1, 1024), "limit": 10}));
+    assert_eq!(built_in.len(), 6);
+    assert_eq!(built_in[0], "b");
+    assert!(!built_in.contains(&"hidden".to_owned()));
+
+    // A query that names an attribute searches its column: the nearest row is
+    // the one whose `image` is the query, never the hidden one that ties with
+    // it, and row e, which has none, is not returned at all.
+    let image = listed(json!({"vector": vector(11, 1024), "vector_attribute": "image", "limit": 10}));
+    assert_eq!(image[0], "b");
+    assert_eq!(sorted(image.clone()), ["a", "b", "c", "d", "f"]);
+    // An exact search finds the same rows in the same order.
+    assert_eq!(
+        listed(json!({"vector": vector(11, 1024), "vector_attribute": "image", "limit": 10, "exact": true})),
+        image
+    );
+    // The filter bounds it, and the permissions still bound the scan.
+    assert_eq!(
+        sorted(listed(json!({
+            "vector": vector(11, 1024),
+            "vector_attribute": "image",
+            "exact": true,
+            "filter": {"field": "root_id", "op": "in", "value": ["a", "c", "e", "hidden"]},
+        }))),
+        ["a", "c"]
+    );
+
+    // The dimensions are the attribute's own.
+    let small = listed(json!({"vector": vector(31, 16), "vector_attribute": "small", "limit": 10}));
+    assert_eq!(small[0], "b");
+    assert_eq!(sorted(small), ["a", "b", "c"]);
+
+    // A caption's embedding is made by the writer; a query text is embedded by
+    // the namespace's model for an attribute that is embedded from text, and
+    // the row without a caption is not returned.
+    let caption =
+        listed(json!({"query": "caption c", "vector_attribute": "caption_vec", "limit": 10}));
+    assert_eq!(caption[0], "c");
+    assert_eq!(sorted(caption), ["a", "b", "c", "d", "e"]);
+    let tie = listed(json!({"query": "caption b", "vector_attribute": "caption_vec", "limit": 10}));
+    assert_eq!(tie[0], "b");
+    assert!(!tie.contains(&"hidden".to_owned()));
+    assert_eq!(
+        sorted(listed(json!({"vector": vector(22, 1024), "vector_attribute": "caption_vec", "limit": 10}))),
+        ["a", "b", "c", "d", "e"]
+    );
+
+    // A name the namespace does not declare, a text query of an attribute that
+    // is not embedded from text, and a vector of another dimension are refused.
+    for arguments in [
+        json!({"vector": vector(11, 1024), "vector_attribute": "nope"}),
+        json!({"query": "rowa", "vector_attribute": "image"}),
+        json!({"vector": vector(11, 1024), "vector_attribute": "small"}),
+        json!({"vector": vector(31, 16), "vector_attribute": "image"}),
+        json!({"vector": vector(31, 16)}),
+        json!({"query": "rowa", "vector_attribute": "vector"}),
+    ] {
+        error(client.call("search", arguments), "invalid_argument");
+    }
+
+    // A patch keeps the stored vectors: it brings none, and it cannot change
+    // the attribute one was embedded from.
+    for (patch, code) in [
+        (json!({"id": "a", "image": vector(10, 1024)}), "vector_not_patchable"),
+        (json!({"id": "a", "caption": "caption z"}), "text_not_patchable"),
+    ] {
+        assert_eq!(
+            writer
+                .post(WRITE_KEY, "dense-fixture", &json!({"patches": [patch]}))
+                .await,
+            (400, json!({"error": code}))
+        );
+    }
+    // A vector of another dimension is refused, and the vector attributes are
+    // fixed for the life of the namespace.
+    let row = json!({"id": "x", "text": "rowx", "image": vector(10, 16)});
+    assert_eq!(
+        writer
+            .post(WRITE_KEY, "dense-fixture", &json!({"upserts": [row]}))
+            .await,
+        (400, json!({"error": "vector_invalid"}))
+    );
+    let more = json!({"settings": {"vectors": {"extra": {"dimensions": 8}}}, "upserts": [{"id": "x", "text": "rowx"}]});
+    assert_eq!(
+        writer.post(WRITE_KEY, "dense-fixture", &more).await,
+        (409, json!({"error": "namespace_settings_fixed"}))
+    );
+}
+
+/// A vector attribute that no row has a vector for has no index, and a search
+/// of it finds nothing; the commit that brings the first vector builds the
+/// index, and the rows after it are indexed with the others.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_builds_a_vector_index_when_the_first_vector_arrives_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let writer = Writer::start(&config, &root, address).await;
+    let settings = json!({"vectors": {"image": {"dimensions": 16}}});
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"settings": settings, "upserts": [
+                    {"id": "a", "text": "alpha", "vector": vector(0, 1024)},
+                ]})
+            )
+            .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    let index_names = async || -> Vec<String> {
+        let (_, manifest) = super::coordination::publication(&config).await;
+        assert_eq!(manifest.schema_version.major, 5);
+        manifest.indexes.iter().map(|i| i.name.clone()).collect()
+    };
+    assert!(!index_names().await.contains(&"vec_image_idx".to_owned()));
+    // A new reader for each question: it serves the publication that is the latest.
+    let query = |n: usize| {
+        body(Mcp::open(&config).call(
+            "search",
+            json!({"vector": vector(n, 16), "vector_attribute": "image", "output": "metadata"}),
+        ))["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert!(query(40).is_empty());
+    let rows: Vec<Value> = (0..3)
+        .map(|n| json!({"id": format!("r{n}"), "text": format!("row{n}"), "vector": vector(n + 1, 1024), "image": vector(40 + n, 16)}))
+        .collect();
+    assert_eq!(
+        writer
+            .post(WRITE_KEY, "dense-fixture", &json!({"upserts": rows}))
+            .await,
+        (200, json!({"upserted": 3, "deleted": 0}))
+    );
+    assert!(index_names().await.contains(&"vec_image_idx".to_owned()));
+    assert_eq!(query(41)[0], "r1");
+}

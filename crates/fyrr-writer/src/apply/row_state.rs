@@ -38,6 +38,7 @@ pub(crate) fn with_typed(
     taken: &[u32],
     staged: &RecordBatch,
     attributes: &fyrr_core::attributes::AttributeSchema,
+    vectors: &fyrr_core::attributes::VectorAttributes,
 ) -> Result<RecordBatch> {
     let all = arrow_select::concat::concat_batches(&rows[0].schema(), rows)
         .map_err(|_| WriterError::ChangedRowsInvalid)?;
@@ -52,8 +53,11 @@ pub(crate) fn with_typed(
         .zip(staged.columns())
         .skip(built_in)
     {
-        let Some(kind) = attributes.get(field.name()) else {
-            continue;
+        // A vector attribute is a column of its own type, the staged one.
+        let data_type = match attributes.get(field.name()) {
+            Some(kind) => kind.arrow_type(),
+            None if vectors.contains_key(field.name()) => column.data_type().clone(),
+            None => continue,
         };
         arrays.push(
             arrow_select::take::take(column.as_ref(), &indices, None)
@@ -61,12 +65,12 @@ pub(crate) fn with_typed(
         );
         fields.push(Arc::new(arrow_schema::Field::new(
             field.name(),
-            kind.arrow_type(),
+            data_type,
             true,
         )));
     }
     // Every attribute of the settings is a column of the staged rows.
-    if fields.len() - built_in != attributes.len() {
+    if fields.len() - built_in != attributes.len() + vectors.len() {
         return Err(WriterError::ChangedRowsInvalid);
     }
     RecordBatch::try_new(Arc::new(arrow_schema::Schema::new(fields)), arrays)

@@ -261,6 +261,7 @@ pub async fn content(
             &taken,
             &typed,
             &config.namespace.attributes,
+            &config.namespace.vectors,
         )?);
     }
     acl_changed |= readers.iter().any(|((root, _), readers)| {

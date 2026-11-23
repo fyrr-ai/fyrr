@@ -56,6 +56,7 @@ pub fn namespace_settings(config: &Config) -> NamespaceSettings {
             .map(fyrr_core::config::RerankConfig::settings),
         attributes: namespace.attributes.clone(),
         attribute_indexes: namespace.attribute_indexes.clone(),
+        vectors: namespace.vectors.clone(),
         write_api: namespace.write_api.clone(),
     }
 }
@@ -120,8 +121,11 @@ async fn create_new(
     // The dimension is chosen here and binds the namespace for good, and the
     // dense index cannot be built over any other. Stored settings that predate
     // this check are read as they are.
-    if !u64::from(settings.embedding.dimensions)
-        .is_multiple_of(fyrr_core::config::DIMENSIONS_MULTIPLE)
+    if !std::iter::once(settings.embedding.dimensions)
+        .chain(settings.vectors.values().map(|vector| vector.dimensions))
+        .all(|dimensions| {
+            u64::from(dimensions).is_multiple_of(fyrr_core::config::DIMENSIONS_MULTIPLE)
+        })
     {
         return Err(WriterError::PublicationInvalid);
     }

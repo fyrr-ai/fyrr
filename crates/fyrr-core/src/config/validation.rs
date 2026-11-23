@@ -11,7 +11,7 @@ impl LoadedConfig {
         api_key::validate(config, &mut error);
         identity_urls_and_http(config, &mut error);
         patterns(config, &mut error);
-        namespace_settings(&config.namespace, &mut error);
+        namespace_settings(&config.namespace, config.embedding.dimensions, &mut error);
         embedding(config, &mut error);
         ranges(config, &mut error);
         storage(config, &mut error);
@@ -245,6 +245,7 @@ fn patterns(config: &Config, error: &mut impl FnMut(&str, String)) {
 /// and for the settings a policy artifact records.
 pub(crate) fn namespace_settings(
     namespace: &NamespaceConfig,
+    embedding_dimensions: u32,
     error: &mut impl FnMut(&str, String),
 ) {
     dense_weight(namespace, error);
@@ -257,6 +258,20 @@ pub(crate) fn namespace_settings(
         crate::attributes::check_indexes(&namespace.attributes, &namespace.attribute_indexes)
     {
         error("namespace.attribute_indexes", code.to_string());
+    }
+    if !namespace.vectors.is_empty() {
+        if namespace.write_api.is_none() {
+            error(
+                "namespace.vectors",
+                "vector attributes are written through the write API".into(),
+            );
+        } else if let Err(code) = crate::attributes::check_vectors(
+            &namespace.attributes,
+            &namespace.vectors,
+            embedding_dimensions,
+        ) {
+            error("namespace.vectors", code.to_string());
+        }
     }
     if namespace.write_api.is_none() {
         for (name, kind) in crate::attributes::CONNECTOR_COLUMNS {
@@ -275,10 +290,12 @@ pub(crate) fn namespace_settings(
     if let Some(api) = &namespace.write_api {
         if let Err(code) = crate::attributes::check_name(&api.text_attribute) {
             error("namespace.write_api.text_attribute", code.to_string());
-        } else if namespace.attributes.contains_key(&api.text_attribute) {
+        } else if namespace.attributes.contains_key(&api.text_attribute)
+            || namespace.vectors.contains_key(&api.text_attribute)
+        {
             error(
                 "namespace.write_api.text_attribute",
-                "is also declared in namespace.attributes".into(),
+                "is also declared in namespace.attributes or namespace.vectors".into(),
             );
         }
     }
