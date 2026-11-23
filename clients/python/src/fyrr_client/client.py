@@ -30,7 +30,7 @@ from .models import (
 # answers `408 deadline_exceeded` before the client gives up. A request with a
 # longer `deadline_ms` needs a longer `timeout`.
 DEFAULT_TIMEOUT = 30.0
-# The server asks for 60 s after a `429`; a larger `Retry-After` is not waited for.
+# The server asks for 60 s after a `429`; a larger `Retry-After` is raised, not waited for.
 MAX_RETRY_AFTER = 120.0
 MAX_BACKOFF = 30.0
 RETRY_STATUSES = frozenset({408, 429, *range(500, 600)})
@@ -79,7 +79,7 @@ class _Base:
             "reader": reader_url.rstrip("/"),
             "writer": writer_url and writer_url.rstrip("/"),
         }
-        self._headers = {"Authorization": f"Bearer {api_key}"}
+        self._headers = {"Authorization": f"Bearer {_checked_key(api_key)}"}
         self._timeout = httpx.Timeout(timeout)
         self._max_retries = max_retries
         self._backoff = backoff
@@ -118,7 +118,8 @@ class _Base:
             if response.status_code not in allowed:
                 return None
         if response is not None and (wait := _retry_after(response)) is not None:
-            return min(wait, MAX_RETRY_AFTER)
+            # A longer wait is the caller's to make: raise the answer, which has `retry_after`.
+            return wait if wait <= MAX_RETRY_AFTER else None
         delay = min(self._backoff * (1 << attempt), MAX_BACKOFF)
         return delay / 2 + random.uniform(0, delay / 2)
 
@@ -134,8 +135,16 @@ class _Base:
             return body
         code = None
         if isinstance(body, dict):
-            code = body.get("error") or body.get("scimType") or body.get("detail")
+            code = body.get("error") or body.get("scimType")
         raise FyrrError(response.status_code, code, _retry_after(response))
+
+
+def _checked_key(api_key: str) -> str:
+    """The key without the newline of the file it was read from; never echoed in an error."""
+    key = api_key.strip()
+    if not key or not key.isascii() or not key.isprintable() or " " in key:
+        raise ValueError("api_key must be one token of printable ASCII, with no spaces")
+    return key
 
 
 def _retry_after(response: httpx.Response) -> float | None:
@@ -275,21 +284,11 @@ class Client(_Base):
         else:
             yield from names
             return
-        # More than 10,000 names: list the narrower prefixes. The name `prefix` itself sorts
-        # first and no narrower prefix lists it, so ask for it directly.
-        if prefix and self._exists(prefix):
-            yield prefix
+        # More than 10,000 names: list the narrower prefixes.
+        # shortcut: a name that equals a prefix split here is not listed by any narrower prefix
+        # and is not yielded; the API has no way to ask for it. Read it with describe_namespace.
         for child in _child_prefixes(prefix):
             yield from self.iter_namespaces(child)
-
-    def _exists(self, namespace: str) -> bool:
-        try:
-            self.describe_namespace(namespace)
-        except FyrrError as error:
-            if error.status in (401, 404):
-                return False
-            raise
-        return True
 
     def describe_namespace(self, namespace: str) -> NamespaceReport:
         path = _namespace_path(namespace)
@@ -391,20 +390,9 @@ class AsyncClient(_Base):
             for name in names:
                 yield name
             return
-        if prefix and await self._exists(prefix):
-            yield prefix
         for child in _child_prefixes(prefix):
             async for name in self.iter_namespaces(child):
                 yield name
-
-    async def _exists(self, namespace: str) -> bool:
-        try:
-            await self.describe_namespace(namespace)
-        except FyrrError as error:
-            if error.status in (401, 404):
-                return False
-            raise
-        return True
 
     async def describe_namespace(self, namespace: str) -> NamespaceReport:
         path = _namespace_path(namespace)

@@ -5391,7 +5391,7 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:clients/python/tests/test_retries.py::test_retry_after_is_honoured_and_capped": {
+      "python:clients/python/tests/test_retries.py::test_retry_after_is_honoured_until_the_cap": {
         "tier": "quick",
         "seconds": null
       },
@@ -5407,11 +5407,23 @@
         "tier": "quick",
         "seconds": null
       },
+      "python:clients/python/tests/test_retries.py::test_a_key_is_stripped_checked_and_never_shown": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_scim_error_without_a_type_has_no_code": {
+        "tier": "quick",
+        "seconds": null
+      },
       "python:clients/python/tests/test_retries.py::test_a_missing_writer_url_is_refused": {
         "tier": "quick",
         "seconds": null
       },
       "python:clients/python/tests/test_retries.py::test_iter_namespaces_narrows_the_prefix_above_the_listing_limit": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_iter_namespaces_follows_a_key_limited_to_a_namespace_prefix": {
         "tier": "quick",
         "seconds": null
       },

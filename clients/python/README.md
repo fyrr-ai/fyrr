@@ -39,6 +39,10 @@ async with AsyncClient(reader_url, writer_url, api_key=key) as client:
 | `iter_namespaces(prefix="")` | `GET /v1/namespaces`, narrowing the prefix | reader |
 | `iter_documents(namespace, filter=None, page_size=1000, consistency=None)` | `query`, by the document key | reader |
 
+The key is stripped of surrounding whitespace, so one read from a file works;
+a key with a space, a control character or a non-ASCII character is refused
+with a `ValueError` that does not show it.
+
 `writer_url` is optional: a client without it refuses the writer routes with a
 `ValueError`. The API key (or OIDC access token) needs the role of each route
 ([API reference](https://github.com/fyrr-ai/fyrr/blob/main/docs/api-reference.md)).
@@ -78,7 +82,8 @@ helpers) is retried up to `max_retries` times (default 3) on a connection
 error, a timeout, and the statuses 408, 429 and 5xx. The wait is `backoff`
 seconds (default 0.5) doubling with each attempt, at most 30 seconds, with
 jitter. When the answer has `Retry-After`, the client waits that long instead
-(at most 120 seconds). A request that is wrong, such as an unsupported URL
+(at most 120 seconds; a longer `Retry-After` is raised with `retry_after` set,
+not waited for). A request that is wrong, such as an unsupported URL
 scheme, is not retried.
 
 A **write** and `delete_namespace` change data, and a lost answer does not say
@@ -103,7 +108,10 @@ narrows the scan.
 
 `iter_namespaces` lists the names that start with `prefix` in name order. The
 API answers `too_many_namespaces` above 10,000 names; the helper then lists
-each narrower prefix instead.
+each narrower prefix instead, from the prefix you give (a key limited to a
+`namespace_prefix` sees only names that start with it). A name that is itself a
+prefix the helper splits is not yielded then, because no narrower prefix lists
+it; read it with `describe_namespace`.
 
 ## Tests
 

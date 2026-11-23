@@ -153,14 +153,16 @@ def test_other_errors_are_final(slept: list[float]) -> None:
     assert slept == []
 
 
-def test_retry_after_is_honoured_and_capped(slept: list[float]) -> None:
+def test_retry_after_is_honoured_until_the_cap(slept: list[float]) -> None:
     script = Script(
         httpx.Response(408, headers={"Retry-After": "7"}, json={"error": "deadline_exceeded"}),
         httpx.Response(503, headers={"Retry-After": "100000"}, json={"error": "busy"}),
         found(),
     )
-    client(script).query("ns", {})
-    assert slept == [7.0, client_module.MAX_RETRY_AFTER]
+    with pytest.raises(FyrrError) as raised:
+        client(script).query("ns", {})
+    assert slept == [7.0]
+    assert raised.value.retry_after == 100000.0 and len(script.requests) == 2
 
 
 def test_backoff_doubles_and_gives_up(slept: list[float]) -> None:
@@ -202,19 +204,42 @@ def test_the_async_client_retries_alike(slept: list[float]) -> None:
     assert slept == [3.0]
 
 
+def test_a_key_is_stripped_checked_and_never_shown() -> None:
+    secret = "fyrr_key_secret"
+    seen: list[str] = []
+
+    def record(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["Authorization"])
+        return found()
+
+    with Client(READER, api_key=f"{secret}\n", transport=httpx.MockTransport(record)) as read:
+        read.query("ns", {})
+        assert secret not in repr(read)
+    assert seen == [f"Bearer {secret}"]
+    for bad in ["", "  ", f"{secret}\x00", f"{secret} two", "kéy"]:
+        with pytest.raises(ValueError) as raised:
+            Client(READER, api_key=bad)
+        assert secret not in str(raised.value) and "kéy" not in str(raised.value)
+
+
+def test_a_scim_error_without_a_type_has_no_code() -> None:
+    script = Script(httpx.Response(403, json={"schemas": [], "status": "403", "detail": "no"}))
+    with pytest.raises(FyrrError) as raised:
+        client(script).delete_namespace("ns")
+    assert raised.value.code is None
+
+
 def test_a_missing_writer_url_is_refused() -> None:
     with pytest.raises(ValueError, match="writer_url"):
         Client(READER, api_key="k").write("ns", WRITE)
 
 
 def test_iter_namespaces_narrows_the_prefix_above_the_listing_limit() -> None:
-    existing = ["a", "a1", "a2", "a3", "ab", "b", "c"]
+    existing = ["a1", "a2", "a3", "ab", "b", "c"]
     limit = 3  # the server's is 10,000
 
     def server(request: httpx.Request) -> httpx.Response:
-        if request.url.path != "/v1/namespaces":  # a namespace report
-            found = request.url.path.rsplit("/", 1)[1] in existing
-            return httpx.Response(200 if found else 401, json={"error": "unauthorized"})
+        assert request.url.path == "/v1/namespaces"  # the listing alone, no report
         matching = [n for n in existing if n.startswith(request.url.params.get("prefix", ""))]
         if len(matching) > limit:
             return httpx.Response(400, json={"error": "too_many_namespaces"})
@@ -222,6 +247,21 @@ def test_iter_namespaces_narrows_the_prefix_above_the_listing_limit() -> None:
 
     with Client(READER, api_key="k", transport=httpx.MockTransport(server)) as listing:
         assert list(listing.iter_namespaces()) == existing
+
+
+def test_iter_namespaces_follows_a_key_limited_to_a_namespace_prefix() -> None:
+    # The server lists names that start with the key's prefix and the requested one.
+    existing = ["acme-1", "acme-2", "acme-3", "acme-4"]
+
+    def server(request: httpx.Request) -> httpx.Response:
+        asked = request.url.params.get("prefix", "")
+        matching = [n for n in existing if n.startswith(asked)]
+        if len(matching) > 2:
+            return httpx.Response(400, json={"error": "too_many_namespaces"})
+        return httpx.Response(200, json={"namespaces": matching})
+
+    with Client(READER, api_key="k", transport=httpx.MockTransport(server)) as listing:
+        assert list(listing.iter_namespaces("acme")) == existing
 
 
 def test_the_async_iter_namespaces_narrows_alike() -> None:

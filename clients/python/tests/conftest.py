@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -24,8 +24,9 @@ START = (
 class Deployment:
     reader_url: str
     writer_url: str
-    admin_key: str
-    read_key: str
+    # Keys stay out of the repr: pytest prints it in a failure, and CI logs are public.
+    admin_key: str = field(repr=False)
+    read_key: str = field(repr=False)
 
 
 @pytest.fixture(scope="session")
