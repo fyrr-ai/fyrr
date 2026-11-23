@@ -268,6 +268,7 @@ without it is answered as before.
 | `query` | The text to search, 1 to 4096 bytes: a lexical search and a dense one by its embedding. |
 | `vector` | The query vector, of the namespace's dimensions, instead of an embedding of `query`. Alone it searches the dense lane only. A sub-query needs `query`, `vector` or both. |
 | `vector_attribute` | The named [vector attribute](tuning.md#namespacevectors) this sub-query searches, as for [`search`](mcp-tools.md#search); default the built-in `vector`. |
+| `vectors` | The query vectors of a `multi` `vector_attribute`, as for [`search`](mcp-tools.md#search), instead of `vector`. |
 | `filter` | A [filter tree](mcp-tools.md#filters) for this sub-query. |
 | `limit` | Required: 1 to 75 hits. |
 
@@ -293,7 +294,7 @@ one number per sub-query.
 the sub-queries. `text_hits` counts per sub-query, or with `fusion` over the
 fused ranking. A sub-query without text is
 reranked only when `rerank.query` names the text. `query`, `queries`,
-`vector`, `vector_attribute`, `exact`, `order`, `order_by` and `offset` are refused with
+`vector`, `vectors`, `vector_attribute`, `exact`, `order`, `order_by` and `offset` are refused with
 `sub_queries`, and so is a request `limit` without `fusion`.
 
 ```sh
@@ -684,7 +685,7 @@ The body is one JSON object (`application/json`, no `Content-Encoding`):
 
 | Key | Meaning |
 | --- | --- |
-| `upserts` | Rows. A row is an object with an `id` (string, its key in the namespace), its text under the key `text_attribute`, `readers` (`usr:<id>` or `grp:<id>`; ignored by an open namespace), optionally its `vector` (a list of numbers), a value for any declared [attribute](tuning.md#namespaceattributes) and a list of numbers, or `null`, for any declared [vector attribute](tuning.md#namespacevectors). A row replaces the document with that `id`, readers included. |
+| `upserts` | Rows. A row is an object with an `id` (string, its key in the namespace), its text under the key `text_attribute`, `readers` (`usr:<id>` or `grp:<id>`; ignored by an open namespace), optionally its `vector` (a list of numbers), a value for any declared [attribute](tuning.md#namespaceattributes) and a list of numbers, or `null`, for any declared [vector attribute](tuning.md#namespacevectors) (a list of such lists for a `multi` one). A row replaces the document with that `id`, readers included. |
 | `patches` | Rows that change a document without replacing it. A row is an object with an `id`, and the attributes to write: a declared [attribute](tuning.md#namespaceattributes) (`null` clears it), `readers`, or the text under the key `text_attribute` with its `vector`. Everything a patch does not name stays as stored, the vector included, and nothing is embedded. A patch of an `id` that does not exist when the request is published is skipped and never creates a document. |
 | `deletes` | IDs to delete. An ID that does not exist is a delete of nothing. |
 | `delete_where` | A [filter](mcp-tools.md#filters): every document that matches it is deleted. The deletes by filter apply before everything else in the request, so that one request can replace the documents of a group. |

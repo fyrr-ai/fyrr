@@ -604,6 +604,10 @@ async fn build_vector_indexes(
         if rows == 0 {
             continue;
         }
+        // shortcut: a multi-vector attribute sizes its partitions by the rows
+        // that hold vectors, not by the vectors, so it has fewer partitions than
+        // its vectors would fill (Lance caps them by the vectors it counts);
+        // size them by the vectors if a search of such a column proves slow.
         let params = vector_index_params(
             rows,
             config.namespace.dense_rq_bits,

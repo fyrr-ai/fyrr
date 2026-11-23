@@ -35,6 +35,9 @@ pub mod mcp {
     /// page deeper than this is a scan by the document key instead.
     pub const MAX_LISTING_WINDOW: u32 = 1_000;
     pub const MAX_QUERIES: usize = 16;
+    /// The most query vectors of a search of a multi-vector attribute: Lance
+    /// searches the index once for each.
+    pub const MAX_QUERY_VECTORS: usize = 32;
     /// The most `contains` conditions of one query.
     pub const MAX_CONTAINS: usize = 16;
     /// The most `boosts` of one query.

@@ -1258,6 +1258,10 @@
         "tier": "quick",
         "seconds": 0.01
       },
+      "full:fyrr-core:test:config/a_multi_vector_attribute_needs_the_cosine_metric_and_no_source": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
       "full:fyrr-core:test:config/every_schema_constraint_is_enforced": {
         "tier": "quick",
         "seconds": 0.025
@@ -1543,6 +1547,10 @@
         "seconds": 0.01
       },
       "full:fyrr-reader:test:lance_pin/flat_distance_of_each_metric_on_both_element_types": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:test:lance_pin/multivector_query_on_ivf_rq_ranks_the_true_rows_under_a_mask": {
         "tier": "quick",
         "seconds": 0.05
       },
@@ -2208,6 +2216,10 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_searches_named_vector_attributes_on_storage": {
         "tier": "full",
         "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_searches_multi_vector_attributes_on_storage": {
+        "tier": "full",
+        "seconds": 120
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_builds_a_vector_index_when_the_first_vector_arrives_on_storage": {
         "tier": "full",

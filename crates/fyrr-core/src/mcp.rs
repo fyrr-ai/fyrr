@@ -89,6 +89,10 @@ pub struct SearchInput {
     /// Query vector of the namespace's dimensions, instead of an embedding of query. Without query the search is dense only and makes no embedding call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vector: Option<Vec<f32>>,
+    /// Query vectors of a multi-vector `vector_attribute`, 1-32 of its dimensions, searched as one query. Not with vector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = MAX_QUERY_VECTORS))]
+    pub vectors: Option<Vec<Vec<f32>>>,
     /// Exact search: score every row that passes the filter and the caller's permissions instead of probing the index. Refused as invalid_argument when more rows pass than the bound of an exact search.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exact: Option<bool>,
@@ -306,6 +310,10 @@ pub struct SubQuery {
     pub query: Option<String>,
     /// Query vector of the namespace's dimensions, instead of an embedding of query.
     pub vector: Option<Vec<f32>>,
+    /// Query vectors of a multi-vector `vector_attribute`, searched as one query. Not with vector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = MAX_QUERY_VECTORS))]
+    pub vectors: Option<Vec<Vec<f32>>>,
     /// Named vector attribute this sub-query searches; default the built-in `vector`. Text needs an attribute with `from`, else send `vector`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 128))]
@@ -1351,7 +1359,7 @@ impl SearchInput {
             })
     }
     pub fn validate(&self) -> Result<(), &'static str> {
-        let listing = !self.has_text() && self.vector.is_none();
+        let listing = !self.has_text() && !self.has_dense();
         let max_limit = if listing {
             MAX_LISTING_WINDOW
         } else {
@@ -1363,7 +1371,7 @@ impl SearchInput {
             .is_none_or(|q| bounded_text(q, MAX_QUERY_BYTES) && !q.trim().is_empty())
             && self.queries.as_ref().is_none_or(|queries| {
                 self.query.is_none()
-                    && self.vector.is_none()
+                    && !self.has_dense()
                     && self.order != Some(SearchOrder::UpdatedAt)
                     && self.order_by.is_none()
                     && (2..=MAX_QUERIES).contains(&queries.len())
@@ -1374,7 +1382,7 @@ impl SearchInput {
             && self.sub_queries.as_ref().is_none_or(|subs| {
                 self.query.is_none()
                     && self.queries.is_none()
-                    && self.vector.is_none()
+                    && !self.has_dense()
                     && self.order.is_none()
                     && self.order_by.is_none()
                     && self.exact.is_none()
@@ -1385,22 +1393,20 @@ impl SearchInput {
                     && (self.fusion.is_some() || self.limit.is_none())
             })
             && (self.has_text()
-                || self.vector.is_some()
+                || self.has_dense()
                 || self.order == Some(SearchOrder::UpdatedAt)
                 || self.order_by.is_some())
-            && self.vector.as_ref().is_none_or(|vector| {
-                u64::try_from(vector.len()).is_ok_and(|n| (1..=DIMENSIONS_MAX).contains(&n))
-            })
+            && valid_dense_key(&self.vector, &self.vectors, &self.vector_attribute)
             && self
                 .exact
-                .is_none_or(|_| self.has_text() || self.vector.is_some())
+                .is_none_or(|_| self.has_text() || self.has_dense())
             && self.vector_attribute.as_ref().is_none_or(|name| {
                 bounded_text(name, crate::limits::schema::MAX_NAME_BYTES)
-                    && (self.has_text() || self.vector.is_some())
+                    && (self.has_text() || self.has_dense())
             })
             && self.order_by.as_ref().is_none_or(|keys| {
                 self.query.is_none()
-                    && self.vector.is_none()
+                    && !self.has_dense()
                     && self.order.is_none()
                     && (1..=MAX_ORDER_KEYS).contains(&keys.len())
                     && keys.iter().all(|key| bounded_text(&key.field, 128))
@@ -1506,16 +1512,66 @@ impl SearchInput {
         }
     }
 }
+/// The dense query of a request: its `vector`, or its `vectors` one after the
+/// other, as Lance takes the query vectors of a multi-vector search.
+fn dense_key<'a>(
+    vector: &'a Option<Vec<f32>>,
+    vectors: &Option<Vec<Vec<f32>>>,
+) -> Option<std::borrow::Cow<'a, [f32]>> {
+    match (vector, vectors) {
+        (Some(vector), _) => Some(vector.as_slice().into()),
+        (None, Some(vectors)) => Some(vectors.concat().into()),
+        (None, None) => None,
+    }
+}
+/// Whether `vector` or `vectors` is shaped as a query: `vectors` name a
+/// `vector_attribute`, come without `vector`, and hold 1 to
+/// [`MAX_QUERY_VECTORS`] vectors of one length. Whether the attribute is
+/// multi-vector, and of what length its vectors are, is the reader's to check.
+fn valid_dense_key(
+    vector: &Option<Vec<f32>>,
+    vectors: &Option<Vec<Vec<f32>>>,
+    attribute: &Option<String>,
+) -> bool {
+    let length = |vector: &Vec<f32>| {
+        u64::try_from(vector.len()).is_ok_and(|n| (1..=DIMENSIONS_MAX).contains(&n))
+    };
+    vector.as_ref().is_none_or(length)
+        && vectors.as_ref().is_none_or(|vectors| {
+            vector.is_none()
+                && attribute.is_some()
+                && (1..=MAX_QUERY_VECTORS).contains(&vectors.len())
+                && vectors
+                    .iter()
+                    .all(|each| length(each) && each.len() == vectors[0].len())
+        })
+}
+impl SearchInput {
+    fn has_dense(&self) -> bool {
+        self.vector.is_some() || self.vectors.is_some()
+    }
+    /// The numbers of the dense query: `vector`, or `vectors` one after the
+    /// other.
+    pub fn dense_key(&self) -> Option<std::borrow::Cow<'_, [f32]>> {
+        dense_key(&self.vector, &self.vectors)
+    }
+}
 impl SubQuery {
+    fn has_dense(&self) -> bool {
+        self.vector.is_some() || self.vectors.is_some()
+    }
+    /// The numbers of the dense query: `vector`, or `vectors` one after the
+    /// other.
+    pub fn dense_key(&self) -> Option<std::borrow::Cow<'_, [f32]>> {
+        dense_key(&self.vector, &self.vectors)
+    }
     fn valid(&self) -> bool {
-        (self.query.is_some() || self.vector.is_some())
+        (self.query.is_some() || self.has_dense())
             && self
                 .query
                 .as_ref()
                 .is_none_or(|q| bounded_text(q, MAX_QUERY_BYTES) && !q.trim().is_empty())
-            && self.vector.as_ref().is_none_or(|vector| {
-                u64::try_from(vector.len()).is_ok_and(|n| (1..=DIMENSIONS_MAX).contains(&n))
-            })
+            && valid_dense_key(&self.vector, &self.vectors, &self.vector_attribute)
             && self
                 .vector_attribute
                 .as_ref()

@@ -1126,16 +1126,16 @@ async fn multivector_query_on_ivf_rq_ranks_the_true_rows_under_a_mask() {
         [axis(&[(0, 0.6), (3, 0.8)]), axis(&[(1, 0.5), (2, 0.866)])],
     ];
     let mut lists = ListBuilder::new(FixedSizeListBuilder::new(Float32Builder::new(), DIM));
-    for id in 0..ROWS {
-        let rows: Vec<Vec<f32>> = if let Some(row) = planted.get(id as usize) {
+    for id in 0..usize::try_from(ROWS).unwrap() {
+        let rows: Vec<Vec<f32>> = if let Some(row) = planted.get(id) {
             row.to_vec()
         } else {
             (0..8)
                 .map(|j| {
                     (0..DIM as usize)
                         .map(|d| {
-                            let noise = ((id as usize * 31 + j * 17 + d * 7) % 11) as f32 / 100.0;
-                            noise + f32::from(d == 8 + (id as usize + j) % 8)
+                            let noise = ((id * 31 + j * 17 + d * 7) % 11) as f32 / 100.0;
+                            noise + f32::from(d == 8 + (id + j) % 8)
                         })
                         .collect()
                 })

@@ -76,6 +76,55 @@ pub(crate) fn vector_type(element: DenseElement, dimensions: u32) -> DataType {
     )
 }
 
+/// The type of the column of a named vector attribute: a list of vectors when
+/// it is multi-vector.
+pub(crate) fn named_vector_type(
+    element: DenseElement,
+    spec: &fyrr_core::attributes::VectorAttribute,
+) -> DataType {
+    let vector = vector_type(element, spec.dimensions);
+    if spec.multi {
+        DataType::List(Arc::new(Field::new("item", vector, true)))
+    } else {
+        vector
+    }
+}
+
+/// The column of a named vector attribute: a row that is `None` is null. A row
+/// of a multi-vector attribute is its vectors one after the other, and a row
+/// with none is null too.
+pub(crate) fn named_vector_column<'a>(
+    element: DenseElement,
+    spec: &fyrr_core::attributes::VectorAttribute,
+    rows: impl Iterator<Item = Option<&'a [f32]>>,
+) -> ArrayRef {
+    if !spec.multi {
+        return nullable_vector_column(element, spec.dimensions, rows);
+    }
+    let dimensions = spec.dimensions as usize;
+    let mut offsets = vec![0_i32];
+    let mut valid = Vec::new();
+    let mut vectors = Vec::new();
+    for row in rows {
+        let row = row.filter(|row| !row.is_empty());
+        valid.push(row.is_some());
+        vectors.extend(row.into_iter().flat_map(|row| row.chunks_exact(dimensions)));
+        // A row holds at most as many vectors as its request's body has bytes.
+        offsets.push(i32::try_from(vectors.len()).unwrap_or(i32::MAX));
+    }
+    let values = nullable_vector_column(element, spec.dimensions, vectors.into_iter().map(Some));
+    Arc::new(ListArray::new(
+        Arc::new(Field::new(
+            "item",
+            vector_type(element, spec.dimensions),
+            true,
+        )),
+        OffsetBuffer::new(offsets.into()),
+        values,
+        Some(NullBuffer::from(valid)),
+    ))
+}
+
 pub fn schema(dimensions: u32, element: DenseElement) -> Arc<Schema> {
     schema_with(dimensions, element, Vec::new())
 }

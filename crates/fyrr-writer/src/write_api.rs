@@ -583,6 +583,19 @@ fn vector_of(value: Value, config: &Config) -> Result<Vec<f32>, ApiError> {
     vector_in(value, config.embedding.dimensions, config)
 }
 
+/// The vectors of a row of a multi-vector attribute, one after the other: a
+/// list of vectors of `dimensions` numbers, each one the element type stores.
+fn vectors_in(value: Value, dimensions: u32, config: &Config) -> Result<Vec<f32>, ApiError> {
+    let Value::Array(list) = value else {
+        return Err(ApiError(400, "vector_invalid"));
+    };
+    let mut vectors = Vec::new();
+    for vector in list {
+        vectors.extend(vector_in(vector, dimensions, config)?);
+    }
+    Ok(vectors)
+}
+
 /// A vector of `dimensions` numbers, which the namespace's element type stores.
 // A vector is stored as float32: the numbers of a JSON body narrow to it.
 #[allow(clippy::cast_possible_truncation)]
@@ -886,6 +899,7 @@ fn checked(
         for ((name, spec), column) in vectors.iter().zip(&mut named) {
             let own = match row.remove(name) {
                 None | Some(Value::Null) => None,
+                Some(value) if spec.multi => Some(vectors_in(value, spec.dimensions, config)?),
                 Some(value) => Some(vector_in(value, spec.dimensions, config)?),
             };
             let embedded = own.is_none()
@@ -936,9 +950,9 @@ fn checked(
     typed.extend(vectors.iter().zip(named).map(|((name, spec), column)| {
         (
             name.clone(),
-            crate::prepare::nullable_vector_column(
+            crate::prepare::named_vector_column(
                 config.namespace.dense_element,
-                spec.dimensions,
+                spec,
                 column.iter().map(Option::as_deref),
             ),
         )
