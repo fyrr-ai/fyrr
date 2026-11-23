@@ -5287,6 +5287,88 @@
       }
     }
   },
+  "python-client": {
+    "title": "python client",
+    "kind": "python",
+    "cases": {
+      "python:clients/python/tests/test_deployment.py::test_write_query_describe_list_delete": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_deployment.py::test_iter_documents_pages_through_every_document": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_deployment.py::test_error_answers_raise_with_status_and_code": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_deployment.py::test_a_conditional_write_applies_or_skips": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_deployment.py::test_async_client_covers_the_same_routes": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_retryable_statuses_are_retried[408]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_retryable_statuses_are_retried[429]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_retryable_statuses_are_retried[500]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_retryable_statuses_are_retried[503]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_retryable_statuses_are_retried[504]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_connection_errors_are_retried": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_other_errors_are_final": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_retry_after_is_honoured_and_capped": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_backoff_doubles_and_gives_up": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_conditional_write_is_never_retried": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_the_async_client_retries_alike": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_missing_writer_url_is_refused": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_iter_namespaces_narrows_the_prefix_above_the_listing_limit": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_the_async_iter_namespaces_narrows_alike": {
+        "tier": "quick",
+        "seconds": null
+      }
+    }
+  },
   "cli-reader": {
     "title": "cli (reader-only build)",
     "kind": "rust",

@@ -29,6 +29,12 @@ os.environ.setdefault("MBX_EAGER_INCREMENTAL", "0")
 MANIFEST = ROOT / "scripts/ci-cases.json"
 BUILD = ROOT / "target/ci-build/manifest.json"
 CASE_CPUS = 2
+# Python projects with their own tests: the CI row that runs them and their `uv` extras.
+PYTHON_PROJECTS = {
+    "connectors": ("python-sdk", ["--all-extras"]),
+    "examples/markdown-provider": ("python-example", []),
+    "clients/python": ("python-client", []),
+}
 
 
 def selected_cases(spec):
@@ -128,10 +134,7 @@ def rust_inventory(compiled):
 
 def inventory():
     cases = rust_inventory(artifacts())
-    for directory, args in [
-        ("connectors", ["--all-extras"]),
-        ("examples/markdown-provider", []),
-    ]:
+    for directory, (_, args) in PYTHON_PROJECTS.items():
         output(["uv", "sync", "--locked", *args], ROOT / directory)
         listing = output(
             ["uv", "run", "--locked", *args, "pytest", "--collect-only", "-q"],
@@ -153,7 +156,7 @@ def validate(manifest, actual):
                 raise ValueError(f"unknown external service: {row}")
         if spec.get("kind") not in {"rust", "python"} or not spec.get("title"):
             raise ValueError(f"row needs its execution kind and title: {row}")
-        if spec["kind"] == "python" and row not in {"python-sdk", "python-example"}:
+        if spec["kind"] == "python" and row not in {owner for owner, _ in PYTHON_PROJECTS.values()}:
             raise ValueError(f"row has no Python check in scripts/ci: {row}")
         if any(case.startswith("python:") != (spec["kind"] == "python") for case in spec["cases"]):
             raise ValueError(f"case does not match its row kind: {row}")
@@ -208,11 +211,7 @@ def run(spec):
     for case in spec["cases"]:
         group, name = case.split("/", 1) if not case.startswith("python:") else (None, None)
         if group is None:
-            directory = (
-                "connectors"
-                if case.startswith("python:connectors/")
-                else "examples/markdown-provider"
-            )
+            directory = next(d for d in PYTHON_PROJECTS if case.startswith(f"python:{d}/"))
             name = case.removeprefix(f"python:{directory}/")
             # Exact selectors preload conftests; isolate directories whose tests
             # import their local conftest module by name.
@@ -224,7 +223,7 @@ def run(spec):
     for group, names in groups.items():
         if group.startswith("python:"):
             directory = group.split(":")[1]
-            extras = ["--all-extras"] if directory == "connectors" else []
+            extras = PYTHON_PROJECTS[directory][1]
             command = ["uv", "run", "--locked", *extras, "pytest", *names]
             cwd = ROOT / directory
         else:
