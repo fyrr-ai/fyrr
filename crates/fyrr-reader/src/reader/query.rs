@@ -149,8 +149,12 @@ impl PreparedReader {
         // the process cache. Refused arms cannot observe shared cache membership.
         self.authorization()?;
         if let Some(vector) = &args.vector {
-            embedding::validate(vector, self.config.embedding.dimensions)
-                .map_err(|_| InvalidArgument)?;
+            embedding::validate(
+                vector,
+                self.config.embedding.dimensions,
+                self.config.namespace.dense_element,
+            )
+            .map_err(|_| InvalidArgument)?;
         }
         if args.exact == Some(true) {
             super::dense::exact_scan_bound(self.selected_rows().max_len().unwrap_or(0))?;
@@ -336,8 +340,12 @@ impl PreparedReader {
             return Err(InvalidArgument);
         }
         for vector in subs.iter().filter_map(|sub| sub.vector.as_ref()) {
-            embedding::validate(vector, self.config.embedding.dimensions)
-                .map_err(|_| InvalidArgument)?;
+            embedding::validate(
+                vector,
+                self.config.embedding.dimensions,
+                self.config.namespace.dense_element,
+            )
+            .map_err(|_| InvalidArgument)?;
         }
         if self.selected_rows().max_len().unwrap_or(0) == 0 {
             return Ok(self.nothing_admitted());
@@ -358,7 +366,13 @@ impl PreparedReader {
             .collect();
         let mut work = runtime.prepare(&texts)?;
         runtime
-            .complete(&mut work, &texts, true, embedding_deadline)
+            .complete(
+                &mut work,
+                &texts,
+                true,
+                embedding_deadline,
+                self.config.namespace.dense_element,
+            )
             .await;
         telemetry
             .stage_us
@@ -582,6 +596,7 @@ impl PreparedReader {
                 queries,
                 self.selected_rows().max_len().unwrap_or(0) != 0,
                 embedding_deadline,
+                self.config.namespace.dense_element,
             )
             .await;
         let mut failed = vectors.vectors.iter().any(Result::is_err);
@@ -613,6 +628,17 @@ impl PreparedReader {
                 std::mem::replace(vector, Err(EmbeddingUnavailable))
             };
             let result = match vector {
+                // A vector from the process cache, made for another element type.
+                Ok(vector)
+                    if embedding::validate(
+                        &vector,
+                        self.config.embedding.dimensions,
+                        self.config.namespace.dense_element,
+                    )
+                    .is_err() =>
+                {
+                    Ok((Vec::new(), None))
+                }
                 Ok(vector) => self
                     .dense(
                         &vector,

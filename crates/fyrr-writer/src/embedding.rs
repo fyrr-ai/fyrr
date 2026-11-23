@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use fyrr_core::config::{Config, EmbeddingConfig};
+use fyrr_core::config::{Config, DenseElement, EmbeddingConfig};
 use fyrr_reader::embedding::{EmbeddingClient, ProviderStats, Role, cache_key, digest, validate};
 
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -19,6 +19,7 @@ fn checksum(key: &str, dimensions: u32, bytes: &[u8]) -> String {
 
 pub struct WriterEmbedding {
     config: EmbeddingConfig,
+    element: DenseElement,
     client: Option<EmbeddingClient>,
     cap: Option<u64>,
     local: LocalCache,
@@ -100,6 +101,7 @@ impl WriterEmbedding {
         };
         Ok(Self {
             config: embedding,
+            element: config.namespace.dense_element,
             client: None,
             cap,
             local,
@@ -120,7 +122,11 @@ impl WriterEmbedding {
             if vectors.contains_key(key) || missing.contains_key(key) {
                 continue;
             }
-            let vector = read_vector(&self.local.root.join(&key[7..]), self.config.dimensions)?;
+            let vector = read_vector(
+                &self.local.root.join(&key[7..]),
+                self.config.dimensions,
+                self.element,
+            )?;
             if let Some(vector) = vector {
                 self.hits += 1;
                 vectors.insert(key.clone(), vector);
@@ -138,6 +144,10 @@ impl WriterEmbedding {
                 .await
                 .map_err(WriterError::from)?;
             for ((key, _), vector) in batch.iter().zip(embedded) {
+                // Before it is kept: a vector the namespace cannot store would
+                // fail every retry from the cache, after the provider is fixed.
+                validate(&vector, self.config.dimensions, self.element)
+                    .map_err(|_| WriterError::EmbeddingBatchInvalid)?;
                 self.local.write(&key[7..], &vector)?;
                 vectors.insert(key.clone(), vector);
             }
@@ -192,7 +202,7 @@ fn initialize_client<'a>(
     }
 }
 
-fn read_vector(path: &Path, dimensions: u32) -> Result<Option<Vec<f32>>> {
+fn read_vector(path: &Path, dimensions: u32, element: DenseElement) -> Result<Option<Vec<f32>>> {
     let mut file = match OpenOptions::new()
         .read(true)
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
@@ -233,7 +243,7 @@ fn read_vector(path: &Path, dimensions: u32) -> Result<Option<Vec<f32>>> {
         .chunks_exact(4)
         .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
         .collect::<Vec<_>>();
-    if validate(&vector, dimensions).is_err() {
+    if validate(&vector, dimensions, element).is_err() {
         return Ok(None);
     }
     Ok(Some(vector))
@@ -409,13 +419,16 @@ mod tests {
                 fs::write(scratch.0.join(&key), b"torn").unwrap();
             }
             let mut cache = LocalCache::open(scratch.0.clone()).unwrap();
-            assert_eq!(read_vector(&scratch.0.join(&key), 512).unwrap(), None);
+            assert_eq!(
+                read_vector(&scratch.0.join(&key), 512, DenseElement::F16).unwrap(),
+                None
+            );
             cache.write(&key, &[0.5; 512]).unwrap();
             drop(cache);
             let cache = LocalCache::open(scratch.0.clone()).unwrap();
             assert_eq!(cache.files.len(), 1);
             assert_eq!(
-                read_vector(&scratch.0.join(&key), 512).unwrap(),
+                read_vector(&scratch.0.join(&key), 512, DenseElement::F16).unwrap(),
                 Some(vec![0.5; 512])
             );
             // Same-sized corruption must also be a miss, even with a valid header.
@@ -423,7 +436,7 @@ mod tests {
             let mut bytes = fs::read(&path).unwrap();
             *bytes.last_mut().unwrap() ^= 1;
             fs::write(&path, bytes).unwrap();
-            assert_eq!(read_vector(&path, 512).unwrap(), None);
+            assert_eq!(read_vector(&path, 512, DenseElement::F16).unwrap(), None);
         }
     }
 
@@ -469,22 +482,31 @@ mod tests {
         let cache = LocalCache::open(scratch.0.clone()).unwrap();
         assert_eq!(cache.files.len(), 1);
         assert_eq!(
-            read_vector(&scratch.0.join(&key), 512).unwrap(),
+            read_vector(&scratch.0.join(&key), 512, DenseElement::F16).unwrap(),
             Some(vec![0.125; 512])
         );
-        assert_eq!(read_vector(&scratch.0.join(&key), 1024), Ok(None));
+        assert_eq!(
+            read_vector(&scratch.0.join(&key), 1024, DenseElement::F16),
+            Ok(None)
+        );
         fs::write(scratch.0.join(&key), [0u8; 2048]).unwrap();
-        assert_eq!(read_vector(&scratch.0.join(&key), 512), Ok(None));
+        assert_eq!(
+            read_vector(&scratch.0.join(&key), 512, DenseElement::F16),
+            Ok(None)
+        );
         drop(cache);
         let mut cache = LocalCache::open(scratch.0.clone()).unwrap();
         cache.write(&key, &[0.25; 512]).unwrap();
         assert_eq!(cache.files.len(), 1);
         assert_eq!(
-            read_vector(&scratch.0.join(&key), 512).unwrap(),
+            read_vector(&scratch.0.join(&key), 512, DenseElement::F16).unwrap(),
             Some(vec![0.25; 512])
         );
         fs::remove_file(scratch.0.join(&key)).unwrap();
-        assert_eq!(read_vector(&scratch.0.join(&key), 512).unwrap(), None);
+        assert_eq!(
+            read_vector(&scratch.0.join(&key), 512, DenseElement::F16).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -503,7 +525,7 @@ mod tests {
         let link = scratch.0.join("c".repeat(64));
         symlink(scratch.0.join("b".repeat(64)), &link).unwrap();
         assert_eq!(
-            read_vector(&link, 512),
+            read_vector(&link, 512, DenseElement::F16),
             Err(WriterError::EmbeddingLocalCacheUnavailable)
         );
         assert!(matches!(
@@ -528,7 +550,7 @@ mod tests {
         crate::io_probe::measure("embedding-cache-hit-1024x512", async {
             for n in 0..1024 {
                 assert!(
-                    read_vector(&scratch.0.join(format!("{n:064x}")), 512)
+                    read_vector(&scratch.0.join(format!("{n:064x}")), 512, DenseElement::F16)
                         .unwrap()
                         .is_some()
                 );

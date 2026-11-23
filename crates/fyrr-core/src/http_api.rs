@@ -83,6 +83,10 @@ pub struct NamespaceReport {
     pub schema: AttributeSchema,
     /// The namespace's settings, as its policy records them.
     pub settings: NamespaceSettings,
+    /// The distance of the vector index and the rescoring, fixed at creation.
+    pub dense_metric: crate::config::DenseMetric,
+    /// The element type of the stored vectors, fixed at creation.
+    pub dense_element: crate::config::DenseElement,
     /// Whether the namespace is frozen: writes are refused while it stays readable.
     pub read_only: bool,
     /// Approximate live rows; `null` for a version published before contract 4.1.

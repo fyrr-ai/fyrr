@@ -72,7 +72,7 @@ impl PreparedReader {
         scan.nearest("vector", &query, 75)
             .map_err(|_| SampleSkip::ReferenceFailed)?
             .use_index(false)
-            .distance_metric(lance_linalg::distance::DistanceType::Cosine)
+            .distance_metric(embedding::distance_type(self.config.namespace.dense_metric))
             .with_row_id();
         scan.project(&["_rowid", "_distance"])
             .map_err(|_| SampleSkip::ReferenceFailed)?;

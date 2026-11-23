@@ -366,11 +366,11 @@ fn rescore_depth(namespace: &NamespaceConfig, error: &mut impl FnMut(&str, Strin
                 || !(1..=1200).contains(max_candidates)
                 || min_candidates > max_candidates
                 || !min_gap.is_finite()
-                || !(0.0..=2.0).contains(min_gap)
+                || *min_gap < 0.0
             {
                 error(
                     "namespace.retrieval.rescore_depth",
-                    "invalid adaptive bounds or cosine gap".into(),
+                    "invalid adaptive bounds or gap".into(),
                 );
             }
         }

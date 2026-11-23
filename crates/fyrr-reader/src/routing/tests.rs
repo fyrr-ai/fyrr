@@ -23,11 +23,20 @@ fn auto_threshold_is_only_a_strategy_decision() {
         (8191, RoutingStrategy::Exact),
         (8192, RoutingStrategy::Rabitq),
     ] {
-        assert_eq!(strategy(RoutingStrategy::Auto, n), expected);
-        assert_eq!(strategy(RoutingStrategy::Exact, n), RoutingStrategy::Exact);
+        let cosine = DenseMetric::Cosine;
+        assert_eq!(strategy(RoutingStrategy::Auto, n, cosine), expected);
         assert_eq!(
-            strategy(RoutingStrategy::Rabitq, n),
+            strategy(RoutingStrategy::Exact, n, cosine),
+            RoutingStrategy::Exact
+        );
+        assert_eq!(
+            strategy(RoutingStrategy::Rabitq, n, DenseMetric::SquaredL2),
             RoutingStrategy::Rabitq
+        );
+        // The centroid scan does not rank by a dot product: Lance routes.
+        assert_eq!(
+            strategy(RoutingStrategy::Rabitq, n, DenseMetric::Dot),
+            RoutingStrategy::Exact
         );
     }
 }
@@ -106,5 +115,64 @@ fn router_takes_the_nearest_admitted_partitions_until_the_target() {
             router.select(query, &few, 2, 20),
             Err(RoutingFallback::EligibleShortlist)
         ));
+    }
+}
+
+/// Under squared L2 the query is not normalized: the router ranks the centroids
+/// by their Euclidean distance to a query of any length, as the namespace's
+/// metric does, and not by the angle that a cosine namespace's normalized query
+/// gives.
+#[test]
+fn router_ranks_a_query_of_any_length_by_euclidean_distance() {
+    let (n, dim) = (64u32, 16i32);
+    let (rows, width) = (n as usize, dim as usize);
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        ((state >> 33) as f32 / (1u64 << 31) as f32) - 0.5
+    };
+    // Centroids of different lengths, so that the angle and the distance differ.
+    let values: Vec<f32> = (0..rows)
+        .flat_map(|p| {
+            let length = 0.25 + (p % 8) as f32;
+            (0..width)
+                .map(|_| length * 2.0 * next())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let centroids = FixedSizeListArray::new(
+        Arc::new(Field::new("item", DataType::Float32, false)),
+        dim,
+        Arc::new(Float32Array::from(values.clone())),
+        None,
+    );
+    let router =
+        CentroidRouter::build(&centroids, Arc::new(tokio::sync::Semaphore::new(4096)), 0).unwrap();
+    let sparse: Vec<u32> = (0..n).map(|p| u32::from(p % 2 == 1)).collect();
+    for (query_no, scale) in [0.05f32, 1.0, 20.0].into_iter().enumerate() {
+        let query: Vec<f32> = (0..width).map(|_| scale * next()).collect();
+        let mut exact: Vec<_> = (0..n)
+            .filter(|p| sparse[*p as usize] > 0)
+            .map(|p| {
+                let at = p as usize * width;
+                (
+                    OrderedFloat(l2_distance(&query, &values[at..at + width])),
+                    p,
+                )
+            })
+            .collect();
+        exact.sort_unstable();
+        let (ids, distances) = router
+            .select(Arc::new(Float32Array::from(query)), &sparse, 2, 20)
+            .unwrap();
+        assert_eq!(
+            ids,
+            exact.iter().take(20).map(|r| r.1).collect::<Vec<_>>(),
+            "query {query_no} of scale {scale}"
+        );
+        // The distances are the squared Euclidean ones, not an angle.
+        assert!(distances.iter().zip(&exact).all(|(d, e)| *d == e.0.0));
     }
 }

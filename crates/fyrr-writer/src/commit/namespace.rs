@@ -46,6 +46,8 @@ pub fn namespace_settings(config: &Config) -> NamespaceSettings {
         fts: namespace.fts_settings(),
         dense_rq_bits: namespace.dense_rq_bits,
         dense_partition_rows: namespace.dense_partition_rows,
+        dense_metric: namespace.dense_metric,
+        dense_element: namespace.dense_element,
         retrieval: namespace.retrieval.settings(),
         composition: namespace.composition.settings(),
         rerank: namespace

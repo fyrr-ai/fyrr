@@ -388,6 +388,7 @@ async fn purge_denied(config: &Config, lease: &LeaseGuard, head: &ServingHead) -
             state.content_purged = true;
             readable.push(apply::marker_row(
                 config.embedding.dimensions,
+                config.namespace.dense_element,
                 &source.id,
                 &root,
                 &state,
@@ -859,11 +860,7 @@ pub async fn verify(config: &Config) -> Result<serde_json::Value> {
                 .and_then(|a| a.as_any().downcast_ref::<arrow_array::FixedSizeListArray>())
                 .ok_or(WriterError::ChangedRowsInvalid)?
                 .value(row);
-            let vector = vector
-                .as_any()
-                .downcast_ref::<arrow_array::Float16Array>()
-                .ok_or(WriterError::ChangedRowsInvalid)?;
-            if !apply::valid_vector(vector, config.embedding.dimensions) {
+            if !apply::valid_vector(vector.as_ref(), config.embedding.dimensions) {
                 return Err(WriterError::ChangedRowsInvalid);
             }
             let state = apply::state(&batch, row)?;

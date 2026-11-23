@@ -75,6 +75,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/embedding::tests::a_32_bit_vector_is_checked_as_sent_and_a_16_bit_one_after_rounding": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-reader:lib:fyrr_reader/embedding::tests::vectors_must_be_finite_nonzero_and_profile_sized": {
         "tier": "quick",
         "seconds": 0.0
@@ -250,6 +254,10 @@
       "full:fyrr-reader:lib:fyrr_reader/routing::tests::auto_threshold_is_only_a_strategy_decision": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/routing::tests::router_ranks_a_query_of_any_length_by_euclidean_distance": {
+        "tier": "quick",
+        "seconds": 0.01
       },
       "full:fyrr-reader:lib:fyrr_reader/routing::tests::probes_stop_at_nprobes_for_full_partitions_and_widen_for_sparse_ones": {
         "tier": "quick",
@@ -542,6 +550,10 @@
       "full:fyrr-writer:lib:fyrr_writer/commit::group::tests::vector_index_uses_the_configured_rabitq_bits": {
         "tier": "quick",
         "seconds": 0.01
+      },
+      "full:fyrr-writer:lib:fyrr_writer/commit::group::tests::vector_index_uses_the_configured_metric_on_both_element_types": {
+        "tier": "quick",
+        "seconds": 2
       },
       "full:fyrr-writer:lib:fyrr_writer/commit::group::tests::vector_index_uses_the_configured_partition_rows": {
         "tier": "quick",
@@ -1214,6 +1226,10 @@
         "tier": "quick",
         "seconds": 0.01
       },
+      "full:fyrr-core:test:config/dense_metric_and_element_default_to_cosine_and_f16_and_enter_the_digest_when_set": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
       "full:fyrr-core:test:config/every_schema_constraint_is_enforced": {
         "tier": "quick",
         "seconds": 0.025
@@ -1388,6 +1404,10 @@
         "tier": "quick",
         "seconds": 0.003
       },
+      "full:fyrr-core:test:contracts/a_vector_metric_and_element_type_need_the_version_an_older_build_refuses": {
+        "tier": "quick",
+        "seconds": 0.003
+      },
       "full:fyrr-core:test:contracts/attribute_index_options_need_the_version_an_older_build_refuses": {
         "tier": "quick",
         "seconds": 0.002
@@ -1489,6 +1509,10 @@
       "full:fyrr-reader:test:lance_pin/native_rabitq_centroid_codes_and_f32_routing_order": {
         "tier": "quick",
         "seconds": 0.01
+      },
+      "full:fyrr-reader:test:lance_pin/flat_distance_of_each_metric_on_both_element_types": {
+        "tier": "quick",
+        "seconds": 0.05
       },
       "full:fyrr-reader:test:lance_pin/positionless_native_fts_and_saving": {
         "tier": "quick",
@@ -1937,6 +1961,10 @@
         "tier": "full",
         "seconds": 8.419
       },
+      "full:fyrr:test:dense_path/embedding::tools_embedding_provider_vector_the_namespace_cannot_store_is_not_cached_on_storage": {
+        "tier": "full",
+        "seconds": 8
+      },
       "full:fyrr:test:dense_path/embedding::tools_embedding_wait_revocation_on_storage": {
         "tier": "quick",
         "seconds": 7.738
@@ -2096,6 +2124,26 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_stores_the_vectors_a_caller_supplies_on_storage": {
         "tier": "full",
         "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_holds_recall_under_cosine_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_holds_recall_under_squared_l2_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_holds_recall_under_dot_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_holds_recall_under_squared_l2_on_32_bit_vectors_on_storage": {
+        "tier": "full",
+        "seconds": 60
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_holds_recall_under_dot_on_32_bit_vectors_on_storage": {
+        "tier": "full",
+        "seconds": 60
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_ends_a_first_publication_of_identical_vectors_on_storage": {
         "tier": "full",

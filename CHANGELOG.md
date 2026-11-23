@@ -38,6 +38,18 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   caller may read are boosted. They do not go with `sub_queries` or `fusion`. The MCP
   `search` tool does not take them. See [Boosts](docs/http-api.md#boosts).
 
+- `namespace.dense_metric` (`cosine`, the default, `squared_l2` or `dot`) and
+  `namespace.dense_element` (`f16`, the default, or `f32`) set the distance of
+  the vector index and the type a vector is stored in. Both are fixed when the
+  namespace is created, recorded in its policy and manifest and reported by
+  `GET /v1/namespaces/{namespace}` as `dense_metric` and `dense_element`. The
+  index build, the partition routing, the rescoring and the recall sample use
+  the namespace's metric. Under `dot` Lance ranks the partitions itself, so
+  `reader.routing = "rabitq"` is not used for it. A namespace with another
+  metric or element type is content-manifest 5.0 and policy-artifact 4.0, so
+  an older build refuses it; a namespace with the defaults keeps its versions,
+  files and retrieval-policy digest. See
+  [tuning](docs/tuning.md#namespace-vector-index).
 - The JSON `query` route takes `query_match`, which makes a text ranking
   require all of its terms, and `contains`, which requires a hit to hold all
   or any tokens of a string attribute with a full-text index. Both work next to

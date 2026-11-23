@@ -3,11 +3,13 @@
 use EmbeddingError::*;
 
 type Result<T> = std::result::Result<T, EmbeddingError>;
-use fyrr_core::config::EmbeddingConfig;
+use arrow_array::{Array, ArrayRef, Float16Array, Float32Array};
+use fyrr_core::config::{DenseElement, DenseMetric, EmbeddingConfig};
 use fyrr_core::envelope::{
     EmbeddingApiStyle, EmbeddingIdentity, EmbeddingRole, EmbeddingRoles, EmbeddingSettings,
 };
 pub use fyrr_core::limits::digest;
+use std::sync::Arc;
 
 mod error;
 pub use error::EmbeddingError;
@@ -85,19 +87,74 @@ pub fn identity(config: &EmbeddingConfig) -> EmbeddingIdentity {
     }
 }
 
-pub fn validate(vector: &[f32], dimensions: u32) -> Result<()> {
-    if vector.len() != dimensions as usize || vector.iter().any(|value| !value.is_finite()) {
+/// The largest magnitude of a number in a vector. A larger one could overflow in
+/// a distance of the widest vectors (8192 numbers), also inside the index, and
+/// the search would fail on it instead of ranking it. Embeddings are far below.
+pub const VECTOR_MAGNITUDE_MAX: f32 = 1e6;
+
+/// Whether `vector` is a finite vector of `dimensions` numbers, none beyond
+/// [`VECTOR_MAGNITUDE_MAX`], whose sum of squares is a normal positive 32-bit
+/// number (a norm that underflows to zero would divide a cosine by zero), that
+/// the namespace's element type stores:
+/// a 16-bit one must also stay finite and nonzero once its numbers are rounded
+/// to 16 bits.
+pub fn validate(vector: &[f32], dimensions: u32, element: DenseElement) -> Result<()> {
+    if vector.len() != dimensions as usize
+        || vector
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() > VECTOR_MAGNITUDE_MAX)
+    {
         return Err(EmbeddingInvalid);
     }
-    let norm: f64 = vector.iter().map(|v| f64::from(*v).powi(2)).sum();
-    if norm == 0.0 || !norm.is_finite() {
+    // Lance measures the norm in 32 bits.
+    let norm: f32 = vector.iter().map(|v| v * v).sum();
+    if !norm.is_normal() {
         return Err(EmbeddingInvalid);
     }
-    let originals: Vec<_> = vector.iter().copied().map(half::f16::from_f32).collect();
-    if originals.iter().any(|v| !v.is_finite()) || originals.iter().all(|v| *v == half::f16::ZERO) {
-        return Err(EmbeddingInvalid);
+    if element == DenseElement::F16 {
+        let originals: Vec<_> = vector.iter().copied().map(half::f16::from_f32).collect();
+        if originals.iter().any(|v| !v.is_finite())
+            || originals.iter().all(|v| *v == half::f16::ZERO)
+        {
+            return Err(EmbeddingInvalid);
+        }
     }
     Ok(())
+}
+
+/// Lance's distance for a namespace's metric.
+pub fn distance_type(metric: DenseMetric) -> lance_linalg::distance::DistanceType {
+    use lance_linalg::distance::DistanceType;
+    match metric {
+        DenseMetric::Cosine => DistanceType::Cosine,
+        DenseMetric::SquaredL2 => DistanceType::L2,
+        DenseMetric::Dot => DistanceType::Dot,
+    }
+}
+
+/// A query as an array of the element type the namespace stores its vectors in.
+pub fn query_array(vector: &[f32], element: DenseElement) -> ArrayRef {
+    match element {
+        DenseElement::F16 => Arc::new(Float16Array::from_iter_values(
+            vector.iter().copied().map(half::f16::from_f32),
+        )),
+        DenseElement::F32 => Arc::new(Float32Array::from(vector.to_vec())),
+    }
+}
+
+/// The numbers of a stored vector. `None` when it holds a null or is of
+/// another type than the two the namespace may store.
+pub fn stored_values(vector: &dyn Array) -> Option<Vec<f32>> {
+    if vector.null_count() > 0 {
+        return None;
+    }
+    if let Some(vector) = vector.as_any().downcast_ref::<Float16Array>() {
+        return Some(vector.values().iter().map(|v| v.to_f32()).collect());
+    }
+    vector
+        .as_any()
+        .downcast_ref::<Float32Array>()
+        .map(|vector| vector.values().to_vec())
 }
 
 #[cfg(test)]

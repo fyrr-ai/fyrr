@@ -2,7 +2,7 @@
 use super::validate;
 use super::{EmbeddingError::*, Result};
 use crate::provider::BodyError;
-use fyrr_core::config::{EmbeddingConfig, EmbeddingRole, ProcessEnvironment};
+use fyrr_core::config::{DenseElement, EmbeddingConfig, EmbeddingRole, ProcessEnvironment};
 use serde::Deserialize;
 use std::hash::BuildHasher;
 use std::sync::{
@@ -461,7 +461,9 @@ impl EmbeddingClient {
         }
         let mut vectors = vec![None; texts.len()];
         for item in response.data {
-            validate(&item.embedding, self.config.dimensions)?;
+            // The element type is the namespace's: a reader process serves
+            // several. Its check follows, on the search path in `dense`.
+            validate(&item.embedding, self.config.dimensions, DenseElement::F32)?;
             let entry = vectors
                 .get_mut(item.index)
                 .ok_or(EmbeddingResponseInvalid)?;

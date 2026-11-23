@@ -102,6 +102,30 @@ async fn tools_embedding_empty_admission_and_namespace_profile_make_no_calls_on_
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A vector a provider returns that the namespace cannot store (a number beyond
+/// 16 bits) is neither searched nor kept: the query is answered by its text, and
+/// asked again it reaches the provider again, which may have been fixed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real executable, local fake embedding provider and local storage; scripts/ci"]
+async fn tools_embedding_provider_vector_the_namespace_cannot_store_is_not_cached_on_storage() {
+    let provider = Provider::open().await;
+    let (config, root, _) = tools::fixture();
+    let live = configured(&config, &provider, 1000);
+    let mut huge = vec![1.0f32; 1024];
+    huge[0] = 70_000.0;
+    provider.insert_both("fixture huge", huge);
+    let mut client = Mcp::open(&live);
+    let first = body(client.call("search", query("fixture huge")));
+    assert!(first["hits"].is_array(), "{first}");
+    let calls = provider.calls();
+    assert!(calls > 0, "the provider was asked");
+    let second = body(client.call("search", query("fixture huge")));
+    assert!(second["hits"].is_array(), "{second}");
+    assert!(provider.calls() > calls, "the refused vector was not kept");
+    drop(client);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn writer_config(
     config: &Path,
     root: &Path,

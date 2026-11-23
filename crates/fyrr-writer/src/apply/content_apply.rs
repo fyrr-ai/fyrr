@@ -29,9 +29,10 @@ pub async fn content(
     // which are taken whole at the end.
     let typed = staged.clone();
     let staged = if envelope.source_id == fyrr_core::connector::API_SOURCE_ID {
-        let built_in = crate::prepare::schema(config.embedding.dimensions)
-            .fields()
-            .len();
+        let built_in =
+            crate::prepare::schema(config.embedding.dimensions, config.namespace.dense_element)
+                .fields()
+                .len();
         staged
             .project(&(0..built_in).collect::<Vec<_>>())
             .map_err(|_| WriterError::ChangedRowsInvalid)?
@@ -153,6 +154,7 @@ pub async fn content(
             next.revision = document.source_revision.clone().or(next.revision);
             output.push(marker_row(
                 config.embedding.dimensions,
+                config.namespace.dense_element,
                 &envelope.source_id,
                 &document.root_id,
                 &next,
@@ -203,6 +205,7 @@ pub async fn content(
                     patch,
                     revision,
                     &config.namespace.attributes,
+                    config.namespace.dense_element,
                 )?);
             }
             continue;
@@ -220,6 +223,7 @@ pub async fn content(
             next.content_purged = true;
             output.push(marker_row(
                 config.embedding.dimensions,
+                config.namespace.dense_element,
                 &envelope.source_id,
                 &document.root_id,
                 &next,

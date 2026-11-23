@@ -73,7 +73,6 @@ async fn server() -> Server {
                 let value = match case {
                     4 => 0.,
                     5 => f32::MAX,
-                    6 => f32::MIN_POSITIVE,
                     _ => (index + 1) as f32 * 0.125,
                 };
                 serde_json::json!({"index":if case == 1 {0} else {index},
@@ -244,7 +243,9 @@ async fn live_provider_roles_order_validation_and_no_uncapped_calls() {
     assert_eq!(body["dimensions"], 512);
     assert_eq!(stats.calls, 2);
     assert_eq!(stats.embedding_calls, 1);
-    for case in [1, 2, 3, 4, 5, 6, 7, 9, 11] {
+    // A vector that is zero once rounded to 16 bits is the namespace's to refuse
+    // (`validate`), not the client's.
+    for case in [1, 2, 3, 4, 5, 7, 9, 11] {
         server.fake.case.store(case, Ordering::Relaxed);
         assert!(
             client

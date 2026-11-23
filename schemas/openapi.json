@@ -1661,6 +1661,14 @@
             "$ref": "#/components/schemas/NamespaceSettings",
             "description": "The namespace's settings, as its policy records them."
           },
+          "dense_metric": {
+            "$ref": "#/components/schemas/DenseMetric",
+            "description": "The distance of the vector index and the rescoring, fixed at creation."
+          },
+          "dense_element": {
+            "$ref": "#/components/schemas/DenseElement",
+            "description": "The element type of the stored vectors, fixed at creation."
+          },
           "read_only": {
             "type": "boolean",
             "description": "Whether the namespace is frozen: writes are refused while it stays readable."
@@ -1706,6 +1714,8 @@
           "publication_id",
           "schema",
           "settings",
+          "dense_metric",
+          "dense_element",
           "read_only",
           "rows",
           "logical_bytes",
@@ -1804,6 +1814,14 @@
             "format": "uint32",
             "minimum": 0,
             "description": "Target rows per partition of the vector index."
+          },
+          "dense_metric": {
+            "$ref": "#/components/schemas/DenseMetric",
+            "description": "The distance of the vector index and the rescoring; absent: cosine."
+          },
+          "dense_element": {
+            "$ref": "#/components/schemas/DenseElement",
+            "description": "The element type of the stored vectors; absent: 16-bit floats."
           },
           "retrieval": {
             "$ref": "#/components/schemas/RetrievalSettings"
@@ -1993,6 +2011,23 @@
           "with_position"
         ],
         "description": "FTS analyzer settings, part of the publication identity."
+      },
+      "DenseMetric": {
+        "type": "string",
+        "enum": [
+          "cosine",
+          "squared_l2",
+          "dot"
+        ],
+        "description": "The distance of the dense index. Lance's IVF_RQ index supports all three on\n16-bit and 32-bit float vectors. Its `_distance` is lower for a nearer row:\n`cosine` is one minus the cosine similarity, `squared_l2` the squared\nEuclidean distance and `dot` one minus the dot product."
+      },
+      "DenseElement": {
+        "type": "string",
+        "enum": [
+          "f16",
+          "f32"
+        ],
+        "description": "The element type of a stored vector. A 16-bit float halves the vector\ncolumn; a 32-bit one keeps the numbers the caller sent."
       },
       "RetrievalSettings": {
         "type": "object",

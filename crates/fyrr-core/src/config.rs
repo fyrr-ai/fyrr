@@ -174,6 +174,14 @@ pub struct NamespaceConfig {
     #[serde(default = "default_dense_partition_rows")]
     #[schemars(range(min = DENSE_PARTITION_ROWS_MIN, max = DENSE_PARTITION_ROWS_MAX))]
     pub dense_partition_rows: u32,
+    /// The distance the dense index and the rescoring measure, fixed for the
+    /// life of the namespace: `cosine`, `squared_l2` or `dot`.
+    #[serde(default)]
+    pub dense_metric: DenseMetric,
+    /// The element type the vectors are stored in, fixed for the life of the
+    /// namespace: `f16` or `f32`.
+    #[serde(default)]
+    pub dense_element: DenseElement,
     /// Typed attributes declared for a new namespace: name to `string`, `int`,
     /// `float`, `bool` or `datetime`. Each is a nullable column with its own
     /// index.
@@ -447,7 +455,8 @@ pub enum RescoreDepth {
     Fixed {
         candidates: usize,
     },
-    /// Expand when the exact cosine gap at the retained boundary is small.
+    /// Expand when the exact distance gap, in the units of the namespace's
+    /// metric, at the retained boundary is small.
     Adaptive {
         min_candidates: usize,
         max_candidates: usize,
@@ -551,6 +560,11 @@ impl NamespaceConfig {
         }
         if let Some(rerank) = &self.rerank {
             policy.push(serde_json::json!({"rerank_v2": rerank.settings()}));
+        }
+        // The fixed string above names the metric and element type of every
+        // namespace that records none: cosine and f16.
+        if !self.dense_metric.is_default() || !self.dense_element.is_default() {
+            policy.push(serde_json::json!({"dense_v1": [self.dense_metric, self.dense_element]}));
         }
         crate::limits::digest(serde_json::Value::Array(policy).to_string().as_bytes())
     }
@@ -926,6 +940,50 @@ pub enum SparseRead {
     #[default]
     MaskedScan,
     TakeRows,
+}
+
+/// The distance of the dense index. Lance's IVF_RQ index supports all three on
+/// 16-bit and 32-bit float vectors. Its `_distance` is lower for a nearer row:
+/// `cosine` is one minus the cosine similarity, `squared_l2` the squared
+/// Euclidean distance and `dot` one minus the dot product.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DenseMetric {
+    #[default]
+    Cosine,
+    SquaredL2,
+    Dot,
+}
+
+/// The element type of a stored vector. A 16-bit float halves the vector
+/// column; a 32-bit one keeps the numbers the caller sent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DenseElement {
+    #[default]
+    F16,
+    F32,
+}
+
+impl DenseMetric {
+    /// Whether this is the metric of a namespace that records none.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+impl DenseElement {
+    /// Whether this is the element type of a namespace that records none.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Bytes of one stored element.
+    pub fn bytes(self) -> u64 {
+        match self {
+            Self::F16 => 2,
+            Self::F32 => 4,
+        }
+    }
 }
 
 /// Partition routing; auto is not a measured crossover.
@@ -1576,6 +1634,8 @@ impl Config {
         namespace.fts_ascii_folding = settings.fts.ascii_folding;
         namespace.dense_rq_bits = settings.dense_rq_bits;
         namespace.dense_partition_rows = settings.dense_partition_rows;
+        namespace.dense_metric = settings.dense_metric;
+        namespace.dense_element = settings.dense_element;
         namespace.attributes.clone_from(&settings.attributes);
         namespace
             .attribute_indexes

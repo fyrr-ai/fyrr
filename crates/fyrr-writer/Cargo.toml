@@ -26,7 +26,6 @@ serde_json.workspace = true
 fyrr-reader.workspace = true
 lance.workspace = true
 lance-index.workspace = true
-lance-linalg.workspace = true
 object_store.workspace = true
 tokio.workspace = true
 futures.workspace = true
