@@ -7,7 +7,7 @@ use crate::embedding::{self, digest};
 use crate::error::*;
 use crate::generation::{GenerationState, MemoryPool, NativeSession, PreparationReservation};
 use crate::mirror::{MirrorLease, MirrorRequest, MirrorStore};
-use crate::retrieval::{Candidate, compose, reciprocal_rank_fusion};
+use crate::retrieval::{Bonus, Candidate, compose, reciprocal_rank_fusion};
 use crate::routing::{CentroidRouter, RoutingFallback, strategy, take_probes};
 use crate::storage::*;
 use arrow_array::{Array, Float32Array, RecordBatch, StringArray, UInt32Array, UInt64Array};

@@ -241,14 +241,16 @@ impl PreparedReader {
                 .ok_or(StorageUnavailable)?;
             *concurrent = concurrent.saturating_sub(wait_only);
         }
-        let ranked_queries = self.compose_queries(
-            args,
-            &predicate,
-            lexical,
-            dense,
-            &mut completion,
-            &mut telemetry,
-        )?;
+        let ranked_queries = self
+            .compose_queries(
+                args,
+                &predicate,
+                lexical,
+                dense,
+                &mut completion,
+                &mut telemetry,
+            )
+            .await?;
         self.finish_search_batch(
             args,
             queries,
@@ -417,9 +419,10 @@ impl PreparedReader {
                     &self.config.namespace.composition,
                     depth,
                     &self.config.namespace.retrieval,
+                    &Bonus::new(),
                 )?
             } else {
-                crate::retrieval::dense_only(dense, depth)?
+                crate::retrieval::dense_only(dense, depth, &Bonus::new())?
             });
             self.stage(&mut telemetry, "fusion", stage, self.mirror.counters());
         }
@@ -518,12 +521,16 @@ impl PreparedReader {
                     let mut ranked = Vec::with_capacity(results.len());
                     for result in &results {
                         let (rows, _, _) = result.as_ref().map_err(|code| *code)?;
+                        let bonus =
+                            crate::boost::bonuses(self, args.boosts.as_deref(), [&[], rows])
+                                .await?;
                         ranked.push(compose(
                             Vec::new(),
                             rows.clone(),
                             &self.config.namespace.composition,
                             k,
                             &self.config.namespace.retrieval,
+                            &bonus,
                         )?);
                     }
                     let selected = select_hits(ranked, queries, args, output, k, max_documents);
@@ -627,7 +634,7 @@ impl PreparedReader {
         Ok::<_, ReaderError>((results, failed))
     }
 
-    fn compose_queries(
+    async fn compose_queries(
         &mut self,
         args: &SearchInput,
         predicate: &str,
@@ -673,11 +680,10 @@ impl PreparedReader {
                     predicate.to_owned(),
                 ));
             }
-            let mut depth = crate::rerank::configured(self, args.rerank.as_ref())
+            let depth = crate::rerank::configured(self, args.rerank.as_ref())
                 .map_or(k, |rerank| k.max(rerank.candidates));
-            if args.boosts.is_some() {
-                depth = crate::boost::candidate_depth(&self.config.namespace.composition, depth);
-            }
+            let bonus =
+                crate::boost::bonuses(self, args.boosts.as_deref(), [&dense, &lexical]).await?;
             let selected = if args.has_text() {
                 compose(
                     dense,
@@ -685,9 +691,10 @@ impl PreparedReader {
                     &self.config.namespace.composition,
                     depth,
                     &self.config.namespace.retrieval,
+                    &bonus,
                 )?
             } else {
-                crate::retrieval::dense_only(dense, depth)?
+                crate::retrieval::dense_only(dense, depth, &bonus)?
             };
             #[cfg(test)]
             self.trace_stages(|stages| {
@@ -731,8 +738,6 @@ impl PreparedReader {
             .as_ref()
             .is_some_and(|slot| !slot.held())
         {
-            // shortcut: this degraded answer skips the boosts, as it skips the
-            // reranker; they need a native read a parked slot may not make.
             let mut result = fallback.take().ok_or(StorageUnavailable)??;
             for (stage, micros) in result.metadata.telemetry.stage_us {
                 if matches!(stage.as_str(), "metadata" | "excerpts") {
@@ -752,7 +757,6 @@ impl PreparedReader {
             return Ok(result);
         }
         drop(fallback);
-        crate::boost::apply(self, args, &mut ranked_queries).await?;
         // Nothing to rerank against without text; a request may supply it.
         let scored_text = args.rerank.as_ref().and_then(|r| r.query.as_deref());
         let texts: Vec<&str> = queries

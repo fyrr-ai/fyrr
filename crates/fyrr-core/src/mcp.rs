@@ -1361,9 +1361,11 @@ impl SearchInput {
                     && conditions.iter().all(Contains::is_valid)
             })
             && self.boosts.as_ref().is_none_or(|boosts| {
-                // A listing has no ranking to boost, and a sub-query has its own.
+                // A listing has no ranking to boost, a sub-query has its own, and
+                // a fusion of `queries` ranks by position in each list, not by score.
                 !listing
                     && self.sub_queries.is_none()
+                    && self.fusion.is_none()
                     && (1..=MAX_BOOSTS).contains(&boosts.len())
                     && boosts.iter().all(Boost::is_valid)
             })

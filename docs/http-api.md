@@ -398,13 +398,14 @@ a text ranking (`query` or `queries`), a vector ranking, or both fused. It is
 no argument of the tool: `fetch` and `/mcp` refuse it, and their output does
 not change. A request without it is answered as before. It is
 `400 invalid_argument` for a listing, which has no ranking, and with
-`sub_queries`, which rank on their own.
+`sub_queries` or `fusion`, which rank by their own rules.
 
-The score of a ranking lies between 0 and 1: a lane is normalized, and a
-ranking by vector alone is normalized the same way before boosts apply. Each
+The fused score of a text or hybrid ranking lies between 0 and 1. A ranking by
+vector alone is scored by distance, so its distances are normalized to that
+range first, and its `score` reads as that sum when a boost is present. Each
 term adds its `weight` times a function that lies between 0 and 1, so a weight
-of 0.2 moves a document at most 0.2 up the scale of the relevance scores, and
-a weight of 1 lets a boost outweigh relevance.
+of 0.2 moves a document at most 0.2 up the scale, and a weight of 1 lets a
+boost outweigh relevance.
 
 | `function` | Other members | Adds |
 | --- | --- | --- |
@@ -421,19 +422,18 @@ current time as the origin: send the time of the request. An attribute that is
 not declared or has another type, a weight or midpoint out of range and a
 missing `origin` are `400 invalid_argument`.
 
-Boosts apply to the candidates of the composed ranking, not to the whole
-namespace: the first `composition.fusion + composition.dense +
-composition.lexical` documents (50 by default, see
-[tuning](tuning.md#namespacecomposition)) or, when it is more, the request's
-`limit` or the reranker's `candidates`. A document inside that depth can
-reach the first rank through a boost whatever its relevance rank; one outside
-it cannot. The candidates are the rows the caller may read and the request's
-filters select, so a boost never reads an attribute of a document the caller
-cannot read. The documents are ordered by the boosted score and cut at `limit`.
-A reranker blends its score with the boosted one; with a reranker weight of 1
-the reranker alone decides the order. The lexical-only answer a reader gives
-while it waits for a slow embedding provider (`degraded` holds `dense`) carries
-no boosts.
+Boosts apply to the candidates the lanes retrieve, not to the whole namespace:
+the text lane's `namespace.retrieval.lexical_candidates` and the vector lane's
+`dense_candidates` (at least `limit`), see [tuning](tuning.md#namespaceretrieval).
+They are the rows the caller may read and the request's filters select, so a
+boost never reads an attribute of a document the caller cannot read. The boost
+is added to a candidate's fused score before the
+[composition](tuning.md#namespacecomposition) picks its slots, so its
+`source_cap` and slot rules still apply: a boost that adds 0 everywhere returns
+the answer a request without `boosts` returns. A document among the candidates
+can reach the first rank through a boost whatever its relevance rank; one
+outside them cannot. A reranker blends its score with the boosted one; with a
+reranker weight of 1 the reranker alone decides the order.
 
 ```sh
 curl https://fyrr.example.com/v1/namespaces/main/query \

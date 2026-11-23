@@ -4017,27 +4017,29 @@ async fn identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_s
     let (config, root) = setup_on(Backend::Local);
     let address = free_address();
     configure(&config, &address, "");
+    embed(&root, &["alpha"]);
     let writer = Writer::start(&config, &root, address).await;
-    let axis = |index: usize| {
-        let mut vector = vec![0.0_f32; 1024];
-        vector[index] = 1.0;
-        vector
-    };
+    // The vector `embed` gives the text "alpha": the documents hold it, or its
+    // opposite.
+    let alpha: Vec<f32> = (0..1024)
+        .map(|d: usize| (((2000 * (d + 7)) as f32).sin()))
+        .collect();
+    let towards = |sign: f32| alpha.iter().map(|x| x * sign).collect::<Vec<f32>>();
     // `a`, `b` and `c` match the query best, by text and by vector, and tie.
     // `f` matches it worst and is the most viewed and the most recent. `g`
     // matches it best and has more of both, but the caller may not read it.
     let long = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda";
     let rows = [
-        ("a", "alpha", 0, 1.0, "2020-01-01T00:00:00Z", "usr:x"),
-        ("b", "alpha", 0, 2.0, "2020-01-02T00:00:00Z", "usr:x"),
-        ("c", "alpha", 0, -3.0, "2020-01-03T00:00:00Z", "usr:x"),
-        ("f", long, 1, 500.0, "2026-11-20T00:00:00Z", "usr:x"),
-        ("g", "alpha", 0, 1e9, "2026-11-22T00:00:00Z", "usr:other"),
+        ("a", "alpha", 1.0, 1.0, "2020-01-01T00:00:00Z", "usr:x"),
+        ("b", "alpha", 1.0, 2.0, "2020-01-02T00:00:00Z", "usr:x"),
+        ("c", "alpha", 1.0, -3.0, "2020-01-03T00:00:00Z", "usr:x"),
+        ("f", long, -1.0, 500.0, "2026-11-20T00:00:00Z", "usr:x"),
+        ("g", "alpha", 1.0, 1e9, "2026-11-22T00:00:00Z", "usr:other"),
     ];
     let upserts: Vec<Value> = rows
         .iter()
-        .map(|(id, text, axis_index, views, seen, reader)| {
-            json!({"id": id, "text": text, "vector": axis(*axis_index), "views": views,
+        .map(|(id, text, sign, views, seen, reader)| {
+            json!({"id": id, "text": text, "vector": towards(*sign), "views": views,
                    "seen": seen, "title": id, "readers": [reader]})
         })
         .collect();
@@ -4071,13 +4073,14 @@ async fn identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_s
                        "midpoint": 100.0});
     let recent = json!({"function": "recency", "attribute": "seen", "weight": 2.0,
                         "midpoint": "7d", "origin": "2026-11-23T00:00:00Z"});
-    let text = json!({"query": "alpha", "vector": axis(0), "limit": 2});
+    // A text query with no vector of the request's own: both lanes rank it.
+    let text = json!({"query": "alpha", "limit": 2});
 
     // By relevance alone `f` comes last of the four, outside the top 2.
     assert_eq!(
         roots(
             &ask_with(
-                json!({"query": "alpha", "vector": axis(0), "limit": 4}),
+                json!({"query": "alpha", "limit": 4}),
                 Value::Null
             )
             .await
@@ -4109,7 +4112,7 @@ async fn identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_s
     }
     // The same for a ranking by vector alone, and for the caller's rows only:
     // `g` never shows, whatever its values.
-    let by_vector = json!({"vector": axis(0), "limit": 2});
+    let by_vector = json!({"vector": alpha, "limit": 2});
     assert_eq!(
         roots(&ask_with(by_vector.clone(), Value::Null).await),
         ["a", "b"]
@@ -4118,6 +4121,9 @@ async fn identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_s
         roots(&ask_with(by_vector, json!([views])).await),
         ["f", "b"]
     );
+    // A hybrid request with its own vector is boosted the same way.
+    let hybrid = json!({"query": "alpha", "vector": alpha, "limit": 2});
+    assert_eq!(roots(&ask_with(hybrid, json!([views])).await), ["f", "b"]);
     // `updated_at` takes recency as well.
     let updated = json!([{"function": "recency", "attribute": "updated_at", "weight": 1.0,
                           "midpoint": "1d", "origin": "2026-11-23T00:00:00Z"}]);
@@ -4125,7 +4131,8 @@ async fn identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_s
 
     // A boost needs a declared attribute of the right type, a weight from 0 to
     // 1000000, a midpoint above 0, an origin, and at most 8 of them. It does
-    // not go with a listing, which has no ranking, or with sub-queries.
+    // not go with a listing, which has no ranking, or with sub-queries or a
+    // fusion, which rank by their own rules.
     let refused = [
         json!([{"function": "recency", "attribute": "views", "weight": 1.0,
                 "midpoint": "7d", "origin": "2026-11-23T00:00:00Z"}]),
@@ -4161,6 +4168,7 @@ async fn identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_s
     for body in [
         json!({"order": "updated_at"}),
         json!({"sub_queries": [{"query": "alpha", "limit": 3}]}),
+        json!({"queries": ["alpha", "bravo"], "fusion": {"method": "rrf"}}),
     ] {
         assert_eq!(
             ask_with(body, json!([views])).await,

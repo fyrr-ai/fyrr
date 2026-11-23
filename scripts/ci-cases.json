@@ -231,7 +231,7 @@
         "tier": "quick",
         "seconds": 0.001
       },
-      "full:fyrr-reader:lib:fyrr_reader/retrieval::tests::a_bonus_lifts_a_row_past_better_scored_ones_and_ties_keep_the_record_order": {
+      "full:fyrr-reader:lib:fyrr_reader/retrieval::tests::a_bonus_lifts_a_row_outside_the_limit_and_zero_bonuses_change_nothing": {
         "tier": "quick",
         "seconds": 0.001
       },
@@ -244,10 +244,6 @@
         "seconds": 0.001
       },
       "full:fyrr-reader:lib:fyrr_reader/boost::tests::the_recency_boost_is_the_midpoint_over_the_midpoint_plus_the_distance": {
-        "tier": "quick",
-        "seconds": 0.001
-      },
-      "full:fyrr-reader:lib:fyrr_reader/boost::tests::the_candidate_depth_is_the_composition_or_the_depth_asked_for": {
         "tier": "quick",
         "seconds": 0.001
       },

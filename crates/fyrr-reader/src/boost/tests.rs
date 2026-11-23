@@ -23,14 +23,3 @@ fn the_recency_boost_is_the_midpoint_over_the_midpoint_plus_the_distance() {
     // A document far from the origin gets next to nothing, never a negative.
     assert!((0.0..1e-9).contains(&recency(1e15, 3.0)));
 }
-
-#[test]
-fn the_candidate_depth_is_the_composition_or_the_depth_asked_for() {
-    let composition = Composition {
-        fusion: 30,
-        dense: 5,
-        lexical: 15,
-    };
-    assert_eq!(candidate_depth(&composition, 10), 50);
-    assert_eq!(candidate_depth(&composition, 75), 75);
-}
