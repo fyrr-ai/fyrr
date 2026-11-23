@@ -1254,6 +1254,10 @@
         "tier": "quick",
         "seconds": 0.01
       },
+      "full:fyrr-core:test:config/namespace_vectors_are_declared_with_dimensions_and_a_source_and_enter_the_digest": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
       "full:fyrr-core:test:config/every_schema_constraint_is_enforced": {
         "tier": "quick",
         "seconds": 0.025
@@ -1429,6 +1433,10 @@
         "seconds": 0.003
       },
       "full:fyrr-core:test:contracts/a_vector_metric_and_element_type_need_the_version_an_older_build_refuses": {
+        "tier": "quick",
+        "seconds": 0.003
+      },
+      "full:fyrr-core:test:contracts/vector_attributes_need_the_version_an_older_build_refuses": {
         "tier": "quick",
         "seconds": 0.003
       },
@@ -1834,6 +1842,10 @@
         "tier": "full",
         "seconds": 90.0
       },
+      "full:fyrr:test:dense_path/storage_budget::a_vector_attribute_costs_a_reader_a_bounded_number_of_storage_requests": {
+        "tier": "full",
+        "seconds": 90.0
+      },
       "full:fyrr:test:dense_path/api_keys::an_idle_namespace_answers_from_a_head_read_after_its_request": {
         "tier": "full",
         "seconds": 40.0
@@ -2190,6 +2202,14 @@
         "seconds": 40
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_searches_by_a_query_vector_exact_or_approximate_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_searches_named_vector_attributes_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_builds_a_vector_index_when_the_first_vector_arrives_on_storage": {
         "tier": "full",
         "seconds": 40
       },

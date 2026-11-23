@@ -286,6 +286,101 @@ async fn an_attribute_costs_a_reader_a_bounded_number_of_storage_requests() {
     );
 }
 
+/// Storage requests one declared vector attribute adds to a reader that opens
+/// a namespace on an empty mirror, warms it and answers a first search of each
+/// attribute: Lance opens an index when it is first searched, so the open
+/// itself costs none, and the first search reads the files of the index and of
+/// the column. Raise it only on purpose.
+const VECTOR_OPEN_BUDGET: usize = 2;
+// The most vector attributes a namespace declares cost a reader no more to open
+// than a whole namespace without any: `limits::schema::MAX_VECTOR_ATTRIBUTES` is
+// held to the measured cost.
+const _: () =
+    assert!(fyrr_core::limits::schema::MAX_VECTOR_ATTRIBUTES * VECTOR_OPEN_BUDGET <= OPEN_BUDGET);
+
+/// The storage requests, other than the version check's, of a reader that
+/// opens a one-document namespace written through the API with `vectors` named
+/// vector attributes, each with a vector and so an index, answers its first
+/// search, warms the generation, and answers a first search of each attribute.
+async fn vector_open_requests(vectors: usize) -> usize {
+    let (config, root) = setup_on(Backend::Local);
+    let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
+    let address = free_address();
+    super::write_api::configure(&config, &address, "open = true");
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("# fyrr-test-head-check = every", "")
+        .replace("[reader]", "[reader]\nversion_check_interval = '1s'");
+    std::fs::write(&config, &text).unwrap();
+    let vector: Vec<f32> = (0..1024).map(|d| ((d + 7) as f32).sin()).collect();
+    root.embedding.insert_both("ledger", vector.clone());
+    let writer = super::write_api::Writer::start(&config, &root, address).await;
+    let mut row = json!({"id": "kept", "text": "ledger", "vector": vector});
+    let mut declared = serde_json::Map::new();
+    for n in 0..vectors {
+        declared.insert(format!("v{n}"), json!({"dimensions": 8}));
+        let value: Vec<f32> = (0..8).map(|d| (((n + 1) * (d + 3)) as f32).sin()).collect();
+        row[format!("v{n}")] = json!(value);
+    }
+    let answer = writer
+        .post(
+            super::write_api::WRITE_KEY,
+            "dense-fixture",
+            &json!({"settings": {"vectors": declared}, "upserts": [row]}),
+        )
+        .await;
+    assert_eq!(answer, (200, json!({"upserted": 1, "deleted": 0})));
+    drop(writer);
+    let seen = Seen::default();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (observed, _observer) = proxy_at_boundary(endpoint.clone(), stop.clone(), seen.hook());
+    let reader = root.join("observed.toml");
+    std::fs::write(&reader, text.replace(&endpoint, &observed)).unwrap();
+    let started = std::time::Instant::now();
+    let mut client = super::tools::Mcp::open(&reader);
+    served(&mut client).unwrap();
+    for n in 0..vectors {
+        let value: Vec<f32> = (0..8).map(|d| (((n + 1) * (d + 3)) as f32).sin()).collect();
+        let hits = super::tools::body(client.call(
+            "search",
+            json!({"vector": value, "vector_attribute": format!("v{n}"), "output": "metadata"}),
+        ));
+        assert_eq!(hits["hits"].as_array().unwrap().len(), 1);
+    }
+    seen.settle();
+    let allowed = head_reads_allowed(started.elapsed(), 1);
+    let opened = seen.since(0);
+    let requests = opened.1.len();
+    within(
+        &format!("open and search with {vectors} vector attributes"),
+        opened,
+        usize::MAX,
+        allowed,
+    );
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    drop(client);
+    std::fs::remove_dir_all(root).unwrap();
+    requests
+}
+
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+#[allow(clippy::print_stderr)]
+async fn a_vector_attribute_costs_a_reader_a_bounded_number_of_storage_requests() {
+    const VECTORS: usize = fyrr_core::limits::schema::MAX_VECTOR_ATTRIBUTES;
+    let without = vector_open_requests(0).await;
+    let with = vector_open_requests(VECTORS).await;
+    let added = with.saturating_sub(without);
+    eprintln!(
+        "budget vectors: {without} requests without, {with} with {VECTORS}: {added} added, {:.2} per vector attribute",
+        added as f64 / VECTORS as f64
+    );
+    assert!(
+        added <= VECTORS * VECTOR_OPEN_BUDGET,
+        "{VECTORS} vector attributes added {added} storage requests ({without} without, {with} with), budget {VECTOR_OPEN_BUDGET} each"
+    );
+}
+
 /// What a reader that declares API keys adds to the budgets above: one `GET`
 /// of the published keys when it starts and one per version check, and nothing
 /// per request.

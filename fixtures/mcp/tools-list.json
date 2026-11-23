@@ -45,6 +45,15 @@
               "null"
             ]
           },
+          "vector_attribute": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 128,
+            "minLength": 1,
+            "x-maxUtf8Bytes": 128
+          },
           "text_hits": {
             "type": [
               "integer",

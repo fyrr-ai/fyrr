@@ -543,6 +543,8 @@ async fn build_indexes(
         record_transaction(dataset, lineage, before).await?;
         stage(stage_timings, name, start);
     }
+    // Boxed for the same reason.
+    Box::pin(build_vector_indexes(config, lease, dataset, lineage)).await?;
     if first {
         // Boxed for the same reason.
         Box::pin(build_attribute_indexes(
@@ -567,6 +569,61 @@ async fn build_indexes(
         .await?;
         record_transaction(dataset, lineage, before).await?;
         stage(stage_timings, "fts_merge", start);
+    }
+    Ok(())
+}
+
+/// Builds the vector index of each named vector attribute that has none and
+/// whose column holds a vector. An attribute that no row has a vector for yet
+/// has no index, and a search of it scans: the next commit that brings one
+/// builds it, and `optimize_indices` indexes every later row.
+async fn build_vector_indexes(
+    config: &Config,
+    lease: &LeaseGuard,
+    dataset: &mut Dataset,
+    lineage: &mut CommitLineage,
+) -> Result<()> {
+    if config.namespace.vectors.is_empty() {
+        return Ok(());
+    }
+    let present: BTreeSet<_> = dataset
+        .load_indices()
+        .await?
+        .iter()
+        .map(|index| index.name.clone())
+        .collect();
+    for name in config.namespace.vectors.keys() {
+        let index = fyrr_core::attributes::vector_index_name(name);
+        if present.contains(&index) {
+            continue;
+        }
+        let rows = dataset
+            // Backticks make the name a column whatever it spells (`null`, `order`).
+            .count_rows(Some(format!("`{name}` IS NOT NULL")))
+            .await?;
+        if rows == 0 {
+            continue;
+        }
+        let params = vector_index_params(
+            rows,
+            config.namespace.dense_rq_bits,
+            config.namespace.dense_partition_rows,
+            config.namespace.dense_metric,
+        );
+        let before = dataset.version().version;
+        native_step(
+            lease,
+            dataset.create_index(
+                &[name.as_str()],
+                IndexType::Vector,
+                Some(index),
+                &params,
+                true,
+            ),
+            WriterError::IndexBuildFailed,
+        )
+        .await?;
+        record_transaction(dataset, lineage, before).await?;
     }
     Ok(())
 }

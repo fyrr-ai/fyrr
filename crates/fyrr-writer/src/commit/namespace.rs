@@ -56,6 +56,7 @@ pub fn namespace_settings(config: &Config) -> NamespaceSettings {
             .map(fyrr_core::config::RerankConfig::settings),
         attributes: namespace.attributes.clone(),
         attribute_indexes: namespace.attribute_indexes.clone(),
+        vectors: namespace.vectors.clone(),
         write_api: namespace.write_api.clone(),
     }
 }

@@ -122,6 +122,14 @@ pub mod schema {
     pub const MAX_NAME_BYTES: usize = 128;
     /// Bytes in the value of a `string` attribute.
     pub const MAX_VALUE_BYTES: usize = 4096;
+    /// Named vector attributes a namespace can declare, each its own column
+    /// and vector index. A reader opens an index when it first searches it,
+    /// and that costs 2 storage requests (measured by
+    /// `a_vector_attribute_costs_a_reader_a_bounded_number_of_storage_requests`).
+    /// 16 of them cost 32, within the 36 requests a reader makes to open a
+    /// namespace without any and answer its first search; that test holds the
+    /// two together.
+    pub const MAX_VECTOR_ATTRIBUTES: usize = 16;
 }
 
 /// Checks a required identifier: non-empty, no surrounding whitespace, no

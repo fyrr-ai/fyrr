@@ -16,7 +16,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::attributes::{
-    AttributeIndexes, AttributeSchema, check_indexes, check_schema, has_connector_columns,
+    AttributeIndexes, AttributeSchema, VectorAttributes, check_indexes, check_schema,
+    check_vectors, has_connector_columns,
 };
 use crate::config::{
     CompositionSettings, DenseElement, DenseMetric, NamespaceConfig, RerankSettings,
@@ -73,6 +74,10 @@ pub struct NamespaceSettings {
     /// records the ones that are built.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attribute_indexes: AttributeIndexes,
+    /// The named vector attributes, fixed at creation. An older build would
+    /// not know their columns and indexes.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vectors: VectorAttributes,
     /// Present: the namespace is written through the HTTP API and takes no
     /// connector source. Fixed with the rest of the settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -81,13 +86,15 @@ pub struct NamespaceSettings {
 
 impl NamespaceSettings {
     /// Whether an older build would misread a namespace with these settings:
-    /// it ignores index options, reads the connector columns as null and
-    /// searches and writes cosine and 16-bit floats.
+    /// it ignores index options, reads the connector columns as null,
+    /// searches and writes cosine and 16-bit floats and leaves out the columns
+    /// of the named vector attributes.
     pub fn needs_newer_build(&self) -> bool {
         !self.attribute_indexes.is_empty()
             || (self.write_api.is_none() && has_connector_columns(&self.attributes))
             || !self.dense_metric.is_default()
             || !self.dense_element.is_default()
+            || !self.vectors.is_empty()
     }
 
     /// The bounds a configuration file is held to, so that no stored settings
@@ -109,11 +116,12 @@ impl NamespaceSettings {
             dense_element: self.dense_element,
             attributes: self.attributes.clone(),
             attribute_indexes: self.attribute_indexes.clone(),
+            vectors: self.vectors.clone(),
             write_api: self.write_api.clone(),
         };
         let mut issues = Vec::new();
         let mut issue = |path: &str, message: String| issues.push(format!("{path}: {message}"));
-        crate::config::check_namespace(&namespace, &mut issue);
+        crate::config::check_namespace(&namespace, self.embedding.dimensions, &mut issue);
         if let Some(rerank) = &self.rerank {
             crate::config::check_rerank(rerank, &mut issue);
         }
@@ -189,7 +197,7 @@ impl Contract for PolicyArtifact {
             && self.schema_version.major != INDEXED_POLICY_CONTRACT_VERSION.major
         {
             return Err(
-                "attribute index options, connector columns, a vector metric or element type and read_only need the indexed policy version"
+                "attribute index options, connector columns, a vector metric or element type, vector attributes and read_only need the indexed policy version"
                     .into(),
             );
         }
@@ -258,6 +266,10 @@ pub struct ContentManifest {
     /// text indexes it asks for, among `indexes`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attribute_indexes: AttributeIndexes,
+    /// The named vector attributes of this version: each is a nullable column
+    /// with a vector index of its own, among `indexes` once it has a vector.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vectors: VectorAttributes,
     /// Immutable files of this version, relative to the dataset root.
     pub files: Vec<FileRef>,
     /// Envelopes this publication committed.
@@ -380,6 +392,7 @@ impl ContentManifest {
             && self.dense_metric == settings.dense_metric
             && self.dense_element == settings.dense_element
             && self.attributes == settings.attributes
+            && self.vectors == settings.vectors
     }
 }
 
@@ -492,13 +505,16 @@ impl Contract for ContentManifest {
         check_schema(&self.attributes).map_err(|error| format!("attributes: {error}"))?;
         check_indexes(&self.attributes, &self.attribute_indexes)
             .map_err(|error| format!("attribute_indexes: {error}"))?;
+        check_vectors(&self.attributes, &self.vectors, self.embedding.dimensions)
+            .map_err(|error| format!("vectors: {error}"))?;
         if (!self.attribute_indexes.is_empty()
             || !self.dense_metric.is_default()
-            || !self.dense_element.is_default())
+            || !self.dense_element.is_default()
+            || !self.vectors.is_empty())
             && self.schema_version.major != INDEXED_PUBLICATION_CONTRACT_VERSION.major
         {
             return Err(
-                "attribute index options and a vector metric or element type need the indexed manifest version"
+                "attribute index options, a vector metric or element type and vector attributes need the indexed manifest version"
                     .into(),
             );
         }

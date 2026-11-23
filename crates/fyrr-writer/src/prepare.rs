@@ -34,22 +34,46 @@ pub(crate) fn vector_column<'a>(
     dimensions: u32,
     rows: impl Iterator<Item = &'a [f32]>,
 ) -> ArrayRef {
+    nullable_vector_column(element, dimensions, rows.map(Some))
+}
+
+/// The column of a named vector attribute: a row that is `None` is null.
+pub(crate) fn nullable_vector_column<'a>(
+    element: DenseElement,
+    dimensions: u32,
+    rows: impl Iterator<Item = Option<&'a [f32]>>,
+) -> ArrayRef {
     // The dimension is at most 8192.
     let dimensions = dimensions as i32;
     match element {
         DenseElement::F16 => Arc::new(
             FixedSizeListArray::from_iter_primitive::<Float16Type, _, _>(
-                rows.map(|v| Some(v.iter().map(|x| Some(half::f16::from_f32(*x))))),
+                rows.map(|v| v.map(|v| v.iter().map(|x| Some(half::f16::from_f32(*x))))),
                 dimensions,
             ),
         ),
         DenseElement::F32 => Arc::new(
             FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-                rows.map(|v| Some(v.iter().copied().map(Some))),
+                rows.map(|v| v.map(|v| v.iter().copied().map(Some))),
                 dimensions,
             ),
         ),
     }
+}
+
+/// The type of a vector column: fixed-size lists of the element type.
+pub(crate) fn vector_type(element: DenseElement, dimensions: u32) -> DataType {
+    DataType::FixedSizeList(
+        Arc::new(Field::new(
+            "item",
+            match element {
+                DenseElement::F16 => DataType::Float16,
+                DenseElement::F32 => DataType::Float32,
+            },
+            true,
+        )),
+        dimensions as i32,
+    )
 }
 
 pub fn schema(dimensions: u32, element: DenseElement) -> Arc<Schema> {
@@ -65,21 +89,7 @@ pub fn schema_with(dimensions: u32, element: DenseElement, extra: Vec<Field>) ->
         Field::new("record_id", DataType::Utf8, false),
         Field::new("source_revision", DataType::Utf8, false),
         Field::new("readers", strings.clone(), false),
-        Field::new(
-            "vector",
-            DataType::FixedSizeList(
-                Arc::new(Field::new(
-                    "item",
-                    match element {
-                        DenseElement::F16 => DataType::Float16,
-                        DenseElement::F32 => DataType::Float32,
-                    },
-                    true,
-                )),
-                dimensions as i32,
-            ),
-            false,
-        ),
+        Field::new("vector", vector_type(element, dimensions), false),
         Field::new("searchable_text", DataType::Utf8, false),
         Field::new("metadata_json", DataType::Utf8, false),
         Field::new("record_order", DataType::UInt64, true),
@@ -318,7 +328,14 @@ fn weigh_change(config: &Config, change: &DocumentChange) -> Result<(u64, u64)> 
 
 /// What a record adds to the size of an envelope besides its change.
 fn record_estimate(config: &Config) -> u64 {
-    2048 + u64::from(config.embedding.dimensions) * config.namespace.dense_element.bytes()
+    let dimensions = u64::from(config.embedding.dimensions)
+        + config
+            .namespace
+            .vectors
+            .values()
+            .map(|vector| u64::from(vector.dimensions))
+            .sum::<u64>();
+    2048 + dimensions * config.namespace.dense_element.bytes()
 }
 
 /// What an envelope weighs before its first change.

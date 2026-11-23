@@ -193,6 +193,18 @@ impl<'a> ContentWork<'a> {
                             .map(|(name, kind)| {
                                 arrow_schema::Field::new(name, kind.arrow_type(), true)
                             })
+                            // The vector attributes come after the typed ones, in
+                            // name order, and are fixed with the table.
+                            .chain(config.namespace.vectors.iter().map(|(name, vector)| {
+                                arrow_schema::Field::new(
+                                    name,
+                                    crate::prepare::vector_type(
+                                        config.namespace.dense_element,
+                                        vector.dimensions,
+                                    ),
+                                    true,
+                                )
+                            }))
                             .collect(),
                     )
                     .as_ref(),

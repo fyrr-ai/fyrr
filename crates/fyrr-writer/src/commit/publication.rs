@@ -79,6 +79,13 @@ pub(crate) async fn write_manifest(
                 .find(|(_, _, _, name)| *name == index.name)
         {
             (column, attribute_index_kind(kind, option))
+        } else if let Some(name) = config
+            .namespace
+            .vectors
+            .keys()
+            .find(|name| fyrr_core::attributes::vector_index_name(name) == index.name)
+        {
+            (name.as_str(), "ivf_rq")
         } else {
             continue;
         };
@@ -210,6 +217,7 @@ pub(crate) async fn write_manifest(
             && !config.namespace.typed_connector_fields()
             && config.namespace.dense_metric.is_default()
             && config.namespace.dense_element.is_default()
+            && config.namespace.vectors.is_empty()
         {
             PUBLICATION_CONTRACT_VERSION
         } else {
@@ -239,6 +247,7 @@ pub(crate) async fn write_manifest(
         indexes,
         attributes: config.namespace.attributes.clone(),
         attribute_indexes,
+        vectors: config.namespace.vectors.clone(),
         files,
         envelope_ids: receipts,
         lineage: lineage.clone(),

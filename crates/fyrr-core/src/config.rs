@@ -197,6 +197,13 @@ pub struct NamespaceConfig {
     /// and `analyzer` sets how the full-text index cuts a text into terms.
     #[serde(default)]
     pub attribute_indexes: crate::attributes::AttributeIndexes,
+    /// Named vector attributes declared for a new namespace, fixed for its
+    /// life: name to `dimensions` and, optionally, the `string` attribute
+    /// (`from`) the writer embeds the vector from. Each is a nullable column
+    /// with its own vector index. The built-in `vector` is not declared: it
+    /// stays the default attribute of every namespace. Needs `write_api`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub vectors: crate::attributes::VectorAttributes,
     /// Present: the writer serves `POST /v1/namespaces/{namespace}/documents`,
     /// and a namespace created from this file or through that route takes its
     /// documents only from the API (no `[[sources]]`). The keys are the
@@ -569,6 +576,9 @@ impl NamespaceConfig {
         // namespace that records none: cosine and f16.
         if !self.dense_metric.is_default() || !self.dense_element.is_default() {
             policy.push(serde_json::json!({"dense_v1": [self.dense_metric, self.dense_element]}));
+        }
+        if !self.vectors.is_empty() {
+            policy.push(serde_json::json!({"vectors_v1": self.vectors}));
         }
         crate::limits::digest(serde_json::Value::Array(policy).to_string().as_bytes())
     }
@@ -1656,6 +1666,7 @@ impl Config {
         namespace
             .attribute_indexes
             .clone_from(&settings.attribute_indexes);
+        namespace.vectors.clone_from(&settings.vectors);
         namespace.write_api.clone_from(&settings.write_api);
         namespace.retrieval = (&settings.retrieval).into();
         namespace.composition = (&settings.composition).into();

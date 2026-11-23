@@ -59,6 +59,13 @@ pub(super) async fn content_page(
         .flat_map(|section| crate::chunk::chunks(&section.text))
         .collect::<Vec<_>>();
     let mut embedded = cache.embed(&embedding_texts).await?.into_iter();
+    let filled;
+    let attributes = if config.namespace.vectors.values().any(|v| v.from.is_some()) {
+        filled = embed_sources(config, cache, attributes).await?;
+        &filled[..]
+    } else {
+        attributes
+    };
     let mut maps = std::collections::BTreeMap::new();
     for change in &changes {
         if let ContentChange::Write(change, _) = change
@@ -207,6 +214,62 @@ struct RowColumns {
     /// The typed columns of a connector's rows; an API request brings its own.
     typed: Option<AttributeColumns>,
 }
+/// `attributes` with each vector attribute that names a source attribute given,
+/// for every row that has none and a source value, the embedding of the value.
+async fn embed_sources(
+    config: &Config,
+    cache: &mut WriterEmbedding,
+    attributes: &[(String, ArrayRef)],
+) -> Result<Vec<(String, ArrayRef)>> {
+    use arrow_array::Array as _;
+    let mut filled = attributes.to_vec();
+    for (name, spec) in &config.namespace.vectors {
+        let Some(source) = &spec.from else {
+            continue;
+        };
+        let find = |wanted: &str| attributes.iter().position(|(n, _)| n == wanted);
+        let (Some(at), Some(from)) = (find(name), find(source)) else {
+            continue;
+        };
+        let (Some(texts), Some(current)) = (
+            filled[from].1.as_any().downcast_ref::<StringArray>(),
+            filled[at].1.as_any().downcast_ref::<FixedSizeListArray>(),
+        ) else {
+            return Err(WriterError::PreparedRowsInvalid);
+        };
+        let missing: Vec<usize> = (0..current.len())
+            .filter(|&row| {
+                current.is_null(row) && texts.is_valid(row) && !texts.value(row).is_empty()
+            })
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        let inputs: Vec<&str> = missing.iter().map(|&row| texts.value(row)).collect();
+        let vectors = cache.embed(&inputs).await?;
+        if vectors.len() != missing.len() {
+            return Err(WriterError::EmbeddingBatchInvalid);
+        }
+        let mut rows: Vec<Option<Vec<f32>>> = (0..current.len())
+            .map(|row| {
+                (!current.is_null(row))
+                    .then(|| fyrr_reader::embedding::stored_values(current.value(row).as_ref()))
+                    .flatten()
+            })
+            .collect();
+        for (row, vector) in missing.into_iter().zip(vectors) {
+            rows[row] = Some(vector);
+        }
+        let column = nullable_vector_column(
+            config.namespace.dense_element,
+            spec.dimensions,
+            rows.iter().map(Option::as_deref),
+        );
+        filled[at].1 = column;
+    }
+    Ok(filled)
+}
+
 struct DocumentRows<'a> {
     change: &'a DocumentChange,
     common: Option<fyrr_core::connector::DocumentMetadata>,

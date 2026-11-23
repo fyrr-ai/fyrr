@@ -89,6 +89,98 @@ impl PreparedReader {
         Ok(self.dense_traced(vector, k, exact, telemetry).await?.0)
     }
 
+    /// The dimensions of the vectors of a vector attribute: `None` is the
+    /// built-in `vector`. A name the namespace does not declare is refused.
+    pub(super) fn vector_dimensions(&self, attribute: Option<&str>) -> Result<u32> {
+        match attribute {
+            None => Ok(self.config.embedding.dimensions),
+            Some(name) => self
+                .config
+                .namespace
+                .vectors
+                .get(name)
+                .map(|vector| vector.dimensions)
+                .ok_or(InvalidArgument),
+        }
+    }
+
+    /// The vector attribute a text query must select the rows of, so that its
+    /// lexical lane returns none that the attribute cannot rank: the named
+    /// attribute, when the request has text. A name the namespace does not
+    /// declare is refused, before it is made part of any predicate.
+    pub(super) fn present_vector<'a>(
+        &self,
+        attribute: Option<&'a str>,
+        text: bool,
+    ) -> Result<Option<&'a str>> {
+        match attribute {
+            Some(name) if !self.config.namespace.vectors.contains_key(name) => Err(InvalidArgument),
+            Some(name) if text => Ok(Some(name)),
+            _ => Ok(None),
+        }
+    }
+
+    /// [`Self::dense`] over a vector attribute: `None` is the built-in `vector`.
+    pub(crate) async fn dense_attribute(
+        &self,
+        attribute: Option<&str>,
+        vector: &[f32],
+        k: usize,
+        exact: bool,
+        telemetry: &mut Telemetry,
+    ) -> Result<Vec<Candidate>> {
+        match attribute {
+            None => self.dense(vector, k, exact, telemetry).await,
+            Some(name) => self.dense_named(name, vector, k, exact, telemetry).await,
+        }
+    }
+
+    /// The nearest rows by a named vector attribute, by Lance's own search of
+    /// its column, with the same admission and filter selection as the
+    /// built-in vector: the request predicate prefilters it, and every row it
+    /// returns is checked against the selection. A row with no vector in the
+    /// attribute is never returned, so the answer may hold fewer rows than the
+    /// selection does: it is no error.
+    async fn dense_named(
+        &self,
+        column: &str,
+        vector: &[f32],
+        k: usize,
+        exact: bool,
+        telemetry: &mut Telemetry,
+    ) -> Result<Vec<Candidate>> {
+        embedding::validate(
+            vector,
+            self.vector_dimensions(Some(column))?,
+            self.config.namespace.dense_element,
+        )?;
+        if !(1..=75).contains(&k) {
+            return Err(InvalidArgument);
+        }
+        self.authorization()?;
+        let wanted = k.min(
+            usize::try_from(self.selected_rows().max_len().unwrap_or(0))
+                .map_err(|_| StorageUnavailable)?,
+        );
+        if wanted == 0 {
+            return Ok(Vec::new());
+        }
+        let (start, before) = (Instant::now(), self.mirror.counters());
+        let (rows, _) = self
+            .native_dense_rows(
+                column,
+                &Float32Array::from(vector.to_vec()),
+                wanted,
+                k,
+                self.preparation_reservation.warm() && self.filter_selection.is_none() && !exact,
+                self.config.reader.nprobes,
+                telemetry,
+            )
+            .await?;
+        self.stage(telemetry, "dense_named", start, before);
+        Ok(rows)
+    }
+
     /// As [`Self::dense`], and whether the vector index found the rows: not an
     /// exact scan, which a selective filter or a missing index brings about.
     pub(crate) async fn dense_traced(
@@ -183,6 +275,7 @@ impl PreparedReader {
             } else {
                 let (rows, indexed) = self
                     .native_dense_rows(
+                        "vector",
                         &query_array,
                         wanted,
                         k,
@@ -200,6 +293,7 @@ impl PreparedReader {
                 by_index = false;
                 rows = self
                     .native_dense_rows(
+                        "vector",
                         &query_array,
                         wanted,
                         k,
@@ -357,8 +451,10 @@ impl PreparedReader {
 
     /// The nearest rows by Lance's own search, and whether the vector index
     /// found them: a short answer from the index is redone as an exact scan.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn native_dense_rows(
         &self,
+        column: &str,
         query: &Float32Array,
         wanted: usize,
         k: usize,
@@ -398,7 +494,7 @@ impl PreparedReader {
             if !self.preparation_reservation.warm() {
                 scan.batch_size(256);
             }
-            scan.nearest("vector", query, requested)
+            scan.nearest(column, query, requested)
                 .map_err(|_| EmbeddingInvalid)?
                 .use_index(use_index);
             scan.distance_metric(embedding::distance_type(self.config.namespace.dense_metric));

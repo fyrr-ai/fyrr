@@ -157,6 +157,47 @@ fn attribute_index_options_need_the_version_an_older_build_refuses() {
     }
 }
 
+/// Named vector attributes are read only from the versions an older build
+/// refuses: it would not know their columns and indexes. A namespace that
+/// declares none writes no entry, so that an older one keeps its bytes.
+#[test]
+fn vector_attributes_need_the_version_an_older_build_refuses() {
+    let manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
+    let policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
+    let vectors =
+        json!({"image": {"dimensions": 512}, "title_vec": {"dimensions": 1024, "from": "title"}});
+    let mut manifest = manifest;
+    manifest["attributes"] = json!({"title": "string"});
+    manifest["vectors"] = vectors.clone();
+    assert!(parse::<ContentManifest>(&manifest).is_err());
+    manifest["schema_version"] = json!("5.0");
+    let kept = parse::<ContentManifest>(&manifest).unwrap();
+    assert_eq!(serde_json::to_value(&kept).unwrap()["vectors"], vectors);
+    // A source that is no `string` attribute, a name an attribute has and a
+    // dimension the model does not have are refused whatever the version.
+    for bad in [
+        json!({"v": {"dimensions": 1024, "from": "missing"}}),
+        json!({"title": {"dimensions": 8}}),
+        json!({"v": {"dimensions": 512, "from": "title"}}),
+        json!({"v": {"dimensions": 0}}),
+    ] {
+        let mut manifest = manifest.clone();
+        manifest["vectors"] = bad.clone();
+        assert!(parse::<ContentManifest>(&manifest).is_err(), "{bad}");
+    }
+    let mut policy = policy;
+    policy["settings"]["write_api"] = json!({});
+    policy["settings"]["attributes"] = json!({"title": "string"});
+    policy["settings"]["vectors"] = vectors;
+    assert!(parse::<PolicyArtifact>(&policy).is_err());
+    policy["schema_version"] = json!("4.0");
+    assert!(parse::<PolicyArtifact>(&policy).is_ok());
+    // Without any, there is no entry.
+    let plain = common::read_json("fixtures/contracts/content-manifest/manifest.json");
+    let written = serde_json::to_value(parse::<ContentManifest>(&plain).unwrap()).unwrap();
+    assert!(written.get("vectors").is_none());
+}
+
 /// A metric other than cosine or a 32-bit element type is read only from the
 /// versions an older build refuses: it would search and write cosine and 16-bit
 /// floats. The defaults are no entry, so that an older namespace keeps its bytes.

@@ -92,6 +92,10 @@ pub struct SearchInput {
     /// Exact search: score every row that passes the filter and the caller's permissions instead of probing the index. Refused as invalid_argument when more rows pass than the bound of an exact search.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exact: Option<bool>,
+    /// Named vector attribute the dense search reads; default the built-in `vector`. Text needs an attribute with `from`, else send `vector`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 128))]
+    pub vector_attribute: Option<String>,
     /// Hits carrying text per query, before deduplication; default all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(max = 75))]
@@ -302,6 +306,10 @@ pub struct SubQuery {
     pub query: Option<String>,
     /// Query vector of the namespace's dimensions, instead of an embedding of query.
     pub vector: Option<Vec<f32>>,
+    /// Named vector attribute this sub-query searches; default the built-in `vector`. Text needs an attribute with `from`, else send `vector`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 128))]
+    pub vector_attribute: Option<String>,
     /// Filter tree of this sub-query, joined by `and` with the request's filters.
     pub filter: Option<Filter>,
     /// Hits of this sub-query. Without `fusion` the limits add up to at most the namespace's `max_documents`.
@@ -1370,6 +1378,7 @@ impl SearchInput {
                     && self.order.is_none()
                     && self.order_by.is_none()
                     && self.exact.is_none()
+                    && self.vector_attribute.is_none()
                     && (1..=MAX_QUERIES).contains(&subs.len())
                     && subs.iter().all(SubQuery::valid)
                     // The request's limit sizes the fused answer, and only that.
@@ -1385,6 +1394,10 @@ impl SearchInput {
             && self
                 .exact
                 .is_none_or(|_| self.has_text() || self.vector.is_some())
+            && self.vector_attribute.as_ref().is_none_or(|name| {
+                bounded_text(name, crate::limits::schema::MAX_NAME_BYTES)
+                    && (self.has_text() || self.vector.is_some())
+            })
             && self.order_by.as_ref().is_none_or(|keys| {
                 self.query.is_none()
                     && self.vector.is_none()
@@ -1503,6 +1516,10 @@ impl SubQuery {
             && self.vector.as_ref().is_none_or(|vector| {
                 u64::try_from(vector.len()).is_ok_and(|n| (1..=DIMENSIONS_MAX).contains(&n))
             })
+            && self
+                .vector_attribute
+                .as_ref()
+                .is_none_or(|name| bounded_text(name, crate::limits::schema::MAX_NAME_BYTES))
             && (1..=MAX_SEARCH_LIMIT).contains(&self.limit)
     }
 }
