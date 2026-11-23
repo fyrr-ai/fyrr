@@ -157,14 +157,11 @@ impl PreparedReader {
             self.stage(telemetry, "dense_routing_ann", start, before);
             let refine_start = Instant::now();
             let refine_counters = self.mirror.counters();
-            let mut by_index = self
+            let has_index = self
                 .indexes
                 .iter()
-                .any(|index| index.name == Layout::VECTOR_INDEX)
-                && (candidates.is_some()
-                    || (self.preparation_reservation.warm()
-                        && self.filter_selection.is_none()
-                        && !exact));
+                .any(|index| index.name == Layout::VECTOR_INDEX);
+            let mut by_index = has_index && candidates.is_some();
             let mut rows = if let Some(candidates) = candidates {
                 match self
                     .refine_dense_candidates(vector, candidates, wanted, k, shortlist, telemetry)
@@ -178,17 +175,20 @@ impl PreparedReader {
                     }
                 }
             } else {
-                self.native_dense_rows(
-                    &query_array,
-                    wanted,
-                    k,
-                    self.preparation_reservation.warm()
-                        && self.filter_selection.is_none()
-                        && !exact,
-                    self.fallback_probes,
-                    telemetry,
-                )
-                .await?
+                let (rows, indexed) = self
+                    .native_dense_rows(
+                        &query_array,
+                        wanted,
+                        k,
+                        self.preparation_reservation.warm()
+                            && self.filter_selection.is_none()
+                            && !exact,
+                        self.fallback_probes,
+                        telemetry,
+                    )
+                    .await?;
+                by_index = has_index && indexed;
+                rows
             };
             if rows.len() < wanted {
                 by_index = false;
@@ -201,7 +201,8 @@ impl PreparedReader {
                         self.fallback_probes,
                         telemetry,
                     )
-                    .await?;
+                    .await?
+                    .0;
             }
             if rows.len() != wanted {
                 return Err(StorageUnavailable);
@@ -348,6 +349,8 @@ impl PreparedReader {
         )?))
     }
 
+    /// The nearest rows by Lance's own search, and whether the vector index
+    /// found them: a short answer from the index is redone as an exact scan.
     pub(super) async fn native_dense_rows(
         &self,
         query: &Float32Array,
@@ -356,7 +359,7 @@ impl PreparedReader {
         mut use_index: bool,
         nprobes: usize,
         telemetry: &mut Telemetry,
-    ) -> Result<Vec<Candidate>> {
+    ) -> Result<(Vec<Candidate>, bool)> {
         let bound = k * 16;
         let depth = &self.config.namespace.retrieval.rescore_depth;
         let mut pool = depth.initial(k);
@@ -425,7 +428,8 @@ impl PreparedReader {
             if !unresolved || requested == bound {
                 telemetry.dense_tie_bound_hits += u64::from(unresolved);
                 rows.truncate(wanted);
-                return Ok(rows);
+                // The index may have given up on the way: report the scan that answered.
+                return Ok((rows, use_index));
             }
             requested = if use_index && requested < pool {
                 next_divisor(requested, pool)

@@ -3,7 +3,7 @@
   "info": {
     "title": "fyrr HTTP API",
     "version": "4.0",
-    "description": "The /v1/ routes of the reader (query, fetch, aggregate, report, list) and of the writer (documents, delete), and `/metrics` of the optional metrics listener. The version is that of the MCP contract the query and fetch bodies follow."
+    "description": "The /v1/ routes of the reader (query, fetch, aggregate, recall, report, list) and of the writer (documents, delete), and `/metrics` of the optional metrics listener. The version is that of the MCP contract the query and fetch bodies follow."
   },
   "tags": [
     {
@@ -297,6 +297,46 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/AggregateRequest"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/v1/namespaces/{namespace}/recall": {
+      "post": {
+        "tags": [
+          "reader"
+        ],
+        "summary": "Measure how closely the vector index agrees with an exact search, over stored vectors the key may read",
+        "description": "Needs an API key with the `admin` and the `read` role.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/namespace"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecallOutput"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "description": "The request body.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecallRequest"
               }
             }
           },
@@ -1547,6 +1587,54 @@
           "avg",
           "min",
           "max"
+        ]
+      },
+      "RecallRequest": {
+        "type": "object",
+        "description": "The body of `POST /v1/namespaces/{namespace}/recall`: the recall arguments\nand `consistency`.",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 1,
+            "description": "Stored vectors to sample, 1 to 100: each is searched by the index and\nexactly, and the two answers are compared.",
+            "maximum": 100
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Filter"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The rows to sample and search, as in `search`: they must also be rows the caller may read."
+          },
+          "deadline_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 1,
+            "description": "Deadline in milliseconds; default 10000.",
+            "maximum": 300000
+          },
+          "consistency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Consistency"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Defaults to `cached`."
+          }
+        },
+        "required": [
+          "count"
         ]
       },
       "WriteRequest": {
@@ -3146,6 +3234,51 @@
           "values"
         ],
         "description": "One group: its values of the `group_by` fields and its aggregates, both in\nrequest order. A `null` aggregate is one over no value."
+      },
+      "RecallOutput": {
+        "type": "object",
+        "properties": {
+          "samples": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0,
+            "description": "Stored vectors measured: `count`, or fewer when the selection holds fewer rows."
+          },
+          "rows": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Rows the caller may read that the filter selects: what each exact search scans."
+          },
+          "approximate": {
+            "type": "boolean",
+            "description": "`true` when the vector index answered every sample's search. `false` when an exact scan did, as a selective `filter` or a namespace without a vector index brings about: the recalls then compare two exact answers, and say nothing of an index. Also `false` without a sample."
+          },
+          "recall_at_10": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The share of the ten nearest rows by an exact search that the index also found, averaged over `samples`; `null` without a sample."
+          },
+          "recall_at_75": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "As `recall_at_10` for the 75 nearest rows."
+          }
+        },
+        "required": [
+          "samples",
+          "rows",
+          "approximate",
+          "recall_at_10",
+          "recall_at_75"
+        ],
+        "description": "The `recall` result: how closely the vector index of the rows the caller\nmay read agrees with an exact search. It names no document."
       },
       "WriteResponse": {
         "type": "object",
