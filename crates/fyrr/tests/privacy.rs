@@ -1272,7 +1272,7 @@ async fn identity_storage_inputs_credentials_missing_key_and_rotation_are_fail_c
     inputs["permissions"] = json!([[{"id":"permission-only","revision":"p1","readers":[format!("usr:{source_id}"),format!("grp:{group_id}")]}]]);
     inputs["container_grants"] = json!([[{"container_id":"container-only","container_kind":"folder","permission_revision":"p1","readers":[format!("usr:{source_id}")]}]]);
     std::fs::write(&input, serde_json::to_vec(&inputs).unwrap()).unwrap();
-    let config=sandbox.input("fyrr.toml",&format!("[namespace]\nname='privacy-storage'\n[storage]\nuri='s3://{bucket}/privacy-storage-{}-{}'\nendpoint='{endpoint}'\nallow_http=true\naccess_key_id={{env='FYRR_TEST_S3_ACCESS_KEY_ID'}}\nsecret_access_key={{env='FYRR_TEST_S3_SECRET_ACCESS_KEY'}}\n[embedding]\nendpoint='http://127.0.0.1:9/v1'\n[identity]\nhashing_key={{env='FYRR_TEST_S3_SECRET_ACCESS_KEY'}}\nencryption_key={{env='FYRR_TEST_ENCRYPTION_KEY'}}\nstdio_user='{email}'\n[identity.directory]\nprovider='scim'\nissuer='{issuer}'\nverified_domains=['example.test']\ncredentials={{env='SCIM_TOKEN'}}\n[writer.credentials]\nSTORED_PROVIDER_SECRET='provider-secret'\n[writer.commit]\ncoalescing_timer='10m'\n[writer.serve]\nmetrics_listen='{writer_metrics}'\n[writer.serve.admin]\nlisten='{address}'\noperator_token={{env='OP_TOKEN'}}\n[[sources]]\nid='incremental'\ntype='incremental-test'\npermissions='sync'\n[sources.intervals]\npermissions='5m'\nmembers='5m'\n[sources.scope]\nfixture='{}'\n[[sources]]\nid='secret-source'\ntype='sentinel-secret'\npermissions='fixed'\nreaders=['grp:fixture']\n[sources.settings]\naccess={{env='STORED_PROVIDER_SECRET'}}\n[sources.scope]\nfixture='{}'\n",std::process::id(),fyrr_core::clock::now().timestamp_micros(),input.display(),input.display()));
+    let config=sandbox.input("fyrr.toml",&format!("[namespace]\nname='privacy-storage'\n[storage]\nuri='s3://{bucket}/privacy-storage-{}-{}'\nendpoint='{endpoint}'\nallow_http=true\naccess_key_id={{env='FYRR_TEST_S3_ACCESS_KEY_ID'}}\nsecret_access_key={{env='FYRR_TEST_S3_SECRET_ACCESS_KEY'}}\n[embedding]\nendpoint='http://127.0.0.1:9/v1'\n[identity]\nhashing_key={{env='FYRR_TEST_S3_SECRET_ACCESS_KEY'}}\nencryption_key={{env='FYRR_TEST_ENCRYPTION_KEY'}}\nstdio_user='{email}'\n[identity.directory]\nprovider='scim'\nissuer='{issuer}'\nverified_domains=['example.test']\ncredentials={{env='SCIM_TOKEN'}}\n[writer.credentials]\nSTORED_PROVIDER_SECRET='provider-secret'\n[writer.commit]\ncoalescing_timer='1s'\n[writer.serve]\nmetrics_listen='{writer_metrics}'\n[writer.serve.admin]\nlisten='{address}'\noperator_token={{env='OP_TOKEN'}}\n[[sources]]\nid='incremental'\ntype='incremental-test'\npermissions='sync'\n[sources.intervals]\npermissions='5m'\nmembers='5m'\n[sources.scope]\nfixture='{}'\n[[sources]]\nid='secret-source'\ntype='sentinel-secret'\npermissions='fixed'\nreaders=['grp:fixture']\n[sources.settings]\naccess={{env='STORED_PROVIDER_SECRET'}}\n[sources.scope]\nfixture='{}'\n",std::process::id(),fyrr_core::clock::now().timestamp_micros(),input.display(),input.display()));
     let embedding = common::embedding::Provider::open().await;
     let text = common::embedding::configure(
         &std::fs::read_to_string(&config).unwrap(),
@@ -1424,14 +1424,27 @@ async fn identity_storage_inputs_credentials_missing_key_and_rotation_are_fail_c
     let mut process = Owned(process);
     let response=client.post(&url).bearer_auth(&provider_token).json(&json!({"schemas":["urn:ietf:params:scim:schemas:core:2.0:User","urn:fyrr:params:scim:schemas:extension:identity:2.0:User"],"userName":email,"active":true,"emails":[{"value":email,"primary":true}],"urn:fyrr:params:scim:schemas:extension:identity:2.0:User":{"subjects":[{"issuer":issuer,"subject":subject}]}})).send().await.unwrap();
     assert_eq!(response.status(), 201);
-    let body = client
-        .get(format!("http://{writer_metrics}/metrics"))
-        .send()
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
+    // A commit round of the running service shows in its metrics.
+    let mut body = String::new();
+    let mut status = 0;
+    for _ in 0..100 {
+        let response = client
+            .get(format!("http://{writer_metrics}/metrics"))
+            .send()
+            .await
+            .unwrap();
+        status = response.status().as_u16();
+        body = response.text().await.unwrap();
+        if body.contains("fyrr_writer_commit_rounds_total{outcome=") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains("fyrr_writer_commit_rounds_total{outcome="),
+        "{body}"
+    );
     assert!(sentinels.found_in(&body).is_empty(), "{body}");
     assert!(!body.contains("privacy-storage"), "{body}");
     let _ = Command::new("kill")
@@ -1458,6 +1471,20 @@ async fn identity_storage_inputs_credentials_missing_key_and_rotation_are_fail_c
     let key_name = sentinels.mark("metrics-key-name").to_lowercase();
     sentinels.plant(&key_name, "metrics-key-name");
     let reader_config = sandbox.input("reader.toml", &format!("{}\n[reader.http]\nlisten='{reader_address}'\npublic_url='http://{reader_address}/mcp'\nmetrics_listen='{reader_metrics}'\n[[identity.api_keys]]\nname='{key_name}'\nkey={{env='METRICS_PRIVACY_KEY'}}\nreaders=['grp:fixture']\n", std::fs::read_to_string(&config).unwrap()));
+    // Bind the key in the identity and publish it, so that the reader serves it.
+    for command in ["commit", "keys"] {
+        let result = sandbox.configured(
+            &reader_config,
+            ["writer", command],
+            &[("METRICS_PRIVACY_KEY", api_key.as_str())],
+        );
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_clean(&sentinels, &result, &sandbox, "published API key");
+    }
     let run = sandbox.output();
     let mut reader = common::fyrr()
         .args([
@@ -1479,19 +1506,28 @@ async fn identity_storage_inputs_credentials_missing_key_and_rotation_are_fail_c
         .unwrap();
     let metrics_url = format!("http://{reader_metrics}/metrics");
     let mut scraped = None;
+    let mut queried = None;
     for _ in 0..600 {
         if reader.try_wait().unwrap().is_some() {
             break;
         }
         if client.get(&metrics_url).send().await.is_ok() {
-            let _ = client
-                .post(format!(
-                    "http://{reader_address}/v1/namespaces/privacy-storage/query"
-                ))
-                .bearer_auth(&api_key)
-                .json(&json!({"query": metrics_query}))
-                .send()
-                .await;
+            // The reader reads the published keys just after it starts.
+            for _ in 0..100 {
+                queried = client
+                    .post(format!(
+                        "http://{reader_address}/v1/namespaces/privacy-storage/query"
+                    ))
+                    .bearer_auth(&api_key)
+                    .json(&json!({"query": metrics_query}))
+                    .send()
+                    .await
+                    .ok();
+                if queried.as_ref().is_some_and(|r| r.status() == 200) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
             scraped = client.get(&metrics_url).send().await.ok();
             break;
         }
@@ -1509,9 +1545,15 @@ async fn identity_storage_inputs_credentials_missing_key_and_rotation_are_fail_c
             String::from_utf8_lossy(&result.stderr)
         )
     });
+    let queried = queried.expect("the query was sent");
+    let query_status = queried.status();
+    let query_body = queried.text().await.unwrap_or_default();
+    assert_eq!(query_status, 200, "{query_body}");
     assert_eq!(status, 200, "{body}");
     assert!(
-        body.contains("fyrr_reader_http_request_duration_seconds_count{route=\"search\""),
+        body.contains(
+            "fyrr_reader_http_request_duration_seconds_count{route=\"search\",code=\"200\"} 1"
+        ),
         "{body}"
     );
     assert!(sentinels.found_in(&body).is_empty(), "{body}");

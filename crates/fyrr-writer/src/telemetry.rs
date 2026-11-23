@@ -16,7 +16,7 @@ pub(crate) static PENDING_ENVELOPES: Metric = Metric::gauge(
 );
 pub(crate) static PUBLICATIONS: Metric = Metric::counter(
     "fyrr_writer_publications_total",
-    "Publications of a new head: commit groups and maintenance.",
+    "Content publications: each new manifest version, from a commit group or maintenance.",
 );
 pub(crate) static MAINTENANCE_STEPS: Metric = Metric::counter(
     "fyrr_writer_maintenance_steps_total",
