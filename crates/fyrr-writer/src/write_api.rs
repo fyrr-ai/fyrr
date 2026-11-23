@@ -653,6 +653,9 @@ fn checked_patches(
         let Some(Value::String(id)) = row.remove("id") else {
             return Err(ApiError(400, "id_missing"));
         };
+        // The check that the envelope makes of every id, made before anything is
+        // published for the request.
+        fyrr_core::limits::check_id("id", &id).map_err(|_| ApiError(400, "document_invalid"))?;
         if !ids.insert(id.clone()) {
             return Err(ApiError(400, "duplicate_id"));
         }
@@ -1085,36 +1088,65 @@ async fn leftovers(
 /// Publishes the attributes `added` to the schema of the namespace, as a request
 /// that carries only a schema does, and returns the head and the policy that
 /// serve them. The first attribute committed under a name decides its type: one
-/// that a request inferred another type for meanwhile is refused.
-async fn add_inferred(
-    config: &Config,
-    head: &fyrr_core::publication::ServingHead,
-    added: &AttributeSchema,
-) -> Result<(fyrr_core::publication::ServingHead, PolicyArtifact), ApiError> {
-    change_schema_waiting(config, &head.incarnation, |current| {
-        let mut next = current.clone();
-        for (name, kind) in added {
-            if next.attributes.entry(name.clone()).or_insert(*kind) != kind {
-                return Err(WriterError::AttributeTypeChange);
+/// that a request inferred another type for meanwhile is refused. The rows of
+/// the request were laid out in the column order `predicted`, from the schema as
+/// it was read: when another writer added columns first, the table's order
+/// differs and nothing is written (`503 busy`; the request is sent again).
+/// Boxed: the future of `execute` is at the compiler's depth limit.
+fn add_inferred<'a>(
+    process: &'a Config,
+    config: &'a Config,
+    head: &'a fyrr_core::publication::ServingHead,
+    added: &'a AttributeSchema,
+    predicted: Option<&'a [String]>,
+) -> futures::future::BoxFuture<
+    'a,
+    Result<(fyrr_core::publication::ServingHead, PolicyArtifact), ApiError>,
+> {
+    Box::pin(async move {
+        change_schema_waiting(process, &head.incarnation, |current| {
+            let mut next = current.clone();
+            for (name, kind) in added {
+                if next.attributes.entry(name.clone()).or_insert(*kind) != kind {
+                    return Err(WriterError::AttributeTypeChange);
+                }
             }
+            // Another request may have filled the schema meanwhile.
+            if next.attributes.len() > fyrr_core::limits::schema::MAX_ATTRIBUTES {
+                return Err(WriterError::PublicationInvalid);
+            }
+            Ok(next)
+        })
+        .await
+        .map_err(|error| match error {
+            WriterError::AttributeTypeChange => ApiError(400, "attribute_type_mismatch"),
+            other => other.into(),
+        })?;
+        let (store, root) = fyrr_reader::storage::namespace_store(config)?;
+        let current = fyrr_reader::storage::optional_head(config)
+            .await?
+            .ok_or(ApiError(503, "unavailable"))?;
+        // The namespace the request was checked against is the one it is written
+        // into: it may have been deleted and created again since the lease was freed.
+        if current.incarnation != head.incarnation {
+            return Err(ApiError(409, "namespace_changed"));
         }
-        // Another request may have filled the schema meanwhile.
-        if next.attributes.len() > fyrr_core::limits::schema::MAX_ATTRIBUTES {
-            return Err(WriterError::PublicationInvalid);
+        if let Some(predicted) = predicted {
+            columns_unchanged(predicted, &attribute_order(config, Some(&current)).await?)?;
         }
-        Ok(next)
+        let policy = fyrr_reader::storage::artifact(store.as_ref(), &root, &current.policy).await?;
+        Ok((current, policy))
     })
-    .await
-    .map_err(|error| match error {
-        WriterError::AttributeTypeChange => ApiError(400, "attribute_type_mismatch"),
-        other => other.into(),
-    })?;
-    let (store, root) = fyrr_reader::storage::namespace_store(config)?;
-    let head = fyrr_reader::storage::optional_head(config)
-        .await?
-        .ok_or(ApiError(503, "unavailable"))?;
-    let policy = fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-    Ok((head, policy))
+}
+
+/// A fragment names its columns by position, so rows laid out in another order
+/// than the table's would put their values in the wrong attributes.
+fn columns_unchanged(predicted: &[String], actual: &[String]) -> Result<(), ApiError> {
+    if predicted == actual {
+        Ok(())
+    } else {
+        Err(ApiError(503, "busy"))
+    }
 }
 
 /// Changes the schema of the namespace under the lease. The committer holds the
@@ -1333,6 +1365,7 @@ async fn execute(
             .filter(|_| !body.upserts.0.is_empty()),
     )
     .await?;
+    let predicted = (!body.upserts.0.is_empty()).then(|| order.clone());
     let (rows, attributes, patches, conditions) = checked(&mut body, &config, text_key, order)?;
     let filter_writes = checked_filter_writes(&mut body, &config, text_key)?;
     let (upserted, deleted) = (rows.len() as u64, body.deletes.0.len() as u64);
@@ -1376,7 +1409,9 @@ async fn execute(
     // that hold them are prepared: the column is there, null for every older
     // row, when the envelope is applied.
     let existing = match existing {
-        Some((head, _)) if !added.is_empty() => Some(add_inferred(process, &head, &added).await?),
+        Some((head, _)) if !added.is_empty() => {
+            Some(add_inferred(process, &config, &head, &added, predicted.as_deref()).await?)
+        }
         other => other,
     };
     let (head, served) = match existing {
@@ -1605,6 +1640,17 @@ async fn write_envelope(
 mod tests {
     use super::*;
     use fyrr_core::http_api::{PatchWhere, WriteRequest, WriteRow};
+
+    #[test]
+    fn rows_laid_out_in_another_column_order_than_the_tables_are_refused() {
+        let order = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert!(columns_unchanged(&order(&["a", "z"]), &order(&["a", "z"])).is_ok());
+        // Another writer added `z` first: the table holds z, a.
+        assert!(matches!(
+            columns_unchanged(&order(&["a", "z"]), &order(&["z", "a"])),
+            Err(ApiError(503, "busy"))
+        ));
+    }
 
     /// The body that `schemas/openapi.json` describes is the body the route
     /// parses: `Payload` refuses a member that `WriteRequest` has and it lacks.

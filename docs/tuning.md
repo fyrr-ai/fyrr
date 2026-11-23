@@ -225,7 +225,7 @@ manifest of the publication lists it with the others.
 
 The first type committed under a name stays. A later value of another type, in
 the same request or in another, is refused with `attribute_type_mismatch`, and a
-request that is refused declares nothing. The bound of 128 attributes, the rules
+request that is refused for its rows declares nothing: the schema is changed after every row has been checked. A request that fails after that for a reason of the service alone (the embedding provider is down, `503`) leaves the attribute declared. Another writer that adds attributes to the namespace at the same moment can make the request `503 busy` before anything of its rows is written: send it again. The bound of 128 attributes, the rules
 for a name and the limit on a value hold for inferred attributes as they do for
 declared ones. A `null` or an empty array infers nothing: such a value for an
 attribute that is not declared is `400 attribute_undeclared`, as is any

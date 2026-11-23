@@ -4027,6 +4027,13 @@ async fn identity_write_api_infers_undeclared_attributes_on_storage() {
         (400, json!({"error": "attribute_type_mismatch"}))
     );
     assert!(schema().await.get("shape").is_none());
+    // A request that the envelope would refuse declares nothing either: the
+    // empty id of a patch is checked before the schema is changed.
+    assert_eq!(
+        post(json!({"patches": [{"id": "", "hue": "x"}]})).await,
+        (400, json!({"error": "document_invalid"}))
+    );
+    assert!(schema().await.get("hue").is_none());
 
     // Two requests at once that infer different types: the first committed
     // wins, the other is refused, and no row has the other type.
