@@ -5,13 +5,14 @@ use fyrr_core::connector::CursorState;
 
 /// What a copy writes before its head exists. Whatever else lies under the
 /// destination's prefix, a deletion's fence included, is not its debris.
-const DEBRIS: [&str; 6] = [
+const DEBRIS: [&str; 7] = [
     "dataset.lance/",
     "identity/",
     "policy/",
     "publications/",
     "evidence/",
     "cursors/",
+    "document-metadata/",
 ];
 
 /// Copies the namespace `from` into the storage of `to`, under the same name:
@@ -39,8 +40,9 @@ pub async fn copy(from: &Config, to: &Config) -> Result<serde_json::Value> {
     let manifest =
         fyrr_reader::storage::read_manifest(source_store.as_ref(), &source_root, &pointer.manifest)
             .await?;
-    // What the head serves, not what the manifest was published with: a
-    // retired source, a freeze or a directory published since must stay in force.
+    // What the head serves, not what the manifest was published with: a source
+    // retired or a directory published since must stay in force. The copy is
+    // writable whether or not the source is frozen.
     let policy: PolicyArtifact =
         fyrr_reader::storage::artifact(source_store.as_ref(), &source_root, &head.policy).await?;
     let identity: IdentityArtifact =
@@ -116,6 +118,35 @@ pub async fn copy(from: &Config, to: &Config) -> Result<serde_json::Value> {
         },
     )
     .await?;
+
+    // The connector maps that rows refer to by digest, which a reader loads
+    // beside the dataset: all of them, whole.
+    let maps: Vec<_> = source_store
+        .list(Some(&source_root.clone().join("document-metadata")))
+        .try_collect()
+        .await?;
+    {
+        let (source_store, source_root, store, root) = (&source_store, &source_root, &store, &root);
+        crate::io::bounded(
+            maps.iter()
+                .filter(|object| object.location.as_ref().ends_with(".json")),
+            |object| async move {
+                let bytes = source_store.get(&object.location).await?.bytes().await?;
+                let target = Path::from(format!(
+                    "{root}/{}",
+                    fyrr_reader::storage::relative_path(&object.location, source_root)
+                ));
+                store
+                    .put_opts(&target, bytes.into(), object_store::PutMode::Create.into())
+                    .await?;
+                match store.head(&target).await {
+                    Ok(meta) if meta.size == object.size => Ok(()),
+                    _ => Err(WriterError::CopyIncomplete),
+                }
+            },
+        )
+        .await?;
+    }
 
     let mut new_policy = PolicyArtifact {
         generation: 1,

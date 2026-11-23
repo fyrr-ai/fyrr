@@ -105,7 +105,7 @@ fn visible(config: &Path) {
     let hits = search["hits"].as_array().unwrap();
     assert!(!hits.is_empty(), "the copy finds documents: {search}");
     assert!(
-        hits.iter().all(|hit| hit["source_id"] == "allowed"),
+        hits.iter().all(|hit| hit["source_id"] != "denied"),
         "the access of the copy is the source's: {search}"
     );
     let mut client = super::tools::Mcp::open(config);
@@ -115,6 +115,21 @@ fn visible(config: &Path) {
         json!([]),
         "{denied}"
     );
+    // A document with a connector map, which is read from beside the dataset.
+    let map = client.call(
+        "fetch",
+        json!({"source_id": "metadata", "root_id": "doc-0"}),
+    );
+    assert_eq!(map["isError"], false, "{map}");
+    assert_eq!(
+        map["structuredContent"]["documents"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "{map}"
+    );
+    assert!(map.to_string().contains("note-0"), "{map}");
 }
 
 fn fetched(config: &Path, root_id: &str) -> String {
@@ -129,6 +144,26 @@ fn fetched(config: &Path, root_id: &str) -> String {
 async fn local_copy_is_one_version_independent_and_completes_after_interruption() {
     let (config, root) = setup_on(Backend::Local);
     let storage = storage_of(&config);
+    // A source whose documents carry a connector map, which a reader loads
+    // from beside the dataset.
+    let mapped = root.join("documents.json");
+    let documents: Vec<_> = (0..2)
+        .map(|n| json!({"id": format!("doc-{n}"), "title": "document", "author": "Ada", "readers": ["grp:allow"], "note": format!("note-{n}"), "text": format!("fixture document {n}")}))
+        .collect();
+    std::fs::write(
+        &mapped,
+        serde_json::to_vec(&json!({"documents": documents, "cursor": "one"})).unwrap(),
+    )
+    .unwrap();
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "{text}\n[[sources]]\nid='metadata'\ntype='sentinel-docs'\npermissions='fixed'\nreaders=['grp:allow']\n[sources.scope]\nfixture='{}'\n",
+            mapped.display()
+        ),
+    )
+    .unwrap();
     success(&config, &["writer", "namespace", "create"]);
     sync(&config);
     success(&config, &["writer", "commit"]);

@@ -156,16 +156,23 @@ namespace name of `prod.toml`:
 name=docs                      # the namespace of prod.toml
 day=$(date -u +%Y%m%d)
 sed "s/DAY/$day/" backup.toml > "backup-$day.toml"
-fyrr --config prod.toml writer namespace copy --to-config "backup-$day.toml"
-# keep seven
-for old in $(ls backup-*.toml | sort | head -n -7); do
-  fyrr --config "$old" writer namespace delete --delete-data "$name" && rm "$old"
-done
+if fyrr --config prod.toml writer namespace copy --to-config "backup-$day.toml"; then
+  # Only after a copy succeeded, keep the seven newest completed copies: those
+  # that a reader can open. A night that failed is neither counted nor pruned.
+  for c in backup-*.toml; do
+    fyrr --config "$c" reader check >/dev/null 2>&1 && echo "$c"
+  done | sort | head -n -7 | while read -r old; do
+    fyrr --config "$old" writer namespace delete --delete-data "$name" && rm "$old"
+  done
+fi
 ```
 
 Do not give the bucket a lifecycle rule that expires objects by age: it would
 remove files a namespace still names. To restore, copy a backup back with the
-two files exchanged, check the result with `reader check` and `writer verify`, and
+two files exchanged into a new storage (a new `uri`, as the nightly copies have),
+or delete the namespace of the storage first with `writer namespace delete`:
+a copy into a storage that holds the namespace fails with `namespace_exists`.
+Check the result with `reader check` and `writer verify`, and
 switch the readers and writers to it. A version stays for `writer.version_grace`
 after a newer one serves, so a copy that takes longer than that while the source
 is written and maintained can fail with `copy_incomplete` or
