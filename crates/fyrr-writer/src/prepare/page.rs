@@ -432,11 +432,21 @@ impl RowColumns {
             }
             for (chunk_number, text) in crate::chunk::chunks(&section.text).into_iter().enumerate()
             {
-                let vector = section
-                    .vector
-                    .clone()
-                    .or_else(|| embedded.next())
-                    .ok_or(WriterError::EmbeddingBatchInvalid)?;
+                let vector = match &section.vector {
+                    Some(vector) => vector.clone(),
+                    // A provider's vector is checked for the namespace's element
+                    // type here; a connector's was, when the change was checked.
+                    None => {
+                        let vector = embedded.next().ok_or(WriterError::EmbeddingBatchInvalid)?;
+                        fyrr_reader::embedding::validate(
+                            &vector,
+                            config.embedding.dimensions,
+                            config.namespace.dense_element,
+                        )
+                        .map_err(|_| WriterError::EmbeddingBatchInvalid)?;
+                        vector
+                    }
+                };
                 self.sources.push(source.id.clone());
                 self.roots.push(change.root_id.clone());
                 let record = format!("{}:{chunk_number}", section_ids[section_number]);

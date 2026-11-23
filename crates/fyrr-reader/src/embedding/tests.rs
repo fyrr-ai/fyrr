@@ -26,6 +26,12 @@ fn a_32_bit_vector_is_checked_as_sent_and_a_16_bit_one_after_rounding() {
         assert!(validate(&[bad; 1024], 1024, DenseElement::F32).is_err());
     }
     assert!(validate(&[1.0; 1023], 1024, DenseElement::F32).is_err());
+    // A number whose square overflows in a distance is refused, whatever the type.
+    for element in [DenseElement::F16, DenseElement::F32] {
+        assert!(validate(&[1e16; 1024], 1024, element).is_err());
+        assert!(validate(&[-1e20; 1024], 1024, element).is_err());
+    }
+    assert!(validate(&[1e15; 8192], 8192, DenseElement::F32).is_ok());
 }
 
 #[test]

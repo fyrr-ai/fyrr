@@ -461,10 +461,9 @@ impl EmbeddingClient {
         }
         let mut vectors = vec![None; texts.len()];
         for item in response.data {
-            // shortcut: a provider's embedding must also survive 16-bit rounding,
-            // whatever the namespace stores; relax it for a provider that returns
-            // numbers beyond ±65504 to an f32 namespace.
-            validate(&item.embedding, self.config.dimensions, DenseElement::F16)?;
+            // The element type is the namespace's: a reader process serves
+            // several. Its check follows, on the search path in `dense`.
+            validate(&item.embedding, self.config.dimensions, DenseElement::F32)?;
             let entry = vectors
                 .get_mut(item.index)
                 .ok_or(EmbeddingResponseInvalid)?;

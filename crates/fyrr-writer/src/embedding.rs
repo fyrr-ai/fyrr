@@ -233,7 +233,7 @@ fn read_vector(path: &Path, dimensions: u32) -> Result<Option<Vec<f32>>> {
         .chunks_exact(4)
         .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
         .collect::<Vec<_>>();
-    if validate(&vector, dimensions, DenseElement::F16).is_err() {
+    if validate(&vector, dimensions, DenseElement::F32).is_err() {
         return Ok(None);
     }
     Ok(Some(vector))

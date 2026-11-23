@@ -87,11 +87,21 @@ pub fn identity(config: &EmbeddingConfig) -> EmbeddingIdentity {
     }
 }
 
-/// Whether `vector` is a finite, nonzero vector of `dimensions` numbers that
-/// the namespace's element type stores: a 16-bit one must also stay finite and
-/// nonzero once its numbers are rounded to 16 bits.
+/// The largest magnitude of a number in a vector. A larger one could square to
+/// infinity in a distance of the widest vectors (8192 numbers), and the search
+/// would fail on it instead of ranking it.
+pub const VECTOR_MAGNITUDE_MAX: f32 = 1e15;
+
+/// Whether `vector` is a finite, nonzero vector of `dimensions` numbers, none
+/// beyond [`VECTOR_MAGNITUDE_MAX`], that the namespace's element type stores:
+/// a 16-bit one must also stay finite and nonzero once its numbers are rounded
+/// to 16 bits.
 pub fn validate(vector: &[f32], dimensions: u32, element: DenseElement) -> Result<()> {
-    if vector.len() != dimensions as usize || vector.iter().any(|value| !value.is_finite()) {
+    if vector.len() != dimensions as usize
+        || vector
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() > VECTOR_MAGNITUDE_MAX)
+    {
         return Err(EmbeddingInvalid);
     }
     let norm: f64 = vector.iter().map(|v| f64::from(*v).powi(2)).sum();

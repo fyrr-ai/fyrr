@@ -1466,6 +1466,12 @@ async fn identity_write_api_stores_the_vectors_a_caller_supplies_on_storage() {
                 .chain(std::iter::repeat_n(1.0, 1023))
                 .collect::<Vec<_>>()
         ),
+        // Finite, but its square would overflow a distance.
+        json!(
+            std::iter::once(1e20)
+                .chain(std::iter::repeat_n(1.0, 1023))
+                .collect::<Vec<_>>()
+        ),
     ] {
         assert_eq!(
             writer
