@@ -4078,13 +4078,7 @@ async fn identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_s
 
     // By relevance alone `f` comes last of the four, outside the top 2.
     assert_eq!(
-        roots(
-            &ask_with(
-                json!({"query": "alpha", "limit": 4}),
-                Value::Null
-            )
-            .await
-        ),
+        roots(&ask_with(json!({"query": "alpha", "limit": 4}), Value::Null).await),
         ["a", "b", "c", "f"]
     );
     assert_eq!(
