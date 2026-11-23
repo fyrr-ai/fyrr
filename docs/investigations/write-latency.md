@@ -35,9 +35,8 @@ document with the machine, storage and versions.
 ## Result: local storage
 
 Measured with the release build of this change (`fyrr 0.1.1`, full build) on **local storage** (`file://`, an XFS volume), on a 12th Gen Intel Core
-i9-12900H (20 logical CPUs, 31 GiB), Linux 7.0.0-43. The S3 fixture and real S3
-were **not measured**; the script runs them with `--storage fixture` and
-`--storage s3`. Two complete runs agree; the table is the second.
+i9-12900H (20 logical CPUs, 31 GiB), Linux 7.0.0-43. Two complete runs agree;
+the table is the second. The S3 fixture is measured below; real S3 is not.
 
 | Rows per write | Writes | `write` p50 / p90 / p99 (ms) | `read` p50 / p90 / p99 (ms) | `total` p50 / p90 / p99 (ms) |
 | ---: | ---: | --- | --- | --- |
@@ -73,3 +72,66 @@ ms (50,000 rows, p50 / maximum).
   encoding issue is opened for now.
 - `read` is a strong fetch by key after the answer: the head check and a key
   lookup, 85 ms at p50 for 1,000 rows. It is not the latency of a ranked search.
+
+## Result: S3 fixture (RustFS on local disk)
+
+**This is not real S3.** The fixture is one RustFS container (image
+`rustfs/rustfs@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff`,
+memory limit 4 GiB) on the same host as the writer and the reader, reached over
+loopback HTTP, with its data on the same XFS volume. It has no network latency,
+no S3 request pricing and none of S3's throttling, so these numbers show the
+cost of the object-store *protocol* (many small requests) against a fast local
+server, and not what a deployment on S3 will see.
+
+Measured with the release build (`fyrr 0.1.1`, full build, commit `5ff777b5`
+plus the script changes of this change) via `scripts/s3-fixture start` and
+`scripts/bench-write --storage fixture`, on the same machine as the local run
+(12th Gen Intel Core i9-12900H, 20 logical CPUs, 31 GiB, Linux 7.0.0-43). One
+complete run; the whole run took about 5.5 hours.
+
+| Rows per write | Writes | `write` p50 / p90 / p99 (ms) | `read` p50 / p90 / p99 (ms) | `total` p50 / p90 / p99 (ms) |
+| ---: | ---: | --- | --- | --- |
+| 1 | 1,000 | 8,403 / 15,795 / 445,413 | 156 / 291 / 418 | 8,692 / 15,986 / 445,507 |
+| 1,000 | 50 | 3,592 / 4,415 / 6,524 | 122 / 188 / 204 | 3,732 / 4,595 / 6,646 |
+| 50,000 | 5 | 53,983 / 57,397 / 57,397 | 85 / 149 / 149 | 54,068 / 57,545 / 57,545 |
+
+The p99 of 50 and of 5 writes is their maximum.
+
+- **A single-row write is about 19 times slower than on local storage** (p50
+  8.4 s against 0.44 s) and **a 1,000-row write about 6 times slower** (3.6 s
+  against 0.56 s). A 50,000-row write is 14 % slower (54 s against 47 s): its
+  cost is the work on the rows, not the requests. A strong `read` costs
+  1.4–1.5 times the local one.
+- **Single-row writes did not stay inside the writer's answer deadline.** 7 of
+  the 1,000 writes got no answer in 600 s (`503 outcome_unknown`, the writer's
+  `ANSWER_DEADLINE`); they are counted at 600 s in the percentiles and have no
+  read, so the p99 of 445 s is the 10th-longest write. 460 writes took over 10
+  s. `writer serve` ran maintenance 16 times in that phase, and 14 of the writes
+  over 10 s ended while a maintenance run had completed. The committer runs
+  maintenance in its own loop, so a write waits for it. Two earlier attempts of
+  this run stopped at the first such write (the second at the 576th) because
+  the script then asserted `200`; the script now counts them and continues.
+  The 1,000- and 50,000-row phases ran maintenance 0 times and had no timeout.
+- **Object-store operations per write**, as the writer's storage wrapper records
+  them: 1 row: 1,804 `GET`, 25 `HEAD`, 39 `LIST`, 61 `PUT`; 1,000 rows: 633
+  `GET`, 13 `HEAD`, 22 `LIST`, 34 `PUT`; 50,000 rows: 1,223 `GET`, 12 `HEAD`, 23
+  `LIST`, 34 `PUT` and 2 multipart uploads (8.2 parts). A strong fetch costs the
+  reader 26–47 `GET`. Counts include maintenance and the writer's polling of the
+  head while it waits for the answer. Each call is a request to the fixture; the
+  hundreds of `GET`s per write are what separate 8.4 s from 0.44 s.
+- **After 1,000 single-row writes** the served version has 162 data files and
+  34 segments in each of its 12 indexes (local: 168 and 41).
+- **Request intake** is again small: the 50,000-row body was refused with `403`
+  after it was received and scanned in 113 ms and with `400 vector_invalid`
+  after its first 49,999 rows were bound in 354 ms, against 53,983 ms for the
+  write.
+
+## Real S3: not measured
+
+No credentials for a real S3 bucket are configured for this repository: the
+`real S3:` rows of `scripts/ci` run against the same RustFS fixture
+(`scripts/s3-fixture`, started by `scenario_setup` for `backend: s3`), and
+neither the repository nor the environment of this run holds AWS credentials.
+`scripts/bench-write --storage s3` is ready for it (`FYRR_BENCH_S3_URI` and the
+AWS credential chain) but has not been run, so there is no real-S3 number here.
+The fixture numbers above must not be read as one.
