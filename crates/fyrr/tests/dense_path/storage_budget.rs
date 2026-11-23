@@ -128,11 +128,14 @@ const WARM_DELAY_SECS: u64 = 30;
 /// once. They grow with the files of a publication. Raise a budget only on
 /// purpose: every request is paid for on an object store. The five attribute
 /// columns of a connector namespace (title, team, status, labels, created_at)
-/// each have an index: 36 requests, 9 more than without them.
-const OPEN_BUDGET: usize = 36;
+/// each have an index, and the title has a full-text index besides: 37
+/// requests, 10 more than without them (the full-text index of the title
+/// costs one).
+const OPEN_BUDGET: usize = 37;
 /// The same for switching to a publication that adds one document, warming
-/// of the new generation included: 9 more than without the connector columns.
-const SWITCH_BUDGET: usize = 34;
+/// of the new generation included: 10 more than without the connector columns
+/// (the full-text index of the title costs one).
+const SWITCH_BUDGET: usize = 35;
 
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
