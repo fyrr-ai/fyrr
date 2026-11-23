@@ -2,6 +2,8 @@ use super::*;
 use fyrr_core::attributes::{
     AttributeIndexes, attribute_index_kind, indexes_present, possible_indexes,
 };
+use lance::index::DatasetIndexInternalExt;
+use lance_index::metrics::NoOpMetricsCollector;
 
 /// Publish native work through the same immutable manifest and fenced head CAS.
 /// `carry` holds the options of the indexes that stand as they were built: the
@@ -101,7 +103,17 @@ pub(crate) async fn write_manifest(
             });
             match known {
                 Some(count) => Some(count),
-                None => Some(vector_partitions(dataset, &index.name, &uuid).await?),
+                // The segment's own IVF model: no other segment is opened and no
+                // statistics are serialized.
+                None => {
+                    let segment = dataset
+                        .open_vector_index(column, &index.uuid, &NoOpMetricsCollector)
+                        .await?;
+                    Some(
+                        u32::try_from(segment.total_partitions())
+                            .map_err(|_| WriterError::IndexBuildFailed)?,
+                    )
+                }
             }
         } else {
             None
@@ -295,24 +307,6 @@ pub(crate) async fn write_manifest(
     });
     head.updated_at = fyrr_core::clock::now();
     Ok(manifest)
-}
-
-/// The partitions of one segment of the vector index `name`, from Lance's
-/// statistics, which list the segments in the order `load_indices_by_name` does.
-async fn vector_partitions(dataset: &Dataset, name: &str, uuid: &str) -> Result<u32> {
-    let position = dataset
-        .load_indices_by_name(name)
-        .await?
-        .iter()
-        .position(|index| index.uuid.to_string() == uuid)
-        .ok_or(WriterError::IndexBuildFailed)?;
-    let statistics: serde_json::Value =
-        serde_json::from_str(&dataset.index_statistics(name).await?)
-            .map_err(|_| WriterError::IndexBuildFailed)?;
-    statistics["indices"][position]["num_partitions"]
-        .as_u64()
-        .and_then(|count| u32::try_from(count).ok())
-        .ok_or(WriterError::IndexBuildFailed)
 }
 
 pub(crate) async fn previous_manifest(
