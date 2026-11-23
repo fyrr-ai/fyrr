@@ -830,6 +830,11 @@ pub struct HttpConfig {
     #[serde(default = "default_requests_per_minute")]
     #[schemars(range(min = 1))]
     pub group_requests_per_minute: u32,
+    /// Address of an extra listener that serves `GET /metrics` in the
+    /// Prometheus text format; absent, there is none. It has no authentication
+    /// and carries no namespace name, identity, query or document text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_listen: Option<String>,
 }
 
 /// Reader settings.
@@ -1037,6 +1042,11 @@ pub struct WriterServeConfig {
     pub maintenance: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin: Option<WriterAdminConfig>,
+    /// Address of an extra listener that serves `GET /metrics` in the
+    /// Prometheus text format; absent, there is none. It has no authentication
+    /// and carries no namespace name, identity, query or document text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_listen: Option<String>,
 }
 
 /// Optional writer administration; production uses a TLS-terminating proxy.

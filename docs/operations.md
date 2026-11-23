@@ -23,8 +23,39 @@ Setting a deployment up (topology, images, scheduling) is in
   the HTTP server answers `/readyz`. A reader whose request scheduler fails
   stops serving (HTTP 503 from `/readyz`, or exit on stdio) and must be
   restarted.
+- [Metrics](#metrics) are served in the Prometheus text format when a
+  `metrics_listen` address is configured.
 - Every successful MCP tool response carries stage timings and S3 request counts in
   `metadata.telemetry`.
+
+## Metrics
+
+`reader.http.metrics_listen` (reader) and `writer.serve.metrics_listen`
+(`fyrr writer serve`) open an extra listener that serves `GET /metrics` in the
+Prometheus text format. Without them there is no listener. It has no
+authentication, so bind it to a loopback or private address. No label or
+value carries a namespace name, an identity, a query or document text, and
+every label has a few fixed values.
+
+| Process | Metric | Meaning |
+| --- | --- | --- |
+| reader | `fyrr_reader_http_request_duration_seconds{route,code}` | Histogram of HTTP requests by route (`mcp`, `search`, `fetch`, `aggregate`, `report`, `list`, `readyz`, `refresh`, `metadata`, `other`) and HTTP status code; its `_count` is the request count. |
+| reader | `fyrr_reader_queue_wait_seconds` | Histogram of the time from the arrival of a request to the start of its execution. |
+| reader | `fyrr_reader_mirror_hits_total` | Reads answered from the local mirror. |
+| reader | `fyrr_reader_object_store_requests_total`, `fyrr_reader_object_store_bytes_total` | Reads the mirror sent to the object store, and their bytes. |
+| reader | `fyrr_reader_mirror_bytes` | Bytes of the local mirrors, as last measured. |
+| reader | `fyrr_reader_mirror_evictions_total` | Mirror files removed to make room. |
+| reader | `fyrr_reader_open_namespaces` | Namespaces held open: the configured one and those opened by request path. |
+| reader | `fyrr_reader_recall_samples_total{outcome}` | Background recall samples: `completed`, or the reason one was skipped. |
+| writer | `fyrr_writer_publications_total` | Content publications: each new manifest version, from a commit group or a maintenance run. A change of the head without one, such as a rejection before the first version, is not counted. |
+| writer | `fyrr_writer_commit_rounds_total{outcome}` | Commit rounds: `published` (at least one group), `idle`, `busy` or `failed`. |
+| writer | `fyrr_writer_commit_duration_seconds` | Histogram of the duration of the rounds that published; a round may publish several groups. |
+| writer | `fyrr_writer_pending_envelopes` | Envelopes waiting, summed over the namespaces the writer committed, each as of its last read; an idle round does not read them again. |
+| writer | `fyrr_writer_maintenance_steps_total{step}` | Maintenance steps done: `compaction` or `index_merge`. |
+| writer | `fyrr_writer_rejected_envelopes_total` | Envelopes the committer rejected. |
+
+Histogram buckets are 5 ms to 120 s. The metrics count since the process
+started.
 
 ## Reader refresh
 

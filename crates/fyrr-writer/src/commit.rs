@@ -59,6 +59,7 @@ pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<Prepared
         result.push(envelope);
     }
     result.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
+    crate::telemetry::pending_envelopes(&config.namespace.name, result.len());
     Ok(result)
 }
 

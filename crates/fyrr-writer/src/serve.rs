@@ -53,6 +53,14 @@ pub async fn run(
             }
         })
     };
+    let metrics = match &loaded.config.writer.serve.metrics_listen {
+        Some(address) => Some(
+            fyrr_reader::metrics::listen(address)
+                .await
+                .map_err(|_| WriterError::MetricsListenUnavailable)?,
+        ),
+        None => None,
+    };
     let commits = Arc::new(crate::write_api::Commits::new());
     let admin = crate::admin::start(&loaded.config, stop.clone(), commits.clone()).await?;
     let stopped = stop.clone();
@@ -188,14 +196,27 @@ pub async fn run(
                 );
                 for config in namespaces {
                     let mut maintenance = None;
-                    match crate::commit::commit_until_stopped(&config, false, Some(&stop)).await {
+                    let began = std::time::Instant::now();
+                    let outcome = match crate::commit::commit_until_stopped(&config, false, Some(&stop)).await {
                         Ok((_, tick)) => {
-                            eprintln!("writer_service event={}", if tick.published { "published" } else { "idle" });
+                            let outcome = if tick.published { "published" } else { "idle" };
+                            eprintln!("writer_service event={outcome}");
                             maintenance = tick.maintenance;
+                            if tick.published {
+                                fyrr_reader::metrics::observe(&crate::telemetry::COMMIT_DURATION, &[], began.elapsed());
+                            }
+                            outcome
                         }
-                        Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
-                        Err(error) => eprintln!("writer_service event=commit_failed code={}", error.as_str()),
-                    }
+                        Err(WriterError::CommitterBusy) => {
+                            eprintln!("writer_service event=committer_busy");
+                            "busy"
+                        }
+                        Err(error) => {
+                            eprintln!("writer_service event=commit_failed code={}", error.as_str());
+                            "failed"
+                        }
+                    };
+                    fyrr_reader::metrics::add(&crate::telemetry::COMMIT_ROUNDS, &[("outcome", outcome)], 1);
                     commits.done.send_modify(|rounds| *rounds += 1);
                     if stop.load(Ordering::Acquire) {
                         break 'serving;
@@ -204,7 +225,13 @@ pub async fn run(
                     // waits for the maintenance in progress, as it does for a commit group.
                     if let Some(config) = maintenance.filter(|_| loaded.config.writer.serve.maintenance) {
                         match crate::maintenance::maintain(&config, false).await {
-                            Ok(_) => eprintln!("writer_service event=maintained"),
+                            Ok(done) => {
+                                eprintln!("writer_service event=maintained");
+                                for (step, key) in [("compaction", "compaction_steps"), ("index_merge", "index_merge_steps")] {
+                                    let steps = done[key].as_i64().unwrap_or(0);
+                                    fyrr_reader::metrics::add(&crate::telemetry::MAINTENANCE_STEPS, &[("step", step)], steps);
+                                }
+                            }
                             Err(WriterError::CommitterBusy) => eprintln!("writer_service event=committer_busy"),
                             Err(_) => eprintln!("writer_service event=maintenance_failed"),
                         }
@@ -217,6 +244,9 @@ pub async fn run(
         }
     }
     stop.store(true, Ordering::Release);
+    if let Some(metrics) = metrics {
+        metrics.abort();
+    }
     watch.abort();
     let _ = watch.await;
     if !shutdown.is_finished() {

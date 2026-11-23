@@ -47,6 +47,7 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
         ("admin_listen_unavailable", false),
         ("admin_service_failed", false),
         ("admin_tls_required", false),
+        ("metrics_listen_unavailable", false),
         ("api_namespace_has_sources", false),
         ("write_api_needs_committer", false),
         ("authorization_unavailable", false),
