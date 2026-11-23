@@ -28,6 +28,15 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The JSON `query` route takes `boosts`: 1 to 8 terms added to the relevance
+  score of a text, vector or fused ranking, each a weight times an
+  `attribute` function `x / (x + midpoint)` of a numeric attribute or a
+  `recency` function `midpoint / (midpoint + d)` of the distance of a
+  `datetime` attribute from an `origin` the request gives (the reader has no
+  clock). A document inside the composed candidate depth can reach the first
+  rank through a boost, and only rows the caller may read are boosted. The MCP
+  `search` tool does not take them. See [Boosts](docs/http-api.md#boosts).
+
 - The JSON `query` route takes `query_match`, which makes a text ranking
   require all of its terms, and `contains`, which requires a hit to hold all
   or any tokens of a string attribute with a full-text index. Both work next to

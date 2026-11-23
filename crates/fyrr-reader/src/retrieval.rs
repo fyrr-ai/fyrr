@@ -51,6 +51,19 @@ fn documents(rows: Vec<Candidate>) -> Vec<Candidate> {
         .filter(|r| seen.insert((r.source.clone(), r.root.clone())))
         .collect()
 }
+/// Adds `bonus[i]` to the score of `rows[i]` and ranks the rows again, best
+/// first, ties by record key. Rows scored by distance have no fixed scale, so
+/// they are normalized first, as a lane is: a bonus counts against a score
+/// between 0 and 1.
+pub(crate) fn rescored(rows: &mut [Candidate], bonus: &[f64], by_distance: bool) {
+    if by_distance {
+        normalize(rows);
+    }
+    for (row, bonus) in rows.iter_mut().zip(bonus) {
+        row.score += bonus;
+    }
+    rows.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.key().cmp(&b.key())));
+}
 /// A search without text has one lane, so the documents keep its order by
 /// distance: no fusion weight may reorder or zero them.
 pub(crate) fn dense_only(dense: Vec<Candidate>, limit: usize) -> Result<Vec<Candidate>> {

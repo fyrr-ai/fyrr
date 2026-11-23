@@ -37,6 +37,11 @@ pub mod mcp {
     pub const MAX_QUERIES: usize = 16;
     /// The most `contains` conditions of one query.
     pub const MAX_CONTAINS: usize = 16;
+    /// The most `boosts` of one query.
+    pub const MAX_BOOSTS: usize = 8;
+    /// The largest weight of a boost: the sum of `MAX_BOOSTS` of them added to
+    /// a score stays finite.
+    pub const MAX_BOOST_WEIGHT: f64 = 1e6;
     /// The rank constant of a reciprocal rank fusion that names none.
     pub const DEFAULT_RANK_CONSTANT: u32 = 60;
     /// The largest weight of a fusion: with a rank constant of 1 the score of a

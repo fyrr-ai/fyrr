@@ -54,6 +54,7 @@ impl PreparedReader {
         // An unknown included attribute is refused even when nothing matches.
         self.returned_columns(args.fields.as_ref())?;
         crate::rerank::scored_column(self, args.rerank.as_ref())?;
+        crate::boost::check(self, args.boosts.as_deref())?;
         let deadline = deadline.unwrap_or_else(|| {
             total
                 + std::time::Duration::from_millis(u64::from(
@@ -672,8 +673,11 @@ impl PreparedReader {
                     predicate.to_owned(),
                 ));
             }
-            let depth = crate::rerank::configured(self, args.rerank.as_ref())
+            let mut depth = crate::rerank::configured(self, args.rerank.as_ref())
                 .map_or(k, |rerank| k.max(rerank.candidates));
+            if args.boosts.is_some() {
+                depth = crate::boost::candidate_depth(&self.config.namespace.composition, depth);
+            }
             let selected = if args.has_text() {
                 compose(
                     dense,
@@ -727,6 +731,8 @@ impl PreparedReader {
             .as_ref()
             .is_some_and(|slot| !slot.held())
         {
+            // shortcut: this degraded answer skips the boosts, as it skips the
+            // reranker; they need a native read a parked slot may not make.
             let mut result = fallback.take().ok_or(StorageUnavailable)??;
             for (stage, micros) in result.metadata.telemetry.stage_us {
                 if matches!(stage.as_str(), "metadata" | "excerpts") {
@@ -746,6 +752,7 @@ impl PreparedReader {
             return Ok(result);
         }
         drop(fallback);
+        crate::boost::apply(self, args, &mut ranked_queries).await?;
         // Nothing to rerank against without text; a request may supply it.
         let scored_text = args.rerank.as_ref().and_then(|r| r.query.as_deref());
         let texts: Vec<&str> = queries

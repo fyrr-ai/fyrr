@@ -20,6 +20,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 mod auth;
+mod boost;
 pub mod cli;
 pub mod embedding;
 mod error;

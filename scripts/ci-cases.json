@@ -231,6 +231,26 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-reader:lib:fyrr_reader/retrieval::tests::a_bonus_lifts_a_row_past_better_scored_ones_and_ties_keep_the_record_order": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-reader:lib:fyrr_reader/retrieval::tests::a_distance_score_is_normalized_before_a_bonus_is_added": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-reader:lib:fyrr_reader/boost::tests::the_attribute_boost_is_x_over_x_plus_the_midpoint": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-reader:lib:fyrr_reader/boost::tests::the_recency_boost_is_the_midpoint_over_the_midpoint_plus_the_distance": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-reader:lib:fyrr_reader/boost::tests::the_candidate_depth_is_the_composition_or_the_depth_asked_for": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-reader:lib:fyrr_reader/routing::tests::auto_threshold_is_only_a_strategy_decision": {
         "tier": "quick",
         "seconds": 0.0
@@ -1827,6 +1847,10 @@
         "seconds": 40
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_narrows_a_query_by_the_tokens_of_a_full_text_attribute_on_storage": {
+        "tier": "full",
+        "seconds": 30
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_storage": {
         "tier": "full",
         "seconds": 30
       }

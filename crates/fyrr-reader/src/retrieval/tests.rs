@@ -250,3 +250,49 @@ fn reciprocal_rank_fusion_sums_weight_over_rank_constant_plus_rank() {
         ]
     );
 }
+
+#[test]
+fn a_bonus_lifts_a_row_past_better_scored_ones_and_ties_keep_the_record_order() {
+    let roots = |rows: &[Candidate]| rows.iter().map(|r| r.root.clone()).collect::<Vec<_>>();
+    let mut rows = vec![
+        row("a", "x", "1", 0.9),
+        row("a", "y", "1", 0.5),
+        row("a", "z", "1", 0.4),
+        row("a", "w", "1", 0.1),
+    ];
+    rescored(&mut rows, &[0.0, 0.0, 0.0, 0.0], false);
+    assert_eq!(roots(&rows), ["x", "y", "z", "w"]);
+    // `w` is last of the four: a bonus of 1 puts it first, 0.35 only third.
+    rescored(&mut rows, &[0.0, 0.0, 0.0, 1.0], false);
+    assert_eq!(roots(&rows), ["w", "x", "y", "z"]);
+    let mut rows = vec![
+        row("a", "x", "1", 0.9),
+        row("a", "y", "1", 0.5),
+        row("a", "z", "1", 0.4),
+        row("a", "w", "1", 0.1),
+    ];
+    rescored(&mut rows, &[0.0, 0.0, 0.0, 0.35], false);
+    assert_eq!(roots(&rows), ["x", "y", "w", "z"]);
+    // Equal scores order by the record key.
+    let mut rows = vec![row("a", "y", "1", 0.5), row("a", "x", "1", 0.2)];
+    rescored(&mut rows, &[0.0, 0.3], false);
+    assert_eq!(roots(&rows), ["x", "y"]);
+}
+
+#[test]
+fn a_distance_score_is_normalized_before_a_bonus_is_added() {
+    // Scores are negated distances: a bonus of 1 would swamp them as they are.
+    let mut rows = vec![
+        row("a", "x", "1", -100.0),
+        row("a", "y", "1", -300.0),
+        row("a", "z", "1", -500.0),
+    ];
+    rescored(&mut rows, &[0.0, 0.0, 0.05], true);
+    assert!(rows.iter().all(|r| (0.0..=1.05).contains(&r.score)));
+    assert_eq!(
+        rows.iter().map(|r| r.root.as_str()).collect::<Vec<_>>(),
+        ["x", "y", "z"]
+    );
+    rescored(&mut rows, &[0.0, 0.0, 1.0], false);
+    assert_eq!(rows[0].root, "z");
+}
