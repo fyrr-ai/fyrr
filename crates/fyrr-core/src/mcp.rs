@@ -236,7 +236,9 @@ impl Phrase {
         self.slop.unwrap_or(0)
     }
     fn is_valid(&self) -> bool {
-        bounded_text(&self.text, 4096) && self.slop() <= MAX_PHRASE_SLOP
+        bounded_text(&self.text, 4096)
+            && !self.text.trim().is_empty()
+            && self.slop() <= MAX_PHRASE_SLOP
     }
 }
 
