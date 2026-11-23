@@ -157,6 +157,9 @@ pub struct SearchInput {
     /// Set by the HTTP query route from its `contains` member; no tool argument.
     #[serde(skip)]
     pub contains: Option<Vec<Contains>>,
+    /// Set by the HTTP query route from its `sub_queries` member; no tool argument.
+    #[serde(skip)]
+    pub sub_queries: Option<Vec<SubQuery>>,
 }
 
 /// The `query_match` member of a JSON `query` request: whether a document
@@ -169,7 +172,8 @@ pub enum TermMatch {
 }
 
 /// One condition of the `contains` member of a JSON `query` request, on the
-/// full-text index of a string attribute. Exactly one of `all` and `any`.
+/// full-text index of a string attribute, which is not built with the `ngram`
+/// tokenizer. Exactly one of `all` and `any`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Contains {
@@ -184,11 +188,6 @@ pub struct Contains {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 4096), extend("x-maxUtf8Bytes" = 4096))]
     pub any: Option<String>,
-    /// The last token of `all` may be a prefix: the value starts with the text.
-    /// Needs the attribute's full-text index built with the `ngram` tokenizer
-    /// and `prefix_only`, and `all`; else `invalid_argument`.
-    #[serde(default)]
-    pub prefix: bool,
 }
 
 impl Contains {
@@ -202,17 +201,34 @@ impl Contains {
     }
     fn is_valid(&self) -> bool {
         bounded_text(&self.attribute, 128)
-            // An index of the n-grams of the start of a value finds its values
-            // by all of them: any one is what every value starting alike has.
-            && (!self.prefix || self.all.is_some())
             && self.text().is_some_and(|(text, _)| {
                 bounded_text(text, MAX_QUERY_BYTES) && !text.trim().is_empty()
             })
     }
 }
 
-/// The `fusion` member of a JSON `query` request with `queries`: one ranking
-/// of the documents of all sub-queries, in place of their round-robin merge.
+/// One member of `sub_queries` in a JSON `query` request: a search of its own
+/// by text, by vector, or by both as in the `search` tool, with its own
+/// filter and limit. The filter arguments and `filter` of the request apply to
+/// every sub-query as well.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SubQuery {
+    /// Query text, 1-4096 UTF-8 bytes.
+    #[schemars(length(min = 1, max = 4096), extend("x-maxUtf8Bytes" = 4096))]
+    pub query: Option<String>,
+    /// Query vector of the namespace's dimensions, instead of an embedding of query.
+    pub vector: Option<Vec<f32>>,
+    /// Filter tree of this sub-query, joined by `and` with the request's filters.
+    pub filter: Option<Filter>,
+    /// Hits of this sub-query. Without `fusion` the limits add up to at most the namespace's `max_documents`.
+    #[schemars(range(min = 1, max = MAX_SEARCH_LIMIT))]
+    pub limit: u32,
+}
+
+/// The `fusion` member of a JSON `query` request with `queries` or
+/// `sub_queries`: one ranking of the documents of all sub-queries, in place of
+/// their round-robin merge or their answers one after the other.
 /// A document scores the sum of `weight / (rank_constant + rank)` over the
 /// sub-queries that return it, rank counted from 1.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
@@ -574,7 +590,7 @@ pub struct SearchOutput {
 /// One hit, in a deterministic total order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SearchHit {
-    /// Winning query's zero-based index, present only for multi-query search.
+    /// Winning query's zero-based index, present only for multi-query search and sub-queries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(max = 15))]
     pub query_index: Option<u32>,
@@ -1183,16 +1199,27 @@ impl SearchInput {
             _ => Some(Filter::And { and: terms }),
         }
     }
-    /// Whether a lexical lane runs: the request has query text.
+    /// Whether the request searches by query text or by sub-queries, not by a vector alone or as a listing.
     pub fn has_text(&self) -> bool {
-        self.query.is_some() || self.queries.is_some()
+        self.query.is_some() || self.queries.is_some() || self.sub_queries.is_some()
+    }
+    /// The filter tree of one sub-query: the request's and the sub-query's own,
+    /// joined by `and`.
+    pub fn sub_query_filter(&self, sub: &SubQuery) -> Option<Filter> {
+        match (self.filter_tree(), sub.filter.clone()) {
+            (Some(request), Some(own)) => Some(Filter::And {
+                and: vec![request, own],
+            }),
+            (request, own) => request.or(own),
+        }
     }
     pub fn effective_limit(&self) -> u32 {
-        self.limit.unwrap_or(if self.queries.is_some() {
-            MULTI_QUERY_LIMIT
-        } else {
-            DEFAULT_SEARCH_LIMIT
-        })
+        self.limit
+            .unwrap_or(if self.queries.is_some() || self.sub_queries.is_some() {
+                MULTI_QUERY_LIMIT
+            } else {
+                DEFAULT_SEARCH_LIMIT
+            })
     }
     pub fn validate(&self) -> Result<(), &'static str> {
         let listing = !self.has_text() && self.vector.is_none();
@@ -1215,6 +1242,18 @@ impl SearchInput {
                         .iter()
                         .all(|q| bounded_text(q, MAX_QUERY_BYTES) && !q.trim().is_empty())
             })
+            && self.sub_queries.as_ref().is_none_or(|subs| {
+                self.query.is_none()
+                    && self.queries.is_none()
+                    && self.vector.is_none()
+                    && self.order.is_none()
+                    && self.order_by.is_none()
+                    && self.exact.is_none()
+                    && (1..=MAX_QUERIES).contains(&subs.len())
+                    && subs.iter().all(SubQuery::valid)
+                    // The request's limit sizes the fused answer, and only that.
+                    && (self.fusion.is_some() || self.limit.is_none())
+            })
             && (self.has_text()
                 || self.vector.is_some()
                 || self.order == Some(SearchOrder::UpdatedAt)
@@ -1234,10 +1273,15 @@ impl SearchInput {
             })
             && (self.queries.is_none() || self.limit.is_none_or(|v| v <= MULTI_QUERY_LIMIT))
             && self.fusion.as_ref().is_none_or(|fusion| {
-                self.queries.as_ref().is_some_and(|queries| {
+                let lists = self
+                    .queries
+                    .as_ref()
+                    .map(Vec::len)
+                    .or(self.sub_queries.as_ref().map(Vec::len));
+                lists.is_some_and(|lists| {
                     fusion.rank_constant != Some(0)
                         && fusion.weights.as_ref().is_none_or(|weights| {
-                            weights.len() == queries.len()
+                            weights.len() == lists
                                 && weights
                                     .iter()
                                     .all(|w| (0.0..=MAX_FUSION_WEIGHT).contains(w))
@@ -1245,15 +1289,18 @@ impl SearchInput {
                 })
             })
             && self.rerank.as_ref().is_none_or(|r| r.validate().is_ok())
-            && self.query_match.is_none_or(|_| self.has_text())
+            // A sub-query has its own filter and ranking, which these do not reach.
+            && self.query_match.is_none_or(|_| self.has_text() && self.sub_queries.is_none())
             && self.contains.as_ref().is_none_or(|conditions| {
                 // A listing has no ranking to narrow, and it reads by predicate.
                 !listing
+                    && self.sub_queries.is_none()
                     && (1..=MAX_CONTAINS).contains(&conditions.len())
                     && conditions.iter().all(Contains::is_valid)
             })
             && self.text_hits.is_none_or(|v| {
-                self.output != Some(OutputMode::Metadata) && v <= self.effective_limit()
+                self.output != Some(OutputMode::Metadata)
+                    && (v <= self.effective_limit() || self.sub_queries.is_some())
             })
             && self.excerpt_chars.is_none_or(|v| {
                 (1..=EXCERPT_CODEPOINTS).contains(&v)
@@ -1301,6 +1348,19 @@ impl SearchInput {
         } else {
             Err("invalid_argument")
         }
+    }
+}
+impl SubQuery {
+    fn valid(&self) -> bool {
+        (self.query.is_some() || self.vector.is_some())
+            && self
+                .query
+                .as_ref()
+                .is_none_or(|q| bounded_text(q, MAX_QUERY_BYTES) && !q.trim().is_empty())
+            && self.vector.as_ref().is_none_or(|vector| {
+                u64::try_from(vector.len()).is_ok_and(|n| (1..=DIMENSIONS_MAX).contains(&n))
+            })
+            && (1..=MAX_SEARCH_LIMIT).contains(&self.limit)
     }
 }
 impl FetchInput {

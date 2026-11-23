@@ -18,6 +18,11 @@ struct HydrationRows {
     text_batch: Option<RecordBatch>,
     text_rows: BTreeMap<u64, usize>,
 }
+/// The rows once each, in order: sub-queries may select a row several times.
+fn unique(rows: impl Iterator<Item = u64>) -> Vec<u64> {
+    let mut seen = BTreeSet::new();
+    rows.filter(|row| seen.insert(*row)).collect()
+}
 struct RenderedHits {
     hits: Vec<SearchHit>,
     omitted_bytes: u64,
@@ -271,7 +276,7 @@ impl PreparedReader {
         recency_text: Option<(u32, OutputMode)>,
         returned: &[String],
     ) -> Result<(Vec<SelectedHit<'q>>, HydrationRows)> {
-        let row_ids: Vec<_> = selected.iter().map(|r| r.candidate.row_id).collect();
+        let row_ids = unique(selected.iter().map(|r| r.candidate.row_id));
         // Private per-record metadata permits projection without any text.
         let all_text = recency_text.map_or_else(
             || {
@@ -357,11 +362,12 @@ impl PreparedReader {
                 hit
             })
             .collect();
-        let text_ids: Vec<_> = selected
-            .iter()
-            .filter(|hit| hit.output != OutputMode::Metadata)
-            .map(|hit| hit.candidate.row_id)
-            .collect();
+        let text_ids = unique(
+            selected
+                .iter()
+                .filter(|hit| hit.output != OutputMode::Metadata)
+                .map(|hit| hit.candidate.row_id),
+        );
         let text_batch = if all_text {
             Some(batch.clone())
         } else if text_ids.is_empty() {
@@ -422,7 +428,8 @@ impl PreparedReader {
         for hit in selected {
             let candidate = hit.candidate;
             let (metadata, private) = metadata
-                .remove(&candidate.row_id)
+                .get(&candidate.row_id)
+                .cloned()
                 .ok_or(StorageUnavailable)?;
             let text = if let Some(row) = text_rows.get(&candidate.row_id) {
                 Some(
@@ -497,7 +504,7 @@ impl PreparedReader {
                 score: candidate.score,
                 excerpt,
                 content,
-                attributes: attributes.remove(&candidate.row_id),
+                attributes: attributes.get(&candidate.row_id).cloned(),
                 lexical_score: candidate.lexical.filter(|_| scores),
                 distance: candidate.distance.filter(|_| scores),
             });

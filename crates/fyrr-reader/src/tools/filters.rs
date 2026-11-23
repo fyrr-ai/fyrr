@@ -361,8 +361,10 @@ impl PreparedReader {
     }
     /// The full-text query of one condition: a match query on the attribute's
     /// index, joined by AND or OR. The attribute must have a full-text index as
-    /// the manifest records it, and `prefix` needs that index to have been built
-    /// with n-grams of the start of a token.
+    /// the manifest records it, and not one of n-grams: Lance gives every n-gram
+    /// of a value the same position and takes them as alternatives, so `all`
+    /// would find a value with any one of them (the pin test records it).
+    /// shortcut: no prefix matching, which waits for #170.
     fn contains_query(&self, condition: &Contains) -> Result<FtsQuery> {
         let index = self
             .manifest
@@ -370,11 +372,10 @@ impl PreparedReader {
             .get(&condition.attribute)
             .filter(|index| index.full_text)
             .ok_or(InvalidArgument)?;
-        if condition.prefix
-            && !index
-                .analyzer
-                .as_ref()
-                .is_some_and(|a| a.tokenizer == Tokenizer::Ngram && a.prefix_only)
+        if index
+            .analyzer
+            .as_ref()
+            .is_some_and(|a| a.tokenizer == Tokenizer::Ngram)
         {
             return Err(InvalidArgument);
         }

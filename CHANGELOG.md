@@ -7,15 +7,6 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## [Unreleased]
 
-### Added
-
-- The JSON `query` route takes `query_match`, which makes a text ranking
-  require all of its terms, and `contains`, which requires a hit to hold all
-  or any tokens of a string attribute with a full-text index, or to start with
-  a text when the index is built with n-gram prefixes. Both work next to
-  `filter`, with a text and with a vector ranking, and under the caller's
-  permissions. The MCP `search` tool does not take them.
-
 ### Changed
 
 - A namespace created for connectors stores `title`, `team`, `status`,
@@ -37,6 +28,22 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The JSON `query` route takes `query_match`, which makes a text ranking
+  require all of its terms, and `contains`, which requires a hit to hold all
+  or any tokens of a string attribute with a full-text index. Both work next to
+  `filter`, with a text and with a vector ranking, and under the caller's
+  permissions. An attribute indexed with the `ngram` tokenizer is refused:
+  prefix matching waits for a newer Lance. The MCP `search` tool does not take
+  them.
+
+- The `query` route of the HTTP API takes `sub_queries`: 1 to 16 searches in
+  one request, each with its own `filter`, ranking (`query` text, `vector`, or
+  both) and `limit`, read from one published version. Their hits follow one
+  another in request order, or `fusion` ranks the documents of all of them.
+  Every sub-query passes the same permissions as a single query, and the
+  memory, response size, `max_documents` and deadline bound the whole request.
+  It is no tool argument, so the MCP contract is unchanged. See
+  [Sub-queries](docs/http-api.md#sub-queries).
 - `writer namespace copy --to-config FILE` copies the configured namespace, as
   the one version it serves, into the `[storage]` of another configuration file
   (another bucket or region) under the same name. The copy is independent and

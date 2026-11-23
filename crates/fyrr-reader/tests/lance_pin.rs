@@ -972,8 +972,11 @@ async fn all_terms_and_prefix_queries_return_the_true_top_10_on_three_segments_a
     let any = found(&dataset, FtsQuery::Match(all()), None, None).await;
     assert!(any.len() > holds_all.len());
 
-    // An index of the n-grams of the start of a value, up to the longest
-    // n-gram: a text finds the values that start with it, spaces included.
+    // An index of the n-grams of the start of a value gives every n-gram the
+    // same position, which Lance takes as alternatives: the AND match query
+    // finds the values that start with any one prefix, not with the whole
+    // text, so `contains` refuses these indexes until the pin moves (#170).
+    // This fails when Lance changes that.
     let (dataset, texts) = segmented(
         "prefix",
         900,
@@ -985,25 +988,24 @@ async fn all_terms_and_prefix_queries_return_the_true_top_10_on_three_segments_a
             .with_position(false),
     )
     .await;
-    let mask = even_rows(&dataset).await;
-    for (prefix, most) in [("al", true), ("alpha be", false)] {
-        let query = FtsQuery::Match(
-            MatchQuery::new(prefix.into())
-                .with_column(Some("content".into()))
-                .with_operator(Operator::And),
-        );
-        for allowed in [None, Some(&mask)] {
-            let every = found(&dataset, query.clone(), None, allowed).await;
-            let expected: Vec<i64> = texts
-                .iter()
-                .enumerate()
-                .filter(|(id, text)| text.starts_with(prefix) && (allowed.is_none() || id % 2 == 0))
-                .map(|(id, _)| i64::try_from(id).unwrap())
-                .collect();
-            assert!(!most || expected.len() > 50, "the probe needs many matches");
-            assert_eq!(every.keys().copied().collect::<Vec<_>>(), expected);
-            let top = found(&dataset, query.clone(), Some(10), allowed).await;
-            assert_true_top_10(&top, &every);
-        }
-    }
+    let prefix = "alpha be";
+    let query = FtsQuery::Match(
+        MatchQuery::new(prefix.into())
+            .with_column(Some("content".into()))
+            .with_operator(Operator::And),
+    );
+    let every = found(&dataset, query, None, None).await;
+    let starts: Vec<i64> = texts
+        .iter()
+        .enumerate()
+        .filter(|(_, text)| text.starts_with(prefix))
+        .map(|(id, _)| i64::try_from(id).unwrap())
+        .collect();
+    assert!(starts.iter().all(|id| every.contains_key(id)));
+    assert!(
+        every.len() > starts.len(),
+        "{} rows for the {} that start with the text",
+        every.len(),
+        starts.len()
+    );
 }
