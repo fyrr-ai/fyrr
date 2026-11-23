@@ -166,8 +166,9 @@ crate, which has no look-around and no back-references. It matches anywhere in
 the text, so anchor it with `^` and `$`. It takes at most 512 bytes, and one
 that does not compile, or whose compiled form is over 256 KiB, is
 `invalid_argument`; its matching time is linear in the text. Matching is
-case-sensitive, and no case-insensitive operator is offered; `(?i)` inside a
-regular expression is the only way. A document without the attribute (`null`)
+case-sensitive: no case-insensitive operator is offered, and a regular
+expression that turns on the `i` flag, as `(?i)` or `(?i:...)` does, is
+`invalid_argument`. A document without the attribute (`null`)
 matches none of the six, `not_starts_with`, `not_contains` and `not_matches`
 included, and `not` of a test leaves it out too. The same tests are valid in
 the filter of a write [condition](http-api.md#conditions), of `delete_where`
