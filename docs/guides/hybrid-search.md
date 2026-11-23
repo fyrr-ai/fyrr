@@ -54,12 +54,15 @@ lexical and the dense lane found it:
 ```sh
 curl -fsS "$READER/v1/namespaces/handbook/query" \
   -H "Authorization: Bearer $READ_KEY" -H "Content-Type: application/json" \
-  -d '{"query":"restore a backup","consistency":"strong","fields":{"scores":true}}' |
+  -d '{"query":"restore backup","consistency":"strong","fields":{"scores":true}}' |
   jq -c '.hits[] | [.root_id, .lexical_score != null, .distance != null]'
 ```
 
 ```text
-EXPECTED
+["restore",true,true]
+["deploy",true,true]
+["holidays",false,true]
+["rollback",false,true]
 ```
 
 The `score` of a hit is its fused score. How much the dense lane counts against
@@ -77,13 +80,13 @@ return it, with `rank` counted from 1 in each search's own order:
 ```sh
 curl -fsS "$READER/v1/namespaces/handbook/query" \
   -H "Authorization: Bearer $READ_KEY" -H "Content-Type: application/json" \
-  -d '{"queries":["restore a backup","deploy a release"],"limit":4,
+  -d '{"queries":["restore backup","deploy release"],"limit":4,
        "fusion":{"method":"rrf"},"consistency":"strong"}' |
   jq -c '[.hits[].root_id]'
 ```
 
 ```text
-EXPECTED
+["deploy","restore","rollback","holidays"]
 ```
 
 `weights` has one number per search, in request order, and `rank_constant`
@@ -93,13 +96,13 @@ the second search up and it leads:
 ```sh
 curl -fsS "$READER/v1/namespaces/handbook/query" \
   -H "Authorization: Bearer $READ_KEY" -H "Content-Type: application/json" \
-  -d '{"queries":["restore a backup","deploy a release"],"limit":4,
+  -d '{"queries":["restore backup","deploy release"],"limit":4,
        "fusion":{"method":"rrf","weights":[1,5]},"consistency":"strong"}' |
   jq -c '[.hits[].root_id]'
 ```
 
 ```text
-EXPECTED
+["rollback","deploy","holidays","restore"]
 ```
 
 ## 4. Give each search its own filter and limit
@@ -113,15 +116,15 @@ popular ones (`views` of 100 or more):
 curl -fsS "$READER/v1/namespaces/handbook/query" \
   -H "Authorization: Bearer $READ_KEY" -H "Content-Type: application/json" \
   -d '{"sub_queries":[
-         {"query":"restore a backup","limit":3},
-         {"query":"restore a backup","limit":3,
+         {"query":"restore backup","limit":3},
+         {"query":"restore backup","limit":3,
           "filter":{"field":"views","op":"gte","value":100}}],
        "fusion":{"method":"rrf"},"limit":4,"consistency":"strong"}' |
   jq -c '[.hits[] | [.root_id, .query_index]]'
 ```
 
 ```text
-EXPECTED
+[["deploy",1],["restore",0],["holidays",0]]
 ```
 
 A hit's `query_index` names the sub-query that gave it most. A reranker, when
@@ -140,18 +143,19 @@ as `x` grows:
 ```sh
 curl -fsS "$READER/v1/namespaces/handbook/query" \
   -H "Authorization: Bearer $READ_KEY" -H "Content-Type: application/json" \
-  -d '{"query":"restore a backup","limit":4,"consistency":"strong"}' |
+  -d '{"query":"restore backup","limit":4,"consistency":"strong"}' |
   jq -c '[.hits[].root_id]'
 curl -fsS "$READER/v1/namespaces/handbook/query" \
   -H "Authorization: Bearer $READ_KEY" -H "Content-Type: application/json" \
-  -d '{"query":"restore a backup","limit":4,"consistency":"strong",
+  -d '{"query":"restore backup","limit":4,"consistency":"strong",
        "boosts":[{"function":"attribute","attribute":"views",
                   "weight":0.5,"midpoint":100}]}' |
   jq -c '[.hits[].root_id]'
 ```
 
 ```text
-EXPECTED
+["restore","deploy","holidays","rollback"]
+["deploy","restore","rollback","holidays"]
 ```
 
 A weight of 0.5 moves a document at most 0.5 up a score that lies between 0 and

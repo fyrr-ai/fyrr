@@ -9,6 +9,9 @@
 
 [namespace]
 name = "main"
+# Defaults of every namespace this process creates. English stemming makes
+# `restore` match `restores` and `restoring` (full-text guide).
+fts_stem = true
 
 [storage]
 uri = "file:///home/you/.local/share/fyrr/guides"

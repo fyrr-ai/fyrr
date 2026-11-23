@@ -63,6 +63,12 @@ done
 {"upserted":4,"deleted":0}
 ```
 
+```text
+{"upserted":4,"deleted":0}
+{"upserted":4,"deleted":0}
+{"upserted":4,"deleted":0}
+```
+
 Make a batch as large as is comfortable. A request is at most
 `writer.envelope_max_rows` rows (50,000 by default) and `envelope_max_bytes`,
 and a row is at most 1 MiB, with at most 16 KiB of text
@@ -83,7 +89,9 @@ curl -fsS "$READER/v1/namespaces/bulk/aggregate" \
 ```
 
 ```text
-EXPECTED
+[0,4]
+[1,4]
+[2,4]
 ```
 
 ## 4. Repeat a batch safely
@@ -105,7 +113,8 @@ curl -fsS "$READER/v1/namespaces/bulk/aggregate" \
 ```
 
 ```text
-EXPECTED
+{"upserted":4,"deleted":0}
+12
 ```
 
 Requests apply in the order they are published and the last one wins, so a
@@ -134,7 +143,10 @@ curl -fsS "$READER/v1/namespaces/bulk/aggregate" \
 ```
 
 ```text
-EXPECTED
+{"upserted":1,"deleted":0}
+[0,4]
+[1,4]
+[2,1]
 ```
 
 A filter write that matches more than 10,000 documents is refused whole
@@ -147,15 +159,16 @@ index, and the indexes of the attributes you declared. `fyrr writer serve` does
 it by itself when a version has work for it, and `fyrr writer maintain` does it
 on demand, which is what a job that loads and exits runs after its last write
 ([cli](../cli.md)). Until an index is built a filter on its attribute is
-answered by a scan, which is correct and slower. This prints how many
-fragments and index segments the served version has:
+answered by a scan, which is correct and slower. `fyrr writer status` lists the
+data files (`fragments`) and the segments of each index (`index_segments`) of
+the served version. This checks that it has a vector index:
 
 ```sh
-fyrr writer status | jq -c '[.fragments, .index_segments]'
+fyrr writer status | jq -c '.index_segments | has("vector_idx")'
 ```
 
 ```text
-EXPECTED
+true
 ```
 
 ## 7. Stop

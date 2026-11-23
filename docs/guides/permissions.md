@@ -60,7 +60,8 @@ done
 ```
 
 ```text
-EXPECTED
+["backup","holidays","onboarding"]
+["holidays","salaries"]
 ```
 
 Ann reads `backup`, through her group, `holidays` and `onboarding`. Bob reads
@@ -76,7 +77,7 @@ curl -fsS "$READER/v1/namespaces/company/fetch" \
 ```
 
 ```text
-EXPECTED
+0
 ```
 
 Counts obey the same rule. `aggregate` counts the documents the caller may
@@ -92,7 +93,8 @@ done
 ```
 
 ```text
-EXPECTED
+[3]
+[2]
 ```
 
 ## 3. Grant and revoke
@@ -110,7 +112,7 @@ curl -fsS "$WRITER/v1/namespaces/company/documents" \
 ```
 
 ```text
-EXPECTED
+{"upserted":0,"deleted":0,"patched":2,"skipped":0}
 ```
 
 ```sh
@@ -121,7 +123,7 @@ curl -fsS "$READER/v1/namespaces/company/query" \
 ```
 
 ```text
-EXPECTED
+["backup","onboarding","salaries"]
 ```
 
 An upsert of a row replaces the document with its `readers`, so send the

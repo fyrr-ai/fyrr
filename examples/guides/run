@@ -43,12 +43,12 @@ for index, (language, body) in enumerate(blocks):
     script.write_text(body)
     driver.append(f'echo "--- {guide.name} block {ran}: $(head -n 1 {script})" >&2')
     driver.append(f"source {script} >{output}")
-    driver.append(f"cat {output}")
+    driver.append(f"cat {output}; echo")
     follows = index + 1 < len(blocks) and blocks[index + 1][0] == "text"
     if follows:
         expected = work / f"{ran}.expected"
         expected.write_text(blocks[index + 1][1])
-        driver.append(f'diff -u {expected} {output} >&2 || {{ echo "{guide.name} block {ran}: output differs" >&2; exit 1; }}')
+        driver.append(f'[[ "$(<{expected})" == "$(<{output})" ]] || {{ diff -u {expected} {output} >&2; echo "{guide.name} block {ran}: output differs" >&2; exit 1; }}')
 if not ran:
     sys.exit(f"{guide}: no sh block")
 (work / "driver").write_text("\n".join(driver) + "\n")

@@ -24,15 +24,17 @@ source examples/guides/start
 
 ## 1. Index the text
 
-The first write declares a `title` attribute with a full-text index, and
-switches on stemming for the namespace (`fts_stem`). Every row's `text` is
-full-text indexed already:
+Every row's `text` is full-text indexed. The first write also declares a `title`
+attribute with a full-text index of its own. Stemming is a setting of the
+namespace, `fts_stem` in `[namespace]` of the
+[configuration](../tuning.md#namespace), and the guides' configuration turns it
+on; the namespace takes it from the file when its first write creates it and
+keeps it for life:
 
 ```sh
 curl -fsS "$WRITER/v1/namespaces/articles/documents" \
   -H "Authorization: Bearer $WRITE_KEY" -H "Content-Type: application/json" \
-  -d '{"settings":{"fts_stem":true,
-                   "attributes":{"title":"string"},
+  -d '{"settings":{"attributes":{"title":"string"},
                    "attribute_indexes":{"title":{"full_text":true}}},
        "upserts":[
          {"id":"restore","title":"Restoring a backup",
@@ -60,7 +62,10 @@ curl -fsS "$READER/v1/namespaces/articles/query" \
 ```
 
 ```text
-EXPECTED
+["restore",true]
+["deploy",true]
+["rollback",true]
+["holidays",false]
 ```
 
 `restore` holds both words, `deploy` holds `backup`, and `rollback` holds
@@ -80,7 +85,10 @@ curl -fsS "$READER/v1/namespaces/articles/query" \
 ```
 
 ```text
-EXPECTED
+["restore",true]
+["deploy",false]
+["holidays",false]
+["rollback",false]
 ```
 
 It narrows the lexical lane only. To make a word a requirement of the answer,
@@ -96,7 +104,7 @@ curl -fsS "$READER/v1/namespaces/articles/query" \
 ```
 
 ```text
-EXPECTED
+restore
 ```
 
 `all` wants every token of its text and `any` at least one; a condition has
@@ -122,7 +130,7 @@ curl -fsS "$READER/v1/namespaces/articles/query" \
 ```
 
 ```text
-EXPECTED
+["restore","backup","restore"]
 ```
 
 An excerpt marks at most 100 ranges.
