@@ -536,11 +536,15 @@
         "gte",
         "contains",
         "not_contains",
+        "starts_with",
+        "not_starts_with",
+        "matches",
+        "not_matches",
         "contains_any",
         "contains_all",
         "contains_none"
       ],
-      "description": "How a field is compared with a value. The last five test the elements of an\narray attribute and apply to nothing else."
+      "description": "How a field is compared with a value. `starts_with`, `matches` and their\nnegations test the text of a `string`; `contains` and `not_contains` test\nthe text of a `string` or one element of an array. The last three test the\nelements of an array attribute and apply to nothing else."
     },
     "PreparedFragment": {
       "type": "object",

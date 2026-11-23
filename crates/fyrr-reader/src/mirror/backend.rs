@@ -368,6 +368,7 @@ impl MirrorStore {
         }
         let used = seen.values().map(|&(_, size)| size).sum();
         *known = seen;
+        self.reported.set(used);
         Ok(used)
     }
 
@@ -444,6 +445,7 @@ impl MirrorStore {
                     .map(|meta| meta.len())
                     .sum();
                 self.remove_pages(&blob).map_err(|_| Self::failure())?;
+                crate::metrics::add(&crate::metrics::MIRROR_EVICTIONS, &[], 1);
                 used = used.saturating_sub(held);
                 continue;
             }
@@ -451,8 +453,10 @@ impl MirrorStore {
             crate::sync::lock(&self.verified).remove(&path);
             Verifications::forget(&path);
             std::fs::remove_file(path).map_err(|_| Self::failure())?;
+            crate::metrics::add(&crate::metrics::MIRROR_EVICTIONS, &[], 1);
             used -= size;
         }
+        self.reported.set(used);
 
         Ok(used + incoming <= self.max_bytes)
     }

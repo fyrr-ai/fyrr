@@ -24,11 +24,13 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
+mod copy;
 mod group;
 pub(crate) mod history;
 mod namespace;
 mod publication;
 
+pub use copy::copy;
 pub(crate) use group::{
     add_attribute_columns, build_attribute_indexes, change_schema, check_schema_change, commit_one,
 };
@@ -38,7 +40,7 @@ pub use namespace::namespace_settings;
 pub(crate) use namespace::sources_allowed;
 pub use namespace::{create, create_with, delete, set_read_only, set_read_only_held};
 pub(crate) use namespace::{ensure_writable, publish_policy};
-pub(crate) use publication::publish;
+pub(crate) use publication::{previous_manifest, publish};
 
 pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<PreparedEnvelope>> {
     let mut result = Vec::new();
@@ -59,6 +61,7 @@ pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<Prepared
         result.push(envelope);
     }
     result.sort_by(|a, b| (&a.source_id, a.sequence).cmp(&(&b.source_id, b.sequence)));
+    crate::telemetry::pending_envelopes(&config.namespace.name, result.len());
     Ok(result)
 }
 

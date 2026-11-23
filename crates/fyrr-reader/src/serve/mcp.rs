@@ -90,6 +90,7 @@ pub(super) async fn execute(
     let mut dense = None;
     let request = &job.request;
     let wait = u64::try_from(context.arrived.elapsed().as_millis()).unwrap_or(u64::MAX);
+    crate::metrics::observe(&crate::metrics::QUEUE_WAIT, &[], context.arrived.elapsed());
     let outcome = if context.cancelled.is_cancelled() {
         Err(Cancelled)
     } else if Instant::now() >= context.deadline {

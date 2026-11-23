@@ -1947,6 +1947,119 @@ async fn identity_write_api_aggregates_the_documents_a_caller_reads_on_storage()
     );
 }
 
+/// A `string` is filtered by prefix, substring and regular expression, and by
+/// their negations: case-sensitively, a missing value matches none of them, a
+/// document the caller may not read matches none however it is asked for, and
+/// a pattern the engine cannot bound is `invalid_argument`.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_filters_strings_by_prefix_substring_and_expression_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let texts = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+    embed(&root, &texts);
+    let writer = Writer::start(&config, &root, address).await;
+    // The values hold what a pattern must not take for syntax: `%`, `_`, a
+    // quote and a backslash. Row e is unreadable and row d has no value.
+    let notes = [
+        json!("Alpha_one"),
+        json!("alpha%two'"),
+        json!("back\\slash"),
+        Value::Null,
+        json!("Alpha secret"),
+        json!("release-2026-11-22"),
+    ];
+    let upserts: Vec<Value> = ["a", "b", "c", "d", "e", "f"]
+        .iter()
+        .enumerate()
+        .map(|(n, id)| {
+            let readers = if *id == "e" {
+                json!(["usr:nobody"])
+            } else {
+                json!(["grp:allow", "usr:x"])
+            };
+            json!({"id": id, "text": texts[n], "readers": readers, "note": notes[n], "price": 1.5})
+        })
+        .collect();
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({
+                    "settings": {
+                        "attributes": {"note": "string", "price": "float"},
+                        "attribute_indexes": {"note": {"ngram": true}},
+                    },
+                    "upserts": upserts,
+                })
+            )
+            .await,
+        (200, json!({"upserted": 6, "deleted": 0}))
+    );
+    let on = |op: &str, value: Value| json!({"field": "note", "op": op, "value": value});
+    for (op, value, expected) in [
+        ("starts_with", json!("Alpha"), vec!["a"]),
+        ("starts_with", json!("alpha%"), vec!["b"]),
+        ("starts_with", json!("alpha_"), vec![]),
+        ("starts_with", json!("back\\"), vec!["c"]),
+        ("matches", json!(".*"), vec!["a", "b", "c", "f"]),
+        ("not_matches", json!(".*"), vec![]),
+        ("not_starts_with", json!("Alpha"), vec!["b", "c", "f"]),
+        ("contains", json!("lpha"), vec!["a", "b"]),
+        ("contains", json!("'"), vec!["b"]),
+        ("contains", json!("\\"), vec!["c"]),
+        ("contains", json!("ALPHA"), vec![]),
+        ("contains", json!("secret"), vec![]),
+        ("not_contains", json!("lpha"), vec!["c", "f"]),
+        ("matches", json!("^Alpha_\\w+$"), vec!["a"]),
+        ("matches", json!("\\\\"), vec!["c"]),
+        ("matches", json!("\\d{4}-\\d{2}-\\d{2}$"), vec!["f"]),
+        ("matches", json!("e"), vec!["a", "f"]),
+        ("matches", json!("(?i)ALPHA"), vec!["a", "b"]),
+        ("not_matches", json!("\\d"), vec!["a", "b", "c"]),
+    ] {
+        assert_eq!(
+            listing(&config, on(op, value.clone())),
+            expected,
+            "{op} {value}"
+        );
+    }
+    // `not` of a test keeps a missing value out, as `not_*` does.
+    assert_eq!(
+        listing(&config, json!({"not": on("starts_with", json!("Alpha"))})),
+        ["b", "c", "f"]
+    );
+    assert_eq!(
+        listing(
+            &config,
+            json!({"and": [on("contains", json!("lpha")), on("not_matches", json!("^Alpha"))]})
+        ),
+        ["b"]
+    );
+
+    let mut client = Mcp::open(&config);
+    let on_field = |field: &str, op: &str, value: Value| json!({"filter": {"field": field, "op": op, "value": value}});
+    for arguments in [
+        // An expression over the bound, one that does not parse, and one whose
+        // compiled form is too large.
+        on_field("note", "matches", json!("a".repeat(513))),
+        on_field("note", "matches", json!("(")),
+        on_field("note", "matches", json!("((a{100}){100}){100}")),
+        // Text tests take text and a `string` only.
+        on_field("note", "starts_with", json!(1)),
+        on_field("note", "contains", Value::Null),
+        on_field("note", "matches", json!(["a"])),
+        on_field("note", "starts_with", json!("")),
+        on_field("price", "starts_with", json!("1")),
+        on_field("price", "matches", json!("1")),
+        on_field("price", "contains", json!("1")),
+    ] {
+        error(client.call("search", arguments.clone()), "invalid_argument");
+    }
+}
+
 /// Unsigned, UUID, bytes and array attributes are written over HTTP and stored
 /// in their own columns. A listing filters and orders by the ones that can be,
 /// and refuses `bytes` and the arrays where they cannot be.
@@ -3042,6 +3155,161 @@ async fn identity_write_api_changes_the_schema_of_a_live_namespace_on_storage() 
         listed(json!({"field": "stock", "op": "gt", "value": 2})),
         ["c"]
     );
+}
+
+/// A change of the analyzer of a full-text index is a schema change: it is
+/// published at once, and the index it replaces keeps serving with its old
+/// analyzer until maintenance has built the new one and published it. Nothing
+/// is built again once the index is current.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on_storage() {
+    use lance::index::DatasetIndexExt;
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    // The maintenance of this test is the one it runs (`configure` builds on 2 threads).
+    let text = std::fs::read_to_string(&config).unwrap().replacen(
+        "[namespace]\n",
+        "[namespace]\nfts_ascii_folding = true\n",
+        1,
+    );
+    std::fs::write(
+        &config,
+        format!("{text}\n[writer.serve]\nmaintenance = false\n"),
+    )
+    .unwrap();
+    embed(&root, &["alpha", "bravo"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let post = async |body: Value| writer.post(WRITE_KEY, "dense-fixture", &body).await;
+    // The sequence of the served publication, the segments of the index and the
+    // options its manifest records, and the parameters the index was built with.
+    let served = async || {
+        let (head, manifest) = super::coordination::publication(&config).await;
+        let mut segments: Vec<_> = manifest
+            .indexes
+            .iter()
+            .filter(|index| index.name == "attrfts_note_idx")
+            .map(|index| index.uuid.clone())
+            .collect();
+        segments.sort();
+        let loaded = fyrr_core::config::load(&config).unwrap();
+        let dataset = fyrr_reader::storage::pinned(&loaded.config, &head)
+            .await
+            .unwrap();
+        let params = dataset
+            .index_statistics("attrfts_note_idx")
+            .await
+            .unwrap()
+            .replace(' ', "");
+        (
+            head.content.as_ref().unwrap().sequence,
+            segments,
+            serde_json::to_value(&manifest.attribute_indexes).unwrap(),
+            params,
+        )
+    };
+
+    assert_eq!(
+        post(json!({
+            "settings": {
+                "attributes": {"note": "string"},
+                "attribute_indexes": {"note": {"index": false, "full_text": true}},
+            },
+            "upserts": [
+                {"id": "a", "text": "alpha", "readers": ["grp:allow"], "note": "Caf\u{e9}"},
+                {"id": "b", "text": "bravo", "readers": ["grp:allow"], "note": "na\u{ef}ve"},
+            ],
+        }))
+        .await,
+        (200, json!({"upserted": 2, "deleted": 0}))
+    );
+    let (sequence, old, recorded, params) = served().await;
+    assert_eq!(old.len(), 1);
+    assert_eq!(
+        recorded,
+        json!({"note": {"index": false, "full_text": true, "ngram": false}})
+    );
+    assert!(params.contains("\"base_tokenizer\":\"simple\""), "{params}");
+    // An index without an analyzer of its own takes the namespace's settings.
+    assert!(params.contains("\"ascii_folding\":true"), "{params}");
+
+    // The change is one publication that leaves the index as it was built.
+    let change = json!({"settings": {"attribute_indexes": {"note": {
+        "analyzer": {"tokenizer": "unicode"}}}}});
+    assert_eq!(
+        post(change.clone()).await,
+        (200, json!({"upserted": 0, "deleted": 0}))
+    );
+    let (changed, segments, recorded, params) = served().await;
+    assert_eq!(changed, sequence + 1);
+    assert_eq!(segments, old);
+    let changed_id = super::coordination::publication(&config)
+        .await
+        .1
+        .publication_id;
+    assert_eq!(
+        recorded,
+        json!({"note": {"index": false, "full_text": true, "ngram": false}})
+    );
+    assert!(params.contains("\"base_tokenizer\":\"simple\""), "{params}");
+    assert!(params.contains("\"ascii_folding\":true"), "{params}");
+    // The reader serves that publication, and what is stored verifies.
+    assert_eq!(
+        listing(
+            &config,
+            json!({"field": "note", "op": "eq", "value": "Caf\u{e9}"})
+        ),
+        ["a"]
+    );
+    assert_eq!(success(&config, &["writer", "verify"])["verified"], true);
+    // The same request again changes nothing.
+    assert_eq!(post(change).await.0, 200);
+    assert_eq!(served().await.0, changed);
+
+    // Maintenance builds the index again and publishes it with its analyzer.
+    run_when_free(&config, &["writer", "maintain"]).await;
+    let (rebuilt, segments, recorded, params) = served().await;
+    assert!(rebuilt > changed);
+    assert_eq!(segments.len(), 1);
+    assert_ne!(segments, old);
+    assert_eq!(
+        recorded,
+        json!({"note": {"index": false, "full_text": true, "ngram": false, "analyzer": {
+            "tokenizer": "unicode", "ascii_folding": false, "max_token_length": 40,
+            "ngram_min_length": 3, "ngram_max_length": 3, "prefix_only": false}}})
+    );
+    assert!(params.contains("\"base_tokenizer\":\"icu\""), "{params}");
+    assert!(params.contains("\"ascii_folding\":false"), "{params}");
+    assert_eq!(
+        listing(
+            &config,
+            json!({"field": "note", "op": "eq", "value": "na\u{ef}ve"})
+        ),
+        ["b"]
+    );
+    assert_eq!(success(&config, &["writer", "verify"])["verified"], true);
+
+    // A current index is not built again.
+    run_when_free(&config, &["writer", "maintain"]).await;
+    assert_eq!(served().await.1, segments);
+
+    // A restore of the publication before the rebuild brings the old index back
+    // and records the analyzer it was built with, so maintenance builds the new
+    // one again.
+    run_when_free(&config, &["writer", "restore", &changed_id]).await;
+    let (restored, segments, recorded, params) = served().await;
+    assert!(restored > rebuilt);
+    assert_eq!(
+        recorded,
+        json!({"note": {"index": false, "full_text": true, "ngram": false}})
+    );
+    assert!(params.contains("\"base_tokenizer\":\"simple\""), "{params}");
+    run_when_free(&config, &["writer", "maintain"]).await;
+    let (_, again, recorded, params) = served().await;
+    assert_ne!(again, segments);
+    assert_eq!(recorded["note"]["analyzer"]["tokenizer"], "unicode");
+    assert!(params.contains("\"base_tokenizer\":\"icu\""), "{params}");
 }
 
 /// The ids a listing of the namespace returns under `filter`, in order.

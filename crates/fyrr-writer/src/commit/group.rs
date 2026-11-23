@@ -1,5 +1,10 @@
 use super::publication::previous_manifest;
 use super::*;
+use fyrr_core::attributes::{
+    AttributeIndexes,
+    analyzer::{Analyzer, Tokenizer},
+    stale_analyzers,
+};
 use lance::dataset::NewColumnTransform;
 
 mod native;
@@ -153,6 +158,7 @@ pub(crate) async fn commit_one(
         acl_changed,
         Vec::new(),
         false,
+        None,
     )
     .await?;
     stage(stage_timings, "publication", publication_start);
@@ -533,7 +539,14 @@ async fn build_indexes(
     }
     if first {
         // Boxed for the same reason.
-        Box::pin(build_attribute_indexes(config, lease, dataset, lineage)).await?;
+        Box::pin(build_attribute_indexes(
+            config,
+            lease,
+            dataset,
+            lineage,
+            &AttributeIndexes::new(),
+        ))
+        .await?;
     }
     if config.writer.commit.merge_fts_segments {
         let start = std::time::Instant::now();
@@ -554,29 +567,48 @@ async fn build_indexes(
 
 /// Builds the indexes the attributes are to have that the table does not have
 /// yet: all of them in a first publication, the ones switched on since in
-/// maintenance. Until one is built, a filter on its attribute is a scan.
+/// maintenance. A full-text index that `built` (the options its manifest
+/// records) shows built with another analyzer is built again: the table keeps
+/// the old index until this work is published, and a reader serves that
+/// publication's version, so the old one serves meanwhile. Until an index is
+/// built, a filter on its attribute is a scan. Returns the attributes whose
+/// full-text index is built again.
 pub(crate) async fn build_attribute_indexes(
     config: &Config,
     lease: &LeaseGuard,
     dataset: &mut Dataset,
     lineage: &mut CommitLineage,
-) -> Result<()> {
-    let built: BTreeSet<_> = dataset
+    built: &AttributeIndexes,
+) -> Result<Vec<String>> {
+    let present: BTreeSet<_> = dataset
         .load_indices()
         .await?
         .iter()
         .map(|index| index.name.clone())
         .collect();
+    let stale: BTreeSet<_> = stale_analyzers(&config.namespace.attribute_indexes, built).collect();
     let scalar = ScalarIndexParams::default();
-    let fts = fts_params(config);
+    let mut rebuilt = Vec::new();
     for (column, name, kind) in fyrr_reader::search::attribute_indexes(
         &config.namespace.attributes,
         &config.namespace.attribute_indexes,
     ) {
-        if built.contains(&name) {
+        let again = kind == IndexType::Inverted && stale.contains(column.as_str());
+        if present.contains(&name) && !again {
             continue;
         }
+        let fts;
         let params: &dyn lance_index::IndexParams = if kind == IndexType::Inverted {
+            // Without an analyzer of its own the index takes the namespace's settings.
+            fts = match config
+                .namespace
+                .attribute_indexes
+                .get(&column)
+                .and_then(|options| options.analyzer.as_ref())
+            {
+                Some(analyzer) => attribute_fts_params(config, analyzer)?,
+                None => fts_params(config),
+            };
             &fts
         } else {
             &scalar
@@ -589,8 +621,11 @@ pub(crate) async fn build_attribute_indexes(
         )
         .await?;
         record_transaction(dataset, lineage, before).await?;
+        if again {
+            rebuilt.push(column);
+        }
     }
-    Ok(())
+    Ok(rebuilt)
 }
 
 /// Adds a nullable column for each declared attribute. Lance records it in the
@@ -640,6 +675,49 @@ fn fts_params(config: &Config) -> lance_index::scalar::InvertedIndexParams {
         .stem(config.namespace.fts_stem)
         .remove_stop_words(config.namespace.fts_remove_stop_words)
         .ascii_folding(config.namespace.fts_ascii_folding);
+    with_workers(config, fts)
+}
+
+/// Parameters of the full-text index of an attribute that has an analyzer of
+/// its own. A language stems the terms and removes its stop words; a list of
+/// stop words replaces the language's.
+fn attribute_fts_params(
+    config: &Config,
+    analyzer: &Analyzer,
+) -> Result<lance_index::scalar::InvertedIndexParams> {
+    let mut fts = lance_index::scalar::InvertedIndexParams::default()
+        .base_tokenizer(
+            match analyzer.tokenizer {
+                Tokenizer::Simple => "simple",
+                Tokenizer::Whitespace => "whitespace",
+                Tokenizer::Unicode => "icu",
+                Tokenizer::Ngram => "ngram",
+            }
+            .into(),
+        )
+        .with_position(false)
+        .max_token_length(Some(analyzer.max_token_length as usize))
+        .lower_case(true)
+        .stem(analyzer.language.is_some())
+        .remove_stop_words(analyzer.language.is_some() || analyzer.stop_words.is_some())
+        .custom_stop_words(analyzer.stop_words.clone())
+        .ascii_folding(analyzer.ascii_folding);
+    if let Some(language) = analyzer.language {
+        fts = fts.language(&language.lance_name())?;
+    }
+    if analyzer.tokenizer == Tokenizer::Ngram {
+        fts = fts
+            .ngram_min_length(analyzer.ngram_min_length)
+            .ngram_max_length(analyzer.ngram_max_length)
+            .ngram_prefix_only(analyzer.prefix_only);
+    }
+    Ok(with_workers(config, fts))
+}
+
+fn with_workers(
+    config: &Config,
+    fts: lance_index::scalar::InvertedIndexParams,
+) -> lance_index::scalar::InvertedIndexParams {
     match config.writer.threads {
         Some(threads) => fts.num_workers(crate::threads::pools(threads).fts_workers),
         None => fts,

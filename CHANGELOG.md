@@ -36,6 +36,24 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   memory, response size, `max_documents` and deadline bound the whole request.
   It is no tool argument, so the MCP contract is unchanged. See
   [Sub-queries](docs/http-api.md#sub-queries).
+- `writer namespace copy --to-config FILE` copies the configured namespace, as
+  the one version it serves, into the `[storage]` of another configuration file
+  (another bucket or region) under the same name. The copy is independent and
+  writable and finds the same documents with the same access. A different
+  `identity.hashing_key` fails with `hashing_key_mismatch`; a copy in the same
+  storage, which would need another name and so other hashes, is not supported
+  (`copy_same_storage`); an interrupted copy leaves no namespace and the same
+  command completes it. See [Backup and copy](docs/operations.md#backup-and-copy).
+- `filter` tests the text of a `string` with `starts_with`, `contains`,
+  `matches` (a regular expression) and the negations `not_starts_with`,
+  `not_contains` and `not_matches`. A prefix is answered from the B-tree of a
+  `string` attribute and a substring or an expression from its n-gram index
+  (`ngram = true`); the negations and the patterns without a literal of three
+  alphanumeric characters are scans bounded by the request deadline. A value is
+  never empty, and an expression is bounded to 512 bytes and a compiled size of
+  256 KiB. No case-insensitive test is offered. The write conditions and the
+  filters of `delete_where` and `patch_where` take the same tests. See
+  [Text tests](docs/mcp-tools.md#text-tests).
 - The `query` route of the HTTP API takes `fusion` and `rerank`. `fusion`
   (`{"method":"rrf","rank_constant":60,"weights":[…]}`, with `queries`) ranks the
   documents of all sub-queries by reciprocal rank fusion instead of merging
@@ -109,6 +127,17 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   and this build reads both. See
   [Changing the schema](docs/http-api.md#changing-the-schema) and
   [`[namespace.attribute_indexes]`](docs/tuning.md#namespaceattribute_indexes).
+- The full-text index of an attribute has its own `analyzer`: the tokenizer
+  (`simple`, `whitespace`, `unicode` for Unicode word segmentation, which finds
+  the words of Chinese and Japanese text by a dictionary, or `ngram` with a
+  minimum and a maximum length and a prefix-only switch), a `language` for
+  stemming and stop words (18 are offered), a custom `stop_words` list,
+  `ascii_folding` and `max_token_length`. The analyzer is an option of the
+  index, so it travels in the contract versions that carry index options
+  (content-manifest 5.0, policy-artifact 4.0). A change of it is a schema
+  change: the next maintenance builds the index again and publishes it, and the
+  index it replaces serves until then. An index without an analyzer takes the
+  namespace's `fts_*` settings, as before. See [Analyzer](docs/tuning.md#analyzer-of-a-full-text-index).
 - The write API takes `delete_where` and `patch_where`: a filter whose matching
   documents are deleted, or patched with the attributes or readers of `set`.
   The committer evaluates it once against the state the request is applied to;

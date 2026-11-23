@@ -35,6 +35,10 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-reader:lib:fyrr_reader/metrics::tests::histogram_buckets_are_cumulative_and_end_at_infinity": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-reader:lib:fyrr_reader/embedding::live::tests::live_concurrent_calls_share_one_monotone_spend_limit": {
         "tier": "quick",
         "seconds": 0.012
@@ -300,6 +304,14 @@
         "seconds": 0.5
       },
       "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::a_value_of_the_wrong_type_or_field_is_invalid_argument": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::a_text_test_selects_the_rows_whose_text_it_names": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::filter_selection_tests::a_text_test_compiles_to_one_call_and_refuses_what_it_cannot_bound": {
         "tier": "quick",
         "seconds": 0.0
       },
@@ -1090,6 +1102,10 @@
       "full:fyrr-reader:lib:fyrr_reader/search::open_tests::an_attribute_must_be_a_nullable_column_of_its_type_with_its_index_on_it": {
         "tier": "quick",
         "seconds": 0.0
+      },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::an_analyzer_that_differs_from_the_built_one_is_stale": {
+        "tier": "quick",
+        "seconds": 0.0
       }
     },
     "children": {
@@ -1446,6 +1462,10 @@
         "tier": "quick",
         "seconds": 0.1
       },
+      "full:fyrr-reader:test:lance_pin/string_filters_use_the_btree_and_the_ngram_index_where_they_can": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
       "full:fyrr-reader:test:lance_pin/native_rabitq_centroid_codes_and_f32_routing_order": {
         "tier": "quick",
         "seconds": 0.01
@@ -1453,6 +1473,14 @@
       "full:fyrr-reader:test:lance_pin/positionless_native_fts_and_saving": {
         "tier": "quick",
         "seconds": 0.069
+      },
+      "full:fyrr-reader:test:lance_pin/unicode_word_tokenizer_segments_chinese_and_japanese_by_dictionary": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-reader:test:lance_pin/every_language_the_settings_offer_has_a_stemmer_and_stop_words_and_is_documented": {
+        "tier": "quick",
+        "seconds": 0.1
       }
     }
   },
@@ -1577,6 +1605,10 @@
       "full:fyrr:test:dense_path/local_storage::local_storage_reaps_abandoned_uploads_but_protects_live_staging": {
         "tier": "full",
         "seconds": 9.929
+      },
+      "full:fyrr:test:dense_path/namespace_copy::local_copy_is_one_version_independent_and_completes_after_interruption": {
+        "tier": "full",
+        "seconds": 120.0
       },
       "full:fyrr:test:dense_path/coordination::coordination_live_holder_is_busy_then_fenced_after_expiry_on_local_storage": {
         "tier": "quick",
@@ -1774,6 +1806,10 @@
         "tier": "full",
         "seconds": 33.382
       },
+      "full:fyrr:test:dense_path/publication_lifecycle::serve_metrics_count_publications_without_identity_on_storage": {
+        "tier": "full",
+        "seconds": 20
+      },
       "full:fyrr:test:dense_path/publication_lifecycle::serve_runs_a_source_again_when_a_rejection_is_published_on_storage": {
         "tier": "full",
         "seconds": 40
@@ -1781,6 +1817,10 @@
       "full:fyrr:test:dense_path/publication_lifecycle::serve_timer_disabled_committer_on_storage": {
         "tier": "full",
         "seconds": 96.301
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on_storage": {
+        "tier": "full",
+        "seconds": 40
       }
     }
   },
@@ -1969,6 +2009,10 @@
         "tier": "full",
         "seconds": 30
       },
+      "full:fyrr:test:dense_path/http_json::identity_http_metrics_listener_counts_requests_without_identity_on_storage": {
+        "tier": "full",
+        "seconds": 30
+      },
       "full:fyrr:test:dense_path/http_mcp::identity_http_authentication_isolation_rate_limits_drain_and_refresh_on_storage": {
         "tier": "full",
         "seconds": 85.864
@@ -2090,6 +2134,10 @@
         "seconds": 1
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_aggregates_the_documents_a_caller_reads_on_storage": {
+        "tier": "full",
+        "seconds": 4
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_filters_strings_by_prefix_substring_and_expression_on_storage": {
         "tier": "full",
         "seconds": 4
       },

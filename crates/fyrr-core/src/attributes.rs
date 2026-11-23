@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::limits::schema::{MAX_ATTRIBUTES, MAX_NAME_BYTES, MAX_VALUE_BYTES};
 
+pub mod analyzer;
+use analyzer::Analyzer;
+
 /// The columns of the table that are not attributes. An attribute cannot take
 /// one of these names; `prepare::schema` in the writer is held to this list.
 pub const BUILT_IN_COLUMNS: [&str; 16] = [
@@ -175,8 +178,10 @@ impl AttributeType {
 
 /// The indexes an attribute has: the scalar one unless it says otherwise, and a
 /// full-text or an n-gram index when it asks for one. An attribute without an
-/// index is still filtered and sorted: by a scan of the table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// index is still filtered and sorted: by a scan of the table. The settings of
+/// the analyzer belong to the full-text index and are only set with it; an
+/// index without one takes the namespace's `fts_*` settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttributeIndex {
     #[serde(default = "yes")]
@@ -185,6 +190,8 @@ pub struct AttributeIndex {
     pub full_text: bool,
     #[serde(default)]
     pub ngram: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analyzer: Option<Analyzer>,
 }
 
 const fn yes() -> bool {
@@ -197,6 +204,7 @@ impl Default for AttributeIndex {
             index: true,
             full_text: false,
             ngram: false,
+            analyzer: None,
         }
     }
 }
@@ -263,18 +271,40 @@ pub fn possible_indexes(
 }
 
 /// The options of the attributes of the schema that `has` an index of, as the
-/// entries that differ from the default.
+/// entries that differ from the default. A full-text index that is there has
+/// the `analyzer` that `analyzer` gives for its attribute.
 pub fn indexes_present(
     attributes: &AttributeSchema,
     has: impl Fn(&str) -> bool,
+    analyzer: impl Fn(&str) -> Option<Analyzer>,
 ) -> AttributeIndexes {
     let mut present = AttributeIndexes::new();
     for (name, _, option, index) in possible_indexes(attributes) {
         let entry = present.entry(name.to_owned()).or_default();
         entry.set(option, has(&index));
+        if option == IndexOption::FullText && entry.full_text {
+            entry.analyzer = analyzer(name);
+        }
     }
     present.retain(|_, options| *options != AttributeIndex::default());
     present
+}
+
+/// The attributes whose full-text index is built with another analyzer than
+/// `wanted` asks for: the ones to rebuild.
+pub fn stale_analyzers<'a>(
+    wanted: &'a AttributeIndexes,
+    built: &'a AttributeIndexes,
+) -> impl Iterator<Item = &'a str> {
+    wanted
+        .iter()
+        .filter(|(name, options)| {
+            options.full_text
+                && built
+                    .get(*name)
+                    .is_some_and(|b| b.full_text && b.analyzer != options.analyzer)
+        })
+        .map(|(name, _)| name.as_str())
 }
 
 /// A value checked against its attribute's type.
@@ -354,8 +384,8 @@ pub fn check_schema(schema: &AttributeSchema) -> Result<(), AttributeError> {
 }
 
 /// Checks the index options of a schema: each names a declared attribute and
-/// differs from the default, and asks only for what the attribute's type
-/// can have.
+/// differs from the default, asks only for what the attribute's type can have,
+/// and sets the analyzer only of a full-text index, within its bounds.
 pub fn check_indexes(
     schema: &AttributeSchema,
     indexes: &AttributeIndexes,
@@ -368,6 +398,8 @@ pub fn check_indexes(
             || IndexOption::ALL
                 .into_iter()
                 .any(|option| differs(option) && !kind.supports(option))
+            || options.analyzer.as_ref().is_some_and(|a| !a.is_valid())
+            || (options.analyzer.is_some() && !options.full_text)
         {
             return Err(AttributeError::IndexInvalid);
         }
@@ -511,6 +543,7 @@ pub fn resolve(
 
 #[cfg(test)]
 mod tests {
+    use super::analyzer::{Language, NGRAM_LENGTH_MAX, STOP_WORD_BYTES_MAX, Tokenizer};
     use super::*;
     use serde_json::json;
 
@@ -837,7 +870,7 @@ mod tests {
         );
         // What a table has, as the options that differ from the default.
         let built = ["attr_title_idx", "attrfts_title_idx"];
-        let present = indexes_present(&schema, |name| built.contains(&name));
+        let present = indexes_present(&schema, |name| built.contains(&name), |_| None);
         assert_eq!(
             present,
             AttributeIndexes::from([
@@ -857,7 +890,7 @@ mod tests {
                 ),
             ])
         );
-        assert_eq!(indexes_present(&schema, |_| true).len(), 1);
+        assert_eq!(indexes_present(&schema, |_| true, |_| None).len(), 1);
     }
 
     #[test]
@@ -875,13 +908,86 @@ mod tests {
             ngram: true,
             ..Default::default()
         };
-        assert_eq!(check_indexes(&schema, &options("title", off)), Ok(()));
-        assert_eq!(check_indexes(&schema, &options("title", text)), Ok(()));
+        assert_eq!(
+            check_indexes(&schema, &options("title", off.clone())),
+            Ok(())
+        );
+        assert_eq!(
+            check_indexes(&schema, &options("title", text.clone())),
+            Ok(())
+        );
+        let analyzed = |analyzer| AttributeIndex {
+            full_text: true,
+            analyzer: Some(analyzer),
+            ..Default::default()
+        };
+        let ngram = |min, max| Analyzer {
+            tokenizer: Tokenizer::Ngram,
+            ngram_min_length: min,
+            ngram_max_length: max,
+            ..Default::default()
+        };
+        let german = Analyzer {
+            language: Some(Language::German),
+            stop_words: Some(vec!["und".to_owned()]),
+            ascii_folding: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            check_indexes(&schema, &options("title", analyzed(german.clone()))),
+            Ok(())
+        );
+        assert_eq!(
+            check_indexes(&schema, &options("title", analyzed(ngram(2, 5)))),
+            Ok(())
+        );
+        let word = |word: &str| Analyzer {
+            stop_words: Some(vec![word.to_owned()]),
+            ..Default::default()
+        };
         for (name, entry) in [
-            ("nope", off),
+            ("nope", off.clone()),
             ("title", AttributeIndex::default()),
             ("blob", off),
-            ("blob", text),
+            ("blob", text.clone()),
+            // An analyzer belongs to a full-text index.
+            (
+                "title",
+                AttributeIndex {
+                    analyzer: Some(german),
+                    ..text
+                },
+            ),
+            // Every setting is within its bounds and meant for its tokenizer.
+            ("title", analyzed(ngram(0, 3))),
+            ("title", analyzed(ngram(4, 3))),
+            ("title", analyzed(ngram(1, NGRAM_LENGTH_MAX + 1))),
+            (
+                "title",
+                analyzed(Analyzer {
+                    ngram_min_length: 2,
+                    ..Default::default()
+                }),
+            ),
+            (
+                "title",
+                analyzed(Analyzer {
+                    language: Some(Language::English),
+                    ..ngram(3, 3)
+                }),
+            ),
+            (
+                "title",
+                analyzed(Analyzer {
+                    max_token_length: 0,
+                    ..Default::default()
+                }),
+            ),
+            ("title", analyzed(word(""))),
+            (
+                "title",
+                analyzed(word(&"w".repeat(STOP_WORD_BYTES_MAX + 1))),
+            ),
         ] {
             assert_eq!(
                 check_indexes(&schema, &options(name, entry)),
@@ -889,6 +995,33 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn an_analyzer_that_differs_from_the_built_one_is_stale() {
+        fn stale<'a>(wanted: &'a AttributeIndexes, built: &'a AttributeIndexes) -> Vec<&'a str> {
+            stale_analyzers(wanted, built).collect()
+        }
+        let with = |analyzer: Option<Analyzer>| {
+            AttributeIndexes::from([(
+                "title".to_owned(),
+                AttributeIndex {
+                    full_text: true,
+                    analyzer,
+                    ..Default::default()
+                },
+            )])
+        };
+        let folded = Analyzer {
+            ascii_folding: true,
+            ..Default::default()
+        };
+        assert_eq!(stale(&with(Some(folded.clone())), &with(None)), ["title"]);
+        assert_eq!(stale(&with(None), &with(Some(folded.clone()))), ["title"]);
+        assert!(stale(&with(Some(folded.clone())), &with(Some(folded))).is_empty());
+        assert!(stale(&with(None), &with(None)).is_empty());
+        // An index that is not built is built, not rebuilt.
+        assert!(stale(&with(None), &AttributeIndexes::new()).is_empty());
     }
 
     #[test]

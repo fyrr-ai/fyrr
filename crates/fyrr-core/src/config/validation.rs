@@ -21,6 +21,7 @@ impl LoadedConfig {
         writer_bounds(config, &mut error);
         positive_intervals(config, &mut error);
         administration(config, &mut error);
+        metrics(config, &mut error);
         directory(config, &mut error);
         writer_credentials(config, &mut error);
         sources(config, &mut error);
@@ -696,6 +697,27 @@ fn positive_intervals(config: &Config, error: &mut impl FnMut(&str, String)) {
     ] {
         if value.as_millis() == 0 {
             error(path, "must be greater than zero".into());
+        }
+    }
+}
+
+fn metrics(config: &Config, error: &mut impl FnMut(&str, String)) {
+    for (path, address) in [
+        (
+            "reader.http.metrics_listen",
+            config
+                .reader
+                .http
+                .as_ref()
+                .and_then(|http| http.metrics_listen.as_deref()),
+        ),
+        (
+            "writer.serve.metrics_listen",
+            config.writer.serve.metrics_listen.as_deref(),
+        ),
+    ] {
+        if address.is_some_and(|address| address.parse::<std::net::SocketAddr>().is_err()) {
+            error(path, "must be an IP socket address".into());
         }
     }
 }

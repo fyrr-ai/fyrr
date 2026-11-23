@@ -56,6 +56,7 @@ Pin `concurrency = 2` to retain the previous request and queue limits.
 | `authorization_cache_subjects` | `64` | 1–1024 subjects whose admission is cached (LRU, 128 MiB accounted bound, charged by an estimate of each entry's size; workers share a cached admission instead of copying it). |
 | `user_requests_per_minute` | `120` | At least 1, per [canonical user](architecture.md#terms); linked subjects share it. Each API key is counted as one user. |
 | `group_requests_per_minute` | `120` | At least 1, per published group membership. |
+| `metrics_listen` | absent | IP socket address (`IP:port`) of an extra listener that serves `GET /metrics` in the Prometheus text format; absent, there is none. It has no authentication: bind it to a loopback or private address. See [Metrics](operations.md#metrics). |
 
 ## `[writer]`
 
@@ -91,4 +92,5 @@ Pin `concurrency = 2` to retain the previous request and queue limits.
 | `backpressure.max_pending_content_bytes` | `16GiB` | |
 | `serve.committer` | `true` | Run the [committer](architecture.md#terms) role in `writer serve`; off keeps polling and leaves publication to batch `commit` jobs. |
 | `serve.maintenance` | `true` | Run [`writer maintain`](cli.md) from `writer serve` when the served version has work for it; off leaves maintenance to you. Needs `serve.committer`. |
+| `serve.metrics_listen` | absent | IP socket address (`IP:port`) of an extra listener that serves `GET /metrics` in the Prometheus text format; absent, there is none. It has no authentication: bind it to a loopback or private address. See [Metrics](operations.md#metrics). |
 | `serve.admin` | absent | Writer administration listener: `listen`, `operator_token = { env = "VAR" }`, `tls_terminated` (required for a non-loopback listener). Needs `identity.encryption_key`. |

@@ -7,6 +7,7 @@ use arrow_array::builder::{ListBuilder, StringBuilder};
 use arrow_array::{BooleanArray, Int64Array, RecordBatchIterator, TimestampMicrosecondArray};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use fyrr_core::attributes::AttributeType;
+use fyrr_core::limits::mcp::MAX_REGEX_BYTES;
 use lance::dataset::{WriteMode, WriteParams};
 use serde_json::json;
 
@@ -54,6 +55,7 @@ fn schema() -> Arc<Schema> {
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             true,
         ),
+        Field::new("note", DataType::Utf8, true),
     ]))
 }
 
@@ -66,6 +68,7 @@ fn attributes() -> AttributeSchema {
         ("flag".to_owned(), AttributeType::Bool),
         ("seen".to_owned(), AttributeType::Datetime),
         ("ratio".to_owned(), AttributeType::Float),
+        ("note".to_owned(), AttributeType::String),
     ])
 }
 
@@ -80,6 +83,17 @@ fn flag(row: usize) -> Option<bool> {
 
 fn seen(row: usize) -> Option<i64> {
     (!row.is_multiple_of(5)).then_some(EPOCH + row as i64 * HOUR)
+}
+
+/// Text that holds what a pattern must not take for syntax: `_`, `%`, a quote
+/// and a backslash, in two cases. Null for every fourth row.
+fn note(row: usize) -> Option<String> {
+    match row % 4 {
+        0 => None,
+        1 => Some(format!("Alpha_{row}")),
+        2 => Some(format!("alpha%{row}'")),
+        _ => Some(format!("a\\b{row}")),
+    }
 }
 
 /// The SQL the reader compiles a filter tree to, for the fixture's attributes.
@@ -147,6 +161,9 @@ fn rows(range: std::ops::Range<usize>) -> RecordBatch {
                 TimestampMicrosecondArray::from(range.clone().map(seen).collect::<Vec<_>>())
                     .with_timezone("UTC"),
             ),
+            Arc::new(StringArray::from(
+                range.clone().map(note).collect::<Vec<_>>(),
+            )),
         ],
     )
     .unwrap()
@@ -185,6 +202,8 @@ async fn fixture(name: &str, tail: bool) -> (Dataset, std::path::PathBuf) {
         ("true", "attr_true_idx", IndexType::BTree),
         ("flag", "attr_flag_idx", IndexType::Bitmap),
         ("seen", "attr_seen_idx", IndexType::BTree),
+        ("note", "attr_note_idx", IndexType::BTree),
+        ("note", "attrngram_note_idx", IndexType::NGram),
     ] {
         dataset
             .create_index(
@@ -297,7 +316,23 @@ fn filters() -> Vec<(&'static str, String)> {
     let on_rank =
         |op: &str, value: serde_json::Value| json!({"field":"rank","op":op,"value":value});
     let on_flag = |op: &str, value: bool| json!({"field":"flag","op":op,"value":value});
+    let on_note = |op: &str, value: &str| json!({"field":"note","op":op,"value":value});
     for (name, tree) in [
+        ("text_starts_with", on_note("starts_with", "Alpha")),
+        ("text_not_starts_with", on_note("not_starts_with", "Alpha")),
+        ("text_contains", on_note("contains", "lpha")),
+        ("text_not_contains", on_note("not_contains", "lpha")),
+        ("text_short_contains", on_note("contains", "a")),
+        ("text_matches", on_note("matches", r"^Alpha_\d+$")),
+        ("text_not_matches", on_note("not_matches", r"\d{2}")),
+        (
+            "text_on_a_label",
+            json!({"field":"author","op":"starts_with","value":"a1"}),
+        ),
+        (
+            "text_or",
+            json!({"or": [on_note("contains", "lpha"), on_rank("eq", json!(1))]}),
+        ),
         ("eq", on_rank("eq", json!(3))),
         ("ne", on_rank("ne", json!(3))),
         ("in", on_rank("in", json!([1, 2]))),
@@ -619,6 +654,239 @@ async fn selected_numbers(dataset: &Dataset, filter: &str) -> BTreeSet<usize> {
         .iter()
         .map(|root| root.unwrap()["root-".len()..].parse().unwrap())
         .collect()
+}
+
+/// The rows each text test selects, whether an index answers it or the rows
+/// are in a fragment the indexes do not cover, and none of them takes a
+/// pattern character for syntax.
+#[tokio::test]
+async fn a_text_test_selects_the_rows_whose_text_it_names() {
+    let (dataset, root) = fixture("text", true).await;
+    let live = |row: &usize| !(row % 5 == 4 && row % 4 == 1);
+    let all: Vec<usize> = (0..INDEXED_ROWS + TAIL_ROWS).filter(live).collect();
+    let on = |op: &str, value: &str| json!({"field":"note","op":op,"value":value});
+    let has = |row: usize, test: &dyn Fn(&str) -> bool| note(row).is_some_and(|n| test(&n));
+    let cases: Vec<Case> = vec![
+        (
+            "starts_with is case-sensitive",
+            on("starts_with", "Alpha"),
+            Box::new(move |r| has(r, &|n| n.starts_with("Alpha"))),
+        ),
+        (
+            "% is literal",
+            on("starts_with", "alpha%"),
+            Box::new(move |r| has(r, &|n| n.starts_with("alpha%"))),
+        ),
+        (
+            "_ is not a wildcard",
+            on("starts_with", "Alpha_1"),
+            Box::new(move |r| has(r, &|n| n.starts_with("Alpha_1"))),
+        ),
+        (
+            "not_starts_with leaves out a missing value",
+            on("not_starts_with", "Alpha"),
+            Box::new(move |r| has(r, &|n| !n.starts_with("Alpha"))),
+        ),
+        (
+            "contains",
+            on("contains", "lpha"),
+            Box::new(move |r| has(r, &|n| n.contains("lpha"))),
+        ),
+        (
+            "contains is case-sensitive",
+            on("contains", "ALPHA"),
+            Box::new(|_| false),
+        ),
+        (
+            "contains takes a quote",
+            on("contains", "'"),
+            Box::new(move |r| has(r, &|n| n.contains('\''))),
+        ),
+        (
+            "contains takes a backslash",
+            on("contains", "\\"),
+            Box::new(move |r| has(r, &|n| n.contains('\\'))),
+        ),
+        (
+            "not_contains leaves out a missing value",
+            on("not_contains", "lpha"),
+            Box::new(move |r| has(r, &|n| !n.contains("lpha"))),
+        ),
+        (
+            "matches",
+            on("matches", r"^Alpha_\d+$"),
+            Box::new(move |r| has(r, &|n| n.starts_with("Alpha_"))),
+        ),
+        (
+            "matches without a literal of three characters",
+            on("matches", r"a.b"),
+            Box::new(move |r| has(r, &|n| n.contains('\\'))),
+        ),
+        (
+            "matches takes an escaped backslash",
+            on("matches", r"a\\b"),
+            Box::new(move |r| has(r, &|n| n.contains('\\'))),
+        ),
+        (
+            "matches takes a backslash",
+            on("matches", r"\\"),
+            Box::new(move |r| has(r, &|n| n.contains('\\'))),
+        ),
+        (
+            "starts_with takes a backslash",
+            on("starts_with", "a\\"),
+            Box::new(move |r| has(r, &|n| n.starts_with("a\\"))),
+        ),
+        (
+            "matches everything but a missing value",
+            on("matches", ".*"),
+            Box::new(move |r| has(r, &|_| true)),
+        ),
+        (
+            "not_matches of everything is empty",
+            on("not_matches", ".*"),
+            Box::new(|_| false),
+        ),
+        (
+            "not of a match of everything is empty",
+            json!({"not": on("matches", ".*")}),
+            Box::new(|_| false),
+        ),
+        (
+            "not_matches leaves out a missing value",
+            on("not_matches", "^Alpha"),
+            Box::new(move |r| has(r, &|n| !n.starts_with("Alpha"))),
+        ),
+        (
+            "not of a test leaves out a missing value",
+            json!({"not": on("contains", "lpha")}),
+            Box::new(move |r| has(r, &|n| !n.contains("lpha"))),
+        ),
+    ];
+    for (name, tree, matches) in &cases {
+        let sql = compiled(tree.clone());
+        let expected: BTreeSet<usize> = all.iter().copied().filter(|r| matches(*r)).collect();
+        assert_eq!(
+            expected.is_empty(),
+            [
+                "contains is case-sensitive",
+                "not_matches of everything is empty",
+                "not of a match of everything is empty"
+            ]
+            .contains(name),
+            "{name}"
+        );
+        assert_eq!(
+            selected_numbers(&dataset, &sql).await,
+            expected,
+            "{name}: {sql}"
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// What a text test compiles to, what it refuses, and the bounds of an
+/// expression, which is the one pattern a caller writes in a language.
+#[test]
+fn a_text_test_compiles_to_one_call_and_refuses_what_it_cannot_bound() {
+    let compile = |field: &str, op: &str, value: serde_json::Value| {
+        let tree = json!({"field":field,"op":op,"value":value});
+        PreparedReader::filter_sql(&serde_json::from_value(tree).unwrap(), &attributes())
+    };
+    for (field, op, value, sql) in [
+        (
+            "note",
+            "starts_with",
+            json!("it's"),
+            "starts_with(`note`,'it''s')",
+        ),
+        (
+            "note",
+            "matches",
+            json!("a"),
+            "regexp_like(`note`,'(?-m)a','m')",
+        ),
+        (
+            "note",
+            "not_starts_with",
+            json!(r"a\b"),
+            r"NOT starts_with(`note`,'a\b')",
+        ),
+        ("note", "contains", json!("50%_"), "contains(`note`,'50%_')"),
+        (
+            "note",
+            "matches",
+            json!(r"^a\d+'"),
+            r"regexp_like(`note`,'(?-m)^a\d+''','m')",
+        ),
+        (
+            "note",
+            "not_matches",
+            json!("x|y"),
+            "NOT regexp_like(`note`,'(?-m)x|y','m')",
+        ),
+        (
+            "author",
+            "starts_with",
+            json!("a"),
+            "starts_with(`author`,'a')",
+        ),
+        (
+            "source_id",
+            "contains",
+            json!("s"),
+            "contains(`source_id`,'s')",
+        ),
+    ] {
+        assert_eq!(
+            compile(field, op, value).as_deref(),
+            Ok(sql),
+            "{field} {op}"
+        );
+    }
+    let near = "a".repeat(MAX_REGEX_BYTES);
+    assert!(compile("note", "matches", json!(near)).is_ok());
+    let long = "a".repeat(MAX_REGEX_BYTES + 1);
+    // Nested repeats compile to a program far over the bound.
+    let huge = "((a{100}){100}){100}";
+    for (field, op, value) in [
+        // An expression over its bound, one that is not one, and one whose
+        // program is over the compile bound.
+        ("note", "matches", json!(long)),
+        ("note", "not_matches", json!(long)),
+        ("note", "matches", json!("(")),
+        ("note", "matches", json!("a{2,1}")),
+        ("note", "matches", json!(huge)),
+        ("note", "not_matches", json!(huge)),
+        // An empty value, which DataFusion would turn into `IS NOT NULL`.
+        ("note", "starts_with", json!("")),
+        ("note", "not_starts_with", json!("")),
+        ("note", "contains", json!("")),
+        ("note", "not_contains", json!("")),
+        ("note", "matches", json!("")),
+        ("note", "not_matches", json!("")),
+        // A value of another type, a missing value, and a field that is not a string.
+        ("note", "starts_with", json!(1)),
+        ("note", "starts_with", json!(null)),
+        ("note", "contains", json!(null)),
+        ("note", "matches", json!(["a"])),
+        ("note", "not_contains", json!(true)),
+        ("rank", "starts_with", json!("1")),
+        ("rank", "contains", json!("1")),
+        ("flag", "matches", json!("true")),
+        ("seen", "not_starts_with", json!("2026")),
+        ("attributes", "contains", json!("team=blue")),
+        ("nope", "starts_with", json!("a")),
+    ] {
+        assert_eq!(
+            compile(field, op, value.clone()),
+            Err(InvalidArgument),
+            "{field} {op}"
+        );
+    }
+    // The operators are a closed set: no case-insensitive test is offered.
+    let unknown = json!({"field":"note","op":"icontains","value":"a"});
+    assert!(serde_json::from_value::<Filter>(unknown).is_err());
 }
 
 /// A missing attribute matches `eq null` and `ne null` only; `ne`, `not_in`

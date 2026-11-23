@@ -23,8 +23,39 @@ Setting a deployment up (topology, images, scheduling) is in
   the HTTP server answers `/readyz`. A reader whose request scheduler fails
   stops serving (HTTP 503 from `/readyz`, or exit on stdio) and must be
   restarted.
+- [Metrics](#metrics) are served in the Prometheus text format when a
+  `metrics_listen` address is configured.
 - Every successful MCP tool response carries stage timings and S3 request counts in
   `metadata.telemetry`.
+
+## Metrics
+
+`reader.http.metrics_listen` (reader) and `writer.serve.metrics_listen`
+(`fyrr writer serve`) open an extra listener that serves `GET /metrics` in the
+Prometheus text format. Without them there is no listener. It has no
+authentication, so bind it to a loopback or private address. No label or
+value carries a namespace name, an identity, a query or document text, and
+every label has a few fixed values.
+
+| Process | Metric | Meaning |
+| --- | --- | --- |
+| reader | `fyrr_reader_http_request_duration_seconds{route,code}` | Histogram of HTTP requests by route (`mcp`, `search`, `fetch`, `aggregate`, `report`, `list`, `readyz`, `refresh`, `metadata`, `other`) and HTTP status code; its `_count` is the request count. |
+| reader | `fyrr_reader_queue_wait_seconds` | Histogram of the time from the arrival of a request to the start of its execution. |
+| reader | `fyrr_reader_mirror_hits_total` | Reads answered from the local mirror. |
+| reader | `fyrr_reader_object_store_requests_total`, `fyrr_reader_object_store_bytes_total` | Reads the mirror sent to the object store, and their bytes. |
+| reader | `fyrr_reader_mirror_bytes` | Bytes of the local mirrors, as last measured. |
+| reader | `fyrr_reader_mirror_evictions_total` | Mirror files removed to make room. |
+| reader | `fyrr_reader_open_namespaces` | Namespaces held open: the configured one and those opened by request path. |
+| reader | `fyrr_reader_recall_samples_total{outcome}` | Background recall samples: `completed`, or the reason one was skipped. |
+| writer | `fyrr_writer_publications_total` | Content publications: each new manifest version, from a commit group or a maintenance run. A change of the head without one, such as a rejection before the first version, is not counted. |
+| writer | `fyrr_writer_commit_rounds_total{outcome}` | Commit rounds: `published` (at least one group), `idle`, `busy` or `failed`. |
+| writer | `fyrr_writer_commit_duration_seconds` | Histogram of the duration of the rounds that published; a round may publish several groups. |
+| writer | `fyrr_writer_pending_envelopes` | Envelopes waiting, summed over the namespaces the writer committed, each as of its last read; an idle round does not read them again. |
+| writer | `fyrr_writer_maintenance_steps_total{step}` | Maintenance steps done: `compaction` or `index_merge`. |
+| writer | `fyrr_writer_rejected_envelopes_total` | Envelopes the committer rejected. |
+
+Histogram buckets are 5 ms to 120 s. The metrics count since the process
+started.
 
 ## Reader refresh
 
@@ -93,6 +124,69 @@ Both publish a new version under the namespace lease, with the **current**
 policy, identity, permissions and tombstones: a restore never revives a
 revoked grant or a retired source's rows. `fyrr writer verify` scans the
 whole pinned publication and needs only namespace storage.
+
+## Backup and copy
+
+```sh
+fyrr --config prod.toml writer namespace copy --to-config backup.toml
+```
+
+copies the namespace of `prod.toml`, as the one version its head serves when the
+command starts, into the `[storage]` of `backup.toml`: another bucket or region.
+The source is only read and can be written meanwhile. The copy has the same name:
+the keyed hashes in its rows are made with it, so a copy under another name, or
+in the same storage, is not supported yet. `identity.hashing_key` must be the same
+in both files; another key fails with `hashing_key_mismatch` and writes nothing.
+The copy is a namespace of its own and writable: point a reader or writer at it
+with the storage of `backup.toml`, and it finds the same documents with the same
+access. It holds no history, so `writer restore` reaches nothing older than the
+copied version, and its connector sources read again from their start. A namespace
+whose identity holds snapshots (`permissions = "sync"` sources or a directory)
+cannot be copied (`copy_inputs_unsupported`). The head is written last, so a copy
+that was interrupted is no namespace at all; run the same command again and it
+removes what is left and starts over. A copy that finished fails with
+`namespace_exists` when run again; run one copy to a destination at a time.
+
+A backup is a scheduled copy into a storage of its own, and its retention is
+deleting the old storages. Give `backup.toml` a `uri` ending in `DAY` and the
+namespace name of `prod.toml`:
+
+```sh
+# every night, from a host that has both files and the key
+name=docs                      # the namespace of prod.toml
+day=$(date -u +%Y%m%d)
+sed "s/DAY/$day/" backup.toml > "backup-$day.toml"
+if fyrr --config prod.toml writer namespace copy --to-config "backup-$day.toml"; then
+  # Only after a copy succeeded, keep the seven newest completed copies: those
+  # that a reader can open. A night that failed is neither counted nor pruned.
+  for c in backup-*.toml; do
+    fyrr --config "$c" reader check >/dev/null 2>&1 && echo "$c"
+  done | sort | head -n -7 | while read -r old; do
+    fyrr --config "$old" writer namespace delete --delete-data "$name" && rm "$old"
+  done
+fi
+```
+
+Do not give the bucket a lifecycle rule that expires objects by age: it would
+remove files a namespace still names. To restore, copy a backup back with the
+two files exchanged into a new storage (a new `uri`, as the nightly copies have),
+or delete the namespace of the storage first with `writer namespace delete`:
+a copy into a storage that holds the namespace fails with `namespace_exists`.
+Check the result with `reader check` and `writer verify`, and
+switch the readers and writers to it. A version stays for `writer.version_grace`
+after a newer one serves, so a copy that takes longer than that while the source
+is written and maintained can fail with `copy_incomplete` or
+`storage_unavailable`; run it again and it copies the then-current version. Every
+object is read once and written once, so a copy costs its requests and, across
+regions, its transfer.
+
+Measured throughput: a namespace of 1,536 rows (4.3 MB of files, vectors of
+1,024 dimensions) copied in 0.28 to 0.31 s over four runs, 14 to 15 MB/s, by the
+native binary on local `file://` storage, source and destination on one XFS volume
+of a shared build host. The time includes the command's fixed costs, which dominate
+a copy this small, so it is a floor for local storage and says nothing about S3,
+where the object count and the round trip decide; measure a copy of your own
+namespace with the `bytes` and `seconds` it prints.
 
 ## Retiring and purging sources
 

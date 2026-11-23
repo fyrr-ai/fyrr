@@ -455,6 +455,114 @@ async fn configurable_max_token_length_default_40_and_override_128() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A tokenizer's probes: each query with the ids of the rows it hits.
+type Hits<'a> = &'a [(&'a str, &'a [i64])];
+
+/// How the Unicode word tokenizer (Lance's `icu`) cuts Chinese and Japanese
+/// text, against the `simple` tokenizer, which takes a run of such characters
+/// as one token. Stemming and stop words are off, so that only the
+/// segmentation decides the hits. The tokenizer finds words by a dictionary
+/// that ships with Lance: `北京` and `天安门`, `東京` are words, and `北`, `東`
+/// and `京` alone are not tokens of the texts that hold them.
+#[tokio::test]
+async fn unicode_word_tokenizer_segments_chinese_and_japanese_by_dictionary() {
+    let root = directory("unicode-tokens");
+    let rows: Vec<(i64, String)> = [
+        (0, "我爱北京天安门"),
+        (1, "私は東京に住んでいます"),
+        (2, "Hello World"),
+    ]
+    .map(|(id, text)| (id, text.to_owned()))
+    .into();
+    let mut dataset = write(&root.join("cjk.lance"), &rows, WriteMode::Create).await;
+    // (tokenizer, [(query, ids of the rows that hit)])
+    let probes: [(&str, Hits); 2] = [
+        (
+            "simple",
+            &[
+                ("我爱北京天安门", &[0]),
+                ("北京", &[]),
+                ("私は東京に住んでいます", &[1]),
+                ("東京", &[]),
+                ("hello", &[2]),
+            ],
+        ),
+        (
+            "icu",
+            &[
+                ("北京", &[0]),
+                ("天安门", &[0]),
+                ("北", &[]),
+                ("東京", &[1]),
+                ("東", &[]),
+                ("京", &[]),
+                ("hello", &[2]),
+            ],
+        ),
+    ];
+    for (tokenizer, queries) in probes {
+        let params = InvertedIndexParams::default()
+            .base_tokenizer(tokenizer.into())
+            .with_position(false)
+            .stem(false)
+            .remove_stop_words(false);
+        index(&mut dataset, params, true).await;
+        for (query, hits) in queries {
+            let found: Vec<i64> = scores(&dataset, FullTextSearchQuery::new((*query).into()), None)
+                .await
+                .into_keys()
+                .collect();
+            assert_eq!(found, *hits, "{tokenizer}: {query}");
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Every language the settings offer has a stemmer and a stop-word list in the
+/// pinned Lance and is listed in `docs/tuning.md`. A language that a newer Lance
+/// adds is not offered until it is added here.
+#[test]
+fn every_language_the_settings_offer_has_a_stemmer_and_stop_words_and_is_documented() {
+    use fyrr_core::attributes::analyzer::Language;
+    use lance_index::scalar::inverted::tokenizer::Language as Lance;
+    let _: fn(Lance) = |language| match language {
+        Lance::Arabic
+        | Lance::Danish
+        | Lance::Dutch
+        | Lance::English
+        | Lance::Finnish
+        | Lance::French
+        | Lance::German
+        | Lance::Greek
+        | Lance::Hungarian
+        | Lance::Italian
+        | Lance::Norwegian
+        | Lance::Portuguese
+        | Lance::Romanian
+        | Lance::Russian
+        | Lance::Spanish
+        | Lance::Swedish
+        | Lance::Tamil
+        | Lance::Turkish => {}
+    };
+    let docs =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/tuning.md"))
+            .unwrap();
+    for language in Language::ALL {
+        let params = InvertedIndexParams::default()
+            .language(&language.lance_name())
+            .unwrap()
+            .stem(true)
+            .remove_stop_words(true);
+        params.build().unwrap();
+        let name = serde_json::to_value(language).unwrap();
+        assert!(
+            docs.contains(&format!("`{}`", name.as_str().unwrap())),
+            "{name} is not in docs/tuning.md"
+        );
+    }
+}
+
 /// The attribute types a schema offers: a scalar column and an array column of
 /// each element type, with the index kind `AttributeType` names, answer the
 /// filters the reader compiles (`=`, `array_has`, `array_has_any`,
@@ -618,6 +726,95 @@ async fn every_offered_attribute_type_has_an_index_that_answers_its_filters() {
             if let Err(error) = outcome {
                 failures.push(format!("{filter}: {error}"));
             }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The string filters of `filter`: a prefix is answered from a B-tree, a
+/// substring and an expression with a literal of three characters from an
+/// n-gram index, and the rest, the negations and the short patterns, by a scan
+/// that returns the same rows as the index would. A column that has both
+/// indexes is held to its rows only: Lance may scan it.
+#[tokio::test]
+async fn string_filters_use_the_btree_and_the_ngram_index_where_they_can() {
+    let kinds = ["alpha", "bravo", "charlie"];
+    let names: Vec<Option<String>> = (0..200)
+        .map(|row| Some(format!("item-{row:04}-{}", kinds[row % 3])))
+        .chain([None])
+        .collect();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("name", DataType::Utf8, true),
+        Field::new("text", DataType::Utf8, true),
+        Field::new("both", DataType::Utf8, true),
+    ]));
+    let column = || Arc::new(StringArray::from(names.clone())) as ArrayRef;
+    let batch = RecordBatch::try_new(schema.clone(), vec![column(), column(), column()]).unwrap();
+    let root = directory("string-filters");
+    let mut dataset = Dataset::write(
+        RecordBatchIterator::new(vec![Ok(batch)], schema),
+        root.join("strings.lance").to_str().unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    for (column, kind, index) in [
+        ("name", IndexType::BTree, "name_idx"),
+        ("text", IndexType::NGram, "text_idx"),
+        ("both", IndexType::BTree, "both_btree_idx"),
+        ("both", IndexType::NGram, "both_ngram_idx"),
+    ] {
+        dataset
+            .create_index(
+                &[column],
+                kind,
+                Some(index.to_owned()),
+                &lance_index::scalar::ScalarIndexParams::default(),
+                false,
+            )
+            .await
+            .unwrap();
+    }
+    let mut failures = Vec::new();
+    for (filter, rows, indexed) in [
+        ("starts_with(both,'item-001')", 10, None),
+        ("contains(both,'bravo')", 67, None),
+        (r"regexp_like(both,'(?-m)^item-001\d-alpha$','m')", 3, None),
+        ("starts_with(name,'item-00')", 100, Some(true)),
+        ("starts_with(name,'item-001')", 10, Some(true)),
+        ("contains(text,'bravo')", 67, Some(true)),
+        (
+            r"regexp_like(text,'(?-m)^item-001\d-alpha$','m')",
+            3,
+            Some(true),
+        ),
+        ("regexp_like(text,'(?-m)r.vo','m')", 67, Some(false)),
+        ("contains(text,'ra')", 67, Some(false)),
+        ("NOT starts_with(name,'item-00')", 100, Some(false)),
+        ("NOT contains(text,'bravo')", 133, Some(false)),
+        (
+            r"NOT regexp_like(text,'(?-m)^item-001\d-alpha$','m')",
+            197,
+            Some(false),
+        ),
+    ] {
+        let mut scan = dataset.scan();
+        let outcome = async {
+            scan.filter(filter).map_err(|e| e.to_string())?;
+            let plan = scan.explain_plan(true).await.map_err(|e| e.to_string())?;
+            let found = scan.count_rows().await.map_err(|e| e.to_string())?;
+            if found != rows {
+                return Err(format!("{found} rows, not {rows}"));
+            }
+            if indexed.is_some_and(|indexed| plan.contains("ScalarIndexQuery") != indexed) {
+                return Err(format!("indexed is not {indexed:?}: {plan}"));
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = outcome {
+            failures.push(format!("{filter}: {error}"));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

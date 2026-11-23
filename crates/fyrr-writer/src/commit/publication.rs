@@ -1,7 +1,12 @@
 use super::*;
-use fyrr_core::attributes::{attribute_index_kind, indexes_present, possible_indexes};
+use fyrr_core::attributes::{
+    AttributeIndexes, attribute_index_kind, indexes_present, possible_indexes,
+};
 
 /// Publish native work through the same immutable manifest and fenced head CAS.
+/// `carry` holds the options of the indexes that stand as they were built: the
+/// manifest before's by default. An index that is not in it was built by this
+/// work, with the analyzer of the settings.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn publish(
     config: &Config,
@@ -11,11 +16,51 @@ pub(crate) async fn publish(
     lineage: CommitLineage,
     receipts: Vec<String>,
     acl_changed: bool,
+    cursor_rewinds: Vec<String>,
+    maintenance_completed: bool,
+    carry: Option<&AttributeIndexes>,
+) -> Result<u64> {
+    let manifest = write_manifest(
+        config,
+        dataset,
+        &mut head,
+        &lineage,
+        1,
+        receipts,
+        acl_changed,
+        cursor_rewinds,
+        maintenance_completed,
+        carry,
+    )
+    .await?;
+    verify_lineage(dataset, &lineage).await?;
+    #[cfg(test)]
+    crate::maintenance::restore_test_publication();
+    lease.publish(head).await?;
+    fyrr_reader::metrics::add(&crate::telemetry::PUBLICATIONS, &[], 1);
+    Ok(manifest.lance_version)
+}
+
+/// Writes the immutable manifest of `dataset` and points `head` at it, without
+/// making the head visible: `publish` does that under the lease, and a copied
+/// namespace's first head is written by its copy. `first_sequence` is the
+/// sequence of the first publication of a head that has none; a copy continues
+/// its source's, which the rows' publication sequences are compared against.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn write_manifest(
+    config: &Config,
+    dataset: &Dataset,
+    head: &mut ServingHead,
+    lineage: &CommitLineage,
+    first_sequence: u64,
+    receipts: Vec<String>,
+    acl_changed: bool,
     mut cursor_rewinds: Vec<String>,
     maintenance_completed: bool,
-) -> Result<u64> {
+    carry: Option<&AttributeIndexes>,
+) -> Result<ContentManifest> {
     let (store, root) = namespace_store(config)?;
-    let previous_manifest = previous_manifest(store.as_ref(), &root, &head).await?;
+    let previous_manifest = previous_manifest(store.as_ref(), &root, head).await?;
     if cursor_rewinds.is_empty() {
         cursor_rewinds = previous_manifest
             .as_ref()
@@ -46,9 +91,20 @@ pub(crate) async fn publish(
     }
     // What the table has, not what the settings ask for: an index that is
     // switched on waits for maintenance, and a reader expects what is built.
-    let attribute_indexes = indexes_present(&config.namespace.attributes, |name| {
-        indexes.iter().any(|index| index.name == name)
-    });
+    // A full-text index that stands has the analyzer it was built with, which
+    // the settings may have left since.
+    let carry = carry.or(previous_manifest.as_ref().map(|m| &m.attribute_indexes));
+    let attribute_indexes = indexes_present(
+        &config.namespace.attributes,
+        |name| indexes.iter().any(|index| index.name == name),
+        |attribute| {
+            carry
+                .and_then(|indexes| indexes.get(attribute))
+                .filter(|options| options.full_text)
+                .or_else(|| config.namespace.attribute_indexes.get(attribute))
+                .and_then(|options| options.analyzer.clone())
+        },
+    );
     let reader_coverage = fyrr_reader::storage::coverage(&actual, "readers_idx");
     if dataset
         .manifest()
@@ -101,7 +157,7 @@ pub(crate) async fn publish(
             .collect(),
     )
     .await?;
-    let sequence = head.content.as_ref().map_or(Ok(1), |p| {
+    let sequence = head.content.as_ref().map_or(Ok(first_sequence), |p| {
         p.sequence
             .checked_add(1)
             .ok_or(WriterError::PublicationSequenceOverflow)
@@ -143,7 +199,7 @@ pub(crate) async fn publish(
         config,
         store.as_ref(),
         &root,
-        &head,
+        head,
         previous_manifest.as_ref(),
         &receipts,
         sequence,
@@ -206,14 +262,10 @@ pub(crate) async fn publish(
         committed_at: manifest.committed_at,
     });
     head.updated_at = fyrr_core::clock::now();
-    verify_lineage(dataset, &lineage).await?;
-    #[cfg(test)]
-    crate::maintenance::restore_test_publication();
-    lease.publish(head).await?;
-    Ok(manifest.lance_version)
+    Ok(manifest)
 }
 
-pub(super) async fn previous_manifest(
+pub(crate) async fn previous_manifest(
     store: &dyn ObjectStore,
     root: &Path,
     head: &ServingHead,

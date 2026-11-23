@@ -39,6 +39,7 @@ pub struct MirrorStore {
     lock: Arc<tokio::sync::Mutex<()>>,
     counters: Arc<std::sync::RwLock<Arc<IoCounters>>>,
     totals: Arc<IoCounters>,
+    reported: Arc<ReportedBytes>,
     verified: Arc<std::sync::Mutex<BTreeMap<PathBuf, CachedFile>>>,
     /// Apparent sizes of the `.blob` and `.partial` files seen by `make_room`.
     sizes: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
@@ -88,6 +89,27 @@ impl IoCounters {
         }
     }
 }
+/// What a mirror last added to the size gauge; it takes that back when the
+/// mirror's last clone ends.
+#[derive(Debug, Default)]
+struct ReportedBytes(AtomicU64);
+impl ReportedBytes {
+    fn set(&self, bytes: u64) {
+        let before = self.0.swap(bytes, Ordering::Relaxed);
+        let signed = |n| i64::try_from(n).unwrap_or(i64::MAX);
+        crate::metrics::add(
+            &crate::metrics::MIRROR_BYTES,
+            &[],
+            signed(bytes).saturating_sub(signed(before)),
+        );
+    }
+}
+impl Drop for ReportedBytes {
+    fn drop(&mut self) {
+        self.set(0);
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Io {
     Request,
@@ -359,6 +381,12 @@ impl MirrorStore {
     }
 
     fn record(&self, counters: &IoCounters, io: Io, amount: u64) {
+        let metric = match io {
+            Io::Request => &crate::metrics::OBJECT_STORE_REQUESTS,
+            Io::Bytes => &crate::metrics::OBJECT_STORE_BYTES,
+            Io::Hit => &crate::metrics::MIRROR_HITS,
+        };
+        crate::metrics::add(metric, &[], i64::try_from(amount).unwrap_or(i64::MAX));
         for counters in [counters, &*self.totals] {
             let counter = match io {
                 Io::Request => &counters.requests,
@@ -438,6 +466,7 @@ impl MirrorStore {
             lock: Arc::default(),
             counters: Arc::default(),
             totals: Arc::default(),
+            reported: Arc::default(),
             verified: Arc::default(),
             sizes: Arc::default(),
             dataset_cache_key: Arc::default(),

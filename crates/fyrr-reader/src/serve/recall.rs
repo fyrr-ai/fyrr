@@ -37,6 +37,11 @@ pub(super) fn recall_telemetry(
     else {
         unreachable!("recall metrics are numeric objects");
     };
+    let outcome = result
+        .as_ref()
+        .err()
+        .map_or("completed", |reason| reason.label());
+    crate::metrics::add(&crate::metrics::RECALL_SAMPLES, &[("outcome", outcome)], 1);
     match result {
         Ok(Value::Object(values)) => metrics.extend(values),
         Err(reason) => {

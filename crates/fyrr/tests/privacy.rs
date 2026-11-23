@@ -1259,13 +1259,20 @@ async fn identity_storage_inputs_credentials_missing_key_and_rotation_are_fail_c
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     drop(listener);
+    let free = || {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+    };
+    let (writer_metrics, reader_address, reader_metrics) = (free(), free(), free());
     let input=sandbox.input("members.json",&json!({"epoch":1,"members":[{"last":false,"users":[{"id":source_id,"email":email,"email_verification":"verified_corporate","active":true}]},{"last":true,"groups":[{"id":group_id,"members":[format!("usr:{source_id}")]}]}]}).to_string());
     let mut inputs: Value = serde_json::from_slice(&std::fs::read(&input).unwrap()).unwrap();
     inputs["content"] = json!([[{"id":"permission-only","revision":"r1","readers":[format!("usr:{source_id}")],"texts":["storage canary document"]}]]);
     inputs["permissions"] = json!([[{"id":"permission-only","revision":"p1","readers":[format!("usr:{source_id}"),format!("grp:{group_id}")]}]]);
     inputs["container_grants"] = json!([[{"container_id":"container-only","container_kind":"folder","permission_revision":"p1","readers":[format!("usr:{source_id}")]}]]);
     std::fs::write(&input, serde_json::to_vec(&inputs).unwrap()).unwrap();
-    let config=sandbox.input("fyrr.toml",&format!("[namespace]\nname='privacy-storage'\n[storage]\nuri='s3://{bucket}/privacy-storage-{}-{}'\nendpoint='{endpoint}'\nallow_http=true\naccess_key_id={{env='FYRR_TEST_S3_ACCESS_KEY_ID'}}\nsecret_access_key={{env='FYRR_TEST_S3_SECRET_ACCESS_KEY'}}\n[embedding]\nendpoint='http://127.0.0.1:9/v1'\n[identity]\nhashing_key={{env='FYRR_TEST_S3_SECRET_ACCESS_KEY'}}\nencryption_key={{env='FYRR_TEST_ENCRYPTION_KEY'}}\n[identity.directory]\nprovider='scim'\nissuer='{issuer}'\nverified_domains=['example.test']\ncredentials={{env='SCIM_TOKEN'}}\n[writer.credentials]\nSTORED_PROVIDER_SECRET='provider-secret'\n[writer.commit]\ncoalescing_timer='10m'\n[writer.serve.admin]\nlisten='{address}'\noperator_token={{env='OP_TOKEN'}}\n[[sources]]\nid='incremental'\ntype='incremental-test'\npermissions='sync'\n[sources.intervals]\npermissions='5m'\nmembers='5m'\n[sources.scope]\nfixture='{}'\n[[sources]]\nid='secret-source'\ntype='sentinel-secret'\npermissions='fixed'\nreaders=['grp:fixture']\n[sources.settings]\naccess={{env='STORED_PROVIDER_SECRET'}}\n[sources.scope]\nfixture='{}'\n",std::process::id(),fyrr_core::clock::now().timestamp_micros(),input.display(),input.display()));
+    let config=sandbox.input("fyrr.toml",&format!("[namespace]\nname='privacy-storage'\n[storage]\nuri='s3://{bucket}/privacy-storage-{}-{}'\nendpoint='{endpoint}'\nallow_http=true\naccess_key_id={{env='FYRR_TEST_S3_ACCESS_KEY_ID'}}\nsecret_access_key={{env='FYRR_TEST_S3_SECRET_ACCESS_KEY'}}\n[embedding]\nendpoint='http://127.0.0.1:9/v1'\n[identity]\nhashing_key={{env='FYRR_TEST_S3_SECRET_ACCESS_KEY'}}\nencryption_key={{env='FYRR_TEST_ENCRYPTION_KEY'}}\nstdio_user='{email}'\n[identity.directory]\nprovider='scim'\nissuer='{issuer}'\nverified_domains=['example.test']\ncredentials={{env='SCIM_TOKEN'}}\n[writer.credentials]\nSTORED_PROVIDER_SECRET='provider-secret'\n[writer.commit]\ncoalescing_timer='1s'\n[writer.serve]\nmetrics_listen='{writer_metrics}'\n[writer.serve.admin]\nlisten='{address}'\noperator_token={{env='OP_TOKEN'}}\n[[sources]]\nid='incremental'\ntype='incremental-test'\npermissions='sync'\n[sources.intervals]\npermissions='5m'\nmembers='5m'\n[sources.scope]\nfixture='{}'\n[[sources]]\nid='secret-source'\ntype='sentinel-secret'\npermissions='fixed'\nreaders=['grp:fixture']\n[sources.settings]\naccess={{env='STORED_PROVIDER_SECRET'}}\n[sources.scope]\nfixture='{}'\n",std::process::id(),fyrr_core::clock::now().timestamp_micros(),input.display(),input.display()));
     let embedding = common::embedding::Provider::open().await;
     let text = common::embedding::configure(
         &std::fs::read_to_string(&config).unwrap(),
@@ -1414,14 +1421,146 @@ async fn identity_storage_inputs_credentials_missing_key_and_rotation_are_fail_c
         assert!(process.try_wait().unwrap().is_none());
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    let process = Owned(process);
+    let mut process = Owned(process);
     let response=client.post(&url).bearer_auth(&provider_token).json(&json!({"schemas":["urn:ietf:params:scim:schemas:core:2.0:User","urn:fyrr:params:scim:schemas:extension:identity:2.0:User"],"userName":email,"active":true,"emails":[{"value":email,"primary":true}],"urn:fyrr:params:scim:schemas:extension:identity:2.0:User":{"subjects":[{"issuer":issuer,"subject":subject}]}})).send().await.unwrap();
     assert_eq!(response.status(), 201);
+    // A commit round of the running service shows in its metrics.
+    let mut body = String::new();
+    let mut status = 0;
+    for _ in 0..100 {
+        let response = client
+            .get(format!("http://{writer_metrics}/metrics"))
+            .send()
+            .await
+            .unwrap();
+        status = response.status().as_u16();
+        body = response.text().await.unwrap();
+        if body.contains("fyrr_writer_commit_rounds_total{outcome=") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains("fyrr_writer_commit_rounds_total{outcome="),
+        "{body}"
+    );
+    assert!(sentinels.found_in(&body).is_empty(), "{body}");
+    assert!(!body.contains("privacy-storage"), "{body}");
     let _ = Command::new("kill")
         .args(["-TERM", &process.0.id().to_string()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+    process.0.wait().unwrap();
+    // The directory user the SCIM call made is published: the reader can then
+    // bind its stdio user, and its metrics listener is scraped after a query.
+    let result = sandbox.run(args(vec!["writer", "commit"]), &[]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_clean(&sentinels, &result, &sandbox, "published directory user");
+    // The reader's metrics listener, scraped after a query by namespace path
+    // with an API key, carries no namespace, query, key or document value.
+    const TAIL: &str = "Zk9Qm3Xw7Vb1Nc5Hd2Fg8Jt4Ls6Pr0Ay";
+    let api_key = format!("fyrr_key_{}-{TAIL}", sentinels.mark("metrics-api-key"));
+    sentinels.plant(TAIL, "metrics-api-key-tail");
+    let metrics_query = sentinels.mark("metrics-query");
+    let key_name = sentinels.mark("metrics-key-name").to_lowercase();
+    sentinels.plant(&key_name, "metrics-key-name");
+    let reader_config = sandbox.input("reader.toml", &format!("{}\n[reader.http]\nlisten='{reader_address}'\npublic_url='http://{reader_address}/mcp'\nmetrics_listen='{reader_metrics}'\n[[identity.api_keys]]\nname='{key_name}'\nkey={{env='METRICS_PRIVACY_KEY'}}\nreaders=['grp:fixture']\n", std::fs::read_to_string(&config).unwrap()));
+    // Bind the key in the identity and publish it, so that the reader serves it.
+    for command in ["commit", "keys"] {
+        let result = sandbox.configured(
+            &reader_config,
+            ["writer", command],
+            &[("METRICS_PRIVACY_KEY", api_key.as_str())],
+        );
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_clean(&sentinels, &result, &sandbox, "published API key");
+    }
+    let run = sandbox.output();
+    let mut reader = common::fyrr()
+        .args([
+            "--config",
+            reader_config.to_str().unwrap(),
+            "reader",
+            "serve",
+        ])
+        .env("METRICS_PRIVACY_KEY", &api_key)
+        .env("SCIM_TOKEN", &provider_token)
+        .env("OP_TOKEN", &operator_token)
+        .env("HOME", run.join("home"))
+        .env("TMPDIR", run.join("tmp"))
+        .env("XDG_CACHE_HOME", run.join("home/.cache"))
+        .current_dir(run.join("cwd"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let metrics_url = format!("http://{reader_metrics}/metrics");
+    let mut scraped = None;
+    let mut queried = None;
+    for _ in 0..600 {
+        if reader.try_wait().unwrap().is_some() {
+            break;
+        }
+        if client.get(&metrics_url).send().await.is_ok() {
+            // The reader reads the published keys just after it starts.
+            for _ in 0..100 {
+                queried = client
+                    .post(format!(
+                        "http://{reader_address}/v1/namespaces/privacy-storage/query"
+                    ))
+                    .bearer_auth(&api_key)
+                    .json(&json!({"query": metrics_query}))
+                    .send()
+                    .await
+                    .ok();
+                if queried.as_ref().is_some_and(|r| r.status() == 200) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            scraped = client.get(&metrics_url).send().await.ok();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let reader_metrics_text = match scraped {
+        Some(response) => Some((response.status(), response.text().await.unwrap_or_default())),
+        None => None,
+    };
+    let _ = reader.kill();
+    let result = reader.wait_with_output().unwrap();
+    let (status, body) = reader_metrics_text.unwrap_or_else(|| {
+        panic!(
+            "the reader's metrics listener did not answer: {}",
+            String::from_utf8_lossy(&result.stderr)
+        )
+    });
+    let queried = queried.expect("the query was sent");
+    let query_status = queried.status();
+    let query_body = queried.text().await.unwrap_or_default();
+    assert_eq!(query_status, 200, "{query_body}");
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains(
+            "fyrr_reader_http_request_duration_seconds_count{route=\"search\",code=\"200\"} 1"
+        ),
+        "{body}"
+    );
+    assert!(sentinels.found_in(&body).is_empty(), "{body}");
+    for private in ["privacy-storage", "permission-only", "storage canary"] {
+        assert!(!body.contains(private), "{private}\n{body}");
+    }
+    assert_clean(&sentinels, &result, &sandbox, "reader metrics listener");
     let loaded = fyrr_core::config::load(&config).unwrap();
     let (store, root) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
     let before = fyrr_reader::storage::optional_head(&loaded.config)

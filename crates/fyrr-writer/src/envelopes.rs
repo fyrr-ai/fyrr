@@ -193,8 +193,28 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
     let identity: fyrr_core::identity::IdentityArtifact =
         fyrr_reader::storage::artifact(store.as_ref(), &root, &head.identity).await?;
     let directory = serde_json::json!({"provider":config.identity.directory.provider,"identity_generation":head.identity.generation,"principals":identity.principals.len(),"tokens":identity.tokens.len(),"sync_interval_ms":config.identity.directory.sync_interval.as_millis(),"encrypted_inputs":config.identity.encryption_key.is_some()});
+    // The shape of the served version: the data files of its rows and the
+    // segments of each index, which the cost of a read and of a commit follows.
+    let mut fragments = 0;
+    let mut index_segments = BTreeMap::<String, u64>::new();
+    if let Some(pointer) = &head.content {
+        let manifest: fyrr_core::publication::ContentManifest =
+            fyrr_reader::storage::read_contract(
+                store.as_ref(),
+                &Path::from(format!("{root}/{}", pointer.manifest)),
+            )
+            .await?;
+        fragments = manifest
+            .files
+            .iter()
+            .filter(|file| file.path.starts_with("data/"))
+            .count();
+        for index in &manifest.indexes {
+            *index_segments.entry(index.name.clone()).or_default() += 1;
+        }
+    }
     Ok(
-        serde_json::json!({"directory":directory,"warnings":warnings,"retired_sources_configured":retired_configured,"content_sequence":head.content.map(|p|p.sequence),"envelopes":envelopes,"pending_envelopes":pending,"quarantine":quarantine,"source_reads":source_reads(config,&policy).await?}),
+        serde_json::json!({"directory":directory,"warnings":warnings,"retired_sources_configured":retired_configured,"content_sequence":head.content.map(|p|p.sequence),"envelopes":envelopes,"pending_envelopes":pending,"quarantine":quarantine,"fragments":fragments,"index_segments":index_segments,"source_reads":source_reads(config,&policy).await?}),
     )
 }
 

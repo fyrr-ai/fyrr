@@ -143,6 +143,17 @@ pub enum NamespaceAction {
         #[arg(long)]
         delete_data: Option<String>,
     },
+    /// Copy the namespace, as the version it serves now, into the `[storage]`
+    /// of another configuration file, under the same name. The copy is
+    /// independent and writable; the source is only read. That file's
+    /// `identity.hashing_key` must be the source's. A copy that stopped is
+    /// completed by running the command again.
+    Copy {
+        /// A configuration file of the destination deployment: its `[storage]`
+        /// and `identity.hashing_key` are used, nothing else.
+        #[arg(long)]
+        to_config: std::path::PathBuf,
+    },
     /// List the namespaces of the storage root, in name order: a name is listed
     /// while any object exists under it, so a namespace whose deletion has not
     /// finished is listed.
@@ -330,6 +341,18 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
                 export.as_deref(),
                 delete_data.as_deref(),
             )),
+            WriterCommand::Namespace {
+                action: NamespaceAction::Copy { to_config },
+            } => {
+                let to = match config::load(to_config) {
+                    Ok(loaded) => loaded.config,
+                    Err(issue) => {
+                        eprintln!("{issue}");
+                        return ExitCode::from(exit::CONFIG);
+                    }
+                };
+                runtime_command(crate::commit::copy(config, &to))
+            }
             WriterCommand::Namespace {
                 action: NamespaceAction::List { prefix },
             } => runtime_command(async {
