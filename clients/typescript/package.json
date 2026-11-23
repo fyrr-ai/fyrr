@@ -1,0 +1,35 @@
+{
+  "name": "fyrr-client",
+  "version": "0.1.0",
+  "description": "TypeScript client of the fyrr HTTP API, for server runtimes",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fyrr-ai/fyrr.git",
+    "directory": "clients/typescript"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc",
+    "generate": "node tools/generate-models.ts",
+    "check:models": "node tools/generate-models.ts --check",
+    "test": "node --test \"tests/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}
