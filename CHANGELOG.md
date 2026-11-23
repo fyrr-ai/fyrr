@@ -28,6 +28,14 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- An array of strings can have a full-text index, with one document per
+  element, and the JSON `query` route takes `query_attributes`: the full-text
+  attributes a text query scores, each with a weight, instead of only
+  `searchable_text`. A document scores the sum of the weighted scores of the
+  attributes it matches; `contains` takes an array too. An array stands alone
+  in `query_attributes`, and an attribute indexed with `ngram` is refused.
+  The MCP `search` tool does not take the member.
+
 - A named vector attribute can be `multi`: a row holds a list of vectors of the
   attribute's `dimensions` (`"multi": true` in `namespace.vectors`), for models
   that represent a document by one vector per token. `search` takes `vectors`

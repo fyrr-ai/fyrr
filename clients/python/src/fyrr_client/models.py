@@ -21,7 +21,7 @@ class DeleteNamespaceRequest(TypedDict):
 
 class QueryRequest(TypedDict):
     """The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
-    `search` tool and ten members that are no tool arguments.
+    `search` tool and eleven members that are no tool arguments.
     """
     query: NotRequired[str | None]
     """Query text, 1-4096 UTF-8 bytes. Omit only for a filter-only listing with order=updated_at or order_by."""
@@ -83,6 +83,8 @@ class QueryRequest(TypedDict):
     """1-16 searches of their own, each with its filter, ranking and limit, instead of `query`, `queries` and `vector`."""
     query_match: NotRequired[TermMatch | None]
     """With `query`: `all` ranks only the documents that hold every term; default `any`."""
+    query_attributes: NotRequired[list[QueryAttribute] | None]
+    """With `query` or `queries`: 1-8 attributes with a full-text index that the text ranking scores, each with a weight; default `searchable_text`. A string array attribute stands alone."""
     contains: NotRequired[list[Contains] | None]
     """Conditions on full-text attributes, each also required of a hit, like `filter`. Not with a listing."""
     boosts: NotRequired[list[Boost] | None]
@@ -197,17 +199,31 @@ class SubQuery(TypedDict):
     """Hits of this sub-query. Without `fusion` the limits add up to at most the namespace's `max_documents`."""
 
 
-class Contains(TypedDict):
-    """One condition of the `contains` member of a JSON `query` request, on the
-    full-text index of a string attribute, which is not built with the `ngram`
-    tokenizer. Exactly one of `all` and `any`.
+class QueryAttribute(TypedDict):
+    """One member of the `query_attributes` member of a JSON `query` request: an
+    attribute with a full-text index that the text ranking scores, and how much
+    its score counts. A document scores the sum of the weighted scores of the
+    attributes it matches.
     """
     attribute: str
-    """A string attribute with a full-text index."""
+    """`searchable_text`, the text of the document, or a `string` or string
+    array attribute with a full-text index.
+    """
+    weight: NotRequired[float | None]
+    """0.000001 to 100; default 1."""
+
+
+class Contains(TypedDict):
+    """One condition of the `contains` member of a JSON `query` request, on the
+    full-text index of a string or string array attribute, which is not built
+    with the `ngram` tokenizer. Exactly one of `all` and `any`.
+    """
+    attribute: str
+    """A string or string array attribute with a full-text index."""
     all: NotRequired[str | None]
-    """The value holds every token of this text, 1-4096 UTF-8 bytes."""
+    """The value, or one element of an array, holds every token of this text, 1-4096 UTF-8 bytes."""
     any: NotRequired[str | None]
-    """The value holds at least one token of this text, 1-4096 UTF-8 bytes."""
+    """The value, or one element of an array, holds at least one token of this text, 1-4096 UTF-8 bytes."""
 
 
 class BoostAttribute(TypedDict):

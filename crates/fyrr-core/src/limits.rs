@@ -40,6 +40,13 @@ pub mod mcp {
     pub const MAX_QUERY_VECTORS: usize = 32;
     /// The most `contains` conditions of one query.
     pub const MAX_CONTAINS: usize = 16;
+    /// The most attributes the text ranking of one query names.
+    pub const MAX_QUERY_ATTRIBUTES: usize = 8;
+    /// The smallest weight of an attribute of the text ranking: it stays a
+    /// positive, normal number as the `f32` boost of a match query.
+    pub const MIN_QUERY_ATTRIBUTE_WEIGHT: f64 = 0.000001;
+    /// The largest weight of an attribute of the text ranking.
+    pub const MAX_QUERY_ATTRIBUTE_WEIGHT: f64 = 100.0;
     /// The most `boosts` of one query.
     pub const MAX_BOOSTS: usize = 8;
     /// The most attributes `caps` limits in one query.

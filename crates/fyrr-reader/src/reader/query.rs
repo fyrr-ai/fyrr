@@ -141,9 +141,11 @@ impl PreparedReader {
         self.apply_filters(args.filter_tree().as_ref(), present)
             .await?;
         self.apply_contains(args.contains.as_deref()).await?;
+        let text = self.text_match(args)?;
         let predicate = self.request_predicate()?;
-        let lexical_predicate = Self::fts_requires_sql_prefilter(&self.dataset, &self.indexes)
-            .then_some(predicate.as_str());
+        let lexical_predicate =
+            Self::fts_requires_sql_prefilter(&self.dataset, &self.indexes, &text)
+                .then_some(predicate.as_str());
         self.stage(&mut telemetry, "predicate", stage, filter_counters);
         if !args.has_text() && !args.has_dense() {
             return self.listing(args, telemetry).await;
@@ -212,6 +214,7 @@ impl PreparedReader {
                 args,
                 queries,
                 lexical_predicate,
+                &text,
                 fallback_needed,
                 fallback_telemetry
             ),
@@ -406,10 +409,14 @@ impl PreparedReader {
                     let (rows, fetched, bound_hits) = Self::lexical(
                         &self.dataset,
                         self.selected_rows(),
-                        Self::fts_requires_sql_prefilter(&self.dataset, &self.indexes)
-                            .then_some(predicate.as_str()),
+                        Self::fts_requires_sql_prefilter(
+                            &self.dataset,
+                            &self.indexes,
+                            &TextMatch::default(),
+                        )
+                        .then_some(predicate.as_str()),
                         text,
-                        false,
+                        &TextMatch::default(),
                         lexical_candidates,
                     )
                     .await?;
@@ -506,6 +513,7 @@ impl PreparedReader {
         args: &SearchInput,
         queries: &[&str],
         lexical_predicate: Option<&str>,
+        text: &TextMatch,
         fallback_needed: bool,
         fallback_telemetry: Telemetry,
     ) -> (Vec<LexicalQuery>, u64, u64, Option<Result<SearchOutput>>) {
@@ -530,7 +538,7 @@ impl PreparedReader {
                     self.selected_rows(),
                     lexical_predicate,
                     query,
-                    args.query_match == Some(TermMatch::All),
+                    text,
                     self.config.namespace.retrieval.lexical_candidates,
                 )
                 .await

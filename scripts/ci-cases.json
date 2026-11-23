@@ -359,6 +359,18 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::a_row_with_more_matching_elements_than_the_fetch_bound_is_reported": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::an_unindexed_tail_is_scored_flat_and_never_returns_a_row_the_caller_may_not_read": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-reader:lib:fyrr_reader/search::tests::the_sql_prefilter_stays_unless_every_index_the_query_reads_covers_every_fragment": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/search::tests::lexical_request_mask_precedes_topk_and_preserves_sql_scores": {
         "tier": "quick",
         "seconds": 0.027
@@ -1107,6 +1119,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-core:lib:fyrr_core/attributes::tests::an_array_of_strings_has_a_full_text_index_and_no_other_array_has": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-core:lib:fyrr_core/attributes::tests::an_attribute_has_the_indexes_its_type_supports": {
         "tier": "quick",
         "seconds": 0.0
@@ -1534,6 +1550,14 @@
         "tier": "quick",
         "seconds": 1.0
       },
+      "full:fyrr-reader:test:lance_pin/string_array_indexed_per_element_never_matches_across_two_elements": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
+      "full:fyrr-reader:test:lance_pin/weighted_attribute_query_returns_the_true_top_10_on_three_segments_and_under_a_mask": {
+        "tier": "quick",
+        "seconds": 1.0
+      },
       "full:fyrr-reader:test:lance_pin/bm25_global_statistics_deletions_merge_and_rebuild": {
         "tier": "quick",
         "seconds": 0.062
@@ -1917,6 +1941,10 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_rebuilds_a_full_text_index_for_a_changed_analyzer_on_storage": {
         "tier": "full",
         "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_ranks_a_text_query_by_several_full_text_attributes_on_storage": {
+        "tier": "full",
+        "seconds": 30
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_narrows_a_query_by_the_tokens_of_a_full_text_attribute_on_storage": {
         "tier": "full",

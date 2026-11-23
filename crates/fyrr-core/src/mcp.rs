@@ -166,6 +166,9 @@ pub struct SearchInput {
     /// Set by the HTTP query route from its `contains` member; no tool argument.
     #[serde(skip)]
     pub contains: Option<Vec<Contains>>,
+    /// Set by the HTTP query route from its `query_attributes` member; no tool argument.
+    #[serde(skip)]
+    pub query_attributes: Option<Vec<QueryAttribute>>,
     /// Set by the HTTP query route from its `sub_queries` member; no tool argument.
     #[serde(skip)]
     pub sub_queries: Option<Vec<SubQuery>>,
@@ -190,22 +193,49 @@ pub enum TermMatch {
 }
 
 /// One condition of the `contains` member of a JSON `query` request, on the
-/// full-text index of a string attribute, which is not built with the `ngram`
-/// tokenizer. Exactly one of `all` and `any`.
+/// full-text index of a string or string array attribute, which is not built
+/// with the `ngram` tokenizer. Exactly one of `all` and `any`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Contains {
-    /// A string attribute with a full-text index.
+    /// A string or string array attribute with a full-text index.
     #[schemars(length(min = 1, max = 128))]
     pub attribute: String,
-    /// The value holds every token of this text, 1-4096 UTF-8 bytes.
+    /// The value, or one element of an array, holds every token of this text, 1-4096 UTF-8 bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 4096), extend("x-maxUtf8Bytes" = 4096))]
     pub all: Option<String>,
-    /// The value holds at least one token of this text, 1-4096 UTF-8 bytes.
+    /// The value, or one element of an array, holds at least one token of this text, 1-4096 UTF-8 bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 4096), extend("x-maxUtf8Bytes" = 4096))]
     pub any: Option<String>,
+}
+
+/// One member of the `query_attributes` member of a JSON `query` request: an
+/// attribute with a full-text index that the text ranking scores, and how much
+/// its score counts. A document scores the sum of the weighted scores of the
+/// attributes it matches.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QueryAttribute {
+    /// `searchable_text`, the text of the document, or a `string` or string
+    /// array attribute with a full-text index.
+    #[schemars(length(min = 1, max = 128))]
+    pub attribute: String,
+    /// 0.000001 to 100; default 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0.000001, max = 100))]
+    pub weight: Option<f64>,
+}
+
+impl QueryAttribute {
+    pub fn weight(&self) -> f64 {
+        self.weight.unwrap_or(1.0)
+    }
+    fn is_valid(&self) -> bool {
+        bounded_text(&self.attribute, 128)
+            && (MIN_QUERY_ATTRIBUTE_WEIGHT..=MAX_QUERY_ATTRIBUTE_WEIGHT).contains(&self.weight())
+    }
 }
 
 impl Contains {
@@ -1431,6 +1461,15 @@ impl SearchInput {
             && self.rerank.as_ref().is_none_or(|r| r.validate().is_ok())
             // A sub-query has its own filter and ranking, which these do not reach.
             && self.query_match.is_none_or(|_| self.has_text() && self.sub_queries.is_none())
+            && self.query_attributes.as_ref().is_none_or(|attributes| {
+                // Only a text ranking has attributes to score, and a sub-query has its own.
+                self.has_text()
+                    && self.sub_queries.is_none()
+                    && (1..=MAX_QUERY_ATTRIBUTES).contains(&attributes.len())
+                    && attributes.iter().enumerate().all(|(i, a)| {
+                        a.is_valid() && attributes[..i].iter().all(|b| b.attribute != a.attribute)
+                    })
+            })
             && self.contains.as_ref().is_none_or(|conditions| {
                 // A listing has no ranking to narrow, and it reads by predicate.
                 !listing
