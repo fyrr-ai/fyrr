@@ -55,6 +55,7 @@ impl PreparedReader {
         self.returned_columns(args.fields.as_ref())?;
         crate::rerank::scored_column(self, args.rerank.as_ref())?;
         crate::boost::check(self, args.boosts.as_deref())?;
+        crate::cap::check(self, args.caps.as_deref())?;
         let deadline = deadline.unwrap_or_else(|| {
             total
                 + std::time::Duration::from_millis(u64::from(
@@ -434,9 +435,10 @@ impl PreparedReader {
                     depth,
                     &self.config.namespace.retrieval,
                     &Bonus::new(),
+                    &Selection::default(),
                 )?
             } else {
-                crate::retrieval::dense_only(dense, depth, &Bonus::new())?
+                crate::retrieval::dense_only(dense, depth, &Bonus::new(), &Selection::default())?
             });
             self.stage(&mut telemetry, "fusion", stage, self.mirror.counters());
         }
@@ -538,6 +540,7 @@ impl PreparedReader {
                         let bonus =
                             crate::boost::bonuses(self, args.boosts.as_deref(), [&[], rows])
                                 .await?;
+                        let selection = crate::cap::selection(self, args, [&[], rows]).await?;
                         ranked.push(compose(
                             Vec::new(),
                             rows.clone(),
@@ -545,6 +548,7 @@ impl PreparedReader {
                             k,
                             &self.config.namespace.retrieval,
                             &bonus,
+                            &selection,
                         )?);
                     }
                     let selected = select_hits(ranked, queries, args, output, k, max_documents);
@@ -710,6 +714,7 @@ impl PreparedReader {
                 .map_or(k, |rerank| k.max(rerank.candidates));
             let bonus =
                 crate::boost::bonuses(self, args.boosts.as_deref(), [&dense, &lexical]).await?;
+            let selection = crate::cap::selection(self, args, [&dense, &lexical]).await?;
             let selected = if args.has_text() {
                 compose(
                     dense,
@@ -718,9 +723,10 @@ impl PreparedReader {
                     depth,
                     &self.config.namespace.retrieval,
                     &bonus,
+                    &selection,
                 )?
             } else {
-                crate::retrieval::dense_only(dense, depth, &bonus)?
+                crate::retrieval::dense_only(dense, depth, &bonus, &selection)?
             };
             #[cfg(test)]
             self.trace_stages(|stages| {

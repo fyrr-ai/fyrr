@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use crate::attributes::AttributeSchema;
 use crate::mcp::{
     AggregateInput, Boost, Contains, FetchInput, Filter, Fusion, RerankChoice, ReturnFields,
-    SearchInput, SubQuery, TermMatch,
+    SearchInput, SubQuery, TermMatch, ValueCap,
 };
 use crate::publication::NamespaceSettings;
 
@@ -28,7 +28,7 @@ pub enum Consistency {
 }
 
 /// The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
-/// `search` tool and eight members that are no tool arguments.
+/// `search` tool and ten members that are no tool arguments.
 #[derive(Debug, Clone, PartialEq, JsonSchema)]
 pub struct QueryRequest {
     #[schemars(flatten)]
@@ -51,6 +51,11 @@ pub struct QueryRequest {
     /// 1-8 terms added to the relevance score of a text or vector ranking: a weight times a function of an attribute. Not with a listing, `sub_queries` or `fusion`.
     #[schemars(length(min = 1, max = 8))]
     pub boosts: Option<Vec<Boost>>,
+    /// `false` returns every matching record, not the best one of each document; default `true`. Not with a listing, `queries` or `sub_queries`.
+    pub group_documents: Option<bool>,
+    /// 1-4 caps of at most `max` hits per value of an attribute; the total `limit` still applies. Not with a listing, `queries` or `sub_queries`.
+    #[schemars(length(min = 1, max = 4))]
+    pub caps: Option<Vec<ValueCap>>,
 }
 
 /// The body of `POST /v1/namespaces/{namespace}/fetch`: the arguments of the

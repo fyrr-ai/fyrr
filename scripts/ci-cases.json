@@ -243,6 +243,14 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-reader:lib:fyrr_reader/retrieval::tests::a_cap_per_value_drops_the_hits_over_it_whatever_selects_them": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
+      "full:fyrr-reader:lib:fyrr_reader/retrieval::tests::a_hit_is_a_record_only_when_the_request_asks_for_every_record": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-reader:lib:fyrr_reader/boost::tests::the_attribute_boost_is_x_over_x_plus_the_midpoint": {
         "tier": "quick",
         "seconds": 0.001
@@ -1873,6 +1881,10 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_storage": {
         "tier": "full",
         "seconds": 30
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_caps_the_hits_per_attribute_value_on_storage": {
+        "tier": "full",
+        "seconds": 30
       }
     }
   },
@@ -2062,6 +2074,10 @@
         "seconds": 47.941
       },
       "full:fyrr:test:dense_path/http_json::identity_http_json_routes_share_the_mcp_gates_on_storage": {
+        "tier": "full",
+        "seconds": 30
+      },
+      "full:fyrr:test:dense_path/http_json::identity_http_json_query_returns_every_record_and_caps_the_hits_per_author_on_storage": {
         "tier": "full",
         "seconds": 30
       },

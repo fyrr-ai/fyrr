@@ -972,6 +972,15 @@ pub(super) async fn fixture_for_issuer(
     issuer_url: &str,
     backend: Backend,
 ) -> (PathBuf, PathBuf, FixtureRoot, DirectorySnapshot) {
+    fixture_with_documents(issuer_url, backend, Vec::new()).await
+}
+/// `fixture_for_issuer` with documents of its own, each an incremental document
+/// with `id`, `revision` and `readers`.
+pub(super) async fn fixture_with_documents(
+    issuer_url: &str,
+    backend: Backend,
+    extra: Vec<Value>,
+) -> (PathBuf, PathBuf, FixtureRoot, DirectorySnapshot) {
     static NAMESPACE: AtomicUsize = AtomicUsize::new(0);
     let namespace = format!("http-fixture-{}", NAMESPACE.fetch_add(1, Ordering::SeqCst));
     let (worker, commit, root) =
@@ -1003,6 +1012,10 @@ pub(super) async fn fixture_for_issuer(
                     .unwrap(),
             ],
         });
+    }
+    for document in extra {
+        perms.push(json!({"id":document["id"],"revision":"p1","readers":document["readers"]}));
+        docs.push(document);
     }
     super::incremental::input(
         &root,

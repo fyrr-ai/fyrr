@@ -7,7 +7,7 @@ use crate::embedding::{self, digest};
 use crate::error::*;
 use crate::generation::{GenerationState, MemoryPool, NativeSession, PreparationReservation};
 use crate::mirror::{MirrorLease, MirrorRequest, MirrorStore};
-use crate::retrieval::{Bonus, Candidate, compose, reciprocal_rank_fusion};
+use crate::retrieval::{Bonus, Candidate, Selection, compose, reciprocal_rank_fusion};
 use crate::routing::{CentroidRouter, RoutingFallback, strategy, take_probes};
 use crate::storage::*;
 use arrow_array::{Array, Float32Array, RecordBatch, StringArray, UInt32Array, UInt64Array};
@@ -152,8 +152,10 @@ fn select_hits<'q>(
                 .collect()
         })
         .collect();
-    if args.sub_queries.is_some() {
-        // Each sub-query keeps its own hits, in request order.
+    if args.sub_queries.is_some() || args.group_documents == Some(false) {
+        // Each sub-query keeps its own hits, in request order; so does the one
+        // query that asks for every record, which `interleave` would take
+        // once for each document.
         return selected.into_iter().flatten().take(max_documents).collect();
     }
     interleave(selected, max_documents)

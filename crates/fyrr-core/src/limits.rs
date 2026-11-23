@@ -39,6 +39,8 @@ pub mod mcp {
     pub const MAX_CONTAINS: usize = 16;
     /// The most `boosts` of one query.
     pub const MAX_BOOSTS: usize = 8;
+    /// The most attributes `caps` limits in one query.
+    pub const MAX_CAPS: usize = 4;
     /// The largest weight of a boost: the sum of `MAX_BOOSTS` of them added to
     /// a score stays finite.
     pub const MAX_BOOST_WEIGHT: f64 = 1e6;

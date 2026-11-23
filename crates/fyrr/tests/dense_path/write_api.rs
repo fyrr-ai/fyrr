@@ -4415,6 +4415,161 @@ async fn identity_write_api_boosts_a_ranking_by_an_attribute_and_by_recency_on_s
 
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_caps_the_hits_per_attribute_value_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    embed(&root, &["alpha"]);
+    let writer = Writer::start(&config, &root, address).await;
+    let alpha: Vec<f32> = (0..1024)
+        .map(|d: usize| ((2000 * (d + 7)) as f32).sin())
+        .collect();
+    // `a` to `e` match the query equally, by text and by vector, so they rank
+    // by their ids. `0h` would rank first, but the caller may not read it.
+    let rows = [
+        ("0h", "red", "en", "usr:other"),
+        ("a", "red", "en", "usr:x"),
+        ("b", "red", "en", "usr:x"),
+        ("c", "red", "de", "usr:x"),
+        ("d", "blue", "en", "usr:x"),
+        ("e", "blue", "de", "usr:x"),
+    ];
+    let upserts: Vec<Value> = rows
+        .iter()
+        .map(|(id, kind, lang, reader)| {
+            json!({"id": id, "text": "alpha", "vector": alpha, "kind": kind, "lang": lang,
+                   "readers": [reader]})
+        })
+        .collect();
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({
+                    "settings": {"attributes": {"kind": "string", "lang": "string",
+                                                "views": "float"}},
+                    "upserts": upserts,
+                })
+            )
+            .await
+            .0,
+        200
+    );
+    let reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let ask_with = async |mut body: Value, members: Value| {
+        body["output"] = json!("metadata");
+        for (name, member) in members.as_object().into_iter().flatten() {
+            body[name] = member.clone();
+        }
+        ask(&reader, body).await
+    };
+    let by_kind = json!([{"attribute": "kind", "max": 2}]);
+    let by_lang = json!([{"attribute": "lang", "max": 2}]);
+    let both = json!([{"attribute": "kind", "max": 2}, {"attribute": "lang", "max": 2}]);
+    // Text and vector alone, and the two fused.
+    let rankings = [
+        json!({"query": "alpha", "limit": 5}),
+        json!({"vector": alpha, "limit": 5}),
+        json!({"query": "alpha", "vector": alpha, "limit": 5}),
+    ];
+    for ranking in rankings {
+        let plain = ask_with(ranking.clone(), json!({})).await;
+        assert_eq!(roots(&plain), ["a", "b", "c", "d", "e"], "{ranking}");
+        // Without the new members, or with `group_documents` on, the answer is the same.
+        let grouped = ask_with(ranking.clone(), json!({"group_documents": true})).await;
+        assert_eq!(grouped.1["hits"], plain.1["hits"], "{ranking}");
+        // A cap is hard: `c` is over the two reds, and no one takes its place
+        // but the next candidates.
+        for (caps, expected) in [
+            (&by_kind, vec!["a", "b", "d", "e"]),
+            (&by_lang, vec!["a", "b", "c", "e"]),
+            (&both, vec!["a", "b", "e"]),
+            // Every row is `api`; no row has an author.
+            (
+                &json!([{"attribute": "source_type", "max": 3}]),
+                vec!["a", "b", "c"],
+            ),
+            (
+                &json!([{"attribute": "author", "max": 1}]),
+                vec!["a", "b", "c", "d", "e"],
+            ),
+        ] {
+            assert_eq!(
+                roots(&ask_with(ranking.clone(), json!({"caps": caps})).await),
+                expected,
+                "{ranking} {caps}"
+            );
+        }
+        // The limit still applies after the cap.
+        let mut limited = ranking.clone();
+        limited["limit"] = json!(3);
+        assert_eq!(
+            roots(&ask_with(limited, json!({"caps": by_kind})).await),
+            ["a", "b", "d"],
+            "{ranking}"
+        );
+    }
+
+    // A cap names a declared `string` attribute or `author`, `project` or
+    // `source_type`, 1 to 4 times, once each, and at most 1 to 75 hits; the
+    // members go with neither a listing nor `queries` nor `sub_queries`.
+    let text = json!({"query": "alpha", "limit": 5});
+    let cap = |attribute: &str, max: Value| json!([{"attribute": attribute, "max": max}]);
+    let refused = [
+        cap("views", json!(1)),
+        cap("missing", json!(1)),
+        cap("updated_at", json!(1)),
+        cap("kind", json!(0)),
+        cap("kind", json!(76)),
+        cap("kind", json!(-1)),
+        cap("kind", json!("2")),
+        json!([{"attribute": "kind"}]),
+        json!([{"attribute": "kind", "max": 1, "extra": true}]),
+        json!([{"attribute": "kind", "max": 1}, {"attribute": "kind", "max": 2}]),
+        json!([]),
+        json!([{"attribute": "kind", "max": 1}, {"attribute": "lang", "max": 1},
+               {"attribute": "author", "max": 1}, {"attribute": "project", "max": 1},
+               {"attribute": "source_type", "max": 1}]),
+    ];
+    for caps in refused {
+        assert_eq!(
+            ask_with(text.clone(), json!({"caps": caps})).await,
+            (400, json!({"error": "invalid_argument"})),
+            "{caps}"
+        );
+    }
+    for members in [
+        json!({"group_documents": "no"}),
+        json!({"group_documents": 1}),
+    ] {
+        assert_eq!(
+            ask_with(text.clone(), members.clone()).await,
+            (400, json!({"error": "invalid_argument"})),
+            "{members}"
+        );
+    }
+    for body in [
+        json!({"order": "updated_at"}),
+        json!({"queries": ["alpha", "bravo"]}),
+        json!({"queries": ["alpha", "bravo"], "fusion": {"method": "rrf"}}),
+        json!({"sub_queries": [{"query": "alpha", "limit": 3}]}),
+    ] {
+        for members in [json!({"caps": by_kind}), json!({"group_documents": false})] {
+            assert_eq!(
+                ask_with(body.clone(), members.clone()).await,
+                (400, json!({"error": "invalid_argument"})),
+                "{body} {members}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_reranks_as_a_query_asks_within_the_spend_limit_on_storage() {
     let provider = super::rerank::Provider::open().await;
     let (config, root) = setup_on(Backend::Local);

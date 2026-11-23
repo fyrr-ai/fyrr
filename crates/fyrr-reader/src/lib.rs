@@ -21,6 +21,7 @@
 
 mod auth;
 mod boost;
+mod cap;
 pub mod cli;
 pub mod embedding;
 mod error;
