@@ -5736,9 +5736,9 @@ async fn identity_write_api_builds_a_vector_index_when_the_first_vector_arrives_
     assert_eq!(query(41)[0], "r1");
 }
 
-/// A `phrase` member keeps the hits whose text holds its tokens in this order,
-/// adjacent or with at most `slop` tokens between two of them, for a text and
-/// a vector ranking alike; it is joined to the filter by AND and refused where
+/// A `phrase` member keeps the hits whose text holds its tokens next to one
+/// another in this order, for a text and a vector ranking alike; a `slop`
+/// above 0 is refused, because Lance 14.0.3 loses matches for it; it is joined to the filter by AND and refused where
 /// there is no ranking to narrow.
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
@@ -5805,14 +5805,6 @@ async fn identity_write_api_requires_a_phrase_of_the_text_on_storage() {
             ["a"]
         );
         assert_eq!(found(ranking.clone(), phrase("alpha beta", 0)).await, ["a"]);
-        assert_eq!(
-            found(ranking.clone(), phrase("alpha beta", 1)).await,
-            ["a", "c"]
-        );
-        assert_eq!(
-            found(ranking.clone(), phrase("alpha beta", 2)).await,
-            ["a", "c", "e"]
-        );
         assert_eq!(found(ranking.clone(), phrase("beta alpha", 0)).await, ["b"]);
         assert!(
             found(ranking.clone(), phrase("beta gamma alpha", 0))
@@ -5822,17 +5814,15 @@ async fn identity_write_api_requires_a_phrase_of_the_text_on_storage() {
     }
     // The phrase and the filter are joined by AND.
     let filtered = json!({"query": "alpha",
-                          "filter": {"field": "root_id", "op": "ne", "value": "a"}});
-    assert_eq!(
-        found(filtered, json!({"text": "alpha beta", "slop": 1})).await,
-        ["c"]
-    );
-    // A phrase has a text of at most 4096 bytes and a slop of at most 16, and
-    // it names nothing else; there is no ranking in a listing to narrow, and a
+                          "filter": {"field": "root_id", "op": "ne", "value": "b"}});
+    assert_eq!(found(filtered, json!({"text": "alpha gamma"})).await, ["c"]);
+    // A phrase has a text of at most 4096 bytes and a slop of 0, and it names
+    // nothing else; there is no ranking in a listing to narrow, and a
     // sub-query has its own.
     for phrase in [
         json!({"text": ""}),
         json!({"text": " "}),
+        json!({"text": "alpha beta", "slop": 1}),
         json!({"text": "alpha beta", "slop": 17}),
         json!({"text": "alpha beta", "slop": -1}),
         json!({"text": "alpha beta", "attribute": "title"}),

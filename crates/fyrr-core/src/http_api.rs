@@ -48,7 +48,7 @@ pub struct QueryRequest {
     /// With `query` or `queries`: 1-8 attributes with a full-text index that the text ranking scores, each with a weight; default `searchable_text`. A string array attribute stands alone.
     #[schemars(length(min = 1, max = 8))]
     pub query_attributes: Option<Vec<QueryAttribute>>,
-    /// With `query`, `queries` or a vector ranking: the tokens of `text` occur in the document in this order, at most `slop` tokens apart; also required of a hit, like `filter`. Needs `fts_positions`. Not with a listing or `sub_queries`.
+    /// With `query`, `queries` or a vector ranking: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like `filter`. Needs `fts_positions`. Not with a listing or `sub_queries`.
     pub phrase: Option<Phrase>,
     /// Conditions on full-text attributes, each also required of a hit, like `filter`. Not with a listing.
     #[schemars(length(min = 1, max = 16))]

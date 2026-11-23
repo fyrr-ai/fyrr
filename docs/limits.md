@@ -43,7 +43,7 @@ bound; it is what applies when the request names none.
 | `limits::mcp::MAX_LISTING_WINDOW` | 1,000 | `offset + limit` of a listing, at most; a deeper page is a scan by the document key. |
 | `limits::mcp::MAX_QUERIES` | 16 | Entries of `queries`. |
 | `limits::mcp::MAX_CONTAINS` | 16 | `contains` conditions of one query. |
-| `limits::mcp::MAX_PHRASE_SLOP` | 16 | Tokens `phrase.slop` lets stand between two tokens of the phrase. |
+| `limits::mcp::MAX_PHRASE_SLOP` | 0 | Tokens `phrase.slop` lets stand between two tokens of the phrase: none until a newer Lance. |
 | `limits::mcp::MAX_QUERY_ATTRIBUTES` | 8 | Attributes `query_attributes` names in one query. |
 | `limits::mcp::MIN_QUERY_ATTRIBUTE_WEIGHT` | 0.000001 | The smallest weight of an attribute of `query_attributes`. |
 | `limits::mcp::MAX_QUERY_ATTRIBUTE_WEIGHT` | 100 | The largest weight of an attribute of `query_attributes`. |

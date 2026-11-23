@@ -86,7 +86,7 @@ class QueryRequest(TypedDict):
     query_attributes: NotRequired[list[QueryAttribute] | None]
     """With `query` or `queries`: 1-8 attributes with a full-text index that the text ranking scores, each with a weight; default `searchable_text`. A string array attribute stands alone."""
     phrase: NotRequired[Phrase | None]
-    """With `query`, `queries` or a vector ranking: the tokens of `text` occur in the document in this order, at most `slop` tokens apart; also required of a hit, like `filter`. Needs `fts_positions`. Not with a listing or `sub_queries`."""
+    """With `query`, `queries` or a vector ranking: the tokens of `text` occur in the document next to one another in this order; also required of a hit, like `filter`. Needs `fts_positions`. Not with a listing or `sub_queries`."""
     contains: NotRequired[list[Contains] | None]
     """Conditions on full-text attributes, each also required of a hit, like `filter`. Not with a listing."""
     boosts: NotRequired[list[Boost] | None]
@@ -224,9 +224,7 @@ class Phrase(TypedDict):
     text: str
     """1-4096 UTF-8 bytes."""
     slop: NotRequired[int | None]
-    """How many tokens may stand between a token and the one before it: 0 to 16;
-    default 0, adjacent tokens.
-    """
+    """Tokens allowed between two tokens of the phrase; only 0 (adjacent) until a newer Lance."""
 
 
 class Contains(TypedDict):

@@ -449,7 +449,7 @@ listing, which has no ranking to narrow, and with `sub_queries`.
 | Member | Meaning |
 | --- | --- |
 | `text` | The phrase, 1–4096 UTF-8 bytes. |
-| `slop` | How many tokens may stand between a token and the one before it: 0 to 16, default 0 (adjacent). |
+| `slop` | Tokens allowed between two tokens of the phrase. Only 0, the default (adjacent tokens), is accepted: Lance 14.0.3 loses matches for a larger slop, so it is `400 invalid_argument` until a newer Lance ([#170](https://github.com/fyrr-ai/fyrr/issues/170)). |
 
 A phrase needs the positions of the tokens, which a namespace stores only when
 it is created with `fts_positions = true` in `[namespace]` (see
@@ -462,7 +462,7 @@ The phrase reads `searchable_text` only; an attribute's index has no positions.
 curl https://fyrr.example.com/v1/namespaces/main/query \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"query":"backup","phrase":{"text":"restore a backup","slop":1}}'
+  -d '{"query":"backup","phrase":{"text":"restore a backup"}}'
 ```
 
 ## Boosts

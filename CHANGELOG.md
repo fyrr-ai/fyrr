@@ -30,9 +30,9 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 - A namespace can store token positions in the full-text index of
   `searchable_text` (`fts_positions = true` in `[namespace]`), and the JSON
-  `query` route takes `phrase`: the tokens of a text in order, adjacent or at
-  most `slop` tokens apart, required of a hit like `filter`, for a text and a
-  vector ranking. A phrase on a namespace without positions is
+  `query` route takes `phrase`: the tokens of a text next to one another in
+  order, required of a hit like `filter`, for a text and a vector ranking. Its
+  `slop` accepts only 0 until a newer Lance keeps every match for a larger one. A phrase on a namespace without positions is
   `invalid_argument`. The MCP `search` tool does not take the member. A
   namespace with positions writes the indexed policy and manifest versions.
 

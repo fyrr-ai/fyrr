@@ -224,10 +224,9 @@ pub struct Phrase {
     /// 1-4096 UTF-8 bytes.
     #[schemars(length(min = 1, max = 4096), extend("x-maxUtf8Bytes" = 4096))]
     pub text: String,
-    /// How many tokens may stand between a token and the one before it: 0 to 16;
-    /// default 0, adjacent tokens.
+    /// Tokens allowed between two tokens of the phrase; only 0 (adjacent) until a newer Lance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 0, max = 16))]
+    #[schemars(range(min = 0, max = 0))]
     pub slop: Option<u32>,
 }
 
@@ -238,7 +237,7 @@ impl Phrase {
     fn is_valid(&self) -> bool {
         bounded_text(&self.text, 4096)
             && !self.text.trim().is_empty()
-            && self.slop() <= MAX_PHRASE_SLOP
+            && (0..=MAX_PHRASE_SLOP).contains(&self.slop())
     }
 }
 

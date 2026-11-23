@@ -41,7 +41,8 @@ pub mod mcp {
     /// The most `contains` conditions of one query.
     pub const MAX_CONTAINS: usize = 16;
     /// The most tokens a `phrase` condition may leave between two of its tokens.
-    pub const MAX_PHRASE_SLOP: u32 = 16;
+    /// shortcut: Lance 14.0.3 loses matches for slop > 0; raise with #170.
+    pub const MAX_PHRASE_SLOP: u32 = 0;
     /// The most attributes the text ranking of one query names.
     pub const MAX_QUERY_ATTRIBUTES: usize = 8;
     /// The smallest weight of an attribute of the text ranking: it stays a
