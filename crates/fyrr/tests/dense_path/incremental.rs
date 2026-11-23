@@ -184,6 +184,84 @@ async fn incremental_connector_fields_are_typed_columns_on_storage() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// The title of a connector document has a full-text index, so a query ranks
+/// by it with `query_attributes`: the document whose title matches comes up on
+/// the text lane, and the ones with another or no title do not.
+#[tokio::test]
+#[ignore = "real worker, HTTP reader and local storage; scripts/ci"]
+async fn incremental_connector_title_has_a_full_text_index_on_storage() {
+    let setup = setup();
+    for row in 8..768 {
+        std::fs::remove_file(setup.1.join("sources").join(format!("{row}.txt"))).unwrap();
+    }
+    let table = "\n[[identity.api_keys]]\nname='title'\nkey={env='FYRR_TEST_TITLE_KEY'}\nreaders=['grp:group']\n";
+    let text = std::fs::read_to_string(&setup.0).unwrap();
+    std::fs::write(&setup.0, format!("{text}{table}")).unwrap();
+    let (worker, commit, root) = fixture_host_at(8, false, "title-fixture", setup);
+    let key = format!("fyrr_key_{:064}", 77);
+    let key = key.as_str();
+    field_documents(&root);
+    sync_fields(&worker);
+    // The keys are in the configuration of the commit that binds them.
+    let committed = host_command(&commit)
+        .args(["writer", "commit"])
+        .env("FYRR_TEST_TITLE_KEY", key)
+        .output()
+        .unwrap();
+    assert!(committed.status.success(), "{committed:?}");
+
+    let (_, manifest) = publication(&worker).await;
+    assert!(
+        manifest
+            .indexes
+            .iter()
+            .any(|index| index.name == "attrfts_title_idx" && index.column == "title"),
+        "the title has a full-text index"
+    );
+
+    super::write_api::embed(&root, &["alpha"]);
+    let keys = host_command(&commit)
+        .args(["writer", "keys"])
+        .env("FYRR_TEST_TITLE_KEY", key)
+        .output()
+        .unwrap();
+    assert!(keys.status.success(), "{keys:?}");
+    let mut reader = super::http_mcp::Reader::start_appended(&worker, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let response = reader
+        .client
+        .post(format!("{}/v1/namespaces/title-fixture/query", reader.base))
+        .bearer_auth(key)
+        .json(
+            &json!({"query": "alpha", "output": "metadata", "consistency": "strong",
+            "fields": {"scores": true},
+            "query_attributes": [{"attribute": "title"}]}),
+        )
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let answer: Value = response.json().await.unwrap_or(Value::Null);
+    assert_eq!(status, 200, "{answer} {}", reader.stderr_text());
+    let scored: Vec<(&str, f64)> = answer["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|hit| {
+            Some((
+                hit["root_id"].as_str()?,
+                hit.get("lexical_score")?.as_f64()?,
+            ))
+        })
+        .collect();
+    assert_eq!(scored.len(), 1, "{answer}");
+    assert_eq!(scored[0].0, "a", "{answer}");
+    reader.stop().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// A namespace created before the connector columns keeps its layout: its
 /// documents keep the fields in their metadata, an older publication version
 /// stays, and the tools return the fields as before. Creating it again with a
@@ -201,6 +279,7 @@ async fn incremental_namespace_created_before_the_connector_columns_keeps_its_la
         for (name, _) in fyrr_core::attributes::CONNECTOR_COLUMNS {
             settings.attributes.remove(name);
         }
+        settings.attribute_indexes.remove("title");
         let config = loaded.config.clone();
         std::thread::spawn(move || {
             tokio::runtime::Runtime::new()
@@ -225,6 +304,23 @@ async fn incremental_namespace_created_before_the_connector_columns_keeps_its_la
     let (_, manifest) = publication(&worker).await;
     assert_eq!(manifest.schema_version.to_string(), "4.1");
     command(&worker, &["writer", "namespace", "create"]);
+    // A title index the file asks for is not one the namespace has.
+    let text = std::fs::read_to_string(&worker).unwrap();
+    std::fs::write(
+        &worker,
+        format!("{text}\n[namespace.attribute_indexes.title]\nfull_text = true\n"),
+    )
+    .unwrap();
+    let refused = host_command(&worker)
+        .args(["writer", "namespace", "create"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("namespace_settings_fixed"),
+        "{refused:?}"
+    );
+    std::fs::write(&worker, text).unwrap();
 
     // Filtering by the fields is what the new layout adds.
     read_fields(&worker, json!({"field":"root_id","op":"eq","value":"a"}));

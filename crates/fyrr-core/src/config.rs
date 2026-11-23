@@ -1510,6 +1510,17 @@ pub struct LoadedConfig {
     raw: toml::Table,
 }
 
+impl LoadedConfig {
+    /// Whether the file itself has an entry for `attribute` in
+    /// `[namespace.attribute_indexes]`, not a default derived from other keys.
+    pub fn sets_attribute_index(&self, attribute: &str) -> bool {
+        self.raw
+            .get("namespace")
+            .and_then(|namespace| namespace.get("attribute_indexes"))
+            .is_some_and(|indexes| indexes.get(attribute).is_some())
+    }
+}
+
 /// Where an effective value came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
@@ -1564,7 +1575,8 @@ pub fn parse(text: &str) -> Result<LoadedConfig, Issue> {
 /// Fills defaults that follow from other keys of the same file; explicit
 /// values always win. Every derived URL comes from operator configuration.
 fn derive_defaults(config: &mut Config, raw: &toml::Table) {
-    // A namespace fed by connectors stores their metadata fields as columns.
+    // A namespace fed by connectors stores their metadata fields as columns,
+    // and a query can rank by the title: it has a full-text index.
     if config.namespace.write_api.is_none() {
         for (name, kind) in crate::attributes::CONNECTOR_COLUMNS {
             config
@@ -1573,6 +1585,14 @@ fn derive_defaults(config: &mut Config, raw: &toml::Table) {
                 .entry(name.into())
                 .or_insert(kind);
         }
+        config
+            .namespace
+            .attribute_indexes
+            .entry("title".into())
+            .or_insert_with(|| crate::attributes::AttributeIndex {
+                full_text: true,
+                ..Default::default()
+            });
     }
     let identity = &mut config.identity;
     if let Some(oidc) = &mut identity.oidc {

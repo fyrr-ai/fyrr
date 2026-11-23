@@ -19,7 +19,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   index options and of the read-only switch, so an older build refuses it
   instead of reading nulls. The
   `key=value` attributes of a connector document stay in the `attributes`
-  column. A namespace or a configuration made by an unreleased build between
+  column. The `title` has a full-text index, so a query can rank by it with
+  `query_attributes`. A namespace or a configuration made by an unreleased build between
   typed attributes (#225) and this change can be refused: one that declares the
   five connector names with exactly their types, one at the limit of declared
   attributes (the five count), or one that sets one of the five to another type.
