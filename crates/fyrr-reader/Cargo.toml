@@ -24,6 +24,7 @@ serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
 regex.workspace = true
+regex-syntax.workspace = true
 base64.workspace = true
 half.workspace = true
 object_store.workspace = true

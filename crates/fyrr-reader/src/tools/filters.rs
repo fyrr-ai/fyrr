@@ -111,6 +111,9 @@ fn text_sql(column: &str, kind: AttributeType, op: Op, value: &Value) -> Result<
         if pattern.len() > MAX_REGEX_BYTES {
             return Err(InvalidArgument);
         }
+        if turns_on_case_folding(pattern) {
+            return Err(InvalidArgument);
+        }
         let expression = format!("(?-m){pattern}");
         regex::RegexBuilder::new(&expression)
             .multi_line(true)
@@ -122,6 +125,55 @@ fn text_sql(column: &str, kind: AttributeType, op: Op, value: &Value) -> Result<
         format!("{function}({column},{})", sql(pattern))
     };
     Ok(if negated { format!("NOT {test}") } else { test })
+}
+
+/// Whether a regular expression turns on case-insensitive matching with an
+/// inline `i` flag: `(?i)`, `(?i:...)`, `(?mi)` and the like. Matching is
+/// case-sensitive, and no flag changes that. A pattern that does not parse has
+/// no flag to find; the compile that follows refuses it.
+fn turns_on_case_folding(pattern: &str) -> bool {
+    use regex_syntax::ast::{self, Ast, Flag, FlagsItemKind, GroupKind};
+
+    struct Folding(bool);
+
+    impl Folding {
+        fn scan(&mut self, flags: &ast::Flags) {
+            let mut negated = false;
+            for item in &flags.items {
+                match item.kind {
+                    FlagsItemKind::Negation => negated = true,
+                    FlagsItemKind::Flag(Flag::CaseInsensitive) if !negated => self.0 = true,
+                    FlagsItemKind::Flag(_) => {}
+                }
+            }
+        }
+    }
+
+    impl ast::Visitor for Folding {
+        type Output = bool;
+        type Err = std::convert::Infallible;
+
+        fn finish(self) -> Result<bool, Self::Err> {
+            Ok(self.0)
+        }
+
+        fn visit_pre(&mut self, node: &Ast) -> Result<(), Self::Err> {
+            match node {
+                Ast::Flags(set) => self.scan(&set.flags),
+                Ast::Group(group) => {
+                    if let GroupKind::NonCapturing(flags) = &group.kind {
+                        self.scan(flags);
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+    }
+
+    ast::parse::Parser::new()
+        .parse(pattern)
+        .is_ok_and(|tree| ast::visit(&tree, Folding(false)).unwrap_or_else(|never| match never {}))
 }
 
 /// A test of the elements of an array attribute. A scalar attribute has none,

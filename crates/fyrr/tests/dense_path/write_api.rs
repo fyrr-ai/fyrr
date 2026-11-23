@@ -2385,7 +2385,6 @@ async fn identity_write_api_filters_strings_by_prefix_substring_and_expression_o
         ("matches", json!("\\\\"), vec!["c"]),
         ("matches", json!("\\d{4}-\\d{2}-\\d{2}$"), vec!["f"]),
         ("matches", json!("e"), vec!["a", "f"]),
-        ("matches", json!("(?i)ALPHA"), vec!["a", "b"]),
         ("not_matches", json!("\\d"), vec!["a", "b", "c"]),
     ] {
         assert_eq!(
@@ -2415,6 +2414,8 @@ async fn identity_write_api_filters_strings_by_prefix_substring_and_expression_o
         on_field("note", "matches", json!("a".repeat(513))),
         on_field("note", "matches", json!("(")),
         on_field("note", "matches", json!("((a{100}){100}){100}")),
+        // Case-insensitive matching is not offered.
+        on_field("note", "matches", json!("(?i)ALPHA")),
         // Text tests take text and a `string` only.
         on_field("note", "starts_with", json!(1)),
         on_field("note", "contains", Value::Null),

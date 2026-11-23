@@ -846,6 +846,19 @@ fn a_text_test_compiles_to_one_call_and_refuses_what_it_cannot_bound() {
     }
     let near = "a".repeat(MAX_REGEX_BYTES);
     assert!(compile("note", "matches", json!(near)).is_ok());
+    // A flag that is not `i`, one that turns `i` off, and a literal `(?i)`.
+    for pattern in [
+        "(?s)alpha",
+        "(?-i)alpha",
+        "(?-i:alpha)",
+        "\\(\\?i\\)",
+        "[(?i)]",
+    ] {
+        assert!(
+            compile("note", "matches", json!(pattern)).is_ok(),
+            "{pattern}"
+        );
+    }
     let long = "a".repeat(MAX_REGEX_BYTES + 1);
     // Nested repeats compile to a program far over the bound.
     let huge = "((a{100}){100}){100}";
@@ -858,6 +871,12 @@ fn a_text_test_compiles_to_one_call_and_refuses_what_it_cannot_bound() {
         ("note", "matches", json!("a{2,1}")),
         ("note", "matches", json!(huge)),
         ("note", "not_matches", json!(huge)),
+        // Case-insensitive matching is not offered, by any inline flag.
+        ("note", "matches", json!("(?i)alpha")),
+        ("note", "not_matches", json!("(?i)alpha")),
+        ("note", "matches", json!("(?i:alpha)")),
+        ("note", "matches", json!("(?mi)alpha")),
+        ("note", "matches", json!("a(?s-m:b)(?i:c)")),
         // An empty value, which DataFusion would turn into `IS NOT NULL`.
         ("note", "starts_with", json!("")),
         ("note", "not_starts_with", json!("")),
