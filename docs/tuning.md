@@ -56,6 +56,10 @@ stems in any of the 18 languages. Setting `fts_stem`, `fts_remove_stop_words`,
 `fts_ascii_folding` or a `fts_max_token_length` other than `40` together with
 the analyzer is a configuration error at `namespace.analyzer`.
 
+The `ngram` tokenizer is not offered for the text: attribute indexes inherit
+the analyzer, and a `phrase` or an `all` match on n-grams would find rows with
+any one of them. It is a configuration error at `namespace.analyzer`.
+
 Unlike the analyzer of an attribute, the analyzer of the text cannot change
 once the namespace exists: it is part of the policy artifact the namespace
 was created with, as the `fts_*` keys are, and a changed `[namespace.analyzer]`

@@ -1254,6 +1254,10 @@
         "tier": "quick",
         "seconds": 0.002
       },
+      "full:fyrr-core:test:config/the_text_analyzer_is_a_publication_setting_that_keeps_a_namespace_without_one_as_it_was": {
+        "tier": "quick",
+        "seconds": 0.002
+      },
       "full:fyrr-core:test:config/composition_is_bounded_defaulted_and_bound_into_policy_identity": {
         "tier": "quick",
         "seconds": 0.001
@@ -2114,6 +2118,10 @@
         "seconds": 10.0
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_highlights_the_tokens_an_excerpt_matches_on_storage": {
+        "tier": "full",
+        "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_text_follows_the_namespace_analyzer_on_storage": {
         "tier": "full",
         "seconds": 40
       }

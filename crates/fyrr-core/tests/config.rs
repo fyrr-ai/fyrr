@@ -1325,6 +1325,10 @@ fn the_text_analyzer_is_a_publication_setting_that_keeps_a_namespace_without_one
         "[namespace.analyzer]\nngram_min_length = 4\n",
         "namespace.analyzer",
     );
+    assert_error(
+        "[namespace.analyzer]\ntokenizer = \"ngram\"\n",
+        "namespace.analyzer",
+    );
     let mixed = MINIMAL.replace("[namespace]", "[namespace]\nfts_stem = true");
     let mixed = parse(&format!("{mixed}\n{table}")).unwrap();
     assert!(

@@ -258,6 +258,11 @@ pub(crate) fn namespace_settings(
                 "namespace.analyzer",
                 "a setting is out of its bounds, or is one its tokenizer ignores".into(),
             );
+        } else if analyzer.tokenizer == crate::attributes::analyzer::Tokenizer::Ngram {
+            error(
+                "namespace.analyzer",
+                "the ngram tokenizer is not offered for the text: attributes inherit it, and a phrase or an `all` match would find rows with any one n-gram".into(),
+            );
         } else if namespace.fts_stem
             || namespace.fts_remove_stop_words
             || namespace.fts_ascii_folding
