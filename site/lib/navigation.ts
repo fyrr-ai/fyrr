@@ -106,6 +106,21 @@ export const navigation = [
         "http-api.md",
         "HTTP JSON API",
         "The same questions over plain JSON, for callers without MCP."
+      ],
+      [
+        "api-reference.md",
+        "API reference",
+        "Every route, who serves it, and who may call it."
+      ],
+      [
+        "guarantees.md",
+        "Guarantees",
+        "What a write promises, what a read sees, and what an outage does."
+      ],
+      [
+        "limits.md",
+        "Limits",
+        "Every bound in one table, checked against the code."
       ]
     ]
   ],
