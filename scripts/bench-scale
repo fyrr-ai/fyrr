@@ -1,0 +1,927 @@
+#!/usr/bin/env python3
+"""Measure query latency and recall of one namespace of millions of rows.
+
+The native `fyrr writer serve`, `fyrr writer maintain` and `fyrr reader serve`
+run on one local storage and this script only drives them and scores what they
+return. It writes `--rows` rows (default 3,000,000, 128 dimensions) in requests
+of 50,000: a clustered vector, a text of Zipf-distributed words and the reader
+tokens that say who may read it (every row `grp:all`, every 10th `usr:p10`,
+every 100th `usr:p1`). The namespace is not open, so a subject reads what its
+tokens name: `all` every row, `p10` 10% of them, `p1` 1%. It then times:
+
+  load       the answer time of every write request (the publication that
+             holds it, with the index update), the peak RSS of the writer and
+             the bytes of the storage; then `writer maintain` (run again once
+             if it fails, for example `maintenance_step_deadline`): time, peak
+             RSS and the index segments before and after;
+  per memory budget of the reader (`--memory`), per subject, one reader
+  process started on an empty mirror, so that the first query is the first of
+  its process:
+  start      the time until `/readyz` answers, and the storage requests and
+             bytes then;
+  first      the first query of each lane on that process, with its whole
+             `telemetry` and the reader's own storage counters (`/metrics`)
+             around it. The dense one reads the index files and builds the
+             admission of the subject;
+  warm       p50, p95 and p99 of `--queries` more queries, for the lanes dense
+             (`vector`), full-text (`query`) and hybrid (both);
+  admission  `isolated_admission`: on one cold reader the first query of one
+             subject loads the files, then the first query of each other
+             subject builds its admission alone, less the median of its later
+             queries;
+  recall     of the dense lane against the 10 nearest rows the subject may
+             read, by a scan in numpy over the stored 16-bit values, and, for
+             `all`, the reader's own `/recall` (`--native-recall` samples).
+
+The numpy scan is scoring, not a measurement of fyrr: an `exact` search is
+refused above 100,000 rows. `/recall` answers `approximate: false` when it
+used an exact scan itself, which measures no index. Memory peaks are `VmHWM`
+of `/proc/<pid>/status` (peak resident set), a diagnosis of the process, not
+of the budget the reader accounts. Storage is local, so a cold request has no
+network latency: its request count and bytes carry over to an object store,
+its time does not. The operating system's page cache is not dropped: cold
+means a fresh process and an empty reader mirror.
+
+  scripts/bench-scale --binary target/release/fyrr --rows 3000000 --keep
+  scripts/bench-scale --reuse DIR                  # queries only, same namespace
+  scripts/bench-scale --reuse DIR --maintain --maintain-step 1h
+
+`--keep` leaves the namespace under `--dir` (about 6 GB at 3,000,000 rows) and
+prints its directory on stderr first. Delete it when done. The writer and `writer maintain` run on cores 0-3 only, with
+`writer.threads = 2`: all-core vector index builds hard-reset a shared host.
+Output is one JSON document on stdout and a table on stderr. Needs python3 with
+numpy.
+"""
+
+import argparse
+import http.client
+import json
+import math
+import os
+import platform
+import secrets
+import shutil
+import signal
+import socket
+import statistics
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+import numpy as np
+
+CLUSTERS = 1000
+SPREAD = 1.0  # noise around a cluster centre, against centres of unit spread
+VOCABULARY = 100000
+TOKENS = 24  # words per row
+QUERY_TOKENS = 3
+MIN_QUERY_RANK = 10  # the most common words are left out of a query
+SCALE = 1000  # the numbers of a vector have 3 decimals
+WRITE_ROWS = 50000
+K = 10
+NAMESPACE = "bench-scale"
+SUBJECTS = (("all", 1), ("p10", 10), ("p1", 100))  # name, one row in N is readable
+LANES = ("dense", "fts", "hybrid")
+WRITER_CORES = "0-3"
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def free_address():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return "127.0.0.1:%d" % probe.getsockname()[1]
+
+
+def machine(path):
+    lines = Path("/proc/cpuinfo").read_text().splitlines()
+    cpu = next(
+        (l.split(":", 1)[1].strip() for l in lines if l.startswith("model name")),
+        "unknown",
+    )
+    memory = next(
+        int(l.split()[1]) // 1024
+        for l in Path("/proc/meminfo").read_text().splitlines()
+        if l.startswith("MemTotal")
+    )
+    mount = subprocess.run(
+        ["findmnt", "-n", "-o", "SOURCE,FSTYPE,OPTIONS", "-T", str(path)],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return {
+        "kernel": platform.release(),
+        "cpu": cpu,
+        "logical_cpus": os.cpu_count(),
+        "memory_mib": memory,
+        "storage": "local file system (file://), mount: " + mount,
+    }
+
+
+def percentile(ordered, fraction):
+    """Nearest rank."""
+    return ordered[max(0, math.ceil(fraction * len(ordered)) - 1)]
+
+
+def summary(seconds):
+    ordered = sorted(seconds)
+    return {
+        "n": len(ordered),
+        "p50_ms": round(percentile(ordered, 0.50) * 1000, 1),
+        "p95_ms": round(percentile(ordered, 0.95) * 1000, 1),
+        "p99_ms": round(percentile(ordered, 0.99) * 1000, 1),
+        "max_ms": round(ordered[-1] * 1000, 1),
+    }
+
+
+def peak_rss_mib(pid):
+    try:
+        lines = Path("/proc/%d/status" % pid).read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if line.startswith("VmHWM:"):
+            return int(line.split()[1]) // 1024
+    return None
+
+
+def tree_bytes(path):
+    out = subprocess.run(["du", "-sb", str(path)], capture_output=True, text=True)
+    return int(out.stdout.split()[0])
+
+
+class Corpus:
+    """Rows and queries from a seed: the same call returns the same numbers."""
+
+    def __init__(self, rows, dimensions):
+        self.rows, self.dimensions = rows, dimensions
+        self.centres = np.random.default_rng(1729).standard_normal(
+            (CLUSTERS, dimensions), dtype=np.float32
+        )
+        self.words = ["w%d" % n for n in range(VOCABULARY)]
+        weights = 1.0 / np.arange(1, VOCABULARY + 1)
+        self.cdf = np.cumsum(weights) / weights.sum()
+        # `%.3f` of every number a vector can hold, by its value in thousandths.
+        self.reach = 12 * SCALE
+        self.table = ["%.3f" % (n / SCALE) for n in range(-self.reach, self.reach + 1)]
+
+    def vectors(self, rng, count):
+        """Integer thousandths, `count` x dimensions."""
+        cluster = rng.integers(0, CLUSTERS, count)
+        noise = rng.standard_normal((count, self.dimensions), dtype=np.float32)
+        values = self.centres[cluster] + SPREAD * noise
+        return np.clip(np.rint(values * SCALE), -self.reach, self.reach).astype(
+            np.int32
+        )
+
+    def chunk(self, first, count):
+        rng = np.random.default_rng([1729, first])
+        vectors = self.vectors(rng, count)
+        tokens = np.searchsorted(self.cdf, rng.random((count, TOKENS)))
+        return vectors, tokens
+
+    def body(self, first):
+        count = min(WRITE_ROWS, self.rows - first)
+        vectors, tokens = self.chunk(first, count)
+        table, words, offset = self.table, self.words, self.reach
+        rows = []
+        for n in range(count):
+            row = first + n
+            readers = '"grp:all"'
+            if row % 10 == 0:
+                readers += ',"usr:p10"'
+            if row % 100 == 0:
+                readers += ',"usr:p1"'
+            vector = ",".join([table[v + offset] for v in vectors[n].tolist()])
+            text = " ".join([words[t] for t in tokens[n].tolist()])
+            rows.append(
+                '{"id":"r%d","text":"%s","readers":[%s],"vector":[%s]}'
+                % (row, text, readers, vector)
+            )
+        return ('{"upserts":[%s]}' % ",".join(rows)).encode()
+
+    def stored(self):
+        """Every row as the unit vector of its 16-bit values, as float32."""
+        out = np.empty((self.rows, self.dimensions), dtype=np.float32)
+        for first in range(0, self.rows, WRITE_ROWS):
+            count = min(WRITE_ROWS, self.rows - first)
+            vectors, _tokens = self.chunk(first, count)
+            half = (vectors.astype(np.float32) / SCALE).astype(np.float16)
+            half = half.astype(np.float32)
+            out[first : first + count] = half / np.linalg.norm(half, axis=1)[:, None]
+        return out
+
+    def queries(self, count):
+        rng = np.random.default_rng(4242)
+        vectors = self.vectors(rng, count)
+        texts = []
+        for _ in range(count):
+            rank = []
+            while len(rank) < QUERY_TOKENS:
+                token = int(np.searchsorted(self.cdf, rng.random()))
+                if token >= MIN_QUERY_RANK:
+                    rank.append(token)
+            texts.append(" ".join(self.words[t] for t in rank))
+        return [v.astype(np.float32) / SCALE for v in vectors], texts
+
+
+class Server:
+    def __init__(self, address):
+        self.host, port = address.split(":")
+        self.port = int(port)
+
+    def call(self, method, path, key, body=None, timeout=1800):
+        headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
+        connection = http.client.HTTPConnection(self.host, self.port, timeout=timeout)
+        started = time.perf_counter()
+        connection.request(method, path, body, headers)
+        response = connection.getresponse()
+        answer = response.read()
+        elapsed = time.perf_counter() - started
+        connection.close()
+        try:
+            answer = json.loads(answer)
+        except ValueError:
+            pass
+        return response.status, answer, elapsed
+
+
+def alive(pid):
+    state = Path("/proc/%d/stat" % pid).read_text().rsplit(")", 1)[1].split()[0]
+    return state != "Z"
+
+
+def wait_ready(server, key, pid, limit=3600):
+    """Seconds until `/readyz` answers, or None when the process has exited."""
+    started = time.perf_counter()
+    while time.perf_counter() - started < limit and alive(pid):
+        try:
+            if server.call("GET", "/readyz", key, timeout=60)[0] == 200:
+                return time.perf_counter() - started
+        except OSError:
+            pass
+        time.sleep(0.1)
+    return None
+
+
+STORAGE_METRICS = (
+    "fyrr_reader_object_store_requests_total",
+    "fyrr_reader_object_store_bytes_total",
+    "fyrr_reader_mirror_hits_total",
+)
+
+
+def storage_counters(address):
+    """What the reader has read from storage since it started, by its metrics."""
+    host, port = address.split(":")
+    connection = http.client.HTTPConnection(host, int(port), timeout=60)
+    connection.request("GET", "/metrics")
+    text = connection.getresponse().read().decode()
+    connection.close()
+    counters = dict.fromkeys(STORAGE_METRICS, 0)
+    for line in text.splitlines():
+        name = line.split("{")[0].split(" ")[0]
+        if name in counters:
+            counters[name] += float(line.rsplit(" ", 1)[1])
+    return {k.removeprefix("fyrr_reader_"): int(v) for k, v in counters.items()}
+
+
+def numeric(telemetry):
+    """The numbers of a telemetry object, nested keys joined with a dot."""
+    flat = {}
+    for key, value in telemetry.items():
+        if isinstance(value, dict):
+            flat.update({key + "." + k: v for k, v in numeric(value).items()})
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            flat[key] = value
+    return flat
+
+
+def telemetry_medians(samples):
+    keys = set().union(*[set(numeric(s)) for s in samples])
+    medians = {}
+    for key in sorted(keys):
+        values = [numeric(s).get(key, 0) for s in samples]
+        if any(values):
+            medians[key] = statistics.median(values)
+    return medians
+
+
+def write_config(
+    work,
+    writer_address,
+    reader_address,
+    metrics_address,
+    memory_max_bytes,
+    keys,
+    step_max_duration,
+):
+    config = work / "fyrr.toml"
+    maintenance = (
+        ""
+        if not step_max_duration
+        else "[writer.maintenance]\nstep_max_duration = '%s'\n" % step_max_duration
+    )
+    admin = "[[identity.api_keys]]\nname = 'admin'\nkey = { env = 'FYRR_BENCH_ADMIN_KEY' }\n"
+    admin += "roles = ['read', 'admin']\nreaders = ['grp:all']\n"
+    subjects = "".join(
+        "[[identity.api_keys]]\nname = '%s'\nkey = { env = 'FYRR_BENCH_KEY_%s' }\n"
+        "readers = ['%s']\n"
+        % (name, name.upper(), "grp:all" if name == "all" else "usr:" + name)
+        for name, _ in SUBJECTS
+    )
+    config.write_text(
+        '[namespace]\nname = "%s"\n[storage]\nuri = "file://%s"\n'
+        '[embedding]\nendpoint = "http://127.0.0.1:9/v1"\nmodel = "caller-supplied"\n'
+        "dimensions = %d\n"
+        '[identity]\nhashing_key = { env = "FYRR_BENCH_HASHING_KEY" }\n'
+        'encryption_key = { env = "FYRR_BENCH_ENCRYPTION_KEY" }\n'
+        "[namespace.write_api]\nopen = false\n"
+        "[[identity.api_keys]]\nname = 'writer'\nkey = { env = 'FYRR_BENCH_WRITE_KEY' }\n"
+        "roles = ['write']\n"
+        "%s%s"
+        "[writer]\nthreads = 2\n%s"
+        "[writer.serve.admin]\nlisten = '%s'\noperator_token = { env = 'FYRR_BENCH_OPERATOR' }\n"
+        "[reader]\nmirror_path = '%s'\nmirror_max_bytes = 8589934592\n"
+        "memory_max_bytes = '%dMiB'\n"
+        "[reader.http]\nlisten = '%s'\npublic_url = 'http://%s/mcp'\nmetrics_listen = '%s'\n"
+        "user_requests_per_minute = 1000000\ngroup_requests_per_minute = 1000000\n"
+        % (
+            NAMESPACE,
+            work / "storage",
+            keys["dimensions"],
+            subjects,
+            admin,
+            maintenance,
+            writer_address,
+            work / "mirror",
+            memory_max_bytes // 2**20,
+            reader_address,
+            reader_address,
+            metrics_address,
+        )
+    )
+    return config
+
+
+class Run:
+    def __init__(self, args, work, secrets_):
+        self.args, self.work, self.secrets = args, work, secrets_
+        self.binary = str(Path(args.binary).resolve())
+        self.env = dict(os.environ, VIRTUAL_ENV=str(ROOT / "connectors/.venv"))
+        for name, value in secrets_["env"].items():
+            self.env[name] = value
+        self.writer_address = free_address()
+        self.reader_address = free_address()
+        self.metrics_address = free_address()
+
+    def base(self, memory_max_bytes):
+        config = write_config(
+            self.work,
+            self.writer_address,
+            self.reader_address,
+            self.metrics_address,
+            memory_max_bytes,
+            self.secrets,
+            self.args.maintain_step,
+        )
+        return [self.binary, "--config", str(config)]
+
+    def spawn(self, command, memory_max_bytes, pin=False, log=None):
+        argv = self.base(memory_max_bytes) + command
+        if pin:
+            argv = ["taskset", "-c", WRITER_CORES] + argv
+        name = log or "-".join(command[:2])
+        return subprocess.Popen(
+            argv,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=(self.work / (name + ".stderr")).open("w"),
+        )
+
+    def run_measured(self, command, pin=True):
+        """Run to the end: the seconds, the peak RSS in MiB (`VmHWM`, sampled
+        every second: `wait4` would count the driver's own pages) and the exit code."""
+        process = self.spawn(
+            command, self.args.memory[0], pin=pin, log="-".join(command)
+        )
+        started, peak = time.perf_counter(), 0
+        while alive(process.pid):
+            peak = max(peak, peak_rss_mib(process.pid) or 0)
+            time.sleep(1)
+        seconds = time.perf_counter() - started
+        _pid, status, _usage = os.wait4(process.pid, 0)
+        return seconds, peak, os.waitstatus_to_exitcode(status)
+
+    def stop(self, process):
+        """SIGTERM; the peak RSS in MiB (`VmHWM`) the process had until then."""
+        peak = None
+        if alive(process.pid):
+            peak = peak_rss_mib(process.pid)
+            os.kill(process.pid, signal.SIGTERM)
+        os.wait4(process.pid, 0)
+        return peak
+
+    def status(self):
+        out = subprocess.run(
+            self.base(self.args.memory[0]) + ["writer", "status"],
+            env=self.env,
+            check=True,
+            capture_output=True,
+        )
+        shape = json.loads(out.stdout)
+        return {
+            "index_segments": shape["index_segments"],
+            "fragments": shape["fragments"],
+        }
+
+
+def maintain_run(run):
+    seconds, peak, code = run.run_measured(["writer", "maintain"])
+    return {
+        "seconds": round(seconds, 1),
+        "peak_rss_mib": peak,
+        "exit_code": code,
+        "stderr_tail": (run.work / "writer-maintain.stderr")
+        .read_text()
+        .splitlines()[-5:],
+    }
+
+
+def maintain_once(run, work):
+    """One more `writer maintain` of a kept namespace, with the statuses around it."""
+    before = run.status()
+    result = maintain_run(run)
+    return {
+        "step_max_duration": run.args.maintain_step or "5m (default)",
+        "before": before,
+        "run": result,
+        "after": run.status(),
+        "storage_bytes": tree_bytes(work / "storage"),
+    }
+
+
+def load(run, corpus):
+    """Write every row; the load, then the maintenance, as the writer takes them."""
+    args, work = run.args, run.work
+    if run.run_measured(["writer", "keys"], pin=False)[2]:
+        raise SystemExit("writer keys failed")
+    writer = run.spawn(["writer", "serve", "--jobs", "1"], args.memory[0], pin=True)
+    write = Server(run.writer_address)
+    path = "/v1/namespaces/%s/documents" % NAMESPACE
+    batches, started = [], time.perf_counter()
+    try:
+        for first in range(0, corpus.rows, WRITE_ROWS):
+            body = corpus.body(first)
+            for _ in range(600):
+                try:
+                    status, answer, took = write.call(
+                        "POST", path, run.secrets["env"]["FYRR_BENCH_WRITE_KEY"], body
+                    )
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            else:
+                raise SystemExit("the writer did not come up")
+            assert status == 200, (status, answer)
+            batches.append(
+                {
+                    "first_row": first,
+                    "rows": answer["upserted"],
+                    "seconds": round(took, 1),
+                    "writer_peak_rss_mib": peak_rss_mib(writer.pid),
+                    "storage_bytes": tree_bytes(work / "storage"),
+                }
+            )
+            print(
+                "wrote %d rows (%.0f s, writer peak %d MiB)"
+                % (
+                    first + answer["upserted"],
+                    took,
+                    batches[-1]["writer_peak_rss_mib"],
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+    finally:
+        serve_peak = run.stop(writer)
+    elapsed = time.perf_counter() - started
+    before = run.status()
+    runs = []
+    for attempt in range(2):
+        runs.append(maintain_run(run))
+        if runs[-1]["exit_code"] == 0:
+            break
+    after = run.status()
+    return {
+        "rows": corpus.rows,
+        "request_rows": WRITE_ROWS,
+        "writes": batches,
+        "write_seconds_sum": round(sum(b["seconds"] for b in batches), 1),
+        "wall_seconds_with_generation": round(elapsed, 1),
+        "writer_peak_rss_mib": serve_peak,
+        "peak_storage_bytes": max(b["storage_bytes"] for b in batches),
+        "before_maintain": before,
+        # A failed run is repeated once; both are recorded.
+        "maintain": {"runs": runs, "storage_bytes": tree_bytes(work / "storage")},
+        "after_maintain": after,
+    }
+
+
+def ids(answer):
+    return [int(hit["root_id"][1:]) for hit in answer["hits"]]
+
+
+def arm(run, corpus, memory_max_bytes, vectors, texts, stored):
+    """One reader process per subject, each started on an empty mirror, so that
+    the first query of a subject is the first on its process: its admission is
+    built then, and the startup is a measurement of its own."""
+    args = run.args
+    keys = {
+        name: run.secrets["env"]["FYRR_BENCH_KEY_" + name.upper()]
+        for name, _ in SUBJECTS
+    }
+    path = "/v1/namespaces/%s/query" % NAMESPACE
+    result = {"memory_max_bytes": memory_max_bytes, "subjects": []}
+    answers, errors = {}, []
+    for subject, every in SUBJECTS:
+        shutil.rmtree(run.work / "mirror", ignore_errors=True)
+        reader = run.spawn(["reader", "serve"], memory_max_bytes)
+        read = Server(run.reader_address)
+        out = {"subject": subject, "rows_readable": corpus.rows // every}
+        try:
+            ready = wait_ready(read, keys[subject], reader.pid)
+            if ready is None:
+                # The reader refused to start: record why and go on to the next arm.
+                out["ready_error"] = (
+                    (run.work / "reader-serve.stderr").read_text().splitlines()[-5:]
+                )
+                result["subjects"].append(out)
+                break
+            out["ready_seconds"] = round(ready, 2)
+            out["ready_peak_rss_mib"] = peak_rss_mib(reader.pid)
+            counters = storage_counters(run.metrics_address)
+            out["storage_at_ready"] = counters
+
+            def search(lane, n):
+                body = {"limit": K, "output": "metadata"}
+                if lane in ("dense", "hybrid"):
+                    body["vector"] = [float(x) for x in vectors[n]]
+                if lane in ("fts", "hybrid"):
+                    body["query"] = texts[n]
+                status, answer, took = read.call(
+                    "POST",
+                    path,
+                    keys[subject],
+                    json.dumps(body).encode(),
+                    timeout=310,
+                )
+                if status != 200:
+                    return None, took, {"status": status, "answer": answer}
+                return answer, took, None
+
+            # The first query of each lane on this process. The dense one comes
+            # first and builds the admission of the subject.
+            out["first"] = []
+            for lane in LANES:
+                answer, took, error = search(lane, 0)
+                entry = {"lane": lane, "seconds": round(took, 3)}
+                if error:
+                    entry["error"] = error
+                else:
+                    entry["telemetry"] = answer["metadata"]["telemetry"]
+                now = storage_counters(run.metrics_address)
+                entry["storage_requests_and_bytes"] = {
+                    k: now[k] - counters[k] for k in now
+                }
+                counters = now
+                entry["reader_peak_rss_mib"] = peak_rss_mib(reader.pid)
+                out["first"].append(entry)
+                print(
+                    "first %s %s %.2f s" % (subject, lane, took),
+                    file=sys.stderr,
+                    flush=True,
+                )
+            out["warm"] = []
+            for lane in LANES:
+                times, telemetry, failed = [], [], 0
+                for n in range(1, args.queries + 1):
+                    answer, took, error = search(lane, n)
+                    if error:
+                        failed += 1
+                        errors.append(
+                            {"subject": subject, "lane": lane, "n": n, **error}
+                        )
+                        continue
+                    times.append(took)
+                    telemetry.append(answer["metadata"]["telemetry"])
+                    if lane == "dense":
+                        answers[(subject, n)] = ids(answer)
+                case = {"lane": lane, "errors": failed}
+                if times:
+                    case.update(summary(times))
+                    case["telemetry_median"] = telemetry_medians(telemetry)
+                out["warm"].append(case)
+                print(
+                    "warm %s %s %s" % (subject, lane, case.get("p50_ms")),
+                    file=sys.stderr,
+                    flush=True,
+                )
+            # The first dense query of a subject on a cold reader reads the index
+            # files and builds the subject's admission. The time over the warm
+            # median is that cost; the requests and bytes are the reader's own
+            # counters. `isolated_admission` separates the admission.
+            first, warm = out["first"][0], out["warm"][0]
+            if "telemetry" in first and "p50_ms" in warm:
+                telemetry = first["telemetry"]
+                out["cold_first_query"] = {
+                    "first_query_ms": round(first["seconds"] * 1000, 1),
+                    "warm_p50_ms": warm["p50_ms"],
+                    "excess_over_warm_ms": round(
+                        first["seconds"] * 1000 - warm["p50_ms"], 1
+                    ),
+                    "stage_s3_requests_admission": telemetry["stage_s3_requests"].get(
+                        "admission"
+                    ),
+                    "stage_s3_bytes_admission": telemetry["stage_s3_bytes"].get(
+                        "admission"
+                    ),
+                    "storage_requests_and_bytes": first["storage_requests_and_bytes"],
+                }
+            out["reader_peak_rss_mib"] = peak_rss_mib(reader.pid)
+            out["mirror_bytes"] = tree_bytes(run.work / "mirror")
+            if subject == "all" and args.native_recall:
+                status, answer, took = read.call(
+                    "POST",
+                    "/v1/namespaces/%s/recall" % NAMESPACE,
+                    run.secrets["env"]["FYRR_BENCH_ADMIN_KEY"],
+                    json.dumps(
+                        {"count": args.native_recall, "deadline_ms": 300000}
+                    ).encode(),
+                    timeout=330,
+                )
+                out["recall_native"] = {
+                    "status": status,
+                    "answer": answer,
+                    "seconds": round(took, 1),
+                }
+                out["reader_peak_rss_mib_after_recall"] = peak_rss_mib(reader.pid)
+        finally:
+            out["reader_peak_rss_mib_exit"] = run.stop(reader)
+        result["subjects"].append(out)
+    result["errors"] = errors
+    if "ready_error" not in result["subjects"][0]:
+        result["isolated_admission"] = isolated_admission(
+            run, memory_max_bytes, vectors
+        )
+
+    # Recall of the dense lane against the exact 10 nearest rows.
+    unit = vectors[1 : args.queries + 1]
+    unit = unit / np.linalg.norm(unit, axis=1)[:, None]
+    for out, (subject, every) in zip(result["subjects"], SUBJECTS):
+        if "ready_error" in out:
+            continue
+        truth = exact_top(stored, unit, every)
+        scores = []
+        for n in range(1, args.queries + 1):
+            got = answers.get((subject, n))
+            if got is not None:
+                scores.append(len(set(got) & set(truth[n - 1])) / K)
+        out["recall_numpy"] = {
+            "queries": len(scores),
+            "recall_at_10_mean": round(statistics.fmean(scores), 4) if scores else None,
+            "recall_at_10_min": round(min(scores), 4) if scores else None,
+            "queries_below_0.9": sum(1 for s in scores if s < 0.9),
+        }
+    return result
+
+
+def isolated_admission(run, memory_max_bytes, vectors):
+    """The admission of each subject apart from loading the index. On a cold
+    reader the first query of one subject reads the files and builds its
+    admission; the first query of each other subject then builds its admission
+    alone. The median of the fourth to sixth query of every identity is the
+    baseline taken off: the first ones still read pages of the index.
+    Two orders, so that every subject is measured as a later one."""
+    results = []
+    for order in (("p1", "all", "p10"), ("p10", "p1", "all")):
+        shutil.rmtree(run.work / "mirror", ignore_errors=True)
+        reader = run.spawn(["reader", "serve"], memory_max_bytes)
+        read = Server(run.reader_address)
+        path = "/v1/namespaces/%s/query" % NAMESPACE
+        out = {"order": order, "steps": []}
+        try:
+            keys = {n: run.secrets["env"]["FYRR_BENCH_KEY_" + n.upper()] for n in order}
+            if wait_ready(read, keys[order[0]], reader.pid) is None:
+                out["ready_error"] = (
+                    (run.work / "reader-serve.stderr").read_text().splitlines()[-5:]
+                )
+                results.append(out)
+                break
+            counters = storage_counters(run.metrics_address)
+            for name in order:
+                timings = []
+                for n in range(6):
+                    body = {
+                        "limit": K,
+                        "output": "metadata",
+                        "vector": vectors[n].tolist(),
+                    }
+                    status, answer, took = read.call(
+                        "POST", path, keys[name], json.dumps(body).encode(), timeout=310
+                    )
+                    now = storage_counters(run.metrics_address)
+                    timings.append(
+                        {
+                            "status": status,
+                            "ms": round(took * 1000, 1),
+                            "storage_requests_and_bytes": {
+                                k: now[k] - counters[k] for k in now
+                            },
+                            "telemetry": answer["metadata"]["telemetry"]
+                            if status == 200
+                            else answer,
+                        }
+                    )
+                    counters = now
+                baseline = statistics.median(t["ms"] for t in timings[3:])
+                out["steps"].append(
+                    {
+                        "subject": name,
+                        "first": timings[0],
+                        "later_ms": [t["ms"] for t in timings[1:]],
+                        "baseline_ms": baseline,
+                        "admission_estimate_ms": round(timings[0]["ms"] - baseline, 1),
+                    }
+                )
+                print(
+                    "isolated %s first %.0f ms, later %s ms"
+                    % (name, timings[0]["ms"], [t["ms"] for t in timings[1:]]),
+                    file=sys.stderr,
+                    flush=True,
+                )
+        finally:
+            out["reader_peak_rss_mib"] = run.stop(reader)
+        results.append(out)
+    return results
+
+
+def exact_top(stored, unit, every):
+    """The 10 nearest of every query among the rows 0, every, 2*every, ... ."""
+    best_score = np.full((len(unit), K), -2.0, dtype=np.float32)
+    best_row = np.zeros((len(unit), K), dtype=np.int64)
+    step = 250000 - 250000 % every
+    for first in range(0, len(stored), step):
+        rows = np.arange(first, min(first + step, len(stored)))
+        rows = rows[rows % every == 0]
+        scores = stored[rows] @ unit.T  # rows x queries
+        top = min(K, len(rows))
+        part = np.argpartition(-scores, top - 1, axis=0)[:top]
+        cand_score = np.concatenate(
+            [best_score, np.take_along_axis(scores, part, 0).T], axis=1
+        )
+        cand_row = np.concatenate([best_row, rows[part].T], axis=1)
+        keep = np.argsort(-cand_score, axis=1)[:, :K]
+        best_score = np.take_along_axis(cand_score, keep, 1)
+        best_row = np.take_along_axis(cand_row, keep, 1)
+    return best_row.tolist()
+
+
+def table(report):
+    print("\nwarm latency (ms), %d queries each" % report["queries"], file=sys.stderr)
+    for arm_ in report["arms"]:
+        print("memory_max_bytes %d" % arm_["memory_max_bytes"], file=sys.stderr)
+        for out in arm_["subjects"]:
+            if "ready_error" in out:
+                print("not served: %s" % out["ready_error"][-1], file=sys.stderr)
+                continue
+            admission = out.get("cold_first_query", {})
+            print(
+                "%s: ready %.1f s, cold first query +%s ms, recall@10 %s"
+                % (
+                    out["subject"],
+                    out["ready_seconds"],
+                    admission.get("excess_over_warm_ms"),
+                    out["recall_numpy"]["recall_at_10_mean"],
+                ),
+                file=sys.stderr,
+            )
+            for case in out["warm"]:
+                print(
+                    "  %-7s p50 %8s p95 %8s p99 %8s errors %d"
+                    % (
+                        case["lane"],
+                        case.get("p50_ms"),
+                        case.get("p95_ms"),
+                        case.get("p99_ms"),
+                        case["errors"],
+                    ),
+                    file=sys.stderr,
+                )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--binary", default=str(ROOT / "target/release/fyrr"))
+    parser.add_argument("--rows", type=int, default=3000000)
+    parser.add_argument("--dimensions", type=int, default=128)
+    parser.add_argument(
+        "--queries", type=int, default=100, help="warm queries per case"
+    )
+    parser.add_argument(
+        "--memory",
+        type=int,
+        nargs="+",
+        default=[2415919104, 6442450944, 8589934592],
+        help="reader.memory_max_bytes of each arm (default 2304 MiB, 6 GiB and 8 GiB)",
+    )
+    parser.add_argument(
+        "--native-recall", type=int, default=10, help="samples of /recall; 0 skips"
+    )
+    parser.add_argument(
+        "--dir", default=str(ROOT / "target"), help="where the namespace is written"
+    )
+    parser.add_argument("--keep", action="store_true", help="keep the namespace")
+    parser.add_argument(
+        "--maintain-step",
+        help="writer.maintenance.step_max_duration of every writer command (default 5m)",
+    )
+    parser.add_argument(
+        "--maintain",
+        action="store_true",
+        help="with --reuse: run `writer maintain` again, once, before the queries",
+    )
+    parser.add_argument("--reuse", help="a kept namespace: skip the load")
+    args = parser.parse_args()
+    if args.rows % WRITE_ROWS and args.rows > WRITE_ROWS:
+        raise SystemExit("--rows must be a multiple of %d" % WRITE_ROWS)
+
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    loaded = None
+    if args.reuse:
+        work = Path(args.reuse).resolve()
+        secrets_ = json.loads((work / "secrets.json").read_text())
+        loaded = json.loads((work / "load.json").read_text())
+        args.dimensions, args.rows = secrets_["dimensions"], loaded["rows"]
+    else:
+        # Local storage refuses a path with a symlink in it.
+        work = Path(tempfile.mkdtemp(prefix="scale-", dir=args.dir)).resolve()
+        work.chmod(0o700)
+        print("namespace in %s" % work, file=sys.stderr, flush=True)
+        env = {
+            name: secrets.token_hex(32)
+            for name in ("FYRR_BENCH_HASHING_KEY", "FYRR_BENCH_ENCRYPTION_KEY")
+        }
+        env["FYRR_BENCH_OPERATOR"] = secrets.token_hex(16)
+        for name in ["WRITE_KEY", "ADMIN_KEY"] + [
+            "KEY_" + n.upper() for n, _ in SUBJECTS
+        ]:
+            env["FYRR_BENCH_" + name] = "fyrr_key_" + secrets.token_hex(32)
+        secrets_ = {"dimensions": args.dimensions, "env": env}
+        (work / "secrets.json").write_text(json.dumps(secrets_))
+        (work / "secrets.json").chmod(0o600)
+    corpus = Corpus(args.rows, args.dimensions)
+    run = Run(args, work, secrets_)
+    report = {}
+    try:
+        if loaded:
+            report["load"] = loaded
+            if args.maintain:
+                loaded.setdefault("maintain_again", []).append(maintain_once(run, work))
+                (work / "load.json").write_text(json.dumps(loaded, indent=2))
+        else:
+            report["load"] = load(run, corpus)
+            (work / "load.json").write_text(json.dumps(report["load"], indent=2))
+        vectors, texts = corpus.queries(args.queries + 1)
+        stored = corpus.stored()
+        report["arms"] = [
+            arm(run, corpus, memory, vectors, texts, stored) for memory in args.memory
+        ]
+    finally:
+        if not args.keep and not args.reuse:
+            shutil.rmtree(work, ignore_errors=True)
+
+    version = subprocess.run(
+        [run.binary, "--version"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    commit = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    report.update(
+        {
+            "rows": args.rows,
+            "dimensions": args.dimensions,
+            "queries": args.queries,
+            "version": version,
+            "commit": commit,
+            "machine": machine(work if work.exists() else ROOT),
+            "writer": "taskset -c %s, writer.threads = 2" % WRITER_CORES,
+        }
+    )
+    print(json.dumps(report, indent=2))
+    table(report)
+
+
+if __name__ == "__main__":
+    main()
