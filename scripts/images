@@ -68,6 +68,23 @@ clear_mirror || die "cannot clean this image fixture's cache"
 rm -rf "$OUT"
 mkdir -p "$OUT/compose"
 
+# --- the Helm chart ----------------------------------------------------------
+ensure_helm
+helm="$HELM_DIR/helm"
+chart=deploy/helm/fyrr
+log "linting and rendering $chart"
+"$helm" lint --strict "$chart" >"$OUT/helm-lint.log" 2>&1 || { cat "$OUT/helm-lint.log"; die "helm lint failed"; }
+"$helm" template fyrr "$chart" >"$OUT/helm-default.yaml" || die "helm template failed with the default values"
+"$helm" template fyrr "$chart" --set metrics.port=9090 --set reader.existingSecret=reader-env \
+  --set writer.existingSecret=writer-env --set 'reader.env[0].name=EXAMPLE' --set 'reader.env[0].value=1' \
+  >"$OUT/helm-options.yaml" || die "helm template failed with the options set"
+grep -q 'path: /readyz' "$OUT/helm-default.yaml" || die "chart: readers have no /readyz readiness probe"
+# One writer: the writer Deployment is the only one with a fixed replica count of 1.
+grep -A8 'name: fyrr-writer' "$OUT/helm-default.yaml" | grep -q 'replicas: 1' || die "chart: the writer is not a single replica"
+grep -q 'containerPort: 9090' "$OUT/helm-options.yaml" || die "chart: metrics.port opens no metrics port"
+! grep -q 'containerPort: 9090' "$OUT/helm-default.yaml" || die "chart: the metrics port is not opt-in"
+echo "ok   helm chart lints and renders"
+
 build() {
   local target="$1" tag="$2" started
   started=$SECONDS

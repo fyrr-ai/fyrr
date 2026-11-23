@@ -1,0 +1,87 @@
+# One release serves one fyrr namespace: replicated readers, exactly one writer.
+# Secrets never go in this file: fyrr.toml refers to them as { env = "NAME" }
+# (here FYRR_IDENTITY_KEY, FYRR_ENCRYPTION_KEY, FYRR_EMBEDDING_API_KEY,
+# FYRR_API_KEY_AGENTS) and the pods get the values from existing Secrets
+# (existingSecret or env).
+
+# fyrr.toml, shared by readers and writer, mounted at /etc/fyrr/fyrr.toml.
+# Replace it. Keep these three for the chart:
+#   - reader.http.listen on the port of reader.port;
+#   - no reader.mirror_path (the mirror then lands on the readers' emptyDir);
+#   - metrics_listen on the port of metrics.port, if you set one.
+config: |
+  [namespace]
+  name = "example"
+
+  [storage]
+  uri = "s3://example-bucket/prod"
+  region = "eu-central-1"
+
+  [embedding]
+  endpoint = "https://embeddings.example.com/v1"
+  model = "BAAI/bge-m3"
+  dimensions = 1024
+  api_key = { env = "FYRR_EMBEDDING_API_KEY" }
+  reader_live = true
+
+  [embedding.spend]
+  limit_microusd = 50000000
+  max_call_microusd = 2000
+
+  [identity]
+  hashing_key = { env = "FYRR_IDENTITY_KEY" }
+  encryption_key = { env = "FYRR_ENCRYPTION_KEY" }
+
+  [[identity.api_keys]]
+  name = "agents"
+  key = { env = "FYRR_API_KEY_AGENTS" }
+  readers = ["grp:engineering"]
+
+  [reader]
+  mirror_max_bytes = 8589934592
+
+  [reader.http]
+  listen = "0.0.0.0:8080"
+  public_url = "https://fyrr.example.com/mcp"
+
+  # [[sources]] ... see docs/connectors/README.md
+
+image:
+  pullPolicy: IfNotPresent
+
+reader:
+  replicas: 2
+  image:
+    repository: ghcr.io/fyrr-ai/fyrr-reader
+    tag: ""  # default: the chart's appVersion
+  # The port of reader.http.listen; the Service and /readyz use it.
+  port: 8080
+  # Secret whose keys all become environment variables, and further variables
+  # (a list of Kubernetes EnvVar, e.g. with valueFrom.secretKeyRef). Give the
+  # readers read-only bucket credentials (or a service account that grants them).
+  existingSecret: ""
+  env: []
+  serviceAccountName: ""
+  # The readers' private mirror, an emptyDir the pod loses with itself.
+  # Keep sizeLimit above reader.mirror_max_bytes.
+  mirrorSizeLimit: 10Gi
+  resources: {}
+
+writer:
+  image:
+    repository: ghcr.io/fyrr-ai/fyrr
+    tag: ""  # default: the chart's appVersion
+  # Provider credentials and bucket write access go here, not to the readers.
+  existingSecret: ""
+  env: []
+  serviceAccountName: ""
+  # writer serve finishes its current commit group on SIGTERM, then releases the lease.
+  terminationGracePeriodSeconds: 300
+  resources: {}
+
+# Opt-in Prometheus listener (/metrics, unauthenticated) as a pod port named
+# "metrics", on readers and writer. The Service never exposes it; scrape the
+# pods. Also set reader.http.metrics_listen and writer.serve.metrics_listen to
+# "0.0.0.0:<port>" in config.
+metrics:
+  port: null

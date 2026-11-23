@@ -66,6 +66,7 @@ annotations; PyArrow's untyped API remains covered by Arrow contract tests.
 | `schemas/`, `fixtures/` | Generated JSON Schemas, golden contract documents and MCP goldens. |
 | `plugins/`, `.claude-plugin/` | The optional Claude Code plugin and its marketplace manifest. Raise `version` in `plugins/fyrr/.claude-plugin/plugin.json` with every change; clients cache a plugin by version. |
 | `docker/` | `Dockerfile` (targets `fyrr-reader` and `fyrr`), entry point, `compose.yaml`. |
+| `deploy/helm/fyrr` | Helm chart: readers and one writer. Rendered and linted by `scripts/images`. |
 | `deny.toml` | License and advisory policy. |
 
 ## Verifying

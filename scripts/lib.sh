@@ -85,6 +85,31 @@ ensure_protoc() {
   rm -rf "$tmp"
 }
 
+HELM_DIR="$ROOT/target/tools/helm"
+
+# Fetch the pinned helm into target/tools once; verify its checksum.
+ensure_helm() {
+  local bin="$HELM_DIR/helm"
+  if [[ -x "$bin" ]] && [[ "$("$bin" version --short)" == "v$HELM_VERSION+"* ]]; then
+    return 0
+  fi
+  local url sha
+  case "$(uname -m)" in
+    x86_64) url="$HELM_URL_X86_64" sha="$HELM_SHA256_X86_64" ;;
+    aarch64) url="$HELM_URL_AARCH64" sha="$HELM_SHA256_AARCH64" ;;
+    *) die "no pinned helm for $(uname -m)" ;;
+  esac
+  log "fetching helm $HELM_VERSION"
+  local tmp
+  tmp="$(mktemp -d)"
+  curl -fsSL --retry 3 -o "$tmp/helm.tar.gz" "$url"
+  echo "$sha  $tmp/helm.tar.gz" | sha256sum -c --quiet - || die "helm checksum mismatch"
+  rm -rf "$HELM_DIR"
+  mkdir -p "$HELM_DIR"
+  tar -xzf "$tmp/helm.tar.gz" --strip-components=1 -C "$HELM_DIR" --wildcards '*/helm'
+  rm -rf "$tmp"
+}
+
 # Keep source locations stable across checkouts, Cargo homes and image builds.
 # Preserve caller-supplied compiler flags before appending the canonical maps.
 build_release() {
