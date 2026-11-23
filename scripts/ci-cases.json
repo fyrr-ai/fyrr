@@ -439,6 +439,10 @@
         "tier": "quick",
         "seconds": 0.001
       },
+      "full:fyrr-writer:lib:fyrr_writer/write_api::tests::rows_laid_out_in_another_column_order_than_the_tables_are_refused": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-writer:lib:fyrr_writer/threads::tests::threads_size_every_pool_and_the_full_text_workers": {
         "tier": "quick",
         "seconds": 0.001
