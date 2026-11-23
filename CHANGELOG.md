@@ -67,6 +67,13 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   permissions. An attribute indexed with the `ngram` tokenizer is refused:
   prefix matching waits for a newer Lance. The MCP `search` tool does not take
   them.
+- The JSON `query` route takes `fields.highlights`: each excerpt then lists
+  the `[start, end)` ranges of its tokens that match the query, in the
+  codepoints of the record like its `start` and `end`. A token matches as the
+  namespace's full-text analyzer (stemming, folding, case) reduces it, so a
+  stemmed match is marked. At most 100 ranges per excerpt. The MCP tools do
+  not take it, and a request without it answers as before. See
+  [Returned fields](docs/http-api.md#returned-fields).
 
 - The `query` route of the HTTP API takes `sub_queries`: 1 to 16 searches in
   one request, each with its own `filter`, ranking (`query` text, `vector`, or

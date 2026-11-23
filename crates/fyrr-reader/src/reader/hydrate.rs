@@ -198,6 +198,10 @@ impl PreparedReader {
             self.stage(&mut telemetry, "hydration", start, before);
             let start = Instant::now();
             let scores = fields.is_some_and(|fields| fields.scores);
+            let queries: Vec<(&str, u64)> = selected
+                .iter()
+                .map(|hit| (hit.query, hit.candidate.row_id))
+                .collect();
             let mut rendered = self.render_hits(selected, &mut rows, scores)?;
             if !rendered.excerpt_jobs.is_empty() {
                 let selection_start = Instant::now();
@@ -247,6 +251,28 @@ impl PreparedReader {
                     }
                 }
                 rendered.selection_us += micros(selection_start.elapsed());
+            }
+            if fields.is_some_and(|fields| fields.highlights) {
+                let mut tokenizer = crate::fts_params(&self.config.namespace)
+                    .build()
+                    .map_err(|_| ConfigurationInvalid)?;
+                for (hit, (query, row_id)) in rendered.hits.iter_mut().zip(queries) {
+                    // A hit of another output has no text to read.
+                    if let Some(excerpt) = &mut hit.excerpt {
+                        let records = strings(
+                            rows.text_batch.as_ref().ok_or(StorageUnavailable)?,
+                            "searchable_text",
+                        )?;
+                        let row = rows.text_rows.get(&row_id).ok_or(StorageUnavailable)?;
+                        crate::excerpt::highlight(
+                            tokenizer.as_mut(),
+                            query,
+                            records.value(*row),
+                            excerpt,
+                        )
+                        .map_err(|_| ConfigurationInvalid)?;
+                    }
+                }
             }
             telemetry
                 .stage_us

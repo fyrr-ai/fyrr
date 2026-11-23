@@ -51,6 +51,8 @@ pub mod mcp {
     pub const MAX_FUSION_WEIGHT: f64 = 1e6;
     pub const MULTI_QUERY_LIMIT: u32 = 20;
     pub const EXCERPT_CODEPOINTS: u32 = 1200;
+    /// The most match ranges one excerpt reports.
+    pub const MAX_HIGHLIGHTS: usize = 100;
     pub const MAX_EXCLUSIONS: usize = 100;
     pub const MAX_FILTER_VALUES: usize = 64;
     /// Bytes of the regular expression of a `matches` filter.

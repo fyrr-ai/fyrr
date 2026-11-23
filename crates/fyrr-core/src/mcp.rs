@@ -394,6 +394,9 @@ pub struct ReturnFields {
     /// Report the lexical score and the vector distance of each hit.
     #[serde(default)]
     pub scores: bool,
+    /// Report the ranges of the query terms in each excerpt, as the index analyzer matches them.
+    #[serde(default)]
+    pub highlights: bool,
 }
 
 impl ReturnFields {
@@ -716,6 +719,10 @@ pub struct Excerpt {
     pub text: String,
     pub start: u32,
     pub end: u32,
+    /// `[start, end)` ranges of the tokens that match the query, with `fields.highlights`; offsets as `start` and `end`, at most `MAX_HIGHLIGHTS`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub highlights: Option<Vec<[u32; 2]>>,
 }
 
 /// `fetch` result.

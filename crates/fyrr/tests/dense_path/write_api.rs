@@ -2825,6 +2825,113 @@ async fn identity_write_api_returns_the_attributes_vectors_and_scores_a_query_as
     reader.stop().await;
 }
 
+/// A JSON query with `fields.highlights` reports where the tokens that match
+/// the query lie in an excerpt, as the namespace's analyzer cuts and reduces
+/// them, in codepoints of the record; without it the answer is what it was.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_highlights_the_tokens_an_excerpt_matches_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let text = std::fs::read_to_string(&config).unwrap().replacen(
+        "[namespace]\n",
+        "[namespace]\nfts_stem = true\nfts_ascii_folding = true\n",
+        1,
+    );
+    std::fs::write(&config, text).unwrap();
+    let record = "\u{1f600} Alphas sold at the caf\u{e9}, then ALPHA again";
+    embed(&root, &[record, "alpha"]);
+    let writer = Writer::start(&config, &root, address).await;
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"upserts": [{"id": "a", "text": record, "vector": vector(0, 1024),
+                                     "readers": ["usr:x"]}]})
+            )
+            .await,
+        (200, json!({"upserted": 1, "deleted": 0}))
+    );
+    let mut reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let post = async |body: Value| -> (u16, Value) {
+        let response = reader
+            .client
+            .post(format!("{}/v1/namespaces/dense-fixture/query", reader.base))
+            .bearer_auth(secret(READ_KEY))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        (
+            response.status().as_u16(),
+            response.json::<Value>().await.unwrap(),
+        )
+    };
+    let ask = async |query: &str, fields: Value| {
+        let mut body = json!({"query": query, "vector": vector(0, 1024)});
+        if !fields.is_null() {
+            body["fields"] = fields;
+        }
+        post(body).await
+    };
+    let excerpt = |answer: (u16, Value)| {
+        assert_eq!(answer.0, 200, "{}", answer.1);
+        answer.1["hits"][0]["excerpt"].clone()
+    };
+
+    // The stemmed `Alphas` and the upper-case `ALPHA` match `alpha`, and the
+    // offsets count the emoji before them as one codepoint.
+    let marked = excerpt(ask("alpha", json!({"highlights": true})).await);
+    assert_eq!(marked["highlights"], json!([[2, 8], [32, 37]]));
+    let chars: Vec<char> = record.chars().collect();
+    let words: Vec<String> = marked["highlights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|range| {
+            chars[range[0].as_u64().unwrap() as usize..range[1].as_u64().unwrap() as usize]
+                .iter()
+                .collect()
+        })
+        .collect();
+    assert_eq!(words, ["Alphas", "ALPHA"]);
+    // The analyzer folds the accent of `caf\u{e9}` and cuts it from the comma.
+    assert_eq!(
+        excerpt(ask("cafe", json!({"highlights": true})).await)["highlights"],
+        json!([[21, 25]])
+    );
+    assert_eq!(
+        excerpt(ask("zulu", json!({"highlights": true})).await)["highlights"],
+        json!([])
+    );
+    // Without the option the excerpt has no `highlights` and is otherwise the same.
+    let plain = excerpt(ask("alpha", Value::Null).await);
+    assert!(plain.get("highlights").is_none(), "{plain}");
+    let mut unmarked = marked.clone();
+    unmarked.as_object_mut().unwrap().remove("highlights");
+    assert_eq!(plain, unmarked);
+    assert_eq!(
+        excerpt(ask("alpha", json!({"highlights": false})).await),
+        plain
+    );
+    // A hit without an excerpt has no text to mark and is no error.
+    let metadata = post(json!({"query": "alpha", "vector": vector(0, 1024),
+                               "output": "metadata", "fields": {"highlights": true}}))
+    .await;
+    assert_eq!(metadata.0, 200, "{}", metadata.1);
+    assert_eq!(metadata.1["hits"][0]["excerpt"], Value::Null);
+    assert_eq!(
+        ask("alpha", json!({"highlights": "yes"})).await,
+        (400, json!({"error": "invalid_argument"}))
+    );
+    reader.stop().await;
+}
+
 /// A search takes its query vector from the request instead of the embedding
 /// provider, scans exactly when asked, fetches as many candidates as its limit
 /// asks for, and stays inside the filter and the caller's permissions.

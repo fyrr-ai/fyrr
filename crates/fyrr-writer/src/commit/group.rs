@@ -673,15 +673,7 @@ pub(crate) async fn add_attribute_columns(
 /// environment (see `threads::apply`) for builds and for index merges alike,
 /// which keeps the partition geometry through both.
 fn fts_params(config: &Config) -> lance_index::scalar::InvertedIndexParams {
-    let fts = lance_index::scalar::InvertedIndexParams::default()
-        .base_tokenizer("simple".into())
-        .with_position(false)
-        .max_token_length(Some(config.namespace.fts_max_token_length as usize))
-        .lower_case(true)
-        .stem(config.namespace.fts_stem)
-        .remove_stop_words(config.namespace.fts_remove_stop_words)
-        .ascii_folding(config.namespace.fts_ascii_folding);
-    with_workers(config, fts)
+    with_workers(config, fyrr_reader::fts_params(&config.namespace))
 }
 
 /// Parameters of the full-text index of an attribute that has an analyzer of
