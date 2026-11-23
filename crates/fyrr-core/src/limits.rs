@@ -100,6 +100,14 @@ pub mod write {
     pub const MAX_FILTER_WRITE_DOCUMENTS: usize = 10_000;
 }
 
+/// Bounds of the recall report (not of connector documents).
+pub mod recall {
+    /// The most stored vectors one recall request samples. Each is searched
+    /// twice, once by the index and once exactly over every row the caller may
+    /// read, and the request deadline bounds the whole run.
+    pub const MAX_SAMPLES: u32 = 100;
+}
+
 /// Bounds of the namespace listing (not of connector documents).
 pub mod listing {
     /// Namespaces one listing returns: more names than this match, and it fails.

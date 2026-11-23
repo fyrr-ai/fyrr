@@ -16,6 +16,9 @@ pub(crate) enum ToolCall {
     /// `POST /v1/namespaces/{namespace}/aggregate`: no MCP tool, so `parse`
     /// never makes it; `aggregate` does.
     Aggregate(Box<AggregateInput>),
+    /// `POST /v1/namespaces/{namespace}/recall`: no MCP tool, so `parse` never
+    /// makes it; `recall` does.
+    Recall(Box<RecallInput>),
     /// `GET /v1/namespaces/{namespace}`: no MCP tool, so `parse` never makes it.
     Report,
 }
@@ -35,8 +38,8 @@ impl ToolCall {
             Self::Search(args) => args.validate().map_err(|_| InvalidArgument)?,
             Self::Fetch(args) => args.validate().map_err(|_| InvalidArgument)?,
             Self::ListFilters(args) => args.validate().map_err(|_| InvalidArgument)?,
-            // `aggregate` validated its own arguments.
-            Self::Aggregate(_) | Self::Report => {}
+            // `aggregate` and `recall` validated their own arguments.
+            Self::Aggregate(_) | Self::Recall(_) | Self::Report => {}
         }
         Ok(call)
     }
@@ -79,12 +82,19 @@ impl ToolCall {
         args.validate().map_err(|_| InvalidArgument)?;
         Ok(Self::Aggregate(Box::new(args)))
     }
+    /// The call of the JSON `recall` route.
+    pub(crate) fn recall(args: Value) -> Result<Self> {
+        let args: RecallInput = serde_json::from_value(args).map_err(|_| InvalidArgument)?;
+        args.validate().map_err(|_| InvalidArgument)?;
+        Ok(Self::Recall(Box::new(args)))
+    }
     pub(crate) fn deadline_ms(&self) -> u32 {
         match self {
             Self::Search(args) => args.deadline_ms,
             Self::Fetch(args) => args.deadline_ms,
             Self::ListFilters(args) => args.deadline_ms,
             Self::Aggregate(args) => args.deadline_ms,
+            Self::Recall(args) => args.deadline_ms,
             Self::Report => None,
         }
         .unwrap_or(fyrr_core::limits::mcp::DEFAULT_DEADLINE_MS)
@@ -134,6 +144,10 @@ pub(super) async fn execute(
                     .aggregate(args)
                     .await
                     .and_then(|r| serde_json::to_value(r).map_err(|_| StorageUnavailable)),
+                ToolCall::Recall(args) => reader
+                    .recall(args, job.subject.as_ref().map(|subject| subject.expires))
+                    .await
+                    .and_then(|r| serde_json::to_value(r).map_err(|_| StorageUnavailable)),
                 ToolCall::Report => reader.report().await,
             }
         };
@@ -156,7 +170,10 @@ pub(super) async fn execute(
     *crate::sync::lock(&job.response_claims.scratch) = reader.response_claim.take();
     let result = match outcome {
         Ok(mut value) => {
-            let with_telemetry = !matches!(request, ToolCall::Search(_) | ToolCall::Report);
+            let with_telemetry = !matches!(
+                request,
+                ToolCall::Search(_) | ToolCall::Recall(_) | ToolCall::Report
+            );
             if with_telemetry && job.subject.is_some() {
                 value["metadata"]["telemetry"]["stage_us"]["authorization_cache_build"] =
                     json!(context.authorization_build_us);

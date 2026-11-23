@@ -86,6 +86,18 @@ impl PreparedReader {
         exact: bool,
         telemetry: &mut Telemetry,
     ) -> Result<Vec<Candidate>> {
+        Ok(self.dense_traced(vector, k, exact, telemetry).await?.0)
+    }
+
+    /// As [`Self::dense`], and whether the vector index found the rows: not an
+    /// exact scan, which a selective filter or a missing index brings about.
+    pub(crate) async fn dense_traced(
+        &self,
+        vector: &[f32],
+        k: usize,
+        exact: bool,
+        telemetry: &mut Telemetry,
+    ) -> Result<(Vec<Candidate>, bool)> {
         embedding::validate(
             vector,
             self.config.embedding.dimensions,
@@ -101,7 +113,7 @@ impl PreparedReader {
         );
         let query_array = Float32Array::from(vector.to_vec());
         if wanted == 0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
         let depth = &self.config.namespace.retrieval.rescore_depth;
         let mut shortlist = depth.initial(k);
@@ -130,9 +142,15 @@ impl PreparedReader {
             {
                 routing_telemetry(telemetry, Some(RoutingFallback::Absent), false);
             }
+            // Whether the index itself found a row: the unindexed tail is
+            // scanned, whatever it holds.
+            let mut index_found = false;
             let candidates = if self.preparation_reservation.warm() && indexed {
                 match self.candidates(vector, shortlist, &plan, telemetry).await {
-                    Ok(candidates) => Some(candidates),
+                    Ok((candidates, found)) => {
+                        index_found = found;
+                        Some(candidates)
+                    }
                     Err(PartitionMapUnavailable) => None,
                     Err(error) => return Err(error),
                 }
@@ -145,6 +163,11 @@ impl PreparedReader {
             self.stage(telemetry, "dense_routing_ann", start, before);
             let refine_start = Instant::now();
             let refine_counters = self.mirror.counters();
+            let has_index = self
+                .indexes
+                .iter()
+                .any(|index| index.name == Layout::VECTOR_INDEX);
+            let mut by_index = has_index && index_found;
             let mut rows = if let Some(candidates) = candidates {
                 match self
                     .refine_dense_candidates(vector, candidates, wanted, k, shortlist, telemetry)
@@ -158,19 +181,23 @@ impl PreparedReader {
                     }
                 }
             } else {
-                self.native_dense_rows(
-                    &query_array,
-                    wanted,
-                    k,
-                    self.preparation_reservation.warm()
-                        && self.filter_selection.is_none()
-                        && !exact,
-                    self.fallback_probes,
-                    telemetry,
-                )
-                .await?
+                let (rows, indexed) = self
+                    .native_dense_rows(
+                        &query_array,
+                        wanted,
+                        k,
+                        self.preparation_reservation.warm()
+                            && self.filter_selection.is_none()
+                            && !exact,
+                        self.fallback_probes,
+                        telemetry,
+                    )
+                    .await?;
+                by_index = has_index && indexed;
+                rows
             };
             if rows.len() < wanted {
+                by_index = false;
                 rows = self
                     .native_dense_rows(
                         &query_array,
@@ -180,7 +207,8 @@ impl PreparedReader {
                         self.fallback_probes,
                         telemetry,
                     )
-                    .await?;
+                    .await?
+                    .0;
             }
             if rows.len() != wanted {
                 return Err(StorageUnavailable);
@@ -194,7 +222,7 @@ impl PreparedReader {
                 .flatten()
                 .filter(|addr| self.selected_rows().selected(u64::from(*addr)))
                 .count() as u64;
-            return Ok(rows);
+            return Ok((rows, by_index));
         }
     }
 
@@ -327,6 +355,8 @@ impl PreparedReader {
         )?))
     }
 
+    /// The nearest rows by Lance's own search, and whether the vector index
+    /// found them: a short answer from the index is redone as an exact scan.
     pub(super) async fn native_dense_rows(
         &self,
         query: &Float32Array,
@@ -335,7 +365,7 @@ impl PreparedReader {
         mut use_index: bool,
         nprobes: usize,
         telemetry: &mut Telemetry,
-    ) -> Result<Vec<Candidate>> {
+    ) -> Result<(Vec<Candidate>, bool)> {
         let bound = k * 16;
         let depth = &self.config.namespace.retrieval.rescore_depth;
         let mut pool = depth.initial(k);
@@ -404,7 +434,8 @@ impl PreparedReader {
             if !unresolved || requested == bound {
                 telemetry.dense_tie_bound_hits += u64::from(unresolved);
                 rows.truncate(wanted);
-                return Ok(rows);
+                // The index may have given up on the way: report the scan that answered.
+                return Ok((rows, use_index));
             }
             requested = if use_index && requested < pool {
                 next_divisor(requested, pool)
@@ -422,7 +453,7 @@ impl PreparedReader {
         shortlist: usize,
         plan: &FilterPlan,
         telemetry: &mut Telemetry,
-    ) -> Result<BTreeSet<u64>> {
+    ) -> Result<(BTreeSet<u64>, bool)> {
         let indexes = &self.indexes;
         let prefilter = Arc::new(DatasetPreFilter::new(
             self.dataset.clone(),
@@ -547,6 +578,7 @@ impl PreparedReader {
         let mut ranked: Vec<_> = candidates.into_iter().collect();
         ranked.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
         ranked.truncate(shortlist);
+        let found = !ranked.is_empty();
         let mut result: BTreeSet<_> = ranked.into_iter().map(|(id, _)| id).collect();
         result.extend(
             self.admission
@@ -556,6 +588,6 @@ impl PreparedReader {
                 .flatten()
                 .map(u64::from),
         );
-        Ok(result)
+        Ok((result, found))
     }
 }

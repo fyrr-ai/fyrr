@@ -2528,6 +2528,10 @@
       "full:fyrr:test:dense_path/embedding::tools_writer_embedding_512_batches_restart_mcp_recall_and_routing_on_storage": {
         "tier": "full",
         "seconds": 39.237
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_reports_recall_to_an_admin_key_on_storage": {
+        "tier": "full",
+        "seconds": 5
       }
     },
     "children": {

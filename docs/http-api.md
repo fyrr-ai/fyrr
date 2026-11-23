@@ -28,6 +28,7 @@
 | `POST /v1/namespaces/{namespace}/query` | The arguments of [`search`](mcp-tools.md#search) | The `search` result |
 | `POST /v1/namespaces/{namespace}/fetch` | The arguments of [`fetch`](mcp-tools.md#fetch) | The `fetch` result |
 | `POST /v1/namespaces/{namespace}/aggregate` | The [aggregate request](#aggregate) | The [aggregate result](#aggregate) |
+| `POST /v1/namespaces/{namespace}/recall` | The [recall request](#recall) | The [recall result](#recall) |
 | `GET /v1/namespaces/{namespace}` | None | The [namespace report](#namespace-report) |
 | `GET /v1/namespaces?prefix=` | None | The [namespace list](#listing-namespaces) |
 
@@ -64,8 +65,8 @@ spend limits are per process: every namespace charges the same counters.
 alone. `list_filters` has no JSON route.
 
 `query`, `fetch` and `aggregate`, like `/mcp`, need the `read` role of an
-[API key](identity.md#identityapi_keys); users signed in through OIDC hold
-`read` only. Other namespaces than the configured one are for API keys: an OIDC
+[API key](identity.md#identityapi_keys); [`recall`](#recall) needs `admin` and `read`.
+Users signed in through OIDC hold `read` only. Other namespaces than the configured one are for API keys: an OIDC
 user reads the configured namespace through the path and answers `503
 authorization_unavailable` for any other. An API key opens a namespace where
 its role and `namespace_prefix` in the published keys allow it, and reads there
@@ -531,6 +532,53 @@ Only documents the caller may read are counted. More than
 `reader.filter_count_max_rows` readable rows answers `503 busy`, as
 [`list_filters`](mcp-tools.md#list_filters) does, which runs the same scan. More than 1000
 groups is `400 invalid_argument`: narrow the filter or group by fewer fields.
+
+## Recall
+
+`POST /v1/namespaces/{namespace}/recall` measures how closely the vector index
+agrees with an exact search, as the [background sampler](operations.md#vector-recall)
+does, but for the number of stored vectors it is asked. It needs both the `admin`
+and the `read` role of an API key: `read` binds the key to the rows it samples,
+which `readers` name, and `admin` keeps the route to operators, since a filter
+and `samples` would tell any caller something of values it may not see. A key
+with only one of the two, and an OIDC user, answers `403 forbidden`. It is a JSON route only: no MCP tool takes it.
+
+| Member | Meaning |
+| --- | --- |
+| `count` | 1–100 stored vectors to measure. They are the first rows, in storage order, that the key may read and `filter` selects. |
+| `filter` | A [filter](mcp-tools.md#filters) tree, as for `search`, which every search of the run uses; the rows the key may read always apply on top of it. |
+| `deadline_ms` | 1–300000; default 10 s. |
+| `consistency` | As for [`query`](#consistency). |
+
+```sh
+curl https://fyrr.example.com/v1/namespaces/main/recall \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"count":20,"filter":{"field":"status","op":"eq","value":"open"},"deadline_ms":60000}'
+```
+
+The answer is `{"samples": 20, "rows": 41873, "approximate": true,
+"recall_at_10": 0.97, "recall_at_75": 0.94}`. For each vector the reader
+searches the namespace by that vector (75 nearest, the namespace's distance)
+the way a query does, and exactly, over the rows the key may read and `filter`
+selects, and compares the two answers; `recall_at_10` and `recall_at_75` are
+the means over `samples`. `samples` is `count`, or fewer when the selection
+holds fewer rows, and `rows` is the size of that selection, the rows each exact
+scan reads. The whole run uses one selection: a change of the key's permissions
+while it runs fails it with `503 authorization_unavailable`. Without a sample
+both recalls are `null`.
+
+A query may answer by an exact scan instead of the index, as one with a
+selective `filter` does, or one on a namespace without a vector index, or for a
+key that reads only rows the index does not cover yet. `approximate: false`
+means that at least one sample was answered by an exact scan: its recall
+compares two exact answers and measures no index. The answer names no document
+and returns no text or vector.
+
+The run holds one query slot and stops at the deadline with `408
+deadline_exceeded` and no partial answer. Each sample scans every selected
+row, so a large `count` over a large namespace needs a long `deadline_ms`; the
+other errors are those of [`query`](#errors).
 
 ## Errors
 

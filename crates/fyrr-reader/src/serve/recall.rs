@@ -80,7 +80,9 @@ impl SampleWork {
         let result = {
             let work = async {
                 let _pin = pin.map_err(|_| SampleSkip::AuthorizationChanged)?;
-                reader.recall_reference(&sample).await
+                reader.recall_reference(&sample).await.map(|(at_10, at_75, rows)| {
+                    json!({"recall_at_10":at_10,"recall_at_75":at_75,"recall_admitted_rows":rows})
+                })
             };
             tokio::select! { biased;
                 () = cancelled.cancelled() =>Err(SampleSkip::Cancelled),

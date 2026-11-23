@@ -25,6 +25,8 @@ Setting a deployment up (topology, images, scheduling) is in
   restarted.
 - [Metrics](#metrics) are served in the Prometheus text format when a
   `metrics_listen` address is configured.
+- [Vector recall](#vector-recall) says how closely the vector index agrees with
+  an exact search: measured by the reader in the background, and on request.
 - Every successful MCP tool response carries stage timings and S3 request counts in
   `metadata.telemetry`.
 
@@ -39,7 +41,7 @@ every label has a few fixed values.
 
 | Process | Metric | Meaning |
 | --- | --- | --- |
-| reader | `fyrr_reader_http_request_duration_seconds{route,code}` | Histogram of HTTP requests by route (`mcp`, `search`, `fetch`, `aggregate`, `report`, `list`, `readyz`, `refresh`, `metadata`, `other`) and HTTP status code; its `_count` is the request count. |
+| reader | `fyrr_reader_http_request_duration_seconds{route,code}` | Histogram of HTTP requests by route (`mcp`, `search`, `fetch`, `aggregate`, `recall`, `report`, `list`, `readyz`, `refresh`, `metadata`, `other`) and HTTP status code; its `_count` is the request count. |
 | reader | `fyrr_reader_queue_wait_seconds` | Histogram of the time from the arrival of a request to the start of its execution. |
 | reader | `fyrr_reader_mirror_hits_total` | Reads answered from the local mirror. |
 | reader | `fyrr_reader_object_store_requests_total`, `fyrr_reader_object_store_bytes_total` | Reads the mirror sent to the object store, and their bytes. |
@@ -56,6 +58,37 @@ every label has a few fixed values.
 
 Histogram buckets are 5 ms to 120 s. The metrics count since the process
 started.
+
+## Vector recall
+
+The vector index finds the nearest rows approximately. Its recall is the share
+of the rows an exact search over the same rows would return that the index
+returned too, at the 10 and at the 75 nearest (`recall_at_10`, `recall_at_75`).
+The reader measures it two ways, both over the rows the caller may read, under
+the same filter and with the namespace's distance.
+
+**In the background.** The reader picks every 100th successful dense search
+and, when it has no other work, replays that query as an exact search, one at a time, within
+2 seconds. A foreground request cancels it. Each pick prints one `telemetry`
+event to stderr with `recall_successful`, `recall_selected`, `recall_completed`,
+`recall_coverage` (completed over successful searches) and, for a completed
+sample, `recall_at_10`, `recall_at_75` and `recall_admitted_rows` (the rows the
+exact search scanned); a skipped one has `recall_skip_<reason>` instead.
+`fyrr_reader_recall_samples_total{outcome}` counts them by `completed` or the
+reason. The sampler needs dense searches: with the default
+`embedding.reader_live = false` the reader embeds no query text, so only
+searches by a supplied `vector` or by a cached embedding are counted, and a
+reader without them takes no sample. The request below does not wait for them.
+
+**On request.** `POST /v1/namespaces/{namespace}/recall` measures a number of
+stored vectors at once, whatever the traffic. It needs the `admin` and the `read` role of an
+[API key](identity.md#identityapi_keys), and the key reads only the rows its
+`readers` bind it to: they are the rows it samples and searches. See
+[Recall](http-api.md#recall) for the body and the answer. The request holds one
+query slot, like a query, and its `deadline_ms` bounds the whole run: each
+sampled vector costs one index search and one exact scan of every row the key
+may read and the filter selects, so size `count` and the deadline to the
+namespace. The answer holds counts and recall, never a document's key or text.
 
 ## Reader refresh
 

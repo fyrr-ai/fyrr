@@ -795,6 +795,37 @@ pub struct AggregateInput {
     pub deadline_ms: Option<u32>,
 }
 
+/// The arguments of the JSON `recall` route; it is no MCP tool.
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecallInput {
+    /// Stored vectors to sample, 1 to 100: each is searched by the index and
+    /// exactly, and the two answers are compared.
+    #[schemars(range(min = 1, max = crate::limits::recall::MAX_SAMPLES))]
+    pub count: u32,
+    /// The rows to sample and search, as in `search`: they must also be rows the caller may read.
+    pub filter: Option<Filter>,
+    /// Deadline in milliseconds; default 10000.
+    #[schemars(range(min = 1, max = 300_000))]
+    pub deadline_ms: Option<u32>,
+}
+
+/// The `recall` result: how closely the vector index of the rows the caller
+/// may read agrees with an exact search. It names no document.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct RecallOutput {
+    /// Stored vectors measured: `count`, or fewer when the selection holds fewer rows.
+    pub samples: u32,
+    /// Rows the caller may read that the filter selects: what each exact search scans.
+    pub rows: u64,
+    /// `false` when at least one sample was answered by an exact scan, not by the vector index, as a selective `filter`, a namespace without a vector index or a caller who reads only unindexed rows brings about: that sample compares two exact answers and says nothing of an index. Also `false` without a sample.
+    pub approximate: bool,
+    /// The share of the ten nearest rows by an exact search that the index also found, averaged over `samples`; `null` without a sample.
+    pub recall_at_10: Option<f64>,
+    /// As `recall_at_10` for the 75 nearest rows.
+    pub recall_at_75: Option<f64>,
+}
+
 /// One aggregate: `count` takes an optional field, the others need one.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1556,6 +1587,18 @@ impl AggregateInput {
                     .is_some_and(|field| bounded_text(field, 128))
                     || (aggregation.field.is_none() && aggregation.op == AggregateOp::Count)
             })
+            && valid_deadline(self.deadline_ms)
+        {
+            Ok(())
+        } else {
+            Err("invalid_argument")
+        }
+    }
+}
+
+impl RecallInput {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if (1..=crate::limits::recall::MAX_SAMPLES).contains(&self.count)
             && valid_deadline(self.deadline_ms)
         {
             Ok(())
