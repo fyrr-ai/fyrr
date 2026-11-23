@@ -25,14 +25,39 @@ Serving many users over HTTP is in [HTTP login and users](http-users.md).
   processor of the documents.
 - **S3 and the reader mirror hold readable content.** Document text,
   metadata and vectors are stored in [Lance](architecture.md#terms) files under `storage.uri`, and
-  readers cache them in `reader.mirror_path`. fyrr does not encrypt them;
-  protect the bucket and the mirror host with your own access control and
-  storage encryption. Anyone who can read the bucket can read every
-  document.
+  readers cache them in `reader.mirror_path`. fyrr does not encrypt them
+  itself; protect the bucket and the mirror host with your own access control
+  and storage encryption (see [Encryption at rest](#encryption-at-rest)).
+  Anyone who can read the bucket can read every document.
 - **Identity values are hashed, not encrypted.** Reader tokens and subject
   keys are stored as HMAC-SHA256 digests keyed by `identity.hashing_key`, so
   the artifacts do not list user or group names. This hides identities; it
   does not protect document content.
+
+## Encryption at rest
+
+Without `storage.kms_key_id`, fyrr sends no encryption header and the bucket's
+default encryption applies. With a KMS key ID, ARN or alias, every object fyrr
+writes to S3 asks for server-side encryption under that key (`aws:kms`): the
+dataset files and manifests that [Lance](architecture.md#terms) writes, and
+fyrr's own control objects such as the serving head. A `file://` URI takes no
+key. One key serves every namespace under `storage.uri`; there is no key per
+namespace.
+
+- Writers need `kms:GenerateDataKey` and `kms:Decrypt` on the key; readers need
+  `kms:Decrypt`. A principal without them cannot write or read the objects.
+- **A disabled key, a key scheduled for deletion or a deleted key makes every
+  object under it unreadable.** Readers and writers fail with
+  `storage_unavailable` as soon as they need such an object, and nothing is
+  served from storage until the key is enabled again. A deleted key cannot be
+  restored and the objects are lost: restore from a
+  [backup](operations.md#backup-and-copy) under another key.
+- **Setting or changing `kms_key_id` re-encrypts nothing.** Objects written
+  earlier keep the key (or the bucket default) they were written with, and
+  fyrr does not rewrite them. After a rotation to a new key, and after an
+  automatic rotation of a key, every earlier version of the key must stay
+  enabled for as long as any object written under it exists; disabling or
+  deleting an old version makes those objects unreadable like a disabled key.
 
 ## Principals and reader tokens
 

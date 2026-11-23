@@ -216,6 +216,9 @@ fn patterns(config: &Config, error: &mut impl FnMut(&str, String)) {
             &*STORAGE_URI,
         ),
     ];
+    if let Some(key) = &config.storage.kms_key_id {
+        patterns.push(("storage.kms_key_id".to_owned(), key.as_str(), &*KMS_KEY_ID));
+    }
     for (index, source) in config.sources.iter().enumerate() {
         patterns.push((
             format!("sources[{index}].id"),

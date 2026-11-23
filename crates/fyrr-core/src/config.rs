@@ -47,6 +47,9 @@ pub const NAMESPACE_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{0,62}$";
 /// (`file:///absolute/path`).
 pub const STORAGE_URI_PATTERN: &str =
     r"^(s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](/.*)?|file:///[^?#]+)$";
+/// A KMS key by ID, ARN or alias (`alias/name`): the characters those use, at
+/// most 2048 bytes, so the value is a valid request header.
+pub const KMS_KEY_ID_PATTERN: &str = r"^[A-Za-z0-9:/_.+=@-]{1,2048}$";
 /// Source IDs: lowercase letters, digits, `_` and `-`, at most 63 bytes.
 pub const SOURCE_ID_PATTERN: &str = r"^[a-z0-9][a-z0-9_-]{0,62}$";
 /// Connector provider names.
@@ -97,6 +100,7 @@ pub fn is_namespace_name(text: &str) -> bool {
     NAMESPACE.is_match(text)
 }
 static STORAGE_URI: LazyLock<regex::Regex> = LazyLock::new(|| compiled(STORAGE_URI_PATTERN));
+static KMS_KEY_ID: LazyLock<regex::Regex> = LazyLock::new(|| compiled(KMS_KEY_ID_PATTERN));
 static SOURCE_ID: LazyLock<regex::Regex> = LazyLock::new(|| compiled(SOURCE_ID_PATTERN));
 pub static PROVIDER: LazyLock<regex::Regex> = LazyLock::new(|| compiled(PROVIDER_PATTERN));
 
@@ -596,6 +600,11 @@ pub struct StorageConfig {
     pub secret_access_key: Option<SecretRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_token: Option<SecretRef>,
+    /// KMS key (ID, ARN or alias) that encrypts every object fyrr writes;
+    /// absent, the bucket's default encryption applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = KMS_KEY_ID_PATTERN))]
+    pub kms_key_id: Option<String>,
 }
 
 /// Embedding identity, role transformations and bounded provider access.
@@ -1418,6 +1427,10 @@ impl StorageConfig {
             "aws_virtual_hosted_style_request".to_owned(),
             self.virtual_hosted_style.to_string(),
         );
+        if let Some(key) = &self.kms_key_id {
+            options.insert("aws_server_side_encryption".to_owned(), "aws:kms".to_owned());
+            options.insert("aws_sse_kms_key_id".to_owned(), key.clone());
+        }
         for (key, secret) in [
             ("aws_access_key_id", &self.access_key_id),
             ("aws_secret_access_key", &self.secret_access_key),

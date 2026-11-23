@@ -541,6 +541,42 @@ fn storage_rules_and_options() {
     assert_eq!(map["aws_secret_access_key"], SENTINEL);
     assert_eq!(map["aws_endpoint"], "http://127.0.0.1:9000");
     assert_eq!(map["allow_http"], "true");
+    assert!(!map.contains_key("aws_server_side_encryption") && !map.contains_key("aws_sse_kms_key_id"));
+}
+
+#[test]
+fn a_kms_key_becomes_server_side_encryption_options() {
+    let with = |key: &str| {
+        MINIMAL.replace(
+            "uri = \"s3://fyrr-data/acme\"",
+            &format!("uri = \"s3://fyrr-data/acme\"\nkms_key_id = \"{key}\""),
+        )
+    };
+    for key in [
+        "1234abcd-12ab-34cd-56ef-1234567890ab",
+        "arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+        "alias/fyrr-data",
+    ] {
+        let loaded = parse(&with(key)).expect("parse");
+        assert_eq!(errors(&loaded), Vec::<String>::new(), "{key}");
+        let map = loaded
+            .config
+            .storage
+            .object_store_options(&env(&[]))
+            .expect("resolved")
+            .into_map();
+        assert_eq!(map["aws_server_side_encryption"], "aws:kms");
+        assert_eq!(map["aws_sse_kms_key_id"], key);
+    }
+    for key in ["", "bad key", "key\r\nx-injected: 1", &"k".repeat(2049)] {
+        let errors = errors(&parse(&with(key)).expect("parse"));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.starts_with("error: storage.kms_key_id")),
+            "{key:?}: {errors:?}"
+        );
+    }
 }
 
 #[test]
@@ -606,6 +642,7 @@ fn local_storage_takes_a_canonical_file_uri_and_no_s3_keys() {
         ("access_key_id", "{ env = \"FYRR_TEST_KEY\" }"),
         ("secret_access_key", "{ env = \"FYRR_TEST_SECRET\" }"),
         ("session_token", "{ env = \"FYRR_TEST_TOKEN\" }"),
+        ("kms_key_id", "\"alias/fyrr-data\""),
     ] {
         let text = local("file:///var/lib/fyrr").replace(
             "uri = \"file:///var/lib/fyrr\"",

@@ -54,6 +54,7 @@ such as `query_cache_max_bytes`, take a TOML integer instead.
 | `endpoint` | absent | Endpoint of an S3-compatible service; absent uses `AWS_ENDPOINT_URL` when set, otherwise AWS S3. |
 | `allow_http` | `false` | Allow a plain-HTTP endpoint (development only). |
 | `virtual_hosted_style` | `false` | Virtual-hosted-style requests instead of path-style. |
+| `kms_key_id` | absent | KMS key (ID, ARN or alias) that encrypts every object fyrr writes; absent, the bucket's default encryption applies. See [encryption at rest](security.md#encryption-at-rest). |
 | `access_key_id`, `secret_access_key`, `session_token` | absent | Set `access_key_id` and `secret_access_key` together; `session_token` requires both. Otherwise uses the environment and role sources below. |
 
 All keys but `uri` configure S3 access; with a `file://` URI, `config check`
