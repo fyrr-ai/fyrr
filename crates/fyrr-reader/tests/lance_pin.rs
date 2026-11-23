@@ -459,7 +459,8 @@ async fn configurable_max_token_length_default_40_and_override_128() {
 /// text, against the `simple` tokenizer, which takes a run of such characters
 /// as one token. Stemming and stop words are off, so that only the
 /// segmentation decides the hits. The tokenizer finds words by a dictionary
-/// that ships with Lance: a word it does not know is cut into what it does.
+/// that ships with Lance: `北京` and `天安门`, `東京` are words, and `北`, `東`
+/// and `京` alone are not tokens of the texts that hold them.
 #[tokio::test]
 async fn unicode_word_tokenizer_segments_chinese_and_japanese_by_dictionary() {
     let root = directory("unicode-tokens");
@@ -490,7 +491,8 @@ async fn unicode_word_tokenizer_segments_chinese_and_japanese_by_dictionary() {
                 ("天安门", &[0]),
                 ("北", &[]),
                 ("東京", &[1]),
-                ("ます", &[1]),
+                ("東", &[]),
+                ("京", &[]),
                 ("hello", &[2]),
             ],
         ),

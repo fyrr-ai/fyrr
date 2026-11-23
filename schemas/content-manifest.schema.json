@@ -454,9 +454,126 @@
         "ngram": {
           "type": "boolean",
           "default": false
+        },
+        "analyzer": {
+          "$ref": "#/$defs/Analyzer"
         }
       },
-      "description": "The indexes an attribute has: the scalar one unless it says otherwise, and a\nfull-text or an n-gram index when it asks for one. An attribute without an\nindex is still filtered and sorted: by a scan of the table."
+      "description": "The indexes an attribute has: the scalar one unless it says otherwise, and a\nfull-text or an n-gram index when it asks for one. An attribute without an\nindex is still filtered and sorted: by a scan of the table. The settings of\nthe analyzer belong to the full-text index and are only set with it."
+    },
+    "Analyzer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tokenizer": {
+          "$ref": "#/$defs/Tokenizer",
+          "default": "simple"
+        },
+        "language": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Language"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Stems the terms and removes the stop words of the language. Absent: no\nstemming, and no stop words but `stop_words`."
+        },
+        "stop_words": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "The stop words to remove instead of the language's: compared with a term\nafter it is lowercased and stemmed."
+        },
+        "ascii_folding": {
+          "type": "boolean",
+          "default": false
+        },
+        "max_token_length": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "description": "Tokens longer than this, in UTF-8 bytes, are dropped.",
+          "maximum": 1024,
+          "default": 40
+        },
+        "ngram_min_length": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "description": "Only with the `ngram` tokenizer.",
+          "maximum": 16,
+          "default": 3
+        },
+        "ngram_max_length": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "description": "Only with the `ngram` tokenizer; not below `ngram_min_length`.",
+          "maximum": 16,
+          "default": 3
+        },
+        "prefix_only": {
+          "type": "boolean",
+          "description": "Only with the `ngram` tokenizer: only the n-grams that start a token.",
+          "default": false
+        }
+      },
+      "description": "The settings of a full-text index that decide which terms a text yields.\nA text is lowercased always. Changing them changes the index, which the\nwriter's maintenance rebuilds while the old one keeps serving."
+    },
+    "Tokenizer": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "simple",
+          "description": "Runs of letters and digits: a text in Chinese, Japanese or Korean is one\ntoken per run of such characters."
+        },
+        {
+          "type": "string",
+          "const": "whitespace",
+          "description": "Runs of characters that are not white space."
+        },
+        {
+          "type": "string",
+          "const": "unicode",
+          "description": "Unicode word segmentation, which finds the words of a text in Chinese or\nJapanese by a dictionary."
+        },
+        {
+          "type": "string",
+          "const": "ngram",
+          "description": "Every substring of a token between `ngram_min_length` and\n`ngram_max_length` characters, or only the ones that start it."
+        }
+      ],
+      "description": "The way a text is cut into tokens."
+    },
+    "Language": {
+      "type": "string",
+      "enum": [
+        "arabic",
+        "danish",
+        "dutch",
+        "english",
+        "finnish",
+        "french",
+        "german",
+        "greek",
+        "hungarian",
+        "italian",
+        "norwegian",
+        "portuguese",
+        "romanian",
+        "russian",
+        "spanish",
+        "swedish",
+        "tamil",
+        "turkish"
+      ],
+      "description": "A language with a stemmer and a stop-word list."
     },
     "FileRef": {
       "type": "object",

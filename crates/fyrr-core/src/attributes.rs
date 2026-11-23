@@ -1005,6 +1005,9 @@ mod tests {
 
     #[test]
     fn an_analyzer_that_differs_from_the_built_one_is_stale() {
+        fn stale<'a>(wanted: &'a AttributeIndexes, built: &'a AttributeIndexes) -> Vec<&'a str> {
+            stale_analyzers(wanted, built).collect()
+        }
         let with = |analyzer: Analyzer| {
             AttributeIndexes::from([(
                 "title".to_owned(),
@@ -1018,9 +1021,6 @@ mod tests {
         let folded = Analyzer {
             ascii_folding: true,
             ..Default::default()
-        };
-        let stale = |wanted: &AttributeIndexes, built: &AttributeIndexes| {
-            stale_analyzers(wanted, built).collect::<Vec<_>>()
         };
         assert_eq!(
             stale(&with(folded.clone()), &with(Analyzer::default())),
