@@ -54,10 +54,18 @@ namespace.
   [backup](operations.md#backup-and-copy) under another key.
 - **Setting or changing `kms_key_id` re-encrypts nothing.** Objects written
   earlier keep the key (or the bucket default) they were written with, and
-  fyrr does not rewrite them. After a rotation to a new key, and after an
-  automatic rotation of a key, every earlier version of the key must stay
-  enabled for as long as any object written under it exists; disabling or
-  deleting an old version makes those objects unreadable like a disabled key.
+  fyrr does not rewrite them. Rotating the key material of one key (AWS
+  automatic rotation) keeps the earlier key material in that key, so the key
+  stays usable. Replacing `kms_key_id` with another key ID, ARN or alias is a
+  different case: every earlier key must stay enabled for as long as any object
+  written under it exists, and disabling or deleting it makes those objects
+  unreadable like a disabled key.
+- A key in another account needs its full key ARN; an ID or alias is resolved
+  in the caller's account.
+- The environment can add encryption settings too: `AWS_*` variables such as
+  `AWS_SERVER_SIDE_ENCRYPTION` and `AWS_SSE_KMS_KEY_ID` are read by the S3
+  client. Set `storage.kms_key_id` rather than relying on them, and do not set
+  both for different keys.
 
 ## Principals and reader tokens
 

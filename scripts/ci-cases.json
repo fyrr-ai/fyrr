@@ -5596,7 +5596,7 @@
       },
       "full:fyrr:test:dense_path/coordination::s3_every_written_object_is_logged_and_carries_the_kms_key": {
         "tier": "full",
-        "seconds": 30
+        "seconds": 12.446
       }
     }
   }

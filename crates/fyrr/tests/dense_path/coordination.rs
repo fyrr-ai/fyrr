@@ -932,6 +932,7 @@ async fn s3_conditional_writes_and_paginated_listing_are_visible() {
 /// encryption half runs on real S3 under #108.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real S3; the key assertions need FYRR_TEST_S3_KMS_KEY_ID; scripts/ci"]
+#[allow(clippy::print_stderr)]
 async fn s3_every_written_object_is_logged_and_carries_the_kms_key() {
     use futures::TryStreamExt;
     use object_store::{aws::AmazonS3Builder, signer::Signer};
@@ -939,7 +940,11 @@ async fn s3_every_written_object_is_logged_and_carries_the_kms_key() {
     let (config, root) = setup_on(Backend::S3);
     if let Some(key) = &key {
         let text = std::fs::read_to_string(&config).unwrap();
-        let text = text.replacen("\n[embedding]", &format!("\nkms_key_id = \"{key}\"\n[embedding]"), 1);
+        let text = text.replacen(
+            "\n[embedding]",
+            &format!("\nkms_key_id = \"{key}\"\n[embedding]"),
+            1,
+        );
         std::fs::write(&config, text).unwrap();
     }
     let log = root.join("object-store.jsonl");
@@ -972,7 +977,9 @@ async fn s3_every_written_object_is_logged_and_carries_the_kms_key() {
     let objects: Vec<_> = store.list(Some(&namespace)).try_collect().await.unwrap();
     for suffix in ["/head.json", ".lance", ".manifest"] {
         assert!(
-            objects.iter().any(|object| object.location.as_ref().ends_with(suffix)),
+            objects
+                .iter()
+                .any(|object| object.location.as_ref().ends_with(suffix)),
             "no {suffix} object: the run did not publish"
         );
     }
@@ -988,7 +995,8 @@ async fn s3_every_written_object_is_logged_and_carries_the_kms_key() {
         eprintln!("FYRR_TEST_S3_KMS_KEY_ID is not set: coverage checked, key not asserted");
         return;
     };
-    let Some(fyrr_core::config::StorageBackend::S3 { bucket, .. }) = loaded.config.storage.backend()
+    let Some(fyrr_core::config::StorageBackend::S3 { bucket, .. }) =
+        loaded.config.storage.backend()
     else {
         unreachable!("the fixture is S3");
     };

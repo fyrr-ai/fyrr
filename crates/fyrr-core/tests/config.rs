@@ -541,7 +541,9 @@ fn storage_rules_and_options() {
     assert_eq!(map["aws_secret_access_key"], SENTINEL);
     assert_eq!(map["aws_endpoint"], "http://127.0.0.1:9000");
     assert_eq!(map["allow_http"], "true");
-    assert!(!map.contains_key("aws_server_side_encryption") && !map.contains_key("aws_sse_kms_key_id"));
+    assert!(
+        !map.contains_key("aws_server_side_encryption") && !map.contains_key("aws_sse_kms_key_id")
+    );
 }
 
 #[test]
@@ -568,7 +570,7 @@ fn a_kms_key_becomes_server_side_encryption_options() {
         assert_eq!(map["aws_server_side_encryption"], "aws:kms");
         assert_eq!(map["aws_sse_kms_key_id"], key);
     }
-    for key in ["", "bad key", "key\r\nx-injected: 1", &"k".repeat(2049)] {
+    for key in ["", "bad key", "key\\r\\nx-injected: 1", &"k".repeat(2049)] {
         let errors = errors(&parse(&with(key)).expect("parse"));
         assert!(
             errors

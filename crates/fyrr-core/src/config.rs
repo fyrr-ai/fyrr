@@ -1428,7 +1428,10 @@ impl StorageConfig {
             self.virtual_hosted_style.to_string(),
         );
         if let Some(key) = &self.kms_key_id {
-            options.insert("aws_server_side_encryption".to_owned(), "aws:kms".to_owned());
+            options.insert(
+                "aws_server_side_encryption".to_owned(),
+                "aws:kms".to_owned(),
+            );
             options.insert("aws_sse_kms_key_id".to_owned(), key.clone());
         }
         for (key, secret) in [

@@ -170,6 +170,20 @@ async fn local_copy_is_one_version_independent_and_completes_after_interruption(
 
     // The same storage would need another name, and another name other hashes.
     refused(&copy(&config, &config), "copy_same_storage");
+    // The destination file is validated like `config check`: a key on a local
+    // storage is refused before anything is written.
+    let keyed = elsewhere(&config, "keyed", None);
+    let text = std::fs::read_to_string(&keyed).unwrap();
+    std::fs::write(
+        &keyed,
+        text.replacen("[storage]\n", "[storage]\nkms_key_id = \"alias/x\"\n", 1),
+    )
+    .unwrap();
+    refused(&copy(&config, &keyed), "storage.kms_key_id");
+    assert!(
+        !storage_of(&keyed).exists(),
+        "nothing is written to a refused destination"
+    );
 
     // The source is quiet: a copy reads it and changes none of its objects.
     let before = objects(&storage);
