@@ -81,10 +81,9 @@ searches by a supplied `vector` or by a cached embedding are counted, and a
 reader without them takes no sample. The request below does not wait for them.
 
 **On request.** `POST /v1/namespaces/{namespace}/recall` measures a number of
-stored vectors at once, whatever the traffic. It needs the `admin` role of an
-[API key](identity.md#identityapi_keys); the key still reads only the rows its
-`readers` bind it to, so give a key that measures a namespace with reader
-checks the `readers` of the rows it should sample. See
+stored vectors at once, whatever the traffic. It needs the `admin` and the `read` role of an
+[API key](identity.md#identityapi_keys), and the key reads only the rows its
+`readers` bind it to: they are the rows it samples and searches. See
 [Recall](http-api.md#recall) for the body and the answer. The request holds one
 query slot, like a query, and its `deadline_ms` bounds the whole run: each
 sampled vector costs one index search and one exact scan of every row the key

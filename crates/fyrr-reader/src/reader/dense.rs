@@ -86,6 +86,18 @@ impl PreparedReader {
         exact: bool,
         telemetry: &mut Telemetry,
     ) -> Result<Vec<Candidate>> {
+        Ok(self.dense_traced(vector, k, exact, telemetry).await?.0)
+    }
+
+    /// As [`Self::dense`], and whether the vector index found the rows: not an
+    /// exact scan, which a selective filter or a missing index brings about.
+    pub(crate) async fn dense_traced(
+        &self,
+        vector: &[f32],
+        k: usize,
+        exact: bool,
+        telemetry: &mut Telemetry,
+    ) -> Result<(Vec<Candidate>, bool)> {
         embedding::validate(
             vector,
             self.config.embedding.dimensions,
@@ -101,7 +113,7 @@ impl PreparedReader {
         );
         let query_array = Float32Array::from(vector.to_vec());
         if wanted == 0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
         let depth = &self.config.namespace.retrieval.rescore_depth;
         let mut shortlist = depth.initial(k);
@@ -145,6 +157,14 @@ impl PreparedReader {
             self.stage(telemetry, "dense_routing_ann", start, before);
             let refine_start = Instant::now();
             let refine_counters = self.mirror.counters();
+            let mut by_index = self
+                .indexes
+                .iter()
+                .any(|index| index.name == Layout::VECTOR_INDEX)
+                && (candidates.is_some()
+                    || (self.preparation_reservation.warm()
+                        && self.filter_selection.is_none()
+                        && !exact));
             let mut rows = if let Some(candidates) = candidates {
                 match self
                     .refine_dense_candidates(vector, candidates, wanted, k, shortlist, telemetry)
@@ -171,6 +191,7 @@ impl PreparedReader {
                 .await?
             };
             if rows.len() < wanted {
+                by_index = false;
                 rows = self
                     .native_dense_rows(
                         &query_array,
@@ -194,7 +215,7 @@ impl PreparedReader {
                 .flatten()
                 .filter(|addr| self.selected_rows().selected(u64::from(*addr)))
                 .count() as u64;
-            return Ok(rows);
+            return Ok((rows, by_index));
         }
     }
 

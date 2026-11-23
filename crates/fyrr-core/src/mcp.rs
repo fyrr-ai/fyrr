@@ -811,6 +811,8 @@ pub struct RecallOutput {
     pub samples: u32,
     /// Rows the caller may read that the filter selects: what each exact search scans.
     pub rows: u64,
+    /// `true` when the vector index answered every sample's search. `false` when an exact scan did, as a selective `filter` or a namespace without a vector index brings about: the recalls then compare two exact answers, and say nothing of an index. Also `false` without a sample.
+    pub approximate: bool,
     /// The share of the ten nearest rows by an exact search that the index also found, averaged over `samples`; `null` without a sample.
     pub recall_at_10: Option<f64>,
     /// As `recall_at_10` for the 75 nearest rows.

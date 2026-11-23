@@ -185,7 +185,7 @@ fn openapi() -> Value {
         "/v1/namespaces/{namespace}/recall": {"post": operation(
             "reader",
             "Measure how closely the vector index agrees with an exact search, over stored vectors the key may read",
-            "an API key with the `admin` role",
+            "an API key with the `admin` and the `read` role",
             "Error",
             Some(requests.subschema_for::<RecallRequest>()),
             answers.subschema_for::<RecallOutput>(),

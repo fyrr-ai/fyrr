@@ -2590,10 +2590,6 @@
         "tier": "quick",
         "seconds": 0.0
       },
-      "full:fyrr:test:privacy/recall_request_errors_and_answers_keep_filter_values_private": {
-        "tier": "quick",
-        "seconds": 0.0
-      },
       "full:fyrr:test:privacy/providers::a_provider_dry_run_never_prints_document_values": {
         "tier": "quick",
         "seconds": 2.036
@@ -5322,10 +5318,6 @@
         "seconds": 0.042
       },
       "reader:fyrr:test:privacy/mcp_validation_errors_keep_filter_cursor_and_window_values_private": {
-        "tier": "quick",
-        "seconds": 0.0
-      },
-      "reader:fyrr:test:privacy/recall_request_errors_and_answers_keep_filter_values_private": {
         "tier": "quick",
         "seconds": 0.0
       },

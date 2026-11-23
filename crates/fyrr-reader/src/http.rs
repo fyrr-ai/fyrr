@@ -457,7 +457,7 @@ const LIST_ROLES: &[ApiKeyRole] = &[ApiKeyRole::Admin, ApiKeyRole::List];
 
 /// The tool a JSON route runs, the roles an API key needs one of for it and the
 /// namespace the path names: `POST /v1/namespaces/{namespace}/query`,
-/// `.../fetch` and `.../aggregate` need `read`, `.../recall` needs `admin`, `GET` and
+/// `.../fetch` and `.../aggregate` need `read`, `.../recall` needs `admin` and `read`, `GET` and
 /// `HEAD /v1/namespaces/{namespace}` and `/v1/namespaces` need `admin` or `list`. `/mcp` needs `read` as well. A key
 /// without a role of a route gets 403 `forbidden`; `/readyz` and
 /// `/admin/refresh` take no API key.
@@ -535,6 +535,9 @@ fn query_member<T: serde::de::DeserializeOwned>(
 /// the caller needs, and, for a route that names one, the namespace.
 struct Needs<'a> {
     roles: &'a [ApiKeyRole],
+    /// Roles the caller needs one of as well: a route that reads rows needs
+    /// `read`, whose readers the published identity binds a key to.
+    also: &'a [ApiKeyRole],
     /// Whether the caller acts as a principal of the identity artifact, whose
     /// reader tokens filter the rows it reads. A key with no `read` role has
     /// none, and the route that takes it reads no rows.
@@ -613,6 +616,11 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
         roles: route
             .as_ref()
             .map_or(&[ApiKeyRole::Read][..], |(_, roles, _)| *roles),
+        also: if tool == Some("recall") {
+            &[ApiKeyRole::Read]
+        } else {
+            &[]
+        },
         principal: !matches!(tool, Some("report" | "list")),
         namespace: route
             .as_ref()
@@ -835,6 +843,9 @@ async fn authenticate_mcp(
     let served = if let Some(name) = needs.namespace {
         let found = timeout_at(deadline, async {
             state.admission.grant(&subject, needs.roles, name).await?;
+            if !needs.also.is_empty() {
+                state.admission.grant(&subject, needs.also, name).await?;
+            }
             spend(state, subject.api_key.as_deref().unwrap_or(&subject.key)).await?;
             let unbound = if subject.api_key.is_some() {
                 Unauthorized

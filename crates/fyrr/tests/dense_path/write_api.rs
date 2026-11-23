@@ -17,6 +17,8 @@ const READ_KEY: usize = 42;
 const ADMIN_KEY: usize = 44;
 /// May write the namespaces whose names start with `shop-`.
 const SCOPED_KEY: usize = 43;
+/// May read the rows of `usr:x` and, with `admin`, measure recall.
+const RECALL_KEY: usize = 45;
 
 /// A configuration without sources that writes through the API, with a key
 /// that may write and one that may only read.
@@ -29,7 +31,8 @@ pub(super) fn configure(config: &Path, address: &std::net::SocketAddr, extra: &s
             "{base}\n[namespace.write_api]\n{extra}\n\
              [[identity.api_keys]]\nname='writer'\nkey={{env='FYRR_TEST_WRITE_KEY'}}\nroles=['write']\n\
              [[identity.api_keys]]\nname='reader'\nkey={{env='FYRR_TEST_READ_KEY'}}\nreaders=['usr:x']\n\
-             [[identity.api_keys]]\nname='admin-writer'\nkey={{env='FYRR_TEST_ADMIN_KEY'}}\nroles=['write','admin']\nreaders=['usr:x']\n\
+             [[identity.api_keys]]\nname='admin-writer'\nkey={{env='FYRR_TEST_ADMIN_KEY'}}\nroles=['write','admin']\n\
+             [[identity.api_keys]]\nname='recall-admin'\nkey={{env='FYRR_TEST_RECALL_KEY'}}\nroles=['read','admin']\nreaders=['usr:x']\n\
              [[identity.api_keys]]\nname='scoped'\nkey={{env='FYRR_TEST_SCOPED_KEY'}}\nroles=['write']\nnamespace_prefix='shop-'\n\
              [writer]\nthreads=2\n[writer.commit]\ncoalescing_timer='10m'\n\
              [writer.serve.admin]\nlisten='{address}'\noperator_token={{env='FYRR_TEST_OPERATOR'}}\n"
@@ -68,6 +71,7 @@ impl Writer {
             .env("FYRR_TEST_READ_KEY", secret(READ_KEY))
             .env("FYRR_TEST_SCOPED_KEY", secret(SCOPED_KEY))
             .env("FYRR_TEST_ADMIN_KEY", secret(ADMIN_KEY))
+            .env("FYRR_TEST_RECALL_KEY", secret(RECALL_KEY))
             .output()
             .unwrap();
         assert!(keys.status.success(), "{}", report(&keys));
@@ -77,6 +81,7 @@ impl Writer {
             .env("FYRR_TEST_READ_KEY", secret(READ_KEY))
             .env("FYRR_TEST_SCOPED_KEY", secret(SCOPED_KEY))
             .env("FYRR_TEST_ADMIN_KEY", secret(ADMIN_KEY))
+            .env("FYRR_TEST_RECALL_KEY", secret(RECALL_KEY))
             .env("FYRR_TEST_OPERATOR", OPERATOR)
             .stdout(std::fs::File::create(root.join("service.stdout")).unwrap())
             .stderr(std::fs::File::create(root.join("service.stderr")).unwrap())
@@ -2190,9 +2195,9 @@ async fn identity_write_api_aggregates_the_documents_a_caller_reads_on_storage()
 }
 
 /// The JSON `recall` route measures the vector index on stored vectors of the
-/// rows a key may read: only an `admin` key may ask, a filter narrows the rows
-/// that are sampled and searched, a deadline bounds the run, and the answer
-/// holds counts and recall, never a document.
+/// rows a key may read: only a key with the `admin` and the `read` role may ask,
+/// a filter narrows the rows that are sampled, searched and counted, a deadline
+/// bounds the run, and the answer holds counts and recall, never a document.
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_reports_recall_to_an_admin_key_on_storage() {
@@ -2242,24 +2247,27 @@ async fn identity_write_api_reports_recall_to_an_admin_key_on_storage() {
         )
     };
 
-    // Only the `admin` role may ask: a key that reads, or writes, is refused.
-    for key in [READ_KEY, WRITE_KEY] {
+    // Only a key with both the `admin` and the `read` role may ask: one that
+    // only reads, only writes, or administers without reading is refused.
+    for key in [READ_KEY, WRITE_KEY, ADMIN_KEY] {
         assert_eq!(
             ask(key, json!({"count": 3})).await,
             (403, json!({"error": "forbidden"}))
         );
     }
 
-    // The index finds every row of a namespace this small. The answer is four
-    // numbers: the hidden row is in no count, and no key, text or tag shows.
-    let (status, answer) = ask(ADMIN_KEY, json!({"count": 3})).await;
+    // Every row of a namespace this small is found. The answer holds numbers
+    // alone: the hidden row is in no count, and no key, text or tag shows.
+    let (status, answer) = ask(RECALL_KEY, json!({"count": 3})).await;
     assert_eq!(status, 200, "{answer}");
-    assert_eq!(
-        answer,
-        json!({"samples": 3, "rows": 4, "recall_at_10": 1.0, "recall_at_75": 1.0})
-    );
+    assert_eq!(answer["samples"], 3);
+    assert_eq!(answer["rows"], 4);
+    assert_eq!(answer["recall_at_10"], 1.0);
+    assert_eq!(answer["recall_at_75"], 1.0);
+    assert!(answer["approximate"].is_boolean(), "{answer}");
+    assert_eq!(answer.as_object().unwrap().len(), 5, "{answer}");
     // Fewer rows than `count`: every readable row is measured once.
-    let (status, answer) = ask(ADMIN_KEY, json!({"count": 100})).await;
+    let (status, answer) = ask(RECALL_KEY, json!({"count": 100})).await;
     assert_eq!(status, 200, "{answer}");
     assert_eq!(answer["samples"], 4);
     assert_eq!(answer["rows"], 4);
@@ -2267,21 +2275,26 @@ async fn identity_write_api_reports_recall_to_an_admin_key_on_storage() {
     // The filter narrows both the rows that are sampled and the rows that are
     // searched; one that selects only what the key may not read selects nothing.
     let tag = |value: &str| json!({"field": "tag", "op": "eq", "value": value});
-    let (status, answer) = ask(ADMIN_KEY, json!({"count": 100, "filter": tag("red")})).await;
+    let (status, answer) = ask(RECALL_KEY, json!({"count": 100, "filter": tag("red")})).await;
     assert_eq!(status, 200, "{answer}");
     assert_eq!(answer["samples"], 2);
+    // Two of the four readable rows, not the four.
     assert_eq!(answer["rows"], 2);
+    // Two rows are cheaper to scan than to probe: the index answered none, and
+    // the answer says so rather than report a recall of two exact scans.
+    assert_eq!(answer["approximate"], false);
     assert_eq!(
-        ask(ADMIN_KEY, json!({"count": 5, "filter": tag("secret")})).await,
+        ask(RECALL_KEY, json!({"count": 5, "filter": tag("secret")})).await,
         (
             200,
-            json!({"samples": 0, "rows": 0, "recall_at_10": null, "recall_at_75": null})
+            json!({"samples": 0, "rows": 0, "approximate": false,
+                   "recall_at_10": null, "recall_at_75": null})
         )
     );
 
     // A deadline that the run cannot meet is `deadline_exceeded`, with no partial answer.
     assert_eq!(
-        ask(ADMIN_KEY, json!({"count": 100, "deadline_ms": 1})).await,
+        ask(RECALL_KEY, json!({"count": 100, "deadline_ms": 1})).await,
         (408, json!({"error": "deadline_exceeded"}))
     );
 
@@ -2295,7 +2308,7 @@ async fn identity_write_api_reports_recall_to_an_admin_key_on_storage() {
         json!({"count": 1, "filter": {"field": "nope", "op": "eq", "value": 1}}),
     ] {
         assert_eq!(
-            ask(ADMIN_KEY, body.clone()).await,
+            ask(RECALL_KEY, body.clone()).await,
             (400, json!({"error": "invalid_argument"})),
             "{body}"
         );

@@ -118,68 +118,74 @@ impl PreparedReader {
     }
 
     /// The recall of the vector index on `args.count` stored vectors of the
-    /// rows the caller may read and `args.filter` selects: each is one sample of
-    /// the background sampler, a dense search by that vector and the exact
-    /// reference over the same predicate.
+    /// rows the caller may read and `args.filter` selects. One admission and
+    /// filter selection serves the whole run; each sample is one of the
+    /// background sampler: the nearest rows of the stored vector, then the
+    /// exact reference over the same predicate. A change of the caller's
+    /// permissions fails the reference check, never a sample.
     pub(crate) async fn recall(
         &mut self,
         args: &RecallInput,
         expires: Option<i64>,
-        deadline: Instant,
     ) -> Result<RecallOutput> {
         use crate::serve::SampleSkip;
         args.validate().map_err(|_| InvalidArgument)?;
-        let vectors = self.recall_vectors(args).await?;
-        let mut output = RecallOutput {
-            samples: 0,
-            rows: 0,
-            recall_at_10: None,
-            recall_at_75: None,
-        };
+        let (_, _, mut telemetry, _pin) = self.request_prologue().await?;
+        self.apply_filters(args.filter.as_ref()).await?;
+        let rows = self.selected_rows().max_len().unwrap_or(0);
+        let predicate = self.request_predicate()?;
+        let (mut samples, mut approximate) = (0_u32, true);
         let (mut at_10, mut at_75) = (0.0, 0.0);
-        for vector in vectors {
-            let search: SearchInput = serde_json::from_value(serde_json::json!({
-                "vector": vector, "limit": fyrr_core::limits::mcp::MAX_SEARCH_LIMIT,
-                "output": "metadata", "filter": args.filter}))
-            .map_err(|_| InvalidArgument)?;
-            let mut completion = None;
-            self.search_input(&search, Some((&mut completion, 0)), Some(deadline))
+        for vector in self.recall_vectors(args, &predicate).await? {
+            let (nearest, by_index) = self
+                .dense_traced(&vector, MAX_RECALL_RANK, false, &mut telemetry)
                 .await?;
-            let Some(completion) = completion else {
-                continue;
-            };
-            let sample = self.recall_sample(completion, expires);
+            approximate &= by_index;
+            let mut found = [0; MAX_RECALL_RANK];
+            for (slot, candidate) in found.iter_mut().zip(&nearest) {
+                *slot = candidate.row_id;
+            }
+            let sample = self.recall_sample(
+                (
+                    vector,
+                    found,
+                    nearest.len().min(MAX_RECALL_RANK),
+                    predicate.clone(),
+                ),
+                expires,
+            );
             match self.recall_reference(&sample).await {
-                Ok((recall_10, recall_75, rows)) => {
-                    output.samples += 1;
-                    output.rows = rows;
+                Ok((recall_10, recall_75, _)) => {
+                    samples += 1;
                     at_10 += recall_10;
                     at_75 += recall_75;
                 }
-                // The rows of the selection are gone between the two searches.
+                // The selection lost its rows between the two searches.
                 Err(SampleSkip::EmptyReference) => {}
                 Err(SampleSkip::AuthorizationChanged) => return Err(AuthorizationUnavailable),
                 Err(_) => return Err(StorageUnavailable),
             }
         }
-        if output.samples > 0 {
-            let samples = f64::from(output.samples);
-            output.recall_at_10 = Some(at_10 / samples);
-            output.recall_at_75 = Some(at_75 / samples);
+        if self.interrupted().await? {
+            return Err(AuthorizationUnavailable);
         }
-        Ok(output)
+        Ok(RecallOutput {
+            samples,
+            rows,
+            approximate: samples > 0 && approximate,
+            recall_at_10: (samples > 0).then(|| at_10 / f64::from(samples)),
+            recall_at_75: (samples > 0).then(|| at_75 / f64::from(samples)),
+        })
     }
 
     /// The stored vectors of the first `args.count` rows, in storage order,
-    /// that the caller may read and `args.filter` selects.
+    /// that `predicate` (the caller's admission and the filter) selects.
     // shortcut: the first rows, not a random sample of them; upgrade when the
     // order of storage correlates with the recall of the index.
-    async fn recall_vectors(&mut self, args: &RecallInput) -> Result<Vec<Vec<f32>>> {
-        let (_, _, _, _pin) = self.request_prologue().await?;
-        self.apply_filters(args.filter.as_ref()).await?;
+    async fn recall_vectors(&self, args: &RecallInput, predicate: &str) -> Result<Vec<Vec<f32>>> {
         let mut scan = self.dataset.scan();
         scan.project(&["vector"]).map_err(|_| IncompatibleIndex)?;
-        scan.filter(&self.request_predicate()?)
+        scan.filter(predicate)
             .map_err(|_| IncompatibleIndex)?
             .with_row_id();
         scan.limit(Some(i64::from(args.count)), None)
@@ -202,3 +208,6 @@ impl PreparedReader {
             .collect()
     }
 }
+
+/// The ranks a recall run compares: the deepest one the sampler reports.
+const MAX_RECALL_RANK: usize = fyrr_core::limits::mcp::MAX_SEARCH_LIMIT as usize;

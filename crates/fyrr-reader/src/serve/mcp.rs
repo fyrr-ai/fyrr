@@ -145,11 +145,7 @@ pub(super) async fn execute(
                     .await
                     .and_then(|r| serde_json::to_value(r).map_err(|_| StorageUnavailable)),
                 ToolCall::Recall(args) => reader
-                    .recall(
-                        args,
-                        job.subject.as_ref().map(|subject| subject.expires),
-                        context.deadline.into_std(),
-                    )
+                    .recall(args, job.subject.as_ref().map(|subject| subject.expires))
                     .await
                     .and_then(|r| serde_json::to_value(r).map_err(|_| StorageUnavailable)),
                 ToolCall::Report => reader.report().await,

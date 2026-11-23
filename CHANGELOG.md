@@ -109,7 +109,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   order. It has no MCP tool. `list_filters` now runs the same scan. See
   [Aggregate](docs/http-api.md#aggregate).
 - `POST /v1/namespaces/{namespace}/recall` on the reader (an API key with the
-  `admin` role) measures the vector index against an exact search on up to 100
+  `admin` and `read` roles) measures the vector index against an exact search on up to 100
   stored vectors, optionally under a filter, and returns `recall_at_10`,
   `recall_at_75` and the row counts, never a document. It runs within the
   request deadline and holds one query slot. It has no MCP tool. The background
