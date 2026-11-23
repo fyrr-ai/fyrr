@@ -550,7 +550,7 @@ mod tests {
         crate::io_probe::measure("embedding-cache-hit-1024x512", async {
             for n in 0..1024 {
                 assert!(
-                    read_vector(&scratch.0.join(format!("{n:064x}")), 512)
+                    read_vector(&scratch.0.join(format!("{n:064x}")), 512, DenseElement::F16)
                         .unwrap()
                         .is_some()
                 );
