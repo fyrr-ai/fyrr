@@ -764,7 +764,7 @@
             "items": {
               "$ref": "#/components/schemas/Boost"
             },
-            "description": "1-8 terms added to the relevance score of a text or vector ranking: a weight times a function of an attribute. Not with a listing or `sub_queries`.",
+            "description": "1-8 terms added to the relevance score of a text or vector ranking: a weight times a function of an attribute. Not with a listing, `sub_queries` or `fusion`.",
             "minItems": 1,
             "maxItems": 8
           }

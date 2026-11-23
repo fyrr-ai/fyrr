@@ -401,8 +401,8 @@ not change. A request without it is answered as before. It is
 `sub_queries` or `fusion`, which rank by their own rules.
 
 The fused score of a text or hybrid ranking lies between 0 and 1. A ranking by
-vector alone is scored by distance, so its distances are normalized to that
-range first, and its `score` reads as that sum when a boost is present. Each
+vector alone is scored by distance, so when a boost adds anything to it, the
+distances are normalized to that range first, and its `score` reads as that sum. Each
 term adds its `weight` times a function that lies between 0 and 1, so a weight
 of 0.2 moves a document at most 0.2 up the scale, and a weight of 1 lets a
 boost outweigh relevance.

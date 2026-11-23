@@ -254,17 +254,18 @@ impl Boost {
             Self::Attribute { attribute, .. } | Self::Recency { attribute, .. } => attribute,
         }
     }
+    pub fn weight(&self) -> f64 {
+        match self {
+            Self::Attribute { weight, .. } | Self::Recency { weight, .. } => *weight,
+        }
+    }
     fn is_valid(&self) -> bool {
-        let (weight, positive_midpoint) = match self {
-            Self::Attribute {
-                weight, midpoint, ..
-            } => (*weight, midpoint.is_finite() && *midpoint > 0.0),
-            Self::Recency {
-                weight, midpoint, ..
-            } => (*weight, midpoint.as_millis() > 0),
+        let positive_midpoint = match self {
+            Self::Attribute { midpoint, .. } => midpoint.is_finite() && *midpoint > 0.0,
+            Self::Recency { midpoint, .. } => midpoint.as_millis() > 0,
         };
         bounded_text(self.attribute(), 128)
-            && (0.0..=MAX_BOOST_WEIGHT).contains(&weight)
+            && (0.0..=MAX_BOOST_WEIGHT).contains(&self.weight())
             && positive_midpoint
     }
 }

@@ -38,13 +38,15 @@ pub(crate) fn check(reader: &PreparedReader, boosts: Option<&[Boost]>) -> Result
 }
 
 /// `x / (x + midpoint)` for a midpoint above 0. A negative `x`, or one that is
-/// no number, counts as 0.
+/// no number, counts as 0. Computed from the ratio of the smaller to the
+/// larger, so that no sum of two finite numbers overflows.
 pub(crate) fn attribute(x: f64, midpoint: f64) -> f64 {
     let x = x.max(0.0);
-    if x.is_infinite() {
-        1.0
+    if x <= midpoint {
+        let ratio = x / midpoint;
+        ratio / (1.0 + ratio)
     } else {
-        x / (x + midpoint)
+        1.0 / (1.0 + midpoint / x)
     }
 }
 
@@ -83,6 +85,11 @@ pub(crate) async fn bonuses(
     boosts: Option<&[Boost]>,
     lanes: [&[Candidate]; 2],
 ) -> Result<Bonus> {
+    // A request whose boosts all weigh nothing reads no attribute.
+    let Some(boosts) = boosts.filter(|boosts| boosts.iter().any(|boost| boost.weight() > 0.0))
+    else {
+        return Ok(Bonus::new());
+    };
     let row_ids: Vec<u64> = lanes
         .into_iter()
         .flatten()
@@ -90,9 +97,9 @@ pub(crate) async fn bonuses(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let Some(boosts) = boosts.filter(|_| !row_ids.is_empty()) else {
+    if row_ids.is_empty() {
         return Ok(Bonus::new());
-    };
+    }
     let mut names: Vec<&str> = boosts.iter().map(Boost::attribute).collect();
     names.sort_unstable();
     names.dedup();

@@ -12,6 +12,11 @@ fn the_attribute_boost_is_x_over_x_plus_the_midpoint() {
     close(attribute(f64::NEG_INFINITY, 10.0), 0.0);
     close(attribute(f64::NAN, 10.0), 0.0);
     close(attribute(f64::INFINITY, 10.0), 1.0);
+    // Neither a sum of two large numbers nor a tiny ratio goes wrong.
+    close(attribute(1e308, 1e308), 0.5);
+    close(attribute(f64::MAX, f64::MAX), 0.5);
+    let tiny = attribute(1e-10, 1e300);
+    assert!(tiny > 0.0 && tiny < 1e-300, "{tiny}");
 }
 
 #[test]
