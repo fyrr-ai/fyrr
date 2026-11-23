@@ -92,12 +92,15 @@ the vector a row carries, of the `[embedding]` dimensions. A namespace written
 through the [document write API](http-api.md#write-documents) can declare more
 vector attributes when it is created, for example the embedding of a title or of
 an image next to that of the text. Each is a nullable column of its own, with
-`dimensions` (a multiple of 8, 8 to 8192) and a vector index of its own, built
+`dimensions` (a multiple of 8, 8 to 8192; a name is not `id`) and a vector index of its own, built
 as the index of `vector` is: the namespace's `dense_metric`, `dense_element`,
-`dense_rq_bits` and `dense_partition_rows` apply to all of them. At most 8
-([`MAX_VECTOR_ATTRIBUTES`](limits.md)) can be declared: a reader opens every
-index (about 2 storage requests per vector attribute, which the storage request
-budget test holds). The name follows the rules of an attribute's, and no
+`dense_rq_bits` and `dense_partition_rows` apply to all of them. At most 16
+([`MAX_VECTOR_ATTRIBUTES`](limits.md)) can be declared. A reader opens an
+attribute's index when it first searches it, which costs 2 storage requests (2.00
+measured with 16 attributes; the storage request budget test holds it), so the
+first search of every attribute costs 32, within the 36 requests of opening a
+namespace and answering its first search. Each index is also built and updated
+with every publication. The name follows the rules of an attribute's, and no
 attribute, no built-in column and no `text_attribute` has it. The declaration is
 fixed for the life of the namespace (`409 namespace_settings_fixed`).
 
@@ -115,9 +118,13 @@ A search of a vector attribute asks Lance for the nearest rows of its column
 under the same permissions and filters as a search of `vector`, and is checked
 row by row against them. It does not use the partition maps and the compressed
 centroid routing (`reader.routing`) that the built-in vector's dense lane does:
-Lance probes `reader.nprobes` partitions. An attribute that has no vector yet
-has no index, and a search of it reads the column: the commit that brings its
-first vector builds the index.
+Lance probes `reader.nprobes` partitions. A request with a filter (and a text
+query, which selects the rows that have a vector) makes it a flat scan over the
+selection, not an index probe, and an answer of the index that is shorter than
+the request asks for is scanned again flat: the cost grows with the selection,
+as an `exact` search does. An attribute that has no vector yet has no index,
+and a search of it reads the column: the commit that brings its first vector
+builds the index.
 
 A namespace with vector attributes is
 [content-manifest](../CONTRIBUTING.md#rules-for-changes) 5.0 and its policy

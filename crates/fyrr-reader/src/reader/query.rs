@@ -137,7 +137,9 @@ impl PreparedReader {
 
         let stage = Instant::now();
         let filter_counters = self.mirror.counters();
-        self.apply_filters(args.filter_tree().as_ref()).await?;
+        let present = self.present_vector(args.vector_attribute.as_deref(), args.has_text())?;
+        self.apply_filters(args.filter_tree().as_ref(), present)
+            .await?;
         self.apply_contains(args.contains.as_deref()).await?;
         let predicate = self.request_predicate()?;
         let lexical_predicate = Self::fts_requires_sql_prefilter(&self.dataset, &self.indexes)
@@ -381,7 +383,9 @@ impl PreparedReader {
             let counters = self.mirror.counters();
             // The sub-query's own selection replaces the previous one.
             self.filter_selection = None;
-            self.apply_filters(args.sub_query_filter(sub).as_ref())
+            let present =
+                self.present_vector(sub.vector_attribute.as_deref(), sub.query.is_some())?;
+            self.apply_filters(args.sub_query_filter(sub).as_ref(), present)
                 .await?;
             let predicate = self.request_predicate()?;
             self.stage(&mut telemetry, "predicate", stage, counters);
@@ -582,12 +586,10 @@ impl PreparedReader {
     ) -> Result<()> {
         let dimensions = self.vector_dimensions(attribute)?;
         match (vector, attribute) {
-            (Some(vector), _) => embedding::validate(
-                vector,
-                dimensions,
-                self.config.namespace.dense_element,
-            )
-            .map_err(|_| InvalidArgument),
+            (Some(vector), _) => {
+                embedding::validate(vector, dimensions, self.config.namespace.dense_element)
+                    .map_err(|_| InvalidArgument)
+            }
             (None, Some(name))
                 if self
                     .config
@@ -723,6 +725,8 @@ impl PreparedReader {
                 && completion.is_none()
                 // The recall reference scans by SQL, which `contains` is not.
                 && self.filter_selection.as_ref().is_none_or(|f| !f.masked)
+                // The recall reference searches the built-in vector.
+                && args.vector_attribute.is_none()
             {
                 let mut rows = [0; fyrr_core::limits::mcp::MAX_SEARCH_LIMIT as usize];
                 for (id, candidate) in rows.iter_mut().zip(&dense) {

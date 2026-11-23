@@ -1436,7 +1436,9 @@ fn namespace_vectors_are_declared_with_dimensions_and_a_source_and_enter_the_dig
     // A name that is built in, an attribute's, malformed, a source that is not a
     // declared string attribute, a source of other dimensions than the model's,
     // more than the limit, and a namespace no API writes are refused.
-    let head = format!("{MINIMAL}\n[namespace.write_api]\n[namespace.attributes]\ntitle='string'\nbody='int'\n");
+    let head = format!(
+        "{MINIMAL}\n[namespace.write_api]\n[namespace.attributes]\ntitle='string'\nbody='int'\n"
+    );
     for bad in [
         "[namespace.vectors.vector]\ndimensions=8",
         "[namespace.vectors.title]\ndimensions=8",
@@ -1446,10 +1448,14 @@ fn namespace_vectors_are_declared_with_dimensions_and_a_source_and_enter_the_dig
         "[namespace.vectors.image]\ndimensions=1024\nfrom='missing'",
         "[namespace.vectors.image]\ndimensions=1024\nfrom='body'",
         "[namespace.vectors.image]\ndimensions=512\nfrom='title'",
+        "[namespace.vectors.image]\ndimensions=12",
+        "[namespace.vectors.id]\ndimensions=8",
     ] {
         let loaded = parse(&format!("{head}{bad}")).unwrap();
         assert!(
-            errors(&loaded).iter().any(|error| error.contains("namespace.vectors")),
+            errors(&loaded)
+                .iter()
+                .any(|error| error.contains("namespace.vectors")),
             "{bad}: {:?}",
             errors(&loaded)
         );
@@ -1458,7 +1464,10 @@ fn namespace_vectors_are_declared_with_dimensions_and_a_source_and_enter_the_dig
         .map(|n| format!("[namespace.vectors.v{n}]\ndimensions=8\n"))
         .collect();
     assert!(!errors(&parse(&format!("{head}{many}")).unwrap()).is_empty());
-    let unwritten = parse(&format!("{MINIMAL}\n[namespace.vectors.image]\ndimensions=8")).unwrap();
+    let unwritten = parse(&format!(
+        "{MINIMAL}\n[namespace.vectors.image]\ndimensions=8"
+    ))
+    .unwrap();
     assert!(
         errors(&unwritten)
             .iter()

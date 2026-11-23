@@ -164,7 +164,8 @@ fn attribute_index_options_need_the_version_an_older_build_refuses() {
 fn vector_attributes_need_the_version_an_older_build_refuses() {
     let manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
     let policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
-    let vectors = json!({"image": {"dimensions": 512}, "title_vec": {"dimensions": 1024, "from": "title"}});
+    let vectors =
+        json!({"image": {"dimensions": 512}, "title_vec": {"dimensions": 1024, "from": "title"}});
     let mut manifest = manifest;
     manifest["attributes"] = json!({"title": "string"});
     manifest["vectors"] = vectors.clone();

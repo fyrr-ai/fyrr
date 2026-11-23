@@ -598,7 +598,8 @@ async fn build_vector_indexes(
             continue;
         }
         let rows = dataset
-            .count_rows(Some(format!("{name} IS NOT NULL")))
+            // Backticks make the name a column whatever it spells (`null`, `order`).
+            .count_rows(Some(format!("`{name}` IS NOT NULL")))
             .await?;
         if rows == 0 {
             continue;
@@ -612,7 +613,13 @@ async fn build_vector_indexes(
         let before = dataset.version().version;
         native_step(
             lease,
-            dataset.create_index(&[name.as_str()], IndexType::Vector, Some(index), &params, true),
+            dataset.create_index(
+                &[name.as_str()],
+                IndexType::Vector,
+                Some(index),
+                &params,
+                true,
+            ),
             WriterError::IndexBuildFailed,
         )
         .await?;

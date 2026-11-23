@@ -5002,6 +5002,7 @@ async fn identity_write_api_searches_named_vector_attributes_on_storage() {
         }
         if n < 3 {
             row["small"] = json!(vector(30 + n, 16));
+            row["order"] = json!(vector(40 + n, 8));
         }
         upserts.push(row);
     }
@@ -5020,6 +5021,9 @@ async fn identity_write_api_searches_named_vector_attributes_on_storage() {
             "image": {"dimensions": 1024},
             "caption_vec": {"dimensions": 1024, "from": "caption"},
             "small": {"dimensions": 16},
+            // Names that are words of SQL: a predicate on them needs quoting.
+            "order": {"dimensions": 8},
+            "null": {"dimensions": 1024, "from": "caption"},
         },
     });
     assert_eq!(
@@ -5039,10 +5043,17 @@ async fn identity_write_api_searches_named_vector_attributes_on_storage() {
     assert_eq!(manifest.schema_version.major, 5);
     assert_eq!(
         manifest.vectors.keys().collect::<Vec<_>>(),
-        ["caption_vec", "image", "small"]
+        ["caption_vec", "image", "null", "order", "small"]
     );
     let indexes: Vec<_> = manifest.indexes.iter().map(|i| i.name.as_str()).collect();
-    for name in ["vector_idx", "vec_image_idx", "vec_caption_vec_idx", "vec_small_idx"] {
+    for name in [
+        "vector_idx",
+        "vec_image_idx",
+        "vec_caption_vec_idx",
+        "vec_small_idx",
+        "vec_order_idx",
+        "vec_null_idx",
+    ] {
         assert!(indexes.contains(&name), "{name} is not among {indexes:?}");
     }
 
@@ -5071,12 +5082,15 @@ async fn identity_write_api_searches_named_vector_attributes_on_storage() {
     // A query that names an attribute searches its column: the nearest row is
     // the one whose `image` is the query, never the hidden one that ties with
     // it, and row e, which has none, is not returned at all.
-    let image = listed(json!({"vector": vector(11, 1024), "vector_attribute": "image", "limit": 10}));
+    let image =
+        listed(json!({"vector": vector(11, 1024), "vector_attribute": "image", "limit": 10}));
     assert_eq!(image[0], "b");
     assert_eq!(sorted(image.clone()), ["a", "b", "c", "d", "f"]);
     // An exact search finds the same rows in the same order.
     assert_eq!(
-        listed(json!({"vector": vector(11, 1024), "vector_attribute": "image", "limit": 10, "exact": true})),
+        listed(
+            json!({"vector": vector(11, 1024), "vector_attribute": "image", "limit": 10, "exact": true})
+        ),
         image
     );
     // The filter bounds it, and the permissions still bound the scan.
@@ -5095,6 +5109,10 @@ async fn identity_write_api_searches_named_vector_attributes_on_storage() {
     assert_eq!(small[0], "b");
     assert_eq!(sorted(small), ["a", "b", "c"]);
 
+    let order = listed(json!({"vector": vector(41, 8), "vector_attribute": "order", "limit": 10}));
+    assert_eq!(order[0], "b");
+    assert_eq!(sorted(order), ["a", "b", "c"]);
+
     // A caption's embedding is made by the writer; a query text is embedded by
     // the namespace's model for an attribute that is embedded from text, and
     // the row without a caption is not returned.
@@ -5106,9 +5124,32 @@ async fn identity_write_api_searches_named_vector_attributes_on_storage() {
     assert_eq!(tie[0], "b");
     assert!(!tie.contains(&"hidden".to_owned()));
     assert_eq!(
-        sorted(listed(json!({"vector": vector(22, 1024), "vector_attribute": "caption_vec", "limit": 10}))),
+        sorted(listed(
+            json!({"vector": vector(22, 1024), "vector_attribute": "caption_vec", "limit": 10})
+        )),
         ["a", "b", "c", "d", "e"]
     );
+    // Row f has no caption and so no vector, but its text is what "rowf" says: a
+    // text query of an attribute selects only the rows that have a vector, so the
+    // lexical lane does not return it either, exact or not, whatever the
+    // attribute is called.
+    root.embedding.insert_both("rowf", vector(25, 1024));
+    for attribute in ["caption_vec", "null"] {
+        for exact in [false, true] {
+            let found = listed(json!({
+                "query": "rowf",
+                "vector_attribute": attribute,
+                "limit": 10,
+                "exact": exact,
+            }));
+            assert!(
+                !found.contains(&"f".to_owned()),
+                "{attribute} {exact}: {found:?}"
+            );
+            assert!(!found.contains(&"hidden".to_owned()), "{attribute} {exact}");
+            assert_eq!(found.len(), 5, "{attribute} {exact}: {found:?}");
+        }
+    }
 
     // A name the namespace does not declare, a text query of an attribute that
     // is not embedded from text, and a vector of another dimension are refused.
@@ -5126,8 +5167,14 @@ async fn identity_write_api_searches_named_vector_attributes_on_storage() {
     // A patch keeps the stored vectors: it brings none, and it cannot change
     // the attribute one was embedded from.
     for (patch, code) in [
-        (json!({"id": "a", "image": vector(10, 1024)}), "vector_not_patchable"),
-        (json!({"id": "a", "caption": "caption z"}), "text_not_patchable"),
+        (
+            json!({"id": "a", "image": vector(10, 1024)}),
+            "vector_not_patchable",
+        ),
+        (
+            json!({"id": "a", "caption": "caption z"}),
+            "text_not_patchable",
+        ),
     ] {
         assert_eq!(
             writer

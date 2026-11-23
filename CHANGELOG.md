@@ -37,7 +37,7 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   `vector_attribute` (and a sub-query takes one) to name the attribute the dense
   search reads; without it the built-in `vector` is searched, as before. A
   search of a named attribute uses the same permissions and filters as one of
-  `vector`, but not its partition maps and centroid routing. At most 8 can be
+  `vector`, but not its partition maps and centroid routing. At most 16 can be
   declared (`limits::schema::MAX_VECTOR_ATTRIBUTES`). A patch keeps the stored
   vectors and cannot change the attribute one was embedded from. The recall of
   a namespace stays that of the built-in vector. A namespace with vector

@@ -104,6 +104,22 @@ impl PreparedReader {
         }
     }
 
+    /// The vector attribute a text query must select the rows of, so that its
+    /// lexical lane returns none that the attribute cannot rank: the named
+    /// attribute, when the request has text. A name the namespace does not
+    /// declare is refused, before it is made part of any predicate.
+    pub(super) fn present_vector<'a>(
+        &self,
+        attribute: Option<&'a str>,
+        text: bool,
+    ) -> Result<Option<&'a str>> {
+        match attribute {
+            Some(name) if !self.config.namespace.vectors.contains_key(name) => Err(InvalidArgument),
+            Some(name) if text => Ok(Some(name)),
+            _ => Ok(None),
+        }
+    }
+
     /// [`Self::dense`] over a vector attribute: `None` is the built-in `vector`.
     pub(crate) async fn dense_attribute(
         &self,
@@ -156,9 +172,7 @@ impl PreparedReader {
                 &Float32Array::from(vector.to_vec()),
                 wanted,
                 k,
-                self.preparation_reservation.warm()
-                    && self.filter_selection.is_none()
-                    && !exact,
+                self.preparation_reservation.warm() && self.filter_selection.is_none() && !exact,
                 self.config.reader.nprobes,
                 telemetry,
             )
@@ -437,6 +451,7 @@ impl PreparedReader {
 
     /// The nearest rows by Lance's own search, and whether the vector index
     /// found them: a short answer from the index is redone as an exact scan.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn native_dense_rows(
         &self,
         column: &str,

@@ -13,7 +13,7 @@ use chrono::DateTime;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::DIMENSIONS_MAX;
+use crate::config::{DIMENSIONS_MAX, DIMENSIONS_MULTIPLE};
 use crate::limits::schema::{
     MAX_ATTRIBUTES, MAX_NAME_BYTES, MAX_VALUE_BYTES, MAX_VECTOR_ATTRIBUTES,
 };
@@ -440,7 +440,7 @@ pub fn vector_index_name(attribute: &str) -> String {
 }
 
 /// Checks the vector attributes of a namespace: their number, their names,
-/// which no attribute or built-in column may share, their dimensions, and a
+/// which no attribute, built-in column or `id` may share, their dimensions, and a
 /// `from` that is a declared `string` attribute whose embeddings have the
 /// dimensions of the namespace's embedding model.
 pub fn check_vectors(
@@ -453,9 +453,14 @@ pub fn check_vectors(
     }
     vectors.iter().try_for_each(|(name, vector)| {
         check_name(name)?;
-        if attributes.contains_key(name)
+        // `id` is the key of a row of the write API, so no row could carry it.
+        // Unlike the built-in vector's, the dimensions of a vector attribute are
+        // checked wherever they are, as the index cannot be built over another.
+        if name == "id"
+            || attributes.contains_key(name)
             || vector.dimensions == 0
             || u64::from(vector.dimensions) > DIMENSIONS_MAX
+            || !u64::from(vector.dimensions).is_multiple_of(DIMENSIONS_MULTIPLE)
         {
             return Err(AttributeError::VectorInvalid);
         }

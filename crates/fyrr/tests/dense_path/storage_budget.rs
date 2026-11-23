@@ -286,21 +286,22 @@ async fn an_attribute_costs_a_reader_a_bounded_number_of_storage_requests() {
     );
 }
 
-/// Storage requests one declared vector attribute adds to opening a reader on
-/// an empty mirror and warming it: reads of the files of its index. Raise it only
-/// on purpose.
+/// Storage requests one declared vector attribute adds to a reader that opens
+/// a namespace on an empty mirror, warms it and answers a first search of each
+/// attribute: Lance opens an index when it is first searched, so the open
+/// itself costs none, and the first search reads the files of the index and of
+/// the column. Raise it only on purpose.
 const VECTOR_OPEN_BUDGET: usize = 2;
 // The most vector attributes a namespace declares cost a reader no more to open
 // than a whole namespace without any: `limits::schema::MAX_VECTOR_ATTRIBUTES` is
 // held to the measured cost.
-const _: () = assert!(
-    fyrr_core::limits::schema::MAX_VECTOR_ATTRIBUTES * VECTOR_OPEN_BUDGET <= OPEN_BUDGET
-);
+const _: () =
+    assert!(fyrr_core::limits::schema::MAX_VECTOR_ATTRIBUTES * VECTOR_OPEN_BUDGET <= OPEN_BUDGET);
 
 /// The storage requests, other than the version check's, of a reader that
 /// opens a one-document namespace written through the API with `vectors` named
 /// vector attributes, each with a vector and so an index, answers its first
-/// search and warms the generation.
+/// search, warms the generation, and answers a first search of each attribute.
 async fn vector_open_requests(vectors: usize) -> usize {
     let (config, root) = setup_on(Backend::Local);
     let endpoint = std::env::var("FYRR_TEST_S3_ENDPOINT").unwrap();
@@ -338,12 +339,20 @@ async fn vector_open_requests(vectors: usize) -> usize {
     let started = std::time::Instant::now();
     let mut client = super::tools::Mcp::open(&reader);
     served(&mut client).unwrap();
+    for n in 0..vectors {
+        let value: Vec<f32> = (0..8).map(|d| (((n + 1) * (d + 3)) as f32).sin()).collect();
+        let hits = super::tools::body(client.call(
+            "search",
+            json!({"vector": value, "vector_attribute": format!("v{n}"), "output": "metadata"}),
+        ));
+        assert_eq!(hits["hits"].as_array().unwrap().len(), 1);
+    }
     seen.settle();
     let allowed = head_reads_allowed(started.elapsed(), 1);
     let opened = seen.since(0);
     let requests = opened.1.len();
     within(
-        &format!("open with {vectors} vector attributes"),
+        &format!("open and search with {vectors} vector attributes"),
         opened,
         usize::MAX,
         allowed,
@@ -368,7 +377,7 @@ async fn a_vector_attribute_costs_a_reader_a_bounded_number_of_storage_requests(
     );
     assert!(
         added <= VECTORS * VECTOR_OPEN_BUDGET,
-        "{VECTORS} vector attributes added {added} storage requests, budget {VECTOR_OPEN_BUDGET} each"
+        "{VECTORS} vector attributes added {added} storage requests ({without} without, {with} with), budget {VECTOR_OPEN_BUDGET} each"
     );
 }
 

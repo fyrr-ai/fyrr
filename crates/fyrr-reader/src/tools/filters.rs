@@ -298,11 +298,24 @@ impl PreparedReader {
             Filter::Compare(comparison) => comparison_sql(comparison, attributes),
         }
     }
-    pub(crate) async fn apply_filters(&mut self, tree: Option<&Filter>) -> Result<()> {
-        let Some(tree) = tree else {
-            return Ok(());
+    /// `present` is a declared vector attribute whose rows alone may be
+    /// selected: a text query of it must not find, through its lexical lane,
+    /// a row that has no vector to rank it by.
+    pub(crate) async fn apply_filters(
+        &mut self,
+        tree: Option<&Filter>,
+        present: Option<&str>,
+    ) -> Result<()> {
+        // Backticks make the name a column whatever it spells (`null`, `order`).
+        let filter = match (tree, present) {
+            (None, None) => return Ok(()),
+            (Some(tree), None) => Self::filter_sql(tree, &self.manifest.attributes)?,
+            (None, Some(name)) => format!("`{name}` IS NOT NULL"),
+            (Some(tree), Some(name)) => format!(
+                "({}) AND `{name}` IS NOT NULL",
+                Self::filter_sql(tree, &self.manifest.attributes)?
+            ),
         };
-        let filter = Self::filter_sql(tree, &self.manifest.attributes)?;
         let predicate = format!("({}) AND ({filter})", self.admission_predicate()?);
         #[cfg(test)]
         self.test_hooks.filter_scan.wait_once().await;
@@ -493,7 +506,7 @@ impl PreparedReader {
         let outcome = async {
             let stage = Instant::now();
             let counters = self.mirror.counters();
-            self.apply_filters(filter).await?;
+            self.apply_filters(filter, None).await?;
             let projection: BTreeSet<&str> = ["source_id", "root_id"]
                 .into_iter()
                 .chain(columns.iter().copied())

@@ -131,7 +131,7 @@ impl PreparedReader {
         use crate::serve::SampleSkip;
         args.validate().map_err(|_| InvalidArgument)?;
         let (_, _, mut telemetry, _pin) = self.request_prologue().await?;
-        self.apply_filters(args.filter.as_ref()).await?;
+        self.apply_filters(args.filter.as_ref(), None).await?;
         let rows = self.selected_rows().max_len().unwrap_or(0);
         let predicate = self.request_predicate()?;
         let (mut samples, mut approximate) = (0_u32, true);

@@ -539,9 +539,9 @@ async fn attribute_order(
     let (attributes, vectors) = (&config.namespace.attributes, &config.namespace.vectors);
     let declared = |name: &String| attributes.contains_key(name) || vectors.contains_key(name);
     let mut order = Vec::new();
-    if let Some(head) = head.filter(|head| {
-        head.content.is_some() && !(attributes.is_empty() && vectors.is_empty())
-    }) {
+    if let Some(head) =
+        head.filter(|head| head.content.is_some() && !(attributes.is_empty() && vectors.is_empty()))
+    {
         let dataset = fyrr_reader::storage::pinned(config, head).await?;
         order.extend(
             dataset
@@ -918,6 +918,18 @@ fn checked(
     }
     if !conditions.given.is_empty() {
         return Err(ApiError(400, "condition_invalid"));
+    }
+    // A null row of a vector column holds the room of a vector too. The columns
+    // are refused here, by the bound an envelope is held to, before they are
+    // allocated: the request's text and attributes are bounded by its body, these
+    // are not.
+    let room = config.namespace.dense_element.bytes()
+        * vectors
+            .values()
+            .map(|spec| u64::from(spec.dimensions))
+            .sum::<u64>();
+    if (rows.len() as u64).saturating_mul(room) > config.writer.commit.group_max_bytes.as_u64() {
+        return Err(ApiError(413, "request_too_large"));
     }
     // The columns follow the table's: the typed ones, then the vectors.
     let mut typed = columns.finish();

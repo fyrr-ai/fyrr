@@ -123,6 +123,13 @@
           },
           "description": "The indexes the attributes are to have where they are not the default.\nAn index switched on is built by the next maintenance; the manifest\nrecords the ones that are built."
         },
+        "vectors": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/VectorAttribute"
+          },
+          "description": "The named vector attributes, fixed at creation. An older build would\nnot know their columns and indexes."
+        },
         "write_api": {
           "anyOf": [
             {
@@ -677,6 +684,30 @@
         "turkish"
       ],
       "description": "A language with a stemmer and a stop-word list."
+    },
+    "VectorAttribute": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dimensions": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "description": "Numbers in each vector of the column, a multiple of 8 from 8 to 8192.",
+          "maximum": 8192
+        },
+        "from": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A declared `string` attribute whose value the writer embeds, with the\nnamespace's embedding model, into a row that brings no vector of its\nown for this attribute. The model's dimensions must be `dimensions`.\nWithout it, rows carry the vector or leave it null."
+        }
+      },
+      "required": [
+        "dimensions"
+      ],
+      "description": "A named vector attribute: a nullable column of its own, of vectors of one\ndimension, with a vector index of its own. The metric, the element type and\nthe index settings are the namespace's. The built-in `vector` column is not\none: it is the default attribute of every namespace and is not declared."
     },
     "WriteApiSettings": {
       "type": "object",
