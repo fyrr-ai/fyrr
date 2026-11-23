@@ -1,12 +1,13 @@
-//! Literal anchored excerpt passages: sentence windows over byte spans with
-//! standard-library Unicode classes; offsets and the cap count codepoints.
+//! Anchored excerpt passages: sentence windows over byte spans, scored by the
+//! query's terms they hold, either its literal words or, for a namespace with
+//! an analyzer, stemming, stop words or folding, its tokens as the index cuts
+//! them; offsets and the cap count codepoints.
 use fyrr_core::attributes::analyzer::{Analyzer, Tokenizer};
 use fyrr_core::config::NamespaceConfig;
 use fyrr_core::limits::mcp::MAX_HIGHLIGHTS;
 use fyrr_core::mcp::Excerpt;
 use lance_index::scalar::InvertedIndexParams;
 use lance_index::scalar::inverted::tokenizer::document_tokenizer::LanceTokenizer;
-use std::collections::HashSet;
 
 /// The analyzer of the full-text index of `searchable_text`, which the writer
 /// builds the index with and a highlight matches with: the `analyzer` of the
@@ -58,25 +59,31 @@ pub fn analyzer_params(analyzer: &Analyzer) -> lance_core::Result<InvertedIndexP
     Ok(fts)
 }
 
+/// The tokens of `query` as the index analyzer cuts and reduces them, sorted
+/// and without duplicates.
+fn query_terms(tokenizer: &mut dyn LanceTokenizer, query: &str) -> Result<Vec<String>, String> {
+    let mut terms = Vec::new();
+    let mut stream = tokenizer.token_stream_for_search(query);
+    while let Some(token) = stream.try_next()? {
+        terms.push(token.text.clone());
+    }
+    drop(stream);
+    terms.sort_unstable();
+    terms.dedup();
+    Ok(terms)
+}
+
 /// Sets the match ranges of `excerpt`, a passage of `record`: its tokens, as
 /// the index analyzer cuts and reduces them, that equal a token of `query`. A
 /// token the passage cuts, because the record goes on with a letter or digit,
-/// is not a token of the index and is not marked. Selection stays literal.
-/// shortcut: it still looks for the query's literal words, so a passage with
-/// only a stemmed match may not be the one chosen; make selection use the
-/// analyzer when that costs hits.
+/// is not a token of the index and is not marked.
 pub(crate) fn highlight(
     tokenizer: &mut dyn LanceTokenizer,
     query: &str,
     record: &str,
     excerpt: &mut Excerpt,
 ) -> Result<(), String> {
-    let mut terms = HashSet::new();
-    let mut stream = tokenizer.token_stream_for_search(query);
-    while let Some(token) = stream.try_next()? {
-        terms.insert(token.text.clone());
-    }
-    drop(stream);
+    let terms = query_terms(tokenizer, query)?;
     let codepoints = |text: &str| {
         let Ok(count) = u32::try_from(text.chars().count()) else {
             unreachable!("admitted excerpt codepoint bound");
@@ -98,7 +105,7 @@ pub(crate) fn highlight(
     while ranges.len() < MAX_HIGHLIGHTS
         && let Some(token) = stream.try_next()?
     {
-        if !terms.contains(&token.text)
+        if terms.binary_search(&token.text).is_err()
             || (token.offset_from == 0 && cut_before)
             || (token.offset_to == excerpt.text.len() && cut_after)
         {
@@ -118,15 +125,248 @@ pub(crate) fn highlight(
     Ok(())
 }
 
+/// What selection asks of a query: its terms, which of them a text holds, and
+/// the best hard window of a text with no sentence window that holds one.
+trait Matcher {
+    fn terms(&self) -> usize;
+    /// Sets the bit of every term that a token of `text` equals.
+    fn fill(&mut self, text: &str, bits: &mut [u64]) -> Result<(), String>;
+    /// The window of `cap` codepoints with the most distinct terms.
+    fn fallback(&mut self, text: &str, cap: usize, covered: &mut [u64]) -> Result<Excerpt, String>;
+}
+
+/// Whether a namespace cuts its text with more than the literal words of
+/// `simple` and lowercase: an analyzer, stemming, stop words or folding. Then
+/// an excerpt is selected with the tokens of the index; any other namespace
+/// keeps the literal words.
+///
+/// `fyrr_core` refuses the `ngram` tokenizer for the text at `namespace.analyzer`,
+/// in a configuration file, and in the stored settings of a namespace
+/// (`NamespaceSettings::validate`, run when the policy artifact is read), and
+/// an excerpt is only ever of `searchable_text`: no n-gram tokenizer reaches
+/// `Terms`. N-gram tokens would match every sentence and cost a window per
+/// n-gram, so selection must not be given one.
+pub(crate) fn analyzes(namespace: &NamespaceConfig) -> bool {
+    debug_assert!(
+        namespace
+            .analyzer
+            .as_ref()
+            .is_none_or(|analyzer| analyzer.tokenizer != Tokenizer::Ngram),
+        "the ngram tokenizer is refused for the text"
+    );
+    namespace.analyzer.is_some()
+        || namespace.fts_stem
+        || namespace.fts_remove_stop_words
+        || namespace.fts_ascii_folding
+}
+
+/// The query of an excerpt.
+pub(crate) enum Terms {
+    /// The literal words of the query, lowercased.
+    Literal(LiteralTerms),
+    /// The tokens of the index analyzer, sorted and without duplicates; the bit
+    /// of a term in a window is its position here.
+    Analyzed {
+        terms: Vec<String>,
+        tokenizer: Box<dyn LanceTokenizer>,
+    },
+}
+impl Terms {
+    /// With the tokenizer of the index when the namespace `analyzes`, else
+    /// without one.
+    pub(crate) fn new(tokenizer: Option<&dyn LanceTokenizer>, query: &str) -> Result<Self, String> {
+        let Some(tokenizer) = tokenizer else {
+            return Ok(Self::Literal(LiteralTerms::new(query)));
+        };
+        let mut tokenizer = tokenizer.box_clone();
+        let terms = query_terms(tokenizer.as_mut(), query)?;
+        Ok(Self::Analyzed { terms, tokenizer })
+    }
+    pub(crate) fn select(&self, text: &str, cap: u32) -> Result<Excerpt, String> {
+        match self {
+            Self::Literal(terms) => select(&mut { terms }, text, cap),
+            Self::Analyzed { terms, tokenizer } => select(
+                &mut AnalyzedMatcher {
+                    terms,
+                    tokenizer: tokenizer.box_clone(),
+                },
+                text,
+                cap,
+            ),
+        }
+    }
+}
+
+fn select(matcher: &mut dyn Matcher, text: &str, cap: u32) -> Result<Excerpt, String> {
+    let cap = cap as usize;
+    let spans = sentence_spans(text);
+    let words = matcher.terms().div_ceil(64);
+    let mut matches = vec![0u64; words * spans.len()];
+    for (index, span) in spans.iter().enumerate() {
+        if span.end_cp - span.start_cp <= cap {
+            matcher.fill(
+                &text[span.start..span.end],
+                &mut matches[index * words..(index + 1) * words],
+            )?;
+        }
+    }
+    let mut covered = vec![0u64; words];
+    let mut best = None;
+    let mut counts = vec![0usize; matcher.terms()];
+    let (mut left, mut score) = (0, 0);
+    // Each sentence enters and leaves once. A redundant left edge never
+    // helps a later window: its newer copies expire after that edge does.
+    for (right, end) in spans.iter().enumerate() {
+        for term in bit_indices(&matches[right * words..(right + 1) * words]) {
+            score += usize::from(counts[term] == 0);
+            counts[term] += 1;
+        }
+        while left <= right {
+            let bits = &matches[left * words..(left + 1) * words];
+            let too_long = end.end_cp - spans[left].start_cp > cap;
+            let redundant = left < right && bit_indices(bits).all(|term| counts[term] > 1);
+            if !too_long && !redundant {
+                break;
+            }
+            for term in bit_indices(bits) {
+                counts[term] -= 1;
+                score -= usize::from(counts[term] == 0);
+            }
+            left += 1;
+        }
+        if left <= right && score != 0 {
+            let span = &spans[left];
+            let length = end.end_cp - span.start_cp;
+            let candidate = (
+                score,
+                std::cmp::Reverse(length),
+                std::cmp::Reverse(span.start_cp),
+                left,
+                right,
+            );
+            if best.is_none_or(|best| candidate > best) {
+                best = Some(candidate);
+            }
+        }
+    }
+    if let Some((_, _, _, mut left, mut right)) = best {
+        loop {
+            let mut changed = false;
+            if right + 1 < spans.len() && spans[right + 1].end_cp - spans[left].start_cp <= cap {
+                right += 1;
+                changed = true;
+            }
+            if left > 0 && spans[right].end_cp - spans[left - 1].start_cp <= cap {
+                left -= 1;
+                changed = true;
+            }
+            if !changed {
+                break;
+            }
+        }
+        return Ok(passage(
+            text,
+            spans[left].start,
+            spans[right].end,
+            spans[left].start_cp,
+            spans[right].end_cp,
+        ));
+    }
+    matcher.fallback(text, cap, &mut covered)
+}
+
+struct AnalyzedMatcher<'a> {
+    terms: &'a [String],
+    tokenizer: Box<dyn LanceTokenizer>,
+}
+impl Matcher for AnalyzedMatcher<'_> {
+    fn terms(&self) -> usize {
+        self.terms.len()
+    }
+    fn fill(&mut self, text: &str, bits: &mut [u64]) -> Result<(), String> {
+        let mut stream = self.tokenizer.token_stream_for_doc(text);
+        while let Some(token) = stream.try_next()? {
+            if let Ok(term) = self.terms.binary_search(&token.text) {
+                bits[term / 64] |= 1u64 << (term % 64);
+            }
+        }
+        Ok(())
+    }
+    fn fallback(&mut self, text: &str, cap: usize, covered: &mut [u64]) -> Result<Excerpt, String> {
+        // No sentence window within the cap holds a term: score windows around
+        // the tokens of the whole text. Offsets are needed only on this
+        // fallback, and ASCII text needs no codepoint-to-byte map.
+        let ascii = text.is_ascii();
+        let offsets = if ascii {
+            Vec::new()
+        } else {
+            text.char_indices()
+                .map(|(byte, _)| byte)
+                .chain([text.len()])
+                .collect::<Vec<_>>()
+        };
+        let length = if ascii { text.len() } else { offsets.len() - 1 };
+        let byte = |cp: usize| if ascii { cp } else { offsets[cp] };
+        let codepoint = |byte: usize| {
+            if ascii {
+                byte
+            } else {
+                offsets.partition_point(|at| *at < byte)
+            }
+        };
+        // The codepoint range and the term of every matching token, in order.
+        let mut found = Vec::new();
+        if !self.terms.is_empty() {
+            let mut stream = self.tokenizer.token_stream_for_doc(text);
+            while let Some(token) = stream.try_next()? {
+                if let Ok(term) = self.terms.binary_search(&token.text) {
+                    found.push((
+                        codepoint(token.offset_from),
+                        codepoint(token.offset_to),
+                        term,
+                    ));
+                }
+            }
+        }
+        found.sort_unstable();
+        let mut starts = vec![0];
+        for (from, _, _) in &found {
+            starts.push(from.saturating_sub(cap / 3).min(length.saturating_sub(cap)));
+            starts.push(*from);
+        }
+        starts.sort_unstable();
+        starts.dedup();
+        let mut best = (0usize, std::cmp::Reverse(0usize));
+        for start in starts {
+            covered.fill(0);
+            let end = (start + cap).min(length);
+            let first = found.partition_point(|(from, _, _)| *from < start);
+            for (_, to, term) in found[first..].iter().take_while(|(from, _, _)| *from < end) {
+                if *to <= end {
+                    covered[term / 64] |= 1u64 << (term % 64);
+                }
+            }
+            let score = covered
+                .iter()
+                .map(|w| w.count_ones() as usize)
+                .sum::<usize>();
+            best = best.max((score, std::cmp::Reverse(start)));
+        }
+        let start = best.1.0;
+        let end = (start + cap).min(length);
+        Ok(passage(text, byte(start), byte(end), start, end))
+    }
+}
+
 fn word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-pub(crate) struct Terms {
+pub(crate) struct LiteralTerms {
     terms: Vec<String>,
 }
-impl Terms {
-    pub(crate) fn new(query: &str) -> Self {
+impl LiteralTerms {
+    fn new(query: &str) -> Self {
         let mut terms = query
             .split(|c| !word(c))
             .filter(|s| !s.is_empty())
@@ -146,7 +386,7 @@ impl Terms {
             }
         })
     }
-    fn fill(&self, text: &str, bits: &mut [u64]) {
+    fn fill_text(&self, text: &str, bits: &mut [u64]) {
         if text.is_ascii() {
             for token in text
                 .as_bytes()
@@ -167,82 +407,16 @@ impl Terms {
             }
         }
     }
-    pub(crate) fn select(&self, text: &str, cap: u32) -> Excerpt {
-        let cap = cap as usize;
-        let spans = sentence_spans(text);
-        let words = self.terms.len().div_ceil(64);
-        let mut matches = vec![0u64; words * spans.len()];
-        for (index, span) in spans.iter().enumerate() {
-            if span.end_cp - span.start_cp <= cap {
-                self.fill(
-                    &text[span.start..span.end],
-                    &mut matches[index * words..(index + 1) * words],
-                );
-            }
-        }
-        let mut covered = vec![0u64; words];
-        let mut best = None;
-        let mut counts = vec![0usize; self.terms.len()];
-        let (mut left, mut score) = (0, 0);
-        // Each sentence enters and leaves once. A redundant left edge never
-        // helps a later window: its newer copies expire after that edge does.
-        for (right, end) in spans.iter().enumerate() {
-            for term in bit_indices(&matches[right * words..(right + 1) * words]) {
-                score += usize::from(counts[term] == 0);
-                counts[term] += 1;
-            }
-            while left <= right {
-                let bits = &matches[left * words..(left + 1) * words];
-                let too_long = end.end_cp - spans[left].start_cp > cap;
-                let redundant = left < right && bit_indices(bits).all(|term| counts[term] > 1);
-                if !too_long && !redundant {
-                    break;
-                }
-                for term in bit_indices(bits) {
-                    counts[term] -= 1;
-                    score -= usize::from(counts[term] == 0);
-                }
-                left += 1;
-            }
-            if left <= right && score != 0 {
-                let span = &spans[left];
-                let length = end.end_cp - span.start_cp;
-                let candidate = (
-                    score,
-                    std::cmp::Reverse(length),
-                    std::cmp::Reverse(span.start_cp),
-                    left,
-                    right,
-                );
-                if best.is_none_or(|best| candidate > best) {
-                    best = Some(candidate);
-                }
-            }
-        }
-        if let Some((_, _, _, mut left, mut right)) = best {
-            loop {
-                let mut changed = false;
-                if right + 1 < spans.len() && spans[right + 1].end_cp - spans[left].start_cp <= cap
-                {
-                    right += 1;
-                    changed = true;
-                }
-                if left > 0 && spans[right].end_cp - spans[left - 1].start_cp <= cap {
-                    left -= 1;
-                    changed = true;
-                }
-                if !changed {
-                    break;
-                }
-            }
-            return passage(
-                text,
-                spans[left].start,
-                spans[right].end,
-                spans[left].start_cp,
-                spans[right].end_cp,
-            );
-        }
+}
+impl Matcher for &LiteralTerms {
+    fn terms(&self) -> usize {
+        self.terms.len()
+    }
+    fn fill(&mut self, text: &str, bits: &mut [u64]) -> Result<(), String> {
+        self.fill_text(text, bits);
+        Ok(())
+    }
+    fn fallback(&mut self, text: &str, cap: usize, covered: &mut [u64]) -> Result<Excerpt, String> {
         // Hard windows only tokenize their candidate bytes. Offsets are needed
         // only on this fallback, and ASCII text needs no codepoint-to-byte map.
         let ascii = text.is_ascii();
@@ -276,10 +450,7 @@ impl Terms {
         let mut best = (0usize, std::cmp::Reverse(0usize));
         for start in starts {
             covered.fill(0);
-            self.fill(
-                &text[byte(start)..byte((start + cap).min(length))],
-                &mut covered,
-            );
+            self.fill_text(&text[byte(start)..byte((start + cap).min(length))], covered);
             let score = covered
                 .iter()
                 .map(|w| w.count_ones() as usize)
@@ -288,7 +459,7 @@ impl Terms {
         }
         let start = best.1.0;
         let end = (start + cap).min(length);
-        passage(text, byte(start), byte(end), start, end)
+        Ok(passage(text, byte(start), byte(end), start, end))
     }
 }
 

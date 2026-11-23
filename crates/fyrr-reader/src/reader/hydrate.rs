@@ -229,18 +229,19 @@ impl PreparedReader {
                         );
                         lance_core::utils::tokio::spawn_cpu(move || {
                             let _claims = claims;
-                            Ok::<_, std::convert::Infallible>(
-                                jobs.into_iter()
-                                    .map(|(hit, row, terms, cap)| {
-                                        (hit, terms.select(text.value(row), cap))
-                                    })
-                                    .collect::<Vec<_>>(),
-                            )
+                            jobs.into_iter()
+                                .map(|(hit, row, terms, cap)| {
+                                    let excerpt = terms
+                                        .select(text.value(row), cap)
+                                        .map_err(|_| ConfigurationInvalid)?;
+                                    Ok::<_, ReaderError>((hit, excerpt))
+                                })
+                                .collect::<Result<Vec<_>, _>>()
                         })
                     }))
                     .await;
                 for batch in batches {
-                    for (hit, excerpt) in batch.unwrap_or_else(|error| match error {}) {
+                    for (hit, excerpt) in batch? {
                         // The serial loop counted the entire record as omitted;
                         // account for the returned bytes once selection finishes.
                         rendered.omitted_bytes = rendered
@@ -444,11 +445,21 @@ impl PreparedReader {
         let mut hits = Vec::new();
         let mut omitted_bytes = 0u64;
         let mut excerpt_terms = BTreeMap::new();
-        let parallel_excerpts = selected
+        let excerpts = selected
             .iter()
             .filter(|hit| hit.output == OutputMode::Excerpt)
-            .count()
-            > 8;
+            .count();
+        let parallel_excerpts = excerpts > 8;
+        // A namespace with an analyzer, stemming, stop words or folding selects
+        // excerpts with the tokens of its index, as highlights match; any other
+        // keeps the literal words of the query.
+        let tokenizer = (excerpts > 0 && crate::excerpt::analyzes(&self.config.namespace))
+            .then(|| {
+                crate::fts_params(&self.config.namespace)
+                    .and_then(|params| params.build())
+                    .map_err(|_| ConfigurationInvalid)
+            })
+            .transpose()?;
         let mut excerpt_jobs = Vec::new();
         let (mut revision_us, mut selection_us) = (0u64, 0u64);
         for hit in selected {
@@ -485,15 +496,23 @@ impl PreparedReader {
             revision_us += micros(revision_start.elapsed());
             let selection_start = Instant::now();
             let excerpt = if hit.output == OutputMode::Excerpt {
-                let terms = excerpt_terms
-                    .entry(hit.query)
-                    .or_insert_with(|| Arc::new(crate::excerpt::Terms::new(hit.query)));
+                let terms = match excerpt_terms.entry(hit.query) {
+                    std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(entry) => entry.insert(Arc::new(
+                        crate::excerpt::Terms::new(tokenizer.as_deref(), hit.query)
+                            .map_err(|_| ConfigurationInvalid)?,
+                    )),
+                };
                 if parallel_excerpts {
                     let row = *text_rows.get(&candidate.row_id).ok_or(StorageUnavailable)?;
                     excerpt_jobs.push((hits.len(), row, terms.clone(), hit.excerpt_chars));
                     None
                 } else {
-                    Some(terms.select(text.ok_or(StorageUnavailable)?, hit.excerpt_chars))
+                    Some(
+                        terms
+                            .select(text.ok_or(StorageUnavailable)?, hit.excerpt_chars)
+                            .map_err(|_| ConfigurationInvalid)?,
+                    )
                 }
             } else {
                 None
