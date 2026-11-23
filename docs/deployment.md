@@ -319,7 +319,10 @@ reader. To keep a namespace on few readers, route on the namespace.
 - **`/mcp` has no namespace in its path.** A reader serves `/mcp` from the
   namespace in its own configuration, so never hash it into a shared pool of
   readers. Route `/mcp` by host, or give each configured namespace its own
-  pool of readers.
+  pool of readers. With OIDC, send the two OAuth discovery paths,
+  `/.well-known/oauth-protected-resource` and
+  `/.well-known/oauth-protected-resource/mcp`, to the same pool as `/mcp`:
+  another reader answers them `404`, and a client then cannot sign in.
 - **No coordination.** fyrr adds no router process: the hashing is the load
   balancer's. Readers never coordinate and never learn which namespaces
   another reader serves; each decides from the requests it receives.
