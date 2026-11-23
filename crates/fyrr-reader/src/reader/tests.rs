@@ -240,6 +240,97 @@ async fn an_unindexed_tail_is_scored_flat_and_never_returns_a_row_the_caller_may
     }
 }
 
+/// An array indexed per element returns a row once for each element that
+/// matches, and the fetch is bounded (41 elements for 2 candidates): a row
+/// whose matching elements fit the bound leaves the other rows in the answer, a
+/// row with more of them fills it and pushes them out, and the lane says so.
+#[tokio::test]
+async fn a_row_with_more_matching_elements_than_the_fetch_bound_is_reported() {
+    use arrow_array::{ListArray, RecordBatchIterator};
+    use arrow_buffer::OffsetBuffer;
+    use arrow_schema::{DataType, Field, Schema};
+    use lance::index::DatasetIndexExt;
+    use lance_index::scalar::{InvertedIndexParams, inverted::DocumentGranularity};
+    let item = Arc::new(Field::new("item", DataType::Utf8, false));
+    let text = |name: &str| Field::new(name, DataType::Utf8, false);
+    let schema = Arc::new(Schema::new(vec![
+        text("source_id"),
+        text("root_id"),
+        text("record_id"),
+        Field::new("tags", DataType::List(item.clone()), false),
+    ]));
+    let text_attributes = TextMatch {
+        all_terms: false,
+        attributes: vec![("tags".into(), 1.0)],
+    };
+    // `many` holds `elements` elements that outscore the one of `other`.
+    for (elements, reported) in [(30, 0), (60, 1)] {
+        let rows: [(&str, Vec<&str>); 2] = [
+            ("many", vec!["alpha"; elements]),
+            ("other", vec!["alpha beta"]),
+        ];
+        let strings = |values: Vec<&str>| Arc::new(StringArray::from(values));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                strings(vec!["source"; 2]),
+                strings(rows.iter().map(|row| row.0).collect()),
+                strings(vec!["record"; 2]),
+                Arc::new(ListArray::new(
+                    item.clone(),
+                    OffsetBuffer::from_lengths(rows.iter().map(|row| row.1.len())),
+                    strings(rows.iter().flat_map(|row| row.1.iter().copied()).collect()),
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/lance-pin")
+            .join(format!(
+                "lexical-bound-{elements}-{}-{}",
+                std::process::id(),
+                fyrr_core::clock::now().timestamp_nanos_opt().unwrap()
+            ));
+        let mut dataset = Dataset::write(
+            RecordBatchIterator::new(vec![Ok(batch)], schema.clone()),
+            root.to_str().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        dataset
+            .create_index(
+                &["tags"],
+                IndexType::Inverted,
+                Some("attrfts_tags_idx".into()),
+                &InvertedIndexParams::default()
+                    .with_position(false)
+                    .document_granularity(DocumentGranularity::ListElement),
+                false,
+            )
+            .await
+            .unwrap();
+        let eligible = RowAddrMask::from_allowed(RowAddrTreeMap::from_iter([0, 1]));
+        let (found, _, bound_hits) =
+            PreparedReader::lexical(&dataset, &eligible, None, "alpha", &text_attributes, 2)
+                .await
+                .unwrap();
+        let roots: Vec<_> = found.iter().map(|row| row.root.as_str()).collect();
+        assert_eq!(bound_hits, reported, "{elements} elements");
+        // Within the bound both rows are candidates, once each; beyond it only
+        // the row that fills the fetch is.
+        assert_eq!(
+            roots,
+            if reported == 0 {
+                vec!["many", "other"]
+            } else {
+                vec!["many"]
+            }
+        );
+    }
+}
+
 #[tokio::test]
 async fn lexical_request_mask_precedes_topk_and_preserves_sql_scores() {
     use arrow_array::RecordBatchIterator;

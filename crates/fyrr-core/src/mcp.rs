@@ -224,6 +224,7 @@ pub struct QueryAttribute {
     pub attribute: String,
     /// 0.000001 to 100; default 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0.000001, max = 100))]
     pub weight: Option<f64>,
 }
 

@@ -393,6 +393,13 @@ Lance takes no query over such an index and one of a whole value together, so
 an array next to another attribute is `invalid_argument` until a newer Lance
 allows it.
 
+A known limit of an array: the text lane fetches at most about 20 elements for
+each of its `lexical_candidates` (41 for 2, 4,096 for 200), and a row appears
+once for each element that matches. A document with more matching elements than
+that fills the fetch, and the documents after it are missing from the answer
+although they belong in it. The answer reports it as `telemetry.lexical_tie_bound_hits`. Keep the elements that can match a query few,
+or rank by an attribute that holds one value per document.
+
 ```sh
 curl https://fyrr.example.com/v1/namespaces/main/query \
   -H "Authorization: Bearer $ACCESS_TOKEN" \

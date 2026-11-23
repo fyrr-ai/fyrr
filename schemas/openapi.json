@@ -1277,7 +1277,9 @@
               "null"
             ],
             "format": "double",
-            "description": "0.000001 to 100; default 1."
+            "description": "0.000001 to 100; default 1.",
+            "minimum": 1e-6,
+            "maximum": 100
           }
         },
         "required": [

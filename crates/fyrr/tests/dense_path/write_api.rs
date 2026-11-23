@@ -4504,7 +4504,7 @@ async fn identity_write_api_ranks_a_text_query_by_several_full_text_attributes_o
     // `d` matches every ranking best but the caller may not read it. No text
     // holds the query: only the attributes do.
     let rows = [
-        ("a", "alpha", "beta", json!(vec!["alpha"; 60]), "usr:x"),
+        ("a", "alpha", "beta", json!(vec!["alpha"; 30]), "usr:x"),
         (
             "b",
             "beta",
@@ -4630,10 +4630,11 @@ async fn identity_write_api_ranks_a_text_query_by_several_full_text_attributes_o
     // "beta": no element of `a` or `c` holds both, `b` has one that does.
     let tags = json!([{"attribute": "tags"}]);
     assert_eq!(lexical("alpha beta", tags.clone(), "all").await, ["b"]);
-    // A document with several matching elements is one candidate. `a` has 60
+    // A document with several matching elements is one candidate. `a` has 30
     // elements that outscore every one of `b` and `c`: more than a first fetch
-    // for two candidates holds, yet the two best documents are `a` and `b`,
-    // whose best element outscores that of `c`.
+    // for two candidates holds, and within the bound of the fetch (41), so the
+    // refill finds the two best documents, `a` and then `b`, whose best element
+    // outscores that of `c`.
     assert_eq!(lexical("alpha", tags.clone(), "any").await, ["a", "b"]);
     // `contains` takes an array the same way.
     let contained = ask(
