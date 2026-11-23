@@ -47,7 +47,9 @@ means a fresh process and an empty reader mirror.
   scripts/bench-scale --reuse DIR --maintain --maintain-step 1h
 
 `--keep` leaves the namespace under `--dir` (about 6 GB at 3,000,000 rows) and
-prints its directory on stderr first. Delete it when done. The writer and `writer maintain` run on cores 0-3 only, with
+prints its directory on stderr first. Delete it when done. The script writes a
+`.bench-scale` marker into every directory it creates and deletes only inside
+a directory that has it; `--reuse` refuses one without it. The writer and `writer maintain` run on cores 0-3 only, with
 `writer.threads = 2`: all-core vector index builds hard-reset a shared host.
 Output is one JSON document on stdout and a table on stderr. Needs python3 with
 numpy.
@@ -85,7 +87,19 @@ NAMESPACE = "bench-scale"
 SUBJECTS = (("all", 1), ("p10", 10), ("p1", 100))  # name, one row in N is readable
 LANES = ("dense", "fts", "hybrid")
 WRITER_CORES = "0-3"
+MARKER = ".bench-scale"  # written into every directory the script creates
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def remove(work, path):
+    """Delete `path` (the directory itself or a path inside it), but only in a
+    directory this script created: one that holds the marker."""
+    if not (work / MARKER).is_file():
+        raise SystemExit("refusing to delete in %s: no %s marker" % (work, MARKER))
+    target = Path(path).resolve()
+    if target != work and not target.is_relative_to(work):
+        raise SystemExit("refusing to delete %s: outside %s" % (target, work))
+    shutil.rmtree(target, ignore_errors=True)
 
 
 def free_address():
@@ -375,6 +389,7 @@ class Run:
         self.writer_address = free_address()
         self.reader_address = free_address()
         self.metrics_address = free_address()
+        self.children = []  # every process started and not yet reaped
 
     def base(self, memory_max_bytes):
         config = write_config(
@@ -393,12 +408,28 @@ class Run:
         if pin:
             argv = ["taskset", "-c", WRITER_CORES] + argv
         name = log or "-".join(command[:2])
-        return subprocess.Popen(
+        process = subprocess.Popen(
             argv,
             env=self.env,
             stdout=subprocess.DEVNULL,
             stderr=(self.work / (name + ".stderr")).open("w"),
         )
+        self.children.append(process)
+        return process
+
+    def terminate_all(self):
+        """On any exit, stop what this script started, by its own PIDs only.
+        A writer finishes its current commit group first, so it may take a while."""
+        for process in self.children:
+            if process.poll() is None:
+                process.terminate()
+        for process in self.children:
+            try:
+                process.wait(timeout=900)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        self.children.clear()
 
     def run_measured(self, command, pin=True):
         """Run to the end: the seconds, the peak RSS in MiB (`VmHWM`, sampled
@@ -412,6 +443,7 @@ class Run:
             time.sleep(1)
         seconds = time.perf_counter() - started
         _pid, status, _usage = os.wait4(process.pid, 0)
+        self.children.remove(process)
         return seconds, peak, os.waitstatus_to_exitcode(status)
 
     def stop(self, process):
@@ -421,6 +453,7 @@ class Run:
             peak = peak_rss_mib(process.pid)
             os.kill(process.pid, signal.SIGTERM)
         os.wait4(process.pid, 0)
+        self.children.remove(process)
         return peak
 
     def status(self):
@@ -546,7 +579,7 @@ def arm(run, corpus, memory_max_bytes, vectors, texts, stored):
     result = {"memory_max_bytes": memory_max_bytes, "subjects": []}
     answers, errors = {}, []
     for subject, every in SUBJECTS:
-        shutil.rmtree(run.work / "mirror", ignore_errors=True)
+        remove(run.work, run.work / "mirror")
         reader = run.spawn(["reader", "serve"], memory_max_bytes)
         read = Server(run.reader_address)
         out = {"subject": subject, "rows_readable": corpus.rows // every}
@@ -706,7 +739,7 @@ def isolated_admission(run, memory_max_bytes, vectors):
     Two orders, so that every subject is measured as a later one."""
     results = []
     for order in (("p1", "all", "p10"), ("p10", "p1", "all")):
-        shutil.rmtree(run.work / "mirror", ignore_errors=True)
+        remove(run.work, run.work / "mirror")
         reader = run.spawn(["reader", "serve"], memory_max_bytes)
         read = Server(run.reader_address)
         path = "/v1/namespaces/%s/query" % NAMESPACE
@@ -861,6 +894,8 @@ def main():
     loaded = None
     if args.reuse:
         work = Path(args.reuse).resolve()
+        if not (work / MARKER).is_file():
+            raise SystemExit("%s is not a directory this script created" % work)
         secrets_ = json.loads((work / "secrets.json").read_text())
         loaded = json.loads((work / "load.json").read_text())
         args.dimensions, args.rows = secrets_["dimensions"], loaded["rows"]
@@ -868,6 +903,7 @@ def main():
         # Local storage refuses a path with a symlink in it.
         work = Path(tempfile.mkdtemp(prefix="scale-", dir=args.dir)).resolve()
         work.chmod(0o700)
+        (work / MARKER).write_text("created by scripts/bench-scale\n")
         print("namespace in %s" % work, file=sys.stderr, flush=True)
         env = {
             name: secrets.token_hex(32)
@@ -899,8 +935,9 @@ def main():
             arm(run, corpus, memory, vectors, texts, stored) for memory in args.memory
         ]
     finally:
+        run.terminate_all()
         if not args.keep and not args.reuse:
-            shutil.rmtree(work, ignore_errors=True)
+            remove(work, work)
 
     version = subprocess.run(
         [run.binary, "--version"], capture_output=True, text=True, check=True

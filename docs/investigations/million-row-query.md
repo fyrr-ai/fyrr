@@ -72,11 +72,12 @@ scripts/bench-scale --reuse DIR --maintain --maintain-step 1h \
 
 The query phase of the first command never got a reader: the default budget is
 refused (below), so I stopped it after the load and maintenance, and the later
-two commands are the runs reported. The
-queries of state A ran in two passes of the script that differ only in how the
-isolated admission is estimated (the second query of an identity as baseline
-there, the median of its fourth to sixth query in state B). The raw JSON of
-every run is kept privately on the build host under
+two commands are the runs reported. The two query runs differ in one detail of
+the script: the "later queries" that the comparison under
+[Cold first query](#cold-first-query-and-admission-106) subtracts are the
+second query in state A and the median of the fourth to sixth in state B; the
+script in this change is the second. The raw JSON of every run is kept
+privately on the build host under
 `/mnt/fetchcraft-builds/tmp/bench-scale-results/`; the namespace was deleted
 afterwards.
 
@@ -97,7 +98,7 @@ index. A request time includes the segment's vector and full-text build.
 
 `writer maintain` with the default `writer.maintenance.step_max_duration` (5
 minutes) **failed twice** with `maintenance_step_deadline`, after 331 s and
-313 s. Between them the ten scalar indexes and `fts_idx` were merged to one
+313 s. After the two runs the ten scalar indexes and `fts_idx` were merged to one
 segment each, `vector_idx` stayed at 60 (storage 4.08 GB). The failure happened
 and was repeated once, as planned. A third run with `step_max_duration = 1h`
 (one extra run beyond the plan, to measure the merged state) **succeeded in
@@ -155,19 +156,23 @@ state A, 16.1 against 17.8 ms in B).
 | 1% | full-text | 40 / 95 / 106 | 35 / 86 / 92 |
 | 1% | hybrid | 97 / 110 / 127 | 84 / 97 / 102 |
 
-(The 8192 MiB arm of state B has outliers at p99, for example 831 ms for the 10%
-full-text lane; the 6144 MiB arm of the same state reads 378 ms. With 100
-queries a p99 is the maximum.)
+The p99 of 100 queries is the second slowest. The 8192 MiB arm of state B has
+outliers: the 10% full-text lane has p99 831.2 ms and a maximum of 4,016.9 ms
+(the 6144 MiB arm of the same state: p99 377.6 ms, maximum 437.7 ms), and the
+100% full-text lane a maximum of 4,904.4 ms (6144 MiB arm: 106.8 ms). Other
+jobs ran on the host, so I take these as noise of a shared machine, but I did
+not repeat the runs to show it.
 
 Reading it:
 
 - Merging the vector index cuts dense latency of the 100% subject from 66 to
-  17 ms and of the 10% subject from 65 to 35 ms: a query probes one segment
+  18 ms and of the 10% subject from 65 to 35 ms: a query probes one segment
   instead of 60. The 1% subject changes little (94 to 78 ms).
-- The **10% subject's full-text and hybrid lanes are 4 to 6 times slower** than
-  the 100% and the 1% subject (p50 170 ms against 28-35 ms, p95 about 360 ms).
-  The lexical lane has to filter by a set that is neither small nor the whole
-  corpus. This does not depend on the merge.
+- The **10% subject's full-text lane is 4 to 7 times slower** than the 100%
+  and the 1% subject (p50 170-175 ms against 27-40 ms, p95 about 360 ms) in both
+  states. Its hybrid lane (p50 170-176 ms) is 2.3 and 1.8 times the 100% and
+  1% subjects' in state A (78 and 97 ms), and 5.4 and 2.0 times in state B (31
+  and 84 ms). I did not look into the cause.
 - The first query of every lane, which is the cold case, is in the next section.
 
 ## Cold first query and admission (#106)
@@ -184,40 +189,47 @@ and is not included (39-96 requests, 4-63 MiB).
 | 1% | A | 1.19-1.58 s | 580-743 | 1,107-1,254 | 0.08-0.09 s (444-470, 78-81) | 0.10-0.11 s (514-535, 91-97) |
 | 100% | B | 1.21-1.38 s | 26,241-26,393 | 1,315-1,317 | 0.09-0.11 s (862-868, 82-87) | 0.05 s (754, 43-44) |
 | 10% | B | 1.39-1.44 s | 35,782 | 1,545-1,606 | 0.38-0.40 s (958-1,141, 384-386) | 0.33 s (1-206, 37-116) |
-| 1% | B | 1.69-1.73 s | 46,774 | 1,951-1,964 | 0.08-0.09 s (285-306, 74-81) | 0.09 s (306-322, 84) |
+| 1% | B | 1.69-1.73 s | 46,774 | 1,951-1,964 | 0.08-0.09 s (285, 74-81) | 0.09 s (306-322, 84) |
 
 The merged index is read in small pages: **26,000 to 47,000 requests for 1.3 to
-1.9 GiB** on the first dense query, against about 740 requests for 1.1 GiB when
+1.9 GiB** on the first dense query, against about 580-745 requests for 1.1-1.2 GiB when
 the index has 60 segments. On local storage that costs 1.2-1.7 s; on an object
 store every request has a round trip (this is where #103 and #104 apply) and
 the figure is not measured here.
 
-**Admission** is the part of that first query that builds the subject's
-permission set. On one cold reader the first subject loads the files and builds
-its admission together (the first row of each order below); the subjects after it
-find the files in the mirror, so their first query is the admission alone. The
-telemetry's `stage_s3_requests.admission` is 0 in every first query of every run.
+**Admission was not isolated.** The first query of a subject builds that
+subject's permission set, and the search response exposes no per-stage time
+(`stage_us` is omitted), so no time is attributed to admission. The telemetry
+attributes 0 storage requests and 0 bytes to its `admission` stage in every
+first query of every run, while the reader's own storage counters moved by tens
+to tens of thousands of requests in the same queries (the table above), so
+those are not separable either. What is measured, per subject, is the total
+cost of the first query on a cold reader (the table above): **1.2-1.6 s in
+state A and 1.2-1.7 s in state B, with admission as one part of it**. That is
+an upper bound on the admission of one subject at 3,000,000 rows, and it sits
+far below the 300 s `MAX_REQUEST_DEADLINE`; it is not a measure of admission, and
+nothing is measured at a larger size.
 
-| Subject | State | First query on warm files | Later queries | Difference | Storage requests, bytes |
+To get closer I also ran, on one cold reader, the first query of one subject
+(which reads the files) and then the first query of each other subject, whose
+files are then in the mirror. The table is that second query against the same
+subject's later queries on that reader (second query in state A, median of the
+fourth to sixth in state B). **The difference is an upper bound for admission
+that includes every other first-time read in that query**, as the request
+counts show; it is not admission time:
+
+| Subject | State | First query after the files were read | Later queries | Difference (upper bound) | Storage requests, MiB read |
 | --- | --- | --- | --- | --- | --- |
-| 100% | A | 161-184 ms | 70-74 ms | **87-117 ms** | 33-257 req, 160-178 MB |
-| 10% | A | 132-134 ms | 65-67 ms | **65-69 ms** | 1-51 req, 104-136 MB |
-| 1% | A | 168 ms | 96-100 ms | **67-73 ms** | 273-292 req, 173-175 MB |
-| 100% | B | 612-722 ms | 479-563 ms | 93-193 ms | 0 req |
-| 10% | B | 287-353 ms | 285-351 ms | 2 ms | 0 req |
-| 1% | B | 301-302 ms | 107-142 ms | 160-194 ms | 1-2,981 req, 73-263 MB |
+| 100% | A | 161-184 ms | 68-74 ms | 87-117 ms | 33-257, 153-170 |
+| 10% | A | 132-134 ms | 65-67 ms | 65-69 ms | 1-51, 99-129 |
+| 1% | A | 168-169 ms | 96-100 ms | 67-73 ms | 273-292, 165-167 |
+| 100% | B | 612-722 ms | 479-563 ms | 93-193 ms | 0, 0 |
+| 10% | B | 287-353 ms | 285-351 ms | 1.6-1.9 ms | 0, 0 |
+| 1% | B | 301-302 ms | 108-142 ms | 160-194 ms | 1-2,981, 69-251 |
 
-State A is clear: **admission at 3,000,000 rows costs about 0.1 s for the 100%
-subject and 0.07 s for the 10% and 1% subjects, on warm files**, a far cry from
-the 300 s `MAX_REQUEST_DEADLINE`. The first query of a cold reader costs 1.1-1.4
-s in all, nearly all of it reading the index files. In state B the figures are
-less clean (the second and later queries of a subject that is not the first on
-its reader are slow, see the findings), so the differences there are an upper
-bound at best. Neither state shows an admission that grows toward the deadline:
-**the per-bind corpus pass is not the bottleneck at 3,000,000 rows.**
-
-*Extrapolated, not measured:* if the admission cost grows linearly with the
-admitted rows, 30,000,000 rows would take about 1 s warm for the 100% subject.
+In state B the later queries are themselves slow for the 100% and 10%
+subjects (finding 5), so the baseline is not a clean warm query and the
+differences there say even less. No figure from this table is an admission time.
 
 ## Recall
 
@@ -230,10 +242,10 @@ read, 100 queries per subject, all arms (the arms agree):
 | 10% | 1.000 | 1.000 |
 | 1% | 1.000 | 1.000 |
 
-The 10% and 1% subjects return exactly the truth: their selection is small
-enough that the reader scans it exactly instead of probing the index. The 100%
-subject, whose dense lane uses the index, loses recall when the index has 60
-segments and recovers most of it after the merge. All three use the default
+The 10% and 1% subjects returned exactly the truth in these runs (I did not
+check whether the reader scanned their selection exactly or probed the index).
+The 100% subject loses recall when the index has 60 segments and recovers most of
+it after the merge. All three use the default
 `nprobes` (256 per segment) and 300 candidates.
 
 The reader's own `POST /recall` (10 samples taken from the stored rows, 100%
@@ -248,7 +260,7 @@ numpy scan above is the recall figure of state B.
 These are candidates for their own issues; none is fixed here.
 
 1. **The default `reader.memory_max_bytes` (2304 MiB) refuses a 3,000,000-row
-   namespace**, minimum about 5.7 GiB, while the process stays under 0.5 GiB
+   namespace**, minimum about 5.6 GiB (5,746 MiB), while the process stays under 0.5 GiB
    resident (1.2 GiB during `/recall`). An operator gets
    `preparation_budget_impossible` and no way to know the number except from the
    log.
@@ -258,16 +270,17 @@ These are candidates for their own issues; none is fixed here.
    segments, so a namespace loaded in 50,000-row requests sits at 60 segments
    with 0.87 recall@10 and 4 times the dense latency.
 3. **The merged vector index is read in about 26,000-47,000 small requests on
-   the first query** (1.3-1.9 GiB), 35 to 65 times the requests of the
-   unmerged one for a similar number of bytes.
+   the first query** (1.3-1.9 GiB), 35 to 80 times the requests of the
+   unmerged one (580-745) for a similar number of bytes.
 4. **Full-text and hybrid queries of a subject that reads 10% of the rows take
-   about 170 ms (p95 360 ms)**, 4 to 6 times those of a subject that reads all or
-   1%.
+   about 170 ms (p95 360 ms)** in the full-text lane (4 to 7 times those of a
+   subject that reads all or 1%) and in the hybrid lane (1.8 to 5.4 times).
 5. **Queries of a subject that is not the first one on a reader are slow in
    state B**: on a reader that served the 1% (or 10%) subject first, the 100%
-   subject's dense queries take 480-560 ms for six queries in a row, against 16
-   ms on a reader that serves only that subject. The cause is not known; the
-   isolated-admission rows above are affected by it.
+   subject's dense queries take about 440-600 ms for six queries in a row (one
+   of 1,086 ms), against 16-18 ms p50 on a reader that serves only that
+   subject. The cause is not known; the table of differences above is affected
+   by it.
 6. **`POST /recall` answers by an exact scan at this size** (`approximate:
    false`) and takes 4-5 s per sample, so it cannot report the index recall of
    a merged 3,000,000-row namespace.
@@ -283,9 +296,7 @@ These are candidates for their own issues; none is fixed here.
   no S3 request cost; the request counts are storage-layer counts.
 - **Dropped page cache.** The operating system cache was warm after the load.
 - **More rows.** 3,000,000 only. Nothing is measured at 10,000,000 (#133) or
-  above; the 100,000-row run of the pilot and this one give no more than two
-  points, and no size limit of a namespace (#194) follows from them. The 30
-  million figure above is extrapolated.
+  above. One size gives no slope and no size limit of a namespace (#194).
 - **Writes of other shapes.** Only 60 requests of 50,000 rows, each its own
   publication; coalesced commit groups of up to 1,000,000 rows, a
   `writer maintain` at 64 segments, `dense_partition_rows` or `dense_rq_bits`
