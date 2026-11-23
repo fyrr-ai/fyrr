@@ -11,7 +11,7 @@ use std::fmt::Write;
 use std::sync::Mutex;
 use std::time::Duration;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Kind {
     Counter,
     Gauge,
@@ -19,6 +19,7 @@ enum Kind {
 }
 
 /// One metric family: its name, help text and kind.
+#[derive(Debug)]
 pub struct Metric {
     name: &'static str,
     help: &'static str,
