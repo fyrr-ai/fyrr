@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 
 use crate::config::DIMENSIONS_MAX;
 use crate::limits::mcp::*;
+use crate::units::ConfigDuration;
 use crate::version::SchemaVersion;
 
 /// The MCP tool schema version, reported in tool `_meta` and every response.
@@ -160,6 +161,9 @@ pub struct SearchInput {
     /// Set by the HTTP query route from its `sub_queries` member; no tool argument.
     #[serde(skip)]
     pub sub_queries: Option<Vec<SubQuery>>,
+    /// Set by the HTTP query route from its `boosts` member; no tool argument.
+    #[serde(skip)]
+    pub boosts: Option<Vec<Boost>>,
 }
 
 /// The `query_match` member of a JSON `query` request: whether a document
@@ -204,6 +208,65 @@ impl Contains {
             && self.text().is_some_and(|(text, _)| {
                 bounded_text(text, MAX_QUERY_BYTES) && !text.trim().is_empty()
             })
+    }
+}
+
+/// One term of the `boosts` member of a JSON `query` request: a weight times a
+/// function of an attribute of the document, added to its relevance score. The
+/// score of a text, vector or fused ranking lies between 0 and 1, and each
+/// function lies between 0 and 1 too, so a weight is the most a term can add.
+/// A document without a value of the attribute gets 0 from the term.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "function", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Boost {
+    /// `weight * x / (x + midpoint)` for a numeric attribute `x`: half the
+    /// weight at the midpoint, the whole of it as `x` grows. A negative `x`
+    /// counts as 0.
+    Attribute {
+        /// An `int`, `uint` or `float` attribute.
+        #[schemars(length(min = 1, max = 128))]
+        attribute: String,
+        /// 0 to 1000000.
+        weight: f64,
+        /// Greater than 0, the value of `x` that earns half the weight.
+        midpoint: f64,
+    },
+    /// `weight * midpoint / (midpoint + d)`, where `d` is the distance of a
+    /// `datetime` attribute from `origin`, before or after it: the whole
+    /// weight at the origin, half of it a midpoint away. The reader has no
+    /// clock, so the request names the origin, usually the time it is sent.
+    Recency {
+        /// A `datetime` attribute, or `updated_at`.
+        #[schemars(length(min = 1, max = 128))]
+        attribute: String,
+        /// 0 to 1000000.
+        weight: f64,
+        /// Greater than 0: an integer followed by ms, s, m, h or d.
+        midpoint: ConfigDuration,
+        /// RFC 3339.
+        origin: McpTime,
+    },
+}
+
+impl Boost {
+    pub fn attribute(&self) -> &str {
+        match self {
+            Self::Attribute { attribute, .. } | Self::Recency { attribute, .. } => attribute,
+        }
+    }
+    pub fn weight(&self) -> f64 {
+        match self {
+            Self::Attribute { weight, .. } | Self::Recency { weight, .. } => *weight,
+        }
+    }
+    fn is_valid(&self) -> bool {
+        let positive_midpoint = match self {
+            Self::Attribute { midpoint, .. } => midpoint.is_finite() && *midpoint > 0.0,
+            Self::Recency { midpoint, .. } => midpoint.as_millis() > 0,
+        };
+        bounded_text(self.attribute(), 128)
+            && (0.0..=MAX_BOOST_WEIGHT).contains(&self.weight())
+            && positive_midpoint
     }
 }
 
@@ -1297,6 +1360,15 @@ impl SearchInput {
                     && self.sub_queries.is_none()
                     && (1..=MAX_CONTAINS).contains(&conditions.len())
                     && conditions.iter().all(Contains::is_valid)
+            })
+            && self.boosts.as_ref().is_none_or(|boosts| {
+                // A listing has no ranking to boost, a sub-query has its own, and
+                // a fusion of `queries` ranks by position in each list, not by score.
+                !listing
+                    && self.sub_queries.is_none()
+                    && self.fusion.is_none()
+                    && (1..=MAX_BOOSTS).contains(&boosts.len())
+                    && boosts.iter().all(Boost::is_valid)
             })
             && self.text_hits.is_none_or(|v| {
                 self.output != Some(OutputMode::Metadata)

@@ -54,6 +54,7 @@ impl PreparedReader {
         // An unknown included attribute is refused even when nothing matches.
         self.returned_columns(args.fields.as_ref())?;
         crate::rerank::scored_column(self, args.rerank.as_ref())?;
+        crate::boost::check(self, args.boosts.as_deref())?;
         let deadline = deadline.unwrap_or_else(|| {
             total
                 + std::time::Duration::from_millis(u64::from(
@@ -244,14 +245,16 @@ impl PreparedReader {
                 .ok_or(StorageUnavailable)?;
             *concurrent = concurrent.saturating_sub(wait_only);
         }
-        let ranked_queries = self.compose_queries(
-            args,
-            &predicate,
-            lexical,
-            dense,
-            &mut completion,
-            &mut telemetry,
-        )?;
+        let ranked_queries = self
+            .compose_queries(
+                args,
+                &predicate,
+                lexical,
+                dense,
+                &mut completion,
+                &mut telemetry,
+            )
+            .await?;
         self.finish_search_batch(
             args,
             queries,
@@ -430,9 +433,10 @@ impl PreparedReader {
                     &self.config.namespace.composition,
                     depth,
                     &self.config.namespace.retrieval,
+                    &Bonus::new(),
                 )?
             } else {
-                crate::retrieval::dense_only(dense, depth)?
+                crate::retrieval::dense_only(dense, depth, &Bonus::new())?
             });
             self.stage(&mut telemetry, "fusion", stage, self.mirror.counters());
         }
@@ -531,12 +535,16 @@ impl PreparedReader {
                     let mut ranked = Vec::with_capacity(results.len());
                     for result in &results {
                         let (rows, _, _) = result.as_ref().map_err(|code| *code)?;
+                        let bonus =
+                            crate::boost::bonuses(self, args.boosts.as_deref(), [&[], rows])
+                                .await?;
                         ranked.push(compose(
                             Vec::new(),
                             rows.clone(),
                             &self.config.namespace.composition,
                             k,
                             &self.config.namespace.retrieval,
+                            &bonus,
                         )?);
                     }
                     let selected = select_hits(ranked, queries, args, output, k, max_documents);
@@ -652,7 +660,7 @@ impl PreparedReader {
         Ok::<_, ReaderError>((results, failed))
     }
 
-    fn compose_queries(
+    async fn compose_queries(
         &mut self,
         args: &SearchInput,
         predicate: &str,
@@ -700,6 +708,8 @@ impl PreparedReader {
             }
             let depth = crate::rerank::configured(self, args.rerank.as_ref())
                 .map_or(k, |rerank| k.max(rerank.candidates));
+            let bonus =
+                crate::boost::bonuses(self, args.boosts.as_deref(), [&dense, &lexical]).await?;
             let selected = if args.has_text() {
                 compose(
                     dense,
@@ -707,9 +717,10 @@ impl PreparedReader {
                     &self.config.namespace.composition,
                     depth,
                     &self.config.namespace.retrieval,
+                    &bonus,
                 )?
             } else {
-                crate::retrieval::dense_only(dense, depth)?
+                crate::retrieval::dense_only(dense, depth, &bonus)?
             };
             #[cfg(test)]
             self.trace_stages(|stages| {

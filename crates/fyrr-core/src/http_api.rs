@@ -12,8 +12,8 @@ use serde_json::{Map, Value};
 
 use crate::attributes::AttributeSchema;
 use crate::mcp::{
-    AggregateInput, Contains, FetchInput, Filter, Fusion, RerankChoice, ReturnFields, SearchInput,
-    SubQuery, TermMatch,
+    AggregateInput, Boost, Contains, FetchInput, Filter, Fusion, RerankChoice, ReturnFields,
+    SearchInput, SubQuery, TermMatch,
 };
 use crate::publication::NamespaceSettings;
 
@@ -28,7 +28,7 @@ pub enum Consistency {
 }
 
 /// The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
-/// `search` tool and seven members that are no tool arguments.
+/// `search` tool and eight members that are no tool arguments.
 #[derive(Debug, Clone, PartialEq, JsonSchema)]
 pub struct QueryRequest {
     #[schemars(flatten)]
@@ -48,6 +48,9 @@ pub struct QueryRequest {
     /// Conditions on full-text attributes, each also required of a hit, like `filter`. Not with a listing.
     #[schemars(length(min = 1, max = 16))]
     pub contains: Option<Vec<Contains>>,
+    /// 1-8 terms added to the relevance score of a text or vector ranking: a weight times a function of an attribute. Not with a listing, `sub_queries` or `fusion`.
+    #[schemars(length(min = 1, max = 8))]
+    pub boosts: Option<Vec<Boost>>,
 }
 
 /// The body of `POST /v1/namespaces/{namespace}/fetch`: the arguments of the

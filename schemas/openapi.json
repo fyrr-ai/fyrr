@@ -438,7 +438,7 @@
       },
       "QueryRequest": {
         "type": "object",
-        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and seven members that are no tool arguments.",
+        "description": "The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the\n`search` tool and eight members that are no tool arguments.",
         "properties": {
           "query": {
             "type": [
@@ -755,6 +755,18 @@
             "description": "Conditions on full-text attributes, each also required of a hit, like `filter`. Not with a listing.",
             "minItems": 1,
             "maxItems": 16
+          },
+          "boosts": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Boost"
+            },
+            "description": "1-8 terms added to the relevance score of a text or vector ranking: a weight times a function of an attribute. Not with a listing, `sub_queries` or `fusion`.",
+            "minItems": 1,
+            "maxItems": 8
           }
         }
       },
@@ -1158,6 +1170,86 @@
           "attribute"
         ],
         "description": "One condition of the `contains` member of a JSON `query` request, on the\nfull-text index of a string attribute, which is not built with the `ngram`\ntokenizer. Exactly one of `all` and `any`."
+      },
+      "Boost": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "function": {
+                "type": "string",
+                "const": "attribute"
+              },
+              "attribute": {
+                "type": "string",
+                "description": "An `int`, `uint` or `float` attribute.",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "weight": {
+                "type": "number",
+                "format": "double",
+                "description": "0 to 1000000."
+              },
+              "midpoint": {
+                "type": "number",
+                "format": "double",
+                "description": "Greater than 0, the value of `x` that earns half the weight."
+              }
+            },
+            "required": [
+              "function",
+              "attribute",
+              "weight",
+              "midpoint"
+            ],
+            "description": "`weight * x / (x + midpoint)` for a numeric attribute `x`: half the\nweight at the midpoint, the whole of it as `x` grows. A negative `x`\ncounts as 0."
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "function": {
+                "type": "string",
+                "const": "recency"
+              },
+              "attribute": {
+                "type": "string",
+                "description": "A `datetime` attribute, or `updated_at`.",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "weight": {
+                "type": "number",
+                "format": "double",
+                "description": "0 to 1000000."
+              },
+              "midpoint": {
+                "$ref": "#/components/schemas/Duration",
+                "description": "Greater than 0: an integer followed by ms, s, m, h or d."
+              },
+              "origin": {
+                "$ref": "#/components/schemas/McpTime",
+                "description": "RFC 3339."
+              }
+            },
+            "required": [
+              "function",
+              "attribute",
+              "weight",
+              "midpoint",
+              "origin"
+            ],
+            "description": "`weight * midpoint / (midpoint + d)`, where `d` is the distance of a\n`datetime` attribute from `origin`, before or after it: the whole\nweight at the origin, half of it a midpoint away. The reader has no\nclock, so the request names the origin, usually the time it is sent."
+          }
+        ],
+        "description": "One term of the `boosts` member of a JSON `query` request: a weight times a\nfunction of an attribute of the document, added to its relevance score. The\nscore of a text, vector or fused ranking lies between 0 and 1, and each\nfunction lies between 0 and 1 too, so a weight is the most a term can add.\nA document without a value of the attribute gets 0 from the term."
+      },
+      "Duration": {
+        "description": "Duration: an integer followed by ms, s, m, h or d.",
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]*)(ms|s|m|h|d)$"
       },
       "FetchRequest": {
         "type": "object",

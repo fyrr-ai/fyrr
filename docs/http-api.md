@@ -392,6 +392,61 @@ curl https://fyrr.example.com/v1/namespaces/main/query \
        "contains":[{"attribute":"title","all":"red shoes"}]}'
 ```
 
+## Boosts
+
+The `query` route takes `boosts`, 1–8 terms that add to the relevance score of
+a text ranking (`query` or `queries`), a vector ranking, or both fused. It is
+no argument of the tool: `fetch` and `/mcp` refuse it, and their output does
+not change. A request without it is answered as before. It is
+`400 invalid_argument` for a listing, which has no ranking, and with
+`sub_queries` or `fusion`, which rank by their own rules.
+
+The fused score of a text or hybrid ranking lies between 0 and 1. A ranking by
+vector alone is scored by distance, so when a boost adds anything to it, the
+distances are normalized to that range first, and its `score` reads as that sum. Each
+term adds its `weight` times a function that lies between 0 and 1, so a weight
+of 0.2 moves a document at most 0.2 up the scale, and a weight of 1 lets a
+boost outweigh relevance.
+
+| `function` | Other members | Adds |
+| --- | --- | --- |
+| `attribute` | `attribute`, `weight`, `midpoint` | `weight × x / (x + midpoint)` for a numeric attribute `x`: half the weight at the midpoint, the whole of it as `x` grows. A negative `x` counts as 0. |
+| `recency` | `attribute`, `weight`, `midpoint`, `origin` | `weight × midpoint / (midpoint + d)`, where `d` is the distance of a `datetime` attribute from `origin`, before it or after it: the whole weight at the origin, half of it a midpoint away. |
+
+`attribute` names an `int`, `uint` or `float` attribute of the namespace for
+`attribute`, and a `datetime` attribute or `updated_at` for `recency`. A
+document without a value of it gets 0 from the term. `weight` is a number from
+0 to 1000000; `midpoint` is a number above 0, or for `recency` a duration above
+0 such as `12h` or `30d` (an integer followed by `ms`, `s`, `m`, `h` or `d`);
+`origin` is an RFC 3339 time. The reader has no clock and never takes the
+current time as the origin: send the time of the request. An attribute that is
+not declared or has another type, a weight or midpoint out of range and a
+missing `origin` are `400 invalid_argument`.
+
+Boosts apply to the candidates the lanes retrieve, not to the whole namespace:
+the text lane's `namespace.retrieval.lexical_candidates` and the vector lane's
+`dense_candidates` (at least `limit`), see [tuning](tuning.md#namespaceretrieval).
+They are the rows the caller may read and the request's filters select, so a
+boost never reads an attribute of a document the caller cannot read. The boost
+is added to a candidate's fused score before the
+[composition](tuning.md#namespacecomposition) picks its slots, so its
+`source_cap` and slot rules still apply: a boost that adds 0 everywhere returns
+the answer a request without `boosts` returns. A document among the candidates
+can reach the first rank through a boost whatever its relevance rank; one
+outside them cannot. A reranker blends its score with the boosted one; with a
+reranker weight of 1 the reranker alone decides the order.
+
+```sh
+curl https://fyrr.example.com/v1/namespaces/main/query \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"restore a backup","limit":10,
+       "boosts":[
+         {"function":"attribute","attribute":"views","weight":0.2,"midpoint":1000},
+         {"function":"recency","attribute":"modified","weight":0.3,"midpoint":"30d",
+          "origin":"2026-11-23T09:00:00Z"}]}'
+```
+
 ## Aggregate
 
 `POST /v1/namespaces/{namespace}/aggregate` computes aggregates over the

@@ -28,6 +28,16 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- The JSON `query` route takes `boosts`: 1 to 8 terms added to the relevance
+  score of a text, vector or fused ranking, each a weight times an
+  `attribute` function `x / (x + midpoint)` of a numeric attribute or a
+  `recency` function `midpoint / (midpoint + d)` of the distance of a
+  `datetime` attribute from an `origin` the request gives (the reader has no
+  clock). A document among the lanes' candidates can reach the first rank
+  through a boost, the composition's slot rules still apply, and only rows the
+  caller may read are boosted. They do not go with `sub_queries` or `fusion`. The MCP
+  `search` tool does not take them. See [Boosts](docs/http-api.md#boosts).
+
 - `namespace.dense_metric` (`cosine`, the default, `squared_l2` or `dot`) and
   `namespace.dense_element` (`f16`, the default, or `f32`) set the distance of
   the vector index and the type a vector is stored in. Both are fixed when the

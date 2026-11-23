@@ -51,12 +51,28 @@ fn documents(rows: Vec<Candidate>) -> Vec<Candidate> {
         .filter(|r| seen.insert((r.source.clone(), r.root.clone())))
         .collect()
 }
+/// What a request's boosts add to the score of a row, by row id; a row it does
+/// not name gets nothing.
+pub(crate) type Bonus = BTreeMap<u64, f64>;
 /// A search without text has one lane, so the documents keep its order by
 /// distance: no fusion weight may reorder or zero them.
-pub(crate) fn dense_only(dense: Vec<Candidate>, limit: usize) -> Result<Vec<Candidate>> {
+pub(crate) fn dense_only(
+    dense: Vec<Candidate>,
+    limit: usize,
+    bonus: &Bonus,
+) -> Result<Vec<Candidate>> {
     let mut rows = ranked(dense)?;
     for row in &mut rows {
         row.distance = Some(-row.score);
+    }
+    if bonus.values().any(|bonus| *bonus != 0.0) {
+        // A distance has no fixed scale: normalize it as a lane is, so that a
+        // bonus counts against a score between 0 and 1.
+        normalize(&mut rows);
+        for row in &mut rows {
+            row.score += bonus.get(&row.row_id).copied().unwrap_or(0.0);
+        }
+        rows = ranked(rows)?;
     }
     let mut rows = documents(rows);
     rows.truncate(limit);
@@ -68,6 +84,7 @@ pub(crate) fn compose(
     config: &Composition,
     limit: usize,
     retrieval: &RetrievalConfig,
+    bonus: &Bonus,
 ) -> Result<Vec<Candidate>> {
     let mut dense = ranked(dense)?;
     let mut lexical = ranked(lexical)?;
@@ -95,6 +112,10 @@ pub(crate) fn compose(
             entry.lexical = entry.lexical.or(row.lexical);
             entry.distance = entry.distance.or(row.distance);
         }
+    }
+    // The boosts weigh in the fused score, before the composition picks its slots.
+    for row in union.values_mut() {
+        row.score += bonus.get(&row.row_id).copied().unwrap_or(0.0);
     }
     let fusion = documents(ranked(union.values().cloned().collect())?);
     let dense = documents(dense);
