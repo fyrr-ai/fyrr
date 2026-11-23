@@ -61,6 +61,7 @@ annotations; PyArrow's untyped API remains covered by Arrow contract tests.
 | `crates/fyrr-writer` | Full build only: provider discovery, workers and their Python provider host, batch validation, committer, maintenance, directory and SCIM. |
 | `crates/fyrr` | The `fyrr` binary; feature `writer` (default) is the full build. |
 | `connectors/` | Python package `fyrr-connectors`: provider API, test kit and the bundled providers. |
+| `clients/python/` | Python package `fyrr-client`: synchronous and asynchronous clients of the HTTP API, with types generated from `schemas/openapi.json`. Separate from the binary. |
 | `examples/` | The quickstart (configuration, documents and `run`), an independently built provider wheel and a derived-image Dockerfile. |
 | `schemas/`, `fixtures/` | Generated JSON Schemas, golden contract documents and MCP goldens. |
 | `plugins/`, `.claude-plugin/` | The optional Claude Code plugin and its marketplace manifest. Raise `version` in `plugins/fyrr/.claude-plugin/plugin.json` with every change; clients cache a plugin by version. |
@@ -82,7 +83,7 @@ scripts/ci --step="reference docs" # standalone reference-doc verification
 reader-only build, the test-case ownership guard, unit, contract,
 configuration and schema tests in the full build, CLI and privacy tests in
 both builds, the debug
-reader-only link check, `cargo deny`, the Python SDK and example
+reader-only link check, `cargo deny`, the Python SDK, the Python client and the example
 provider, the quickstart on local storage, local-storage scenarios,
 and a small external-services set against owned RustFS and Keycloak fixtures.
 It keeps going after a failure and writes
@@ -190,7 +191,9 @@ not create.
   `schemas/openapi.json`, the OpenAPI description of the HTTP API, is
   generated from the request and response types of the `/v1/` routes
   (`fyrr_core::http_api`, `fyrr_core::mcp`). A change of such a type also runs
-  `scripts/ci "--step=schema drift"`.
+  `scripts/ci "--step=schema drift"`; the Python client's types are generated
+  from it, and `scripts/ci "--step=python client"` fails until you regenerate
+  them (`cd clients/python && uv run python tools/generate_models.py`).
 - **Dependencies.** A new dependency needs a license and advisory verdict in
   `deny.toml`.
 - **Secrets and privacy.** Secrets never enter the repository, configuration

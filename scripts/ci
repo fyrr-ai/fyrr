@@ -295,6 +295,21 @@ python_checks() {
     "$ROOT/scripts/ci-cases" run python-sdk)
 }
 
+# The Python client: type check, lint, generated models against
+# schemas/openapi.json, and its tests against a local `file://` deployment that
+# the guides' start script runs from the full binary.
+python_client_checks() {
+  ensure_build || return 1
+  (cd "$ROOT/clients/python" &&
+    unset PYTHONPATH &&
+    uv sync --locked &&
+    uv run --locked mypy &&
+    uv run --locked ruff check . &&
+    uv run --locked ruff format --check . &&
+    uv run --locked python tools/generate_models.py --check &&
+    PATH="$ROOT/target/ci-build/full:$PATH" "$ROOT/scripts/ci-cases" run python-client)
+}
+
 # The example provider's own tests, with the SDK's provider test kit.
 example_provider() {
   (cd "$ROOT/examples/markdown-provider" &&
@@ -389,6 +404,7 @@ step "reference docs" none reference_docs
 step "reader-only link check" none reader_link_check
 step "licenses and advisories" none cargo deny --locked check
 step "python connector SDK" pytest python_checks
+step "python client" pytest python_client_checks
 step "example provider (test kit)" pytest example_provider
 step "example wheels without rebuild" none example_wheels
 if ((IMAGES && !DEBUG_ONLY)); then

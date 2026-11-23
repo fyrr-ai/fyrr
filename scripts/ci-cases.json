@@ -5307,6 +5307,140 @@
       }
     }
   },
+  "python-client": {
+    "title": "python client",
+    "kind": "python",
+    "cases": {
+      "python:clients/python/tests/test_deployment.py::test_write_query_describe_list": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_deployment.py::test_iter_documents_pages_through_every_document": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_deployment.py::test_error_answers_raise_with_status_and_code": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_deployment.py::test_a_conditional_write_applies_or_skips": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_deployment.py::test_async_client_covers_the_same_routes": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_read_is_retried_on_the_retryable_statuses[408]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_read_is_retried_on_the_retryable_statuses[429]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_read_is_retried_on_the_retryable_statuses[500]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_read_is_retried_on_the_retryable_statuses[503]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_read_is_retried_on_the_retryable_statuses[504]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_read_is_retried_after_a_connection_error_and_a_timeout": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_is_retried_only_when_it_was_not_sent[write]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_is_retried_only_when_it_was_not_sent[delete]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[answer0-write]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[answer0-delete]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[answer1-write]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[answer1-delete]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[timed_out-write]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[timed_out-delete]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_wrong_request_is_not_retried": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_an_answer_that_is_not_json_is_a_fyrr_error": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_other_errors_are_final": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_retry_after_is_honoured_until_the_cap": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_backoff_doubles_and_gives_up": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_conditional_write_is_never_retried": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_the_async_client_retries_alike": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_key_is_stripped_checked_and_never_shown": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_scim_error_without_a_type_has_no_code": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_missing_writer_url_is_refused": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_iter_namespaces_lists_each_first_character_above_the_listing_limit": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_iter_namespaces_raises_when_a_first_character_still_overflows": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_the_async_iter_namespaces_lists_and_raises_alike": {
+        "tier": "quick",
+        "seconds": null
+      }
+    }
+  },
   "cli-reader": {
     "title": "cli (reader-only build)",
     "kind": "rust",
