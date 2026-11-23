@@ -3985,7 +3985,12 @@ async fn identity_write_api_infers_undeclared_attributes_on_storage() {
     );
     assert_eq!(listing(&config, eq("grade", json!(4))), ["r1"]);
     assert_eq!(
-        post(json!({"patch_where": {"filter": eq("colour", json!("red")), "set": {"size": "l"}}}))
+        writer
+            .post(
+                ADMIN_KEY,
+                "dense-fixture",
+                &json!({"patch_where": {"filter": eq("colour", json!("red")), "set": {"size": "l"}}})
+            )
             .await
             .0,
         200
@@ -4036,12 +4041,12 @@ async fn identity_write_api_infers_undeclared_attributes_on_storage() {
         answers[1],
         (400, json!({"error": "attribute_type_mismatch"}))
     );
-    let (winner, kind) = if listing(&config, eq("weight", json!(7))) == ["r5"] {
-        ("r5", "int")
-    } else {
-        ("r6", "string")
+    let (winner, value) = match schema().await["weight"].as_str() {
+        Some("int") => ("r5", json!(7)),
+        Some("string") => ("r6", json!("heavy")),
+        other => panic!("weight is {other:?}"),
     };
-    assert_eq!(schema().await["weight"], kind);
+    assert_eq!(listing(&config, eq("weight", value)), [winner]);
     assert_eq!(
         listing(&config, json!({"not": eq("weight", Value::Null)})),
         [winner]
