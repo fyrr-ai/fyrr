@@ -21,17 +21,19 @@ fn a_32_bit_vector_is_checked_as_sent_and_a_16_bit_one_after_rounding() {
     assert!(validate(&large, 1024, DenseElement::F32).is_ok());
     // Below the smallest 16-bit number, but not zero in 32 bits.
     assert!(validate(&[f32::MIN_POSITIVE; 1024], 1024, DenseElement::F16).is_err());
-    assert!(validate(&[f32::MIN_POSITIVE; 1024], 1024, DenseElement::F32).is_ok());
+    // A norm that underflows in 32 bits would make a cosine divide by zero.
+    assert!(validate(&[f32::MIN_POSITIVE; 1024], 1024, DenseElement::F32).is_err());
+    assert!(validate(&[1e-20; 1024], 1024, DenseElement::F32).is_ok());
     for bad in [f32::NAN, f32::INFINITY, 0.0] {
         assert!(validate(&[bad; 1024], 1024, DenseElement::F32).is_err());
     }
     assert!(validate(&[1.0; 1023], 1024, DenseElement::F32).is_err());
-    // A number whose square overflows in a distance is refused, whatever the type.
+    // A number that could overflow in a distance is refused, whatever the type.
     for element in [DenseElement::F16, DenseElement::F32] {
-        assert!(validate(&[1e16; 1024], 1024, element).is_err());
+        assert!(validate(&[1.5e6; 1024], 1024, element).is_err());
         assert!(validate(&[-1e20; 1024], 1024, element).is_err());
     }
-    assert!(validate(&[1e15; 8192], 8192, DenseElement::F32).is_ok());
+    assert!(validate(&[1e6; 8192], 8192, DenseElement::F32).is_ok());
 }
 
 #[test]

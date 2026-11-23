@@ -1466,12 +1466,6 @@ async fn identity_write_api_stores_the_vectors_a_caller_supplies_on_storage() {
                 .chain(std::iter::repeat_n(1.0, 1023))
                 .collect::<Vec<_>>()
         ),
-        // Finite, but its square would overflow a distance.
-        json!(
-            std::iter::once(1e20)
-                .chain(std::iter::repeat_n(1.0, 1023))
-                .collect::<Vec<_>>()
-        ),
     ] {
         assert_eq!(
             writer
@@ -1685,6 +1679,27 @@ async fn metric_recall(metric: &str, element: &str) {
                 .await,
             (400, json!({"error": "settings_invalid"})),
             "{key}"
+        );
+    }
+    // A number that could overflow a distance is refused by either type, and one
+    // beyond 16 bits by `f16` alone: the 32-bit namespaces test the bound itself.
+    let mut limits = vec![(2e6, "beyond the magnitude limit")];
+    if element == "f16" {
+        limits.push((70_000.0, "beyond 16 bits"));
+    }
+    for (number, why) in limits {
+        let mut big = metric_row(0);
+        big[0] = number;
+        assert_eq!(
+            writer
+                .post(
+                    WRITE_KEY,
+                    namespace,
+                    &json!({"upserts": [{"id": "x", "text": "x", "vector": big}]})
+                )
+                .await,
+            (400, json!({"error": "vector_invalid"})),
+            "{why}"
         );
     }
     let changed = if metric == "dot" { "cosine" } else { "dot" };

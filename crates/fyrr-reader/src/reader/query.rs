@@ -363,7 +363,13 @@ impl PreparedReader {
             .collect();
         let mut work = runtime.prepare(&texts)?;
         runtime
-            .complete(&mut work, &texts, true, embedding_deadline)
+            .complete(
+                &mut work,
+                &texts,
+                true,
+                embedding_deadline,
+                self.config.namespace.dense_element,
+            )
             .await;
         telemetry
             .stage_us
@@ -582,6 +588,7 @@ impl PreparedReader {
                 queries,
                 self.selected_rows().max_len().unwrap_or(0) != 0,
                 embedding_deadline,
+                self.config.namespace.dense_element,
             )
             .await;
         let mut failed = vectors.vectors.iter().any(Result::is_err);
@@ -613,6 +620,17 @@ impl PreparedReader {
                 std::mem::replace(vector, Err(EmbeddingUnavailable))
             };
             let result = match vector {
+                // A vector from the process cache, made for another element type.
+                Ok(vector)
+                    if embedding::validate(
+                        &vector,
+                        self.config.embedding.dimensions,
+                        self.config.namespace.dense_element,
+                    )
+                    .is_err() =>
+                {
+                    Ok((Vec::new(), None))
+                }
                 Ok(vector) => self
                     .dense(
                         &vector,

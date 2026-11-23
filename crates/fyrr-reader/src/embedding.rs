@@ -87,13 +87,15 @@ pub fn identity(config: &EmbeddingConfig) -> EmbeddingIdentity {
     }
 }
 
-/// The largest magnitude of a number in a vector. A larger one could square to
-/// infinity in a distance of the widest vectors (8192 numbers), and the search
-/// would fail on it instead of ranking it.
-pub const VECTOR_MAGNITUDE_MAX: f32 = 1e15;
+/// The largest magnitude of a number in a vector. A larger one could overflow in
+/// a distance of the widest vectors (8192 numbers), also inside the index, and
+/// the search would fail on it instead of ranking it. Embeddings are far below.
+pub const VECTOR_MAGNITUDE_MAX: f32 = 1e6;
 
-/// Whether `vector` is a finite, nonzero vector of `dimensions` numbers, none
-/// beyond [`VECTOR_MAGNITUDE_MAX`], that the namespace's element type stores:
+/// Whether `vector` is a finite vector of `dimensions` numbers, none beyond
+/// [`VECTOR_MAGNITUDE_MAX`], whose sum of squares is a normal positive 32-bit
+/// number (a norm that underflows to zero would divide a cosine by zero), that
+/// the namespace's element type stores:
 /// a 16-bit one must also stay finite and nonzero once its numbers are rounded
 /// to 16 bits.
 pub fn validate(vector: &[f32], dimensions: u32, element: DenseElement) -> Result<()> {
@@ -104,8 +106,9 @@ pub fn validate(vector: &[f32], dimensions: u32, element: DenseElement) -> Resul
     {
         return Err(EmbeddingInvalid);
     }
-    let norm: f64 = vector.iter().map(|v| f64::from(*v).powi(2)).sum();
-    if norm == 0.0 || !norm.is_finite() {
+    // Lance measures the norm in 32 bits.
+    let norm: f32 = vector.iter().map(|v| v * v).sum();
+    if !norm.is_normal() {
         return Err(EmbeddingInvalid);
     }
     if element == DenseElement::F16 {

@@ -1941,6 +1941,10 @@
         "tier": "full",
         "seconds": 8.419
       },
+      "full:fyrr:test:dense_path/embedding::tools_embedding_provider_vector_the_namespace_cannot_store_is_not_cached_on_storage": {
+        "tier": "full",
+        "seconds": 8
+      },
       "full:fyrr:test:dense_path/embedding::tools_embedding_wait_revocation_on_storage": {
         "tier": "quick",
         "seconds": 7.738
