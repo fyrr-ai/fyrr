@@ -583,6 +583,19 @@ fn vector_of(value: Value, config: &Config) -> Result<Vec<f32>, ApiError> {
     vector_in(value, config.embedding.dimensions, config)
 }
 
+/// The vectors of a row of a multi-vector attribute, one after the other: a
+/// list of vectors of `dimensions` numbers, each one the element type stores.
+fn vectors_in(value: Value, dimensions: u32, config: &Config) -> Result<Vec<f32>, ApiError> {
+    let Value::Array(list) = value else {
+        return Err(ApiError(400, "vector_invalid"));
+    };
+    let mut vectors = Vec::new();
+    for vector in list {
+        vectors.extend(vector_in(vector, dimensions, config)?);
+    }
+    Ok(vectors)
+}
+
 /// A vector of `dimensions` numbers, which the namespace's element type stores.
 // A vector is stored as float32: the numbers of a JSON body narrow to it.
 #[allow(clippy::cast_possible_truncation)]
@@ -886,6 +899,7 @@ fn checked(
         for ((name, spec), column) in vectors.iter().zip(&mut named) {
             let own = match row.remove(name) {
                 None | Some(Value::Null) => None,
+                Some(value) if spec.multi => Some(vectors_in(value, spec.dimensions, config)?),
                 Some(value) => Some(vector_in(value, spec.dimensions, config)?),
             };
             let embedded = own.is_none()
@@ -919,16 +933,25 @@ fn checked(
     if !conditions.given.is_empty() {
         return Err(ApiError(400, "condition_invalid"));
     }
-    // A null row of a vector column holds the room of a vector too. The columns
-    // are refused here, by the bound an envelope is held to, before they are
+    // A null row of a vector column holds the room of a vector too, and a row of
+    // a multi-vector column the room of the vectors it carries. The columns are
+    // refused here, by the bound an envelope is held to, before they are
     // allocated: the request's text and attributes are bounded by its body, these
     // are not.
-    let room = config.namespace.dense_element.bytes()
-        * vectors
-            .values()
-            .map(|spec| u64::from(spec.dimensions))
-            .sum::<u64>();
-    if (rows.len() as u64).saturating_mul(room) > config.writer.commit.group_max_bytes.as_u64() {
+    let numbers: u64 = vectors
+        .values()
+        .zip(&named)
+        .map(|(spec, column)| {
+            if spec.multi {
+                column.iter().flatten().map(|row| row.len() as u64).sum()
+            } else {
+                (rows.len() as u64).saturating_mul(u64::from(spec.dimensions))
+            }
+        })
+        .sum();
+    if numbers.saturating_mul(config.namespace.dense_element.bytes())
+        > config.writer.commit.group_max_bytes.as_u64()
+    {
         return Err(ApiError(413, "request_too_large"));
     }
     // The columns follow the table's: the typed ones, then the vectors.
@@ -936,9 +959,9 @@ fn checked(
     typed.extend(vectors.iter().zip(named).map(|((name, spec), column)| {
         (
             name.clone(),
-            crate::prepare::nullable_vector_column(
+            crate::prepare::named_vector_column(
                 config.namespace.dense_element,
-                spec.dimensions,
+                spec,
                 column.iter().map(Option::as_deref),
             ),
         )
@@ -956,6 +979,7 @@ fn changes(
     patches: Patches,
     mut conditions: BTreeMap<String, Filter>,
     filter_writes: Option<FilterWrites>,
+    attributes: &[(String, arrow_array::ArrayRef)],
 ) -> Result<Vec<ContentChange>, ApiError> {
     let open = config
         .namespace
@@ -1036,7 +1060,7 @@ fn changes(
         })
     }));
     changes.extend(filter_writes.map(|writes| ContentChange::Where(Box::new(writes))));
-    crate::prepare::check_atomic(config, &changes)?;
+    crate::prepare::check_atomic(config, &changes, attributes)?;
     Ok(changes)
 }
 
@@ -1225,6 +1249,7 @@ async fn execute(
         patches,
         conditions,
         filter_writes,
+        &attributes,
     )?;
     let mut answer = WriteResponse {
         upserted,

@@ -505,8 +505,13 @@ impl Contract for ContentManifest {
         check_schema(&self.attributes).map_err(|error| format!("attributes: {error}"))?;
         check_indexes(&self.attributes, &self.attribute_indexes)
             .map_err(|error| format!("attribute_indexes: {error}"))?;
-        check_vectors(&self.attributes, &self.vectors, self.embedding.dimensions)
-            .map_err(|error| format!("vectors: {error}"))?;
+        check_vectors(
+            &self.attributes,
+            &self.vectors,
+            self.embedding.dimensions,
+            self.dense_metric,
+        )
+        .map_err(|error| format!("vectors: {error}"))?;
         if (!self.attribute_indexes.is_empty()
             || !self.dense_metric.is_default()
             || !self.dense_element.is_default()

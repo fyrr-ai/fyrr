@@ -104,6 +104,31 @@ impl PreparedReader {
         }
     }
 
+    /// Whether a vector attribute holds a list of vectors in each row: `None`,
+    /// the built-in `vector`, does not.
+    pub(super) fn is_multi(&self, attribute: Option<&str>) -> bool {
+        attribute
+            .and_then(|name| self.config.namespace.vectors.get(name))
+            .is_some_and(|vector| vector.multi)
+    }
+
+    /// Checks the numbers of a query of a vector attribute: one vector of its
+    /// dimensions, or, for a multi-vector attribute, one or more.
+    pub(super) fn validate_query(&self, attribute: Option<&str>, key: &[f32]) -> Result<()> {
+        let dimensions = self.vector_dimensions(attribute)?;
+        let element = self.config.namespace.dense_element;
+        if !self.is_multi(attribute) {
+            return Ok(embedding::validate(key, dimensions, element)?);
+        }
+        if key.is_empty() || !key.len().is_multiple_of(dimensions as usize) {
+            return Err(EmbeddingInvalid);
+        }
+        for vector in key.chunks_exact(dimensions as usize) {
+            embedding::validate(vector, dimensions, element)?;
+        }
+        Ok(())
+    }
+
     /// The vector attribute a text query must select the rows of, so that its
     /// lexical lane returns none that the attribute cannot rank: the named
     /// attribute, when the request has text. A name the namespace does not
@@ -149,11 +174,7 @@ impl PreparedReader {
         exact: bool,
         telemetry: &mut Telemetry,
     ) -> Result<Vec<Candidate>> {
-        embedding::validate(
-            vector,
-            self.vector_dimensions(Some(column))?,
-            self.config.namespace.dense_element,
-        )?;
+        self.validate_query(Some(column), vector)?;
         if !(1..=75).contains(&k) {
             return Err(InvalidArgument);
         }
@@ -165,11 +186,31 @@ impl PreparedReader {
         if wanted == 0 {
             return Ok(Vec::new());
         }
+        // The vectors of a multi-vector query are one list: Lance searches the
+        // index with each and scores a row by the sum of its best similarities.
+        let query: arrow_array::ArrayRef = if self.is_multi(Some(column)) {
+            let dimensions = self.vector_dimensions(Some(column))?;
+            Arc::new(
+                arrow_array::FixedSizeListArray::try_new(
+                    Arc::new(arrow_schema::Field::new(
+                        "item",
+                        arrow_schema::DataType::Float32,
+                        true,
+                    )),
+                    i32::try_from(dimensions).map_err(|_| InvalidArgument)?,
+                    Arc::new(Float32Array::from(vector.to_vec())),
+                    None,
+                )
+                .map_err(|_| EmbeddingInvalid)?,
+            )
+        } else {
+            Arc::new(Float32Array::from(vector.to_vec()))
+        };
         let (start, before) = (Instant::now(), self.mirror.counters());
         let (rows, _) = self
             .native_dense_rows(
                 column,
-                &Float32Array::from(vector.to_vec()),
+                query.as_ref(),
                 wanted,
                 k,
                 self.preparation_reservation.warm() && self.filter_selection.is_none() && !exact,
@@ -455,7 +496,7 @@ impl PreparedReader {
     pub(super) async fn native_dense_rows(
         &self,
         column: &str,
-        query: &Float32Array,
+        query: &dyn Array,
         wanted: usize,
         k: usize,
         mut use_index: bool,

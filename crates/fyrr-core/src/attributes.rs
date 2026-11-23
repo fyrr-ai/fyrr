@@ -13,7 +13,7 @@ use chrono::DateTime;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{DIMENSIONS_MAX, DIMENSIONS_MULTIPLE};
+use crate::config::{DIMENSIONS_MAX, DIMENSIONS_MULTIPLE, DenseMetric};
 use crate::limits::schema::{
     MAX_ATTRIBUTES, MAX_NAME_BYTES, MAX_VALUE_BYTES, MAX_VECTOR_ATTRIBUTES,
 };
@@ -351,6 +351,8 @@ pub enum AttributeError {
     IndexInvalid,
     #[error("vector_attribute_invalid")]
     VectorInvalid,
+    #[error("vector_attribute_metric_invalid")]
+    MultiVectorMetric,
 }
 
 impl AttributeError {
@@ -364,6 +366,7 @@ impl AttributeError {
             Self::ValueInvalid => "attribute_value_invalid",
             Self::IndexInvalid => "attribute_index_invalid",
             Self::VectorInvalid => "vector_attribute_invalid",
+            Self::MultiVectorMetric => "vector_attribute_metric_invalid",
         }
     }
 }
@@ -433,6 +436,14 @@ pub struct VectorAttribute {
     /// Without it, rows carry the vector or leave it null.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+    /// A row holds a list of vectors of `dimensions` numbers, not one, and a
+    /// search of the attribute takes several query vectors as one query: Lance
+    /// scores a row by the sum, over the query vectors, of the best cosine
+    /// similarity to any vector of the row. Only a namespace whose `dense_metric`
+    /// is `cosine` offers it, and a row's vectors are not embedded from text
+    /// (no `from`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi: bool,
 }
 
 /// A namespace's named vector attributes. They are fixed when it is created.
@@ -446,11 +457,13 @@ pub fn vector_index_name(attribute: &str) -> String {
 /// Checks the vector attributes of a namespace: their number, their names,
 /// which no attribute, built-in column or `id` may share, their dimensions, and a
 /// `from` that is a declared `string` attribute whose embeddings have the
-/// dimensions of the namespace's embedding model.
+/// dimensions of the namespace's embedding model. A `multi` attribute needs the
+/// cosine metric, the one Lance scores a list of vectors by, and has no `from`.
 pub fn check_vectors(
     attributes: &AttributeSchema,
     vectors: &VectorAttributes,
     embedding_dimensions: u32,
+    metric: DenseMetric,
 ) -> Result<(), AttributeError> {
     if vectors.len() > MAX_VECTOR_ATTRIBUTES {
         return Err(AttributeError::TooMany);
@@ -468,7 +481,11 @@ pub fn check_vectors(
         {
             return Err(AttributeError::VectorInvalid);
         }
+        if vector.multi && metric != DenseMetric::Cosine {
+            return Err(AttributeError::MultiVectorMetric);
+        }
         match &vector.from {
+            Some(_) if vector.multi => Err(AttributeError::VectorInvalid),
             Some(source)
                 if attributes.get(source) != Some(&AttributeType::String)
                     || vector.dimensions != embedding_dimensions =>

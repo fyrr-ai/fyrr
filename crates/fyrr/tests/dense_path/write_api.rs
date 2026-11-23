@@ -5431,6 +5431,255 @@ async fn identity_write_api_searches_named_vector_attributes_on_storage() {
     );
 }
 
+/// A multi-vector attribute holds a list of vectors in each row, and a query of
+/// several vectors is one query that Lance scores by the best similarity of each
+/// of them: the nearest row is the one that holds all of them, though a row
+/// nobody may read does too. A row with no vectors is no result. The same holds
+/// under both element types and below the number of vectors an index is trained
+/// from, where the search scans, and above it, where the index answers.
+async fn multi_vector_case(element: &str, background: usize) {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    // Not an open namespace: its readers are enforced.
+    configure(&config, &address, "");
+    let writer = Writer::start(&config, &root, address).await;
+    let axis = |pairs: &[(usize, f32)]| {
+        let mut vector = vec![0.0_f32; 16];
+        for (at, value) in pairs {
+            vector[*at] = *value;
+        }
+        vector
+    };
+    // The query is the axes 0 and 1. A holds both, B holds the second at
+    // cosine 0.9, C at 0.5 and D holds each at 0.6 and 0.5; E and F have none.
+    let planted = [
+        ("a", vec![axis(&[(0, 1.0)]), axis(&[(1, 1.0)])]),
+        ("b", vec![axis(&[(0, 1.0)]), axis(&[(1, 0.9), (2, 0.436)])]),
+        ("c", vec![axis(&[(0, 1.0)]), axis(&[(1, 0.5), (2, 0.866)])]),
+        (
+            "d",
+            vec![axis(&[(0, 0.6), (3, 0.8)]), axis(&[(1, 0.5), (2, 0.866)])],
+        ),
+    ];
+    let mut upserts: Vec<Value> = Vec::new();
+    for (n, (id, tokens)) in planted.iter().enumerate() {
+        upserts.push(json!({
+            "id": id, "text": format!("row{id}"), "vector": vector(n, 1024),
+            "readers": ["grp:allow", "usr:x"], "tokens": tokens,
+        }));
+    }
+    upserts.push(json!({
+        "id": "e", "text": "rowe", "vector": vector(4, 1024), "readers": ["grp:allow", "usr:x"],
+    }));
+    upserts.push(json!({
+        "id": "f", "text": "rowf", "vector": vector(5, 1024), "readers": ["grp:allow", "usr:x"],
+        "tokens": [],
+    }));
+    // As near to the query as a row can be, but nobody may read it.
+    upserts.push(json!({
+        "id": "hidden", "text": "rowhidden", "vector": vector(6, 1024),
+        "readers": ["usr:nobody"], "tokens": [axis(&[(0, 1.0)]), axis(&[(1, 1.0)])],
+    }));
+    // Rows of eight vectors near the axes 8 to 15, away from the query.
+    for n in 0..background {
+        let tokens: Vec<_> = (0..8)
+            .map(|j| {
+                (0..16)
+                    .map(|d| {
+                        let noise = ((n * 31 + j * 17 + d * 7) % 11) as f32 / 100.0;
+                        noise + f32::from(d == 8 + (n + j) % 8)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        upserts.push(json!({
+            "id": format!("bg{n}"), "text": format!("rowbg{n}"), "vector": vector(10 + n, 1024),
+            "readers": ["grp:allow", "usr:x"], "tokens": tokens,
+        }));
+    }
+    let count = upserts.len();
+    let settings = json!({
+        "dense_element": element,
+        "vectors": {
+            "tokens": {"dimensions": 16, "multi": true},
+            "single": {"dimensions": 16},
+        },
+    });
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"settings": settings, "upserts": upserts})
+            )
+            .await,
+        (200, json!({"upserted": count, "deleted": 0})),
+        "{element} {background}"
+    );
+    let (_, manifest) = super::coordination::publication(&config).await;
+    assert!(manifest.vectors["tokens"].multi);
+    assert!(
+        manifest
+            .indexes
+            .iter()
+            .any(|index| index.name == "vec_tokens_idx"),
+        "{element} {background}"
+    );
+
+    let mut client = Mcp::open(&config);
+    let mut listed = |arguments: Value| -> Vec<String> {
+        let mut arguments = arguments;
+        arguments["output"] = json!("metadata");
+        body(client.call("search", arguments))["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let both = json!([axis(&[(0, 1.0)]), axis(&[(1, 1.0)])]);
+    let found = listed(json!({"vectors": both, "vector_attribute": "tokens", "limit": 10}));
+    let context = format!("{element} {background}: {found:?}");
+    assert_eq!(found[..4], ["a", "b", "c", "d"], "{context}");
+    // Rows without vectors and the row nobody may read are not returned, though
+    // the hidden one is as near as the best.
+    for denied in ["e", "f", "hidden"] {
+        assert!(!found.contains(&denied.to_owned()), "{context}");
+    }
+    if background == 0 {
+        assert_eq!(found.len(), 4, "{context}");
+    }
+    // An exact search finds the same rows in the same order, and a filter
+    // bounds it under the permissions.
+    let exact =
+        listed(json!({"vectors": both, "vector_attribute": "tokens", "limit": 10, "exact": true}));
+    assert_eq!(exact[..4], ["a", "b", "c", "d"], "{context}");
+    assert_eq!(
+        listed(json!({
+            "vectors": both,
+            "vector_attribute": "tokens",
+            "exact": true,
+            "filter": {"field": "root_id", "op": "in", "value": ["a", "c", "e", "hidden"]},
+        })),
+        ["a", "c"],
+        "{context}"
+    );
+    // One vector is a query of one.
+    let single =
+        listed(json!({"vectors": [axis(&[(1, 1.0)])], "vector_attribute": "tokens", "limit": 10}));
+    assert_eq!(single[..2], ["a", "b"], "{context}");
+    // Another dimension, `vectors` of an attribute that holds one vector in a
+    // row, a `vector` of the one that holds a list, a count of vectors out of
+    // bounds and a text query of the attribute are refused.
+    for arguments in [
+        json!({"vectors": [axis(&[(0, 1.0)])], "vector_attribute": "single"}),
+        json!({"vectors": [vec![1.0; 8]], "vector_attribute": "tokens"}),
+        // Vectors of half the dimensions, or of twice, are not vectors of the
+        // attribute though they make as many numbers as its dimensions are.
+        json!({"vectors": [vec![1.0; 8], vec![1.0; 8]], "vector_attribute": "tokens"}),
+        json!({"vectors": [vec![1.0; 32]], "vector_attribute": "tokens"}),
+        json!({"vectors": vec![vec![1.0; 32]; 32], "vector_attribute": "tokens"}),
+        json!({"vector": axis(&[(0, 1.0)]), "vector_attribute": "tokens"}),
+        json!({"vectors": both}),
+        json!({"vectors": both, "vector": axis(&[(0, 1.0)]), "vector_attribute": "tokens"}),
+        json!({"vectors": [axis(&[(0, 1.0)]), vec![1.0; 8]], "vector_attribute": "tokens"}),
+        json!({"vectors": [], "vector_attribute": "tokens"}),
+        json!({"vectors": vec![axis(&[(0, 1.0)]); 33], "vector_attribute": "tokens"}),
+        json!({"query": "rowa", "vector_attribute": "tokens"}),
+    ] {
+        error(client.call("search", arguments.clone()), "invalid_argument");
+    }
+    // A sub-query of the JSON query route takes them as `search` does, and
+    // refuses the same.
+    let reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let sub = |vectors: Value| {
+        json!({
+            "sub_queries": [{"vectors": vectors, "vector_attribute": "tokens", "limit": 10}],
+            "output": "metadata",
+        })
+    };
+    assert_eq!(
+        roots(&ask(&reader, sub(both.clone())).await)[..4],
+        ["a", "b", "c", "d"],
+        "{context}"
+    );
+    for bad in [
+        json!([vec![1.0; 8], vec![1.0; 8]]),
+        json!([vec![1.0; 32]]),
+        json!(vec![vec![1.0; 32]; 32]),
+    ] {
+        assert_eq!(
+            ask(&reader, sub(bad.clone())).await.0,
+            400,
+            "{context} {bad}"
+        );
+    }
+    // A row brings its vectors as a list of vectors of the attribute's
+    // dimensions, and a patch keeps what is stored.
+    for (row, code) in [
+        (
+            json!({"id": "x", "text": "rowx", "tokens": axis(&[(0, 1.0)])}),
+            "vector_invalid",
+        ),
+        (
+            json!({"id": "x", "text": "rowx", "tokens": [vec![1.0; 8]]}),
+            "vector_invalid",
+        ),
+        (
+            json!({"id": "x", "text": "rowx", "tokens": "text"}),
+            "vector_invalid",
+        ),
+    ] {
+        assert_eq!(
+            writer
+                .post(WRITE_KEY, "dense-fixture", &json!({"upserts": [row]}))
+                .await,
+            (400, json!({"error": code}))
+        );
+    }
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"patches": [{"id": "a", "tokens": [axis(&[(0, 1.0)])]}]})
+            )
+            .await,
+        (400, json!({"error": "vector_not_patchable"}))
+    );
+}
+
+/// The metric of the namespace is cosine for a multi-vector attribute, and a
+/// namespace of another metric is refused one.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_searches_multi_vector_attributes_on_storage() {
+    for (element, background) in [("f16", 0), ("f32", 0), ("f16", 100)] {
+        multi_vector_case(element, background).await;
+    }
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let writer = Writer::start(&config, &root, address).await;
+    for metric in ["dot", "squared_l2"] {
+        let settings = json!({"dense_metric": metric, "vectors": {"tokens": {"dimensions": 16, "multi": true}}});
+        assert_eq!(
+            writer
+                .post(
+                    WRITE_KEY,
+                    "dense-fixture",
+                    &json!({"settings": settings, "upserts": [{"id": "x", "text": "rowx"}]})
+                )
+                .await,
+            (400, json!({"error": "settings_invalid"})),
+            "{metric}"
+        );
+    }
+}
+
 /// A vector attribute that no row has a vector for has no index, and a search
 /// of it finds nothing; the commit that brings the first vector builds the
 /// index, and the rows after it are indexed with the others.

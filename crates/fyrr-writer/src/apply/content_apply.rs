@@ -65,6 +65,9 @@ pub async fn content(
     let mut output = Vec::new();
     let mut rows = Vec::new();
     let mut taken = Vec::new();
+    // The rows and bytes of the stored rows a patch loads, which are held until
+    // `write_rows` checks the rows written.
+    let mut held = (0u64, 0u64);
     for document in documents.iter() {
         let old = previous.get(&document.root_id);
         // A patch never creates a document: one that is not there is skipped.
@@ -182,6 +185,16 @@ pub async fn content(
                 .try_into_batch()
                 .await
                 .map_err(|_| WriterError::ChangedRowScanFailed)?;
+            match hold_rows(config, &mut held, &stored) {
+                Ok(()) => {}
+                // A patch writes whole rows of what is stored, a size its request
+                // could not know: the envelope is refused, as `write_rows` would.
+                Err(WriterError::EnvelopeBoundsInvalid) => {
+                    reject(config, envelope, "envelope_bounds_exceeded").await?;
+                    return Ok(refused);
+                }
+                Err(error) => return Err(error),
+            }
             let revision = document
                 .source_revision
                 .as_deref()

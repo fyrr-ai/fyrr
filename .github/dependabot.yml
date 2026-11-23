@@ -24,7 +24,7 @@ updates:
       - dependency-name: object_store
         versions: [">=0.15"]
   - package-ecosystem: uv
-    directories: [/connectors, /examples/markdown-provider]
+    directories: [/connectors, /examples/markdown-provider, /clients/python]
     schedule:
       interval: weekly
     open-pull-requests-limit: 1

@@ -1155,6 +1155,14 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-writer:lib:fyrr_writer/apply::tests::stored_rows_are_held_against_the_bounds_of_an_envelope_with_their_multi_vector_lists": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
+      "full:fyrr-writer:lib:fyrr_writer/prepare::tests::a_multi_vector_attribute_weighs_the_vectors_its_rows_carry_not_the_room_of_one": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-writer:lib:fyrr_writer/prepare::tests::the_table_holds_exactly_the_reserved_built_in_columns": {
         "tier": "quick",
         "seconds": 0.0
@@ -1267,6 +1275,10 @@
         "seconds": 0.01
       },
       "full:fyrr-core:test:config/namespace_vectors_are_declared_with_dimensions_and_a_source_and_enter_the_digest": {
+        "tier": "quick",
+        "seconds": 0.01
+      },
+      "full:fyrr-core:test:config/a_multi_vector_attribute_needs_the_cosine_metric_and_no_source": {
         "tier": "quick",
         "seconds": 0.01
       },
@@ -1563,6 +1575,10 @@
         "seconds": 0.01
       },
       "full:fyrr-reader:test:lance_pin/flat_distance_of_each_metric_on_both_element_types": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:test:lance_pin/multivector_query_on_ivf_rq_ranks_the_true_rows_under_a_mask": {
         "tier": "quick",
         "seconds": 0.05
       },
@@ -2232,6 +2248,10 @@
       "full:fyrr:test:dense_path/write_api::identity_write_api_searches_named_vector_attributes_on_storage": {
         "tier": "full",
         "seconds": 40
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_searches_multi_vector_attributes_on_storage": {
+        "tier": "full",
+        "seconds": 120
       },
       "full:fyrr:test:dense_path/write_api::identity_write_api_builds_a_vector_index_when_the_first_vector_arrives_on_storage": {
         "tier": "full",
@@ -5306,6 +5326,140 @@
         "seconds": null
       },
       "python:examples/markdown-provider/tests/test_provider.py::test_metadata_matches_the_published_schema": {
+        "tier": "quick",
+        "seconds": null
+      }
+    }
+  },
+  "python-client": {
+    "title": "python client",
+    "kind": "python",
+    "cases": {
+      "python:clients/python/tests/test_deployment.py::test_write_query_describe_list": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_deployment.py::test_iter_documents_pages_through_every_document": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_deployment.py::test_error_answers_raise_with_status_and_code": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_deployment.py::test_a_conditional_write_applies_or_skips": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_deployment.py::test_async_client_covers_the_same_routes": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_read_is_retried_on_the_retryable_statuses[408]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_read_is_retried_on_the_retryable_statuses[429]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_read_is_retried_on_the_retryable_statuses[500]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_read_is_retried_on_the_retryable_statuses[503]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_read_is_retried_on_the_retryable_statuses[504]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_read_is_retried_after_a_connection_error_and_a_timeout": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_is_retried_only_when_it_was_not_sent[write]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_is_retried_only_when_it_was_not_sent[delete]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[answer0-write]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[answer0-delete]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[answer1-write]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[answer1-delete]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[timed_out-write]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[timed_out-delete]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_wrong_request_is_not_retried": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_an_answer_that_is_not_json_is_a_fyrr_error": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_other_errors_are_final": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_retry_after_is_honoured_until_the_cap": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_backoff_doubles_and_gives_up": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_conditional_write_is_never_retried": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_the_async_client_retries_alike": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_key_is_stripped_checked_and_never_shown": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_scim_error_without_a_type_has_no_code": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_missing_writer_url_is_refused": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_iter_namespaces_lists_each_first_character_above_the_listing_limit": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_iter_namespaces_raises_when_a_first_character_still_overflows": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_the_async_iter_namespaces_lists_and_raises_alike": {
         "tier": "quick",
         "seconds": null
       }

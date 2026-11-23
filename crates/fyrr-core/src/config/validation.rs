@@ -269,6 +269,7 @@ pub(crate) fn namespace_settings(
             &namespace.attributes,
             &namespace.vectors,
             embedding_dimensions,
+            namespace.dense_metric,
         ) {
             error("namespace.vectors", code.to_string());
         }

@@ -1,0 +1,43 @@
+[project]
+name = "fyrr-client"
+version = "0.1.0"
+description = "Python client of the fyrr HTTP API"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+# One runtime dependency serves both the synchronous and the asynchronous client.
+dependencies = ["httpx>=0.28,<1"]
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+    "ruff==0.17.5",
+    "mypy==2.4.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv]
+python-preference = "only-managed"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Written by tools/generate_models.py, which `scripts/ci` checks against schemas/openapi.json.
+extend-exclude = ["src/fyrr_client/models.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers -ra"
+
+[tool.mypy]
+files = ["src", "tests", "tools"]
+cache_dir = "../../target/mypy-client"
+python_version = "3.11"
+strict = true
