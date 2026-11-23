@@ -50,6 +50,20 @@ segment:
 scripts/bench-fts-positions --binary target/release/fyrr
 ```
 
+Measured on one laptop-class machine (20 logical CPUs), local storage, with the
+CI build of commit `c63c373b` (the index size does not depend on the build
+profile), `writer.threads = 2`: 5,183 documents of 7.77 million characters.
+
+| `fts_positions` | Files | Index bytes | Of which postings | Growth |
+| --- | --- | --- | --- | --- |
+| `false` | 4 | 2,693,359 | 2,358,519 | 1.00 |
+| `true` | 4 | 5,081,021 | 4,746,108 | 1.89 |
+
+The positions about double the full-text index of this corpus: 2.39 MB more
+for 7.77 MB of text, 31% of the size of the text. The growth follows the
+number of token occurrences, so a corpus of longer documents grows alike; turn
+the setting on only for a namespace that needs phrase queries.
+
 ### `[namespace.attributes]`
 
 ```toml

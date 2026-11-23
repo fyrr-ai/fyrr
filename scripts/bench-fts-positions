@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -51,15 +52,26 @@ def free_address():
         return "127.0.0.1:%d" % probe.getsockname()[1]
 
 
+def fetch_page(url):
+    """One page of the dataset server, which limits unauthenticated requests:
+    a 429 or a server error is retried after the wait it asks for."""
+    for _ in range(30):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as error:
+            if error.code != 429 and error.code < 500:
+                raise
+            time.sleep(int(error.headers.get("Retry-After", "10")))
+    raise SystemExit("the dataset server keeps refusing: " + url)
+
+
 def fetch_corpus(limit):
     """(id, text) of up to `limit` documents of the dataset, in its order."""
     documents = []
     while limit is None or len(documents) < limit:
         want = PAGE if limit is None else min(PAGE, limit - len(documents))
-        with urllib.request.urlopen(
-            ROWS_URL % (len(documents), want), timeout=120
-        ) as r:
-            page = json.load(r)
+        page = fetch_page(ROWS_URL % (len(documents), want))
         if not page["rows"]:
             break
         for entry in page["rows"]:
