@@ -16,12 +16,47 @@ pub(crate) async fn publish(
     lineage: CommitLineage,
     receipts: Vec<String>,
     acl_changed: bool,
-    mut cursor_rewinds: Vec<String>,
+    cursor_rewinds: Vec<String>,
     maintenance_completed: bool,
     carry: Option<&AttributeIndexes>,
 ) -> Result<u64> {
+    let manifest = write_manifest(
+        config,
+        dataset,
+        &mut head,
+        &lineage,
+        receipts,
+        acl_changed,
+        cursor_rewinds,
+        maintenance_completed,
+        carry,
+    )
+    .await?;
+    verify_lineage(dataset, &lineage).await?;
+    #[cfg(test)]
+    crate::maintenance::restore_test_publication();
+    lease.publish(head).await?;
+    fyrr_reader::metrics::add(&crate::telemetry::PUBLICATIONS, &[], 1);
+    Ok(manifest.lance_version)
+}
+
+/// Writes the immutable manifest of `dataset` and points `head` at it, without
+/// making the head visible: `publish` does that under the lease, and a copied
+/// namespace's first head is written by its copy.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn write_manifest(
+    config: &Config,
+    dataset: &Dataset,
+    head: &mut ServingHead,
+    lineage: &CommitLineage,
+    receipts: Vec<String>,
+    acl_changed: bool,
+    mut cursor_rewinds: Vec<String>,
+    maintenance_completed: bool,
+    carry: Option<&AttributeIndexes>,
+) -> Result<ContentManifest> {
     let (store, root) = namespace_store(config)?;
-    let previous_manifest = previous_manifest(store.as_ref(), &root, &head).await?;
+    let previous_manifest = previous_manifest(store.as_ref(), &root, head).await?;
     if cursor_rewinds.is_empty() {
         cursor_rewinds = previous_manifest
             .as_ref()
@@ -160,7 +195,7 @@ pub(crate) async fn publish(
         config,
         store.as_ref(),
         &root,
-        &head,
+        head,
         previous_manifest.as_ref(),
         &receipts,
         sequence,
@@ -223,12 +258,7 @@ pub(crate) async fn publish(
         committed_at: manifest.committed_at,
     });
     head.updated_at = fyrr_core::clock::now();
-    verify_lineage(dataset, &lineage).await?;
-    #[cfg(test)]
-    crate::maintenance::restore_test_publication();
-    lease.publish(head).await?;
-    fyrr_reader::metrics::add(&crate::telemetry::PUBLICATIONS, &[], 1);
-    Ok(manifest.lance_version)
+    Ok(manifest)
 }
 
 pub(crate) async fn previous_manifest(

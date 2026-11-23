@@ -20,6 +20,11 @@ pub async fn run(
     if jobs == 0 || timeout.is_zero() {
         return Err(WriterError::ConfigInvalid);
     }
+    // The directory, SCIM and key paths hash for the configured namespace, which
+    // may be a copy that records the name of its hashes.
+    let mut loaded = loaded.clone();
+    loaded.config = fyrr_reader::storage::with_hash_name(&loaded.config).await?;
+    let loaded = &loaded;
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|_| WriterError::SignalUnavailable)?;
     let stop = Arc::new(AtomicBool::new(false));

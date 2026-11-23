@@ -55,6 +55,7 @@ pub fn namespace_settings(config: &Config) -> NamespaceSettings {
         attributes: namespace.attributes.clone(),
         attribute_indexes: namespace.attribute_indexes.clone(),
         write_api: namespace.write_api.clone(),
+        hash_name: namespace.hash_name.clone(),
     }
 }
 
@@ -68,6 +69,9 @@ async fn repeat_create(
 ) -> Result<()> {
     let policy: PolicyArtifact = fyrr_reader::storage::artifact(store, root, &head.policy).await?;
     let mut asked = settings.clone();
+    // A copied namespace records the name its hashes were made under, which no
+    // file asks for.
+    asked.hash_name.clone_from(&policy.settings.hash_name);
     // A namespace created before the connector columns has none of them, and
     // a file that asks for them again still repeats its creation.
     if policy.settings.write_api.is_none()
@@ -123,10 +127,6 @@ async fn create_new(
     {
         return Err(WriterError::PublicationInvalid);
     }
-    let now = fyrr_core::clock::now();
-    let mut incarnation = [0; 16];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut incarnation)
-        .map_err(|_| WriterError::RuntimeUnavailable)?;
     let identity = configured_identity(config, 1)?;
     let mut policy = PolicyArtifact {
         fixed_grants: fixed_grants(config)?,
@@ -159,21 +159,34 @@ async fn create_new(
         }
     }
     drop(present);
-    let identity_pointer =
-        crate::prepare::put_generation(store, root, "identity", 1, &identity).await?;
-    let policy_pointer = crate::prepare::put_generation(store, root, "policy", 1, &policy).await?;
-    let head = ServingHead {
+    let head = new_head(config, store, root, &identity, &policy).await?;
+    put_immutable(store, &root.clone().join("head.json"), &head).await
+}
+
+/// Writes generation 1 of the identity and policy of a new namespace, and
+/// returns its head with no content: the head becomes visible, and the
+/// namespace exists, only when the caller writes `head.json`.
+pub(super) async fn new_head(
+    config: &Config,
+    store: &dyn ObjectStore,
+    root: &Path,
+    identity: &IdentityArtifact,
+    policy: &PolicyArtifact,
+) -> Result<ServingHead> {
+    let mut incarnation = [0; 16];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut incarnation)
+        .map_err(|_| WriterError::RuntimeUnavailable)?;
+    Ok(ServingHead {
         schema_version: PUBLICATION_CONTRACT_VERSION,
         namespace: config.namespace.name.clone(),
         content: None,
-        policy: policy_pointer,
-        identity: identity_pointer,
+        identity: crate::prepare::put_generation(store, root, "identity", 1, identity).await?,
+        policy: crate::prepare::put_generation(store, root, "policy", 1, policy).await?,
         lease: None,
         rejected_envelope_ids: Vec::new(),
-        updated_at: now,
+        updated_at: fyrr_core::clock::now(),
         incarnation: hex::encode(incarnation),
-    };
-    put_immutable(store, &root.clone().join("head.json"), &head).await
+    })
 }
 
 // This coordination record is not a publication or user data. Its authority is
@@ -631,7 +644,7 @@ async fn purge(
     }
 }
 
-async fn remove(store: &dyn ObjectStore, path: &Path) -> Result<()> {
+pub(super) async fn remove(store: &dyn ObjectStore, path: &Path) -> Result<()> {
     match store.delete(path).await {
         Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
         Err(_) => Err(WriterError::StorageUnavailable),

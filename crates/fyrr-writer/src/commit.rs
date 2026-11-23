@@ -24,11 +24,13 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
+mod copy;
 mod group;
 pub(crate) mod history;
 mod namespace;
 mod publication;
 
+pub use copy::copy;
 pub(crate) use group::{
     add_attribute_columns, build_attribute_indexes, change_schema, check_schema_change, commit_one,
 };

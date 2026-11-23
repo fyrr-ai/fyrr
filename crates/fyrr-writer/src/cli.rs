@@ -143,6 +143,22 @@ pub enum NamespaceAction {
         #[arg(long)]
         delete_data: Option<String>,
     },
+    /// Copy the namespace SOURCE, as the version it serves now, to the new
+    /// namespace DESTINATION. The copy is independent and writable; the source
+    /// is only read. It is in the same storage, or in the `[storage]` of the
+    /// configuration file `--to-config`; that file's `identity.hashing_key`
+    /// must be the source's. A copy that stopped is completed by running the
+    /// command again.
+    Copy {
+        #[arg(value_parser = namespace_name)]
+        source: String,
+        #[arg(value_parser = namespace_name)]
+        destination: String,
+        /// A configuration file of the destination deployment: its `[storage]`
+        /// and `identity.hashing_key` are used, nothing else.
+        #[arg(long)]
+        to_config: Option<std::path::PathBuf>,
+    },
     /// List the namespaces of the storage root, in name order: a name is listed
     /// while any object exists under it, so a namespace whose deletion has not
     /// finished is listed.
@@ -194,6 +210,12 @@ pub enum WorkerJob {
         #[arg(long)]
         due: bool,
     },
+}
+
+fn namespace_name(text: &str) -> Result<String, String> {
+    fyrr_core::config::is_namespace_name(text)
+        .then(|| text.to_owned())
+        .ok_or_else(|| "expected 1 to 63 lowercase letters, digits or `-`".to_owned())
 }
 
 fn namespace_prefix(text: &str) -> Result<String, String> {
@@ -330,6 +352,29 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
                 export.as_deref(),
                 delete_data.as_deref(),
             )),
+            WriterCommand::Namespace {
+                action:
+                    NamespaceAction::Copy {
+                        source,
+                        destination,
+                        to_config,
+                    },
+            } => {
+                let mut to = match to_config {
+                    Some(file) => match config::load(file) {
+                        Ok(loaded) => loaded.config,
+                        Err(issue) => {
+                            eprintln!("{issue}");
+                            return ExitCode::from(exit::CONFIG);
+                        }
+                    },
+                    None => config.clone(),
+                };
+                destination.clone_into(&mut to.namespace.name);
+                let mut from = config.clone();
+                source.clone_into(&mut from.namespace.name);
+                runtime_command(crate::commit::copy(&from, &to))
+            }
             WriterCommand::Namespace {
                 action: NamespaceAction::List { prefix },
             } => runtime_command(async {

@@ -191,6 +191,12 @@ pub struct NamespaceConfig {
     /// defaults of a new namespace; an existing one keeps its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_api: Option<WriteApiSettings>,
+    /// The namespace name the hashes of this namespace were made under, when
+    /// it is not `name`: set from the policy of a copied namespace, never from
+    /// a file.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub hash_name: Option<String>,
 }
 
 /// How a namespace written through the HTTP API stores and shows its rows. Fixed
@@ -508,6 +514,12 @@ impl Default for Composition {
     }
 }
 impl NamespaceConfig {
+    /// The name that scopes the keyed hashes of reader tokens and subjects: the
+    /// one a copied namespace was made under, else its own.
+    pub fn hash_scope(&self) -> &str {
+        self.hash_name.as_deref().unwrap_or(&self.name)
+    }
+
     /// Whether this namespace stores the metadata fields of connector
     /// documents as typed columns, which a namespace created before them does
     /// not.
@@ -1581,6 +1593,7 @@ impl Config {
             .attribute_indexes
             .clone_from(&settings.attribute_indexes);
         namespace.write_api.clone_from(&settings.write_api);
+        namespace.hash_name.clone_from(&settings.hash_name);
         namespace.retrieval = (&settings.retrieval).into();
         namespace.composition = (&settings.composition).into();
         namespace.rerank = match (&settings.rerank, &self.namespace.rerank) {

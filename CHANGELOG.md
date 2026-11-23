@@ -28,6 +28,15 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `writer namespace copy SOURCE DESTINATION [--to-config FILE]` copies a
+  namespace, as the one version it serves, into a new namespace of the same
+  storage or of the `[storage]` of another configuration file, another bucket
+  or region. The copy is independent and writable, finds the same documents
+  with the same access, and records the name its keyed hashes were made under in
+  its policy, which is then policy 4.0 and refused by an older build. A
+  different `identity.hashing_key` fails with `hashing_key_mismatch`; an
+  interrupted copy leaves no namespace and the same command completes it. See
+  [Backup and copy](docs/operations.md#backup-and-copy).
 - `filter` tests the text of a `string` with `starts_with`, `contains`,
   `matches` (a regular expression) and the negations `not_starts_with`,
   `not_contains` and `not_matches`. A prefix is answered from the B-tree of a
