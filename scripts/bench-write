@@ -12,6 +12,11 @@ size it reports p50, p90 and p99 of
           arrives, until that row is returned;
   total   write plus read: from the submission until a strong read finds it.
 
+A write the writer does not answer within its answer deadline (`503
+outcome_unknown`) is counted in `timed_out_writes` and left out of every
+percentile and of the per-read counts: it has no read, and its row may still be
+published.
+
 It also reports the object-store operations per write (the writer's own and,
 for the read, the reader's, through `FYRR_OBJECT_STORE_DIAGNOSTICS`), the
 fragment and index-segment counts of the served version (`writer status`)
@@ -20,7 +25,9 @@ body: the same body, refused with `403` after it was read and scanned, and
 with `400 vector_invalid` after every row before the last was bound.
 
   scripts/bench-write --binary target/release/fyrr --storage local
-  eval "$(scripts/s3-fixture env)"; scripts/bench-write --storage fixture
+  export FYRR_FIXTURE_ID="bench-write-$$"   # a fixture of its own: `stop` removes it
+  scripts/s3-fixture start; eval "$(scripts/s3-fixture env)"
+  scripts/bench-write --storage fixture; scripts/s3-fixture stop
   FYRR_BENCH_S3_URI=s3://bucket/prefix scripts/bench-write --storage s3
 
 The S3 modes use the fixture's or the environment's credentials (`s3` reads
@@ -39,6 +46,7 @@ import platform
 import random
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -243,13 +251,15 @@ def main():
             stderr=(work / ("-".join(command[:2]) + ".stderr")).open("w"),
         )
 
-    keys = subprocess.run([*base, "writer", "keys"], env=env, capture_output=True, text=True)
-    if keys.returncode:
-        raise SystemExit("writer keys failed: " + keys.stderr)
     writer_log, reader_log = work / "writer.jsonl", work / "reader.jsonl"
-    writer = run(["writer", "serve", "--jobs", "1"], writer_log)
-    reader = None
+    writer = reader = None
+    # A SIGTERM unwinds through the `finally` below like any other exit.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     try:
+        keys = subprocess.run([*base, "writer", "keys"], env=env, capture_output=True, text=True)
+        if keys.returncode:
+            raise SystemExit("writer keys failed: " + keys.stderr)
+        writer = run(["writer", "serve", "--jobs", "1"], writer_log)
         write = Server(writer_address)
         rows = Rows()
         path = "/v1/namespaces/%s/documents"
@@ -303,29 +313,47 @@ def main():
         for batch, count in PLAN:
             maintained = maintenance_runs()
             ns = "bench-%d" % batch
-            writes, reads = [], []
+            writes, reads, totals = [], [], []
+            timed_out, slow_with_maintenance = 0, 0
             for n in range(count):
                 body = rows.body("%s-w%d" % (ns, n), batch)
+                before = maintenance_runs()
                 status, answer, elapsed = write.call("POST", path % ns, write_key, body)
-                assert status == 200 and answer["upserted"] == batch, (status, answer)
+                if (status, answer) == (503, {"error": "outcome_unknown"}):
+                    # Not answered within the writer's answer deadline: counted, with
+                    # no read after it. The row may still be published.
+                    timed_out += 1
+                    continue
+                assert status == 200 and answer["upserted"] == batch, (
+                    status,
+                    answer,
+                    "write %d of %d, %d rows, %.1f s" % (n, count, batch, elapsed),
+                )
                 last = "%s-w%d-%d" % (ns, n, batch - 1)
                 status, answer, took = fetch(ns, last)
                 assert status == 200 and answer["documents"], (status, answer)
                 writes.append(elapsed)
                 reads.append(took)
+                totals.append(elapsed + took)
+                if elapsed > 10 and maintenance_runs() > before:
+                    slow_with_maintenance += 1
+                if (n + 1) % 100 == 0:
+                    print("batch %d: %d writes" % (batch, n + 1), file=sys.stderr, flush=True)
             ops = writer_ops.take()
             entry = {
                 "writes": count,
                 "write": summary(writes),
                 "read": summary(reads),
-                "total": summary([w + r for w, r in zip(writes, reads, strict=False)]),
+                "total": summary(totals),
+                "timed_out_writes": timed_out,
+                "slow_writes_during_maintenance": slow_with_maintenance,
                 "maintenance_runs": maintenance_runs() - maintained,
                 "writes_over_10s": sum(1 for w in writes if w > 10),
                 "writer_object_store_ops_per_write": {
                     m: round(c / count, 2) for m, c in sorted(ops.items())
                 },
                 "reader_object_store_ops_per_read": {
-                    m: round(c / count, 2) for m, c in sorted(reader_ops.take().items())
+                    m: round(c / len(reads), 2) for m, c in sorted(reader_ops.take().items())
                 },
             }
             if batch == PLAN[0][0]:
@@ -365,10 +393,20 @@ def main():
             "samples": len(refused_scan),
         }
     finally:
+        # What the writer said, before the work directory goes with it.
+        if sys.exc_info()[0] is not None and (work / "writer-serve.stderr").exists():
+            tail = (work / "writer-serve.stderr").read_text().splitlines()[-30:]
+            print("writer stderr, last lines:", *tail, sep="\n", file=sys.stderr)
+        # Our own children, by their PIDs, then the work directory.
         for process in (reader, writer):
-            if process:
+            if process and process.poll() is None:
                 process.terminate()
-                process.wait(timeout=60)
+                try:
+                    process.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+        shutil.rmtree(work, ignore_errors=True)
 
     version = subprocess.run(
         [str(binary), "--version"], capture_output=True, text=True, check=True
@@ -398,7 +436,6 @@ def main():
             for k in ("write", "read", "total")
         ]
         print("%-8s %-6d %-26s %-26s %-26s" % (batch, entry["writes"], *cells), file=sys.stderr)
-    shutil.rmtree(work)
 
 
 if __name__ == "__main__":
