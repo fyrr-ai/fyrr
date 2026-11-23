@@ -29,6 +29,17 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Added
 
+- `[namespace.analyzer]` gives the full-text index of `searchable_text` the
+  settings of an attribute's analyzer: the tokenizer (`simple`, `whitespace`,
+  `unicode`, `ngram`), one of 18 languages for stemming and stop words, stop
+  words of its own, ASCII folding and the maximum token length. The lexical
+  lane, `phrase` and `highlights` follow it. It replaces `fts_stem`,
+  `fts_remove_stop_words`, `fts_ascii_folding` and `fts_max_token_length`,
+  which stay as they were: a namespace without an analyzer keeps its index and
+  its policy digest. The analyzer is fixed when the namespace is created, like
+  those keys; a namespace with one writes the indexed policy and manifest
+  versions. See [tuning](docs/tuning.md#the-analyzer-of-the-text).
+
 - A namespace can store token positions in the full-text index of
   `searchable_text` (`fts_positions = true` in `[namespace]`), and the JSON
   `query` route takes `phrase`: the tokens of a text next to one another in

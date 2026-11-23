@@ -173,6 +173,14 @@ pub struct NamespaceConfig {
     /// Token positions in the `searchable_text` index; a `phrase` condition needs them.
     #[serde(default)]
     pub fts_positions: bool,
+    /// How the full-text index of `searchable_text` cuts a text into terms: the
+    /// tokenizer, the language, the stop words and the other settings of an
+    /// attribute's analyzer. Absent: the `simple` tokenizer with the `fts_*`
+    /// keys above. Present, `fts_stem`, `fts_remove_stop_words`,
+    /// `fts_ascii_folding` and `fts_max_token_length` stay at their defaults.
+    /// Fixed when the namespace is created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analyzer: Option<crate::attributes::analyzer::Analyzer>,
     /// RaBitQ bits per dimension of the dense vector index.
     #[serde(default = "default_dense_rq_bits")]
     #[schemars(range(min = 1, max = DENSE_RQ_BITS_MAX))]
@@ -549,6 +557,7 @@ impl NamespaceConfig {
             remove_stop_words: self.fts_remove_stop_words,
             ascii_folding: self.fts_ascii_folding,
             with_position: self.fts_positions,
+            analyzer: self.analyzer.clone(),
         }
     }
     /// Includes fixed lane weights, candidate bounds, source cap, P1 and composition.
@@ -1683,6 +1692,7 @@ impl Config {
         namespace.fts_remove_stop_words = settings.fts.remove_stop_words;
         namespace.fts_ascii_folding = settings.fts.ascii_folding;
         namespace.fts_positions = settings.fts.with_position;
+        namespace.analyzer.clone_from(&settings.fts.analyzer);
         namespace.dense_rq_bits = settings.dense_rq_bits;
         namespace.dense_partition_rows = settings.dense_partition_rows;
         namespace.dense_metric = settings.dense_metric;

@@ -3060,6 +3060,92 @@ async fn identity_write_api_highlights_the_tokens_an_excerpt_matches_on_storage(
     reader.stop().await;
 }
 
+/// The `analyzer` of `[namespace]` cuts and reduces the text of `searchable_text`
+/// as an attribute's analyzer does: with German and the `unicode` tokenizer a
+/// stemmed query matches in the text lane, and a highlight marks the stemmed
+/// match.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_text_follows_the_namespace_analyzer_on_storage() {
+    use lance::index::DatasetIndexExt;
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        format!("{text}\n[namespace.analyzer]\ntokenizer = \"unicode\"\nlanguage = \"german\"\n"),
+    )
+    .unwrap();
+    let record = "Die Katzen schlafen";
+    embed(&root, &[record, "andere", "Katze"]);
+    let writer = Writer::start(&config, &root, address).await;
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"upserts": [
+                    {"id": "a", "text": record, "vector": vector(0, 1024),
+                     "readers": ["usr:x"]},
+                    {"id": "b", "text": "andere", "vector": vector(1, 1024),
+                     "readers": ["usr:x"]},
+                ]})
+            )
+            .await,
+        (200, json!({"upserted": 2, "deleted": 0}))
+    );
+    // The index of the text is built with the analyzer.
+    let (head, _) = super::coordination::publication(&config).await;
+    let loaded = fyrr_core::config::load(&config).unwrap();
+    let dataset = fyrr_reader::storage::pinned(&loaded.config, &head)
+        .await
+        .unwrap();
+    let params = dataset
+        .index_statistics("fts_idx")
+        .await
+        .unwrap()
+        .replace(' ', "");
+    assert!(params.contains("\"base_tokenizer\":\"icu\""), "{params}");
+    assert!(params.contains("\"language\":\"German\""), "{params}");
+
+    let mut reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let post = async |body: Value| -> Value {
+        let response = reader
+            .client
+            .post(format!("{}/v1/namespaces/dense-fixture/query", reader.base))
+            .bearer_auth(secret(READ_KEY))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        response.json::<Value>().await.unwrap()
+    };
+    // The roots the text lane found, and the highlights of the first hit.
+    let ask = async |query: &str, vector_seed: usize| {
+        post(json!({"query": query, "vector": vector(vector_seed, 1024),
+                    "output": "metadata", "fields": {"scores": true}}))
+        .await["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|hit| hit.get("lexical_score").is_some_and(|s| !s.is_null()))
+            .map(|hit| hit["root_id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    // `Katze` and `Katzen` have one stem in German.
+    assert_eq!(ask("Katze", 1).await, ["a"]);
+    let marked = post(json!({"query": "Katze", "vector": vector(0, 1024),
+                             "fields": {"highlights": true}}))
+    .await;
+    assert_eq!(marked["hits"][0]["excerpt"]["highlights"], json!([[4, 10]]));
+    reader.stop().await;
+}
+
 /// A search takes its query vector from the request instead of the embedding
 /// provider, scans exactly when asked, fetches as many candidates as its limit
 /// asks for, and stays inside the filter and the caller's permissions.

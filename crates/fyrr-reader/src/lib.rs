@@ -47,5 +47,5 @@ mod telemetry;
 mod tools;
 
 pub use error::{IndexVerificationError, ReaderError};
-pub use excerpt::fts_params;
+pub use excerpt::{analyzer_params, fts_params};
 pub use tools::filter_sql;

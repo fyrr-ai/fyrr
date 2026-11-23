@@ -100,7 +100,7 @@ async fn lifecycle(config: &Config, tag: &str) -> (Vec<usize>, Vec<usize>) {
             &["searchable_text"],
             IndexType::Inverted,
             Some("fts_idx".into()),
-            &fts_params(config),
+            &fts_params(config).unwrap(),
             true,
         )
         .await

@@ -252,6 +252,28 @@ pub(crate) fn namespace_settings(
     rescore_depth(namespace, error);
     composition(namespace, error);
     namespace_ranges(namespace, error);
+    if let Some(analyzer) = &namespace.analyzer {
+        if !analyzer.is_valid() {
+            error(
+                "namespace.analyzer",
+                "a setting is out of its bounds, or is one its tokenizer ignores".into(),
+            );
+        } else if analyzer.tokenizer == crate::attributes::analyzer::Tokenizer::Ngram {
+            error(
+                "namespace.analyzer",
+                "the ngram tokenizer is not offered for the text: attributes inherit it, and a phrase or an `all` match would find rows with any one n-gram".into(),
+            );
+        } else if namespace.fts_stem
+            || namespace.fts_remove_stop_words
+            || namespace.fts_ascii_folding
+            || namespace.fts_max_token_length != super::default_fts_max_token_length()
+        {
+            error(
+                "namespace.analyzer",
+                "replaces fts_stem, fts_remove_stop_words, fts_ascii_folding and fts_max_token_length: leave them out".into(),
+            );
+        }
+    }
     if let Err(code) = crate::attributes::check_schema(&namespace.attributes) {
         error("namespace.attributes", code.to_string());
     } else if let Err(code) =

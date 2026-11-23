@@ -1,10 +1,6 @@
 use super::publication::previous_manifest;
 use super::*;
-use fyrr_core::attributes::{
-    AttributeIndexes, AttributeType,
-    analyzer::{Analyzer, Tokenizer},
-    stale_analyzers,
-};
+use fyrr_core::attributes::{AttributeIndexes, AttributeType, stale_analyzers};
 use lance::dataset::NewColumnTransform;
 use lance_index::scalar::inverted::DocumentGranularity;
 
@@ -518,7 +514,7 @@ async fn build_indexes(
         config.namespace.dense_metric,
     );
     let scalar = ScalarIndexParams::default();
-    let fts = fts_params(config);
+    let fts = fts_params(config)?;
     for &(column, name, kind, _) in INDEXES {
         if (name == "fts_idx" && !fts_changed) || (name != "fts_idx" && !first) {
             continue;
@@ -675,8 +671,8 @@ pub(crate) async fn build_attribute_indexes(
                 .get(&column)
                 .and_then(|options| options.analyzer.as_ref())
             {
-                Some(analyzer) => attribute_fts_params(config, analyzer)?,
-                None => fts_params(config).with_position(false),
+                Some(analyzer) => with_workers(config, fyrr_reader::analyzer_params(analyzer)?),
+                None => fts_params(config)?.with_position(false),
             };
             // A string array has one document per element: a match never spans two.
             if matches!(
@@ -742,44 +738,11 @@ pub(crate) async fn add_attribute_columns(
 /// (`writer.fts_partition_memory_mb`) is not set here: Lance reads it from the
 /// environment (see `threads::apply`) for builds and for index merges alike,
 /// which keeps the partition geometry through both.
-fn fts_params(config: &Config) -> lance_index::scalar::InvertedIndexParams {
-    with_workers(config, fyrr_reader::fts_params(&config.namespace))
-}
-
-/// Parameters of the full-text index of an attribute that has an analyzer of
-/// its own. A language stems the terms and removes its stop words; a list of
-/// stop words replaces the language's.
-fn attribute_fts_params(
-    config: &Config,
-    analyzer: &Analyzer,
-) -> Result<lance_index::scalar::InvertedIndexParams> {
-    let mut fts = lance_index::scalar::InvertedIndexParams::default()
-        .base_tokenizer(
-            match analyzer.tokenizer {
-                Tokenizer::Simple => "simple",
-                Tokenizer::Whitespace => "whitespace",
-                Tokenizer::Unicode => "icu",
-                Tokenizer::Ngram => "ngram",
-            }
-            .into(),
-        )
-        .with_position(false)
-        .max_token_length(Some(analyzer.max_token_length as usize))
-        .lower_case(true)
-        .stem(analyzer.language.is_some())
-        .remove_stop_words(analyzer.language.is_some() || analyzer.stop_words.is_some())
-        .custom_stop_words(analyzer.stop_words.clone())
-        .ascii_folding(analyzer.ascii_folding);
-    if let Some(language) = analyzer.language {
-        fts = fts.language(&language.lance_name())?;
-    }
-    if analyzer.tokenizer == Tokenizer::Ngram {
-        fts = fts
-            .ngram_min_length(analyzer.ngram_min_length)
-            .ngram_max_length(analyzer.ngram_max_length)
-            .ngram_prefix_only(analyzer.prefix_only);
-    }
-    Ok(with_workers(config, fts))
+fn fts_params(config: &Config) -> Result<lance_index::scalar::InvertedIndexParams> {
+    Ok(with_workers(
+        config,
+        fyrr_reader::fts_params(&config.namespace)?,
+    ))
 }
 
 fn with_workers(

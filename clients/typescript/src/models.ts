@@ -617,7 +617,47 @@ export interface FtsSettings {
   ascii_folding: boolean;
   /** Positional postings, which a phrase condition needs. */
   with_position: boolean;
+  /**
+   * The analyzer of `searchable_text`; present, the keys above are the
+   * defaults and do not apply. Absent: the keys above.
+   */
+  analyzer?: Analyzer | null;
 }
+
+/**
+ * The settings of a full-text index that decide which terms a text yields.
+ * A text is lowercased always. Changing them on an attribute changes its index,
+ * which the writer's maintenance rebuilds while the old one keeps serving; the
+ * analyzer of `searchable_text` is fixed when the namespace is created.
+ */
+export interface Analyzer {
+  tokenizer: Tokenizer;
+  /**
+   * Stems the terms and removes the stop words of the language. Absent: no
+   * stemming, and no stop words but `stop_words`.
+   */
+  language?: Language | null;
+  /**
+   * The stop words to remove instead of the language's: compared with a term
+   * after it is lowercased and stemmed.
+   */
+  stop_words?: string[] | null;
+  ascii_folding: boolean;
+  /** Tokens longer than this, in UTF-8 bytes, are dropped. */
+  max_token_length: number;
+  /** Only with the `ngram` tokenizer. */
+  ngram_min_length: number;
+  /** Only with the `ngram` tokenizer; not below `ngram_min_length`. */
+  ngram_max_length: number;
+  /** Only with the `ngram` tokenizer: only the n-grams that start a token. */
+  prefix_only: boolean;
+}
+
+/** The way a text is cut into tokens. */
+export type Tokenizer = "simple" | "whitespace" | "unicode" | "ngram";
+
+/** A language with a stemmer and a stop-word list. */
+export type Language = "arabic" | "danish" | "dutch" | "english" | "finnish" | "french" | "german" | "greek" | "hungarian" | "italian" | "norwegian" | "portuguese" | "romanian" | "russian" | "spanish" | "swedish" | "tamil" | "turkish";
 
 /**
  * The distance of the dense index. Lance's IVF_RQ index supports all three on
@@ -690,7 +730,7 @@ export interface RerankSettings {
  * full-text or an n-gram index when it asks for one. An attribute without an
  * index is still filtered and sorted: by a scan of the table. The settings of
  * the analyzer belong to the full-text index and are only set with it; an
- * index without one takes the namespace's `fts_*` settings.
+ * index without one takes the namespace's text analyzer settings.
  */
 export interface AttributeIndex {
   index: boolean;
@@ -698,40 +738,6 @@ export interface AttributeIndex {
   ngram: boolean;
   analyzer?: Analyzer | null;
 }
-
-/**
- * The settings of a full-text index that decide which terms a text yields.
- * A text is lowercased always. Changing them changes the index, which the
- * writer's maintenance rebuilds while the old one keeps serving.
- */
-export interface Analyzer {
-  tokenizer: Tokenizer;
-  /**
-   * Stems the terms and removes the stop words of the language. Absent: no
-   * stemming, and no stop words but `stop_words`.
-   */
-  language?: Language | null;
-  /**
-   * The stop words to remove instead of the language's: compared with a term
-   * after it is lowercased and stemmed.
-   */
-  stop_words?: string[] | null;
-  ascii_folding: boolean;
-  /** Tokens longer than this, in UTF-8 bytes, are dropped. */
-  max_token_length: number;
-  /** Only with the `ngram` tokenizer. */
-  ngram_min_length: number;
-  /** Only with the `ngram` tokenizer; not below `ngram_min_length`. */
-  ngram_max_length: number;
-  /** Only with the `ngram` tokenizer: only the n-grams that start a token. */
-  prefix_only: boolean;
-}
-
-/** The way a text is cut into tokens. */
-export type Tokenizer = "simple" | "whitespace" | "unicode" | "ngram";
-
-/** A language with a stemmer and a stop-word list. */
-export type Language = "arabic" | "danish" | "dutch" | "english" | "finnish" | "french" | "german" | "greek" | "hungarian" | "italian" | "norwegian" | "portuguese" | "romanian" | "russian" | "spanish" | "swedish" | "tamil" | "turkish";
 
 /**
  * A named vector attribute: a nullable column of its own, of vectors of one

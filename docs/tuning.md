@@ -28,6 +28,7 @@ and the other `[reader]` and `[writer]` keys in
 | `fts_remove_stop_words` | `false` | Stop-word removal. |
 | `fts_ascii_folding` | `false` | ASCII folding. |
 | `fts_positions` | `false` | Stores token positions in the full-text index of `searchable_text`, which a [`phrase`](http-api.md#matching-tokens) condition needs; the index grows, see [the size of the positions](#the-size-of-the-positions). A namespace without them answers a phrase with `400 invalid_argument`. Like the other `fts_*` settings it is fixed when the namespace is created. |
+| `analyzer` | absent | How the full-text index of `searchable_text` cuts a text into terms: the tokenizer, the language and the other settings of an [analyzer](#analyzer-of-a-full-text-index), set as `[namespace.analyzer]` with the keys `tokenizer`, `language`, `stop_words`, `ascii_folding`, `max_token_length`, `ngram_min_length`, `ngram_max_length` and `prefix_only`. Absent: the `simple` tokenizer with the `fts_*` keys above. It replaces `fts_stem`, `fts_remove_stop_words`, `fts_ascii_folding` and `fts_max_token_length`, which then stay at their defaults, and takes `fts_positions` as they do. Fixed when the namespace is created; see [the analyzer of the text](#the-analyzer-of-the-text). |
 | `composition` | see below | Document slots of a search response. |
 | `retrieval` | see below | Candidate depths, fusion weight and output bounds. |
 | `rerank` | absent | Optional hosted reranker; absent makes no reranker calls. |
@@ -35,6 +36,37 @@ and the other `[reader]` and `[writer]` keys in
 | `attribute_indexes` | `{}` | The attributes whose indexes are not the default: `index = false`, `full_text` and `ngram`, see below. |
 | `vectors` | `{}` | Named vector attributes besides the built-in `vector`: name to `dimensions` and an optional `from` or `multi`, see below. |
 | `write_api` | absent | Serves the [document write API](http-api.md#write-documents) and creates API namespaces, see below. |
+
+### The analyzer of the text
+
+```toml
+[namespace.analyzer]
+tokenizer = "unicode"
+language = "german"
+```
+
+`[namespace.analyzer]` gives `searchable_text` the settings of an
+[attribute's analyzer](#analyzer-of-a-full-text-index): the same keys, defaults
+and limits. Every use of the text index follows it: the lexical lane, a
+[`phrase`](http-api.md#matching-tokens) (with `fts_positions`), and the
+`highlights` of an excerpt. A namespace that has no analyzer keeps the
+`simple` tokenizer and its `fts_*` keys, its index and its policy digest as
+they were, and `fts_stem` stems in English only; the analyzer's `language`
+stems in any of the 18 languages. Setting `fts_stem`, `fts_remove_stop_words`,
+`fts_ascii_folding` or a `fts_max_token_length` other than `40` together with
+the analyzer is a configuration error at `namespace.analyzer`.
+
+The `ngram` tokenizer is not offered for the text: attribute indexes inherit
+the analyzer, and a `phrase` or an `all` match on n-grams would find rows with
+any one of them. It is a configuration error at `namespace.analyzer`.
+
+Unlike the analyzer of an attribute, the analyzer of the text cannot change
+once the namespace exists: it is part of the policy artifact the namespace
+was created with, as the `fts_*` keys are, and a changed `[namespace.analyzer]`
+in the file is ignored for an existing namespace. To change it, create a new
+namespace. A `highlights` range is chosen as the `simple` tokenizer would cut a
+token at the edge of an excerpt, so with another tokenizer a token cut by the
+edge of the excerpt may be marked.
 
 ### The size of the positions
 
@@ -219,9 +251,10 @@ index answers the `contains` and `matches` filters on a `string`
 ([text tests](mcp-tools.md#text-tests)); the full-text index is built and kept,
 and no filter operator reads it yet.
 
-A full-text index takes the namespace's `fts_*` keys, as the text index of the
-documents does, unless it sets an [analyzer](#analyzer-of-a-full-text-index) of
-its own.
+A full-text index takes the analyzer of the namespace's text, as the text index
+of the documents does (its [`[namespace.analyzer]`](#the-analyzer-of-the-text),
+else its `fts_*` keys), unless it sets an
+[analyzer](#analyzer-of-a-full-text-index) of its own.
 
 A new namespace's first publication builds every index its schema asks for.
 After that the attributes and their indexes change by a
