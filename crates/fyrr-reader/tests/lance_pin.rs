@@ -455,6 +455,9 @@ async fn configurable_max_token_length_default_40_and_override_128() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A tokenizer's probes: each query with the ids of the rows it hits.
+type Hits<'a> = &'a [(&'a str, &'a [i64])];
+
 /// How the Unicode word tokenizer (Lance's `icu`) cuts Chinese and Japanese
 /// text, against the `simple` tokenizer, which takes a run of such characters
 /// as one token. Stemming and stop words are off, so that only the
@@ -473,7 +476,7 @@ async fn unicode_word_tokenizer_segments_chinese_and_japanese_by_dictionary() {
     .into();
     let mut dataset = write(&root.join("cjk.lance"), &rows, WriteMode::Create).await;
     // (tokenizer, [(query, ids of the rows that hit)])
-    let probes: [(&str, &[(&str, &[i64])]); 2] = [
+    let probes: [(&str, Hits); 2] = [
         (
             "simple",
             &[
