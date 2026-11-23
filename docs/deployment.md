@@ -313,18 +313,25 @@ reader. To keep a namespace on few readers, route on the namespace.
   on `/v1/namespaces/{namespace}`) to the writer listener. A rule that sends
   every non-`GET` request to the writer would send the search routes there;
   they are `POST` and belong to the readers. Send `/mcp` to the readers.
+  `GET` and `HEAD /v1/namespaces`, the namespace list, has no namespace
+  segment: send it to any reader without hashing. The writer listener answers
+  it `404`.
 - **No coordination.** fyrr adds no router process: the hashing is the load
   balancer's. Readers never coordinate and never learn which namespaces
   another reader serves; each decides from the requests it receives.
 - **A failed reader.** When the balancer drops a reader, it hashes that
-  reader's namespaces to the others. The next reader opens such a namespace
-  from storage and answers the first query cold, then serves it from its own
-  mirror. Nothing is lost, because a reader holds only a read-through copy of
-  storage.
+  reader's namespaces to the others. With API keys, the next reader opens such
+  a namespace from storage and answers the first query cold, then serves it
+  from its own mirror (see the OIDC limit below). Nothing is lost, because a
+  reader holds only a read-through copy of storage.
 
-A namespace the balancer sends to a reader that did not open it yet is not an
-error: any reader can serve any namespace. The hashing only decides how many
-readers pay for each one.
+With API keys, and the same configuration on every reader, any reader serves
+any namespace, so a namespace sent to a reader that did not open it yet is not
+an error; the hashing only decides how many readers pay for each one. This
+holds only with API keys. A request authenticated with OIDC is served only for
+the namespace the reader is configured for (`namespace.name`); for any other
+namespace the reader answers `503`, so it cannot take over another reader's
+namespaces. With OIDC, route each namespace to readers configured for it.
 
 ## Scheduling
 
