@@ -563,8 +563,14 @@ mod tests {
     #[test]
     fn persisted_projection_excludes_text_vectors_and_nonstate_metadata() {
         let state = apply::DocumentState::default();
-        let batch =
-            apply::marker_row(config().embedding.dimensions, "source", "root", &state).unwrap();
+        let batch = apply::marker_row(
+            config().embedding.dimensions,
+            config().namespace.dense_element,
+            "source",
+            "root",
+            &state,
+        )
+        .unwrap();
         let mut columns = batch.columns().to_vec();
         let metadata = batch.schema().index_of("metadata_json").unwrap();
         columns[batch.schema().index_of("source_id").unwrap()] =

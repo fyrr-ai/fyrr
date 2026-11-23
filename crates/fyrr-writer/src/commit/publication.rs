@@ -208,6 +208,8 @@ pub(crate) async fn write_manifest(
     let manifest = ContentManifest {
         schema_version: if attribute_indexes.is_empty()
             && !config.namespace.typed_connector_fields()
+            && config.namespace.dense_metric.is_default()
+            && config.namespace.dense_element.is_default()
         {
             PUBLICATION_CONTRACT_VERSION
         } else {
@@ -231,6 +233,8 @@ pub(crate) async fn write_manifest(
         fts: config.namespace.fts_settings(),
         dense_rq_bits: config.namespace.dense_rq_bits,
         dense_partition_rows: config.namespace.dense_partition_rows,
+        dense_metric: config.namespace.dense_metric,
+        dense_element: config.namespace.dense_element,
         retrieval_policy_digest: config.namespace.retrieval_digest(),
         indexes,
         attributes: config.namespace.attributes.clone(),

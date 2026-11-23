@@ -1,5 +1,5 @@
 use super::*;
-use arrow_array::{ArrayRef, BooleanArray, FixedSizeListArray, Float16Array, Float64Array};
+use arrow_array::{ArrayRef, BooleanArray, FixedSizeListArray, Float64Array};
 use arrow_array::{
     BinaryArray, FixedSizeBinaryArray, Int64Array, ListArray, TimestampMicrosecondArray,
     UInt64Array,
@@ -519,22 +519,18 @@ impl PreparedReader {
     }
 }
 
-/// A vector as numbers; every 16-bit value is exact as a 64-bit one.
+/// A vector as numbers; every 16-bit and 32-bit value is exact as a 64-bit one.
 fn vector_json(array: &ArrayRef, row: usize) -> Result<Value> {
     let list = array
         .as_any()
         .downcast_ref::<FixedSizeListArray>()
         .ok_or(PublicationRowsInvalid)?;
-    let items = list.value(row);
-    let items = items
-        .as_any()
-        .downcast_ref::<Float16Array>()
-        .ok_or(PublicationRowsInvalid)?;
+    let items =
+        crate::embedding::stored_values(list.value(row).as_ref()).ok_or(PublicationRowsInvalid)?;
     Ok(Value::Array(
         items
-            .values()
-            .iter()
-            .map(|item| item.to_f64().into())
+            .into_iter()
+            .map(|item| f64::from(item).into())
             .collect(),
     ))
 }

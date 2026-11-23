@@ -181,6 +181,7 @@ impl<'a> ContentWork<'a> {
                 schema: lance::datatypes::Schema::try_from(
                     crate::prepare::schema_with(
                         config.embedding.dimensions,
+                        config.namespace.dense_element,
                         config
                             .namespace
                             .attributes

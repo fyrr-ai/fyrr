@@ -49,6 +49,8 @@ impl PreparedReader {
             publication_id: manifest.publication_id.clone(),
             schema: manifest.attributes.clone(),
             settings,
+            dense_metric: manifest.dense_metric,
+            dense_element: manifest.dense_element,
             read_only,
             rows: stats.map(|stats| stats.rows),
             logical_bytes: stats.map(|stats| stats.logical_bytes),

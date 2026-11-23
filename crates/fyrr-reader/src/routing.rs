@@ -4,7 +4,7 @@ use arrow_array::{
     types::Float32Type,
 };
 use arrow_schema::{DataType, Field, Schema};
-use fyrr_core::config::RoutingStrategy;
+use fyrr_core::config::{DenseMetric, RoutingStrategy};
 pub(crate) use fyrr_core::mcp::RoutingFallback;
 use lance_index::vector::{
     CENTROID_DIST_COLUMN, PART_ID_COLUMN,
@@ -57,7 +57,18 @@ pub(crate) fn take_probes(
     (ids, distances, consumed)
 }
 
-pub(crate) fn strategy(configured: RoutingStrategy, centroids: usize) -> RoutingStrategy {
+/// How the partitions of a query are chosen. The centroid scan ranks by
+/// Euclidean distance, which is the order of the normalized query under cosine
+/// and of squared L2. The order under a dot product is another one, so Lance
+/// ranks those partitions itself, whatever is configured.
+pub(crate) fn strategy(
+    configured: RoutingStrategy,
+    centroids: usize,
+    metric: DenseMetric,
+) -> RoutingStrategy {
+    if metric == DenseMetric::Dot {
+        return RoutingStrategy::Exact;
+    }
     match configured {
         RoutingStrategy::Auto if centroids >= AUTO_CENTROIDS => RoutingStrategy::Rabitq,
         RoutingStrategy::Auto => RoutingStrategy::Exact,

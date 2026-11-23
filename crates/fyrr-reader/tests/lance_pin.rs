@@ -827,6 +827,85 @@ async fn string_filters_use_the_btree_and_the_ngram_index_where_they_can() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// The `_distance` of a stored vector under each metric is the one the
+/// namespace documents, on both element types the namespace may store: one
+/// minus the cosine similarity, the squared Euclidean distance, and one minus
+/// the dot product. The rescoring and the recall sample rank by it.
+#[tokio::test]
+async fn flat_distance_of_each_metric_on_both_element_types() {
+    use arrow_array::{FixedSizeListArray, Float16Array, types::Float16Type, types::Float32Type};
+    use lance_index::vector::flat::compute_distance;
+    use lance_linalg::distance::DistanceType;
+    const DIM: i32 = 8;
+    let rows: Vec<Vec<f32>> = (0..4)
+        .map(|r| {
+            (0..DIM as usize)
+                .map(|d| ((r * 3 + d * 5) % 7) as f32 - 2.5)
+                .collect()
+        })
+        .collect();
+    let query: Vec<f32> = (0..DIM as usize).map(|d| (d % 3) as f32 - 0.5).collect();
+    let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+    let expected = |metric: DistanceType, row: &[f32]| match metric {
+        DistanceType::Cosine => {
+            1.0 - dot(&query, row) / (dot(&query, &query) * dot(row, row)).sqrt()
+        }
+        DistanceType::L2 => query.iter().zip(row).map(|(q, r)| (q - r).powi(2)).sum(),
+        DistanceType::Dot => 1.0 - dot(&query, row),
+        _ => unreachable!(),
+    };
+    for half in [true, false] {
+        let vectors: ArrayRef = if half {
+            Arc::new(
+                FixedSizeListArray::from_iter_primitive::<Float16Type, _, _>(
+                    rows.iter()
+                        .map(|r| Some(r.iter().map(|v| Some(half::f16::from_f32(*v))))),
+                    DIM,
+                ),
+            )
+        } else {
+            Arc::new(
+                FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                    rows.iter().map(|r| Some(r.iter().map(|v| Some(*v)))),
+                    DIM,
+                ),
+            )
+        };
+        let key: ArrayRef = if half {
+            Arc::new(Float16Array::from_iter_values(
+                query.iter().map(|v| half::f16::from_f32(*v)),
+            ))
+        } else {
+            Arc::new(Float32Array::from(query.clone()))
+        };
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "vector",
+            vectors.data_type().clone(),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![vectors]).unwrap();
+        for metric in [DistanceType::Cosine, DistanceType::L2, DistanceType::Dot] {
+            let scored = compute_distance(key.clone(), metric, "vector", batch.clone())
+                .await
+                .unwrap();
+            let distances = scored
+                .column_by_name("_distance")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .unwrap();
+            for (row, values) in rows.iter().enumerate() {
+                let want = expected(metric, values);
+                assert!(
+                    (distances.value(row) - want).abs() < 1e-3,
+                    "{metric} half={half} row {row}: {} is not {want}",
+                    distances.value(row)
+                );
+            }
+        }
+    }
+}
+
 /// Rows of three to eight words of a small vocabulary, written in three parts
 /// that the inverted index covers as three segments.
 async fn segmented(name: &str, rows: i64, params: &InvertedIndexParams) -> (Dataset, Vec<String>) {

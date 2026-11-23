@@ -193,7 +193,7 @@ struct RowColumns {
     records: Vec<String>,
     revisions: Vec<String>,
     readers: Vec<Vec<String>>,
-    vectors: Vec<Vec<half::f16>>,
+    vectors: Vec<Vec<f32>>,
     texts: Vec<String>,
     metadata: Vec<String>,
     record_orders: Vec<u64>,
@@ -437,7 +437,6 @@ impl RowColumns {
                     .clone()
                     .or_else(|| embedded.next())
                     .ok_or(WriterError::EmbeddingBatchInvalid)?;
-                let vector: Vec<_> = vector.into_iter().map(half::f16::from_f32).collect();
                 self.sources.push(source.id.clone());
                 self.roots.push(change.root_id.clone());
                 let record = format!("{}:{chunk_number}", section_ids[section_number]);
@@ -498,11 +497,10 @@ impl RowColumns {
         let mut fragments = Vec::new();
         if !self.records.is_empty() {
             let reader_array = string_lists(self.readers.iter().map(Vec::as_slice));
-            let vector_array = FixedSizeListArray::from_iter_primitive::<Float16Type, _, _>(
-                self.vectors
-                    .iter()
-                    .map(|v| Some(v.iter().copied().map(Some))),
-                config.embedding.dimensions as i32,
+            let vector_array = vector_column(
+                config.namespace.dense_element,
+                config.embedding.dimensions,
+                self.vectors.iter().map(Vec::as_slice),
             );
             let attribute_array = string_lists(self.attributes.iter().map(Vec::as_slice));
             // An API request brings its attribute columns; a connector's rows
@@ -516,7 +514,7 @@ impl RowColumns {
                 Arc::new(StringArray::from(self.records)),
                 Arc::new(StringArray::from(self.revisions)),
                 Arc::new(reader_array),
-                Arc::new(vector_array),
+                vector_array,
                 Arc::new(StringArray::from(self.texts)),
                 Arc::new(StringArray::from(self.metadata)),
                 Arc::new(UInt64Array::from(self.record_orders)),
@@ -531,6 +529,7 @@ impl RowColumns {
             columns.extend(typed.iter().map(|(_, column)| column.clone()));
             let schema = schema_with(
                 config.embedding.dimensions,
+                config.namespace.dense_element,
                 typed
                     .iter()
                     .map(|(name, column)| Field::new(name, column.data_type().clone(), true))

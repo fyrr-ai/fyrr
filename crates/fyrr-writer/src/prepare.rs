@@ -6,7 +6,7 @@ use page::content_page;
 
 use crate::embedding::WriterEmbedding;
 use arrow_array::builder::{ListBuilder, StringBuilder};
-use arrow_array::types::Float16Type;
+use arrow_array::types::{Float16Type, Float32Type};
 use arrow_array::{
     ArrayRef, BinaryArray, BooleanArray, FixedSizeBinaryArray, FixedSizeListArray, Float64Array,
     Int64Array, ListArray, RecordBatch, RecordBatchIterator, StringArray,
@@ -14,7 +14,7 @@ use arrow_array::{
 };
 use arrow_buffer::{Buffer, NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field, Schema};
-use fyrr_core::config::{Config, PermissionsMode, ProcessEnvironment};
+use fyrr_core::config::{Config, DenseElement, PermissionsMode, ProcessEnvironment};
 use fyrr_core::connector::{
     CONNECTOR_CONTRACT_VERSION, ChangeOp, ConnectorBatch, CursorState, DocumentChange, SyncKind,
 };
@@ -28,12 +28,36 @@ use lance::io::{ObjectStoreParams, StorageOptionsAccessor};
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, path::Path};
 use std::sync::Arc;
 
-pub fn schema(dimensions: u32) -> Arc<Schema> {
-    schema_with(dimensions, Vec::new())
+/// The `vector` column of `rows`, in the namespace's element type.
+pub(crate) fn vector_column<'a>(
+    element: DenseElement,
+    dimensions: u32,
+    rows: impl Iterator<Item = &'a [f32]>,
+) -> ArrayRef {
+    // The dimension is at most 8192.
+    let dimensions = dimensions as i32;
+    match element {
+        DenseElement::F16 => Arc::new(
+            FixedSizeListArray::from_iter_primitive::<Float16Type, _, _>(
+                rows.map(|v| Some(v.iter().map(|x| Some(half::f16::from_f32(*x))))),
+                dimensions,
+            ),
+        ),
+        DenseElement::F32 => Arc::new(
+            FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                rows.map(|v| Some(v.iter().copied().map(Some))),
+                dimensions,
+            ),
+        ),
+    }
+}
+
+pub fn schema(dimensions: u32, element: DenseElement) -> Arc<Schema> {
+    schema_with(dimensions, element, Vec::new())
 }
 
 /// The built-in columns and then `extra`: a namespace's attribute columns.
-pub fn schema_with(dimensions: u32, extra: Vec<Field>) -> Arc<Schema> {
+pub fn schema_with(dimensions: u32, element: DenseElement, extra: Vec<Field>) -> Arc<Schema> {
     let strings = DataType::List(Arc::new(Field::new("item", DataType::Utf8, false)));
     let mut fields = vec![
         Field::new("source_id", DataType::Utf8, false),
@@ -44,7 +68,14 @@ pub fn schema_with(dimensions: u32, extra: Vec<Field>) -> Arc<Schema> {
         Field::new(
             "vector",
             DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float16, true)),
+                Arc::new(Field::new(
+                    "item",
+                    match element {
+                        DenseElement::F16 => DataType::Float16,
+                        DenseElement::F32 => DataType::Float32,
+                    },
+                    true,
+                )),
                 dimensions as i32,
             ),
             false,
@@ -201,7 +232,11 @@ pub fn quarantine_reason(
                 // A vector is the record of one chunk, of the namespace's dimension.
                 || s.vector.as_ref().is_some_and(|vector| {
                     crate::chunk::chunks(&s.text).len() != 1
-                        || fyrr_reader::embedding::validate(vector, config.embedding.dimensions)
+                        || fyrr_reader::embedding::validate(
+                            vector,
+                            config.embedding.dimensions,
+                            config.namespace.dense_element,
+                        )
                             .is_err()
                 })
         })
@@ -283,7 +318,7 @@ fn weigh_change(config: &Config, change: &DocumentChange) -> Result<(u64, u64)> 
 
 /// What a record adds to the size of an envelope besides its change.
 fn record_estimate(config: &Config) -> u64 {
-    2048 + u64::from(config.embedding.dimensions) * 2
+    2048 + u64::from(config.embedding.dimensions) * config.namespace.dense_element.bytes()
 }
 
 /// What an envelope weighs before its first change.
@@ -890,7 +925,7 @@ mod tests {
     }
     #[test]
     fn the_table_holds_exactly_the_reserved_built_in_columns() {
-        let schema = schema(8);
+        let schema = schema(8, DenseElement::F16);
         let names: Vec<_> = schema.fields().iter().map(|f| f.name().as_str()).collect();
         assert_eq!(names, fyrr_core::attributes::BUILT_IN_COLUMNS);
     }

@@ -157,6 +157,49 @@ fn attribute_index_options_need_the_version_an_older_build_refuses() {
     }
 }
 
+/// A metric other than cosine or a 32-bit element type is read only from the
+/// versions an older build refuses: it would search and write cosine and 16-bit
+/// floats. The defaults are no entry, so that an older namespace keeps its bytes.
+#[test]
+fn a_vector_metric_and_element_type_need_the_version_an_older_build_refuses() {
+    let manifest = common::read_json("fixtures/contracts/content-manifest/manifest.json");
+    let policy = common::read_json("fixtures/contracts/policy-artifact/valid.json");
+    for (key, value) in [
+        ("dense_metric", "squared_l2"),
+        ("dense_metric", "dot"),
+        ("dense_element", "f32"),
+    ] {
+        let mut manifest = manifest.clone();
+        manifest[key] = json!(value);
+        assert!(
+            parse::<ContentManifest>(&manifest).is_err(),
+            "{key} {value}"
+        );
+        manifest["schema_version"] = json!("5.0");
+        let kept = parse::<ContentManifest>(&manifest).unwrap();
+        assert_eq!(serde_json::to_value(&kept).unwrap()[key], json!(value));
+        let mut policy = policy.clone();
+        policy["settings"][key] = json!(value);
+        assert!(parse::<PolicyArtifact>(&policy).is_err(), "{key} {value}");
+        policy["schema_version"] = json!("4.0");
+        assert!(parse::<PolicyArtifact>(&policy).is_ok(), "{key} {value}");
+    }
+    // Only the names the pinned index supports are spelled.
+    for (key, value) in [("dense_metric", "hamming"), ("dense_element", "f64")] {
+        let mut manifest = manifest.clone();
+        manifest["schema_version"] = json!("5.0");
+        manifest[key] = json!(value);
+        assert!(
+            parse::<ContentManifest>(&manifest).is_err(),
+            "{key} {value}"
+        );
+    }
+    // The default is no entry at all.
+    let kept = parse::<ContentManifest>(&manifest).unwrap();
+    let written = serde_json::to_value(&kept).unwrap();
+    assert!(written.get("dense_metric").is_none() && written.get("dense_element").is_none());
+}
+
 /// The connector columns are read only from the version an older build
 /// refuses, which would read their fields as null; a namespace without them
 /// keeps its version.

@@ -2,7 +2,7 @@
 //! cache-only copies use the native generation's existing request scratch.
 use super::{EmbeddingClient, ProviderStats, Role, digest, identity};
 use crate::error::*;
-use fyrr_core::config::EmbeddingConfig;
+use fyrr_core::config::{DenseElement, EmbeddingConfig};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -182,6 +182,7 @@ impl QueryEmbeddings {
         queries: &[&str],
         authorized: bool,
         deadline: std::time::Instant,
+        element: DenseElement,
     ) {
         if work.vectors.iter().all(Result::is_ok) {
             return;
@@ -215,9 +216,19 @@ impl QueryEmbeddings {
         match response {
             Ok(vectors) => {
                 for ((key, indices), vector) in missing.into_iter().zip(vectors) {
-                    self.remember(&key, &vector);
+                    // The cache is shared by namespaces of other element types:
+                    // a vector the requesting one cannot search is not kept, and
+                    // its query is answered by the lexical lane.
+                    let usable = super::validate(&vector, self.config.dimensions, element).is_ok();
+                    if usable {
+                        self.remember(&key, &vector);
+                    }
                     for index in indices {
-                        work.vectors[index] = Ok(vector.clone());
+                        work.vectors[index] = if usable {
+                            Ok(vector.clone())
+                        } else {
+                            Err(EmbeddingUnavailable)
+                        };
                     }
                 }
             }

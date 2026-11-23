@@ -2,15 +2,38 @@ use super::*;
 
 #[test]
 fn vectors_must_be_finite_nonzero_and_profile_sized() {
-    assert!(validate(&[1.0; 1024], 1024).is_ok());
-    assert!(validate(&[0.0; 1024], 1024).is_err());
-    assert!(validate(&[f32::NAN; 1024], 1024).is_err());
-    assert!(validate(&[f32::INFINITY; 1024], 1024).is_err());
-    assert!(validate(&[1.0; 1023], 1024).is_err());
-    assert!(validate(&[f32::MAX; 1024], 1024).is_err());
-    assert!(validate(&[f32::MIN_POSITIVE; 1024], 1024).is_err());
-    assert!(validate(&[1.0; 512], 512).is_ok());
-    assert!(validate(&[1.0; 512], 1024).is_err());
+    assert!(validate(&[1.0; 1024], 1024, DenseElement::F16).is_ok());
+    assert!(validate(&[0.0; 1024], 1024, DenseElement::F16).is_err());
+    assert!(validate(&[f32::NAN; 1024], 1024, DenseElement::F16).is_err());
+    assert!(validate(&[f32::INFINITY; 1024], 1024, DenseElement::F16).is_err());
+    assert!(validate(&[1.0; 1023], 1024, DenseElement::F16).is_err());
+    assert!(validate(&[f32::MAX; 1024], 1024, DenseElement::F16).is_err());
+    assert!(validate(&[f32::MIN_POSITIVE; 1024], 1024, DenseElement::F16).is_err());
+    assert!(validate(&[1.0; 512], 512, DenseElement::F16).is_ok());
+    assert!(validate(&[1.0; 512], 1024, DenseElement::F16).is_err());
+}
+
+#[test]
+fn a_32_bit_vector_is_checked_as_sent_and_a_16_bit_one_after_rounding() {
+    let mut large = vec![1.0; 1024];
+    large[0] = 70_000.0;
+    assert!(validate(&large, 1024, DenseElement::F16).is_err());
+    assert!(validate(&large, 1024, DenseElement::F32).is_ok());
+    // Below the smallest 16-bit number, but not zero in 32 bits.
+    assert!(validate(&[f32::MIN_POSITIVE; 1024], 1024, DenseElement::F16).is_err());
+    // A norm that underflows in 32 bits would make a cosine divide by zero.
+    assert!(validate(&[f32::MIN_POSITIVE; 1024], 1024, DenseElement::F32).is_err());
+    assert!(validate(&[1e-20; 1024], 1024, DenseElement::F32).is_ok());
+    for bad in [f32::NAN, f32::INFINITY, 0.0] {
+        assert!(validate(&[bad; 1024], 1024, DenseElement::F32).is_err());
+    }
+    assert!(validate(&[1.0; 1023], 1024, DenseElement::F32).is_err());
+    // A number that could overflow in a distance is refused, whatever the type.
+    for element in [DenseElement::F16, DenseElement::F32] {
+        assert!(validate(&[1.5e6; 1024], 1024, element).is_err());
+        assert!(validate(&[-1e20; 1024], 1024, element).is_err());
+    }
+    assert!(validate(&[1e6; 8192], 8192, DenseElement::F32).is_ok());
 }
 
 #[test]

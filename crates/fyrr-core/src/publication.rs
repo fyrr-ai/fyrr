@@ -18,7 +18,10 @@ use serde::{Deserialize, Serialize};
 use crate::attributes::{
     AttributeIndexes, AttributeSchema, check_indexes, check_schema, has_connector_columns,
 };
-use crate::config::{CompositionSettings, NamespaceConfig, RerankSettings, RetrievalSettings};
+use crate::config::{
+    CompositionSettings, DenseElement, DenseMetric, NamespaceConfig, RerankSettings,
+    RetrievalSettings,
+};
 use crate::envelope::{ChunkProfileIdentity, EmbeddingIdentity, FileRef};
 use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
@@ -28,8 +31,10 @@ pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 1)
 /// The version of a manifest that records something an older build would
 /// ignore, and of a policy artifact that does: attribute index options, the
 /// typed columns of the metadata fields of connector documents (a build without
-/// them would read nulls), or, for a policy, the `read_only` switch (a build
-/// without it would write). An older build refuses them: it reads only its own
+/// them would read nulls), a vector metric or element type other than cosine
+/// and 16-bit floats (a build without them would search and write the wrong
+/// ones), or, for a policy, the `read_only` switch (a build without it would
+/// write). An older build refuses them: it reads only its own
 /// major, and this build reads both. A document with none of them keeps its
 /// version.
 pub const INDEXED_PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
@@ -48,6 +53,12 @@ pub struct NamespaceSettings {
     pub dense_rq_bits: u8,
     /// Target rows per partition of the vector index.
     pub dense_partition_rows: u32,
+    /// The distance of the vector index and the rescoring; absent: cosine.
+    #[serde(default, skip_serializing_if = "DenseMetric::is_default")]
+    pub dense_metric: DenseMetric,
+    /// The element type of the stored vectors; absent: 16-bit floats.
+    #[serde(default, skip_serializing_if = "DenseElement::is_default")]
+    pub dense_element: DenseElement,
     pub retrieval: RetrievalSettings,
     pub composition: CompositionSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,10 +81,13 @@ pub struct NamespaceSettings {
 
 impl NamespaceSettings {
     /// Whether an older build would misread a namespace with these settings:
-    /// it ignores index options and reads the connector columns as null.
+    /// it ignores index options, reads the connector columns as null and
+    /// searches and writes cosine and 16-bit floats.
     pub fn needs_newer_build(&self) -> bool {
         !self.attribute_indexes.is_empty()
             || (self.write_api.is_none() && has_connector_columns(&self.attributes))
+            || !self.dense_metric.is_default()
+            || !self.dense_element.is_default()
     }
 
     /// The bounds a configuration file is held to, so that no stored settings
@@ -91,6 +105,8 @@ impl NamespaceSettings {
             fts_ascii_folding: self.fts.ascii_folding,
             dense_rq_bits: self.dense_rq_bits,
             dense_partition_rows: self.dense_partition_rows,
+            dense_metric: self.dense_metric,
+            dense_element: self.dense_element,
             attributes: self.attributes.clone(),
             attribute_indexes: self.attribute_indexes.clone(),
             write_api: self.write_api.clone(),
@@ -173,7 +189,7 @@ impl Contract for PolicyArtifact {
             && self.schema_version.major != INDEXED_POLICY_CONTRACT_VERSION.major
         {
             return Err(
-                "attribute index options, connector columns and read_only need the indexed policy version"
+                "attribute index options, connector columns, a vector metric or element type and read_only need the indexed policy version"
                     .into(),
             );
         }
@@ -225,6 +241,12 @@ pub struct ContentManifest {
     pub dense_rq_bits: u8,
     /// Target rows per partition of the vector index.
     pub dense_partition_rows: u32,
+    /// The distance of the vector index and the rescoring; absent: cosine.
+    #[serde(default, skip_serializing_if = "DenseMetric::is_default")]
+    pub dense_metric: DenseMetric,
+    /// The element type of the stored vectors; absent: 16-bit floats.
+    #[serde(default, skip_serializing_if = "DenseElement::is_default")]
+    pub dense_element: DenseElement,
     /// Digest of the retrieval policy, including the result composition.
     pub retrieval_policy_digest: String,
     pub indexes: Vec<IndexIdentity>,
@@ -355,6 +377,8 @@ impl ContentManifest {
         self.embedding == settings.embedding
             && self.dense_rq_bits == settings.dense_rq_bits
             && self.dense_partition_rows == settings.dense_partition_rows
+            && self.dense_metric == settings.dense_metric
+            && self.dense_element == settings.dense_element
             && self.attributes == settings.attributes
     }
 }
@@ -468,10 +492,15 @@ impl Contract for ContentManifest {
         check_schema(&self.attributes).map_err(|error| format!("attributes: {error}"))?;
         check_indexes(&self.attributes, &self.attribute_indexes)
             .map_err(|error| format!("attribute_indexes: {error}"))?;
-        if !self.attribute_indexes.is_empty()
+        if (!self.attribute_indexes.is_empty()
+            || !self.dense_metric.is_default()
+            || !self.dense_element.is_default())
             && self.schema_version.major != INDEXED_PUBLICATION_CONTRACT_VERSION.major
         {
-            return Err("attribute index options need the indexed manifest version".into());
+            return Err(
+                "attribute index options and a vector metric or element type need the indexed manifest version"
+                    .into(),
+            );
         }
         if !self.indexes.iter().any(|index| index.column == "readers") {
             // A publication lacking the readers index is refused.

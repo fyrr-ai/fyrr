@@ -268,6 +268,7 @@ pub(crate) fn with_patch(
     patch: &fyrr_core::envelope::DocumentPatch,
     revision: &str,
     attributes: &fyrr_core::attributes::AttributeSchema,
+    element: DenseElement,
 ) -> Result<RecordBatch> {
     let mut batch = replace(
         batch,
@@ -292,14 +293,15 @@ pub(crate) fn with_patch(
             Arc::new(StringArray::from(vec![text.as_str()])),
         )?;
         if let Some(vector) = &patch.vector {
+            let dimensions =
+                u32::try_from(vector.len()).map_err(|_| WriterError::ChangedRowsInvalid)?;
             batch = replace(
                 &batch,
                 "vector",
-                Arc::new(
-                    FixedSizeListArray::from_iter_primitive::<Float16Type, _, _>(
-                        [Some(vector.iter().map(|v| Some(half::f16::from_f32(*v))))],
-                        i32::try_from(vector.len()).map_err(|_| WriterError::ChangedRowsInvalid)?,
-                    ),
+                crate::prepare::vector_column(
+                    element,
+                    dimensions,
+                    std::iter::once(vector.as_slice()),
                 ),
             )?;
         }
@@ -326,17 +328,16 @@ pub(crate) fn with_patch(
 }
 pub(crate) fn marker_row(
     dimensions: u32,
+    element: DenseElement,
     source: &str,
     root: &str,
     state: &DocumentState,
 ) -> Result<RecordBatch> {
-    let schema = crate::prepare::schema(dimensions);
-    let mut vector = vec![half::f16::ZERO; dimensions as usize];
-    vector[0] = half::f16::ONE;
-    let vector = FixedSizeListArray::from_iter_primitive::<Float16Type, _, _>(
-        [Some(vector.into_iter().map(Some))],
-        dimensions as i32,
-    );
+    let schema = crate::prepare::schema(dimensions, element);
+    // The first axis: a vector that is never zero.
+    let unit: Vec<f32> = (0..dimensions).map(|d| f32::from(d == 0)).collect();
+    let vector =
+        crate::prepare::vector_column(element, dimensions, std::iter::once(unit.as_slice()));
     let columns: Vec<ArrayRef> = schema
         .fields()
         .iter()
@@ -355,7 +356,7 @@ pub(crate) fn marker_row(
             ])),
             "searchable_text" => Arc::new(StringArray::from(vec![""])),
             "readers" => readers(&[]),
-            "vector" => Arc::new(vector.clone()),
+            "vector" => vector.clone(),
             _ => arrow_array::new_null_array(field.data_type(), 1),
         })
         .collect();
