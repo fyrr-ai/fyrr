@@ -1180,8 +1180,9 @@ fn change_schema_waiting<'a>(
     })
 }
 
-/// The attributes that the rows of the request name and the schema does not
-/// declare, each with the type of its first value (`resolve` infers it and
+/// The attributes that the upserts and patches of the request name and the schema
+/// does not declare (not `patch_where`: the committer may refuse that write after
+/// the schema is published), each with the type of its first value (`resolve` infers it and
 /// checks the name, the bound and the value). A row that is too large or not an
 /// object is left to the check of the rows. A `null` or an empty array infers
 /// nothing: the attribute stays undeclared.
@@ -1219,13 +1220,6 @@ fn inferred_attributes(
                 let value =
                     serde_json::from_str(value.get()).map_err(|_| ApiError(400, "body_invalid"))?;
                 infer(&mut schema, &name, &value)?;
-            }
-        }
-    }
-    if let Some(patch) = &body.patch_where {
-        for (name, value) in &patch.set {
-            if undeclared(&schema, name) {
-                infer(&mut schema, name, value)?;
             }
         }
     }

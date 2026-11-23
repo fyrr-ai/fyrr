@@ -778,7 +778,7 @@ async fn identity_write_api_deletes_and_patches_the_documents_that_match_a_filte
             "text_not_patchable",
         ),
         (
-            json!({"patch_where": {"filter": team("t2"), "set": {"colour": null}}}),
+            json!({"patch_where": {"filter": team("t2"), "set": {"colour": "red"}}}),
             "attribute_undeclared",
         ),
     ] {
@@ -3984,6 +3984,8 @@ async fn identity_write_api_infers_undeclared_attributes_on_storage() {
         )
     );
     assert_eq!(listing(&config, eq("grade", json!(4))), ["r1"]);
+    // A write by filter infers nothing: the committer may refuse it after the
+    // schema would be published.
     assert_eq!(
         writer
             .post(
@@ -3991,11 +3993,10 @@ async fn identity_write_api_infers_undeclared_attributes_on_storage() {
                 "dense-fixture",
                 &json!({"patch_where": {"filter": eq("colour", json!("red")), "set": {"size": "l"}}})
             )
-            .await
-            .0,
-        200
+            .await,
+        (400, json!({"error": "attribute_undeclared"}))
     );
-    assert_eq!(listing(&config, eq("size", json!("l"))), ["r2"]);
+    assert!(schema().await.get("size").is_none());
 
     // A name that is declared now keeps its type, and a value that has none to
     // infer from names an attribute that is still not declared.

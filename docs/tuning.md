@@ -242,7 +242,7 @@ with `attribute_limit_exceeded` (a 129th attribute), `attribute_name_invalid` or
 
 ### Inferred attributes
 
-A row written through the API to a namespace that has published may carry an
+An upsert or a patch written through the API to a namespace that has published may carry an
 attribute that the schema does not declare. The attribute takes the type of its
 first value: `string`, `int`, `float` or `bool`, or an array of one of them by
 its first element. A `datetime`, `uint`, `uuid` or `bytes` attribute is declared,
@@ -258,7 +258,8 @@ request that is refused for its rows declares nothing: the schema is changed aft
 for a name and the limit on a value hold for inferred attributes as they do for
 declared ones. A `null` or an empty array infers nothing: such a value for an
 attribute that is not declared is `400 attribute_undeclared`, as is any
-undeclared attribute written to a namespace that has no publication yet, whose
+undeclared attribute in `patch_where.set`, which infers nothing, or written to a
+namespace that has no publication yet, whose
 schema stays what its creating request declared. The filters, `order_by` and
 `include` of a query take an attribute only once it is declared.
 
