@@ -515,6 +515,36 @@ class FtsSettings(TypedDict):
     ascii_folding: bool
     with_position: bool
     """Positional postings, which a phrase condition needs."""
+    analyzer: NotRequired[Analyzer | None]
+    """The analyzer of `searchable_text`; present, the keys above are the
+    defaults and do not apply. Absent: the keys above.
+    """
+
+
+class Analyzer(TypedDict):
+    """The settings of a full-text index that decide which terms a text yields.
+    A text is lowercased always. Changing them on an attribute changes its index,
+    which the writer's maintenance rebuilds while the old one keeps serving; the
+    analyzer of `searchable_text` is fixed when the namespace is created.
+    """
+    tokenizer: Tokenizer
+    language: NotRequired[Language | None]
+    """Stems the terms and removes the stop words of the language. Absent: no
+    stemming, and no stop words but `stop_words`.
+    """
+    stop_words: NotRequired[list[str] | None]
+    """The stop words to remove instead of the language's: compared with a term
+    after it is lowercased and stemmed.
+    """
+    ascii_folding: bool
+    max_token_length: int
+    """Tokens longer than this, in UTF-8 bytes, are dropped."""
+    ngram_min_length: int
+    """Only with the `ngram` tokenizer."""
+    ngram_max_length: int
+    """Only with the `ngram` tokenizer; not below `ngram_min_length`."""
+    prefix_only: bool
+    """Only with the `ngram` tokenizer: only the n-grams that start a token."""
 
 
 class RetrievalSettings(TypedDict):
@@ -570,37 +600,12 @@ class AttributeIndex(TypedDict):
     full-text or an n-gram index when it asks for one. An attribute without an
     index is still filtered and sorted: by a scan of the table. The settings of
     the analyzer belong to the full-text index and are only set with it; an
-    index without one takes the namespace's `fts_*` settings.
+    index without one takes the namespace's text analyzer settings.
     """
     index: bool
     full_text: bool
     ngram: bool
     analyzer: NotRequired[Analyzer | None]
-
-
-class Analyzer(TypedDict):
-    """The settings of a full-text index that decide which terms a text yields.
-    A text is lowercased always. Changing them changes the index, which the
-    writer's maintenance rebuilds while the old one keeps serving.
-    """
-    tokenizer: Tokenizer
-    language: NotRequired[Language | None]
-    """Stems the terms and removes the stop words of the language. Absent: no
-    stemming, and no stop words but `stop_words`.
-    """
-    stop_words: NotRequired[list[str] | None]
-    """The stop words to remove instead of the language's: compared with a term
-    after it is lowercased and stemmed.
-    """
-    ascii_folding: bool
-    max_token_length: int
-    """Tokens longer than this, in UTF-8 bytes, are dropped."""
-    ngram_min_length: int
-    """Only with the `ngram` tokenizer."""
-    ngram_max_length: int
-    """Only with the `ngram` tokenizer; not below `ngram_min_length`."""
-    prefix_only: bool
-    """Only with the `ngram` tokenizer: only the n-grams that start a token."""
 
 
 VectorAttribute = TypedDict("VectorAttribute", {"dimensions": "int", "from": "NotRequired[str | None]", "multi": "NotRequired[bool]"})
@@ -897,6 +902,14 @@ ElementType: TypeAlias = Literal["string", "int", "float", "bool", "datetime", "
 EmbeddingApiStyle: TypeAlias = Literal["openai-compatible"]
 
 
+# The way a text is cut into tokens.
+Tokenizer: TypeAlias = Literal["simple", "whitespace", "unicode", "ngram"]
+
+
+# A language with a stemmer and a stop-word list.
+Language: TypeAlias = Literal["arabic", "danish", "dutch", "english", "finnish", "french", "german", "greek", "hungarian", "italian", "norwegian", "portuguese", "romanian", "russian", "spanish", "swedish", "tamil", "turkish"]
+
+
 # The distance of the dense index. Lance's IVF_RQ index supports all three on
 DenseMetric: TypeAlias = Literal["cosine", "squared_l2", "dot"]
 
@@ -907,14 +920,6 @@ DenseElement: TypeAlias = Literal["f16", "f32"]
 
 # The persisted copy of [`RescoreDepth`].
 RescoreSettings: TypeAlias = RescoreSettingsLegacy | RescoreSettingsFixed | RescoreSettingsAdaptive
-
-
-# The way a text is cut into tokens.
-Tokenizer: TypeAlias = Literal["simple", "whitespace", "unicode", "ngram"]
-
-
-# A language with a stemmer and a stop-word list.
-Language: TypeAlias = Literal["arabic", "danish", "dutch", "english", "finnish", "french", "german", "greek", "hungarian", "italian", "norwegian", "portuguese", "romanian", "russian", "spanish", "swedish", "tamil", "turkish"]
 
 
 # Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.

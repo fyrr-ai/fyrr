@@ -1296,6 +1296,44 @@ fn analyzer_flags_are_publication_settings_with_legacy_defaults() {
     }
 }
 #[test]
+fn the_text_analyzer_is_a_publication_setting_that_keeps_a_namespace_without_one_as_it_was() {
+    let legacy = parse(MINIMAL).unwrap().config.namespace;
+    assert!(legacy.fts_settings().analyzer.is_none());
+    // An absent analyzer is not in the policy, so the digest of a namespace
+    // that has none is what it was.
+    assert!(
+        !serde_json::to_string(&legacy.fts_settings())
+            .unwrap()
+            .contains("analyzer")
+    );
+    let table = "[namespace.analyzer]\ntokenizer = \"unicode\"\nlanguage = \"german\"\n";
+    let analyzed = parse(&format!("{MINIMAL}\n{table}")).unwrap();
+    assert!(errors(&analyzed).is_empty(), "{:?}", errors(&analyzed));
+    let namespace = analyzed.config.namespace;
+    assert_ne!(legacy.retrieval_digest(), namespace.retrieval_digest());
+    let analyzer = namespace.fts_settings().analyzer.unwrap();
+    assert_eq!(
+        analyzer.tokenizer,
+        fyrr_core::attributes::analyzer::Tokenizer::Unicode
+    );
+    // The analyzer replaces the `fts_*` keys and keeps the analyzer's bounds.
+    assert_error(
+        "[namespace.analyzer]\nlanguage = \"german\"\nmax_token_length = 0\n",
+        "namespace.analyzer",
+    );
+    assert_error(
+        "[namespace.analyzer]\nngram_min_length = 4\n",
+        "namespace.analyzer",
+    );
+    let mixed = MINIMAL.replace("[namespace]", "[namespace]\nfts_stem = true");
+    let mixed = parse(&format!("{mixed}\n{table}")).unwrap();
+    assert!(
+        errors(&mixed)
+            .iter()
+            .any(|error| error.contains("namespace.analyzer"))
+    );
+}
+#[test]
 fn dense_rq_bits_defaults_to_one_bit_and_is_bounded_without_changing_the_digest() {
     let legacy = parse(MINIMAL).unwrap().config.namespace;
     assert_eq!(legacy.dense_rq_bits, 1);

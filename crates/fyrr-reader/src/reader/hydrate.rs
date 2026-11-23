@@ -254,7 +254,7 @@ impl PreparedReader {
             }
             if fields.is_some_and(|fields| fields.highlights) {
                 let mut tokenizer = crate::fts_params(&self.config.namespace)
-                    .build()
+                    .and_then(|params| params.build())
                     .map_err(|_| ConfigurationInvalid)?;
                 for (hit, (query, row_id)) in rendered.hits.iter_mut().zip(queries) {
                     // A hit of another output has no text to read.

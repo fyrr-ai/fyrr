@@ -1,5 +1,6 @@
 //! Literal anchored excerpt passages: sentence windows over byte spans with
 //! standard-library Unicode classes; offsets and the cap count codepoints.
+use fyrr_core::attributes::analyzer::{Analyzer, Tokenizer};
 use fyrr_core::config::NamespaceConfig;
 use fyrr_core::limits::mcp::MAX_HIGHLIGHTS;
 use fyrr_core::mcp::Excerpt;
@@ -8,16 +9,53 @@ use lance_index::scalar::inverted::tokenizer::document_tokenizer::LanceTokenizer
 use std::collections::HashSet;
 
 /// The analyzer of the full-text index of `searchable_text`, which the writer
-/// builds the index with and a highlight matches with.
-pub fn fts_params(namespace: &NamespaceConfig) -> InvertedIndexParams {
-    InvertedIndexParams::default()
-        .base_tokenizer("simple".into())
-        .with_position(namespace.fts_positions)
-        .max_token_length(Some(namespace.fts_max_token_length as usize))
+/// builds the index with and a highlight matches with: the `analyzer` of the
+/// namespace, else its `fts_*` keys.
+pub fn fts_params(namespace: &NamespaceConfig) -> lance_core::Result<InvertedIndexParams> {
+    let params = match &namespace.analyzer {
+        Some(analyzer) => analyzer_params(analyzer)?,
+        None => InvertedIndexParams::default()
+            .base_tokenizer("simple".into())
+            .max_token_length(Some(namespace.fts_max_token_length as usize))
+            .lower_case(true)
+            .stem(namespace.fts_stem)
+            .remove_stop_words(namespace.fts_remove_stop_words)
+            .ascii_folding(namespace.fts_ascii_folding),
+    };
+    Ok(params.with_position(namespace.fts_positions))
+}
+
+/// The parameters of a full-text index with an analyzer, without positions. A
+/// language stems the terms and removes its stop words; a list of stop words
+/// replaces the language's.
+pub fn analyzer_params(analyzer: &Analyzer) -> lance_core::Result<InvertedIndexParams> {
+    let mut fts = InvertedIndexParams::default()
+        .base_tokenizer(
+            match analyzer.tokenizer {
+                Tokenizer::Simple => "simple",
+                Tokenizer::Whitespace => "whitespace",
+                Tokenizer::Unicode => "icu",
+                Tokenizer::Ngram => "ngram",
+            }
+            .into(),
+        )
+        .with_position(false)
+        .max_token_length(Some(analyzer.max_token_length as usize))
         .lower_case(true)
-        .stem(namespace.fts_stem)
-        .remove_stop_words(namespace.fts_remove_stop_words)
-        .ascii_folding(namespace.fts_ascii_folding)
+        .stem(analyzer.language.is_some())
+        .remove_stop_words(analyzer.language.is_some() || analyzer.stop_words.is_some())
+        .custom_stop_words(analyzer.stop_words.clone())
+        .ascii_folding(analyzer.ascii_folding);
+    if let Some(language) = analyzer.language {
+        fts = fts.language(&language.lance_name())?;
+    }
+    if analyzer.tokenizer == Tokenizer::Ngram {
+        fts = fts
+            .ngram_min_length(analyzer.ngram_min_length)
+            .ngram_max_length(analyzer.ngram_max_length)
+            .ngram_prefix_only(analyzer.prefix_only);
+    }
+    Ok(fts)
 }
 
 /// Sets the match ranges of `excerpt`, a passage of `record`: its tokens, as
@@ -45,9 +83,10 @@ pub(crate) fn highlight(
         };
         count
     };
-    // shortcut: the namespace's tokenizer is `simple`, which splits a token at
-    // the first character that is not alphanumeric; use the tokenizer of the
-    // index here when a namespace can choose another.
+    // shortcut: whether the passage cuts a token is judged as the `simple`
+    // tokenizer would, by alphanumeric characters; with another tokenizer of
+    // the namespace's analyzer a cut token may be marked, or one left out. Use
+    // the tokenizer of the index here when that costs highlights.
     let before = (excerpt.start > 0)
         .then(|| record.chars().nth(excerpt.start as usize - 1))
         .flatten();

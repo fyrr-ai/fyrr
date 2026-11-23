@@ -85,8 +85,9 @@ impl Language {
 }
 
 /// The settings of a full-text index that decide which terms a text yields.
-/// A text is lowercased always. Changing them changes the index, which the
-/// writer's maintenance rebuilds while the old one keeps serving.
+/// A text is lowercased always. Changing them on an attribute changes its index,
+/// which the writer's maintenance rebuilds while the old one keeps serving; the
+/// analyzer of `searchable_text` is fixed when the namespace is created.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Analyzer {

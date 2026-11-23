@@ -187,7 +187,7 @@ impl AttributeType {
 /// full-text or an n-gram index when it asks for one. An attribute without an
 /// index is still filtered and sorted: by a scan of the table. The settings of
 /// the analyzer belong to the full-text index and are only set with it; an
-/// index without one takes the namespace's `fts_*` settings.
+/// index without one takes the namespace's text analyzer settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttributeIndex {

@@ -89,11 +89,12 @@ impl NamespaceSettings {
     /// Whether an older build would misread a namespace with these settings:
     /// it ignores index options, reads the connector columns as null,
     /// searches and writes cosine and 16-bit floats, leaves out the columns
-    /// of the named vector attributes and builds the full-text index without
-    /// positions.
+    /// of the named vector attributes, builds the full-text index without
+    /// positions and cuts the text with the `fts_*` keys, not the analyzer.
     pub fn needs_newer_build(&self) -> bool {
         !self.attribute_indexes.is_empty()
             || self.fts.with_position
+            || self.fts.analyzer.is_some()
             || (self.write_api.is_none() && has_connector_columns(&self.attributes))
             || !self.dense_metric.is_default()
             || !self.dense_element.is_default()
@@ -114,6 +115,7 @@ impl NamespaceSettings {
             fts_remove_stop_words: self.fts.remove_stop_words,
             fts_ascii_folding: self.fts.ascii_folding,
             fts_positions: self.fts.with_position,
+            analyzer: self.fts.analyzer.clone(),
             dense_rq_bits: self.dense_rq_bits,
             dense_partition_rows: self.dense_partition_rows,
             dense_metric: self.dense_metric,
@@ -429,6 +431,10 @@ pub struct FtsSettings {
     pub ascii_folding: bool,
     /// Positional postings, which a phrase condition needs.
     pub with_position: bool,
+    /// The analyzer of `searchable_text`; present, the keys above are the
+    /// defaults and do not apply. Absent: the keys above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analyzer: Option<crate::attributes::analyzer::Analyzer>,
 }
 
 /// One index of the published version.
@@ -518,13 +524,14 @@ impl Contract for ContentManifest {
         .map_err(|error| format!("vectors: {error}"))?;
         if (!self.attribute_indexes.is_empty()
             || self.fts.with_position
+            || self.fts.analyzer.is_some()
             || !self.dense_metric.is_default()
             || !self.dense_element.is_default()
             || !self.vectors.is_empty())
             && self.schema_version.major != INDEXED_PUBLICATION_CONTRACT_VERSION.major
         {
             return Err(
-                "attribute index options, token positions, a vector metric or element type and vector attributes need the indexed manifest version"
+                "attribute index options, token positions, an analyzer of the text, a vector metric or element type and vector attributes need the indexed manifest version"
                     .into(),
             );
         }
