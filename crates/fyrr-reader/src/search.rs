@@ -634,8 +634,8 @@ fn attribute_columns_match(
 }
 
 /// Every named vector attribute is a nullable column of vectors of its
-/// dimensions in the namespace's element type, and its index, once built, is
-/// on that column.
+/// dimensions in the namespace's element type, or of lists of them when it is
+/// multi-vector, and its index, once built, is on that column.
 fn vector_columns_match(
     schema: &lance::datatypes::Schema,
     vectors: &fyrr_core::attributes::VectorAttributes,
@@ -650,9 +650,14 @@ fn vector_columns_match(
     vectors.iter().all(|(name, vector)| {
         schema.field(name).is_some_and(|field| {
             let index = fyrr_core::attributes::vector_index_name(name);
+            let stored = match field.data_type() {
+                DataType::List(inner) if vector.multi => inner.data_type().clone(),
+                other if !vector.multi => other,
+                _ => return false,
+            };
             field.nullable
                 && matches!(
-                    field.data_type(),
+                    stored,
                     DataType::FixedSizeList(inner, dimensions)
                         if u32::try_from(dimensions) == Ok(vector.dimensions)
                             && *inner.data_type() == item

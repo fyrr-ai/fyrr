@@ -185,6 +185,16 @@ fn vector_attributes_need_the_version_an_older_build_refuses() {
         manifest["vectors"] = bad.clone();
         assert!(parse::<ContentManifest>(&manifest).is_err(), "{bad}");
     }
+    // A multi-vector attribute is kept, and only the cosine metric offers it.
+    let mut multi = manifest.clone();
+    multi["vectors"] = json!({"tokens": {"dimensions": 16, "multi": true}});
+    let kept = parse::<ContentManifest>(&multi).unwrap();
+    assert_eq!(
+        serde_json::to_value(&kept).unwrap()["vectors"],
+        multi["vectors"]
+    );
+    multi["dense_metric"] = json!("dot");
+    assert!(parse::<ContentManifest>(&multi).is_err());
     let mut policy = policy;
     policy["settings"]["write_api"] = json!({});
     policy["settings"]["attributes"] = json!({"title": "string"});

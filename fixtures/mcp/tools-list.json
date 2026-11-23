@@ -39,6 +39,20 @@
               "type": "number"
             }
           },
+          "vectors": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "maxItems": 32,
+            "minItems": 1
+          },
           "exact": {
             "type": [
               "boolean",

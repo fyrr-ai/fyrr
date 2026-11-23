@@ -79,6 +79,7 @@ bound; it is what applies when the request names none.
 | `limits::schema::MAX_NAME_BYTES` | 128 | The name of a typed attribute. |
 | `limits::schema::MAX_VALUE_BYTES` | 4,096 | The value of a `string` attribute. |
 | `limits::schema::MAX_VECTOR_ATTRIBUTES` | 16 | Named vector attributes a namespace can declare. |
+| `limits::mcp::MAX_QUERY_VECTORS` | 32 | Query vectors of one search of a multi-vector attribute. |
 
 ## Limits outside the table
 

@@ -1088,3 +1088,167 @@ async fn all_terms_and_prefix_queries_return_the_true_top_10_on_three_segments_a
         starts.len()
     );
 }
+
+/// A `List<FixedSizeList>` column of rows that hold a different number of
+/// vectors is indexed with `IVF_RQ` under the cosine metric, and a query of
+/// several vectors is one multi-vector query: Lance scores each row by the sum,
+/// over the query vectors, of the best similarity to any vector of the row, and
+/// returns `_distance` as the number of query vectors less that sum, from the
+/// quantized codes and so not exactly. The planted rows hold the query vectors at known cosines, so the true order is
+/// known; the request predicate and a row mask, as the reader passes them,
+/// remove the rows they deny before the search ranks.
+#[tokio::test]
+async fn multivector_query_on_ivf_rq_ranks_the_true_rows_under_a_mask() {
+    use arrow_array::{
+        FixedSizeListArray,
+        builder::{FixedSizeListBuilder, Float32Builder, ListBuilder},
+        types::Float32Type,
+    };
+    use lance::index::vector::VectorIndexParams;
+    use lance_index::vector::{bq::RQBuildParams, ivf::builder::IvfBuildParams};
+    use lance_linalg::distance::DistanceType;
+    const DIM: i32 = 16;
+    const ROWS: i64 = 130;
+    let axis = |pairs: &[(usize, f32)]| {
+        let mut vector = vec![0.0_f32; DIM as usize];
+        for (at, value) in pairs {
+            vector[*at] = *value;
+        }
+        vector
+    };
+    // Rows 0 to 3 are planted with the two query vectors `e0` and `e1` at
+    // cosines (1, 1), (1, 0.9), (1, 0.5) and (0.6, 0.5), in this order of
+    // rank. The rest hold eight vectors near the axes 8 to 15, away from both.
+    let planted = [
+        [axis(&[(0, 1.0)]), axis(&[(1, 1.0)])],
+        [axis(&[(0, 1.0)]), axis(&[(1, 0.9), (2, 0.436)])],
+        [axis(&[(0, 1.0)]), axis(&[(1, 0.5), (2, 0.866)])],
+        [axis(&[(0, 0.6), (3, 0.8)]), axis(&[(1, 0.5), (2, 0.866)])],
+    ];
+    let mut lists = ListBuilder::new(FixedSizeListBuilder::new(Float32Builder::new(), DIM));
+    for id in 0..usize::try_from(ROWS).unwrap() {
+        let rows: Vec<Vec<f32>> = if let Some(row) = planted.get(id) {
+            row.to_vec()
+        } else {
+            (0..8)
+                .map(|j| {
+                    (0..DIM as usize)
+                        .map(|d| {
+                            let noise = ((id * 31 + j * 17 + d * 7) % 11) as f32 / 100.0;
+                            noise + f32::from(d == 8 + (id + j) % 8)
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+        for vector in rows {
+            lists.values().values().append_slice(&vector);
+            lists.values().append(true);
+        }
+        lists.append(true);
+    }
+    let vectors = lists.finish();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("vector", vectors.data_type().clone(), true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from_iter_values(0..ROWS)),
+            Arc::new(vectors),
+        ],
+    )
+    .unwrap();
+    let root = directory("multivector");
+    let mut dataset = Dataset::write(
+        RecordBatchIterator::new(vec![Ok(batch)], schema),
+        root.to_str().unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    dataset
+        .create_index(
+            &["vector"],
+            IndexType::Vector,
+            Some("vector_idx".into()),
+            &VectorIndexParams::with_ivf_rq_params(
+                DistanceType::Cosine,
+                IvfBuildParams {
+                    num_partitions: Some(2),
+                    sample_rate: 256,
+                    ..Default::default()
+                },
+                RQBuildParams::new(1),
+            ),
+            false,
+        )
+        .await
+        .unwrap();
+    let query = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+        [axis(&[(0, 1.0)]), axis(&[(1, 1.0)])]
+            .into_iter()
+            .map(|vector| Some(vector.into_iter().map(Some))),
+        DIM,
+    );
+    // The ids a multi-vector search returns, with its `_distance`, and whether
+    // the index answered it.
+    let search = |filter: Option<&'static str>, allowed: Option<RowAddrTreeMap>| {
+        let (dataset, query) = (&dataset, &query);
+        async move {
+            let mut scan = dataset.scan();
+            scan.prefilter(true).with_row_id();
+            if let Some(filter) = filter {
+                scan.filter(filter).unwrap();
+            }
+            if let Some(allowed) = allowed {
+                scan.with_row_id_prefilter(RowAddrMask::from_allowed(allowed));
+            }
+            scan.nearest("vector", query, 10).unwrap();
+            scan.nprobes(2);
+            let plan = scan.explain_plan(true).await.unwrap();
+            let batch = scan.try_into_batch().await.unwrap();
+            let ids: Vec<i64> = batch["id"]
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .values()
+                .to_vec();
+            let distances: Vec<f32> = batch["_distance"]
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .unwrap()
+                .values()
+                .to_vec();
+            (ids, distances, plan)
+        }
+    };
+    let (ids, distances, plan) = search(None, None).await;
+    assert!(plan.contains("MultivectorScoring"), "{plan}");
+    assert_eq!(ids[..4], [0, 1, 2, 3], "{ids:?} {distances:?}");
+    // The quantized codes score the rows, so the distances are not exact.
+    assert!(distances[..4].is_sorted_by(|a, b| a < b), "{distances:?}");
+    // The request predicate denies row 0, and the row mask denies row 1.
+    let rows = {
+        let mut scan = dataset.scan();
+        scan.project(&["id"]).unwrap().with_row_id();
+        let batch = scan.try_into_batch().await.unwrap();
+        let ids = batch["id"].as_any().downcast_ref::<Int64Array>().unwrap();
+        let rows = batch["_rowid"]
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        ids.values()
+            .iter()
+            .zip(rows.values())
+            .filter(|(id, _)| **id != 1)
+            .map(|(_, row)| *row)
+            .collect::<RowAddrTreeMap>()
+    };
+    let (ids, _, plan) = search(Some("id <> 0"), Some(rows)).await;
+    assert!(plan.contains("MultivectorScoring"), "{plan}");
+    assert_eq!(ids[..2], [2, 3], "{ids:?}");
+    assert!(!ids.contains(&0) && !ids.contains(&1), "{ids:?}");
+    std::fs::remove_dir_all(root).unwrap();
+}
