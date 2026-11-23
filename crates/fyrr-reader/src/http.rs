@@ -513,7 +513,7 @@ fn strong_read(arguments: &mut serde_json::Value) -> Result<bool, ReaderError> {
 }
 
 /// Takes `name` off the arguments of a JSON `query` call, where it is no
-/// argument of the tool: `fields`, `fusion` or `rerank`.
+/// argument of the tool: `fields`, `fusion`, `rerank` or `sub_queries`.
 fn query_member<T: serde::de::DeserializeOwned>(
     arguments: &mut serde_json::Value,
     name: &str,
@@ -655,27 +655,23 @@ async fn boundary_inner(state: HttpState, mut request: Request, next: Next) -> R
                     if strong_read(&mut arguments)? {
                         parts.extensions.insert(StrongRead);
                     }
-                    let members = if name == "search" {
-                        (
-                            query_member(&mut arguments, "fields")?,
-                            query_member(&mut arguments, "fusion")?,
-                            query_member(&mut arguments, "rerank")?,
-                        )
-                    } else {
-                        (None, None, None)
-                    };
-                    let mut call = if name == "aggregate" {
-                        crate::serve::ToolCall::aggregate(arguments)?
-                    } else {
-                        crate::serve::ToolCall::parse(name, arguments)?
-                    };
-                    if let crate::serve::ToolCall::Search(search) = &mut call {
-                        (search.fields, search.fusion, search.rerank) = members;
-                        if let Some(fields) = &search.fields {
-                            fields.validate().map_err(|_| InvalidArgument)?;
+                    match name {
+                        "aggregate" => crate::serve::ToolCall::aggregate(arguments),
+                        "search" => {
+                            let fields = query_member(&mut arguments, "fields")?;
+                            let fusion = query_member(&mut arguments, "fusion")?;
+                            let rerank = query_member(&mut arguments, "rerank")?;
+                            let sub_queries = query_member(&mut arguments, "sub_queries")?;
+                            crate::serve::ToolCall::query(
+                                arguments,
+                                fields,
+                                fusion,
+                                rerank,
+                                sub_queries,
+                            )
                         }
+                        _ => crate::serve::ToolCall::parse(name, arguments),
                     }
-                    Ok(call)
                 });
             (None, Some(call))
         } else {
