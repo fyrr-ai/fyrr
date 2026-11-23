@@ -257,6 +257,56 @@ curl https://fyrr.example.com/v1/namespaces/main/query \
   -d '{"query":"backup","fields":{"include":["price","vector"],"scores":true}}'
 ```
 
+## Sub-queries
+
+The `query` route takes one more member, `sub_queries`, that searches several
+ways in one request: 1 to 16 searches, each with its own filter, ranking and
+limit, instead of `query`, `queries` and `vector`. It is no argument of the
+tool: `fetch` and `/mcp` refuse it, and their output does not change. A request
+without it is answered as before.
+
+| Member of a sub-query | Effect |
+| --- | --- |
+| `query` | The text to search, 1 to 4096 bytes: a lexical search and a dense one by its embedding. |
+| `vector` | The query vector, of the namespace's dimensions, instead of an embedding of `query`. Alone it searches the dense lane only. A sub-query needs `query`, `vector` or both. |
+| `filter` | A [filter tree](mcp-tools.md#filters) for this sub-query. |
+| `limit` | Required: 1 to 75 hits. |
+
+The request's own filters (`sources`, `projects`, `filter` and the others)
+apply to every sub-query as well, joined with the sub-query's `filter` by
+`and`. Every sub-query reads the same published version, and its documents
+are admitted by the caller's permissions and then by its own filter, as those
+of any other request are: a filter cannot reach a document the caller may not
+read. Such a document is no hit, and no error.
+
+Without `fusion` the hits of the sub-queries follow one another in request
+order, each in its own order, and a hit's `query_index` names its sub-query. A
+document that several sub-queries find is a hit of each. The `limit`s add up
+to at most the namespace's `max_documents` (75 by default), else the request
+is `400 invalid_argument`. With [`fusion`](#fusion-and-reranking), the answer
+is one ranking of the documents of all sub-queries, and the request's `limit`
+(default 20, at most `max_documents`) is its length; the `limit` of a
+sub-query is then how many documents it gives to the ranking. `weights` has
+one number per sub-query.
+
+`output`, `text_hits`, `excerpt_chars`, `fields`, `rerank`, `deadline_ms` and
+`consistency` apply to the whole request, and the deadline to the sum of
+the sub-queries. `text_hits` counts per sub-query, or with `fusion` over the
+fused ranking. A sub-query without text is
+reranked only when `rerank.query` names the text. `query`, `queries`,
+`vector`, `exact`, `order`, `order_by` and `offset` are refused with
+`sub_queries`, and so is a request `limit` without `fusion`.
+
+```sh
+curl https://fyrr.example.com/v1/namespaces/main/query \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sub_queries":[
+         {"query":"backup policy","limit":5,
+          "filter":{"field":"project","op":"eq","value":"ops"}},
+         {"vector":[0.12,-0.40],"limit":3}]}'
+```
+
 ## Fusion and reranking
 
 The `query` route takes two more members that choose, for one request, what
@@ -264,10 +314,11 @@ the namespace's settings otherwise decide. Neither is an argument of the tool:
 `fetch` and `/mcp` refuse them, and their output does not change. A request
 without them is answered as before.
 
-`fusion` applies to a request with `queries`. Without it, the hits of the
-sub-queries are merged round-robin and `limit` counts the hits of each
-sub-query. With it, the answer is one ranking of the documents of all
-sub-queries, at most `limit` hits and at most `max_documents` documents long.
+`fusion` applies to a request with `queries` or [`sub_queries`](#sub-queries).
+Without it, the hits of the sub-queries of `queries` are merged round-robin and
+`limit` counts the hits of each sub-query. With it, the answer is one ranking of
+the documents of all sub-queries, at most `limit` hits and at most
+`max_documents` documents long.
 
 | Member | Effect |
 | --- | --- |

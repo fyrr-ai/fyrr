@@ -40,6 +40,16 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   an older build refuses it; a namespace with the defaults keeps its versions,
   files and retrieval-policy digest. See
   [tuning](docs/tuning.md#namespace-vector-index).
+||||||| dd0a3350
+
+- The `query` route of the HTTP API takes `sub_queries`: 1 to 16 searches in
+  one request, each with its own `filter`, ranking (`query` text, `vector`, or
+  both) and `limit`, read from one published version. Their hits follow one
+  another in request order, or `fusion` ranks the documents of all of them.
+  Every sub-query passes the same permissions as a single query, and the
+  memory, response size, `max_documents` and deadline bound the whole request.
+  It is no tool argument, so the MCP contract is unchanged. See
+  [Sub-queries](docs/http-api.md#sub-queries).
 - `writer namespace copy --to-config FILE` copies the configured namespace, as
   the one version it serves, into the `[storage]` of another configuration file
   (another bucket or region) under the same name. The copy is independent and

@@ -3825,6 +3825,218 @@ async fn identity_write_api_fuses_the_sub_queries_of_a_query_as_it_asks_on_stora
 
 #[tokio::test]
 #[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_answers_sub_queries_with_their_own_filters_limits_and_ranking_on_storage()
+ {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    // At most four documents in an answer that is not fused.
+    configure(
+        &config,
+        &address,
+        "[namespace.retrieval]\nmax_documents = 4",
+    );
+    let texts = ["alpha", "bravo", "charlie", "delta"];
+    embed(&root, &texts);
+    let writer = Writer::start(&config, &root, address).await;
+    // The read key reads `usr:x`: it may not read delta.
+    let tags = ["red", "blue", "red", "blue"];
+    let upserts: Vec<Value> = texts
+        .iter()
+        .zip(tags)
+        .enumerate()
+        .map(|(n, (text, tag))| {
+            let reader = if n == 3 { "usr:y" } else { "usr:x" };
+            json!({"id": &text[..1], "text": text, "tag": tag, "readers": [reader]})
+        })
+        .collect();
+    let settings = json!({"attributes": {"tag": "string"}});
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"settings": settings, "upserts": upserts})
+            )
+            .await
+            .0,
+        200
+    );
+    let reader = super::http_mcp::Reader::start_appended(&config, &root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    let tag = |value: &str| json!({"field": "tag", "op": "eq", "value": value});
+    let sub = |query: &str, filter: Value, limit: u32| {
+        let mut sub = json!({"query": query, "limit": limit});
+        if !filter.is_null() {
+            sub["filter"] = filter;
+        }
+        sub
+    };
+    let search = |subs: Vec<Value>| json!({"sub_queries": subs, "output": "metadata"});
+    let indexes = |answer: &(u16, Value)| -> Vec<u64> {
+        answer.1["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["query_index"].as_u64().unwrap())
+            .collect()
+    };
+
+    // Each sub-query has its own filter and limit, and its hits come one after
+    // the other in request order: two red documents, then the one blue
+    // document the key may read, though delta is blue too.
+    let answer = ask(
+        &reader,
+        search(vec![
+            sub("alpha", tag("red"), 2),
+            sub("bravo", tag("blue"), 1),
+        ]),
+    )
+    .await;
+    assert_eq!(roots(&answer), ["a", "c", "b"], "{}", answer.1);
+    assert_eq!(indexes(&answer), [0, 0, 1]);
+    // A document two sub-queries find is in both answers.
+    let answer = ask(
+        &reader,
+        search(vec![
+            sub("alpha", Value::Null, 1),
+            sub("alpha", tag("red"), 1),
+        ]),
+    )
+    .await;
+    assert_eq!(roots(&answer), ["a", "a"], "{}", answer.1);
+    assert_eq!(indexes(&answer), [0, 1]);
+    // The limit cuts a sub-query's hits.
+    let answer = ask(&reader, search(vec![sub("bravo", Value::Null, 2)])).await;
+    assert_eq!(roots(&answer).len(), 2, "{}", answer.1);
+    assert_eq!(roots(&answer)[0], "b");
+    // A sub-query ranks by vector alone, with the vector the fixture gives bravo.
+    let by_vector: Vec<f32> = (0..1024)
+        .map(|d| (((1 + 2000) * (d + 7)) as f32).sin())
+        .collect();
+    let answer = ask(
+        &reader,
+        search(vec![
+            sub("alpha", tag("red"), 1),
+            json!({"vector": by_vector, "filter": tag("blue"), "limit": 1}),
+        ]),
+    )
+    .await;
+    assert_eq!(roots(&answer), ["a", "b"], "{}", answer.1);
+    // The request's own filters bind every sub-query.
+    let mut body = search(vec![
+        sub("alpha", Value::Null, 2),
+        sub("bravo", tag("blue"), 2),
+    ]);
+    body["filter"] = tag("red");
+    let answer = ask(&reader, body).await;
+    assert_eq!(roots(&answer), ["a", "c"], "{}", answer.1);
+    assert_eq!(indexes(&answer), [0, 0]);
+
+    // A filter that selects only what the key may not read gives no hits and
+    // no error, next to a sub-query that gives some.
+    let denied = json!({"field": "root_id", "op": "eq", "value": "d"});
+    let answer = ask(
+        &reader,
+        search(vec![
+            sub("delta", denied.clone(), 2),
+            sub("delta", tag("blue"), 2),
+        ]),
+    )
+    .await;
+    assert_eq!(roots(&answer), ["b"], "{}", answer.1);
+    assert_eq!(indexes(&answer), [1]);
+    let answer = ask(&reader, search(vec![sub("delta", denied, 2)])).await;
+    assert!(roots(&answer).is_empty());
+
+    // With `fusion` one ranking of the documents of all sub-queries, each read
+    // through its own filter: the first hit is the one the heavier sub-query
+    // ranks first, and `limit` sizes the fused answer, not the sub-queries.
+    for (weights, first, query_index) in [([3.0, 1.0], "a", 0), ([1.0, 3.0], "b", 1)] {
+        let mut body = search(vec![
+            sub("alpha", tag("red"), 4),
+            sub("bravo", tag("blue"), 4),
+        ]);
+        body["fusion"] = json!({"method": "rrf", "weights": weights});
+        let fused = ask(&reader, body.clone()).await;
+        assert_eq!(roots(&fused).len(), 3, "{}", fused.1);
+        assert_eq!(fused.1["hits"][0]["root_id"], first);
+        assert_eq!(fused.1["hits"][0]["query_index"], query_index);
+        let score = fused.1["hits"][0]["score"].as_f64().unwrap();
+        assert!((score - 3.0 / 61.0).abs() < 1e-9, "{score}");
+        body["limit"] = json!(2);
+        assert_eq!(roots(&ask(&reader, body).await).len(), 2);
+    }
+    // Their limits may add up to more than `max_documents` once fused.
+    let mut body = search(vec![
+        sub("alpha", Value::Null, 3),
+        sub("bravo", Value::Null, 3),
+    ]);
+    body["fusion"] = json!({"method": "rrf"});
+    assert_eq!(roots(&ask(&reader, body).await).len(), 3);
+
+    // Refused: no sub-query, more than 16, a sub-query without a ranking, a
+    // limit out of range or missing, an unknown member or field, a limit sum
+    // above `max_documents` without fusion, and what sub-queries replace or
+    // do not take.
+    let one = || sub("alpha", Value::Null, 1);
+    let many: Vec<Value> = (0..17).map(|_| one()).collect();
+    for body in [
+        search(vec![]),
+        search(many),
+        search(vec![json!({"limit": 1})]),
+        search(vec![json!({"query": "alpha", "limit": 0})]),
+        search(vec![json!({"query": "alpha", "limit": 76})]),
+        search(vec![json!({"query": "alpha"})]),
+        search(vec![json!({"query": "alpha", "limit": 1, "exact": true})]),
+        search(vec![json!({"query": " ", "limit": 1})]),
+        search(vec![json!({"vector": [1.0], "limit": 1})]),
+        search(vec![sub(
+            "alpha",
+            json!({"field": "nope", "op": "eq", "value": 1}),
+            1,
+        )]),
+        search(vec![
+            sub("alpha", Value::Null, 3),
+            sub("bravo", Value::Null, 2),
+        ]),
+        {
+            let mut body = search(vec![one()]);
+            body["query"] = json!("alpha");
+            body
+        },
+        {
+            let mut body = search(vec![one()]);
+            body["queries"] = json!(["alpha", "bravo"]);
+            body
+        },
+        {
+            let mut body = search(vec![one()]);
+            body["exact"] = json!(true);
+            body
+        },
+        {
+            let mut body = search(vec![one()]);
+            body["limit"] = json!(2);
+            body
+        },
+        {
+            let mut body = search(vec![one(), one()]);
+            body["fusion"] = json!({"method": "rrf", "weights": [1.0]});
+            body
+        },
+    ] {
+        assert_eq!(
+            ask(&reader, body.clone()).await,
+            (400, json!({"error": "invalid_argument"})),
+            "{body}"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
 async fn identity_write_api_reranks_as_a_query_asks_within_the_spend_limit_on_storage() {
     let provider = super::rerank::Provider::open().await;
     let (config, root) = setup_on(Backend::Local);

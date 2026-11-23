@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 
 use crate::attributes::AttributeSchema;
 use crate::mcp::{
-    AggregateInput, FetchInput, Filter, Fusion, RerankChoice, ReturnFields, SearchInput,
+    AggregateInput, FetchInput, Filter, Fusion, RerankChoice, ReturnFields, SearchInput, SubQuery,
 };
 use crate::publication::NamespaceSettings;
 
@@ -27,7 +27,7 @@ pub enum Consistency {
 }
 
 /// The body of `POST /v1/namespaces/{namespace}/query`: the arguments of the
-/// `search` tool and four members that are no tool arguments.
+/// `search` tool and five members that are no tool arguments.
 #[derive(Debug, Clone, PartialEq, JsonSchema)]
 pub struct QueryRequest {
     #[schemars(flatten)]
@@ -40,6 +40,8 @@ pub struct QueryRequest {
     pub fusion: Option<Fusion>,
     /// Switches the configured reranker off, or names what it scores.
     pub rerank: Option<RerankChoice>,
+    /// 1-16 searches of their own, each with its filter, ranking and limit, instead of `query`, `queries` and `vector`.
+    pub sub_queries: Option<Vec<SubQuery>>,
 }
 
 /// The body of `POST /v1/namespaces/{namespace}/fetch`: the arguments of the

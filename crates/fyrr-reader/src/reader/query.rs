@@ -126,6 +126,11 @@ impl PreparedReader {
         mut telemetry: Telemetry,
         mut completion: Option<(&mut Option<DenseCompletion>, usize)>,
     ) -> Result<SearchOutput> {
+        if let Some(subs) = &args.sub_queries {
+            return self
+                .search_sub_queries(args, subs, embedding_deadline, telemetry)
+                .await;
+        }
         let k = args.effective_limit() as usize;
 
         let stage = Instant::now();
@@ -149,33 +154,17 @@ impl PreparedReader {
             super::dense::exact_scan_bound(self.selected_rows().max_len().unwrap_or(0))?;
         }
         if self.selected_rows().max_len().unwrap_or(0) == 0 {
-            let mut metadata = self.metadata(Telemetry::default());
-            metadata.degraded = vec![Lane::Dense];
-            return Ok(SearchOutput {
-                hits: Vec::new(),
-                truncated: None,
-                metadata,
-            });
+            return Ok(self.nothing_admitted());
         }
         // Reserve added batch scratch from the same pool as serving generations.
         // Default requests retain their existing claims and executable path.
         self.response_claim =
             if args.queries.is_some() && self.selected_rows().max_len().unwrap_or(0) != 0 {
-                let cfg = &self.config.namespace.retrieval;
-                let candidate_bytes =
-                    (std::mem::size_of::<Candidate>() + 3 * fyrr_core::limits::MAX_ID_BYTES) as u64;
-                // Expanded tie sets, decoded vectors and distance-kernel scratch.
-                let bytes = queries.len() as u64
-                        * (cfg.rescore_depth.maximum(cfg.dense_candidates) as u64
-                            * (candidate_bytes + u64::from(self.config.embedding.dimensions) * 8)
-                            + cfg.lexical_candidates as u64 * 1024u64.div_ceil(50)
-                                * candidate_bytes)
-                        // Includes hydrated metadata/text, typed/JSON copies and escaped
-                        // structured + textual MCP output through transport buffering.
-                        + (queries.len() * k).min(cfg.max_documents) as u64 * 1024 * 1024;
-                Some(Arc::new(
-                    self.preparation_budget.try_claim(bytes).ok_or(Busy)?,
-                ))
+                Some(self.batch_claim(
+                    queries.len(),
+                    self.config.namespace.retrieval.dense_candidates,
+                    queries.len() * k,
+                )?)
             } else {
                 None
             };
@@ -267,6 +256,220 @@ impl PreparedReader {
             telemetry,
         )
         .await
+    }
+
+    /// What a request answers when the caller may read nothing it selects.
+    fn nothing_admitted(&self) -> SearchOutput {
+        let mut metadata = self.metadata(Telemetry::default());
+        metadata.degraded = vec![Lane::Dense];
+        SearchOutput {
+            hits: Vec::new(),
+            truncated: None,
+            metadata,
+        }
+    }
+
+    /// The claim for a batch of `queries` retrievals that read up to
+    /// `dense_candidates` dense candidates each and answer with at most
+    /// `documents` documents.
+    fn batch_claim(
+        &self,
+        queries: usize,
+        dense_candidates: usize,
+        documents: usize,
+    ) -> Result<Arc<tokio::sync::OwnedSemaphorePermit>> {
+        let cfg = &self.config.namespace.retrieval;
+        let candidate_bytes =
+            (std::mem::size_of::<Candidate>() + 3 * fyrr_core::limits::MAX_ID_BYTES) as u64;
+        // Expanded tie sets, decoded vectors and distance-kernel scratch.
+        let bytes = queries as u64
+                * (cfg.rescore_depth.maximum(dense_candidates) as u64
+                    * (candidate_bytes + u64::from(self.config.embedding.dimensions) * 8)
+                    + cfg.lexical_candidates as u64 * 1024u64.div_ceil(50) * candidate_bytes)
+                // Includes hydrated metadata/text, typed/JSON copies and escaped
+                // structured + textual MCP output through transport buffering.
+                + documents.min(cfg.max_documents) as u64 * 1024 * 1024;
+        Ok(Arc::new(
+            self.preparation_budget.try_claim(bytes).ok_or(Busy)?,
+        ))
+    }
+
+    /// The `sub_queries` of a JSON `query` request, read from one pinned
+    /// publication: each is filtered, searched and ranked on its own, then
+    /// their answers follow one another in request order, or `fusion` ranks
+    /// the documents of all of them. One claim, one deadline, one reranking
+    /// and one hydration serve the whole request, and a sub-query's rows pass
+    /// the same admission as a single query's.
+    async fn search_sub_queries(
+        &mut self,
+        args: &SearchInput,
+        subs: &[SubQuery],
+        embedding_deadline: Instant,
+        mut telemetry: Telemetry,
+    ) -> Result<SearchOutput> {
+        self.authorization()?;
+        self.filter_selection = None;
+        // An unknown field or a mistyped value is refused even when nothing matches.
+        for sub in subs {
+            if let Some(tree) = args.sub_query_filter(sub) {
+                Self::filter_sql(&tree, &self.manifest.attributes)?;
+            }
+        }
+        let cfg = &self.config.namespace.retrieval;
+        let (dense_candidates, lexical_candidates, max_documents) = (
+            cfg.dense_candidates,
+            cfg.lexical_candidates,
+            cfg.max_documents,
+        );
+        // The answer holds the hits of every sub-query, or the fused documents.
+        let documents = if args.fusion.is_some() {
+            args.effective_limit() as usize
+        } else {
+            subs.iter().map(|sub| sub.limit as usize).sum()
+        };
+        // A sum of limits above what an answer may hold is refused, not cut.
+        if args.fusion.is_none() && documents > max_documents {
+            return Err(InvalidArgument);
+        }
+        for vector in subs.iter().filter_map(|sub| sub.vector.as_ref()) {
+            embedding::validate(vector, self.config.embedding.dimensions)
+                .map_err(|_| InvalidArgument)?;
+        }
+        if self.selected_rows().max_len().unwrap_or(0) == 0 {
+            return Ok(self.nothing_admitted());
+        }
+        let deepest = subs.iter().map(|sub| sub.limit as usize).max().unwrap_or(0);
+        self.response_claim =
+            Some(self.batch_claim(subs.len(), dense_candidates.max(deepest), documents)?);
+        // The vectors of the sub-queries that bring none, embedded together.
+        // shortcut: a missing embedding is awaited with the execution slot
+        // held, where a single query releases it; release it too if parked
+        // requests show up under load.
+        let start = Instant::now();
+        let runtime = self.query_embeddings.clone();
+        let texts: Vec<&str> = subs
+            .iter()
+            .filter(|sub| sub.vector.is_none())
+            .filter_map(|sub| sub.query.as_deref())
+            .collect();
+        let mut work = runtime.prepare(&texts)?;
+        runtime
+            .complete(&mut work, &texts, true, embedding_deadline)
+            .await;
+        telemetry
+            .stage_us
+            .insert("embedding".into(), micros(start.elapsed()));
+        let mut embedded = work.vectors.iter_mut();
+        let mut ranked = Vec::with_capacity(subs.len());
+        let mut embedding_failed = false;
+        for sub in subs {
+            let vector = match &sub.vector {
+                Some(vector) => Ok(vector.clone()),
+                None => embedded.next().map_or(Err(EmbeddingUnavailable), |vector| {
+                    std::mem::replace(vector, Err(EmbeddingUnavailable))
+                }),
+            };
+            embedding_failed |= vector.is_err();
+            let stage = Instant::now();
+            let counters = self.mirror.counters();
+            // The sub-query's own selection replaces the previous one.
+            self.filter_selection = None;
+            self.apply_filters(args.sub_query_filter(sub).as_ref())
+                .await?;
+            let predicate = self.request_predicate()?;
+            self.stage(&mut telemetry, "predicate", stage, counters);
+            let limit = sub.limit as usize;
+            let (mut dense, mut lexical) = (Vec::new(), Vec::new());
+            if self.selected_rows().max_len().unwrap_or(0) != 0 {
+                if let Some(text) = &sub.query {
+                    let start = Instant::now();
+                    let (rows, fetched, bound_hits) = Self::lexical(
+                        &self.dataset,
+                        self.selected_rows(),
+                        Self::fts_requires_sql_prefilter(&self.dataset, &self.indexes)
+                            .then_some(predicate.as_str()),
+                        text,
+                        lexical_candidates,
+                    )
+                    .await?;
+                    lexical = rows;
+                    telemetry.lexical_candidates_fetched += fetched;
+                    telemetry.lexical_tie_bound_hits += bound_hits;
+                    *telemetry.stage_us.entry("lexical".into()).or_default() +=
+                        micros(start.elapsed());
+                }
+                if let Ok(vector) = &vector {
+                    dense = self
+                        .dense(vector, dense_candidates.max(limit), false, &mut telemetry)
+                        .await?;
+                }
+            }
+            let stage = Instant::now();
+            let depth = crate::rerank::configured(self, args.rerank.as_ref())
+                .map_or(limit, |rerank| limit.max(rerank.candidates));
+            ranked.push(if sub.query.is_some() {
+                compose(
+                    dense,
+                    lexical,
+                    &self.config.namespace.composition,
+                    depth,
+                    &self.config.namespace.retrieval,
+                )?
+            } else {
+                crate::retrieval::dense_only(dense, depth)?
+            });
+            self.stage(&mut telemetry, "fusion", stage, self.mirror.counters());
+        }
+        // Every row was admitted by the caller's permissions and its own
+        // sub-query's filter; reranking and hydration check the permissions again.
+        self.filter_selection = None;
+        let mut degraded = if embedding_failed {
+            vec![Lane::Dense]
+        } else {
+            vec![]
+        };
+        // Nothing to rerank against without text; a request may supply it.
+        let scored_text = args.rerank.as_ref().and_then(|r| r.query.as_deref());
+        let texts: Vec<&str> = subs
+            .iter()
+            .map(|sub| scored_text.or(sub.query.as_deref()).unwrap_or(""))
+            .collect();
+        let unscored: Vec<_> = (0..subs.len())
+            .filter(|index| texts[*index].is_empty())
+            .map(|index| (index, std::mem::take(&mut ranked[index])))
+            .collect();
+        if crate::rerank::rerank(
+            self,
+            &texts,
+            &mut ranked,
+            args.rerank.as_ref(),
+            &mut telemetry,
+        )
+        .await?
+        {
+            degraded.push(Lane::Rerank);
+        }
+        for (index, rows) in unscored {
+            ranked[index] = rows;
+        }
+        // Rows past a sub-query's limit, kept for the reranker, never reach the fusion.
+        for (sub, rows) in subs.iter().zip(&mut ranked) {
+            rows.truncate(sub.limit as usize);
+        }
+        let queries: Vec<&str> = subs
+            .iter()
+            .map(|sub| sub.query.as_deref().unwrap_or(""))
+            .collect();
+        let selected = select_hits(
+            ranked,
+            &queries,
+            args,
+            args.output.unwrap_or(OutputMode::Excerpt),
+            args.effective_limit() as usize,
+            max_documents,
+        );
+        self.hydrate_selected(selected, degraded, telemetry, None, args.fields.as_ref())
+            .await
     }
 
     async fn lexical_batch(

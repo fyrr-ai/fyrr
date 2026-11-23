@@ -40,6 +40,28 @@ impl ToolCall {
         }
         Ok(call)
     }
+    /// The call of the JSON `query` route: the `search` arguments and the
+    /// members that are no tool arguments, validated together.
+    pub(crate) fn query(
+        args: Value,
+        fields: Option<fyrr_core::mcp::ReturnFields>,
+        fusion: Option<fyrr_core::mcp::Fusion>,
+        rerank: Option<fyrr_core::mcp::RerankChoice>,
+        sub_queries: Option<Vec<fyrr_core::mcp::SubQuery>>,
+    ) -> Result<Self> {
+        let mut search: SearchInput = serde_json::from_value(args).map_err(|_| InvalidArgument)?;
+        (
+            search.fields,
+            search.fusion,
+            search.rerank,
+            search.sub_queries,
+        ) = (fields, fusion, rerank, sub_queries);
+        search.validate().map_err(|_| InvalidArgument)?;
+        if let Some(fields) = &search.fields {
+            fields.validate().map_err(|_| InvalidArgument)?;
+        }
+        Ok(Self::Search(Box::new(search)))
+    }
     /// The call of the JSON `aggregate` route.
     pub(crate) fn aggregate(args: Value) -> Result<Self> {
         let args: AggregateInput = serde_json::from_value(args).map_err(|_| InvalidArgument)?;
