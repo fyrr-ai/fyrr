@@ -13,6 +13,7 @@ use fyrr_core::http_api::{
     WriteRequest, WriteResponse,
 };
 use fyrr_core::identity::{ApiKeysArtifact, IdentityArtifact};
+use fyrr_core::limits::mcp::MAX_HIGHLIGHTS;
 use fyrr_core::mcp::{
     AggregateOutput, FetchOutput, MCP_CONTRACT_VERSION, SearchOutput, ToolError, error_codes,
     tools_list,
@@ -220,6 +221,30 @@ fn openapi() -> Value {
             "SearchHit already describes {name}: drop it from this list"
         );
     }
+    let excerpt = schemas
+        .get_mut("Excerpt")
+        .and_then(|excerpt| excerpt.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+        .expect("Excerpt has properties");
+    assert!(
+        excerpt
+            .insert(
+                "highlights".into(),
+                json!({
+                    "type": "array",
+                    "maxItems": MAX_HIGHLIGHTS,
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "integer", "format": "uint32", "minimum": 0},
+                        "minItems": 2,
+                        "maxItems": 2,
+                    },
+                    "description": "With `fields.highlights`: the `[start, end)` ranges of the tokens that match the query, as the index analyzer cuts and reduces them, in the codepoints `start` and `end` count.",
+                }),
+            )
+            .is_none(),
+        "Excerpt already describes highlights: drop it from this list"
+    );
     json!({
         "openapi": "3.1.0",
         "info": {

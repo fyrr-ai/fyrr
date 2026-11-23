@@ -242,6 +242,7 @@ returns what it returned before.
 | `include` | The typed [attributes](tuning.md#namespaceattributes) to return: one or more names. `vector` names the row's vector, returned as an array of numbers. A name the namespace does not declare is `400 invalid_argument`. |
 | `exclude` | Returns every typed attribute except these; `[]` returns all of them. A name the namespace does not declare is ignored. The vector is never returned by `exclude`. |
 | `scores` | `true` adds `lexical_score`, the raw lexical score, and `distance`, the raw vector distance, next to the final `score`. A hit the lexical lane did not find has no `lexical_score`; one the dense lane did not find has no `distance`. |
+| `highlights` | `true` adds `highlights` to the excerpt of each hit: the `[start, end)` ranges of its tokens that match the query, in the same Unicode codepoints of the record as the excerpt's `start` and `end`. A token matches when the namespace's full-text analyzer (`fts_stem`, `fts_ascii_folding` and the other `fts_*` settings) reduces it to a token of the query, so a stemmed match is marked. An excerpt marks at most 100 ranges; one with no match has `[]`. Only the excerpt output has them; the excerpt itself is chosen as before. |
 
 `include` and `exclude` are exclusive. The attributes of a hit are the
 object `attributes`, with the JSON type of each attribute (`datetime` as an

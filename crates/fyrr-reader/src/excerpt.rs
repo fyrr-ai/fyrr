@@ -1,6 +1,68 @@
 //! Literal anchored excerpt passages: sentence windows over byte spans with
 //! standard-library Unicode classes; offsets and the cap count codepoints.
+use fyrr_core::config::NamespaceConfig;
+use fyrr_core::limits::mcp::MAX_HIGHLIGHTS;
 use fyrr_core::mcp::Excerpt;
+use lance_index::scalar::InvertedIndexParams;
+use lance_index::scalar::inverted::tokenizer::document_tokenizer::LanceTokenizer;
+use std::collections::HashSet;
+
+/// The analyzer of the full-text index of `searchable_text`, which the writer
+/// builds the index with and a highlight matches with.
+pub fn fts_params(namespace: &NamespaceConfig) -> InvertedIndexParams {
+    InvertedIndexParams::default()
+        .base_tokenizer("simple".into())
+        .with_position(false)
+        .max_token_length(Some(namespace.fts_max_token_length as usize))
+        .lower_case(true)
+        .stem(namespace.fts_stem)
+        .remove_stop_words(namespace.fts_remove_stop_words)
+        .ascii_folding(namespace.fts_ascii_folding)
+}
+
+/// Sets the match ranges of `excerpt`: its tokens, as the index analyzer cuts
+/// and reduces them, that equal a token of `query`. Selection stays literal.
+/// shortcut: it still looks for the query's literal words, so a passage with
+/// only a stemmed match may not be the one chosen; make selection use the
+/// analyzer when that costs hits.
+pub(crate) fn highlight(
+    tokenizer: &mut dyn LanceTokenizer,
+    query: &str,
+    excerpt: &mut Excerpt,
+) -> Result<(), String> {
+    let mut terms = HashSet::new();
+    let mut stream = tokenizer.token_stream_for_search(query);
+    while let Some(token) = stream.try_next()? {
+        terms.insert(token.text.clone());
+    }
+    drop(stream);
+    let codepoints = |text: &str| {
+        let Ok(count) = u32::try_from(text.chars().count()) else {
+            unreachable!("admitted excerpt codepoint bound");
+        };
+        count
+    };
+    let mut ranges = Vec::new();
+    let mut stream = tokenizer.token_stream_for_doc(&excerpt.text);
+    while ranges.len() < MAX_HIGHLIGHTS
+        && let Some(token) = stream.try_next()?
+    {
+        if !terms.contains(&token.text) {
+            continue;
+        }
+        let (Some(head), Some(body)) = (
+            excerpt.text.get(..token.offset_from),
+            excerpt.text.get(token.offset_from..token.offset_to),
+        ) else {
+            continue;
+        };
+        let start = excerpt.start + codepoints(head);
+        ranges.push([start, start + codepoints(body)]);
+    }
+    drop(stream);
+    excerpt.highlights = Some(ranges);
+    Ok(())
+}
 
 fn word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
@@ -198,6 +260,7 @@ fn passage(text: &str, start: usize, end: usize, start_cp: usize, end_cp: usize)
         text: text[start..end].to_owned(),
         start: start_cp,
         end: end_cp,
+        highlights: None,
     }
 }
 
