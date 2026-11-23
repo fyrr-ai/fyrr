@@ -5355,11 +5355,11 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:clients/python/tests/test_retries.py::test_a_change_is_retried_only_when_it_was_not_sent_or_refused_unread[write]": {
+      "python:clients/python/tests/test_retries.py::test_a_change_is_retried_only_when_it_was_not_sent[write]": {
         "tier": "quick",
         "seconds": null
       },
-      "python:clients/python/tests/test_retries.py::test_a_change_is_retried_only_when_it_was_not_sent_or_refused_unread[delete]": {
+      "python:clients/python/tests/test_retries.py::test_a_change_is_retried_only_when_it_was_not_sent[delete]": {
         "tier": "quick",
         "seconds": null
       },
@@ -5368,6 +5368,14 @@
         "seconds": null
       },
       "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[answer0-delete]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[answer1-write]": {
+        "tier": "quick",
+        "seconds": null
+      },
+      "python:clients/python/tests/test_retries.py::test_a_change_that_may_have_applied_is_not_retried[answer1-delete]": {
         "tier": "quick",
         "seconds": null
       },
@@ -5419,15 +5427,15 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:clients/python/tests/test_retries.py::test_iter_namespaces_narrows_the_prefix_above_the_listing_limit": {
+      "python:clients/python/tests/test_retries.py::test_iter_namespaces_lists_each_first_character_above_the_listing_limit": {
         "tier": "quick",
         "seconds": null
       },
-      "python:clients/python/tests/test_retries.py::test_iter_namespaces_follows_a_key_limited_to_a_namespace_prefix": {
+      "python:clients/python/tests/test_retries.py::test_iter_namespaces_raises_when_a_first_character_still_overflows": {
         "tier": "quick",
         "seconds": null
       },
-      "python:clients/python/tests/test_retries.py::test_the_async_iter_namespaces_narrows_alike": {
+      "python:clients/python/tests/test_retries.py::test_the_async_iter_namespaces_lists_and_raises_alike": {
         "tier": "quick",
         "seconds": null
       }

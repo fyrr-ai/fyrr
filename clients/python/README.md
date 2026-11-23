@@ -91,7 +91,8 @@ whether they applied. A repeat could overwrite a later change to the same ids,
 evaluate `delete_where` against newer documents, or delete a namespace that was
 created again ([guarantees](https://github.com/fyrr-ai/fyrr/blob/main/docs/guarantees.md)).
 They are retried only when the request provably did not reach the server (the
-connection could not be made) or the server refused it unread (`429`). A write
+connection could not be made): no answer, not even a `429` from a proxy, proves
+that it was not applied. A write
 that sets `conditions` is **never** retried. Every other failure, a timeout or
 `503 outcome_unknown` included, is raised for the caller to decide.
 
@@ -108,10 +109,10 @@ narrows the scan.
 
 `iter_namespaces` lists the names that start with `prefix` in name order. The
 API answers `too_many_namespaces` above 10,000 names; the helper then lists
-each narrower prefix instead, from the prefix you give (a key limited to a
-`namespace_prefix` sees only names that start with it). A name that is itself a
-prefix the helper splits is not yielded then, because no narrower prefix lists
-it; read it with `describe_namespace`.
+each first character instead. If one of those lists is still too long, the
+helper raises that error rather than return a list that may lack a name: the
+name equal to a prefix is listed by no narrower prefix. Give a longer `prefix`
+to list a part of the names.
 
 ## Tests
 

@@ -100,22 +100,22 @@ def test_a_read_is_retried_after_a_connection_error_and_a_timeout(slept: list[fl
 
 
 @pytest.mark.parametrize("send", [write, delete])
-def test_a_change_is_retried_only_when_it_was_not_sent_or_refused_unread(
+def test_a_change_is_retried_only_when_it_was_not_sent(
     send: Callable[[Client], object], slept: list[float]
 ) -> None:
-    script = Script(
-        refused,
-        connect_timeout,
-        httpx.Response(429, headers={"Retry-After": "1"}, json={"error": "rate_limited"}),
-        ok(),
-    )
+    script = Script(refused, connect_timeout, ok())
     send(client(script))
-    assert len(script.requests) == 4 and len(slept) == 3
+    assert len(script.requests) == 3 and len(slept) == 2
 
 
 @pytest.mark.parametrize("send", [write, delete])
 @pytest.mark.parametrize(
-    "answer", [httpx.Response(503, json={"error": "outcome_unknown"}), timed_out]
+    "answer",
+    [
+        httpx.Response(503, json={"error": "outcome_unknown"}),
+        httpx.Response(429, headers={"Retry-After": "1"}, json={"error": "rate_limited"}),
+        timed_out,
+    ],
 )
 def test_a_change_that_may_have_applied_is_not_retried(
     send: Callable[[Client], object],
@@ -191,17 +191,21 @@ def test_a_conditional_write_is_never_retried(slept: list[float]) -> None:
 
 def test_the_async_client_retries_alike(slept: list[float]) -> None:
     script = Script(
-        httpx.Response(429, headers={"Retry-After": "3"}, json={"error": "rate_limited"}), ok()
+        httpx.Response(429, headers={"Retry-After": "3"}, json={"error": "rate_limited"}),
+        refused,
+        found(),
     )
 
     async def scenario() -> None:
         async with AsyncClient(
             READER, WRITER, api_key="k", transport=httpx.MockTransport(script)
         ) as asynchronous:
+            assert (await asynchronous.query("ns", {}))["hits"] == []
+            script.answers[:0] = [refused, ok()]
             assert (await asynchronous.write("ns", WRITE))["upserted"] == 1
 
     asyncio.run(scenario())
-    assert slept == [3.0]
+    assert len(slept) == 3 and slept[0] == 3.0
 
 
 def test_a_key_is_stripped_checked_and_never_shown() -> None:
@@ -234,9 +238,8 @@ def test_a_missing_writer_url_is_refused() -> None:
         Client(READER, api_key="k").write("ns", WRITE)
 
 
-def test_iter_namespaces_narrows_the_prefix_above_the_listing_limit() -> None:
-    existing = ["a1", "a2", "a3", "ab", "b", "c"]
-    limit = 3  # the server's is 10,000
+def listing_server(existing: list[str], limit: int) -> Callable[[httpx.Request], httpx.Response]:
+    """A server that lists names by prefix and refuses more than `limit` (10,000 in fyrr)."""
 
     def server(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/namespaces"  # the listing alone, no report
@@ -245,35 +248,32 @@ def test_iter_namespaces_narrows_the_prefix_above_the_listing_limit() -> None:
             return httpx.Response(400, json={"error": "too_many_namespaces"})
         return httpx.Response(200, json={"namespaces": matching})
 
-    with Client(READER, api_key="k", transport=httpx.MockTransport(server)) as listing:
+    return server
+
+
+def test_iter_namespaces_lists_each_first_character_above_the_listing_limit() -> None:
+    existing = ["a1", "a2", "a3", "ab", "b", "c"]
+    transport = httpx.MockTransport(listing_server(existing, limit=4))
+    with Client(READER, api_key="k", transport=transport) as listing:
         assert list(listing.iter_namespaces()) == existing
 
 
-def test_iter_namespaces_follows_a_key_limited_to_a_namespace_prefix() -> None:
-    # The server lists names that start with the key's prefix and the requested one.
-    existing = ["acme-1", "acme-2", "acme-3", "acme-4"]
-
-    def server(request: httpx.Request) -> httpx.Response:
-        asked = request.url.params.get("prefix", "")
-        matching = [n for n in existing if n.startswith(asked)]
-        if len(matching) > 2:
-            return httpx.Response(400, json={"error": "too_many_namespaces"})
-        return httpx.Response(200, json={"namespaces": matching})
-
-    with Client(READER, api_key="k", transport=httpx.MockTransport(server)) as listing:
-        assert list(listing.iter_namespaces("acme")) == existing
+def test_iter_namespaces_raises_when_a_first_character_still_overflows() -> None:
+    # The name "a" would be listed by no narrower prefix: no complete list can be promised.
+    transport = httpx.MockTransport(listing_server(["a", "a1", "a2", "b"], limit=2))
+    with Client(READER, api_key="k", transport=transport) as listing:
+        with pytest.raises(FyrrError) as raised:
+            list(listing.iter_namespaces())
+        assert raised.value.code == "too_many_namespaces"
+        assert list(listing.iter_namespaces("a1")) == ["a1"]
 
 
-def test_the_async_iter_namespaces_narrows_alike() -> None:
-    def server(request: httpx.Request) -> httpx.Response:
-        if request.url.params.get("prefix"):
-            return httpx.Response(200, json={"namespaces": ["x1"]})
-        return httpx.Response(400, json={"error": "too_many_namespaces"})
-
-    async def scenario() -> list[str]:
-        transport = httpx.MockTransport(server)
+def test_the_async_iter_namespaces_lists_and_raises_alike() -> None:
+    async def names(existing: list[str], limit: int) -> list[str]:
+        transport = httpx.MockTransport(listing_server(existing, limit))
         async with AsyncClient(READER, api_key="k", transport=transport) as listing:
             return [name async for name in listing.iter_namespaces()]
 
-    # Every first character lists "x1": a stand-in server that is enough to see the narrowing.
-    assert asyncio.run(scenario()) == ["x1"] * 36
+    assert asyncio.run(names(["a1", "b", "c"], limit=2)) == ["a1", "b", "c"]
+    with pytest.raises(FyrrError):
+        asyncio.run(names(["a", "a1", "a2", "b"], limit=2))

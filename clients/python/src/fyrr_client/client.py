@@ -38,8 +38,8 @@ RETRY_STATUSES = frozenset({408, 429, *range(500, 600)})
 UNSENT = (httpx.ConnectError, httpx.ConnectTimeout)
 # A request that is wrong, not unlucky: a repeat fails the same way.
 PERMANENT = (httpx.UnsupportedProtocol, httpx.LocalProtocolError)
-# Name order of the characters of a namespace name, which cannot start with "-".
-NAME_CHARACTERS = "-0123456789abcdefghijklmnopqrstuvwxyz"
+# The first character of a namespace name, in name order.
+FIRST_CHARACTERS = "0123456789abcdefghijklmnopqrstuvwxyz"
 
 
 class FyrrError(Exception):
@@ -58,8 +58,7 @@ class _Request(NamedTuple):
     body: Any
     params: dict[str, str] | None
     # "all": a read, repeated on every failure the policy names. "unsent": a change, repeated
-    # only when it provably did not reach the server (a failed connect) or the server refused
-    # it unread (429). "none": never repeated.
+    # only when it provably did not reach the server (a failed connect). "none": never repeated.
     retry: str
 
 
@@ -114,8 +113,9 @@ class _Base:
             if request.retry == "unsent" and not isinstance(error, UNSENT):
                 return None
         else:
-            allowed = {429} if request.retry == "unsent" else RETRY_STATUSES
-            if response.status_code not in allowed:
+            # An answer to a change does not prove that it was not applied: a proxy may send
+            # a 429 or a 5xx after the writer took the request. Only a read repeats on one.
+            if request.retry != "all" or response.status_code not in RETRY_STATUSES:
                 return None
         if response is not None and (wait := _retry_after(response)) is not None:
             # A longer wait is the caller's to make: raise the answer, which has `retry_after`.
@@ -206,10 +206,6 @@ def _scan_request(
     return request
 
 
-def _child_prefixes(prefix: str) -> list[str]:
-    return [prefix + c for c in NAME_CHARACTERS if prefix or c != "-"]
-
-
 class Client(_Base):
     """A synchronous client. Reuses its connections; close it, or use it in a `with` block.
 
@@ -219,9 +215,9 @@ class Client(_Base):
 
     A read is retried on a connection error and on 408, 429 and 5xx, up to `max_retries` times,
     after `backoff` seconds doubling each time (jittered), or after the server's `Retry-After`.
-    A write and a namespace deletion may have applied when the answer is lost, so they are
-    retried only when the connection failed (nothing was sent) or on 429 (refused unread); a
-    write with `conditions` is never retried. Raise or repeat those yourself.
+    A write and a namespace deletion may have applied whatever the answer says, so they are
+    retried only when the connection failed (nothing was sent); a write with `conditions` is
+    never retried. Raise or repeat those yourself.
     """
 
     def __init__(
@@ -275,20 +271,23 @@ class Client(_Base):
         )
 
     def iter_namespaces(self, prefix: str = "") -> Iterator[str]:
-        """Every name that starts with `prefix`, in name order, however many there are."""
+        """Every name that starts with `prefix`, in name order.
+
+        With more than 10,000 names the API refuses the listing, and the helper lists each first
+        character instead. A prefix that still matches more than 10,000 names raises the
+        server's `too_many_namespaces`: the name equal to that prefix could not be told from
+        its longer neighbours, so no complete list can be promised. Pass a longer `prefix`.
+        """
         try:
             names = self.list_namespaces(prefix)["namespaces"]
         except FyrrError as error:
-            if error.code != "too_many_namespaces":
+            if error.code != "too_many_namespaces" or prefix:
                 raise
         else:
             yield from names
             return
-        # More than 10,000 names: list the narrower prefixes.
-        # shortcut: a name that equals a prefix split here is not listed by any narrower prefix
-        # and is not yielded; the API has no way to ask for it. Read it with describe_namespace.
-        for child in _child_prefixes(prefix):
-            yield from self.iter_namespaces(child)
+        for first in FIRST_CHARACTERS:
+            yield from self.iter_namespaces(first)
 
     def describe_namespace(self, namespace: str) -> NamespaceReport:
         path = _namespace_path(namespace)
@@ -384,14 +383,14 @@ class AsyncClient(_Base):
         try:
             names = (await self.list_namespaces(prefix))["namespaces"]
         except FyrrError as error:
-            if error.code != "too_many_namespaces":
+            if error.code != "too_many_namespaces" or prefix:
                 raise
         else:
             for name in names:
                 yield name
             return
-        for child in _child_prefixes(prefix):
-            async for name in self.iter_namespaces(child):
+        for first in FIRST_CHARACTERS:
+            async for name in self.iter_namespaces(first):
                 yield name
 
     async def describe_namespace(self, namespace: str) -> NamespaceReport:
