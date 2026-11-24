@@ -45,6 +45,7 @@ means a fresh process and an empty reader mirror.
   scripts/bench-scale --binary target/release/fyrr --rows 3000000 --keep
   scripts/bench-scale --reuse DIR                  # queries only, same namespace
   scripts/bench-scale --reuse DIR --maintain --maintain-step 1h
+  scripts/bench-scale --rows 600000 --request-rows 10000 --no-maintain --keep   # 60 segments, unmerged
 
 `--keep` leaves the namespace under `--dir` (about 6 GB at 3,000,000 rows) and
 prints its directory on stderr first. Delete it when done. The script writes a
@@ -82,7 +83,7 @@ TOKENS = 24  # words per row
 QUERY_TOKENS = 3
 MIN_QUERY_RANK = 10  # the most common words are left out of a query
 SCALE = 1000  # the numbers of a vector have 3 decimals
-WRITE_ROWS = 50000
+WRITE_ROWS = 50000  # rows of a write request, unless `--request-rows`
 K = 10
 NAMESPACE = "bench-scale"
 SUBJECTS = (("all", 1), ("p10", 10), ("p1", 100))  # name, one row in N is readable
@@ -191,8 +192,8 @@ def tree_bytes(path):
 class Corpus:
     """Rows and queries from a seed: the same call returns the same numbers."""
 
-    def __init__(self, rows, dimensions):
-        self.rows, self.dimensions = rows, dimensions
+    def __init__(self, rows, dimensions, request_rows):
+        self.rows, self.dimensions, self.request_rows = rows, dimensions, request_rows
         self.centres = np.random.default_rng(1729).standard_normal(
             (CLUSTERS, dimensions), dtype=np.float32
         )
@@ -219,7 +220,7 @@ class Corpus:
         return vectors, tokens
 
     def body(self, first):
-        count = min(WRITE_ROWS, self.rows - first)
+        count = min(self.request_rows, self.rows - first)
         vectors, tokens = self.chunk(first, count)
         table, words, offset = self.table, self.words, self.reach
         rows = []
@@ -241,8 +242,8 @@ class Corpus:
     def stored(self):
         """Every row as the unit vector of its 16-bit values, as float32."""
         out = np.empty((self.rows, self.dimensions), dtype=np.float32)
-        for first in range(0, self.rows, WRITE_ROWS):
-            count = min(WRITE_ROWS, self.rows - first)
+        for first in range(0, self.rows, self.request_rows):
+            count = min(self.request_rows, self.rows - first)
             vectors, _tokens = self.chunk(first, count)
             half = (vectors.astype(np.float32) / SCALE).astype(np.float16)
             half = half.astype(np.float32)
@@ -353,8 +354,16 @@ def write_config(
     memory_max_bytes,
     keys,
     step_max_duration,
+    rescore=None,
+    nprobes=None,
 ):
     config = work / "fyrr.toml"
+    retrieval = (
+        ""
+        if not rescore
+        else '[namespace.retrieval]\nrescore_depth = { mode = "fixed", candidates = %d }\n'
+        % rescore
+    )
     maintenance = (
         ""
         if not step_max_duration
@@ -374,13 +383,13 @@ def write_config(
         "dimensions = %d\n"
         '[identity]\nhashing_key = { env = "FYRR_BENCH_HASHING_KEY" }\n'
         'encryption_key = { env = "FYRR_BENCH_ENCRYPTION_KEY" }\n'
-        "[namespace.write_api]\nopen = false\n"
+        "[namespace.write_api]\nopen = false\n%s"
         "[[identity.api_keys]]\nname = 'writer'\nkey = { env = 'FYRR_BENCH_WRITE_KEY' }\n"
         "roles = ['write']\n"
         "%s%s"
         "[writer]\nthreads = 2\n%s"
         "[writer.serve.admin]\nlisten = '%s'\noperator_token = { env = 'FYRR_BENCH_OPERATOR' }\n"
-        "[reader]\nmirror_path = '%s'\nmirror_max_bytes = 8589934592\n"
+        "[reader]\nmirror_path = '%s'\nmirror_max_bytes = 8589934592\n%s"
         "memory_max_bytes = '%dMiB'\n"
         "[reader.http]\nlisten = '%s'\npublic_url = 'http://%s/mcp'\nmetrics_listen = '%s'\n"
         "user_requests_per_minute = 1000000\ngroup_requests_per_minute = 1000000\n"
@@ -388,11 +397,13 @@ def write_config(
             NAMESPACE,
             work / "storage",
             keys["dimensions"],
+            retrieval,
             subjects,
             admin,
             maintenance,
             writer_address,
             work / "mirror",
+            "" if not nprobes else "nprobes = %d\n" % nprobes,
             memory_max_bytes // 2**20,
             reader_address,
             reader_address,
@@ -423,6 +434,8 @@ class Run:
             memory_max_bytes,
             self.secrets,
             self.args.maintain_step,
+            self.args.rescore,
+            self.args.nprobes,
         )
         return [self.binary, "--config", str(config)]
 
@@ -536,7 +549,7 @@ def load(run, corpus):
     path = "/v1/namespaces/%s/documents" % NAMESPACE
     batches, started = [], time.perf_counter()
     try:
-        for first in range(0, corpus.rows, WRITE_ROWS):
+        for first in range(0, corpus.rows, corpus.request_rows):
             body = corpus.body(first)
             for _ in range(600):
                 try:
@@ -575,7 +588,7 @@ def load(run, corpus):
     # With the defaults. A run that fails, or that still merged something, is
     # followed by another, up to MAINTAIN_RUNS: what a periodic operator does.
     runs = []
-    for attempt in range(MAINTAIN_RUNS):
+    for attempt in range(0 if args.no_maintain else MAINTAIN_RUNS):
         runs.append(maintain_run(run))
         runs[-1]["status_after"] = run.status()
         if runs[-1]["exit_code"] == 0 and not any(
@@ -585,7 +598,7 @@ def load(run, corpus):
     after = run.status()
     return {
         "rows": corpus.rows,
-        "request_rows": WRITE_ROWS,
+        "request_rows": corpus.request_rows,
         "writes": batches,
         "write_seconds_sum": round(sum(b["seconds"] for b in batches), 1),
         "wall_seconds_with_generation": round(elapsed, 1),
@@ -899,6 +912,12 @@ def main():
     parser.add_argument("--rows", type=int, default=3000000)
     parser.add_argument("--dimensions", type=int, default=128)
     parser.add_argument(
+        "--request-rows",
+        type=int,
+        default=WRITE_ROWS,
+        help="rows of a write request: each is a publication and a vector segment",
+    )
+    parser.add_argument(
         "--queries", type=int, default=100, help="warm queries per case"
     )
     parser.add_argument(
@@ -924,10 +943,21 @@ def main():
         action="store_true",
         help="with --reuse: run `writer maintain` again, once, before the queries",
     )
+    parser.add_argument(
+        "--no-maintain",
+        action="store_true",
+        help="leave the namespace as the writes left it: no `writer maintain` after the load",
+    )
+    parser.add_argument(
+        "--rescore",
+        type=int,
+        help="namespace.retrieval.rescore_depth: fixed candidates (default: legacy, 4 x 75 = 300)",
+    )
+    parser.add_argument("--nprobes", type=int, help="reader.nprobes (default 256)")
     parser.add_argument("--reuse", help="a kept namespace: skip the load")
     args = parser.parse_args()
-    if args.rows % WRITE_ROWS and args.rows > WRITE_ROWS:
-        raise SystemExit("--rows must be a multiple of %d" % WRITE_ROWS)
+    if not args.reuse and args.rows % args.request_rows and args.rows > args.request_rows:
+        raise SystemExit("--rows must be a multiple of %d" % args.request_rows)
 
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     loaded = None
@@ -938,6 +968,7 @@ def main():
         secrets_ = json.loads((work / "secrets.json").read_text())
         loaded = json.loads((work / "load.json").read_text())
         args.dimensions, args.rows = secrets_["dimensions"], loaded["rows"]
+        args.request_rows = loaded["request_rows"]
     else:
         # Local storage refuses a path with a symlink in it.
         work = Path(tempfile.mkdtemp(prefix="scale-", dir=args.dir)).resolve()
@@ -956,7 +987,7 @@ def main():
         secrets_ = {"dimensions": args.dimensions, "env": env}
         (work / "secrets.json").write_text(json.dumps(secrets_))
         (work / "secrets.json").chmod(0o600)
-    corpus = Corpus(args.rows, args.dimensions)
+    corpus = Corpus(args.rows, args.dimensions, args.request_rows)
     run = Run(args, work, secrets_)
     report = {}
     try:
