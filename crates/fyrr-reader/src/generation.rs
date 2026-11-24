@@ -208,6 +208,22 @@ impl PreparationReservation {
             .and_then(|kib| kib.checked_mul(1024))
             .ok_or(StorageUnavailable)
     }
+    /// The files of the vector index segments of a publication.
+    pub(crate) fn vector_index_files(
+        manifest: &ContentManifest,
+    ) -> impl Iterator<Item = &fyrr_core::envelope::FileRef> {
+        manifest.files.iter().filter(|f| {
+            f.path
+                .strip_prefix("_indices/")
+                .and_then(|path| path.split_once('/'))
+                .is_some_and(|(uuid, _)| {
+                    manifest.indexes.iter().any(|index| {
+                        index.name == fyrr_core::layout::NamespaceLayout::VECTOR_INDEX
+                            && index.uuid == uuid
+                    })
+                })
+        })
+    }
     pub(crate) fn warm_estimate(
         config: &Config,
         manifest: &ContentManifest,
@@ -220,20 +236,7 @@ impl PreparationReservation {
         // Preparation additionally
         // allows decoded index input and transient partition buffers; large
         // rewrites deliberately choose cold rather than speculate about fit.
-        let index_bytes = manifest
-            .files
-            .iter()
-            .filter(|f| {
-                f.path
-                    .strip_prefix("_indices/")
-                    .and_then(|path| path.split_once('/'))
-                    .is_some_and(|(uuid, _)| {
-                        manifest.indexes.iter().any(|index| {
-                            index.name == fyrr_core::layout::NamespaceLayout::VECTOR_INDEX
-                                && index.uuid == uuid
-                        })
-                    })
-            })
+        let index_bytes = Self::vector_index_files(manifest)
             .fold(0u64, |sum, f| sum.saturating_add(f.size_bytes));
         // Lance's native RaBitQ root owns a scratch pool per compute thread,
         // including dimension-sized lookup buffers even for tiny delta indexes.

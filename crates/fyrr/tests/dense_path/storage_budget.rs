@@ -1407,3 +1407,108 @@ async fn a_sync_worker_reads_no_more_manifests_as_the_history_grows() {
     assert_eq!(kept[0].location, named[0].location);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// Rows per request, requests, and rows per partition of the merged-index
+/// fixture below. Eight bits of a 1,024-dimension vector make a file of
+/// partitions of 6,000 rows larger than the 2 MiB below which the mirror copies
+/// a file whole, and partitions of 32 rows make it many of them, as 3,000,000
+/// rows of 550 are.
+const MERGED_REQUEST_ROWS: usize = 2000;
+const MERGED_REQUESTS: usize = 3;
+const MERGED_PARTITION_ROWS: usize = 32;
+/// Storage requests of the first dense query of a reader on an empty mirror
+/// after `writer maintain` merged the vector index of
+/// `MERGED_REQUESTS * MERGED_REQUEST_ROWS` rows: opening, its admission and
+/// the query itself. Measured: 94, 74 of them pages of the data files. The
+/// two files of the vector index come whole, a request each, so the number does
+/// not grow with the partitions; paged, the admission read every partition of
+/// the merged index in small ranged requests (534 here, 26,000 at 3,000,000
+/// rows).
+const MERGED_COLD_DENSE_BUDGET: usize = 110;
+
+/// A row near one of eight directions, a little apart from its neighbors.
+fn merged_vector(row: usize) -> Vec<f32> {
+    (0..1024)
+        .map(|d| {
+            (((row % 8 + 1) * (d + 3)) as f32 * 0.37).sin()
+                + 0.15 * (((row + 1) * (d + 11)) as f32 * 0.73).sin()
+        })
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+#[allow(clippy::print_stderr)]
+async fn a_cold_dense_query_on_a_merged_vector_index_stays_within_its_storage_request_budget() {
+    use super::write_api::{WRITE_KEY, Writer, configure};
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "");
+    // The index files fit the mirror whole.
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        text.replace(
+            "mirror_max_bytes = 16777216",
+            "mirror_max_bytes = 268435456",
+        ),
+    )
+    .unwrap();
+    let writer = Writer::start(&config, &root, address).await;
+    for request in 0..MERGED_REQUESTS {
+        let rows: Vec<Value> = (0..MERGED_REQUEST_ROWS)
+            .map(|n| {
+                let row = request * MERGED_REQUEST_ROWS + n;
+                json!({"id": format!("r{row}"), "text": format!("alpha{row}"),
+                       "readers": ["grp:allow"], "vector": merged_vector(row)})
+            })
+            .collect();
+        let mut body = json!({"upserts": rows});
+        if request == 0 {
+            body["settings"] = json!({
+                "dense_partition_rows": MERGED_PARTITION_ROWS,
+                "dense_rq_bits": 8,
+            });
+        }
+        assert_eq!(
+            writer.post(WRITE_KEY, "dense-fixture", &body).await,
+            (200, json!({"upserted": MERGED_REQUEST_ROWS, "deleted": 0}))
+        );
+    }
+    drop(writer);
+    let segments = || async {
+        super::coordination::publication(&config)
+            .await
+            .1
+            .indexes
+            .iter()
+            .filter(|index| index.name == "vector_idx")
+            .count()
+    };
+    assert_eq!(segments().await, MERGED_REQUESTS, "one segment per request");
+    success(&config, &["writer", "maintain"]);
+    assert_eq!(segments().await, 1, "maintenance merged the segments");
+
+    // A reader process that opens and answers one search runs no background
+    // warming, so the files it reads are those of the query and its admission.
+    root.embedding.insert_both("zzprobe", merged_vector(5));
+    let log = root.join("cold-query.jsonl");
+    let search = super::coordination::worker_command(&config)
+        .args(["reader", "search", "zzprobe", "--limit", "10"])
+        .env("FYRR_OBJECT_STORE_DIAGNOSTICS", &log)
+        .output()
+        .unwrap();
+    assert!(search.status.success(), "{}", report(&search));
+    let answer: Value = serde_json::from_slice(&search.stdout).unwrap();
+    assert_eq!(answer["hits"].as_array().unwrap().len(), 10, "{answer}");
+    assert_eq!(answer["hits"][0]["root_id"], "r5", "{answer}");
+    let requests = std::fs::read_to_string(&log).unwrap().lines().count();
+    eprintln!(
+        "budget cold dense query on a merged vector index: {requests} requests (budget {MERGED_COLD_DENSE_BUDGET})"
+    );
+    assert!(
+        requests <= MERGED_COLD_DENSE_BUDGET,
+        "the first dense query made {requests} storage requests, budget {MERGED_COLD_DENSE_BUDGET}"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}

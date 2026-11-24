@@ -1878,6 +1878,10 @@
         "tier": "full",
         "seconds": 600.0
       },
+      "full:fyrr:test:dense_path/storage_budget::a_cold_dense_query_on_a_merged_vector_index_stays_within_its_storage_request_budget": {
+        "tier": "full",
+        "seconds": 120.0
+      },
       "full:fyrr:test:dense_path/storage_budget::a_sync_worker_reads_no_more_manifests_as_the_history_grows": {
         "tier": "full",
         "seconds": 60.0
