@@ -62,7 +62,11 @@ async-trait = "0.1"
 lance-index = { version = "=14.0.3", default-features = false }
 lance-core = { version = "=14.0.3", default-features = false }
 lance-io = { version = "=14.0.3", default-features = false }
-lance-linalg = { version = "=14.0.3", default-features = false }
+# `fp16kernels`: the SIMD kernels of 16-bit vectors. Without it every distance of an `f16`
+# column is scalar, which makes IVF training and re-encoding about 2x slower at 3M rows (#319).
+# Lance picks AVX-512 FP16, AVX2 (needs FMA and F16C) or NEON (needs FP16) at run time and
+# falls back to scalar code, so the binary needs no particular CPU.
+lance-linalg = { version = "=14.0.3", default-features = false, features = ["fp16kernels"] }
 httpdate = "=1.0.3"
 hmac = "0.13"
 constant_time_eq = "=0.6.1"
