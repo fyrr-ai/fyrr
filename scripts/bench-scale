@@ -45,6 +45,7 @@ means a fresh process and an empty reader mirror.
   scripts/bench-scale --binary target/release/fyrr --rows 3000000 --keep
   scripts/bench-scale --reuse DIR                  # queries only, same namespace
   scripts/bench-scale --reuse DIR --maintain --maintain-step 1h
+  scripts/bench-scale --rows 600000 --request-rows 10000 --no-maintain --keep   # 60 segments, unmerged
 
 `--keep` leaves the namespace under `--dir` (about 6 GB at 3,000,000 rows) and
 prints its directory on stderr first. Delete it when done. The script writes a
@@ -82,7 +83,7 @@ TOKENS = 24  # words per row
 QUERY_TOKENS = 3
 MIN_QUERY_RANK = 10  # the most common words are left out of a query
 SCALE = 1000  # the numbers of a vector have 3 decimals
-WRITE_ROWS = 50000
+WRITE_ROWS = 50000  # rows of a write request, unless `--request-rows`
 K = 10
 NAMESPACE = "bench-scale"
 SUBJECTS = (("all", 1), ("p10", 10), ("p1", 100))  # name, one row in N is readable
@@ -190,8 +191,8 @@ def tree_bytes(path):
 class Corpus:
     """Rows and queries from a seed: the same call returns the same numbers."""
 
-    def __init__(self, rows, dimensions):
-        self.rows, self.dimensions = rows, dimensions
+    def __init__(self, rows, dimensions, request_rows):
+        self.rows, self.dimensions, self.request_rows = rows, dimensions, request_rows
         self.centres = np.random.default_rng(1729).standard_normal(
             (CLUSTERS, dimensions), dtype=np.float32
         )
@@ -218,7 +219,7 @@ class Corpus:
         return vectors, tokens
 
     def body(self, first):
-        count = min(WRITE_ROWS, self.rows - first)
+        count = min(self.request_rows, self.rows - first)
         vectors, tokens = self.chunk(first, count)
         table, words, offset = self.table, self.words, self.reach
         rows = []
@@ -240,8 +241,8 @@ class Corpus:
     def stored(self):
         """Every row as the unit vector of its 16-bit values, as float32."""
         out = np.empty((self.rows, self.dimensions), dtype=np.float32)
-        for first in range(0, self.rows, WRITE_ROWS):
-            count = min(WRITE_ROWS, self.rows - first)
+        for first in range(0, self.rows, self.request_rows):
+            count = min(self.request_rows, self.rows - first)
             vectors, _tokens = self.chunk(first, count)
             half = (vectors.astype(np.float32) / SCALE).astype(np.float16)
             half = half.astype(np.float32)
@@ -532,7 +533,7 @@ def load(run, corpus):
     path = "/v1/namespaces/%s/documents" % NAMESPACE
     batches, started = [], time.perf_counter()
     try:
-        for first in range(0, corpus.rows, WRITE_ROWS):
+        for first in range(0, corpus.rows, corpus.request_rows):
             body = corpus.body(first)
             for _ in range(600):
                 try:
@@ -569,14 +570,14 @@ def load(run, corpus):
     elapsed = time.perf_counter() - started
     before = run.status()
     runs = []
-    for attempt in range(2):
+    for attempt in range(0 if args.no_maintain else 2):
         runs.append(maintain_run(run))
         if runs[-1]["exit_code"] == 0:
             break
     after = run.status()
     return {
         "rows": corpus.rows,
-        "request_rows": WRITE_ROWS,
+        "request_rows": corpus.request_rows,
         "writes": batches,
         "write_seconds_sum": round(sum(b["seconds"] for b in batches), 1),
         "wall_seconds_with_generation": round(elapsed, 1),
@@ -886,6 +887,12 @@ def main():
     parser.add_argument("--rows", type=int, default=3000000)
     parser.add_argument("--dimensions", type=int, default=128)
     parser.add_argument(
+        "--request-rows",
+        type=int,
+        default=WRITE_ROWS,
+        help="rows of a write request: each is a publication and a vector segment",
+    )
+    parser.add_argument(
         "--queries", type=int, default=100, help="warm queries per case"
     )
     parser.add_argument(
@@ -911,10 +918,15 @@ def main():
         action="store_true",
         help="with --reuse: run `writer maintain` again, once, before the queries",
     )
+    parser.add_argument(
+        "--no-maintain",
+        action="store_true",
+        help="leave the namespace as the writes left it: no `writer maintain` after the load",
+    )
     parser.add_argument("--reuse", help="a kept namespace: skip the load")
     args = parser.parse_args()
-    if args.rows % WRITE_ROWS and args.rows > WRITE_ROWS:
-        raise SystemExit("--rows must be a multiple of %d" % WRITE_ROWS)
+    if not args.reuse and args.rows % args.request_rows and args.rows > args.request_rows:
+        raise SystemExit("--rows must be a multiple of %d" % args.request_rows)
 
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     loaded = None
@@ -925,6 +937,7 @@ def main():
         secrets_ = json.loads((work / "secrets.json").read_text())
         loaded = json.loads((work / "load.json").read_text())
         args.dimensions, args.rows = secrets_["dimensions"], loaded["rows"]
+        args.request_rows = loaded["request_rows"]
     else:
         # Local storage refuses a path with a symlink in it.
         work = Path(tempfile.mkdtemp(prefix="scale-", dir=args.dir)).resolve()
@@ -943,7 +956,7 @@ def main():
         secrets_ = {"dimensions": args.dimensions, "env": env}
         (work / "secrets.json").write_text(json.dumps(secrets_))
         (work / "secrets.json").chmod(0o600)
-    corpus = Corpus(args.rows, args.dimensions)
+    corpus = Corpus(args.rows, args.dimensions, args.request_rows)
     run = Run(args, work, secrets_)
     report = {}
     try:
