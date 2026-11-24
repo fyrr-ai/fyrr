@@ -1099,6 +1099,22 @@
         "tier": "quick",
         "seconds": 0.05
       },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::prewarm_if_room_copies_whole_only_what_fits_and_asks_nothing_otherwise": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::prewarm_if_room_keeps_no_object_of_another_size": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::prewarm_if_room_reserves_room_for_one_of_two_files_that_do_not_fit_together": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_complete_copy_of_another_length_than_the_manifest_is_removed_not_served": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::pages_of_a_new_map_generation_are_verified_again": {
         "tier": "quick",
         "seconds": 0.05
@@ -1889,6 +1905,10 @@
       "full:fyrr:test:dense_path/storage_budget::a_writer_service_maintains_the_namespace_it_serves": {
         "tier": "full",
         "seconds": 600.0
+      },
+      "full:fyrr:test:dense_path/storage_budget::a_cold_dense_query_on_a_merged_vector_index_stays_within_its_storage_request_budget": {
+        "tier": "full",
+        "seconds": 120.0
       },
       "full:fyrr:test:dense_path/storage_budget::a_sync_worker_reads_no_more_manifests_as_the_history_grows": {
         "tier": "full",

@@ -108,14 +108,21 @@ source purge reap abandoned multipart uploads (`name#digits`), protecting
 files younger than ten minutes and namespaces with live source leases;
 purge plans count them as `namespace_staging_files`. Reader mirrors copy immutable files and preserve
 in-flight pins across purge, bounded by `reader.mirror_max_bytes`. A data
-file of up to 2 MiB is copied whole on its first read when the mirror has
-room for it. A read of part of a
-larger data file fetches only the 4 KiB pages it lacks and keeps them with
-a digest of each page, checked once per process before the page is served.
-A response whose size differs from the content manifest, or whose ETag
-differs from the first, fails that read and drops the kept pages. Index,
-version and transaction files are copied whole, and warming replaces pages
-with the complete file. The size of a pinned data file comes from the
+or index file of up to 2 MiB is copied whole on its first read when the
+mirror has room for it. A read of part of a
+larger data or index file fetches only the 4 KiB pages it lacks and keeps
+them with a digest of each page, checked once per process before the page is
+served. A response whose size differs from the content manifest, or whose
+ETag differs from the first, fails that read and drops the kept pages.
+Version and transaction files are copied whole, and warming replaces pages
+with the complete file. Building the subject's partition map walks every
+partition of the vector index, so it first copies the files of the vector
+index whole, one request each instead of several per partition, when the
+mirror has free room for them; it asks nothing for a file it has no room for,
+and reads pages as before; the room is reserved before the request, so two
+files that do not fit together are not both fetched. A copy whose size is not
+the manifest's is not kept, and a complete copy of another length than the
+manifest states is removed when it is read. The size of a pinned data file comes from the
 content manifest, so asking for it reads nothing.
 
 ## Authorization

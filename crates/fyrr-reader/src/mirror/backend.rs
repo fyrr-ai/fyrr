@@ -22,7 +22,7 @@ impl WrappingObjectStore for MirrorStore {
 #[async_trait::async_trait]
 impl ObjectStore for MirrorStore {
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
-        self.get_immutable(location, options, true).await
+        self.get_immutable(location, options, true, None).await
     }
     async fn put_opts(&self, _: &Path, _: PutPayload, _: PutOptions) -> Result<PutResult> {
         Err(Self::readonly())
@@ -58,7 +58,38 @@ impl ObjectStore for MirrorStore {
     }
 }
 
+/// A whole fill of a pinned file: its manifest size, and whether room may be
+/// made by evicting unpinned files.
+#[derive(Clone, Copy)]
+pub(super) struct Fill {
+    size: u64,
+    evict: bool,
+}
+
+/// The partial file that reserves the room of a download, removed again when
+/// the download fails, is cancelled or never completes.
+struct Reservation(Option<PathBuf>);
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 impl MirrorStore {
+    /// A complete copy whose length is not the one the pinned manifest states.
+    fn stale_length(&self, file: &std::path::Path, metadata: &std::fs::Metadata) -> bool {
+        self.manifest_size(file)
+            .is_some_and(|size| size != metadata.len())
+    }
+    /// Removes a complete copy and its checksum; the caller holds the global locks.
+    fn discard_blob(&self, file: &std::path::Path) -> Result<()> {
+        Self::remove_partial(&file.with_extension("checksum")).map_err(|_| Self::failure())?;
+        crate::sync::lock(&self.verified).remove(file);
+        Verifications::forget(file);
+        Self::remove_partial(file).map_err(|_| Self::failure())
+    }
     /// This mirror reading through `original` under the Lance `store_prefix`.
     pub(super) fn wrapped(&self, store_prefix: &str, original: Arc<dyn ObjectStore>) -> Self {
         let mut store = self.clone();
@@ -69,12 +100,17 @@ impl MirrorStore {
     /// Fills the complete file of `location`: a verified copy answers at once,
     /// otherwise the whole object is downloaded. An object that cannot be kept
     /// is answered by a head rather than a download nobody reads.
-    pub(super) async fn fill(&self, location: &Path) -> Result<GetResult> {
+    /// `size` is what the pinned manifest states: the room for it is reserved
+    /// before the request, evicting unpinned files only if `evict`, and an
+    /// object of another size is refused before any byte is kept. Without room
+    /// the answer is the manifest's head, no request having been made.
+    pub(super) async fn fill(&self, location: &Path, size: u64, evict: bool) -> Result<GetResult> {
         let options = GetOptions {
             head: true,
             ..Default::default()
         };
-        self.get_immutable(location, options, false).await
+        self.get_immutable(location, options, false, Some(Fill { size, evict }))
+            .await
     }
     /// A read through the mirror. With `paged`, a head of a pinned `data/`
     /// or `_indices/` file is answered from the manifest and a ranged read of one is served
@@ -85,6 +121,7 @@ impl MirrorStore {
         location: &Path,
         options: GetOptions,
         paged: bool,
+        fill: Option<Fill>,
     ) -> Result<GetResult> {
         // Test-only gate on a real native data-file read, including mirror hits.
         #[cfg(test)]
@@ -111,7 +148,8 @@ impl MirrorStore {
             return self.pass_through(location, options, &counters).await;
         };
         let file = self.directory.join(name);
-        if crate::sync::lock(&self.oversized).contains(&file) {
+        // A fill that may not evict is answered without a request instead.
+        if crate::sync::lock(&self.oversized).contains(&file) && fill.is_none_or(|f| f.evict) {
             return self.pass_through(location, options, &counters).await;
         }
         let size = self
@@ -127,9 +165,15 @@ impl MirrorStore {
             .await
             .map_err(|_| Self::failure())?
         {
-            let result = Self::blob_result(location, file, options, opened, metadata)?;
-            self.record(&counters, Io::Hit, 1);
-            return Ok(result);
+            if !self.stale_length(&file, &metadata) {
+                let result = Self::blob_result(location, file, options, opened, metadata)?;
+                self.record(&counters, Io::Hit, 1);
+                return Ok(result);
+            }
+            drop(opened);
+            let _lock = self.lock.lock().await;
+            let _host = self.host_lock().await.map_err(|_| Self::failure())?;
+            self.discard_blob(&file)?;
         }
         // A complete file that failed verification is downloaded again whole.
         let unverified = file.symlink_metadata().is_ok();
@@ -159,7 +203,7 @@ impl MirrorStore {
             .await
             .map_err(|_| Self::failure())?;
         let result = self
-            .populate(location, options, &counters, file, size)
+            .populate(location, options, &counters, file, size, fill)
             .await;
         object.finish().await.map_err(|_| Self::failure())?;
         result
@@ -171,8 +215,11 @@ impl MirrorStore {
         options: GetOptions,
         counters: &IoCounters,
         file: PathBuf,
-        expected: Option<u64>,
+        paged: Option<u64>,
+        fill: Option<Fill>,
     ) -> Result<GetResult> {
+        let expected = paged.or(fill.map(|f| f.size));
+        let temporary = file.with_extension("partial");
         let _lock = self.lock.lock().await;
         let _host = self.host_lock().await.map_err(|_| Self::failure())?;
         if let Some((opened, metadata)) = self
@@ -180,9 +227,31 @@ impl MirrorStore {
             .await
             .map_err(|_| Self::failure())?
         {
-            let result = Self::blob_result(location, file, options, opened, metadata)?;
-            self.record(counters, Io::Hit, 1);
-            return Ok(result);
+            if !self.stale_length(&file, &metadata) {
+                let result = Self::blob_result(location, file, options, opened, metadata)?;
+                self.record(counters, Io::Hit, 1);
+                return Ok(result);
+            }
+            drop(opened);
+            self.discard_blob(&file)?;
+        }
+        // A fill that may not evict reserves its room here, checked and taken
+        // under the locks before any request, as the partial file's length. The
+        // download flock is ours, so a partial of this name is dead.
+        let mut reserved = None;
+        if let Some(Fill { size, evict: false }) = fill {
+            Self::remove_partial(&temporary).map_err(|_| Self::failure())?;
+            if size > self.max_bytes || self.used_bytes()?.saturating_add(size) > self.max_bytes {
+                return Ok(Self::head_result(location, &file, size));
+            }
+            let output = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temporary)
+                .map_err(|_| Self::failure())?;
+            output.set_len(size).map_err(|_| Self::failure())?;
+            reserved = Some((output, Reservation(Some(temporary.clone()))));
         }
         drop(_host);
         drop(_lock);
@@ -197,31 +266,33 @@ impl MirrorStore {
             Self::remember_oversized(&self.oversized, file);
             return self.pass_through(location, options, counters).await;
         }
-        let _lock = self.lock.lock().await;
-        let _host = self.host_lock().await.map_err(|_| Self::failure())?;
-        let temporary = file.with_extension("partial");
-        Self::remove_partial(&temporary).map_err(|_| Self::failure())?;
-        // The complete file supersedes any pages of the same object; their
-        // room is released before the complete file reserves its own.
-        self.remove_pages(&file).map_err(|_| Self::failure())?;
-        if !self.make_room(metadata.size)? {
-            drop(_host);
-            drop(_lock);
-            self.record(counters, Io::Request, 1);
-            let result = self.target().get_opts(location, options).await?;
-            self.record(counters, Io::Bytes, result.range.end - result.range.start);
-            return Ok(result);
-        }
-        let mut output = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)
-            .map_err(|_| Self::failure())?;
-        // Sparse length reserves capacity across all processes before downloading.
-        output.set_len(metadata.size).map_err(|_| Self::failure())?;
-        drop(_host);
-        drop(_lock);
+        let (mut output, mut reservation) = if let Some(reserved) = reserved {
+            reserved
+        } else {
+            let _lock = self.lock.lock().await;
+            let _host = self.host_lock().await.map_err(|_| Self::failure())?;
+            Self::remove_partial(&temporary).map_err(|_| Self::failure())?;
+            // The complete file supersedes any pages of the same object; their
+            // room is released before the complete file reserves its own.
+            self.remove_pages(&file).map_err(|_| Self::failure())?;
+            if !self.make_room(metadata.size)? {
+                drop(_host);
+                drop(_lock);
+                self.record(counters, Io::Request, 1);
+                let result = self.target().get_opts(location, options).await?;
+                self.record(counters, Io::Bytes, result.range.end - result.range.start);
+                return Ok(result);
+            }
+            let output = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temporary)
+                .map_err(|_| Self::failure())?;
+            // Sparse length reserves capacity across all processes before downloading.
+            output.set_len(metadata.size).map_err(|_| Self::failure())?;
+            (output, Reservation(Some(temporary.clone())))
+        };
         let mut stream = download.into_stream();
         let mut hasher = Sha256::new();
         let mut written = 0u64;
@@ -253,7 +324,8 @@ impl MirrorStore {
         // Both files are recoverable. Restart verifies their size and checksum.
         #[cfg(test)]
         tests::pause("proof");
-        std::fs::rename(temporary, &file).map_err(|_| Self::failure())?;
+        std::fs::rename(&temporary, &file).map_err(|_| Self::failure())?;
+        reservation.0 = None;
         // Pages a concurrent read kept meanwhile are superseded too.
         self.remove_pages(&file).map_err(|_| Self::failure())?;
         #[cfg(test)]
@@ -324,7 +396,7 @@ impl MirrorStore {
     // fixes its size (mirrored objects are immutable), so an entry is statted
     // once; a dead partial stays counted until the eviction path or a sweep
     // removes it, which only makes this count conservative.
-    fn used_bytes(&self) -> Result<u64> {
+    pub(super) fn used_bytes(&self) -> Result<u64> {
         #[cfg(test)]
         self.room_probes.listings.fetch_add(1, Ordering::SeqCst);
         let mut known = crate::sync::lock(&self.sizes);

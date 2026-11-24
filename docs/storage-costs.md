@@ -26,6 +26,7 @@ publication, so a running reader asks storage nothing else.
 | Idle or busy, nothing published | one `GET` of the serving head per `reader.version_check_interval` (30 s by default) |
 | Start on an empty mirror | at most 27 for a one-document namespace (CI bound, head reads not counted): the control artifacts, then each index and data file once |
 | Switch to a new publication | at most 25 for a one-document change (CI bound): the new manifest and each file the publication adds or rewrites, plus three more reads of the head |
+| First dense query of a subject on a vector index merged by `writer maintain`, empty mirror | the two index files, one `GET` each, however many partitions the index has, when the mirror has free room for them (otherwise pages, as before); the query adds the data-file pages it reads (94 in all for a 6,000-row namespace, CI bound) |
 | Restart on a warm mirror | the control artifacts; files in the mirror are verified locally (from the code, not measured) |
 | HTTP reader that declares API keys | one more `GET`, of `api-keys.json` in the storage root, at start and per `reader.version_check_interval`; none per request while it is readable (CI bound) |
 | HTTP JSON request with `consistency: "strong"` | one `GET` of the serving head when it has not moved (CI bound); the requests of a switch when it has |
