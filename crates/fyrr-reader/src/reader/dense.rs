@@ -253,8 +253,20 @@ impl PreparedReader {
             && self.config.namespace.dense_rq_bits == 1
         {
             // One-bit distances rank a growing pool less precisely. Grow the exact
-            // rescore pool sublinearly within the request's existing reservation.
-            shortlist = eligible.isqrt().clamp(shortlist, depth.maximum(k));
+            // rescore pool sublinearly with the rows the probes inspect, within the
+            // request's existing reservation. An index whose partitions follow its rows
+            // inspects a small share of them; one with few partitions inspects them all.
+            let inspected = self.admission.maps.as_deref().map_or(eligible, |maps| {
+                let probed: u64 = maps
+                    .iter()
+                    .map(|map| {
+                        map.probe_target(self.config.reader.nprobes)
+                            .min(map.indexed_rows)
+                    })
+                    .sum();
+                eligible.min(usize::try_from(probed).unwrap_or(usize::MAX))
+            });
+            shortlist = inspected.isqrt().clamp(shortlist, depth.maximum(k));
         }
         // An unfiltered request and the authorization mask always use the
         // index. A filter does so when probing reads fewer bytes than the
