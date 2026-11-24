@@ -527,6 +527,24 @@
           "format": "uint32",
           "minimum": 0,
           "description": "The IVF partitions of a vector index (`ivf_rq`), as Lance built or\nrebalanced it; absent for every other kind."
+        },
+        "rows": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The rows of the fragments this segment covers. `writer serve` reads it,\nwith `first_fragment`, to know whether a merge has a run to do."
+        },
+        "first_fragment": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The first fragment this segment covers; absent when it covers none."
         }
       },
       "required": [

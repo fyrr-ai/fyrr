@@ -449,6 +449,13 @@ pub struct IndexIdentity {
     /// rebalanced it; absent for every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partitions: Option<u32>,
+    /// The rows of the fragments this segment covers. `writer serve` reads it,
+    /// with `first_fragment`, to know whether a merge has a run to do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u64>,
+    /// The first fragment this segment covers; absent when it covers none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_fragment: Option<u32>,
 }
 
 /// The serving head: the single mutable object per namespace (CAS-updated).

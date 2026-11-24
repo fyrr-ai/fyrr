@@ -113,7 +113,7 @@ maintain` runs in lease-held steps: it publishes pending permission changes,
 removes unreadable rows, compacts fragments, updates indexes and deletes
 retired versions, applied envelopes and the publication manifests and
 checkpoints that only older versions named. `fyrr writer serve` runs it when
-the served version has an index with more than 64 segments, or, at most once
+the served version has an index with more than 64 segments that has a merge to do (neighbors that fit one step, see `writer.maintenance.step_max_duration`), or, at most once
 per `writer.version_grace`, has fragments with deletions or has gone
 `writer.purge_window` minus `writer.version_grace` (or `writer.max_envelope_age`,
 if shorter) without it; `writer.serve.maintenance =

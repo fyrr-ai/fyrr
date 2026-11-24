@@ -2033,6 +2033,23 @@ async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
         "{after:?}"
     );
     assert!(maintained["index_merge_steps"].as_u64().unwrap() >= 2);
+    // The manifest records what `writer serve` needs to see that no merge is left to do.
+    let recorded: Vec<_> = publication(&config)
+        .await
+        .1
+        .indexes
+        .iter()
+        .filter(|index| index.name == "vector_idx")
+        .map(|index| (index.rows, index.first_fragment))
+        .collect();
+    assert_eq!(
+        recorded.iter().map(|(rows, _)| *rows).collect::<Vec<_>>(),
+        after
+            .iter()
+            .map(|&rows| Some(rows as u64))
+            .collect::<Vec<_>>()
+    );
+    assert!(recorded[0].1 < recorded[1].1, "{recorded:?}");
     assert_eq!(command(&config, &["writer", "verify"])["verified"], true);
     let mut client = tools::Mcp::open(&config);
     let found = tools::body(client.call("search", json!({"query": "seg doc 77", "limit": 3})));

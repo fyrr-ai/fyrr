@@ -70,6 +70,12 @@ pub(crate) async fn write_manifest(
             .unwrap_or_default();
     }
     let actual = dataset.load_indices().await?;
+    let fragment_rows: std::collections::HashMap<u32, u64> = dataset
+        .manifest()
+        .fragments
+        .iter()
+        .map(|f| (crate::narrow_u32(f.id), f.num_rows().unwrap_or(0) as u64))
+        .collect();
     let mut indexes = Vec::new();
     for index in actual.iter() {
         let (column, kind) = if let Some(&(column, _, _, kind)) =
@@ -118,12 +124,20 @@ pub(crate) async fn write_manifest(
         } else {
             None
         };
+        let covered: Vec<u32> = index
+            .fragment_bitmap
+            .iter()
+            .flat_map(|bitmap| bitmap.iter())
+            .filter(|id| fragment_rows.contains_key(id))
+            .collect();
         indexes.push(IndexIdentity {
             name: index.name.clone(),
             column: column.into(),
             kind: kind.into(),
             uuid,
             partitions,
+            rows: Some(covered.iter().map(|id| fragment_rows[id]).sum()),
+            first_fragment: covered.first().copied(),
         });
     }
     // What the table has, not what the settings ask for: an index that is
