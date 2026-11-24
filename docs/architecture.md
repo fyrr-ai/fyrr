@@ -116,8 +116,10 @@ served. A response whose size differs from the content manifest, or whose
 ETag differs from the first, fails that read and drops the kept pages.
 Version and transaction files are copied whole, and warming replaces pages
 with the complete file. Building the subject's partition map walks every
-partition of the vector index, so it copies the files of the vector index
-whole first: one request each instead of several per partition. The size of a pinned data file comes from the
+partition of the vector index, so it first copies the files of the vector
+index whole, one request each instead of several per partition, when the
+mirror has free room for them; it asks nothing for a file it has no room for,
+and reads pages as before. A copy whose size is not the manifest's is not kept. The size of a pinned data file comes from the
 content manifest, so asking for it reads nothing.
 
 ## Authorization

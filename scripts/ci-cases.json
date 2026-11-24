@@ -1087,6 +1087,14 @@
         "tier": "quick",
         "seconds": 0.05
       },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::prewarm_if_room_copies_whole_only_what_fits_and_asks_nothing_otherwise": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::prewarm_if_room_keeps_no_object_of_another_size": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::pages_of_a_new_map_generation_are_verified_again": {
         "tier": "quick",
         "seconds": 0.05

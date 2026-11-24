@@ -450,6 +450,19 @@ async fn prewarm_rejects_manifest_size_mismatch() {
         mirror.prewarm(store.clone(), &files).await,
         Err(StorageUnavailable)
     );
+    assert_eq!(
+        std::fs::read_dir(&directory)
+            .unwrap()
+            .filter(|entry| {
+                let path = entry.as_ref().unwrap().path();
+                ["blob", "partial", "checksum"]
+                    .iter()
+                    .any(|extension| path.extension().is_some_and(|e| e == *extension))
+            })
+            .count(),
+        0,
+        "an object of another size is kept in no form"
+    );
     files[0].size_bytes = 4;
     assert!(mirror.prewarm(store, &files).await.is_ok());
     std::fs::remove_dir_all(directory).unwrap();
@@ -1528,6 +1541,61 @@ async fn prewarm_after_pages_needs_no_room_for_both() {
     assert!(f.exists("sparse"));
     f.mirror.prewarm(f.source.clone(), &f.files).await.unwrap();
     assert!(f.exists("blob") && !f.exists("sparse") && !f.exists("map"));
+}
+
+/// A whole copy for a walk that reads every partition costs one request, and
+/// none where the mirror has no room for it: the walk then reads pages.
+#[tokio::test]
+async fn prewarm_if_room_copies_whole_only_what_fits_and_asks_nothing_otherwise() {
+    let f = PagedFixture::at("room-fits", 1 << 20, "_indices/u/aux.idx").await;
+    f.mirror
+        .prewarm_if_room(f.source.clone(), &f.files)
+        .await
+        .unwrap();
+    assert!(f.exists("blob"));
+    assert_eq!(f.mirror.totals().requests, 1);
+
+    let f = PagedFixture::at("room-short", 50_000, "_indices/u/aux.idx").await;
+    for _ in 0..2 {
+        f.mirror
+            .prewarm_if_room(f.source.clone(), &f.files)
+            .await
+            .unwrap();
+    }
+    assert!(!f.exists("blob") && !f.exists("partial"));
+    assert_eq!(f.mirror.totals().requests, 0, "no request, no head");
+
+    // Room for the file, not beside what the mirror holds: nothing is evicted.
+    let f = PagedFixture::at("room-held", 150_000, "_indices/u/aux.idx").await;
+    std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(f.directory.join(format!("{}.blob", "a".repeat(64))))
+        .unwrap()
+        .write_all(&[0; 80_000])
+        .unwrap();
+    f.mirror
+        .prewarm_if_room(f.source.clone(), &f.files)
+        .await
+        .unwrap();
+    assert!(!f.exists("blob"));
+    assert_eq!(f.mirror.totals().requests, 0);
+}
+
+/// An object whose size is not the manifest's is never kept, so no later read
+/// serves it.
+#[tokio::test]
+async fn prewarm_if_room_keeps_no_object_of_another_size() {
+    let mut f = PagedFixture::at("room-size", 1 << 20, "_indices/u/aux.idx").await;
+    f.files[0].size_bytes += 1;
+    assert!(
+        f.mirror
+            .prewarm_if_room(f.source.clone(), &f.files)
+            .await
+            .is_err()
+    );
+    assert!(!f.exists("blob") && !f.exists("partial"));
 }
 
 #[tokio::test]

@@ -207,10 +207,11 @@ impl PreparedReader {
         // The walk below reads every partition of every vector segment. Paged,
         // a merged index costs several small ranged requests per partition
         // (tens of thousands at 3,000,000 rows); whole, one request a file.
-        // shortcut: a refused fill (mirror budget) leaves the walk to read pages.
+        // A file the mirror has no room for, or that does not match the
+        // manifest, is not kept and the walk reads pages as before.
         let _ = self
             .mirror
-            .prewarm(
+            .prewarm_if_room(
                 self.control_backend.clone(),
                 &PreparationReservation::vector_index_files(&self.manifest)
                     .cloned()

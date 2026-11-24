@@ -1416,15 +1416,15 @@ async fn a_sync_worker_reads_no_more_manifests_as_the_history_grows() {
 const MERGED_REQUEST_ROWS: usize = 2000;
 const MERGED_REQUESTS: usize = 3;
 const MERGED_PARTITION_ROWS: usize = 32;
-/// Storage requests of the first dense query of a reader on an empty mirror
-/// after `writer maintain` merged the vector index of
-/// `MERGED_REQUESTS * MERGED_REQUEST_ROWS` rows: opening, its admission and
-/// the query itself. Measured: 94, 74 of them pages of the data files. The
-/// two files of the vector index come whole, a request each, so the number does
-/// not grow with the partitions; paged, the admission read every partition of
-/// the merged index in small ranged requests (534 here, 26,000 at 3,000,000
-/// rows).
-const MERGED_COLD_DENSE_BUDGET: usize = 110;
+/// Storage requests to the files of the vector index by the first dense query
+/// of a reader on an empty mirror, after `writer maintain` merged the index of
+/// `MERGED_REQUESTS * MERGED_REQUEST_ROWS` rows. The two files come whole, a
+/// request each, so the number does not grow with the partitions; paged, the
+/// admission read every partition of the merged index in small ranged
+/// requests (hundreds here, 26,000 at 3,000,000 rows). The requests for pages
+/// of the data files, which vary with the order of concurrent reads, are not
+/// counted.
+const MERGED_COLD_DENSE_BUDGET: usize = 4;
 
 /// A row near one of eight directions, a little apart from its neighbors.
 fn merged_vector(row: usize) -> Vec<f32> {
@@ -1502,13 +1502,52 @@ async fn a_cold_dense_query_on_a_merged_vector_index_stays_within_its_storage_re
     let answer: Value = serde_json::from_slice(&search.stdout).unwrap();
     assert_eq!(answer["hits"].as_array().unwrap().len(), 10, "{answer}");
     assert_eq!(answer["hits"][0]["root_id"], "r5", "{answer}");
-    let requests = std::fs::read_to_string(&log).unwrap().lines().count();
+    let (_, manifest) = super::coordination::publication(&config).await;
+    let loaded = fyrr_core::config::load(&config).unwrap();
+    let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
+    let index_keys: std::collections::BTreeSet<String> = {
+        use futures::TryStreamExt;
+        let uuids: Vec<_> = manifest
+            .indexes
+            .iter()
+            .filter(|index| index.name == "vector_idx")
+            .map(|index| format!("/_indices/{}/", index.uuid))
+            .collect();
+        store
+            .list(Some(&namespace))
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|object| {
+                uuids
+                    .iter()
+                    .any(|uuid| object.location.as_ref().contains(uuid))
+            })
+            .map(|object| {
+                fyrr_core::limits::digest(object.location.as_ref().as_bytes())
+                    .trim_start_matches("sha256:")
+                    .to_owned()
+            })
+            .collect()
+    };
+    assert_eq!(index_keys.len(), 2, "an index file and an auxiliary file");
+    let records: Vec<Value> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let requests = records
+        .iter()
+        .filter(|record| index_keys.contains(record["key_sha256"].as_str().unwrap()))
+        .count();
     eprintln!(
-        "budget cold dense query on a merged vector index: {requests} requests (budget {MERGED_COLD_DENSE_BUDGET})"
+        "budget cold dense query on a merged vector index: {requests} requests to its files of {} in all (budget {MERGED_COLD_DENSE_BUDGET})",
+        records.len()
     );
     assert!(
         requests <= MERGED_COLD_DENSE_BUDGET,
-        "the first dense query made {requests} storage requests, budget {MERGED_COLD_DENSE_BUDGET}"
+        "the first dense query made {requests} storage requests to the vector index, budget {MERGED_COLD_DENSE_BUDGET}"
     );
     std::fs::remove_dir_all(root).unwrap();
 }

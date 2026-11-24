@@ -22,7 +22,7 @@ impl WrappingObjectStore for MirrorStore {
 #[async_trait::async_trait]
 impl ObjectStore for MirrorStore {
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
-        self.get_immutable(location, options, true).await
+        self.get_immutable(location, options, true, None).await
     }
     async fn put_opts(&self, _: &Path, _: PutPayload, _: PutOptions) -> Result<PutResult> {
         Err(Self::readonly())
@@ -69,12 +69,15 @@ impl MirrorStore {
     /// Fills the complete file of `location`: a verified copy answers at once,
     /// otherwise the whole object is downloaded. An object that cannot be kept
     /// is answered by a head rather than a download nobody reads.
-    pub(super) async fn fill(&self, location: &Path) -> Result<GetResult> {
+    /// `expected` is the size the pinned manifest states: an object of another
+    /// size is refused before any byte is kept.
+    pub(super) async fn fill(&self, location: &Path, expected: u64) -> Result<GetResult> {
         let options = GetOptions {
             head: true,
             ..Default::default()
         };
-        self.get_immutable(location, options, false).await
+        self.get_immutable(location, options, false, Some(expected))
+            .await
     }
     /// A read through the mirror. With `paged`, a head of a pinned `data/`
     /// or `_indices/` file is answered from the manifest and a ranged read of one is served
@@ -85,6 +88,7 @@ impl MirrorStore {
         location: &Path,
         options: GetOptions,
         paged: bool,
+        expected: Option<u64>,
     ) -> Result<GetResult> {
         // Test-only gate on a real native data-file read, including mirror hits.
         #[cfg(test)]
@@ -159,7 +163,7 @@ impl MirrorStore {
             .await
             .map_err(|_| Self::failure())?;
         let result = self
-            .populate(location, options, &counters, file, size)
+            .populate(location, options, &counters, file, size.or(expected))
             .await;
         object.finish().await.map_err(|_| Self::failure())?;
         result
@@ -324,7 +328,7 @@ impl MirrorStore {
     // fixes its size (mirrored objects are immutable), so an entry is statted
     // once; a dead partial stays counted until the eviction path or a sweep
     // removes it, which only makes this count conservative.
-    fn used_bytes(&self) -> Result<u64> {
+    pub(super) fn used_bytes(&self) -> Result<u64> {
         #[cfg(test)]
         self.room_probes.listings.fetch_add(1, Ordering::SeqCst);
         let mut known = crate::sync::lock(&self.sizes);
