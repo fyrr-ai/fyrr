@@ -507,6 +507,10 @@
         "tier": "quick",
         "seconds": 0.003
       },
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::merge_run_tests::the_smallest_pair_is_of_neighbors_in_fragment_order": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_fragments::tests::reused_ids_cannot_prove_file_identity_and_restore_mismatch_falls_back": {
         "tier": "quick",
         "seconds": 0.003
@@ -2451,6 +2455,10 @@
     "backend": "local",
     "cases": {
       "full:fyrr:test:dense_path/maintenance::maintenance_repartitions_the_vector_index_of_a_growing_namespace_on_storage": {
+        "tier": "full",
+        "seconds": 240.0
+      },
+      "full:fyrr:test:dense_path/maintenance::maintenance_merges_the_vector_segments_in_tiers_on_storage": {
         "tier": "full",
         "seconds": 240.0
       },

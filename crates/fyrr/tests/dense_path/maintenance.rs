@@ -1956,16 +1956,45 @@ async fn maintenance_repartitions_the_vector_index_of_a_growing_namespace_on_sto
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// The rows of each vector segment at `version` of the head's dataset, in
+/// publication order; the head's own version without one.
+async fn vector_segment_rows(config: &Path, version: Option<u64>) -> Vec<usize> {
+    use lance::index::DatasetIndexExt;
+    let loaded = fyrr_core::config::load(config).unwrap();
+    let (head, _) = publication(config).await;
+    let mut dataset = fyrr_reader::storage::pinned(&loaded.config, &head)
+        .await
+        .unwrap();
+    if let Some(version) = version {
+        dataset = dataset.checkout_version(version).await.unwrap();
+    }
+    let stats: Value =
+        serde_json::from_str(&dataset.index_statistics("vector_idx").await.unwrap()).unwrap();
+    stats["indices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|segment| {
+            segment["partitions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["size"].as_u64().unwrap() as usize)
+                .sum::<usize>()
+        })
+        .collect()
+}
+
 /// A namespace of 24 publications of 250 rows has 24 vector segments. With
 /// `step_max_duration = 8s` a merge step may rewrite 5,600 rows (half the
 /// step at 1,400 rows/s), so `writer maintain` merges the segments in runs of
 /// at most that many rows and leaves a segment that large alone: 22 segments
-/// become one of 5,500 rows, and the last two one of 500. The index is valid
-/// after every step, and the namespace answers like before.
+/// become one of 5,500 rows, and the last two one of 500. Every version the
+/// steps publish holds segments of at most that many rows, and the namespace
+/// answers like before.
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
 async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
-    use lance::index::DatasetIndexExt;
     const COMMITS: usize = 24;
     const COMMIT_ROWS: usize = 250;
     const STEP_ROWS: usize = 5_600;
@@ -1983,7 +2012,7 @@ async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
     std::fs::write(
         &config,
         format!(
-            "{text}\n[writer]\nthreads = 2\n\n[writer.commit]\ngroup_max_rows = {COMMIT_ROWS}\n\n[writer.maintenance]\nstep_max_duration = \"8s\"\n\n[[sources]]\nid = \"docs\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:allow\"]\n[sources.scope]\npaths = [\"{}\"]\n",
+            "{text}\n[writer]\nthreads = 2\nenvelope_max_rows = {COMMIT_ROWS}\n\n[writer.commit]\ngroup_max_rows = {COMMIT_ROWS}\n\n[writer.maintenance]\nstep_max_duration = \"8s\"\n\n[[sources]]\nid = \"docs\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:allow\"]\n[sources.scope]\npaths = [\"{}\"]\n",
             sources.display()
         ),
     )
@@ -1998,58 +2027,40 @@ async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
             success(&config, &["writer", "commit"]);
         }
     }
-    // The rows of each vector segment, in publication order.
-    let segments = || async {
-        let loaded = fyrr_core::config::load(&config).unwrap();
-        let (head, _) = publication(&config).await;
-        let dataset = fyrr_reader::storage::pinned(&loaded.config, &head)
-            .await
-            .unwrap();
-        let stats: Value =
-            serde_json::from_str(&dataset.index_statistics("vector_idx").await.unwrap()).unwrap();
-        stats["indices"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|segment| {
-                segment["partitions"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|p| p["size"].as_u64().unwrap() as usize)
-                    .sum::<usize>()
-            })
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(segments().await, vec![COMMIT_ROWS; COMMITS]);
+    assert_eq!(
+        vector_segment_rows(&config, None).await,
+        vec![COMMIT_ROWS; COMMITS]
+    );
+    let first = publication(&config).await.1.lance_version + 1;
 
     let maintained = success(&config, &["writer", "maintain"]);
-    let after = segments().await;
+    let after = vector_segment_rows(&config, None).await;
     assert_eq!(after, [22 * COMMIT_ROWS, 2 * COMMIT_ROWS], "{maintained}");
-    // No step rewrote more than the budget, and no two neighbors could still share a step.
-    assert!(after.iter().all(|&rows| rows <= STEP_ROWS), "{after:?}");
+    assert!(maintained["index_merge_steps"].as_u64().unwrap() >= 2);
+    // No step rewrote more than the budget: every version a step published has
+    // segments of at most that many rows, and never more segments than before.
+    let last = publication(&config).await.1.lance_version;
+    let mut count = COMMITS;
+    for version in first..=last {
+        let rows = vector_segment_rows(&config, Some(version)).await;
+        assert!(
+            rows.iter().all(|&rows| rows <= STEP_ROWS),
+            "{version}: {rows:?}"
+        );
+        assert!(rows.len() <= count, "{version}: {rows:?}");
+        count = rows.len();
+    }
+    // No two neighbors fit one step, and the manifest says so: `writer serve`
+    // finds nothing to merge.
     assert!(
         after.windows(2).all(|pair| pair[0] + pair[1] > STEP_ROWS),
         "{after:?}"
     );
-    assert!(maintained["index_merge_steps"].as_u64().unwrap() >= 2);
-    // The manifest records what `writer serve` needs to see that no merge is left to do.
-    let recorded: Vec<_> = publication(&config)
-        .await
-        .1
-        .indexes
-        .iter()
-        .filter(|index| index.name == "vector_idx")
-        .map(|index| (index.rows, index.first_fragment))
-        .collect();
+    let manifest = publication(&config).await.1;
     assert_eq!(
-        recorded.iter().map(|(rows, _)| *rows).collect::<Vec<_>>(),
-        after
-            .iter()
-            .map(|&rows| Some(rows as u64))
-            .collect::<Vec<_>>()
+        manifest.merge_pair_rows["vector_idx"],
+        (22 * COMMIT_ROWS + 2 * COMMIT_ROWS) as u64
     );
-    assert!(recorded[0].1 < recorded[1].1, "{recorded:?}");
     assert_eq!(command(&config, &["writer", "verify"])["verified"], true);
     let mut client = tools::Mcp::open(&config);
     let found = tools::body(client.call("search", json!({"query": "seg doc 77", "limit": 3})));

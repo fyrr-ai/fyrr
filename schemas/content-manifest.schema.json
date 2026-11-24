@@ -80,6 +80,15 @@
         "$ref": "#/$defs/IndexIdentity"
       }
     },
+    "merge_pair_rows": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0
+      },
+      "description": "Of each vector index with two or more segments, the smallest sum of the\nrows of two neighboring segments, in fragment order. `writer serve`\ncompares it with the rows one merge step may rewrite, to know whether a\nmerge has anything to do."
+    },
     "attributes": {
       "type": "object",
       "additionalProperties": {
@@ -527,24 +536,6 @@
           "format": "uint32",
           "minimum": 0,
           "description": "The IVF partitions of a vector index (`ivf_rq`), as Lance built or\nrebalanced it; absent for every other kind."
-        },
-        "rows": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint64",
-          "minimum": 0,
-          "description": "The rows of the fragments this segment covers. `writer serve` reads it,\nwith `first_fragment`, to know whether a merge has a run to do."
-        },
-        "first_fragment": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint32",
-          "minimum": 0,
-          "description": "The first fragment this segment covers; absent when it covers none."
         }
       },
       "required": [

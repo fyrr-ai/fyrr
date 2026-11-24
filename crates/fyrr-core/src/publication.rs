@@ -264,6 +264,12 @@ pub struct ContentManifest {
     /// Digest of the retrieval policy, including the result composition.
     pub retrieval_policy_digest: String,
     pub indexes: Vec<IndexIdentity>,
+    /// Of each vector index with two or more segments, the smallest sum of the
+    /// rows of two neighboring segments, in fragment order. `writer serve`
+    /// compares it with the rows one merge step may rewrite, to know whether a
+    /// merge has anything to do.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub merge_pair_rows: BTreeMap<String, u64>,
     /// The typed attributes of this version: each is a nullable column.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: AttributeSchema,
@@ -449,13 +455,6 @@ pub struct IndexIdentity {
     /// rebalanced it; absent for every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partitions: Option<u32>,
-    /// The rows of the fragments this segment covers. `writer serve` reads it,
-    /// with `first_fragment`, to know whether a merge has a run to do.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rows: Option<u64>,
-    /// The first fragment this segment covers; absent when it covers none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_fragment: Option<u32>,
 }
 
 /// The serving head: the single mutable object per namespace (CAS-updated).

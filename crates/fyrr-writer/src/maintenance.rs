@@ -15,8 +15,7 @@ use fyrr_core::attributes::stale_analyzers;
 use fyrr_core::config::Config;
 use fyrr_core::envelope::{EnvelopePayload, RejectionMarker};
 use fyrr_core::publication::{
-    CommitLineage, ContentManifest, HISTORY_CUT_OBJECT, HistoryCut, IndexIdentity, PolicyArtifact,
-    ServingHead,
+    CommitLineage, ContentManifest, HISTORY_CUT_OBJECT, HistoryCut, PolicyArtifact, ServingHead,
 };
 use fyrr_reader::storage::{dataset_uri, namespace_store, pinned, read_contract};
 use lance::Dataset;
@@ -48,34 +47,33 @@ fn merge_tier_rows(config: &Config) -> u64 {
     ((budget * MERGE_ROWS_PER_SECOND) as u64).max(1)
 }
 
-/// Whether `merge_tier` has a run for the segments of one index: two or more neighbors, in
-/// fragment order, whose rows add up to at most `target`. It packs next-fit, as Lance does.
-fn merge_run_pending(segments: &[&IndexIdentity], target: u64) -> bool {
-    let mut ordered: Vec<_> = segments
-        .iter()
-        .filter_map(|segment| Some((segment.first_fragment?, segment.rows?)))
-        .collect();
-    ordered.sort_unstable();
-    let mut bin: Option<(usize, u64)> = None;
-    for (_, rows) in ordered {
-        match &mut bin {
-            Some((count, used)) if used.saturating_add(rows) <= target => {
-                *count += 1;
-                *used += rows;
-                if *count > 1 {
-                    return true;
-                }
-            }
-            _ => bin = Some((1, rows)),
-        }
-    }
-    false
+/// Whether `name` is a vector index: the one that `merge_tier` packs, as against the scalar
+/// ones, which Lance merges in one step.
+fn is_vector_index(config: &Config, name: &str) -> bool {
+    name == "vector_idx"
+        || config
+            .namespace
+            .vectors
+            .keys()
+            .any(|vector| fyrr_core::attributes::vector_index_name(vector) == name)
+}
+
+/// The smallest sum of the rows of two neighboring segments of a vector index, in fragment
+/// order, from each segment's first fragment and rows. A step of `merge_tier` has a run to
+/// execute exactly when this is at most the rows one step may rewrite: next-fit packing makes a
+/// run of two or more segments iff some neighbors fit together.
+pub(crate) fn smallest_neighbor_pair(mut segments: Vec<(u32, u64)>) -> Option<u64> {
+    segments.sort_unstable();
+    segments
+        .windows(2)
+        .map(|pair| pair[0].1.saturating_add(pair[1].1))
+        .min()
 }
 
 /// Whether `maintain` has work, judged from the served manifest alone, so that
 /// an idle `writer serve` tick asks storage for nothing more. An index with
-/// more segments than the limit is due at once if a merge has a run to do, so that an index of
-/// full segments never makes every tick run `maintain`. Everything else waits for
+/// more vector segments than the limit is due at once if two neighbors fit one merge step, so
+/// that an index of full segments never makes every tick run `maintain`. Everything else waits for
 /// `writer.version_grace` since the last maintenance, so that steady upserts,
 /// which leave a deletion in a fragment each, or a short `max_envelope_age` do
 /// not run it on every publication: then a fragment with deletions is due, and
@@ -92,19 +90,26 @@ pub(crate) fn due(config: &Config, manifest: &ContentManifest) -> bool {
         .as_duration()
         .saturating_sub(grace)
         .min(writer.max_envelope_age.as_duration());
-    let mut segments: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    let mut segments = BTreeMap::new();
     for index in &manifest.indexes {
-        segments.entry(&index.name).or_default().push(index);
+        *segments.entry(&index.name).or_insert(0usize) += 1;
     }
     let target = merge_tier_rows(config);
-    if segments
-        .values()
-        .any(|same| same.len() > INDEX_SEGMENT_LIMIT && merge_run_pending(same, target))
-        || fyrr_reader::search::attribute_indexes(
-            &config.namespace.attributes,
-            &config.namespace.attribute_indexes,
-        )
-        .any(|(_, name, _)| !segments.contains_key(&name))
+    let mut vector_segments = BTreeMap::new();
+    for index in manifest.indexes.iter().filter(|i| i.kind == "ivf_rq") {
+        *vector_segments.entry(&index.name).or_insert(0usize) += 1;
+    }
+    if vector_segments.iter().any(|(name, &count)| {
+        count > INDEX_SEGMENT_LIMIT
+            && manifest
+                .merge_pair_rows
+                .get(*name)
+                .is_some_and(|&pair| pair <= target)
+    }) || fyrr_reader::search::attribute_indexes(
+        &config.namespace.attributes,
+        &config.namespace.attribute_indexes,
+    )
+    .any(|(_, name, _)| !segments.contains_key(&name))
         || stale_analyzers(
             &config.namespace.attribute_indexes,
             &manifest.attribute_indexes,
@@ -196,13 +201,16 @@ async fn maintain_held(
                 *counts.entry(index.name.clone()).or_insert(0usize) += 1;
             }
             Ok::<_, WriterError>(counts.into_iter().find_map(|(name, count)| {
-                (count > INDEX_SEGMENT_LIMIT && !settled.contains(&name)).then_some(name)
+                (count > INDEX_SEGMENT_LIMIT
+                    && is_vector_index(config, &name)
+                    && !settled.contains(&name))
+                .then_some(name)
             }))
         })
         .await
         .map_err(|_| WriterError::MaintenanceStepDeadline)??;
         if let Some(name) = oversized {
-            // A namespace of more than 64 segments of `merge_tier_rows` rows has no merge left.
+            // An index of more than 64 segments of `merge_tier_rows` rows has no merge left.
             if !merge_index(config, lease, dataset, head, name.clone(), rebalance).await? {
                 settled.insert(name);
                 continue;
@@ -364,11 +372,12 @@ async fn merge_step(
 ) -> Result<bool> {
     let before = dataset.version().version;
     let mut work = lineage(lease, &head);
+    let vector = is_vector_index(config, &name);
     let mut options = OptimizeOptions::merge(usize::MAX);
     options.index_names = Some(vec![name]);
     options.retrain = false;
     let target = merge_tier_rows(config);
-    if dataset.count_rows(None).await? as u64 <= target {
+    if !vector || dataset.count_rows(None).await? as u64 <= target {
         if rebalance {
             options = options.with_partition_rebalancing();
         }
@@ -380,11 +389,11 @@ async fn merge_step(
         .await?;
     } else {
         // shortcut: indexes above the step target are merged in tiers without partition
-        // rebalancing; rebalance per segment when needed.
+        // rebalancing; rebalance per segment when needed. The scalar indexes stay one step.
         options.max_rows_per_segment = Some(target);
         commit::native_step(
             lease,
-            merge_tier(&mut dataset, &options),
+            Box::pin(merge_tier(&mut dataset, &options)),
             WriterError::IndexMergeFailed,
         )
         .await?;
@@ -1136,48 +1145,24 @@ mod restore_tests;
 
 #[cfg(test)]
 mod merge_run_tests {
-    use super::*;
-
-    fn segment(first_fragment: u32, rows: u64) -> IndexIdentity {
-        IndexIdentity {
-            name: "vector_idx".into(),
-            kind: "ivf_rq".into(),
-            column: "vector".into(),
-            uuid: first_fragment.to_string(),
-            partitions: None,
-            rows: Some(rows),
-            first_fragment: Some(first_fragment),
-        }
-    }
-
-    fn pending(segments: &[IndexIdentity], target: u64) -> bool {
-        merge_run_pending(&segments.iter().collect::<Vec<_>>(), target)
-    }
+    use super::smallest_neighbor_pair;
 
     #[test]
-    fn a_run_needs_two_neighbors_that_fit_one_step() {
-        // Every segment is at the target: nothing to merge, however many there are.
-        let full: Vec<_> = (0..100).map(|i| segment(i, 100)).collect();
-        assert!(!pending(&full, 100));
-        // Two that fit.
-        assert!(pending(
-            &[segment(0, 100), segment(1, 40), segment(2, 60)],
-            100
-        ));
-        // Neighbors in fragment order, whatever the manifest order: the big segment is between.
-        assert!(!pending(
-            &[segment(0, 40), segment(2, 40), segment(1, 100)],
-            100
-        ));
-        // No two neighbors fit.
-        assert!(!pending(
-            &[segment(0, 60), segment(1, 60), segment(2, 60)],
-            100
-        ));
-        // A segment without rows or fragments takes no part.
-        let mut unknown = segment(1, 10);
-        unknown.rows = None;
-        assert!(!pending(&[segment(0, 10), unknown], 100));
+    fn the_smallest_pair_is_of_neighbors_in_fragment_order() {
+        assert_eq!(smallest_neighbor_pair(vec![]), None);
+        assert_eq!(smallest_neighbor_pair(vec![(0, 100)]), None);
+        // Segments of a full step each: every pair is above the step, so no merge is due.
+        let full: Vec<_> = (0..100).map(|i| (i, 100)).collect();
+        assert_eq!(smallest_neighbor_pair(full), Some(200));
+        // The manifest order is not the fragment order: 40 and 40 are not neighbors.
+        assert_eq!(
+            smallest_neighbor_pair(vec![(0, 40), (2, 40), (1, 100)]),
+            Some(140)
+        );
+        assert_eq!(
+            smallest_neighbor_pair(vec![(0, 100), (1, 40), (2, 60)]),
+            Some(100)
+        );
     }
 }
 
