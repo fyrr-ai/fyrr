@@ -1956,14 +1956,19 @@ async fn maintenance_repartitions_the_vector_index_of_a_growing_namespace_on_sto
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// A namespace of 13 publications has 13 segments of each index. `writer
-/// maintain` merges them in steps of at most four segments, so every index is
-/// one segment afterwards, and the namespace answers like before.
+/// A namespace of 24 publications of 250 rows has 24 vector segments. With
+/// `step_max_duration = 8s` a merge step may rewrite 5,600 rows (half the
+/// step at 1,400 rows/s), so `writer maintain` merges the segments in runs of
+/// at most that many rows and leaves a segment that large alone: 22 segments
+/// become one of 5,500 rows, and the last two one of 500. The index is valid
+/// after every step, and the namespace answers like before.
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
-async fn maintenance_merges_the_index_segments_in_bounded_steps_on_storage() {
-    const COMMITS: usize = 13;
-    const STEP_SEGMENTS: usize = 4;
+async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
+    use lance::index::DatasetIndexExt;
+    const COMMITS: usize = 24;
+    const COMMIT_ROWS: usize = 250;
+    const STEP_ROWS: usize = 5_600;
     let (config, root) = setup_on(Backend::Local);
     let text = std::fs::read_to_string(&config)
         .unwrap()
@@ -1974,49 +1979,60 @@ async fn maintenance_merges_the_index_segments_in_bounded_steps_on_storage() {
     let sources = root.join("sources");
     std::fs::remove_dir_all(&sources).unwrap();
     std::fs::create_dir_all(&sources).unwrap();
+    // A commit of exactly `group_max_rows` rows keeps its fragment out of compaction.
     std::fs::write(
         &config,
         format!(
-            "{text}\n[writer]\nthreads = 2\n\n[[sources]]\nid = \"docs\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:allow\"]\n[sources.scope]\npaths = [\"{}\"]\n",
+            "{text}\n[writer]\nthreads = 2\n\n[writer.commit]\ngroup_max_rows = {COMMIT_ROWS}\n\n[writer.maintenance]\nstep_max_duration = \"8s\"\n\n[[sources]]\nid = \"docs\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:allow\"]\n[sources.scope]\npaths = [\"{}\"]\n",
             sources.display()
         ),
     )
     .unwrap();
     success(&config, &["writer", "namespace", "create"]);
-    let mut row = 0;
-    for commit in 0..COMMITS {
-        // The first publication holds enough rows to build the vector index.
-        for _ in 0..if commit == 0 { 64 } else { 8 } {
-            let text = format!("seg doc {row}");
-            std::fs::write(sources.join(format!("{row}.txt")), &text).unwrap();
-            root.embedding.insert_both(&text, clustered(row % 64, row));
-            row += 1;
+    for row in 0..COMMITS * COMMIT_ROWS {
+        let text = format!("seg doc {row}");
+        std::fs::write(sources.join(format!("{row}.txt")), &text).unwrap();
+        root.embedding.insert_both(&text, clustered(row % 64, row));
+        if (row + 1) % COMMIT_ROWS == 0 {
+            success(&config, &["writer", "sync"]);
+            success(&config, &["writer", "commit"]);
         }
-        success(&config, &["writer", "sync"]);
-        success(&config, &["writer", "commit"]);
     }
+    // The rows of each vector segment, in publication order.
     let segments = || async {
-        let mut counts = std::collections::BTreeMap::new();
-        for index in publication(&config).await.1.indexes {
-            *counts.entry(index.name).or_insert(0usize) += 1;
-        }
-        counts
+        let loaded = fyrr_core::config::load(&config).unwrap();
+        let (head, _) = publication(&config).await;
+        let dataset = fyrr_reader::storage::pinned(&loaded.config, &head)
+            .await
+            .unwrap();
+        let stats: Value =
+            serde_json::from_str(&dataset.index_statistics("vector_idx").await.unwrap()).unwrap();
+        stats["indices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|segment| {
+                segment["partitions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| p["size"].as_u64().unwrap() as usize)
+                    .sum::<usize>()
+            })
+            .collect::<Vec<_>>()
     };
-    let before = segments().await;
-    assert_eq!(before["vector_idx"], COMMITS, "{before:?}");
-    let steps: usize = before
-        .values()
-        .map(|&count| (count - 1).div_ceil(STEP_SEGMENTS - 1))
-        .sum();
+    assert_eq!(segments().await, vec![COMMIT_ROWS; COMMITS]);
 
     let maintained = success(&config, &["writer", "maintain"]);
     let after = segments().await;
-    assert!(after.values().all(|&count| count == 1), "{after:?}");
-    assert_eq!(
-        maintained["index_merge_steps"].as_u64().unwrap() as usize,
-        steps,
-        "{maintained}"
+    assert_eq!(after, [22 * COMMIT_ROWS, 2 * COMMIT_ROWS], "{maintained}");
+    // No step rewrote more than the budget, and no two neighbors could still share a step.
+    assert!(after.iter().all(|&rows| rows <= STEP_ROWS), "{after:?}");
+    assert!(
+        after.windows(2).all(|pair| pair[0] + pair[1] > STEP_ROWS),
+        "{after:?}"
     );
+    assert!(maintained["index_merge_steps"].as_u64().unwrap() >= 2);
     assert_eq!(command(&config, &["writer", "verify"])["verified"], true);
     let mut client = tools::Mcp::open(&config);
     let found = tools::body(client.call("search", json!({"query": "seg doc 77", "limit": 3})));

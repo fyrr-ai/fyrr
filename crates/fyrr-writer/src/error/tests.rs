@@ -134,7 +134,6 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
         ("incompatible_index", false),
         ("index_build_failed", false),
         ("index_merge_failed", false),
-        ("index_merge_no_progress", false),
         ("lineage_invalid", false),
         ("maintenance_step_deadline", false),
         ("native_update_failed", false),

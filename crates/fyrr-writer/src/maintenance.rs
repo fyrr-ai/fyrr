@@ -23,16 +23,29 @@ use lance::dataset::cleanup::CleanupPolicy;
 use lance::dataset::optimize::{CompactionOptions, plan_compaction};
 use lance::dataset::transaction::{Operation, RewriteGroup};
 use lance::index::DatasetIndexExt;
+use lance::index::optimize::{commit_optimize_indices, plan_optimize_indices};
 use lance_index::optimize::OptimizeOptions;
 use object_store::{ObjectStoreExt, PutMode, path::Path};
 use std::collections::{BTreeMap, BTreeSet};
 
-// Bound catalog-wide index opens.
+// Bound catalog-wide index opens, while the indexes stay below `merge_tier_rows` per segment.
 const INDEX_SEGMENT_LIMIT: usize = 64;
-// Segments one merge step rewrites, the previous step's output included. A step must fit
-// `writer.maintenance.step_max_duration`: merging 60 vector segments of 50,000 rows in one
-// step took 36 min. Repeated steps converge to one segment, each a valid publication.
-const INDEX_MERGE_STEP_SEGMENTS: usize = 4;
+// Merge throughput measured on #317: 3,000,000 rows in 2,147 s on `writer maintain`, cores 0-3,
+// `writer.threads = 2`. Re-measure with `scripts/bench-scale --maintain` when the merge changes.
+const MERGE_ROWS_PER_SECOND: f64 = 1_400.0;
+
+/// The rows one merge step may rewrite: half of `step_max_duration` at the measured throughput,
+/// 210,000 rows by default. A step also opens segments and writes the version.
+fn merge_tier_rows(config: &Config) -> u64 {
+    let budget = config
+        .writer
+        .maintenance
+        .step_max_duration
+        .as_duration()
+        .as_secs_f64()
+        / 2.0;
+    ((budget * MERGE_ROWS_PER_SECOND) as u64).max(1)
+}
 
 /// Whether `maintain` has work, judged from the served manifest alone, so that
 /// an idle `writer serve` tick asks storage for nothing more. An index with
@@ -139,6 +152,7 @@ async fn maintain_held(
     command_start(config, lease, history, false).await?;
     let mut compacted = 0;
     let mut merged = 0;
+    let mut settled = BTreeSet::new();
     let limit = config.writer.maintenance.step_max_duration.as_duration();
     loop {
         let head = boundary(config, lease, history).await?;
@@ -152,17 +166,17 @@ async fn maintain_held(
             for index in indexes.iter() {
                 *counts.entry(index.name.clone()).or_insert(0usize) += 1;
             }
-            Ok::<_, WriterError>(
-                counts
-                    .into_iter()
-                    .find_map(|(name, count)| (count > INDEX_SEGMENT_LIMIT).then_some(name)),
-            )
+            Ok::<_, WriterError>(counts.into_iter().find_map(|(name, count)| {
+                (count > INDEX_SEGMENT_LIMIT && !settled.contains(&name)).then_some(name)
+            }))
         })
         .await
         .map_err(|_| WriterError::MaintenanceStepDeadline)??;
         if let Some(name) = oversized {
-            if !merge_index(config, lease, dataset, head, name, rebalance).await? {
-                return Err(WriterError::IndexMergeNoProgress);
+            // A namespace of more than 64 segments of `merge_tier_rows` rows has no merge left.
+            if !merge_index(config, lease, dataset, head, name.clone(), rebalance).await? {
+                settled.insert(name);
+                continue;
             }
             merged += 1;
             continue;
@@ -278,6 +292,23 @@ async fn maintain_held(
     )
 }
 
+/// Merge the first group of the plan that packs the segments of an index into runs of at most
+/// `max_rows_per_segment` rows. A run is one step: it rewrites no more than that, and a segment
+/// that is that large already stays. Segments that stay are never rewritten.
+async fn merge_tier(dataset: &mut Dataset, options: &OptimizeOptions) -> lance::Result<()> {
+    let plan = plan_optimize_indices(dataset, options).await?;
+    for merge in &plan.merges {
+        let mut built = Vec::new();
+        for task in plan.tasks.iter().filter(|task| task.group == merge.group) {
+            built.extend(task.execute(dataset).await?);
+        }
+        if let Some(result) = merge.execute(dataset, &built).await? {
+            return commit_optimize_indices(dataset, vec![result], options).await;
+        }
+    }
+    Ok(())
+}
+
 async fn merge_index(
     config: &Config,
     lease: &LeaseGuard,
@@ -304,18 +335,31 @@ async fn merge_step(
 ) -> Result<bool> {
     let before = dataset.version().version;
     let mut work = lineage(lease, &head);
-    let mut options = OptimizeOptions::merge(INDEX_MERGE_STEP_SEGMENTS);
-    if rebalance {
-        options = options.with_partition_rebalancing();
-    }
+    let mut options = OptimizeOptions::merge(usize::MAX);
     options.index_names = Some(vec![name]);
     options.retrain = false;
-    commit::native_step(
-        lease,
-        dataset.optimize_indices(&options),
-        WriterError::IndexMergeFailed,
-    )
-    .await?;
+    let target = merge_tier_rows(config);
+    if dataset.count_rows(None).await? as u64 <= target {
+        if rebalance {
+            options = options.with_partition_rebalancing();
+        }
+        commit::native_step(
+            lease,
+            dataset.optimize_indices(&options),
+            WriterError::IndexMergeFailed,
+        )
+        .await?;
+    } else {
+        // shortcut: indexes above the step target are merged in tiers without partition
+        // rebalancing; rebalance per segment when needed.
+        options.max_rows_per_segment = Some(target);
+        commit::native_step(
+            lease,
+            merge_tier(&mut dataset, &options),
+            WriterError::IndexMergeFailed,
+        )
+        .await?;
+    }
     commit::record_transaction(&dataset, &mut work, before).await?;
     if dataset.version().version == before {
         return Ok(false);
