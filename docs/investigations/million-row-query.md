@@ -266,10 +266,12 @@ These are candidates for their own issues; none is fixed here.
    5-minute step**: two runs failed with `maintenance_step_deadline` (331 s and
    313 s); it takes 2,147 s. `writer serve` runs maintenance only above 64
    segments, so a namespace loaded in 50,000-row requests sits at 60 segments
-   with 0.87 recall@10 and 4 times the dense latency.
+   with 0.87 recall@10 and 4 times the dense latency. (Rerun after #323:
+   see the last section.)
 3. **The merged vector index is read in about 26,000-47,000 small requests on
    the first query** (1.3-1.9 GiB), 35 to 80 times the requests of the
-   unmerged one (580-745) for a similar number of bytes.
+   unmerged one (580-745) for a similar number of bytes. (Rerun after #322:
+   see the last section.)
 4. **Full-text and hybrid queries of a subject that reads 10% of the rows take
    about 170 ms (p95 360 ms)** in the full-text lane (4 to 7 times those of a
    subject that reads all or 1%) and in the hybrid lane (1.8 to 5.4 times).
@@ -305,3 +307,153 @@ These are candidates for their own issues; none is fixed here.
   2304 and 6144 MiB are not measured.
 - **Admission after a version change.** Only the first admission of a reader;
   the rebuild after a publication is not measured.
+
+## Rerun after tiered merging (#323) and whole-file index download (#322)
+
+The same namespace shape was written and measured again with the defaults, on
+`fyrr-ai/main` at `9ab044b848de0ed6bef739e218ea78f162a6721a`, which holds the
+tiered vector merge of [#319](https://github.com/fyrr-ai/fyrr/issues/319)
+(#323) and the whole-file download of the vector index files of
+[#320](https://github.com/fyrr-ai/fyrr/issues/320) (#322). Release profile
+(fat LTO), binary SHA-256
+`09599886eb311bc3c24230648ad0d7c5ba6a5cc25201f056695da7389ae142ed`, same machine
+and storage as above, `writer.threads = 2` and `taskset -c 0-3` for the load
+and for every `writer maintain`. **No `step_max_duration` override** (default 5
+minutes) and no change of any other setting; readers at the default
+`reader.memory_max_bytes` (2304 MiB) and at 6144 MiB.
+
+```sh
+scripts/bench-scale --rows 3000000 --queries 100 --native-recall 10 --keep \
+  --memory 2415919104 6442450944 --dir /mnt/fetchcraft-builds/tmp/bench-scale
+# a second pass of the queries on the same namespace, 6144 MiB only
+scripts/bench-scale --reuse DIR --queries 100 --native-recall 10 --memory 6442450944
+```
+
+`scripts/bench-scale` now repeats `writer maintain` while a run fails or still
+merged something (at most 8 runs) and keeps the telemetry line of every merge
+step. **The host was busy**: other agents' builds and CI ran during the whole
+measurement (load average 2.4-13 on 20 CPUs), so the latencies below carry that noise. The second pass
+repeats the queries on the same host; it does not isolate the noise, and its
+figures differ from the first for any reason. The raw JSON is kept privately on the build host.
+
+### `writer maintain` with the defaults (#319)
+
+60 requests of 50,000 rows, as before (sum of the answers 4,711 s, median
+79.8 s, writer peak RSS 2,326 MiB; the host was slower than for the first
+load). 60 vector segments and 60 fragments afterwards, one `event=maintained`
+of `writer serve` and no merge line from it. Then `writer maintain` four times,
+every run exit code 0, no `maintenance_step_deadline`, no
+`index_merge=skipped`:
+
+| Run | Seconds | Peak RSS (MiB) | Merge steps | Longest step | Fragments, vector segments after |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 50.0 | 1,791 | 26: 11 of 3,000,000 rows, 15 of 200,000 | 14.3 s | 60, **15** |
+| 2 | 192.1 | 1,863 | 26: 11 of 3,000,000 rows, 15 of 200,000 | 90.4 s | 30, 15 |
+| 3 | 207.1 | 1,803 | 11 of 3,000,000 rows | 109.2 s | 15, 15 |
+| 4 | 38.0 | 1,085 | none | none | 15, 15 |
+
+Total 487 s (8.1 minutes), against 2,147 s for the one-step merge of #317.
+Reading it:
+
+- **The vector index is down to 15 segments in the first run, as #323
+  predicted, and each of its 15 steps took 0.1-0.3 s** (four 50,000-row
+  segments joined, no partition rebalancing). The other 11 indexes were merged
+  in 11 steps of 0.0-14.3 s in that run.
+- **It converges without an override, but in four invocations**: the fourth
+  does nothing. Runs 2 and 3 merged again without changing a segment count: the
+  fragments went 60, 30, 15, and the merge steps of the later runs follow that
+  (I infer a compaction step per run; the steps do not name their index, so I
+  could not say which of the 11 took 14, 90 and 109 s). An operator that runs
+  `writer maintain` once is left with 15 vector segments and 60 fragments
+  (the first run), then with the fragments halved by each later run.
+- Storage after the four runs was 8.63 GB (3.82 GB after the load; retained old
+  versions), against 4.18 GB after the merge of #317.
+
+### Cold first dense query (#320)
+
+A fresh reader on an empty mirror, one subject per process, as before. Both
+budgets: 2304 MiB (default) again **refuses** the namespace with
+`preparation_budget_impossible`, minimum 6,060,617,728 B (5,780 MiB)
+([#318](https://github.com/fyrr-ai/fyrr/issues/318)); 6144 MiB serves it. The
+two passes (one reader process per subject and pass):
+
+| Subject | First dense query, pass 1 | First dense query, pass 2 |
+| --- | --- | --- |
+| 100% | 1.86 s, 981 requests, 914 MiB | 1.08 s, 976 requests, 512 MiB |
+| 10% | 2.32 s, 975 requests, 730 MiB | 4.89 s, 995 requests, 474 MiB |
+| 1% | 1.83 s, 971 requests, 702 MiB | 0.83 s, 969 requests, 613 MiB |
+
+**969-995 storage requests for 474-914 MiB, against 26,241-46,774 requests for
+1,315-1,964 MiB in #317's one-segment state** (and 580-745 for 1,094-1,254 MiB
+in its 60-segment state). The state is not the same (15 segments here). The
+aggregate counters show about 1,000 requests where #317 counted 26,000-47,000;
+they do not show how those requests split between whole-file and paged reads. The first full-text query then took 1,140-5,330
+requests (106-811 MiB) and the first hybrid one 1,810-6,122 (40-133 MiB). The
+seconds are as noisy as the rest.
+
+### Warm latency and recall at 15 segments
+
+p50 / p95 / p99 in milliseconds, 100 queries per cell, 6144 MiB reader, the two
+passes, next to the 60-segment and one-segment states of #317
+(8192 MiB arm) for the dense lane. There was one error: in pass 2 the second
+dense query of the 10% subject answered HTTP 408 (`deadline_exceeded`), so its
+cell of that pass (and the numpy recall of that subject in that pass) are over
+**99 successful queries**; every other cell has 100 and no error.
+
+| Subject | Lane | Pass 1 | Pass 2 | #317, 60 segments | #317, 1 segment |
+| --- | --- | --- | --- | --- | --- |
+| 100% | dense | 51 / 69 / 94 | 59 / 137 / 257 | 66 / 73 / 80 | 18 / 44 / 52 |
+| 100% | full-text | 29 / 162 / 260 | 35 / 91 / 112 | 27 / 72 / 89 | 30 / 82 / 156 |
+| 100% | hybrid | 66 / 150 / 700 | 54 / 70 / 82 | 78 / 98 / 114 | 31 / 73 / 89 |
+| 10% | dense | 72 / 1,407 / 2,892 | 50 / 750 / 1,266 | 65 / 72 / 74 | 35 / 95 / 246 |
+| 10% | full-text | 210 / 498 / 571 | 188 / 900 / 1,551 | 175 / 362 / 379 | 170 / 366 / 831 |
+| 10% | hybrid | 235 / 473 / 566 | 245 / 757 / 2,398 | 176 / 368 / 399 | 170 / 358 / 387 |
+| 1% | dense | 117 / 696 / 1,691 | 97 / 118 / 125 | 94 / 106 / 121 | 78 / 87 / 92 |
+| 1% | full-text | 45 / 108 / 120 | 40 / 97 / 100 | 40 / 95 / 106 | 35 / 86 / 92 |
+| 1% | hybrid | 106 / 136 / 249 | 97 / 112 / 118 | 97 / 110 / 127 | 84 / 97 / 102 |
+
+Recall@10 of the dense lane against the exact scan (100 queries per subject),
+the same in both passes (the 10% subject of pass 2 over 99 queries, see above):
+
+| Subject | 15 segments | #317, 60 segments | #317, 1 segment |
+| --- | --- | --- | --- |
+| 100% | **0.850** (48 of 100 queries under 0.9, lowest 0.50) | 0.869 | 0.972 |
+| 10% | 1.000 | 1.000 | 1.000 |
+| 1% | 1.000 | 1.000 | 1.000 |
+
+The reader's own `POST /recall` answered `approximate: false` again (an exact
+scan, 58-65 s for 10 samples), so it reports 1.0 and measures no index. Peak
+RSS of the reader: 35-37 MiB at `/readyz`, 372-432 MiB after the queries,
+1,057-1,103 MiB after `/recall`; `/readyz` answered in 0.1-0.16 s (9.5 s once,
+in the second pass, on the busy host).
+
+What this says:
+
+- **Tiering fixes the maintenance, not the query.** At 15 segments the 100%
+  subject's dense p50 is 51-59 ms, about 3 times the one segment of #317 (18
+  ms) and close to the 60 segments (66 ms); the estimate of 29 ms in #323
+  (interpolating the two) was not reached. Recall@10 is **0.850**, below even
+  the 60-segment state (0.869) and far below the merged one (0.972).
+- The tails are bad and noisy: the 10% subject's dense lane has p95 of 750-1,407
+  ms in both passes (72-95 ms in #317), and single queries of 5-9 s occurred
+  (pass 2: 10% full-text maximum 9,252 ms, hybrid 5,097 ms; pass 1: 1% dense
+  maximum 4,861 ms). Both passes ran with other jobs on the host, so I cannot
+  separate the host from the index here; the dense lane of the 1% subject is
+  back at 97-117 ms p50 in both.
+- Finding 5 of #317 (a subject that is not the first on a reader) shows again
+  in one of the two orders of the isolated runs: the 100% subject's
+  first six queries (the first and the next five) took 402.1-1,923.3 ms when it
+  came after the 10% and the 1% subject, and 68.8-227.1 ms in the order where it
+  came after the 1% subject alone, over the two passes (51-59 ms p50 on a
+  reader of its own).
+
+### Not measured in this rerun
+
+- A one-segment namespace at the defaults: the tiered merge stops at 15
+  segments here, and this rerun did not run `writer maintain` with a larger
+  step budget to get there, so the comparison with #317's one segment is across
+  two builds and two states.
+- The effect of the whole-file download on a reader with a small mirror, on an
+  object store (round trips) or with the page cache dropped; only requests and
+  bytes of the first query on local storage.
+- A repeat on a quiet host. Everything else in "Not measured" above holds.
