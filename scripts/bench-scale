@@ -25,10 +25,10 @@ tokens name: `all` every row, `p10` 10% of them, `p1` 1%. It then times:
              admission of the subject;
   warm       p50, p95 and p99 of `--queries` more queries, for the lanes dense
              (`vector`), full-text (`query`) and hybrid (both);
-  admission  `isolated_admission`: on one cold reader the first query of one
-             subject loads the files, then the first query of each other
-             subject builds its admission alone, less the median of its later
-             queries;
+  isolated   `isolated_admission`, a diagnosis and not an admission time: on
+             one cold reader the first query of one subject loads the files,
+             then the first query of each other subject is compared with
+             its later queries;
   recall     of the dense lane against the 10 nearest rows the subject may
              read, by a scan in numpy over the stored 16-bit values, and, for
              `all`, the reader's own `/recall` (`--native-recall` samples).
@@ -65,6 +65,7 @@ import secrets
 import shutil
 import signal
 import socket
+import stat
 import statistics
 import subprocess
 import sys
@@ -93,12 +94,33 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def remove(work, path):
     """Delete `path` (the directory itself or a path inside it), but only in a
-    directory this script created: one that holds the marker."""
-    if not (work / MARKER).is_file():
+    directory this script created: one that holds the marker. A symlink is
+    never followed: a path that is one is unlinked, and one met on the way
+    down from `work` refuses the delete."""
+    try:
+        marker = os.lstat(work / MARKER)
+    except FileNotFoundError:
+        marker = None
+    if marker is None or not stat.S_ISREG(marker.st_mode) or work.is_symlink():
         raise SystemExit("refusing to delete in %s: no %s marker" % (work, MARKER))
-    target = Path(path).resolve()
+    target = Path(os.path.abspath(path))  # lexical: no symlink is resolved
     if target != work and not target.is_relative_to(work):
         raise SystemExit("refusing to delete %s: outside %s" % (target, work))
+    current = work
+    for part in target.relative_to(work).parts:
+        current = current / part
+        if current.is_symlink():
+            if current == target:
+                current.unlink()
+                return
+            raise SystemExit(
+                "refusing to delete %s: %s is a symlink" % (target, current)
+            )
+    # Right before deleting; `rmtree` itself works on directory descriptors.
+    if not Path(os.path.realpath(target)).is_relative_to(work):
+        raise SystemExit(
+            "refusing to delete %s: it resolves outside %s" % (target, work)
+        )
     shutil.rmtree(target, ignore_errors=True)
 
 
@@ -446,13 +468,18 @@ class Run:
         self.children.remove(process)
         return seconds, peak, os.waitstatus_to_exitcode(status)
 
-    def stop(self, process):
-        """SIGTERM; the peak RSS in MiB (`VmHWM`) the process had until then."""
+    def stop(self, process, timeout=900):
+        """SIGTERM, then SIGKILL after `timeout` seconds (a writer first finishes
+        its commit group); the peak RSS in MiB (`VmHWM`) until the SIGTERM."""
         peak = None
-        if alive(process.pid):
+        if process.poll() is None:
             peak = peak_rss_mib(process.pid)
-            os.kill(process.pid, signal.SIGTERM)
-        os.wait4(process.pid, 0)
+            process.terminate()
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
         self.children.remove(process)
         return peak
 
@@ -664,7 +691,7 @@ def arm(run, corpus, memory_max_bytes, vectors, texts, stored):
             # The first dense query of a subject on a cold reader reads the index
             # files and builds the subject's admission. The time over the warm
             # median is that cost; the requests and bytes are the reader's own
-            # counters. `isolated_admission` separates the admission.
+            # counters. `isolated_admission` is a diagnosis, not an admission time.
             first, warm = out["first"][0], out["warm"][0]
             if "telemetry" in first and "p50_ms" in warm:
                 telemetry = first["telemetry"]
@@ -731,12 +758,11 @@ def arm(run, corpus, memory_max_bytes, vectors, texts, stored):
 
 
 def isolated_admission(run, memory_max_bytes, vectors):
-    """The admission of each subject apart from loading the index. On a cold
-    reader the first query of one subject reads the files and builds its
-    admission; the first query of each other subject then builds its admission
-    alone. The median of the fourth to sixth query of every identity is the
-    baseline taken off: the first ones still read pages of the index.
-    Two orders, so that every subject is measured as a later one."""
+    """A diagnosis, not an admission time. On a cold reader the first query of
+    one subject reads the files; the first query of each other subject is then
+    compared with its own later queries (the median of the fourth to sixth),
+    which have a latency of their own. Two orders, so that every subject comes
+    after another."""
     results = []
     for order in (("p1", "all", "p10"), ("p10", "p1", "all")):
         remove(run.work, run.work / "mirror")
@@ -785,7 +811,7 @@ def isolated_admission(run, memory_max_bytes, vectors):
                         "first": timings[0],
                         "later_ms": [t["ms"] for t in timings[1:]],
                         "baseline_ms": baseline,
-                        "admission_estimate_ms": round(timings[0]["ms"] - baseline, 1),
+                        "first_minus_later_ms": round(timings[0]["ms"] - baseline, 1),
                     }
                 )
                 print(

@@ -203,33 +203,31 @@ subject's permission set, and the search response exposes no per-stage time
 attributes 0 storage requests and 0 bytes to its `admission` stage in every
 first query of every run, while the reader's own storage counters moved by tens
 to tens of thousands of requests in the same queries (the table above), so
-those are not separable either. What is measured, per subject, is the total
-cost of the first query on a cold reader (the table above): **1.2-1.6 s in
-state A and 1.2-1.7 s in state B, with admission as one part of it**. That is
-an upper bound on the admission of one subject at 3,000,000 rows, and it sits
-far below the 300 s `MAX_REQUEST_DEADLINE`; it is not a measure of admission, and
-nothing is measured at a larger size.
+those are not separable either. The only statement these runs support is that
+the whole cold first query, which contains the admission, took **1.2-1.6 s in
+state A and 1.2-1.7 s in state B** for every subject, so at 3,000,000 rows the
+admission of one subject took no longer than that, far below the 300 s
+`MAX_REQUEST_DEADLINE`. It is not a measure of admission, and nothing is
+measured at a larger size.
 
-To get closer I also ran, on one cold reader, the first query of one subject
-(which reads the files) and then the first query of each other subject, whose
-files are then in the mirror. The table is that second query against the same
-subject's later queries on that reader (second query in state A, median of the
-fourth to sixth in state B). **The difference is an upper bound for admission
-that includes every other first-time read in that query**, as the request
-counts show; it is not admission time:
+A diagnosis, not a bound and not an admission time: on one cold reader I ran the
+first query of one subject (which reads the files) and then the first query of
+each other subject, and compared the latter with the same subject's later
+queries on that reader (the second query in state A, the median of the fourth
+to sixth in state B). Later queries have a latency of their own, and the first
+query reads other things too, as the request counts show:
 
-| Subject | State | First query after the files were read | Later queries | Difference (upper bound) | Storage requests, MiB read |
-| --- | --- | --- | --- | --- | --- |
-| 100% | A | 161-184 ms | 68-74 ms | 87-117 ms | 33-257, 153-170 |
-| 10% | A | 132-134 ms | 65-67 ms | 65-69 ms | 1-51, 99-129 |
-| 1% | A | 168-169 ms | 96-100 ms | 67-73 ms | 273-292, 165-167 |
-| 100% | B | 612-722 ms | 479-563 ms | 93-193 ms | 0, 0 |
-| 10% | B | 287-353 ms | 285-351 ms | 1.6-1.9 ms | 0, 0 |
-| 1% | B | 301-302 ms | 108-142 ms | 160-194 ms | 1-2,981, 69-251 |
+| Subject | State | First query after the files were read | Later queries | Storage requests, MiB read in the first query |
+| --- | --- | --- | --- | --- |
+| 100% | A | 161-184 ms | 68-74 ms | 33-257, 153-170 |
+| 10% | A | 132-134 ms | 65-67 ms | 1-51, 99-129 |
+| 1% | A | 168-169 ms | 96-100 ms | 273-292, 165-167 |
+| 100% | B | 612-722 ms | 479-563 ms | 0, 0 |
+| 10% | B | 287-353 ms | 285-351 ms | 0, 0 |
+| 1% | B | 301-302 ms | 108-142 ms | 1-2,981, 69-251 |
 
 In state B the later queries are themselves slow for the 100% and 10%
-subjects (finding 5), so the baseline is not a clean warm query and the
-differences there say even less. No figure from this table is an admission time.
+subjects (finding 5), so the baseline is not a clean warm query there.
 
 ## Recall
 
@@ -279,8 +277,8 @@ These are candidates for their own issues; none is fixed here.
    state B**: on a reader that served the 1% (or 10%) subject first, the 100%
    subject's dense queries take about 440-600 ms for six queries in a row (one
    of 1,086 ms), against 16-18 ms p50 on a reader that serves only that
-   subject. The cause is not known; the table of differences above is affected
-   by it.
+   subject. The cause is not known; the comparison of first and later queries above
+   is affected by it.
 6. **`POST /recall` answers by an exact scan at this size** (`approximate:
    false`) and takes 4-5 s per sample, so it cannot report the index recall of
    a merged 3,000,000-row namespace.
