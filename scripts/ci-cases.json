@@ -507,7 +507,7 @@
         "tier": "quick",
         "seconds": 0.003
       },
-      "full:fyrr-writer:lib:fyrr_writer/maintenance::merge_run_tests::the_smallest_pair_is_of_neighbors_in_fragment_order": {
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::merge_run_tests::the_smallest_pair_is_of_neighbors_in_fragment_order_and_of_a_crowded_index_only": {
         "tier": "quick",
         "seconds": 0.0
       },

@@ -87,7 +87,7 @@
         "format": "uint64",
         "minimum": 0
       },
-      "description": "Of each vector index with two or more segments, the smallest sum of the\nrows of two neighboring segments, in fragment order. `writer serve`\ncompares it with the rows one merge step may rewrite, to know whether a\nmerge has anything to do."
+      "description": "Of each vector index with more live segments than `writer serve` leaves\nalone (64), the smallest sum of the rows of two neighboring segments, in\nfragment order. `writer serve` compares it with the rows one merge step\nmay rewrite, to know whether a merge has anything to do."
     },
     "attributes": {
       "type": "object",

@@ -302,7 +302,7 @@ pub(crate) async fn write_manifest(
         merge_pair_rows: vector_segments
             .into_iter()
             .filter_map(|(name, segments)| {
-                crate::maintenance::smallest_neighbor_pair(segments).map(|rows| (name, rows))
+                crate::maintenance::crowded_pair_rows(segments).map(|rows| (name, rows))
             })
             .collect(),
         attributes: config.namespace.attributes.clone(),

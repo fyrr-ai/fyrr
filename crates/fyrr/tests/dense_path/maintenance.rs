@@ -2050,17 +2050,13 @@ async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
         assert!(rows.len() <= count, "{version}: {rows:?}");
         count = rows.len();
     }
-    // No two neighbors fit one step, and the manifest says so: `writer serve`
-    // finds nothing to merge.
+    // No two neighbors fit one step. The manifest records a pair only for a crowded index
+    // (above 64 segments), so `writer serve` has nothing to merge here.
     assert!(
         after.windows(2).all(|pair| pair[0] + pair[1] > STEP_ROWS),
         "{after:?}"
     );
-    let manifest = publication(&config).await.1;
-    assert_eq!(
-        manifest.merge_pair_rows["vector_idx"],
-        (22 * COMMIT_ROWS + 2 * COMMIT_ROWS) as u64
-    );
+    assert!(publication(&config).await.1.merge_pair_rows.is_empty());
     assert_eq!(command(&config, &["writer", "verify"])["verified"], true);
     let mut client = tools::Mcp::open(&config);
     let found = tools::body(client.call("search", json!({"query": "seg doc 77", "limit": 3})));
