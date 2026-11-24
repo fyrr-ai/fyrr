@@ -35,18 +35,18 @@ use std::collections::{BTreeMap, BTreeSet};
 // Bound catalog-wide index opens, while the indexes stay below `merge_tier_rows` per segment.
 pub(crate) const INDEX_SEGMENT_LIMIT: usize = 64;
 // Throughput of a step that encodes rows against a trained model, the slower of the two kinds of
-// step (the other copies partitions). Measured on #319 at 3,000,000 rows of 128 dimensions and
-// 4,096 partitions, `writer maintain`, cores 0-3, `writer.threads = 2`. Re-measure with
-// `scripts/bench-scale --maintain` when the step changes.
-const MERGE_ROWS_PER_SECOND: u128 = 1_400;
+// step (the other copies partitions). Measured on #319: 200,000 rows of 128 dimensions against
+// 4,096 partitions in 38 s on `writer maintain`, cores 0-3, `writer.threads = 2`. Re-measure with
+// `scripts/bench-scale --reuse DIR --maintain` when the step changes.
+const MERGE_ROWS_PER_SECOND: u128 = 5_200;
 // A vector index gets a new model when its rows ask for this many times the partitions of the
 // model it has. Each model so serves until the rows double, and all the retraining of an index
 // together encodes about twice its rows.
 const MODEL_GROWTH: usize = 2;
 
 /// The rows one step of a vector index may rewrite: half of `step_max_duration` at the measured
-/// throughput. A step also opens segments and writes the version. No segment grows beyond it, so
-/// that one step can always encode a whole segment again.
+/// throughput, 780,000 rows by default. A step also opens segments and writes the version. No
+/// segment grows beyond it, so that one step can always encode a whole segment again.
 fn merge_tier_rows(config: &Config) -> u64 {
     let millis = config
         .writer
@@ -54,12 +54,7 @@ fn merge_tier_rows(config: &Config) -> u64 {
         .step_max_duration
         .as_duration()
         .as_millis();
-    // EXPERIMENT ONLY: remove before merge.
-    let rate = std::env::var("FYRR_EXP_ROWS_PER_SECOND")
-        .ok()
-        .and_then(|rate| rate.parse().ok())
-        .unwrap_or(MERGE_ROWS_PER_SECOND);
-    u64::try_from(millis * rate / 2_000)
+    u64::try_from(millis * MERGE_ROWS_PER_SECOND / 2_000)
         .unwrap_or(u64::MAX)
         .max(1)
 }
@@ -447,6 +442,9 @@ async fn vector_step(
     let model = dataset
         .open_vector_index(&column, &newest.uuid, &NoOpMetricsCollector)
         .await?;
+    // shortcut: Lance trains at most 4,096 partitions (`recommended_num_partitions`), so above
+    // about 4,500,000 rows a partition holds more than twice `dense_partition_rows`. Train with
+    // an explicit count when a namespace of that size is measured.
     let wanted = recommended_num_partitions(
         crate::narrow_usize(fragments.values().sum()),
         config.namespace.dense_partition_rows as usize,
@@ -556,12 +554,7 @@ async fn merge_step(
     let rows = if is_vector_index(config, &name) {
         commit::native_step(
             lease,
-            Box::pin(async {
-                vector_step(config, &mut dataset, &name, options)
-                    .await
-                    // EXPERIMENT ONLY: remove before merge.
-                    .inspect_err(|error| eprintln!("telemetry index_step=failed error={error}"))
-            }),
+            Box::pin(vector_step(config, &mut dataset, &name, options)),
             WriterError::IndexMergeFailed,
         )
         .await?

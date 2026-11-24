@@ -1985,19 +1985,20 @@ async fn vector_segment_rows(config: &Path, version: Option<u64>) -> Vec<usize> 
         .collect()
 }
 
-/// A namespace of 24 publications of 250 rows has 24 vector segments. With
-/// `step_max_duration = 8s` a merge step may rewrite 5,600 rows (half the
-/// step at 1,400 rows/s), so `writer maintain` merges the segments in runs of
-/// at most that many rows and leaves a segment that large alone: 22 segments
-/// become one of 5,500 rows, and the last two one of 500. Every version the
-/// steps publish holds segments of at most that many rows, and the namespace
-/// answers like before.
+/// A namespace of 24 publications of 500 rows has 24 vector segments, each
+/// encoded against the one partition of the first. With `step_max_duration =
+/// 4s` a step may rewrite 10,400 rows (half the step at 5,200 rows/s). `writer
+/// maintain` trains a model for the 12,000 rows and encodes the first segment
+/// against it, then the next 20 segments as one of 10,000 rows, then the last
+/// three as one of 1,500. No two neighbors fit one step, so they stay. Every
+/// version the steps publish holds segments of at most that many rows, and
+/// the namespace answers like before.
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
 async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
     const COMMITS: usize = 24;
-    const COMMIT_ROWS: usize = 250;
-    const STEP_ROWS: usize = 5_600;
+    const COMMIT_ROWS: usize = 500;
+    const STEP_ROWS: usize = 10_400;
     let (config, root) = setup_on(Backend::Local);
     let text = std::fs::read_to_string(&config)
         .unwrap()
@@ -2012,7 +2013,7 @@ async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
     std::fs::write(
         &config,
         format!(
-            "{text}\n[writer]\nthreads = 2\nenvelope_max_rows = {COMMIT_ROWS}\n\n[writer.commit]\ngroup_max_rows = {COMMIT_ROWS}\n\n[writer.maintenance]\nstep_max_duration = \"8s\"\n\n[[sources]]\nid = \"docs\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:allow\"]\n[sources.scope]\npaths = [\"{}\"]\n",
+            "{text}\n[writer]\nthreads = 2\nenvelope_max_rows = {COMMIT_ROWS}\n\n[writer.commit]\ngroup_max_rows = {COMMIT_ROWS}\n\n[writer.maintenance]\nstep_max_duration = \"4s\"\n\n[[sources]]\nid = \"docs\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:allow\"]\n[sources.scope]\npaths = [\"{}\"]\n",
             sources.display()
         ),
     )
@@ -2035,8 +2036,26 @@ async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
 
     let maintained = success(&config, &["writer", "maintain"]);
     let after = vector_segment_rows(&config, None).await;
-    assert_eq!(after, [22 * COMMIT_ROWS, 2 * COMMIT_ROWS], "{maintained}");
-    assert!(maintained["index_merge_steps"].as_u64().unwrap() >= 2);
+    assert_eq!(
+        after,
+        [COMMIT_ROWS, 20 * COMMIT_ROWS, 3 * COMMIT_ROWS],
+        "{maintained}"
+    );
+    assert!(maintained["index_merge_steps"].as_u64().unwrap() >= 3);
+    // Every segment is of the model trained for the rows the namespace has now.
+    let partitions: Vec<_> = publication(&config)
+        .await
+        .1
+        .indexes
+        .into_iter()
+        .filter(|index| index.kind == "ivf_rq")
+        .map(|index| index.partitions)
+        .collect();
+    assert_eq!(
+        partitions,
+        [Some((COMMITS * COMMIT_ROWS / 550) as u32); 3],
+        "{maintained}"
+    );
     // No step rewrote more than the budget: every version a step published has
     // segments of at most that many rows, and never more segments than before.
     let last = publication(&config).await.1.lance_version;
