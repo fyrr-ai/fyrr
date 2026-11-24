@@ -240,16 +240,22 @@ impl PreparedReader {
             return Err(InvalidArgument);
         }
         self.authorization()?;
-        let wanted = k.min(
-            usize::try_from(self.selected_rows().max_len().unwrap_or(0))
-                .map_err(|_| StorageUnavailable)?,
-        );
+        let eligible = usize::try_from(self.selected_rows().max_len().unwrap_or(0))
+            .map_err(|_| StorageUnavailable)?;
+        let wanted = k.min(eligible);
         let query_array = Float32Array::from(vector.to_vec());
         if wanted == 0 {
             return Ok((Vec::new(), false));
         }
         let depth = &self.config.namespace.retrieval.rescore_depth;
         let mut shortlist = depth.initial(k);
+        if matches!(depth, fyrr_core::config::RescoreDepth::Legacy)
+            && self.config.namespace.dense_rq_bits == 1
+        {
+            // One-bit distances rank a growing pool less precisely. Grow the exact
+            // rescore pool sublinearly within the request's existing reservation.
+            shortlist = eligible.isqrt().clamp(shortlist, depth.maximum(k));
+        }
         // An unfiltered request and the authorization mask always use the
         // index. A filter does so when probing reads fewer bytes than the
         // exact scan of its selection, and then probes further.
@@ -258,7 +264,7 @@ impl PreparedReader {
             (Some(_), None) => FilterPlan::EXACT,
             (Some(_), Some(maps)) => FilterPlan::new(
                 maps,
-                self.selected_rows().max_len().unwrap_or(0),
+                eligible as u64,
                 self.config.reader.nprobes,
                 shortlist,
                 self.config.embedding.dimensions,
