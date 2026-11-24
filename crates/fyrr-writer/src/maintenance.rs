@@ -51,7 +51,9 @@ fn merge_tier_rows(config: &Config) -> u64 {
 /// The indexes whose merge step ran out of time, by namespace and name, with the head version the
 /// run that skipped them ended at. In memory: a `writer serve` keeps it between runs. Until the
 /// head is another version (a new publication) neither `maintain` nor `due` tries them again, so a
-/// step that does not fit its deadline is wasted once per publication, never on every tick.
+/// step that does not fit its deadline is wasted once per publication, never on every tick. A skip
+/// ends only with a new content version: an identity-only publication keeps `lance_version`, and
+/// the data it would merge is the same.
 static MERGE_SKIPPED: std::sync::Mutex<BTreeMap<(String, String), u64>> =
     std::sync::Mutex::new(BTreeMap::new());
 
@@ -258,6 +260,7 @@ async fn maintain_held(
                     break;
                 }
                 let start = std::time::Instant::now();
+                let at = version(&head);
                 match merge_index(config, lease, dataset, head, name.clone(), rebalance).await {
                     Ok(Some(rows)) => {
                         merged += 1;
@@ -266,6 +269,8 @@ async fn maintain_held(
                     Ok(None) => break,
                     // The other indexes and the steps after the merges still run.
                     Err(WriterError::MaintenanceStepDeadline) => {
+                        // Recorded now: a later step of this run may fail before the run ends.
+                        skip_merge(&config.namespace.name, &name, at);
                         crate::telemetry::index_merge_skipped(&name);
                         command_recover(config, lease, history, false).await?;
                         skipped.push(name);
@@ -336,6 +341,7 @@ async fn maintain_held(
         )
         .await?;
     }
+    // The run's own publications moved the head on: the skip follows it.
     let end = version(&lease.head().await?);
     for index in skipped {
         skip_merge(&config.namespace.name, &index, end);
@@ -1174,7 +1180,7 @@ mod restore_tests;
 
 #[cfg(test)]
 mod merge_run_tests {
-    use super::{INDEX_SEGMENT_LIMIT, crowded_pair_rows, merge_skipped, skip_merge};
+    use super::{INDEX_SEGMENT_LIMIT, crowded_pair_rows, due, merge_skipped, skip_merge};
 
     #[test]
     fn the_smallest_pair_is_of_neighbors_in_fragment_order_and_of_a_crowded_index_only() {
@@ -1196,6 +1202,31 @@ mod merge_run_tests {
             crowded_pair_rows(crowded(vec![(2000, 40), (2001, 60)])),
             Some(100)
         );
+    }
+
+    #[test]
+    fn a_skip_recorded_before_the_run_publishes_keeps_due_false_for_that_version() {
+        let config = fyrr_core::config::parse(
+            "[namespace]\nname='due-skip'\n[storage]\nuri='s3://due-skip'\n[embedding]\n\
+                endpoint='https://cache.invalid'\n",
+        )
+        .unwrap()
+        .config;
+        let mut manifest: fyrr_core::publication::ContentManifest = serde_json::from_str(
+            include_str!("../../../fixtures/contracts/content-manifest/manifest.json"),
+        )
+        .unwrap();
+        // Just maintained, so only a crowded vector index with a pair that fits one step is due.
+        manifest.maintenance_completed_at = Some(fyrr_core::clock::now());
+        assert!(!due(&config, &manifest));
+        manifest.merge_pair_rows.insert("vector_idx".into(), 1);
+        assert!(due(&config, &manifest));
+        // The merge ran out of time at the version the run began with, and the run then failed
+        // before it published: the manifest is still that version.
+        skip_merge("due-skip", "vector_idx", manifest.lance_version);
+        assert!(!due(&config, &manifest));
+        manifest.lance_version += 1;
+        assert!(due(&config, &manifest));
     }
 
     #[test]

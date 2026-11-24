@@ -515,6 +515,10 @@
         "tier": "quick",
         "seconds": 0.0
       },
+      "full:fyrr-writer:lib:fyrr_writer/maintenance::merge_run_tests::a_skip_recorded_before_the_run_publishes_keeps_due_false_for_that_version": {
+        "tier": "quick",
+        "seconds": 0.0
+      },
       "full:fyrr-writer:lib:fyrr_writer/maintenance::restore_fragments::tests::reused_ids_cannot_prove_file_identity_and_restore_mismatch_falls_back": {
         "tier": "quick",
         "seconds": 0.003
