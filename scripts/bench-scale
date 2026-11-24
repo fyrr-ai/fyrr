@@ -11,8 +11,8 @@ tokens name: `all` every row, `p10` 10% of them, `p1` 1%. It then times:
 
   load       the answer time of every write request (the publication that
              holds it, with the index update), the peak RSS of the writer and
-             the bytes of the storage; then `writer maintain` (run again once
-             if it fails, for example `maintenance_step_deadline`): time, peak
+             the bytes of the storage; then `writer maintain` (with the defaults, run again
+             while it fails or still merges, up to 8 runs): time, peak
              RSS and the index segments before and after;
   per memory budget of the reader (`--memory`), per subject, one reader
   process started on an empty mirror, so that the first query is the first of
@@ -88,6 +88,7 @@ NAMESPACE = "bench-scale"
 SUBJECTS = (("all", 1), ("p10", 10), ("p1", 100))  # name, one row in N is readable
 LANES = ("dense", "fts", "hybrid")
 WRITER_CORES = "0-3"
+MAINTAIN_RUNS = 8
 MARKER = ".bench-scale"  # written into every directory the script creates
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -499,13 +500,16 @@ class Run:
 
 def maintain_run(run):
     seconds, peak, code = run.run_measured(["writer", "maintain"])
+    lines = (run.work / "writer-maintain.stderr").read_text().splitlines()
+    merges = [line for line in lines if "index_merge=" in line]
     return {
         "seconds": round(seconds, 1),
         "peak_rss_mib": peak,
         "exit_code": code,
-        "stderr_tail": (run.work / "writer-maintain.stderr")
-        .read_text()
-        .splitlines()[-5:],
+        # One line per merge step of this run (`index_merge=done rows= seconds=`)
+        # or per index that ran out of time (`index_merge=skipped`).
+        "merge_steps": merges,
+        "other_stderr": [line for line in lines if "index_merge=" not in line][-5:],
     }
 
 
@@ -568,10 +572,15 @@ def load(run, corpus):
         serve_peak = run.stop(writer)
     elapsed = time.perf_counter() - started
     before = run.status()
+    # With the defaults. A run that fails, or that still merged something, is
+    # followed by another, up to MAINTAIN_RUNS: what a periodic operator does.
     runs = []
-    for attempt in range(2):
+    for attempt in range(MAINTAIN_RUNS):
         runs.append(maintain_run(run))
-        if runs[-1]["exit_code"] == 0:
+        runs[-1]["status_after"] = run.status()
+        if runs[-1]["exit_code"] == 0 and not any(
+            "index_merge=done" in line for line in runs[-1]["merge_steps"]
+        ):
             break
     after = run.status()
     return {
@@ -583,7 +592,11 @@ def load(run, corpus):
         "writer_peak_rss_mib": serve_peak,
         "peak_storage_bytes": max(b["storage_bytes"] for b in batches),
         "before_maintain": before,
-        # A failed run is repeated once; both are recorded.
+        "serve_stderr_merge_lines": [
+            line
+            for line in (work / "writer-serve.stderr").read_text().splitlines()
+            if "index_merge=" in line or "event=maintained" in line
+        ],
         "maintain": {"runs": runs, "storage_bytes": tree_bytes(work / "storage")},
         "after_maintain": after,
     }
