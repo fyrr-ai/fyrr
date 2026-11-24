@@ -1216,8 +1216,22 @@ mod merge_run_tests {
             include_str!("../../../fixtures/contracts/content-manifest/manifest.json"),
         )
         .unwrap();
-        // Just maintained, so only a crowded vector index with a pair that fits one step is due.
+        // Just maintained, and holding every index the settings ask for, so that only a crowded
+        // vector index with a pair that fits one step is due.
         manifest.maintenance_completed_at = Some(fyrr_core::clock::now());
+        manifest.indexes = fyrr_reader::search::attribute_indexes(
+            &config.namespace.attributes,
+            &config.namespace.attribute_indexes,
+        )
+        .map(|(column, name, _)| fyrr_core::publication::IndexIdentity {
+            name,
+            kind: "btree".into(),
+            column,
+            uuid: "00000000-0000-0000-0000-000000000000".into(),
+            partitions: None,
+        })
+        .collect();
+        manifest.attribute_indexes.clear();
         assert!(!due(&config, &manifest));
         manifest.merge_pair_rows.insert("vector_idx".into(), 1);
         assert!(due(&config, &manifest));
