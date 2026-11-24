@@ -194,6 +194,15 @@ impl PreparedReader {
         eligible: &RowAddrMask,
     ) -> Result<Vec<Candidate>> {
         let scores = column::<Float32Array>(batch, score_column, SearchResultInvalid)?;
+        Self::scored_lane_rows(batch, scores, distance, eligible)
+    }
+
+    pub(super) fn scored_lane_rows(
+        batch: &RecordBatch,
+        scores: &Float32Array,
+        distance: bool,
+        eligible: &RowAddrMask,
+    ) -> Result<Vec<Candidate>> {
         let mut rows = Vec::new();
         for row in 0..batch.num_rows() {
             let id = ids(batch)?.value(row);
