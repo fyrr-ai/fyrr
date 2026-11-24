@@ -23,6 +23,15 @@ for tool in git curl unzip sha256sum openssl python3 rustup uv cc jq; do
   if command -v "$tool" >/dev/null; then ok "$tool: $(command -v "$tool")"; else bad "$tool is not installed"; fi
 done
 
+# lance-linalg builds its f16 kernels from C: on x86-64 that needs `_Float16` (GCC 12+, Clang 6+).
+if [[ "$(uname -m)" == x86_64 ]] && command -v cc >/dev/null; then
+  if echo '_Float16 x;' | cc -x c -c -o /dev/null - 2>/dev/null; then
+    ok "cc supports _Float16"
+  else
+    bad "cc lacks _Float16 (lance-linalg f16 kernels); install GCC 12+ or Clang 6+"
+  fi
+fi
+
 channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
 if rustc_version="$(rustc --version 2>/dev/null)" && [[ "$rustc_version" == "rustc $channel "* ]]; then
   ok "Rust toolchain $channel (rust-toolchain.toml): $rustc_version"

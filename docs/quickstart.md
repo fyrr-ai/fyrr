@@ -4,7 +4,7 @@ Index a Markdown folder on your machine, then search and fetch it from
 Claude Code over MCP. No accounts or embedding keys are needed. With Docker,
 [use the published image](#fastest-the-published-image) and skip the build.
 The first build downloads dependencies. You need Linux x86-64, git, curl,
-unzip, openssl, Python 3.11+, rustup, uv, a C compiler, jq, binutils and
+unzip, openssl, Python 3.11+, rustup, uv, a C compiler (GCC 12+ or Clang 6+), jq, binutils and
 about 10 GiB free. Install Claude Code before connecting the client.
 Clone below, or use an existing checkout. Run the remaining commands from
 its root in one shell.

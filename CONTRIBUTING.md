@@ -14,7 +14,7 @@ supported build host.
 
 Prerequisites: git, curl, unzip, openssl, Python 3.11 or newer, Docker with the compose
 plugin, rustup, uv,
-cargo-deny 0.20.2, mise with `mise install` (mr-boxington 1.30.0), binutils (`readelf`), jq, a C compiler, and about 10 GiB
+cargo-deny 0.20.2, mise with `mise install` (mr-boxington 1.30.0), binutils (`readelf`), jq, a C compiler (GCC 12+ or Clang 6+), and about 10 GiB
 of free space for `target/`.
 
 ```sh
