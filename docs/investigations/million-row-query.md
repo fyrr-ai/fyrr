@@ -332,8 +332,9 @@ scripts/bench-scale --reuse DIR --queries 100 --native-recall 10 --memory 644245
 `scripts/bench-scale` now repeats `writer maintain` while a run fails or still
 merged something (at most 8 runs) and keeps the telemetry line of every merge
 step. **The host was busy**: other agents' builds and CI ran during the whole
-measurement (load average 2.4-13 on 20 CPUs), so the latencies below carry that noise; the second
-pass shows how much. The raw JSON is kept privately on the build host.
+measurement (load average 2.4-13 on 20 CPUs), so the latencies below carry that noise. The second pass
+repeats the queries on the same host; it does not isolate the noise, and its
+figures differ from the first for any reason. The raw JSON is kept privately on the build host.
 
 ### `writer maintain` with the defaults (#319)
 
@@ -384,16 +385,20 @@ two passes (one reader process per subject and pass):
 
 **969-995 storage requests for 474-914 MiB, against 26,241-46,774 requests for
 1,315-1,964 MiB in #317's one-segment state** (and 580-745 for 1,094-1,254 MiB
-in its 60-segment state). The state is not the same (15 segments here), but the
-page-by-page reads are gone. The first full-text query then took 1,140-5,330
+in its 60-segment state). The state is not the same (15 segments here). The
+aggregate counters show about 1,000 requests where #317 counted 26,000-47,000;
+they do not show how those requests split between whole-file and paged reads. The first full-text query then took 1,140-5,330
 requests (106-811 MiB) and the first hybrid one 1,810-6,122 (40-133 MiB). The
 seconds are as noisy as the rest.
 
 ### Warm latency and recall at 15 segments
 
-p50 / p95 / p99 in milliseconds, 100 queries per cell, no errors, 6144 MiB
-reader, the two passes, next to the 60-segment and one-segment states of #317
-(8192 MiB arm) for the dense lane:
+p50 / p95 / p99 in milliseconds, 100 queries per cell, 6144 MiB reader, the two
+passes, next to the 60-segment and one-segment states of #317
+(8192 MiB arm) for the dense lane. There was one error: in pass 2 the second
+dense query of the 10% subject answered HTTP 408 (`deadline_exceeded`), so its
+cell of that pass (and the numpy recall of that subject in that pass) are over
+**99 successful queries**; every other cell has 100 and no error.
 
 | Subject | Lane | Pass 1 | Pass 2 | #317, 60 segments | #317, 1 segment |
 | --- | --- | --- | --- | --- | --- |
@@ -408,7 +413,7 @@ reader, the two passes, next to the 60-segment and one-segment states of #317
 | 1% | hybrid | 106 / 136 / 249 | 97 / 112 / 118 | 97 / 110 / 127 | 84 / 97 / 102 |
 
 Recall@10 of the dense lane against the exact scan (100 queries per subject),
-the same in both passes:
+the same in both passes (the 10% subject of pass 2 over 99 queries, see above):
 
 | Subject | 15 segments | #317, 60 segments | #317, 1 segment |
 | --- | --- | --- | --- |
@@ -436,10 +441,11 @@ What this says:
   separate the host from the index here; the dense lane of the 1% subject is
   back at 97-117 ms p50 in both.
 - Finding 5 of #317 (a subject that is not the first on a reader) shows again
-  in one of the two orders of the isolated runs: the 100% subject, after the
-  10% and the 1% subject, took 400-1,250 ms for its first six queries, and
-  69-135 ms in the order where it came after the 1% subject alone (51-59 ms
-  p50 on a reader of its own).
+  in one of the two orders of the isolated runs: the 100% subject's
+  first six queries (the first and the next five) took 402.1-1,923.3 ms when it
+  came after the 10% and the 1% subject, and 68.8-227.1 ms in the order where it
+  came after the 1% subject alone, over the two passes (51-59 ms p50 on a
+  reader of its own).
 
 ### Not measured in this rerun
 
