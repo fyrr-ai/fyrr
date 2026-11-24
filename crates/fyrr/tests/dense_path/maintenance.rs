@@ -1988,11 +1988,12 @@ async fn vector_segment_rows(config: &Path, version: Option<u64>) -> Vec<usize> 
 /// A namespace of 24 publications of 500 rows has 24 vector segments, each
 /// encoded against the one partition of the first. With `step_max_duration =
 /// 4s` a step may rewrite 10,400 rows (half the step at 5,200 rows/s). `writer
-/// maintain` trains a model for the 12,000 rows and encodes the first segment
-/// against it, then the next 20 segments as one of 10,000 rows, then the last
-/// three as one of 1,500. No two neighbors fit one step, so they stay. Every
-/// version the steps publish holds segments of at most that many rows, and
-/// the namespace answers like before.
+/// maintain` trains a model for the 12,000 rows and encodes the newest segment
+/// against it, then the first 20 segments as one of 10,000 rows, then the
+/// other three as one of 1,500, and copies that and the newest into one of
+/// 2,000. The two do not fit one step, so they stay. Every version the steps
+/// publish holds segments of at most that many rows, and the namespace answers
+/// like before.
 #[tokio::test]
 #[ignore = "real executable and local storage; scripts/ci"]
 async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
@@ -2036,12 +2037,8 @@ async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
 
     let maintained = success(&config, &["writer", "maintain"]);
     let after = vector_segment_rows(&config, None).await;
-    assert_eq!(
-        after,
-        [COMMIT_ROWS, 20 * COMMIT_ROWS, 3 * COMMIT_ROWS],
-        "{maintained}"
-    );
-    assert!(maintained["index_merge_steps"].as_u64().unwrap() >= 3);
+    assert_eq!(after, [20 * COMMIT_ROWS, 4 * COMMIT_ROWS], "{maintained}");
+    assert!(maintained["index_merge_steps"].as_u64().unwrap() >= 4);
     // Every segment is of the model trained for the rows the namespace has now.
     let partitions: Vec<_> = publication(&config)
         .await
@@ -2053,7 +2050,7 @@ async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
         .collect();
     assert_eq!(
         partitions,
-        [Some((COMMITS * COMMIT_ROWS / 550) as u32); 3],
+        [Some((COMMITS * COMMIT_ROWS / 550) as u32); 2],
         "{maintained}"
     );
     // No step rewrote more than the budget: every version a step published has

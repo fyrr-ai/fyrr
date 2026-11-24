@@ -393,8 +393,8 @@ async fn merge_tier(dataset: &mut Dataset, options: &OptimizeOptions) -> lance::
 /// The steps, each within `merge_tier_rows`:
 ///
 /// 1. The rows ask for `MODEL_GROWTH` times the partitions of the newest model: Lance trains a
-///    new model on a sample of the whole table, and the step encodes the oldest segment against
-///    it. The new segment is the newest, so the writes follow the new model from here on.
+///    new model on a sample of the whole table, and the step encodes the smallest segment
+///    against it. The new segment is the newest, so the writes follow the new model from here on.
 /// 2. A segment has another model than the newest: the step encodes the oldest such segments
 ///    again against the newest model, as one new segment that replaces them.
 /// 3. Every segment has the newest model: the step copies neighbors into one segment.
@@ -485,12 +485,22 @@ async fn vector_step(
         options.max_rows_per_segment = Some(budget);
         return merge_tier(dataset, &options).await;
     }
-    // Whole segments, oldest first, while they fit the step; the step that trained takes one.
-    let trained = reference.uuid != newest.uuid;
+    let rows_of = |covered: &[u32]| covered.iter().map(|id| fragments[id]).sum::<u64>();
+    // The step that trained has spent most of its time: it takes the smallest segment, the
+    // newest of them, which a later step can copy into the run before it.
+    if reference.uuid != newest.uuid {
+        stale = stale
+            .into_iter()
+            .rev()
+            .min_by_key(|(_, covered)| rows_of(covered))
+            .into_iter()
+            .collect();
+    }
+    // Whole segments, oldest first, while they fit the step.
     let (mut encode, mut replaces, mut rows) = (Vec::new(), Vec::new(), 0u64);
     for (segment, covered) in stale {
-        let more: u64 = covered.iter().map(|id| fragments[id]).sum();
-        if !replaces.is_empty() && (trained || rows + more > budget) {
+        let more = rows_of(covered);
+        if !replaces.is_empty() && rows + more > budget {
             break;
         }
         encode.extend(covered.iter().copied());
