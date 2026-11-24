@@ -514,7 +514,7 @@ class Run:
 def maintain_run(run):
     seconds, peak, code = run.run_measured(["writer", "maintain"])
     lines = (run.work / "writer-maintain.stderr").read_text().splitlines()
-    merges = [line for line in lines if "index_merge=" in line]
+    merges = [line for line in lines if "index_merge=" in line or "index_model=" in line]
     return {
         "seconds": round(seconds, 1),
         "peak_rss_mib": peak,
@@ -522,34 +522,47 @@ def maintain_run(run):
         # One line per merge step of this run (`index_merge=done rows= seconds=`)
         # or per index that ran out of time (`index_merge=skipped`).
         "merge_steps": merges,
-        "other_stderr": [line for line in lines if "index_merge=" not in line][-5:],
+        "other_stderr": [line for line in lines if line not in merges][-5:],
     }
 
 
-def maintain_once(run, work):
-    """One more `writer maintain` of a kept namespace, with the statuses around it."""
+def maintain_runs(run):
+    """`writer maintain` until a run succeeds and merges nothing, at most MAINTAIN_RUNS:
+    what a periodic operator does. Each run with the status after it."""
+    runs = []
+    for attempt in range(MAINTAIN_RUNS):
+        runs.append(maintain_run(run))
+        runs[-1]["status_after"] = run.status()
+        if runs[-1]["exit_code"] == 0 and not any(
+            "index_merge=done" in line for line in runs[-1]["merge_steps"]
+        ):
+            break
+    return runs
+
+
+def maintain_again(run, work):
+    """`writer maintain` of a kept namespace until it settles, with the statuses around it."""
     before = run.status()
-    result = maintain_run(run)
+    runs = maintain_runs(run)
     return {
         "step_max_duration": run.args.maintain_step or "5m (default)",
         "before": before,
-        "run": result,
+        "runs": runs,
         "after": run.status(),
         "storage_bytes": tree_bytes(work / "storage"),
     }
 
 
-def load(run, corpus):
-    """Write every row; the load, then the maintenance, as the writer takes them."""
+def write(run, corpus, start):
+    """Write the rows from `start` on, one request after the other, on a `writer serve`
+    of its own: each request's answer time, and the writer's peak RSS."""
     args, work = run.args, run.work
-    if run.run_measured(["writer", "keys"], pin=False)[2]:
-        raise SystemExit("writer keys failed")
     writer = run.spawn(["writer", "serve", "--jobs", "1"], args.memory[0], pin=True)
     write = Server(run.writer_address)
     path = "/v1/namespaces/%s/documents" % NAMESPACE
-    batches, started = [], time.perf_counter()
+    batches = []
     try:
-        for first in range(0, corpus.rows, corpus.request_rows):
+        for first in range(start, corpus.rows, corpus.request_rows):
             body = corpus.body(first)
             for _ in range(600):
                 try:
@@ -583,18 +596,19 @@ def load(run, corpus):
             )
     finally:
         serve_peak = run.stop(writer)
+    return batches, serve_peak
+
+
+def load(run, corpus):
+    """Write every row; the load, then the maintenance, as the writer takes them."""
+    args, work = run.args, run.work
+    if run.run_measured(["writer", "keys"], pin=False)[2]:
+        raise SystemExit("writer keys failed")
+    started = time.perf_counter()
+    batches, serve_peak = write(run, corpus, 0)
     elapsed = time.perf_counter() - started
     before = run.status()
-    # With the defaults. A run that fails, or that still merged something, is
-    # followed by another, up to MAINTAIN_RUNS: what a periodic operator does.
-    runs = []
-    for attempt in range(0 if args.no_maintain else MAINTAIN_RUNS):
-        runs.append(maintain_run(run))
-        runs[-1]["status_after"] = run.status()
-        if runs[-1]["exit_code"] == 0 and not any(
-            "index_merge=done" in line for line in runs[-1]["merge_steps"]
-        ):
-            break
+    runs = [] if args.no_maintain else maintain_runs(run)
     after = run.status()
     return {
         "rows": corpus.rows,
@@ -941,7 +955,14 @@ def main():
     parser.add_argument(
         "--maintain",
         action="store_true",
-        help="with --reuse: run `writer maintain` again, once, before the queries",
+        help="with --reuse: run `writer maintain` again, until it settles, before the queries",
+    )
+    parser.add_argument(
+        "--append",
+        type=int,
+        default=0,
+        help="with --reuse: write this many more requests first (after --maintain), "
+        "to measure a write into the state the namespace is in",
     )
     parser.add_argument(
         "--no-maintain",
@@ -994,7 +1015,18 @@ def main():
         if loaded:
             report["load"] = loaded
             if args.maintain:
-                loaded.setdefault("maintain_again", []).append(maintain_once(run, work))
+                loaded.setdefault("maintain_again", []).append(maintain_again(run, work))
+                (work / "load.json").write_text(json.dumps(loaded, indent=2))
+            if args.append:
+                first = corpus.rows
+                corpus = Corpus(
+                    first + args.append * args.request_rows, args.dimensions, args.request_rows
+                )
+                batches, _peak = write(run, corpus, first)
+                loaded["rows"] = args.rows = corpus.rows
+                loaded.setdefault("appended", []).append(
+                    {"writes": batches, "status_after": run.status()}
+                )
                 (work / "load.json").write_text(json.dumps(loaded, indent=2))
         else:
             report["load"] = load(run, corpus)

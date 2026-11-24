@@ -386,7 +386,7 @@ pub fn run(command: &WriterCommand, path: &Path) -> ExitCode {
                     .map(|namespaces| serde_json::json!({"namespaces":namespaces}))
                     .map_err(Into::into)
             }),
-            WriterCommand::Maintain => runtime_command(crate::maintenance::maintain(config, true)),
+            WriterCommand::Maintain => runtime_command(crate::maintenance::maintain(config)),
             WriterCommand::Serve { jobs, timeout } => {
                 // Source jobs need the providers' Python: say so once, up
                 // front, from an inventory worker (this process runs none).
