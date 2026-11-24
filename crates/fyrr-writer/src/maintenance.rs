@@ -34,51 +34,40 @@ pub(crate) const INDEX_SEGMENT_LIMIT: usize = 64;
 // `writer.threads = 2`. Re-measure with `scripts/bench-scale --maintain` when the merge changes.
 const MERGE_ROWS_PER_SECOND: u128 = 1_400;
 
-/// The most rows one merge step has rewritten within its deadline on this host: halved by a step
-/// that hit the deadline, doubled back by one that used under a quarter of it, reset by a new
-/// content publication. In memory only: a `writer serve` keeps it between runs, `writer maintain`
-/// for the run.
-static MERGE_ROWS_LIMIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
-/// The version the last run ended at: another one at the start of a run is a new content
-/// publication, and the run tries the derived rows again.
-static MERGE_SEEN_VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 /// The rows one merge step may rewrite: half of `step_max_duration` at the measured throughput,
-/// 210,000 rows by default, and at most what this host has shown to fit. A step also opens
-/// segments and writes the version.
+/// 210,000 rows by default. A step also opens segments and writes the version.
 fn merge_tier_rows(config: &Config) -> u64 {
-    // Half of the deadline, in milliseconds, at the measured rows per second.
     let millis = config
         .writer
         .maintenance
         .step_max_duration
         .as_duration()
         .as_millis();
-    let derived = u64::try_from(millis * MERGE_ROWS_PER_SECOND / 2_000)
+    u64::try_from(millis * MERGE_ROWS_PER_SECOND / 2_000)
         .unwrap_or(u64::MAX)
-        .max(1);
-    derived.min(MERGE_ROWS_LIMIT.load(std::sync::atomic::Ordering::Relaxed))
+        .max(1)
 }
 
-/// A merge step that rewrote `rows` rows in `took`: logs the rate it ran at and, if it used under a
-/// quarter of its deadline, lets the next step rewrite twice as many rows.
-fn merge_step_done(config: &Config, rows: u64, took: std::time::Duration) {
-    let target = merge_tier_rows(config);
-    let next = if took * 4 <= config.writer.maintenance.step_max_duration.as_duration() {
-        target.saturating_mul(2)
-    } else {
-        target
-    };
-    MERGE_ROWS_LIMIT.store(next, std::sync::atomic::Ordering::Relaxed);
-    crate::telemetry::index_merge_done(rows, took, next);
+/// The indexes whose merge step ran out of time, by namespace and name, with the head version the
+/// run that skipped them ended at. In memory: a `writer serve` keeps it between runs. Until the
+/// head is another version (a new publication) neither `maintain` nor `due` tries them again, so a
+/// step that does not fit its deadline is wasted once per publication, never on every tick.
+static MERGE_SKIPPED: std::sync::Mutex<BTreeMap<(String, String), u64>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn merge_skipped(namespace: &str, index: &str, version: u64) -> bool {
+    MERGE_SKIPPED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&(namespace.to_owned(), index.to_owned()))
+        .is_some_and(|&skipped| skipped == version)
 }
 
-/// A merge step of up to the target rows ran out of time: the next one rewrites half of them.
-fn merge_step_timed_out(config: &Config, took: std::time::Duration) {
-    let target = merge_tier_rows(config);
-    let next = (target / 2).max(1);
-    MERGE_ROWS_LIMIT.store(next, std::sync::atomic::Ordering::Relaxed);
-    crate::telemetry::index_merge_deadline(target, took, next);
+fn skip_merge(namespace: &str, index: &str, version: u64) {
+    MERGE_SKIPPED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert((namespace.to_owned(), index.to_owned()), version);
 }
 
 /// Whether `name` is a vector index: the one that `merge_tier` packs, as against the scalar
@@ -132,15 +121,13 @@ pub(crate) fn due(config: &Config, manifest: &ContentManifest) -> bool {
         *segments.entry(&index.name).or_insert(0usize) += 1;
     }
     let target = merge_tier_rows(config);
-    if manifest
-        .merge_pair_rows
-        .values()
-        .any(|&pair| pair <= target)
-        || fyrr_reader::search::attribute_indexes(
-            &config.namespace.attributes,
-            &config.namespace.attribute_indexes,
-        )
-        .any(|(_, name, _)| !segments.contains_key(&name))
+    if manifest.merge_pair_rows.iter().any(|(index, &pair)| {
+        pair <= target && !merge_skipped(&config.namespace.name, index, manifest.lance_version)
+    }) || fyrr_reader::search::attribute_indexes(
+        &config.namespace.attributes,
+        &config.namespace.attribute_indexes,
+    )
+    .any(|(_, name, _)| !segments.contains_key(&name))
         || stale_analyzers(
             &config.namespace.attribute_indexes,
             &manifest.attribute_indexes,
@@ -216,11 +203,7 @@ async fn maintain_held(
     // once. Quiet native boundaries need only fresh authorization discovery.
     command_start(config, lease, history, false).await?;
     let version = |head: &ServingHead| head.content.as_ref().map_or(0, |p| p.lance_version);
-    if MERGE_SEEN_VERSION.load(std::sync::atomic::Ordering::Relaxed)
-        != version(&lease.head().await?)
-    {
-        MERGE_ROWS_LIMIT.store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
-    }
+    let mut skipped = Vec::new();
     let mut compacted = 0;
     let mut merged = 0;
     let limit = config.writer.maintenance.step_max_duration.as_duration();
@@ -253,12 +236,9 @@ async fn maintain_held(
             .iter()
             .map(|i| i.name.clone())
             .collect();
-        // The vector indexes are left for this run after two steps ran out of time; the next run
-        // starts with fewer rows per step.
-        let mut timeouts = 0;
         for name in names {
-            let vector = is_vector_index(config, &name);
-            if vector && timeouts >= 2 {
+            // An index that ran out of time on this version waits for a new publication.
+            if merge_skipped(&config.namespace.name, &name, version(&head)) {
                 continue;
             }
             // Each step merges the newest segments only, so the next one finds
@@ -281,19 +261,15 @@ async fn maintain_held(
                 match merge_index(config, lease, dataset, head, name.clone(), rebalance).await {
                     Ok(Some(rows)) => {
                         merged += 1;
-                        if vector {
-                            merge_step_done(config, rows, start.elapsed());
-                        }
+                        crate::telemetry::index_merge_done(rows, start.elapsed());
                     }
                     Ok(None) => break,
-                    Err(WriterError::MaintenanceStepDeadline) if vector => {
-                        merge_step_timed_out(config, start.elapsed());
+                    // The other indexes and the steps after the merges still run.
+                    Err(WriterError::MaintenanceStepDeadline) => {
+                        crate::telemetry::index_merge_skipped(&name);
                         command_recover(config, lease, history, false).await?;
-                        timeouts += 1;
-                        if timeouts >= 2 {
-                            crate::telemetry::index_merge_skipped();
-                            break;
-                        }
+                        skipped.push(name);
+                        break;
                     }
                     Err(error) => return Err(error),
                 }
@@ -360,10 +336,10 @@ async fn maintain_held(
         )
         .await?;
     }
-    MERGE_SEEN_VERSION.store(
-        version(&lease.head().await?),
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    let end = version(&lease.head().await?);
+    for index in skipped {
+        skip_merge(&config.namespace.name, &index, end);
+    }
     Ok(
         serde_json::json!({"compaction_steps":compacted,"index_merge_steps":merged,"deleted_files":removed,"protected_fragment_files":protected,"unverified_protected_fragment_files":unverified_protected,"deleted_envelopes":envelopes}),
     )
@@ -374,6 +350,7 @@ async fn maintain_held(
 /// one step: it rewrites no more than that, and a segment that is that large already stays.
 /// Segments that stay are never rewritten.
 async fn merge_tier(dataset: &mut Dataset, options: &OptimizeOptions) -> lance::Result<u64> {
+    // Planning opens every segment of the index, so its cost grows with their number.
     let plan = plan_optimize_indices(dataset, options).await?;
     for merge in &plan.merges {
         let mut built = Vec::new();
@@ -1197,7 +1174,7 @@ mod restore_tests;
 
 #[cfg(test)]
 mod merge_run_tests {
-    use super::{INDEX_SEGMENT_LIMIT, crowded_pair_rows};
+    use super::{INDEX_SEGMENT_LIMIT, crowded_pair_rows, merge_skipped, skip_merge};
 
     #[test]
     fn the_smallest_pair_is_of_neighbors_in_fragment_order_and_of_a_crowded_index_only() {
@@ -1219,6 +1196,16 @@ mod merge_run_tests {
             crowded_pair_rows(crowded(vec![(2000, 40), (2001, 60)])),
             Some(100)
         );
+    }
+
+    #[test]
+    fn a_skipped_index_waits_for_a_new_version() {
+        assert!(!merge_skipped("skip-ns", "vector_idx", 7));
+        skip_merge("skip-ns", "vector_idx", 7);
+        assert!(merge_skipped("skip-ns", "vector_idx", 7));
+        assert!(!merge_skipped("skip-ns", "vector_idx", 8));
+        assert!(!merge_skipped("skip-ns", "readers_idx", 7));
+        assert!(!merge_skipped("other-ns", "vector_idx", 7));
     }
 }
 
