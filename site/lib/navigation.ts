@@ -123,6 +123,11 @@ export const navigation = [
         "How long a write takes to be answered and to be found by a strong read."
       ],
       [
+        "investigations/million-row-query.md",
+        "Million-row query investigation",
+        "Query latency, recall and cold-start cost at 3 million rows."
+      ],
+      [
         "reader-writer.md",
         "Reader and writer",
         "Two crews, two sets of limits."
