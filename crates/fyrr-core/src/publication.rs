@@ -264,6 +264,12 @@ pub struct ContentManifest {
     /// Digest of the retrieval policy, including the result composition.
     pub retrieval_policy_digest: String,
     pub indexes: Vec<IndexIdentity>,
+    /// Of each vector index with more live segments than `writer serve` leaves
+    /// alone (64), the smallest sum of the rows of two neighboring segments, in
+    /// fragment order. `writer serve` compares it with the rows one merge step
+    /// may rewrite, to know whether a merge has anything to do.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub merge_pair_rows: BTreeMap<String, u64>,
     /// The typed attributes of this version: each is a nullable column.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: AttributeSchema,

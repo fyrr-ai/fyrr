@@ -23,16 +23,85 @@ use lance::dataset::cleanup::CleanupPolicy;
 use lance::dataset::optimize::{CompactionOptions, plan_compaction};
 use lance::dataset::transaction::{Operation, RewriteGroup};
 use lance::index::DatasetIndexExt;
+use lance::index::optimize::{commit_optimize_indices, plan_optimize_indices};
 use lance_index::optimize::OptimizeOptions;
 use object_store::{ObjectStoreExt, PutMode, path::Path};
 use std::collections::{BTreeMap, BTreeSet};
 
-// Bound catalog-wide index opens; merge half the budget to amortize each consolidation.
-const INDEX_SEGMENT_LIMIT: usize = 64;
+// Bound catalog-wide index opens, while the indexes stay below `merge_tier_rows` per segment.
+pub(crate) const INDEX_SEGMENT_LIMIT: usize = 64;
+// Merge throughput measured on #317: 3,000,000 rows in 2,147 s on `writer maintain`, cores 0-3,
+// `writer.threads = 2`. Re-measure with `scripts/bench-scale --maintain` when the merge changes.
+const MERGE_ROWS_PER_SECOND: u128 = 1_400;
+
+/// The rows one merge step may rewrite: half of `step_max_duration` at the measured throughput,
+/// 210,000 rows by default. A step also opens segments and writes the version.
+fn merge_tier_rows(config: &Config) -> u64 {
+    let millis = config
+        .writer
+        .maintenance
+        .step_max_duration
+        .as_duration()
+        .as_millis();
+    u64::try_from(millis * MERGE_ROWS_PER_SECOND / 2_000)
+        .unwrap_or(u64::MAX)
+        .max(1)
+}
+
+/// The indexes whose merge step ran out of time, by namespace and name, with the head version the
+/// run that skipped them ended at. In memory: a `writer serve` keeps it between runs. Until the
+/// head is another version (a new publication) neither `maintain` nor `due` tries them again, so a
+/// step that does not fit its deadline is wasted once per publication, never on every tick. A skip
+/// ends only with a new content version: an identity-only publication keeps `lance_version`, and
+/// the data it would merge is the same.
+static MERGE_SKIPPED: std::sync::Mutex<BTreeMap<(String, String), u64>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn merge_skipped(namespace: &str, index: &str, version: u64) -> bool {
+    MERGE_SKIPPED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&(namespace.to_owned(), index.to_owned()))
+        .is_some_and(|&skipped| skipped == version)
+}
+
+fn skip_merge(namespace: &str, index: &str, version: u64) {
+    MERGE_SKIPPED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert((namespace.to_owned(), index.to_owned()), version);
+}
+
+/// Whether `name` is a vector index: the one that `merge_tier` packs, as against the scalar
+/// ones, which Lance merges in one step.
+fn is_vector_index(config: &Config, name: &str) -> bool {
+    name == "vector_idx"
+        || config
+            .namespace
+            .vectors
+            .keys()
+            .any(|vector| fyrr_core::attributes::vector_index_name(vector) == name)
+}
+
+/// For a vector index of more segments than `INDEX_SEGMENT_LIMIT`, from each live segment's first
+/// fragment and rows: the smallest sum of the rows of two neighbors in fragment order. `merge_tier`
+/// has a run to execute exactly when this is at most the rows one step may rewrite: next-fit
+/// packing makes a run of two or more segments iff some neighbors fit together.
+pub(crate) fn crowded_pair_rows(mut segments: Vec<(u32, u64)>) -> Option<u64> {
+    if segments.len() <= INDEX_SEGMENT_LIMIT {
+        return None;
+    }
+    segments.sort_unstable();
+    segments
+        .windows(2)
+        .map(|pair| pair[0].1.saturating_add(pair[1].1))
+        .min()
+}
 
 /// Whether `maintain` has work, judged from the served manifest alone, so that
 /// an idle `writer serve` tick asks storage for nothing more. An index with
-/// more segments than the limit is due at once. Everything else waits for
+/// more live vector segments than the limit is due at once if two neighbors fit one merge step,
+/// so that an index of full segments never makes every tick run `maintain`. Everything else waits for
 /// `writer.version_grace` since the last maintenance, so that steady upserts,
 /// which leave a deletion in a fragment each, or a short `max_envelope_age` do
 /// not run it on every publication: then a fragment with deletions is due, and
@@ -53,12 +122,14 @@ pub(crate) fn due(config: &Config, manifest: &ContentManifest) -> bool {
     for index in &manifest.indexes {
         *segments.entry(&index.name).or_insert(0usize) += 1;
     }
-    if segments.values().any(|&count| count > INDEX_SEGMENT_LIMIT)
-        || fyrr_reader::search::attribute_indexes(
-            &config.namespace.attributes,
-            &config.namespace.attribute_indexes,
-        )
-        .any(|(_, name, _)| !segments.contains_key(&name))
+    let target = merge_tier_rows(config);
+    if manifest.merge_pair_rows.iter().any(|(index, &pair)| {
+        pair <= target && !merge_skipped(&config.namespace.name, index, manifest.lance_version)
+    }) || fyrr_reader::search::attribute_indexes(
+        &config.namespace.attributes,
+        &config.namespace.attribute_indexes,
+    )
+    .any(|(_, name, _)| !segments.contains_key(&name))
         || stale_analyzers(
             &config.namespace.attribute_indexes,
             &manifest.attribute_indexes,
@@ -133,6 +204,8 @@ async fn maintain_held(
     // Recover the previous command's private suffix and reconcile configuration
     // once. Quiet native boundaries need only fresh authorization discovery.
     command_start(config, lease, history, false).await?;
+    let version = |head: &ServingHead| head.content.as_ref().map_or(0, |p| p.lance_version);
+    let mut skipped = Vec::new();
     let mut compacted = 0;
     let mut merged = 0;
     let limit = config.writer.maintenance.step_max_duration.as_duration();
@@ -142,37 +215,6 @@ async fn maintain_held(
             break;
         }
         let dataset = pinned(config, &head).await?;
-        let oversized = tokio::time::timeout(limit, async {
-            let indexes = dataset.load_indices().await?;
-            let mut counts = BTreeMap::new();
-            for index in indexes.iter() {
-                *counts.entry(index.name.clone()).or_insert(0usize) += 1;
-            }
-            Ok::<_, WriterError>(
-                counts
-                    .into_iter()
-                    .find_map(|(name, count)| (count > INDEX_SEGMENT_LIMIT).then_some(name)),
-            )
-        })
-        .await
-        .map_err(|_| WriterError::MaintenanceStepDeadline)??;
-        if let Some(name) = oversized {
-            if !merge_index(
-                config,
-                lease,
-                dataset,
-                head,
-                name,
-                INDEX_SEGMENT_LIMIT / 2,
-                rebalance,
-            )
-            .await?
-            {
-                return Err(WriterError::IndexMergeNoProgress);
-            }
-            merged += 1;
-            continue;
-        }
         if tokio::time::timeout(limit, purge_denied(config, lease, &head))
             .await
             .map_err(|_| WriterError::MaintenanceStepDeadline)??
@@ -197,17 +239,45 @@ async fn maintain_held(
             .map(|i| i.name.clone())
             .collect();
         for name in names {
-            let head = boundary(config, lease, history).await?;
-            let dataset = pinned(config, &head).await?;
-            let indexes = dataset.load_indices().await?;
-            let same: Vec<_> = indexes.iter().filter(|i| i.name == name).collect();
-            // A merged bitmap may still name retired fragment IDs. It is a coverage
-            // hint, not evidence that the segment needs another rewrite.
-            if same.len() <= 1 {
+            // An index that ran out of time on this version waits for a new publication.
+            if merge_skipped(&config.namespace.name, &name, version(&head)) {
                 continue;
             }
-            if merge_index(config, lease, dataset, head, name, usize::MAX, rebalance).await? {
-                merged += 1;
+            // Each step merges the newest segments only, so the next one finds
+            // the step's output among them.
+            loop {
+                let head = boundary(config, lease, history).await?;
+                let dataset = pinned(config, &head).await?;
+                let segments = dataset
+                    .load_indices()
+                    .await?
+                    .iter()
+                    .filter(|i| i.name == name)
+                    .count();
+                // A merged bitmap may still name retired fragment IDs. It is a coverage
+                // hint, not evidence that the segment needs another rewrite.
+                if segments <= 1 {
+                    break;
+                }
+                let start = std::time::Instant::now();
+                let at = version(&head);
+                match merge_index(config, lease, dataset, head, name.clone(), rebalance).await {
+                    Ok(Some(rows)) => {
+                        merged += 1;
+                        crate::telemetry::index_merge_done(rows, start.elapsed());
+                    }
+                    Ok(None) => break,
+                    // The other indexes and the steps after the merges still run.
+                    Err(WriterError::MaintenanceStepDeadline) => {
+                        // Recorded now: a later step of this run may fail before the run ends.
+                        skip_merge(&config.namespace.name, &name, at);
+                        crate::telemetry::index_merge_skipped(&name);
+                        command_recover(config, lease, history, false).await?;
+                        skipped.push(name);
+                        break;
+                    }
+                    Err(error) => return Err(error),
+                }
             }
         }
     }
@@ -271,9 +341,42 @@ async fn maintain_held(
         )
         .await?;
     }
+    // The run's own publications moved the head on: the skip follows it.
+    let end = version(&lease.head().await?);
+    for index in skipped {
+        skip_merge(&config.namespace.name, &index, end);
+    }
     Ok(
         serde_json::json!({"compaction_steps":compacted,"index_merge_steps":merged,"deleted_files":removed,"protected_fragment_files":protected,"unverified_protected_fragment_files":unverified_protected,"deleted_envelopes":envelopes}),
     )
+}
+
+/// Merge the first group of the plan that packs the segments of an index into runs of at most
+/// `max_rows_per_segment` rows, and return the rows it rewrote; none if there is no run. A run is
+/// one step: it rewrites no more than that, and a segment that is that large already stays.
+/// Segments that stay are never rewritten.
+async fn merge_tier(dataset: &mut Dataset, options: &OptimizeOptions) -> lance::Result<u64> {
+    // Planning opens every segment of the index, so its cost grows with their number.
+    let plan = plan_optimize_indices(dataset, options).await?;
+    for merge in &plan.merges {
+        let mut built = Vec::new();
+        for task in plan.tasks.iter().filter(|task| task.group == merge.group) {
+            built.extend(task.execute(dataset).await?);
+        }
+        if let Some(result) = merge.execute(dataset, &built).await? {
+            let rows = result
+                .segment
+                .fragment_bitmap
+                .iter()
+                .flat_map(|bitmap| bitmap.iter())
+                .filter_map(|id| dataset.get_fragment(id as usize))
+                .map(|fragment| fragment.metadata().num_rows().unwrap_or(0) as u64)
+                .sum::<u64>();
+            commit_optimize_indices(dataset, vec![result], options).await?;
+            return Ok(rows);
+        }
+    }
+    Ok(0)
 }
 
 async fn merge_index(
@@ -282,12 +385,11 @@ async fn merge_index(
     dataset: Dataset,
     head: ServingHead,
     name: String,
-    segments: usize,
     rebalance: bool,
-) -> Result<bool> {
+) -> Result<Option<u64>> {
     tokio::time::timeout(
         config.writer.maintenance.step_max_duration.as_duration(),
-        merge_step(config, lease, dataset, head, name, segments, rebalance),
+        merge_step(config, lease, dataset, head, name, rebalance),
     )
     .await
     .map_err(|_| WriterError::MaintenanceStepDeadline)?
@@ -299,26 +401,41 @@ async fn merge_step(
     mut dataset: Dataset,
     head: ServingHead,
     name: String,
-    segments: usize,
     rebalance: bool,
-) -> Result<bool> {
+) -> Result<Option<u64>> {
     let before = dataset.version().version;
     let mut work = lineage(lease, &head);
-    let mut options = OptimizeOptions::merge(segments);
-    if rebalance {
-        options = options.with_partition_rebalancing();
-    }
+    let vector = is_vector_index(config, &name);
+    let mut options = OptimizeOptions::merge(usize::MAX);
     options.index_names = Some(vec![name]);
     options.retrain = false;
-    commit::native_step(
-        lease,
-        dataset.optimize_indices(&options),
-        WriterError::IndexMergeFailed,
-    )
-    .await?;
+    let target = merge_tier_rows(config);
+    let total = dataset.count_rows(None).await? as u64;
+    let rows = if !vector || total <= target {
+        if rebalance {
+            options = options.with_partition_rebalancing();
+        }
+        commit::native_step(
+            lease,
+            dataset.optimize_indices(&options),
+            WriterError::IndexMergeFailed,
+        )
+        .await?;
+        total
+    } else {
+        // shortcut: indexes above the step target are merged in tiers without partition
+        // rebalancing; rebalance per segment when needed. The scalar indexes stay one step.
+        options.max_rows_per_segment = Some(target);
+        commit::native_step(
+            lease,
+            Box::pin(merge_tier(&mut dataset, &options)),
+            WriterError::IndexMergeFailed,
+        )
+        .await?
+    };
     commit::record_transaction(&dataset, &mut work, before).await?;
     if dataset.version().version == before {
-        return Ok(false);
+        return Ok(None);
     }
     commit::publish(
         config,
@@ -333,7 +450,7 @@ async fn merge_step(
         None,
     )
     .await?;
-    Ok(true)
+    Ok(Some(rows))
 }
 
 /// Remove unreadable chunks; wholly unreadable content becomes a row-local state marker.
@@ -1060,6 +1177,82 @@ pub(crate) async fn purge_warnings(
 
 #[cfg(test)]
 mod restore_tests;
+
+#[cfg(test)]
+mod merge_run_tests {
+    use super::{INDEX_SEGMENT_LIMIT, crowded_pair_rows, due, merge_skipped, skip_merge};
+
+    #[test]
+    fn the_smallest_pair_is_of_neighbors_in_fragment_order_and_of_a_crowded_index_only() {
+        let crowded = |extra: Vec<(u32, u64)>| {
+            // Past the limit, in fragment order from 1000 on, each of a full step of 100 rows.
+            let full = (0..INDEX_SEGMENT_LIMIT as u32).map(|i| (1000 + i, 100));
+            full.chain(extra).collect::<Vec<_>>()
+        };
+        assert_eq!(crowded_pair_rows(vec![(0, 40), (1, 40)]), None);
+        assert_eq!(crowded_pair_rows(crowded(vec![])), None);
+        // Every pair is above a step of 100 rows: no merge is due.
+        assert_eq!(crowded_pair_rows(crowded(vec![(2000, 100)])), Some(200));
+        // The manifest order is not the fragment order: the 40s are not neighbors.
+        assert_eq!(
+            crowded_pair_rows(crowded(vec![(500, 40), (550, 100), (600, 40)])),
+            Some(140)
+        );
+        assert_eq!(
+            crowded_pair_rows(crowded(vec![(2000, 40), (2001, 60)])),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn a_skip_recorded_before_the_run_publishes_keeps_due_false_for_that_version() {
+        let config = fyrr_core::config::parse(
+            "[namespace]\nname='due-skip'\n[storage]\nuri='s3://due-skip'\n[embedding]\n\
+                endpoint='https://cache.invalid'\n",
+        )
+        .unwrap()
+        .config;
+        let mut manifest: fyrr_core::publication::ContentManifest = serde_json::from_str(
+            include_str!("../../../fixtures/contracts/content-manifest/manifest.json"),
+        )
+        .unwrap();
+        // Just maintained, and holding every index the settings ask for, so that only a crowded
+        // vector index with a pair that fits one step is due.
+        manifest.maintenance_completed_at = Some(fyrr_core::clock::now());
+        manifest.indexes = fyrr_reader::search::attribute_indexes(
+            &config.namespace.attributes,
+            &config.namespace.attribute_indexes,
+        )
+        .map(|(column, name, _)| fyrr_core::publication::IndexIdentity {
+            name,
+            kind: "btree".into(),
+            column,
+            uuid: "00000000-0000-0000-0000-000000000000".into(),
+            partitions: None,
+        })
+        .collect();
+        manifest.attribute_indexes.clear();
+        assert!(!due(&config, &manifest));
+        manifest.merge_pair_rows.insert("vector_idx".into(), 1);
+        assert!(due(&config, &manifest));
+        // The merge ran out of time at the version the run began with, and the run then failed
+        // before it published: the manifest is still that version.
+        skip_merge("due-skip", "vector_idx", manifest.lance_version);
+        assert!(!due(&config, &manifest));
+        manifest.lance_version += 1;
+        assert!(due(&config, &manifest));
+    }
+
+    #[test]
+    fn a_skipped_index_waits_for_a_new_version() {
+        assert!(!merge_skipped("skip-ns", "vector_idx", 7));
+        skip_merge("skip-ns", "vector_idx", 7);
+        assert!(merge_skipped("skip-ns", "vector_idx", 7));
+        assert!(!merge_skipped("skip-ns", "vector_idx", 8));
+        assert!(!merge_skipped("skip-ns", "readers_idx", 7));
+        assert!(!merge_skipped("other-ns", "vector_idx", 7));
+    }
+}
 
 async fn compact_one(
     config: &Config,

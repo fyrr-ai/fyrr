@@ -70,7 +70,15 @@ pub(crate) async fn write_manifest(
             .unwrap_or_default();
     }
     let actual = dataset.load_indices().await?;
+    let fragment_rows: std::collections::HashMap<u32, u64> = dataset
+        .manifest()
+        .fragments
+        .iter()
+        .map(|f| (crate::narrow_u32(f.id), f.num_rows().unwrap_or(0) as u64))
+        .collect();
     let mut indexes = Vec::new();
+    let mut vector_segments: std::collections::BTreeMap<String, Vec<(u32, u64)>> =
+        std::collections::BTreeMap::new();
     for index in actual.iter() {
         let (column, kind) = if let Some(&(column, _, _, kind)) =
             INDEXES.iter().find(|(_, name, _, _)| *name == index.name)
@@ -118,6 +126,20 @@ pub(crate) async fn write_manifest(
         } else {
             None
         };
+        if kind == "ivf_rq" {
+            let covered = index
+                .fragment_bitmap
+                .iter()
+                .flat_map(|bitmap| bitmap.iter())
+                .filter(|id| fragment_rows.contains_key(id))
+                .collect::<Vec<_>>();
+            if let Some(&first) = covered.first() {
+                vector_segments
+                    .entry(index.name.clone())
+                    .or_default()
+                    .push((first, covered.iter().map(|id| fragment_rows[id]).sum()));
+            }
+        }
         indexes.push(IndexIdentity {
             name: index.name.clone(),
             column: column.into(),
@@ -277,6 +299,12 @@ pub(crate) async fn write_manifest(
         dense_element: config.namespace.dense_element,
         retrieval_policy_digest: config.namespace.retrieval_digest(),
         indexes,
+        merge_pair_rows: vector_segments
+            .into_iter()
+            .filter_map(|(name, segments)| {
+                crate::maintenance::crowded_pair_rows(segments).map(|rows| (name, rows))
+            })
+            .collect(),
         attributes: config.namespace.attributes.clone(),
         attribute_indexes,
         vectors: config.namespace.vectors.clone(),

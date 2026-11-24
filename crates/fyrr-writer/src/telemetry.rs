@@ -72,3 +72,19 @@ pub(crate) fn head_write_failed(stage: HeadWriteStage, error: &Error) {
     };
     eprintln!("telemetry head_write=failed stage={stage} category={category}");
 }
+
+/// An index merge step that finished, at the rate it rewrote rows.
+#[allow(clippy::print_stderr)]
+pub(crate) fn index_merge_done(rows: u64, took: std::time::Duration) {
+    let seconds = took.as_secs_f64();
+    let rate = rows as f64 / seconds.max(0.001);
+    eprintln!(
+        "telemetry index_merge=done rows={rows} seconds={seconds:.1} rows_per_second={rate:.0}"
+    );
+}
+
+/// An index merge step ran out of time: the index waits for a new publication.
+#[allow(clippy::print_stderr)]
+pub(crate) fn index_merge_skipped(index: &str) {
+    eprintln!("telemetry index_merge=skipped index={index}");
+}

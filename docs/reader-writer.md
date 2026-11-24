@@ -87,7 +87,7 @@ Pin `concurrency = 2` to retain the previous request and queue limits.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `maintenance.step_max_duration` | `5m` | Time budget of one lease-held maintenance step. |
+| `maintenance.step_max_duration` | `5m` | Time budget of one lease-held maintenance step. A vector index of up to `step_max_duration` × 700 rows (210,000 by default) merges its segments in one step and is re-partitioned. A larger one merges them in tiers: each step rewrites a run of neighboring segments of at most that many rows, publishes a valid version, and never rewrites a segment that large again, so the index ends with at most about twice rows ÷ that many segments, and is not re-partitioned. An index whose merge step runs out of time is skipped, with a `telemetry index_merge=skipped` line on stderr, until the next content publication; the other indexes and the later steps of the run still go ahead. The other indexes merge in one step. |
 | `backpressure.max_pending_content_envelopes` | `1000` | At least 1. Content sync pauses above it; permissions and members still publish. |
 | `backpressure.max_pending_content_bytes` | `16GiB` | |
 | `serve.committer` | `true` | Run the [committer](architecture.md#terms) role in `writer serve`; off keeps polling and leaves publication to batch `commit` jobs. |

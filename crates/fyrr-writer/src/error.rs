@@ -153,7 +153,6 @@ writer_errors! {
     IncompatibleIndex => ("incompatible_index", false),
     IndexBuildFailed => ("index_build_failed", false),
     IndexMergeFailed => ("index_merge_failed", false),
-    IndexMergeNoProgress => ("index_merge_no_progress", false),
     LineageInvalid => ("lineage_invalid", false),
     MaintenanceStepDeadline => ("maintenance_step_deadline", false),
     NativeUpdateFailed => ("native_update_failed", false),
