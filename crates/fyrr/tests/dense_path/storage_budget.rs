@@ -1425,6 +1425,13 @@ const MERGED_PARTITION_ROWS: usize = 32;
 /// of the data files, which vary with the order of concurrent reads, are not
 /// counted.
 const MERGED_COLD_DENSE_BUDGET: usize = 4;
+/// The same requests where the mirror is too small to keep the index files
+/// whole: as many as main makes (1,577 to 1,641 over four runs, 1,553 to
+/// 1,665 with the whole copy refused for want of room), which reads them past
+/// the mirror. The count varies with the order of concurrent reads, so the
+/// bound has a tenth over the greatest of main's; a whole copy or a head asked
+/// for before the refusal would add to it, and the heads are asserted none.
+const NO_ROOM_INDEX_REQUESTS: usize = 1800;
 
 /// A row near one of eight directions, a little apart from its neighbors.
 fn merged_vector(row: usize) -> Vec<f32> {
@@ -1492,20 +1499,11 @@ async fn a_cold_dense_query_on_a_merged_vector_index_stays_within_its_storage_re
     // A reader process that opens and answers one search runs no background
     // warming, so the files it reads are those of the query and its admission.
     root.embedding.insert_both("zzprobe", merged_vector(5));
-    let log = root.join("cold-query.jsonl");
-    let search = super::coordination::worker_command(&config)
-        .args(["reader", "search", "zzprobe", "--limit", "10"])
-        .env("FYRR_OBJECT_STORE_DIAGNOSTICS", &log)
-        .output()
-        .unwrap();
-    assert!(search.status.success(), "{}", report(&search));
-    let answer: Value = serde_json::from_slice(&search.stdout).unwrap();
-    assert_eq!(answer["hits"].as_array().unwrap().len(), 10, "{answer}");
-    assert_eq!(answer["hits"][0]["root_id"], "r5", "{answer}");
     let (_, manifest) = super::coordination::publication(&config).await;
     let loaded = fyrr_core::config::load(&config).unwrap();
     let (store, namespace) = fyrr_reader::storage::namespace_store(&loaded.config).unwrap();
-    let index_keys: std::collections::BTreeSet<String> = {
+    // The keys the object-store diagnostics log gives the files of the vector index.
+    let index_keys: Vec<String> = {
         use futures::TryStreamExt;
         let uuids: Vec<_> = manifest
             .indexes
@@ -1532,22 +1530,72 @@ async fn a_cold_dense_query_on_a_merged_vector_index_stays_within_its_storage_re
             .collect()
     };
     assert_eq!(index_keys.len(), 2, "an index file and an auxiliary file");
-    let records: Vec<Value> = std::fs::read_to_string(&log)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    let requests = records
-        .iter()
-        .filter(|record| index_keys.contains(record["key_sha256"].as_str().unwrap()))
-        .count();
+    // The requests of one cold search of `config` to each file of the vector index.
+    let cold = |config: &Path, name: &str| -> Vec<usize> {
+        let log = root.join(format!("{name}.jsonl"));
+        let search = super::coordination::worker_command(config)
+            .args(["reader", "search", "zzprobe", "--limit", "10"])
+            .env("FYRR_OBJECT_STORE_DIAGNOSTICS", &log)
+            .output()
+            .unwrap();
+        assert!(search.status.success(), "{}", report(&search));
+        let answer: Value = serde_json::from_slice(&search.stdout).unwrap();
+        assert_eq!(answer["hits"].as_array().unwrap().len(), 10, "{answer}");
+        assert_eq!(answer["hits"][0]["root_id"], "r5", "{answer}");
+        let text = std::fs::read_to_string(&log).unwrap();
+        let records: Vec<Value> = text
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|record| index_keys.iter().any(|key| record["key_sha256"] == *key))
+            .collect();
+        assert!(
+            records.iter().all(|record| record["method"] == "GET"),
+            "a head of an index file: {records:?}"
+        );
+        index_keys
+            .iter()
+            .map(|key| {
+                records
+                    .iter()
+                    .filter(|record| record["key_sha256"] == *key)
+                    .count()
+            })
+            .collect()
+    };
+
+    let requests = cold(&config, "cold-query");
     eprintln!(
-        "budget cold dense query on a merged vector index: {requests} requests to its files of {} in all (budget {MERGED_COLD_DENSE_BUDGET})",
-        records.len()
+        "budget cold dense query on a merged vector index: {requests:?} requests to its files (budget {MERGED_COLD_DENSE_BUDGET})"
     );
     assert!(
-        requests <= MERGED_COLD_DENSE_BUDGET,
-        "the first dense query made {requests} storage requests to the vector index, budget {MERGED_COLD_DENSE_BUDGET}"
+        requests.iter().all(|count| *count >= 1),
+        "each file of the index is read: {requests:?}"
+    );
+    assert!(
+        requests.iter().sum::<usize>() <= MERGED_COLD_DENSE_BUDGET,
+        "the first dense query made {requests:?} storage requests to the vector index, budget {MERGED_COLD_DENSE_BUDGET}"
+    );
+
+    // A mirror too small for the index files is no worse off for the whole copy:
+    // it makes no request for it and no head, and the files are read as before.
+    let small = root.join("small.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &small,
+        text.replace("mirror_max_bytes = 268435456", "mirror_max_bytes = 1000000")
+            .replace(
+                &root.join("mirror").display().to_string(),
+                &root.join("mirror-small").display().to_string(),
+            ),
+    )
+    .unwrap();
+    let requests = cold(&small, "cold-query-small");
+    eprintln!(
+        "budget cold dense query, mirror too small: {requests:?} requests to the vector index files (bound {NO_ROOM_INDEX_REQUESTS})"
+    );
+    assert!(
+        requests.iter().sum::<usize>() <= NO_ROOM_INDEX_REQUESTS,
+        "{requests:?} requests to the vector index files, at most {NO_ROOM_INDEX_REQUESTS} as on main"
     );
     std::fs::remove_dir_all(root).unwrap();
 }

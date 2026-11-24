@@ -974,6 +974,14 @@ impl MirrorStore {
         store: Arc<dyn ObjectStore>,
         files: &[fyrr_core::envelope::FileRef],
     ) -> Result<(), ReaderError> {
+        self.prewarm_with(store, files, true).await
+    }
+    async fn prewarm_with(
+        &self,
+        store: Arc<dyn ObjectStore>,
+        files: &[fyrr_core::envelope::FileRef],
+        evict: bool,
+    ) -> Result<(), ReaderError> {
         let (prefix, root) = crate::sync::lock(&self.dataset_cache_key)
             .clone()
             .ok_or(StorageUnavailable)?;
@@ -987,7 +995,7 @@ impl MirrorStore {
                 && running.len() < Self::PREWARM_CONCURRENCY
                 && let Some((index, file)) = pending.next()
             {
-                running.push(self.prewarm_file(&store, &prefix, &root, index, file));
+                running.push(self.prewarm_file(&store, &prefix, &root, index, file, evict));
             }
             let Some((index, result)) = running.next().await else {
                 break;
@@ -1001,46 +1009,16 @@ impl MirrorStore {
         }
         first.map_or(Ok(()), |(_, error)| Err(error))
     }
-    /// `prewarm` of the files the mirror has free room for, and no request for
-    /// one it has not: a complete file is verified, a file with pages needs no
-    /// room beyond them, any other must fit beside what the mirror holds
-    /// without evicting. For a caller that reads all of the files anyway and
-    /// can read pages instead.
+    /// `prewarm` that reserves each missing file's room before any request,
+    /// without evicting: a file the mirror has no room for costs no request and
+    /// no head, and is left to be read in pages. For a caller that reads all of
+    /// the files anyway and can read pages instead.
     pub(crate) async fn prewarm_if_room(
         &self,
         store: Arc<dyn ObjectStore>,
         files: &[fyrr_core::envelope::FileRef],
     ) -> Result<(), ReaderError> {
-        let (prefix, root) = crate::sync::lock(&self.dataset_cache_key)
-            .clone()
-            .ok_or(StorageUnavailable)?;
-        let mut fit = Vec::new();
-        for file in files {
-            let path = Path::from(format!("{root}/{}", file.path));
-            let blob = self.directory.join(
-                self.blob_name(&prefix, path.as_ref())
-                    .ok_or(StorageUnavailable)?,
-            );
-            if blob.symlink_metadata().is_ok() || self.free_room(&blob, file.size_bytes).await? {
-                fit.push(file.clone());
-            }
-        }
-        self.prewarm(store, &fit).await
-    }
-    async fn free_room(&self, blob: &std::path::Path, size: u64) -> Result<bool, ReaderError> {
-        let incoming = if blob.with_extension("sparse").symlink_metadata().is_ok() {
-            0
-        } else {
-            size
-        };
-        let _lock = self.lock.lock().await;
-        let _host = self.host_lock().await.map_err(|_| StorageUnavailable)?;
-        Ok(size <= self.max_bytes
-            && self
-                .used_bytes()
-                .map_err(|_| StorageUnavailable)?
-                .saturating_add(incoming)
-                <= self.max_bytes)
+        self.prewarm_with(store, files, false).await
     }
     async fn prewarm_file(
         &self,
@@ -1049,8 +1027,12 @@ impl MirrorStore {
         root: &str,
         index: usize,
         file: &fyrr_core::envelope::FileRef,
+        evict: bool,
     ) -> (usize, Result<(), ReaderError>) {
-        (index, self.fill_file(store, prefix, root, file).await)
+        (
+            index,
+            self.fill_file(store, prefix, root, file, evict).await,
+        )
     }
     async fn fill_file(
         &self,
@@ -1058,10 +1040,11 @@ impl MirrorStore {
         prefix: &str,
         root: &str,
         file: &fyrr_core::envelope::FileRef,
+        evict: bool,
     ) -> Result<(), ReaderError> {
         let path = Path::from(format!("{root}/{}", file.path));
         let result = store
-            .fill(&path, file.size_bytes)
+            .fill(&path, file.size_bytes, evict)
             .await
             .map_err(|_| StorageUnavailable)?;
         if result.meta.size != file.size_bytes {

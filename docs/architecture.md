@@ -119,7 +119,10 @@ with the complete file. Building the subject's partition map walks every
 partition of the vector index, so it first copies the files of the vector
 index whole, one request each instead of several per partition, when the
 mirror has free room for them; it asks nothing for a file it has no room for,
-and reads pages as before. A copy whose size is not the manifest's is not kept. The size of a pinned data file comes from the
+and reads pages as before; the room is reserved before the request, so two
+files that do not fit together are not both fetched. A copy whose size is not
+the manifest's is not kept, and a complete copy of another length than the
+manifest states is removed when it is read. The size of a pinned data file comes from the
 content manifest, so asking for it reads nothing.
 
 ## Authorization

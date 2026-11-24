@@ -1095,6 +1095,14 @@
         "tier": "quick",
         "seconds": 0.05
       },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::prewarm_if_room_reserves_room_for_one_of_two_files_that_do_not_fit_together": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
+      "full:fyrr-reader:lib:fyrr_reader/mirror::tests::a_complete_copy_of_another_length_than_the_manifest_is_removed_not_served": {
+        "tier": "quick",
+        "seconds": 0.05
+      },
       "full:fyrr-reader:lib:fyrr_reader/mirror::tests::pages_of_a_new_map_generation_are_verified_again": {
         "tier": "quick",
         "seconds": 0.05

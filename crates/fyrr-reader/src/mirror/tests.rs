@@ -1557,30 +1557,102 @@ async fn prewarm_if_room_copies_whole_only_what_fits_and_asks_nothing_otherwise(
 
     let f = PagedFixture::at("room-short", 50_000, "_indices/u/aux.idx").await;
     for _ in 0..2 {
-        f.mirror
-            .prewarm_if_room(f.source.clone(), &f.files)
-            .await
-            .unwrap();
+        assert_eq!(
+            f.mirror.prewarm_if_room(f.source.clone(), &f.files).await,
+            Err(MirrorCapacityExhausted)
+        );
     }
     assert!(!f.exists("blob") && !f.exists("partial"));
     assert_eq!(f.mirror.totals().requests, 0, "no request, no head");
 
     // Room for the file, not beside what the mirror holds: nothing is evicted.
     let f = PagedFixture::at("room-held", 150_000, "_indices/u/aux.idx").await;
+    let held = f.directory.join(format!("{}.blob", "a".repeat(64)));
     std::fs::OpenOptions::new()
         .create_new(true)
         .write(true)
         .mode(0o600)
-        .open(f.directory.join(format!("{}.blob", "a".repeat(64))))
+        .open(&held)
         .unwrap()
         .write_all(&[0; 80_000])
         .unwrap();
-    f.mirror
-        .prewarm_if_room(f.source.clone(), &f.files)
-        .await
-        .unwrap();
-    assert!(!f.exists("blob"));
+    assert_eq!(
+        f.mirror.prewarm_if_room(f.source.clone(), &f.files).await,
+        Err(MirrorCapacityExhausted)
+    );
+    assert!(!f.exists("blob") && held.exists(), "nothing is evicted");
     assert_eq!(f.mirror.totals().requests, 0);
+}
+
+/// Room is reserved under the mirror's locks before any request: two files
+/// that do not fit together are not both fetched, whatever their order, and
+/// the one that is left costs nothing.
+#[tokio::test]
+async fn prewarm_if_room_reserves_room_for_one_of_two_files_that_do_not_fit_together() {
+    let directory = temporary_directory("room-race");
+    let mirror = bound_mirror(&directory, 150_000);
+    let source = Arc::new(object_store::memory::InMemory::new());
+    let mut files = Vec::new();
+    for name in ["a", "b"] {
+        let relative = format!("_indices/u/{name}.idx");
+        source
+            .put(
+                &Path::from(format!("dataset.lance/{relative}")),
+                PagedFixture::bytes(0).into(),
+            )
+            .await
+            .unwrap();
+        files.push(fyrr_core::envelope::FileRef {
+            path: relative,
+            size_bytes: PAGED_SIZE as u64,
+        });
+    }
+    let _lease = mirror.pin(&files).await.unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            mirror.prewarm_if_room(source.clone(), &files).await,
+            Err(MirrorCapacityExhausted)
+        );
+    }
+    let blobs = std::fs::read_dir(&directory)
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|e| e == "blob")
+        })
+        .count();
+    assert_eq!(blobs, 1, "one of the two files was reserved");
+    assert_eq!(mirror.totals().requests, 1, "the other asked nothing");
+    assert!(
+        std::fs::read_dir(&directory).unwrap().all(|entry| entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_none_or(|e| e != "partial")),
+        "no reservation is left behind"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// A complete copy whose length is not the manifest's is never served: it is
+/// removed with its checksum, and the read goes on from the object.
+#[tokio::test]
+async fn a_complete_copy_of_another_length_than_the_manifest_is_removed_not_served() {
+    let f = PagedFixture::at("blob-length", 1 << 20, "_indices/u/aux.idx").await;
+    f.mirror.prewarm(f.source.clone(), &f.files).await.unwrap();
+    assert!(f.exists("blob") && f.exists("checksum"));
+    let name = f.blob.file_name().unwrap().to_string_lossy().into_owned();
+    crate::sync::lock(&f.mirror.manifest_sizes).insert(name.clone(), PAGED_SIZE as u64 + 1);
+    // The object has another length than the manifest now says.
+    assert!(f.read(0..10).await.is_err());
+    assert!(!f.exists("blob") && !f.exists("checksum"));
+    // With the manifest right again, the read is served from the object.
+    crate::sync::lock(&f.mirror.manifest_sizes).insert(name, PAGED_SIZE as u64);
+    assert_eq!(f.read(0..10).await.unwrap(), PagedFixture::bytes(0)[..10]);
 }
 
 /// An object whose size is not the manifest's is never kept, so no later read
