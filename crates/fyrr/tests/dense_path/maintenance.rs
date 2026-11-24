@@ -1955,3 +1955,72 @@ async fn maintenance_repartitions_the_vector_index_of_a_growing_namespace_on_sto
     drop(client);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// A namespace of 13 publications has 13 segments of each index. `writer
+/// maintain` merges them in steps of at most four segments, so every index is
+/// one segment afterwards, and the namespace answers like before.
+#[tokio::test]
+#[ignore = "real executable and local storage; scripts/ci"]
+async fn maintenance_merges_the_index_segments_in_bounded_steps_on_storage() {
+    const COMMITS: usize = 13;
+    const STEP_SEGMENTS: usize = 4;
+    let (config, root) = setup_on(Backend::Local);
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .split("[[sources]]")
+        .next()
+        .unwrap()
+        .to_owned();
+    let sources = root.join("sources");
+    std::fs::remove_dir_all(&sources).unwrap();
+    std::fs::create_dir_all(&sources).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "{text}\n[writer]\nthreads = 2\n\n[[sources]]\nid = \"docs\"\ntype = \"local-files\"\npermissions = \"fixed\"\nreaders = [\"grp:allow\"]\n[sources.scope]\npaths = [\"{}\"]\n",
+            sources.display()
+        ),
+    )
+    .unwrap();
+    success(&config, &["writer", "namespace", "create"]);
+    let mut row = 0;
+    for commit in 0..COMMITS {
+        // The first publication holds enough rows to build the vector index.
+        for _ in 0..if commit == 0 { 64 } else { 8 } {
+            let text = format!("seg doc {row}");
+            std::fs::write(sources.join(format!("{row}.txt")), &text).unwrap();
+            root.embedding.insert_both(&text, clustered(row % 64, row));
+            row += 1;
+        }
+        success(&config, &["writer", "sync"]);
+        success(&config, &["writer", "commit"]);
+    }
+    let segments = || async {
+        let mut counts = std::collections::BTreeMap::new();
+        for index in publication(&config).await.1.indexes {
+            *counts.entry(index.name).or_insert(0usize) += 1;
+        }
+        counts
+    };
+    let before = segments().await;
+    assert_eq!(before["vector_idx"], COMMITS, "{before:?}");
+    let steps: usize = before
+        .values()
+        .map(|&count| (count - 1).div_ceil(STEP_SEGMENTS - 1))
+        .sum();
+
+    let maintained = success(&config, &["writer", "maintain"]);
+    let after = segments().await;
+    assert!(after.values().all(|&count| count == 1), "{after:?}");
+    assert_eq!(
+        maintained["index_merge_steps"].as_u64().unwrap() as usize,
+        steps,
+        "{maintained}"
+    );
+    assert_eq!(command(&config, &["writer", "verify"])["verified"], true);
+    let mut client = tools::Mcp::open(&config);
+    let found = tools::body(client.call("search", json!({"query": "seg doc 77", "limit": 3})));
+    assert!(found.to_string().contains("seg doc 77"), "{found}");
+    drop(client);
+    std::fs::remove_dir_all(root).unwrap();
+}

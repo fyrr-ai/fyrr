@@ -27,8 +27,12 @@ use lance_index::optimize::OptimizeOptions;
 use object_store::{ObjectStoreExt, PutMode, path::Path};
 use std::collections::{BTreeMap, BTreeSet};
 
-// Bound catalog-wide index opens; merge half the budget to amortize each consolidation.
+// Bound catalog-wide index opens.
 const INDEX_SEGMENT_LIMIT: usize = 64;
+// Segments one merge step rewrites, the previous step's output included. A step must fit
+// `writer.maintenance.step_max_duration`: merging 60 vector segments of 50,000 rows in one
+// step took 36 min. Repeated steps converge to one segment, each a valid publication.
+const INDEX_MERGE_STEP_SEGMENTS: usize = 4;
 
 /// Whether `maintain` has work, judged from the served manifest alone, so that
 /// an idle `writer serve` tick asks storage for nothing more. An index with
@@ -157,17 +161,7 @@ async fn maintain_held(
         .await
         .map_err(|_| WriterError::MaintenanceStepDeadline)??;
         if let Some(name) = oversized {
-            if !merge_index(
-                config,
-                lease,
-                dataset,
-                head,
-                name,
-                INDEX_SEGMENT_LIMIT / 2,
-                rebalance,
-            )
-            .await?
-            {
+            if !merge_index(config, lease, dataset, head, name, rebalance).await? {
                 return Err(WriterError::IndexMergeNoProgress);
             }
             merged += 1;
@@ -197,16 +191,24 @@ async fn maintain_held(
             .map(|i| i.name.clone())
             .collect();
         for name in names {
-            let head = boundary(config, lease, history).await?;
-            let dataset = pinned(config, &head).await?;
-            let indexes = dataset.load_indices().await?;
-            let same: Vec<_> = indexes.iter().filter(|i| i.name == name).collect();
-            // A merged bitmap may still name retired fragment IDs. It is a coverage
-            // hint, not evidence that the segment needs another rewrite.
-            if same.len() <= 1 {
-                continue;
-            }
-            if merge_index(config, lease, dataset, head, name, usize::MAX, rebalance).await? {
+            // Each step merges the newest segments only, so the next one finds
+            // the step's output among them.
+            loop {
+                let head = boundary(config, lease, history).await?;
+                let dataset = pinned(config, &head).await?;
+                let segments = dataset
+                    .load_indices()
+                    .await?
+                    .iter()
+                    .filter(|i| i.name == name)
+                    .count();
+                // A merged bitmap may still name retired fragment IDs. It is a coverage
+                // hint, not evidence that the segment needs another rewrite.
+                if segments <= 1
+                    || !merge_index(config, lease, dataset, head, name.clone(), rebalance).await?
+                {
+                    break;
+                }
                 merged += 1;
             }
         }
@@ -282,12 +284,11 @@ async fn merge_index(
     dataset: Dataset,
     head: ServingHead,
     name: String,
-    segments: usize,
     rebalance: bool,
 ) -> Result<bool> {
     tokio::time::timeout(
         config.writer.maintenance.step_max_duration.as_duration(),
-        merge_step(config, lease, dataset, head, name, segments, rebalance),
+        merge_step(config, lease, dataset, head, name, rebalance),
     )
     .await
     .map_err(|_| WriterError::MaintenanceStepDeadline)?
@@ -299,12 +300,11 @@ async fn merge_step(
     mut dataset: Dataset,
     head: ServingHead,
     name: String,
-    segments: usize,
     rebalance: bool,
 ) -> Result<bool> {
     let before = dataset.version().version;
     let mut work = lineage(lease, &head);
-    let mut options = OptimizeOptions::merge(segments);
+    let mut options = OptimizeOptions::merge(INDEX_MERGE_STEP_SEGMENTS);
     if rebalance {
         options = options.with_partition_rebalancing();
     }

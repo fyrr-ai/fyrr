@@ -87,7 +87,7 @@ Pin `concurrency = 2` to retain the previous request and queue limits.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `maintenance.step_max_duration` | `5m` | Time budget of one lease-held maintenance step. |
+| `maintenance.step_max_duration` | `5m` | Time budget of one lease-held maintenance step. An index merge step rewrites at most four segments, the previous step's output included, and publishes a valid version; `writer maintain` repeats it until one segment is left. |
 | `backpressure.max_pending_content_envelopes` | `1000` | At least 1. Content sync pauses above it; permissions and members still publish. |
 | `backpressure.max_pending_content_bytes` | `16GiB` | |
 | `serve.committer` | `true` | Run the [committer](architecture.md#terms) role in `writer serve`; off keeps polling and leaves publication to batch `commit` jobs. |
