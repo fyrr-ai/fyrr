@@ -598,23 +598,25 @@ impl PreparedReader {
         if roots.len() != maps.len() {
             return Err(PartitionMapUnavailable);
         }
-        for (map_no, (map, index)) in maps.iter().zip(roots).enumerate() {
+        let key = embedding::query_array(vector, self.config.namespace.dense_element);
+        // Cosine partitions are those of the normalized query; the other
+        // metrics keep the length that they measure.
+        let key = if metric == fyrr_core::config::DenseMetric::Cosine {
+            lance_linalg::kernels::normalize_arrow(key.as_ref())
+                .map_err(|_| EmbeddingInvalid)?
+                .0
+        } else {
+            key
+        };
+        let searches = (0..maps.len()).map(|map_no| {
+            let map = &maps[map_no];
+            let index = &roots[map_no];
             if map.admitted.len() != index.total_partitions() {
                 return Err(PartitionMapUnavailable);
             }
-            let key = embedding::query_array(vector, self.config.namespace.dense_element);
-            // Cosine partitions are those of the normalized query; the other
-            // metrics keep the length that they measure.
-            let key = if metric == fyrr_core::config::DenseMetric::Cosine {
-                lance_linalg::kernels::normalize_arrow(key.as_ref())
-                    .map_err(|_| EmbeddingInvalid)?
-                    .0
-            } else {
-                key
-            };
             let query = Query {
                 column: "vector".into(),
-                key,
+                key: key.clone(),
                 k: shortlist,
                 lower_bound: None,
                 upper_bound: None,
@@ -672,33 +674,43 @@ impl PreparedReader {
                 (selected, selected_distances)
             };
             let count = selected.len();
-            let mut stream = index
-                .clone()
-                .search_partitions(
-                    query,
-                    Arc::new(UInt32Array::from(selected)),
-                    Arc::new(Float32Array::from(selected_distances)),
-                    0,
-                    count,
-                    prefilter.clone(),
-                    None,
-                    Arc::new(NoOpMetricsCollector),
-                )
-                .await
-                .map_err(|_| StorageUnavailable)?;
-            while let Some(batch) = stream.try_next().await.map_err(|_| StorageUnavailable)? {
-                let row_ids = ids(&batch)?;
-                let distance = column::<Float32Array>(&batch, "_distance", IndexRowsInvalid)?;
-                for row in 0..batch.num_rows() {
-                    let id = row_ids.value(row);
-                    if !self.selected_rows().selected(id) {
-                        return Err(AuthorizationUnavailable);
-                    }
-                    candidates
-                        .entry(id)
-                        .and_modify(|d| *d = d.min(distance.value(row)))
-                        .or_insert(distance.value(row));
+            let index = index.clone();
+            let prefilter = prefilter.clone();
+            Ok(async move {
+                let batches = index
+                    .search_partitions(
+                        query,
+                        Arc::new(UInt32Array::from(selected)),
+                        Arc::new(Float32Array::from(selected_distances)),
+                        0,
+                        count,
+                        prefilter,
+                        None,
+                        Arc::new(NoOpMetricsCollector),
+                    )
+                    .await
+                    .map_err(|_| StorageUnavailable)?;
+                Ok(batches.map_err(|_| StorageUnavailable))
+            })
+        });
+        // Each root owns its search scratch. Bound simultaneous root searches
+        // and consume their results in routing order.
+        let width = lance_core::utils::tokio::get_num_compute_intensive_cpus().clamp(1, 4);
+        let mut batches = futures::stream::iter(searches)
+            .try_buffered(width)
+            .try_flatten();
+        while let Some(batch) = batches.try_next().await? {
+            let row_ids = ids(&batch)?;
+            let distance = column::<Float32Array>(&batch, "_distance", IndexRowsInvalid)?;
+            for row in 0..batch.num_rows() {
+                let id = row_ids.value(row);
+                if !self.selected_rows().selected(id) {
+                    return Err(AuthorizationUnavailable);
                 }
+                candidates
+                    .entry(id)
+                    .and_modify(|d| *d = d.min(distance.value(row)))
+                    .or_insert(distance.value(row));
             }
         }
         let mut ranked: Vec<_> = candidates.into_iter().collect();
