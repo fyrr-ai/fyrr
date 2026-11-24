@@ -32,25 +32,31 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) const INDEX_SEGMENT_LIMIT: usize = 64;
 // Merge throughput measured on #317: 3,000,000 rows in 2,147 s on `writer maintain`, cores 0-3,
 // `writer.threads = 2`. Re-measure with `scripts/bench-scale --maintain` when the merge changes.
-const MERGE_ROWS_PER_SECOND: f64 = 1_400.0;
+const MERGE_ROWS_PER_SECOND: u128 = 1_400;
 
 /// The most rows one merge step has rewritten within its deadline on this host: halved by a step
-/// that hit the deadline, doubled back by one that used under a quarter of it. In memory only:
-/// a `writer serve` keeps it between runs, `writer maintain` for the run.
+/// that hit the deadline, doubled back by one that used under a quarter of it, reset by a new
+/// content publication. In memory only: a `writer serve` keeps it between runs, `writer maintain`
+/// for the run.
 static MERGE_ROWS_LIMIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+/// The version the last run ended at: another one at the start of a run is a new content
+/// publication, and the run tries the derived rows again.
+static MERGE_SEEN_VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The rows one merge step may rewrite: half of `step_max_duration` at the measured throughput,
 /// 210,000 rows by default, and at most what this host has shown to fit. A step also opens
 /// segments and writes the version.
 fn merge_tier_rows(config: &Config) -> u64 {
-    let budget = config
+    // Half of the deadline, in milliseconds, at the measured rows per second.
+    let millis = config
         .writer
         .maintenance
         .step_max_duration
         .as_duration()
-        .as_secs_f64()
-        / 2.0;
-    let derived = ((budget * MERGE_ROWS_PER_SECOND) as u64).max(1);
+        .as_millis();
+    let derived = u64::try_from(millis * MERGE_ROWS_PER_SECOND / 2_000)
+        .unwrap_or(u64::MAX)
+        .max(1);
     derived.min(MERGE_ROWS_LIMIT.load(std::sync::atomic::Ordering::Relaxed))
 }
 
@@ -209,6 +215,12 @@ async fn maintain_held(
     // Recover the previous command's private suffix and reconcile configuration
     // once. Quiet native boundaries need only fresh authorization discovery.
     command_start(config, lease, history, false).await?;
+    let version = |head: &ServingHead| head.content.as_ref().map_or(0, |p| p.lance_version);
+    if MERGE_SEEN_VERSION.load(std::sync::atomic::Ordering::Relaxed)
+        != version(&lease.head().await?)
+    {
+        MERGE_ROWS_LIMIT.store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+    }
     let mut compacted = 0;
     let mut merged = 0;
     let limit = config.writer.maintenance.step_max_duration.as_duration();
@@ -348,6 +360,10 @@ async fn maintain_held(
         )
         .await?;
     }
+    MERGE_SEEN_VERSION.store(
+        version(&lease.head().await?),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     Ok(
         serde_json::json!({"compaction_steps":compacted,"index_merge_steps":merged,"deleted_files":removed,"protected_fragment_files":protected,"unverified_protected_fragment_files":unverified_protected,"deleted_envelopes":envelopes}),
     )
