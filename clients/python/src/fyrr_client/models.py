@@ -549,16 +549,12 @@ class Analyzer(TypedDict):
 
 class RetrievalSettings(TypedDict):
     """The persisted copy of [`RetrievalConfig`]."""
-    rescore_depth: NotRequired[RescoreSettings]
+    rescore_depth: NotRequired[RescoreSettings | None]
     dense_weight: float
     dense_candidates: int
     lexical_candidates: int
     source_cap: int
     max_documents: int
-
-
-class RescoreSettingsLegacy(TypedDict):
-    mode: Literal["legacy"]
 
 
 class RescoreSettingsFixed(TypedDict):
@@ -919,7 +915,7 @@ DenseElement: TypeAlias = Literal["f16", "f32"]
 
 
 # The persisted copy of [`RescoreDepth`].
-RescoreSettings: TypeAlias = RescoreSettingsLegacy | RescoreSettingsFixed | RescoreSettingsAdaptive
+RescoreSettings: TypeAlias = RescoreSettingsFixed | RescoreSettingsAdaptive
 
 
 # Contract schema version `<major>.<minor>`. Readers accept any minor of their major and reject other majors.

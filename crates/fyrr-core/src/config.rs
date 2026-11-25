@@ -321,11 +321,9 @@ impl RerankConfig {
 }
 
 /// The persisted copy of [`RescoreDepth`].
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum RescoreSettings {
-    #[default]
-    Legacy,
     Fixed {
         candidates: usize,
     },
@@ -335,15 +333,9 @@ pub enum RescoreSettings {
         min_gap: f64,
     },
 }
-impl RescoreSettings {
-    fn is_legacy(&self) -> bool {
-        *self == Self::Legacy
-    }
-}
 impl From<&RescoreDepth> for RescoreSettings {
     fn from(depth: &RescoreDepth) -> Self {
         match *depth {
-            RescoreDepth::Legacy => Self::Legacy,
             RescoreDepth::Fixed { candidates } => Self::Fixed { candidates },
             RescoreDepth::Adaptive {
                 min_candidates,
@@ -360,7 +352,6 @@ impl From<&RescoreDepth> for RescoreSettings {
 impl From<&RescoreSettings> for RescoreDepth {
     fn from(settings: &RescoreSettings) -> Self {
         match *settings {
-            RescoreSettings::Legacy => Self::Legacy,
             RescoreSettings::Fixed { candidates } => Self::Fixed { candidates },
             RescoreSettings::Adaptive {
                 min_candidates,
@@ -378,8 +369,8 @@ impl From<&RescoreSettings> for RescoreDepth {
 /// The persisted copy of [`RetrievalConfig`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RetrievalSettings {
-    #[serde(default, skip_serializing_if = "RescoreSettings::is_legacy")]
-    pub rescore_depth: RescoreSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rescore_depth: Option<RescoreSettings>,
     pub dense_weight: f64,
     pub dense_candidates: usize,
     pub lexical_candidates: usize,
@@ -389,7 +380,7 @@ pub struct RetrievalSettings {
 impl RetrievalConfig {
     pub fn settings(&self) -> RetrievalSettings {
         RetrievalSettings {
-            rescore_depth: (&self.rescore_depth).into(),
+            rescore_depth: self.rescore_depth.as_ref().map(Into::into),
             dense_weight: self.dense_weight,
             dense_candidates: self.dense_candidates,
             lexical_candidates: self.lexical_candidates,
@@ -401,7 +392,7 @@ impl RetrievalConfig {
 impl From<&RetrievalSettings> for RetrievalConfig {
     fn from(settings: &RetrievalSettings) -> Self {
         Self {
-            rescore_depth: (&settings.rescore_depth).into(),
+            rescore_depth: settings.rescore_depth.as_ref().map(Into::into),
             dense_weight: settings.dense_weight,
             dense_candidates: settings.dense_candidates,
             lexical_candidates: settings.lexical_candidates,
@@ -441,10 +432,10 @@ impl From<&CompositionSettings> for Composition {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct RetrievalConfig {
-    /// Float16 candidate refinement; legacy starts at the original fourfold depth
-    /// and, with one-bit codes, grows with the rows the probes inspect.
-    #[serde(default, skip_serializing_if = "RescoreDepth::is_legacy")]
-    pub rescore_depth: RescoreDepth,
+    /// Float16 candidate refinement. Unset, it starts at four times the dense
+    /// lane depth and, with one-bit codes, grows with the rows the probes inspect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rescore_depth: Option<RescoreDepth>,
     #[schemars(range(min = 0, max = 1))]
     pub dense_weight: f64,
     #[schemars(range(min = 1, max = RESULT_SLOTS_MAX))]
@@ -458,10 +449,28 @@ pub struct RetrievalConfig {
     #[schemars(range(min = 1, max = MAX_DOCUMENTS_MAX))]
     pub max_documents: usize,
 }
+impl RetrievalConfig {
+    /// Rescore candidates for the first pass of a `k`-row lane.
+    pub fn rescore_initial(&self, k: usize) -> usize {
+        self.rescore_depth
+            .as_ref()
+            .map_or(k * 4, |depth| depth.initial(k))
+    }
+    /// The deepest pool the lane may rescore.
+    pub fn rescore_maximum(&self, k: usize) -> usize {
+        self.rescore_depth
+            .as_ref()
+            .map_or(k * 16, |depth| depth.maximum(k))
+    }
+    /// The next pool after a close gap, if the configured depth expands.
+    pub fn rescore_expand(&self, depth: usize, k: usize, gap: f64) -> Option<usize> {
+        self.rescore_depth.as_ref()?.expand(depth, k, gap)
+    }
+}
 impl Default for RetrievalConfig {
     fn default() -> Self {
         Self {
-            rescore_depth: RescoreDepth::Legacy,
+            rescore_depth: None,
             dense_weight: 0.5,
             dense_candidates: 75,
             lexical_candidates: 200,
@@ -471,11 +480,9 @@ impl Default for RetrievalConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RescoreDepth {
-    #[default]
-    Legacy,
     Fixed {
         candidates: usize,
     },
@@ -488,19 +495,14 @@ pub enum RescoreDepth {
     },
 }
 impl RescoreDepth {
-    fn is_legacy(&self) -> bool {
-        *self == Self::Legacy
-    }
     pub fn initial(&self, k: usize) -> usize {
         match self {
-            Self::Legacy => k * 4,
             Self::Fixed { candidates } => (*candidates).max(k + 1),
             Self::Adaptive { min_candidates, .. } => (*min_candidates).max(k + 1),
         }
     }
     pub fn maximum(&self, k: usize) -> usize {
         let configured = match self {
-            Self::Legacy => 0,
             Self::Fixed { candidates } => *candidates,
             Self::Adaptive { max_candidates, .. } => *max_candidates,
         };
@@ -573,7 +575,7 @@ impl NamespaceConfig {
         // The historical policy omitted these fields. Keep its identity tied
         // to the original values rather than to defaults that can change.
         let legacy = RetrievalConfig {
-            rescore_depth: RescoreDepth::Legacy,
+            rescore_depth: None,
             dense_weight: 0.25,
             dense_candidates: 75,
             lexical_candidates: 50,

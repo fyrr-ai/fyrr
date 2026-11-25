@@ -297,7 +297,7 @@ impl PreparedReader {
             (std::mem::size_of::<Candidate>() + 3 * fyrr_core::limits::MAX_ID_BYTES) as u64;
         // Expanded tie sets, decoded vectors and distance-kernel scratch.
         let bytes = queries as u64
-                * (cfg.rescore_depth.maximum(dense_candidates) as u64
+                * (cfg.rescore_maximum(dense_candidates) as u64
                     * (candidate_bytes + u64::from(self.config.embedding.dimensions) * 8)
                     + cfg.lexical_candidates as u64 * 1024u64.div_ceil(50) * candidate_bytes)
                 // Includes hydrated metadata/text, typed/JSON copies and escaped

@@ -9,6 +9,10 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
+- `rescore_depth` has no `legacy` mode. Leave it unset for the default: four
+  times the dense lane depth, which for one-bit codes grows with the rows the
+  probes inspect. A configuration that sets `{ mode = "legacy" }` is refused.
+  See [tuning](docs/tuning.md).
 - The excerpt of a hit in a namespace with an `[namespace.analyzer]`, or with
   `fts_stem`, `fts_remove_stop_words` or `fts_ascii_folding`, is chosen with the
   tokens of its full-text index, as the lexical lane and `highlights` already

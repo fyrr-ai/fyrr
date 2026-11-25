@@ -345,8 +345,15 @@
       "additionalProperties": false,
       "properties": {
         "rescore_depth": {
-          "$ref": "#/$defs/RescoreDepth",
-          "description": "Float16 candidate refinement; legacy starts at the original fourfold depth\nand, with one-bit codes, grows with the rows the probes inspect."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RescoreDepth"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Float16 candidate refinement. Unset, it starts at four times the dense\nlane depth and, with one-bit codes, grows with the rows the probes inspect."
         },
         "dense_weight": {
           "type": "number",
@@ -390,19 +397,6 @@
     },
     "RescoreDepth": {
       "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "mode": {
-              "type": "string",
-              "const": "legacy"
-            }
-          },
-          "required": [
-            "mode"
-          ],
-          "additionalProperties": false
-        },
         {
           "type": "object",
           "additionalProperties": false,

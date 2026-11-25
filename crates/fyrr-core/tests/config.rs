@@ -1192,18 +1192,9 @@ fn retrieval_config_bounds_and_legacy_digest() {
     assert_eq!(retrieval.dense_weight, 0.5);
     assert_eq!(retrieval.lexical_candidates, 200);
     assert_eq!(retrieval.dense_candidates, 75);
-    assert_eq!(
-        retrieval.rescore_depth,
-        fyrr_core::config::RescoreDepth::Legacy
-    );
-    assert_eq!(
-        retrieval.rescore_depth.initial(retrieval.dense_candidates),
-        300
-    );
-    assert_eq!(
-        retrieval.rescore_depth.maximum(retrieval.dense_candidates),
-        1200
-    );
+    assert_eq!(retrieval.rescore_depth, None);
+    assert_eq!(retrieval.rescore_initial(retrieval.dense_candidates), 300);
+    assert_eq!(retrieval.rescore_maximum(retrieval.dense_candidates), 1200);
     let legacy = serde_json::json!([
         "slice2:cosine:ivf-rq1:f16:550:training256:logistic-z:population:lex.75:dense.25:source2-soft-per-bucket:lex50:dense75:p1:1200:phrase0",
         base.config.namespace.fts_settings(),
@@ -1614,23 +1605,31 @@ fn namespace_attributes_are_declared_by_name_and_type() {
     assert!(parse(&format!("{MINIMAL}\n[namespace.attributes]\na='decimal'")).is_err());
 }
 #[test]
-fn rescore_depth_keeps_legacy_digest_and_expands_only_at_small_gaps() {
+fn rescore_depth_defaults_to_the_pool_rule_and_expands_only_at_small_gaps() {
     use fyrr_core::config::RescoreDepth;
-    let baseline = parse(MINIMAL).unwrap().config.namespace;
-    let legacy = parse(&format!(
-        "{MINIMAL}\n[namespace.retrieval]\nrescore_depth={{mode='legacy'}}"
-    ))
-    .unwrap()
-    .config
-    .namespace;
-    assert_eq!(baseline.retrieval_digest(), legacy.retrieval_digest());
-    assert_eq!(RescoreDepth::Legacy.initial(75), 300);
+    let namespace = parse(MINIMAL).unwrap().config.namespace;
+    // Computed on main 7c1626c4, before `Legacy` was deleted: a namespace that
+    // sets nothing must keep the identity its publications already carry.
+    assert_eq!(
+        namespace.retrieval_digest(),
+        "sha256:8a1c25581678e85afb0fbad2d57d6ae486df8944d69dc28c98aa771b4bce098c"
+    );
+    let retrieval = namespace.retrieval;
+    assert_eq!(retrieval.rescore_depth, None);
+    assert_eq!(retrieval.rescore_initial(75), 300);
+    assert_eq!(retrieval.rescore_maximum(75), 1200);
+    assert_eq!(retrieval.rescore_expand(300, 75, 0.0), None);
+    assert!(
+        parse(&format!(
+            "{MINIMAL}\n[namespace.retrieval]\nrescore_depth={{mode='legacy'}}"
+        ))
+        .is_err()
+    );
     let fixed = RescoreDepth::Fixed { candidates: 100 };
     assert_eq!(fixed.initial(75), 100);
     assert_eq!(fixed.initial(150), 151);
     assert_eq!(RescoreDepth::Fixed { candidates: 75 }.initial(75), 76);
     assert_eq!(RescoreDepth::Fixed { candidates: 1200 }.maximum(1), 1200);
-    assert_eq!(RescoreDepth::Legacy.maximum(75), 1200);
     assert_eq!(fixed.expand(100, 75, 0.0), None);
     let adaptive = RescoreDepth::Adaptive {
         min_candidates: 75,
