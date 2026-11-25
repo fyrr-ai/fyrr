@@ -3,16 +3,33 @@ use super::*;
 impl PreparedReader {
     pub async fn open(config: &Config) -> Result<Self> {
         let budget = PreparationReservation::pool(config)?;
-        Self::open_in(config, budget, AUTHORIZATION_CACHE_MAX_BYTES).await
+        Self::open_in(config, budget, AUTHORIZATION_CACHE_MAX_BYTES, None).await
+    }
+    /// The directory of the mirror of the namespace `config` names.
+    pub(crate) fn mirror_dataset_directory(config: &Config) -> Result<std::path::PathBuf> {
+        let mirror_path = config
+            .mirror_directory(&ProcessEnvironment)
+            .ok_or(StorageConfigurationInvalid)?;
+        Ok(mirror_path.join(digest(
+            format!(
+                "{}:{}",
+                config.storage.endpoint.as_deref().unwrap_or(""),
+                dataset_uri(config)
+            )
+            .as_bytes(),
+        )))
     }
     /// Opens a namespace inside the memory envelope of a reader that is already
-    /// running, with `authorization_bytes` for its subject cache.
+    /// running, with `authorization_bytes` for its subject cache. With
+    /// `mirror`, its files go to that directory, to share its budget with the
+    /// other mirrors there; without it, to a directory of the namespace.
     pub(crate) async fn open_in(
         config: &Config,
         budget: MemoryPool,
         authorization_bytes: usize,
+        mirror: Option<std::path::PathBuf>,
     ) -> Result<Self> {
-        let mut reader = Self::open_shared(config, None, budget).await?;
+        let mut reader = Self::open_shared(config, None, budget, mirror).await?;
         // Nothing has used the cache yet: an HTTP reader builds no admission at open.
         reader.admission_cache = Arc::new(std::sync::Mutex::new(
             AuthorizationCache::with_max_bytes(authorization_bytes),
@@ -38,6 +55,7 @@ impl PreparedReader {
         config: &Config,
         shared: Option<SharedReaderResources>,
         preparation_budget: MemoryPool,
+        mirror_directory: Option<std::path::PathBuf>,
     ) -> Result<Self> {
         let (store, root) = namespace_store(config)?;
         let options = config
@@ -48,6 +66,10 @@ impl PreparedReader {
             .mirror_directory(&ProcessEnvironment)
             .ok_or(StorageConfigurationInvalid)?;
         MirrorStore::private_directory(&mirror_path).map_err(|_| StorageUnavailable)?;
+        let mirror_directory = match mirror_directory {
+            Some(directory) => directory,
+            None => Self::mirror_dataset_directory(config)?,
+        };
         let (
             shared_session,
             mirror,
@@ -70,14 +92,7 @@ impl PreparedReader {
             (
                 None,
                 Arc::new(MirrorStore::new(
-                    mirror_path.join(digest(
-                        format!(
-                            "{}:{}",
-                            config.storage.endpoint.as_deref().unwrap_or(""),
-                            dataset_uri(config)
-                        )
-                        .as_bytes(),
-                    )),
+                    mirror_directory,
                     config.reader.mirror_max_bytes,
                 )?),
                 Arc::new(std::sync::Mutex::new(AuthorizationCache::default())),

@@ -94,6 +94,20 @@ impl IoCounters {
 #[derive(Debug, Default)]
 struct ReportedBytes(AtomicU64);
 impl ReportedBytes {
+    /// The reading of `directory`, shared by every mirror kept there: each
+    /// counts the whole directory, which the gauge must add up once.
+    fn of(directory: &std::path::Path) -> Arc<Self> {
+        static BY_DIRECTORY: std::sync::Mutex<BTreeMap<PathBuf, std::sync::Weak<ReportedBytes>>> =
+            std::sync::Mutex::new(BTreeMap::new());
+        let mut known = crate::sync::lock(&BY_DIRECTORY);
+        known.retain(|_, reading| reading.strong_count() > 0);
+        if let Some(reading) = known.get(directory).and_then(std::sync::Weak::upgrade) {
+            return reading;
+        }
+        let reading = Arc::<Self>::default();
+        known.insert(directory.to_path_buf(), Arc::downgrade(&reading));
+        reading
+    }
     fn set(&self, bytes: u64) {
         let before = self.0.swap(bytes, Ordering::Relaxed);
         let signed = |n| i64::try_from(n).unwrap_or(i64::MAX);
@@ -448,6 +462,7 @@ impl MirrorStore {
             Err(std::fs::TryLockError::WouldBlock) => {} // A live download owns its partial.
             Err(_) => return Err(StorageUnavailable),
         }
+        let reported = ReportedBytes::of(&directory);
         Ok(Self {
             #[cfg(test)]
             sample_read: Arc::default(),
@@ -466,7 +481,7 @@ impl MirrorStore {
             lock: Arc::default(),
             counters: Arc::default(),
             totals: Arc::default(),
-            reported: Arc::default(),
+            reported,
             verified: Arc::default(),
             sizes: Arc::default(),
             dataset_cache_key: Arc::default(),

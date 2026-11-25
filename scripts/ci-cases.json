@@ -131,11 +131,7 @@
         "tier": "quick",
         "seconds": 0.0
       },
-      "full:fyrr-reader:lib:fyrr_reader/http::place_tests::a_slot_takes_its_mirror_with_it": {
-        "tier": "quick",
-        "seconds": 0.0
-      },
-      "full:fyrr-reader:lib:fyrr_reader/http::place_tests::a_process_owns_a_directory_for_the_mirrors_of_path_namespaces": {
+      "full:fyrr-reader:lib:fyrr_reader/http::place_tests::a_slot_returns_its_place_when_it_goes": {
         "tier": "quick",
         "seconds": 0.0
       },
@@ -1959,6 +1955,10 @@
         "seconds": 40.0
       },
       "full:fyrr:test:dense_path/api_keys::namespaces_opened_by_path_stay_inside_the_memory_budget": {
+        "tier": "full",
+        "seconds": 90.0
+      },
+      "full:fyrr:test:dense_path/api_keys::namespaces_opened_by_path_stay_inside_the_mirror_budget": {
         "tier": "full",
         "seconds": 90.0
       }

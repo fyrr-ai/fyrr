@@ -31,11 +31,7 @@ const MAX_HEADER_BYTES: usize = 32 * 1024;
 const MAX_BEARER_BYTES: usize = 16 * 1024;
 pub(crate) const MAX_CONNECTIONS: usize = 64;
 /// Namespaces opened by request path besides the configured one. The least
-/// recently used one is closed when another needs the place. Each has an
-/// eighth of the mirror budget, so the count also keeps the mirrors of all of
-/// them inside `reader.mirror_max_bytes`.
-// shortcut: a fixed share of the mirror per namespace; share it by size when
-// namespaces too large for an eighth must be served by path.
+/// recently used one is closed when another needs the place.
 const MAX_OPEN_NAMESPACES: usize = 8;
 const MAX_REQUESTS_IN_FLIGHT: usize = 64;
 const MAX_CONTROLS_IN_FLIGHT: usize = 8;
@@ -107,10 +103,11 @@ impl Served {
 
 /// The namespaces a request path can name: the configured one, always, and
 /// others opened on their first request. At most `MAX_OPEN_NAMESPACES` others
-/// are open, each with an eighth of the reader's mirror and subject-cache
-/// budgets, inside the configured reader's memory envelope. A namespace that
-/// the envelope cannot fund in full closes the least recently used idle one
-/// and opens again.
+/// are open, each with an eighth of the reader's subject-cache budget, inside
+/// the configured reader's memory envelope. A namespace that the envelope
+/// cannot fund in full closes the least recently used idle one and opens
+/// again. All of them keep their mirror in the directory of the configured
+/// one, so together they stay inside `reader.mirror_max_bytes`.
 struct Namespaces {
     /// The configuration the file holds, to which a namespace's name is added.
     process: Arc<Config>,
@@ -122,71 +119,18 @@ struct Namespaces {
     slots: Arc<Semaphore>,
     /// Woken when a namespace has ended and returned what it held.
     closed: Arc<tokio::sync::Notify>,
-    /// How many namespaces have been opened: each has a mirror of its own.
-    opened: std::sync::atomic::AtomicU64,
-    /// Where those mirrors are: the directory of this process, made on the
-    /// first request for one, whose lock the process holds until it ends.
-    mirrors: tokio::sync::OnceCell<(std::path::PathBuf, std::fs::File)>,
 }
 /// A place among the live namespaces. It goes with the scheduler of the
-/// namespace, which has stopped by then, and takes the mirror that namespace
-/// filled with it, so the mirrors on disk are those of the live namespaces.
+/// namespace, which has stopped by then.
 struct Slot {
-    mirror: std::path::PathBuf,
     closed: Arc<tokio::sync::Notify>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 impl Drop for Slot {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.mirror);
         // The scheduler's readers, and the memory they held, are gone by now.
         self.closed.notify_waiters();
     }
-}
-/// A directory of this process for the mirrors of namespaces opened by request
-/// path, among those of other processes next to the configured mirror, which
-/// holds files only. A lock on its `owner.lock` shows that the process lives.
-/// The directories of processes that ended are removed, best effort.
-fn own_mirrors(configured: std::path::PathBuf) -> Result<(std::path::PathBuf, std::fs::File)> {
-    use crate::mirror::MirrorStore;
-    let mut root = configured.into_os_string();
-    root.push(".paths");
-    let root = std::path::PathBuf::from(root);
-    MirrorStore::private_directory(&root).map_err(|_| StorageUnavailable)?;
-    // Held while a directory is made and locked, so that no sweep finds it
-    // between the two. It is released when `sweep` goes.
-    let sweep = MirrorStore::private_file(&root.join("sweep.lock"), true)
-        .map_err(|_| StorageUnavailable)?;
-    sweep.lock().map_err(|_| StorageUnavailable)?;
-    let nanos = fyrr_core::clock::now().timestamp_nanos_opt().unwrap_or(0);
-    let own = root.join(format!("{}-{nanos}", std::process::id()));
-    MirrorStore::private_directory(&own).map_err(|_| StorageUnavailable)?;
-    let lock =
-        MirrorStore::private_file(&own.join("owner.lock"), true).map_err(|_| StorageUnavailable)?;
-    lock.try_lock().map_err(|_| StorageUnavailable)?;
-    for entry in std::fs::read_dir(&root)
-        .into_iter()
-        .flatten()
-        .filter_map(std::result::Result::ok)
-    {
-        let name = entry.file_name();
-        let is_owner_directory = name.to_str().is_some_and(|name| {
-            name.split_once('-').is_some_and(|(pid, nanos)| {
-                [pid, nanos]
-                    .iter()
-                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-            })
-        }) && std::fs::symlink_metadata(entry.path())
-            .is_ok_and(|meta| meta.is_dir());
-        if is_owner_directory
-            && let Ok(other) = MirrorStore::private_file(&entry.path().join("owner.lock"), false)
-            && other.try_lock().is_ok()
-        {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
-    drop(sweep);
-    Ok((own, lock))
 }
 /// Open namespaces, least recently used first. Each has one place that
 /// concurrent requests share, so a namespace is opened once.
@@ -250,8 +194,6 @@ impl Namespaces {
             open: std::sync::Mutex::default(),
             slots: Arc::new(Semaphore::new(MAX_OPEN_NAMESPACES)),
             closed: Arc::default(),
-            opened: std::sync::atomic::AtomicU64::new(0),
-            mirrors: tokio::sync::OnceCell::new(),
         }
     }
     /// The configuration of the namespace `name`.
@@ -320,31 +262,11 @@ impl Namespaces {
                     .await
                     .map_err(|_| Busy)?
                     .map_err(|_| Busy)?;
-                let mut config = this.config(&name);
-                let places = u64::try_from(MAX_OPEN_NAMESPACES).unwrap_or(u64::MAX);
-                config.reader.mirror_max_bytes /= places;
-                let (mirrors, _) = this
-                    .mirrors
-                    .get_or_try_init(|| async {
-                        let configured = this
-                            .configured
-                            .config
-                            .mirror_directory(&ProcessEnvironment)
-                            .ok_or(StorageConfigurationInvalid)?;
-                        // It locks and sweeps: not on the runtime's thread.
-                        tokio::task::spawn_blocking(move || own_mirrors(configured))
-                            .await
-                            .map_err(|_| StorageUnavailable)?
-                    })
-                    .await?;
-                let mirror = mirrors.join(format!(
-                    "path-{}",
-                    this.opened
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                ));
-                config.reader.mirror_path = Some(mirror.to_string_lossy().into_owned());
+                let config = this.config(&name);
+                // The mirror of the configured namespace: one budget for all.
+                let mirror =
+                    crate::search::PreparedReader::mirror_dataset_directory(&this.process)?;
                 let slot = Slot {
-                    mirror,
                     closed: this.closed.clone(),
                     _permit: permit,
                 };
@@ -353,6 +275,7 @@ impl Namespaces {
                         &config,
                         this.budget.clone(),
                         crate::search::AUTHORIZATION_CACHE_MAX_BYTES / MAX_OPEN_NAMESPACES,
+                        Some(mirror.clone()),
                     )
                     .await?;
                     let funded = reader.readiness_state();

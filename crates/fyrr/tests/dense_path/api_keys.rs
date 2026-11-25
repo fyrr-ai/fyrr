@@ -1195,3 +1195,85 @@ async fn namespaces_opened_by_path_stay_inside_the_memory_budget() {
     );
     reader.stop().await;
 }
+
+/// The bytes the mirror counts against its budget under `directory`: complete
+/// files, pages and page maps, at their apparent length.
+fn mirror_bytes(directory: &Path) -> u64 {
+    std::fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .map(|entry| entry.unwrap().path())
+        .map(|path| {
+            if path.is_dir() {
+                mirror_bytes(&path)
+            } else if path
+                .extension()
+                .is_some_and(|e| ["blob", "sparse", "map", "partial"].iter().any(|k| e == *k))
+            {
+                path.metadata().unwrap().len()
+            } else {
+                0
+            }
+        })
+        .sum()
+}
+
+#[tokio::test]
+#[ignore = "real writer, HTTP reader executable and local storage; scripts/ci"]
+async fn namespaces_opened_by_path_stay_inside_the_mirror_budget() {
+    let mut deployment = Deployment::new().await;
+    deployment.without_directory();
+    let key = Key::new("nm-mir-p4z", "FYRR_TEST_API_KEY_MIR", 67, "usr:u1");
+    let published = deployment.publish(&[&key], &[&key], "");
+    assert!(published.status.success(), "{}", report(&published));
+    // Two more than fit: the configured namespace and two others fill the
+    // budget set below, and four are opened.
+    let names: Vec<String> = (0..4)
+        .map(|n| deployment.sibling(&format!("mir{n}"), &[&key]))
+        .collect();
+
+    // What the configured namespace's mirror holds, and what one more
+    // namespace adds, are read from a reader with the default budget.
+    let text = std::fs::read_to_string(&deployment.worker).unwrap();
+    let configured = fyrr_core::config::load(&deployment.worker).unwrap().config;
+    let mirror = PathBuf::from(configured.reader.mirror_path.as_ref().unwrap());
+    let mut probe = Reader::start_appended(&deployment.worker, &deployment.root, key_http).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let own = mirror_bytes(&mirror);
+    let (status, body) = path_query(&probe, &key.secret, &names[0]).await;
+    assert_eq!(status, 200, "{body}");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let each = mirror_bytes(&mirror) - own;
+    probe.stop().await;
+    assert!(own > 0 && each > 0, "the mirror holds {own} and {each}");
+
+    let budget = own + each * 5 / 2;
+    let tight = deployment.root.join("tight-mirror-reader.toml");
+    let kept = deployment.root.join("tight-mirror");
+    std::fs::write(
+        &tight,
+        text.replace(
+            &format!("mirror_path = \"{}\"", mirror.display()),
+            &format!("mirror_path = \"{}\"", kept.display()),
+        )
+        .replace(
+            "mirror_max_bytes = 16777216",
+            &format!("mirror_max_bytes = {budget}"),
+        ),
+    )
+    .unwrap();
+    let mut reader = Reader::start_appended(&tight, &deployment.root, key_http).await;
+    for name in names.iter().chain(&names[..1]) {
+        let (status, body) = path_query(&reader, &key.secret, name).await;
+        assert_eq!(status, 200, "{name}: {body}");
+        assert_eq!(hits_of(&body), [deployment.doc(1)], "{name}");
+        let held = mirror_bytes(&kept);
+        assert!(
+            held <= budget,
+            "{name}: the mirrors hold {held} of {budget}"
+        );
+    }
+    // One budget for all of them: no directory of mirrors beside the configured one.
+    assert!(!PathBuf::from(format!("{}.paths", kept.display())).exists());
+    reader.stop().await;
+}

@@ -103,7 +103,8 @@ storage URI is deleted, a running reader refuses every request
 with `authorization_unavailable` until it has prepared the new namespace's
 first publication, then switches to it without a restart; it never serves the old namespace's rows.
 Memory and disk are bounded by
-`reader.memory_max_bytes` and `reader.mirror_max_bytes`.
+`reader.memory_max_bytes` and `reader.mirror_max_bytes`, for all open
+namespaces together.
 
 ## Maintenance and retention
 
