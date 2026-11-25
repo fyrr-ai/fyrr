@@ -441,7 +441,8 @@ impl From<&CompositionSettings> for Composition {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct RetrievalConfig {
-    /// Float16 candidate refinement; legacy keeps the original fourfold depth.
+    /// Float16 candidate refinement; legacy starts at the original fourfold depth
+    /// and, with one-bit codes, grows with the rows the probes inspect.
     #[serde(default, skip_serializing_if = "RescoreDepth::is_legacy")]
     pub rescore_depth: RescoreDepth,
     #[schemars(range(min = 0, max = 1))]

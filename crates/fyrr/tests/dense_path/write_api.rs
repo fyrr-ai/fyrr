@@ -1923,13 +1923,16 @@ async fn identity_write_api_orders_equal_dense_scores_by_document_key_on_storage
     let address = free_address();
     configure(&config, &address, "");
     let writer = Writer::start(&config, &root, address).await;
-    // 300 rows share one vector and are written in reverse key order; the
-    // reader may read every third of them.
-    let rows: Vec<Value> = (0..300)
+    // 3,000 rows written in reverse key order; the reader may read every third
+    // of them, more than the first rescore pool. The first 60 share the query's
+    // vector, so 20 readable rows tie at the cutoff of the top 10; the others
+    // lie farther away.
+    let rows: Vec<Value> = (0..3000)
         .rev()
         .map(|n| {
             let reader = if n % 3 == 0 { "usr:x" } else { "usr:other" };
-            json!({"id": format!("r{n:03}"), "text": format!("row {n}"), "vector": vec![0.5; 16], "readers": [reader]})
+            let vector = if n < 60 { vec![0.5; 16] } else { vector(n, 16) };
+            json!({"id": format!("r{n:04}"), "text": format!("row {n}"), "vector": vector, "readers": [reader]})
         })
         .collect();
     assert_eq!(
@@ -1940,9 +1943,9 @@ async fn identity_write_api_orders_equal_dense_scores_by_document_key_on_storage
                 &json!({"settings": {"embedding": {"dimensions": 16}}, "upserts": rows}),
             )
             .await,
-        (200, json!({"upserted": 300, "deleted": 0}))
+        (200, json!({"upserted": 3000, "deleted": 0}))
     );
-    let expected: Vec<String> = (0..10).map(|n| format!("r{:03}", n * 3)).collect();
+    let expected: Vec<String> = (0..10).map(|n| format!("r{:04}", n * 3)).collect();
     for (n, sparse_read) in ["masked_scan", "take_rows"].into_iter().enumerate() {
         let reader = rabitq_reader(
             &config,
@@ -1953,8 +1956,9 @@ async fn identity_write_api_orders_equal_dense_scores_by_document_key_on_storage
         .await;
         let (found, telemetry) = indexed_answer(&reader, &[0.5; 16], 10).await;
         assert_eq!(found, expected, "{sparse_read}: {telemetry}");
-        // The pool held every row the reader may read, 100 of them.
-        assert_eq!(telemetry["dense_candidates_fetched"], 100, "{telemetry}");
+        // The refinement ranked the first pool, 300 of the 1,000 rows the reader
+        // may read, and the tie fit in it.
+        assert_eq!(telemetry["dense_candidates_fetched"], 300, "{telemetry}");
         assert!(
             telemetry.get("dense_tie_bound_hits").is_none(),
             "{telemetry}"

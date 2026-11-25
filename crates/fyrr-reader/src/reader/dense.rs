@@ -253,8 +253,8 @@ impl PreparedReader {
             && self.config.namespace.dense_rq_bits == 1
         {
             // One-bit distances rank a growing pool less precisely. Grow the exact
-            // rescore pool sublinearly with the rows the probes inspect, within the
-            // request's existing reservation. An index whose partitions follow its
+            // rescore pool sublinearly with the rows the probes inspect, up to the
+            // depth that the tie expansion could already reach. An index whose partitions follow its
             // rows inspects a small share of them; one with few partitions inspects
             // them all.
             let inspected = self.admission.maps.as_deref().map_or(eligible, |maps| {
@@ -705,6 +705,8 @@ impl PreparedReader {
         });
         // Each root owns its search scratch. Bound simultaneous root searches
         // and consume their results in routing order.
+        // shortcut: a fixed width of 4 measured at 15 segments on 14 cores (#319);
+        // derive it from the warm reservation when segment counts or load change.
         let width = lance_core::utils::tokio::get_num_compute_intensive_cpus().clamp(1, 4);
         let mut batches = futures::stream::iter(searches)
             .try_buffered(width)
