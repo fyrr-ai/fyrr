@@ -272,13 +272,16 @@ async fn maintain_held(
     let head = boundary(config, lease, history).await?;
     if head.content.is_some() {
         let dataset = pinned(config, &head).await?;
-        let names: BTreeSet<_> = dataset
-            .load_indices()
-            .await?
-            .iter()
-            .map(|i| i.name.clone())
-            .collect();
-        for name in names {
+        let mut segments = BTreeMap::<_, usize>::new();
+        for index in dataset.load_indices().await?.iter() {
+            *segments.entry(index.name.clone()).or_default() += 1;
+        }
+        // The most crowded index first: a run that yields after a step would otherwise merge
+        // the first index again and again, as each write gives it a new segment, and the
+        // others would never be reached.
+        let mut names: Vec<_> = segments.into_iter().collect();
+        names.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        for (name, _) in names {
             // An index that ran out of time on this version waits for a new publication.
             if merge_skipped(&config.namespace.name, &name, version(&head)) {
                 continue;
