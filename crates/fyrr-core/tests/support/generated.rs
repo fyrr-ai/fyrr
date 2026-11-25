@@ -421,7 +421,8 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
                         "max_documents": 75
                     },
                     "composition": {"fusion": 50, "dense": 0, "lexical": 0},
-                    "attributes": {"created": "datetime", "priority": "int"}
+                    "attributes": {"created": "datetime", "priority": "int"},
+                    "write_api": {"text_attribute": "text", "open": false}
                 }))
                 .unwrap_or_else(|error| unreachable!("fixture settings parse: {error}")),
                 fixed_grants: Default::default(),

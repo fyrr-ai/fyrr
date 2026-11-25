@@ -72,8 +72,7 @@ async fn local_storage_publishes_and_serves_with_permission_filtering() {
         1536,
         "both sources' rows are published"
     );
-    assert!(storage.join(".fyrr-storage.lock").is_file());
-    assert_eq!(mode(&storage.join(".fyrr-storage.lock")), 0o600);
+    assert!(!storage.join(".fyrr-storage.lock").exists());
 
     success(&config, &["reader", "check"]);
     let search = success(

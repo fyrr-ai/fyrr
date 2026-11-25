@@ -247,7 +247,10 @@ impl PreparedReader {
                 {
                     let policy = artifact::<PolicyArtifact>(store, root, &head.policy)
                         .await
-                        .map_err(|_| AuthorizationUnavailable)?;
+                        .map_err(|error| match error {
+                            crate::storage::StorageError::NamespaceLayoutOld => NamespaceLayoutOld,
+                            _ => AuthorizationUnavailable,
+                        })?;
                     *cached = Some((head.policy.clone(), Arc::new(policy)));
                 }
                 Ok::<_, ReaderError>(cached.as_ref().ok_or(AuthorizationUnavailable)?.1.clone())
@@ -260,7 +263,10 @@ impl PreparedReader {
                 {
                     let identity = artifact::<IdentityArtifact>(store, root, &head.identity)
                         .await
-                        .map_err(|_| AuthorizationUnavailable)?;
+                        .map_err(|error| match error {
+                            crate::storage::StorageError::NamespaceLayoutOld => NamespaceLayoutOld,
+                            _ => AuthorizationUnavailable,
+                        })?;
                     *cached = Some((head.identity.clone(), Arc::new(identity)));
                 }
                 Ok::<_, ReaderError>(cached.as_ref().ok_or(AuthorizationUnavailable)?.1.clone())

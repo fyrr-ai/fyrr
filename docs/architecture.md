@@ -101,8 +101,11 @@ A reader can see an object before its writer has flushed the directory, so a
 writer that publishes a reference to something it only observed flushes it
 first. Lance uses an atomic create-exclusive link. Staging files of a killed
 writer are removed by later writes and by every delete; a stopped writer
-keeps its file. `.fyrr-storage.lock` remains in the root and stops earlier
-releases, which serialized all writes through it, from writing there.
+keeps its file. A root that v0.1.x or an earlier build wrote holds
+`.fyrr-storage.lock` or `.fyrr-storage.stage`; v0.2.0 refuses it with
+`storage_root_old`, since that build can still write there. Recreate the
+namespaces in a new root. A namespace whose stored contracts are of an older
+major than this build writes is refused with `namespace_layout_old`, on S3 too.
 Maintenance and confirmed
 source purge reap abandoned multipart uploads (`name#digits`), protecting
 files younger than ten minutes and namespaces with live source leases;

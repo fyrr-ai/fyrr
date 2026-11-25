@@ -179,8 +179,10 @@ impl RestoreHistory {
                 .await?
                 .bytes()
                 .await?;
-            let envelope: PreparedEnvelope =
-                fyrr_core::parse_contract(&bytes).map_err(|_| WriterError::PublicationInvalid)?;
+            let envelope: PreparedEnvelope = fyrr_reader::storage::parse_stored(
+                &bytes,
+                fyrr_reader::storage::StorageError::PublicationInvalid,
+            )?;
             if envelope.namespace != config.namespace.name {
                 return Err(WriterError::EnvelopeNamespaceInvalid);
             }

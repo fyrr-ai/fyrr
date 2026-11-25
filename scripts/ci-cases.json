@@ -447,6 +447,10 @@
         "tier": "quick",
         "seconds": 0.234
       },
+      "full:fyrr-writer:lib:fyrr_writer/write_api::tests::a_namespace_of_an_earlier_fyrr_is_refused_without_a_retry": {
+        "tier": "quick",
+        "seconds": 0.001
+      },
       "full:fyrr-writer:lib:fyrr_writer/write_api::tests::the_documented_request_is_the_parsed_one": {
         "tier": "quick",
         "seconds": 0.001
@@ -671,7 +675,7 @@
         "tier": "quick",
         "seconds": 9.929
       },
-      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_takes_a_root_over_from_the_version_counter": {
+      "full:fyrr-reader:lib:fyrr_reader/storage::local::tests::local_store_refuses_a_root_of_a_release_that_locked_the_root": {
         "tier": "quick",
         "seconds": 0.202
       },
@@ -1660,6 +1664,14 @@
     "title": "cli (full build)",
     "kind": "rust",
     "cases": {
+      "full:fyrr:test:cli/a_namespace_stored_by_an_earlier_fyrr_is_refused_by_name": {
+        "tier": "quick",
+        "seconds": 0.5
+      },
+      "full:fyrr:test:cli/a_local_root_written_before_0_2_0_is_refused_by_name": {
+        "tier": "quick",
+        "seconds": 0.1
+      },
       "full:fyrr:test:cli/config_check_passes_with_secrets_and_never_prints_them": {
         "tier": "quick",
         "seconds": 2.148
@@ -2640,7 +2652,7 @@
         "tier": "full",
         "seconds": 30.0
       },
-      "full:fyrr:test:dense_path/incremental::incremental_namespace_created_before_the_connector_columns_keeps_its_layout_on_storage": {
+      "full:fyrr:test:dense_path/incremental::incremental_reader_refuses_a_policy_of_an_earlier_fyrr_by_name_on_storage": {
         "tier": "full",
         "seconds": 20.0
       },

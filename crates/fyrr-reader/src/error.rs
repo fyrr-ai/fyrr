@@ -62,6 +62,7 @@ errors! {
     IndexRowsInvalid => ("index_rows_invalid", StorageUnavailable),
     InvalidArgument => ("invalid_argument", InvalidArgument),
     MirrorCapacityExhausted => ("mirror_capacity_exhausted", StorageUnavailable),
+    NamespaceLayoutOld => ("namespace_layout_old", StorageUnavailable),
     PartitionMapUnavailable => ("partition_map_unavailable", StorageUnavailable),
     PreparationBudgetExhausted => ("preparation_budget_exhausted", StorageUnavailable),
     PreparationBudgetImpossible => ("preparation_budget_impossible", StorageUnavailable),
@@ -81,6 +82,7 @@ errors! {
     SerializationFailed => ("serialization_failed", StorageUnavailable),
     StaleCursor => ("stale_cursor", StaleCursor),
     StorageConfigurationInvalid => ("storage_configuration_invalid", StorageUnavailable),
+    StorageRootOld => ("storage_root_old", StorageUnavailable),
     StorageUnavailable => ("storage_unavailable", StorageUnavailable),
     // The listing of namespaces matches more names than it returns.
     TooManyNamespaces => ("too_many_namespaces", StorageUnavailable),
@@ -119,6 +121,8 @@ impl From<crate::storage::StorageError> for ReaderError {
             S::StaleCursor => Self::StaleCursor,
             S::PublicationUnavailable => Self::PublicationUnavailable,
             S::TooManyNamespaces => Self::TooManyNamespaces,
+            S::StorageRootOld => Self::StorageRootOld,
+            S::NamespaceLayoutOld => Self::NamespaceLayoutOld,
         }
     }
 }

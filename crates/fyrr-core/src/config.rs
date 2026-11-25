@@ -543,13 +543,6 @@ impl Default for Composition {
     }
 }
 impl NamespaceConfig {
-    /// Whether this namespace stores the metadata fields of connector
-    /// documents as typed columns, which a namespace created before them does
-    /// not.
-    pub fn typed_connector_fields(&self) -> bool {
-        self.write_api.is_none() && crate::attributes::has_connector_columns(&self.attributes)
-    }
-
     /// Canonical analyzer settings shared by publication and admission.
     pub fn fts_settings(&self) -> crate::publication::FtsSettings {
         crate::publication::FtsSettings {
@@ -1520,17 +1513,6 @@ impl fmt::Display for Issue {
 pub struct LoadedConfig {
     pub config: Config,
     raw: toml::Table,
-}
-
-impl LoadedConfig {
-    /// Whether the file itself has an entry for `attribute` in
-    /// `[namespace.attribute_indexes]`, not a default derived from other keys.
-    pub fn sets_attribute_index(&self, attribute: &str) -> bool {
-        self.raw
-            .get("namespace")
-            .and_then(|namespace| namespace.get("attribute_indexes"))
-            .is_some_and(|indexes| indexes.get(attribute).is_some())
-    }
 }
 
 /// Where an effective value came from.

@@ -13,7 +13,6 @@ pub(in crate::storage) fn seed(
     }
     let store = LocalStore::open(root)?;
     let root = store.root_directory()?;
-    store.hand_over(&root)?;
     store.reap(&root)?;
     let prefix = store.root.clone().join("namespaces").join(namespace);
     // One descriptor chain per directory, however many objects it receives.

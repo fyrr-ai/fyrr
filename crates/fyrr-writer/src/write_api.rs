@@ -166,13 +166,20 @@ impl From<WriterError> for ApiError {
             WriterError::PublicationInvalid => Self(400, "settings_invalid"),
             WriterError::DocumentInvalid => Self(400, "document_invalid"),
             WriterError::SyncBusy => Self(503, "busy"),
+            WriterError::NamespaceLayoutOld => Self(409, "namespace_layout_old"),
+            WriterError::StorageRootOld => Self(409, "storage_root_old"),
             _ => Self(503, "unavailable"),
         }
     }
 }
 impl From<fyrr_reader::storage::StorageError> for ApiError {
-    fn from(_: fyrr_reader::storage::StorageError) -> Self {
-        Self(503, "unavailable")
+    fn from(error: fyrr_reader::storage::StorageError) -> Self {
+        use fyrr_reader::storage::StorageError as S;
+        match error {
+            S::NamespaceLayoutOld => Self(409, "namespace_layout_old"),
+            S::StorageRootOld => Self(409, "storage_root_old"),
+            _ => Self(503, "unavailable"),
+        }
     }
 }
 
@@ -1634,6 +1641,37 @@ async fn write_envelope(
 mod tests {
     use super::*;
     use fyrr_core::http_api::{PatchWhere, WriteRequest, WriteRow};
+
+    /// A namespace or root of an earlier fyrr is a permanent refusal: a client
+    /// that retried a 503 would retry for ever.
+    #[test]
+    fn a_namespace_of_an_earlier_fyrr_is_refused_without_a_retry() {
+        use fyrr_reader::storage::StorageError as S;
+        for (error, code) in [
+            (
+                ApiError::from(WriterError::NamespaceLayoutOld),
+                "namespace_layout_old",
+            ),
+            (
+                ApiError::from(WriterError::StorageRootOld),
+                "storage_root_old",
+            ),
+            (
+                ApiError::from(S::NamespaceLayoutOld),
+                "namespace_layout_old",
+            ),
+            (ApiError::from(S::StorageRootOld), "storage_root_old"),
+        ] {
+            assert_eq!((error.0, error.1), (409, code));
+            assert!(
+                error
+                    .response()
+                    .headers()
+                    .get(header::RETRY_AFTER)
+                    .is_none()
+            );
+        }
+    }
 
     #[test]
     fn rows_laid_out_in_another_column_order_than_the_tables_are_refused() {

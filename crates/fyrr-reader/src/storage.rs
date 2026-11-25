@@ -265,6 +265,13 @@ pub enum StorageError {
     StaleCursor,
     PublicationUnavailable,
     TooManyNamespaces,
+    /// The local root was written by v0.1.x or an earlier build: it holds
+    /// `.fyrr-storage.lock` or `.fyrr-storage.stage`. [`code_hint`] says what to do.
+    StorageRootOld,
+    /// A stored contract was written by v0.1.x or an earlier build: an older
+    /// major, or a connector namespace without the typed connector columns.
+    /// [`code_hint`] says what to do.
+    NamespaceLayoutOld,
 }
 impl StorageError {
     pub const fn as_str(self) -> &'static str {
@@ -276,6 +283,8 @@ impl StorageError {
             Self::StaleCursor => "stale_cursor",
             Self::PublicationUnavailable => "publication_unavailable",
             Self::TooManyNamespaces => "too_many_namespaces",
+            Self::StorageRootOld => "storage_root_old",
+            Self::NamespaceLayoutOld => "namespace_layout_old",
         }
     }
 }
@@ -314,18 +323,48 @@ pub async fn persist_native_files(
     }
     let namespace = config.namespace.name.clone();
     tokio::task::spawn_blocking(move || {
-        let store = local::LocalStore::open(&root)?;
+        let store = open_local(&root)?;
         let dataset = store
             .root()
             .clone()
             .join("namespaces")
             .join(namespace.as_str())
             .join("dataset.lance");
-        store.persist_native(&dataset, &files)
+        store
+            .persist_native(&dataset, &files)
+            .map_err(|_| StorageError::StorageUnavailable)
     })
     .await
     .map_err(|_| StorageError::StorageUnavailable)?
-    .map_err(|_| StorageError::StorageUnavailable)
+}
+
+const OLD_LAYOUT_HINT: &str = "the namespace was written by v0.1.x or an earlier build, in a stored format v0.2.0 does not read. Recreate the namespace under a new name with v0.2.0 (writer namespace create), sync its sources again and write again what was written through the API; or, after stopping every writer of this namespace and keeping a recoverable copy, delete its namespaces/<name>/ prefix and recreate it under the same name.";
+const OLD_ROOT_HINT: &str = "the local storage root was written by v0.1.x or an earlier build (it holds .fyrr-storage.lock or .fyrr-storage.stage). Recreate its namespaces in a new root with v0.2.0; remove those files only once no older writer runs.";
+
+/// What an operator does about an error code that needs more than its name,
+/// for the command line to print under `error: <code>`.
+pub fn code_hint(code: &str) -> Option<&'static str> {
+    if code == StorageError::StorageRootOld.as_str() {
+        Some(OLD_ROOT_HINT)
+    } else if code == StorageError::NamespaceLayoutOld.as_str() {
+        Some(OLD_LAYOUT_HINT)
+    } else {
+        None
+    }
+}
+
+/// Opens the local root; one that releases before 0.2.0 wrote is `StorageRootOld`.
+fn open_local(root: &std::path::Path) -> Result<local::LocalStore, StorageError> {
+    local::LocalStore::open(root).map_err(|error| {
+        if error
+            .get_ref()
+            .is_some_and(|source| source.is::<local::OldRoot>())
+        {
+            StorageError::StorageRootOld
+        } else {
+            StorageError::StorageUnavailable
+        }
+    })
 }
 
 /// Makes durable what a writer observed before it publishes a reference to
@@ -355,7 +394,7 @@ pub fn observed_durability(config: &Config) -> Result<ObservedDurability, Storag
     let Some(StorageBackend::Local { root }) = config.storage.backend() else {
         return Ok(ObservedDurability(None));
     };
-    let store = local::LocalStore::open(&root).map_err(|_| StorageError::StorageUnavailable)?;
+    let store = open_local(&root)?;
     let namespace = store
         .root()
         .clone()
@@ -386,9 +425,7 @@ pub fn cleanup_namespace_store(
     config: &Config,
 ) -> Result<(Arc<dyn ObjectStore>, Path, CleanupDurability), StorageError> {
     if let Some(StorageBackend::Local { root }) = config.storage.backend() {
-        let local = local::LocalStore::open(&root)
-            .map_err(|_| StorageError::StorageUnavailable)?
-            .cleanup_batch();
+        let local = open_local(&root)?.cleanup_batch();
         let root = local
             .root()
             .clone()
@@ -411,8 +448,7 @@ pub fn cleanup_namespace_store(
 pub fn namespace_store(config: &Config) -> Result<(Arc<dyn ObjectStore>, Path), StorageError> {
     match config.storage.backend() {
         Some(StorageBackend::Local { root }) => {
-            let store =
-                local::LocalStore::open(&root).map_err(|_| StorageError::StorageUnavailable)?;
+            let store = open_local(&root)?;
             let root = store
                 .root()
                 .clone()
@@ -564,7 +600,7 @@ pub async fn read_contract<T: Contract>(
         .bytes()
         .await
         .map_err(|_| StorageError::StorageUnavailable)?;
-    parse_contract(&bytes).map_err(|_| StorageError::PublicationInvalid)
+    parse_stored(&bytes, StorageError::PublicationInvalid)
 }
 
 /// The object that holds a deployment's API keys, under [`deployment_root`].
@@ -620,9 +656,7 @@ pub async fn optional_head(
         Err(object_store::Error::NotFound { .. }) => return Ok(None),
         Err(_) => return Err(StorageError::StorageUnavailable),
     };
-    parse_contract(&bytes)
-        .map(Some)
-        .map_err(|_| StorageError::PublicationInvalid)
+    parse_stored(&bytes, StorageError::PublicationInvalid).map(Some)
 }
 
 fn namespace_mac(
@@ -769,7 +803,24 @@ pub async fn artifact<T: fyrr_core::Contract>(
     if digest(&bytes) != pointer.digest {
         return Err(StorageError::AuthorizationUnavailable);
     }
-    parse_contract(&bytes).map_err(|_| StorageError::AuthorizationUnavailable)
+    parse_stored(&bytes, StorageError::AuthorizationUnavailable)
+}
+
+/// Parses a stored contract. One written by an earlier fyrr is refused with
+/// `NamespaceLayoutOld` whatever it is: a major below the one this build writes
+/// (v0.1.x wrote serving heads 3.0 and policies 2.2), or a connector namespace
+/// without the typed connector columns. Anything else invalid is `other`.
+pub fn parse_stored<T: Contract>(bytes: &[u8], other: StorageError) -> Result<T, StorageError> {
+    use fyrr_core::ContractError::{Invalid, UnsupportedMajor};
+    parse_contract(bytes).map_err(|error| match error {
+        UnsupportedMajor { found, .. } if found.major < T::VERSION.major => {
+            StorageError::NamespaceLayoutOld
+        }
+        Invalid { message, .. } if message == fyrr_core::publication::CONNECTOR_COLUMNS_MISSING => {
+            StorageError::NamespaceLayoutOld
+        }
+        _ => other,
+    })
 }
 
 /// `config` with the settings its namespace was created with in place of the
@@ -855,9 +906,7 @@ pub async fn read_older_manifest(
         }
         Err(_) => return Err(StorageError::StorageUnavailable),
     };
-    parse_contract(&bytes)
-        .map(Some)
-        .map_err(|_| StorageError::PublicationInvalid)
+    parse_stored(&bytes, StorageError::PublicationInvalid).map(Some)
 }
 
 /// The oldest publication the namespace keeps, once maintenance cut the
@@ -875,9 +924,11 @@ pub async fn history_cut(
                 .bytes()
                 .await
                 .map_err(|_| StorageError::StorageUnavailable)?;
-            parse_contract::<fyrr_core::publication::HistoryCut>(&bytes)
-                .map(|cut| Some(cut.publication_id))
-                .map_err(|_| StorageError::PublicationInvalid)
+            parse_stored::<fyrr_core::publication::HistoryCut>(
+                &bytes,
+                StorageError::PublicationInvalid,
+            )
+            .map(|cut| Some(cut.publication_id))
         }
         Err(object_store::Error::NotFound { .. }) => Ok(None),
         Err(_) => Err(StorageError::StorageUnavailable),

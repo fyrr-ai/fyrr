@@ -43,6 +43,10 @@
     "attributes": {
       "created": "datetime",
       "priority": "int"
+    },
+    "write_api": {
+      "text_attribute": "text",
+      "open": false
     }
   },
   "fixed_grants": {}

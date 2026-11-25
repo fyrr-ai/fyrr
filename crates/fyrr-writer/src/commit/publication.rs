@@ -268,7 +268,7 @@ pub(crate) async fn write_manifest(
         schema_version: if attribute_indexes.is_empty()
             && !config.namespace.fts_positions
             && config.namespace.analyzer.is_none()
-            && !config.namespace.typed_connector_fields()
+            && config.namespace.write_api.is_some()
             && config.namespace.dense_metric.is_default()
             && config.namespace.dense_element.is_default()
             && config.namespace.vectors.is_empty()

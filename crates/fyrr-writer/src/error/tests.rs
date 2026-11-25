@@ -105,6 +105,8 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
         ("source_unavailable", false),
         ("source_unknown", false),
         ("stale_cursor", false),
+        ("namespace_layout_old", false),
+        ("storage_root_old", false),
         ("too_many_namespaces", false),
         ("tombstone_invalid", false),
         ("worker_failure", false),
@@ -212,6 +214,16 @@ fn writer_error_wire_strings_and_admission_are_unchanged() {
             S::TooManyNamespaces,
             WriterError::TooManyNamespaces,
             "too_many_namespaces",
+        ),
+        (
+            S::StorageRootOld,
+            WriterError::StorageRootOld,
+            "storage_root_old",
+        ),
+        (
+            S::NamespaceLayoutOld,
+            WriterError::NamespaceLayoutOld,
+            "namespace_layout_old",
         ),
         (
             S::PublicationUnavailable,
