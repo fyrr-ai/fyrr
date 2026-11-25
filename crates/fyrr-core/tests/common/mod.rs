@@ -59,3 +59,30 @@ pub fn assert_valid(schema_path: &str, instance: &Value, what: &str) {
         "{what} does not match {schema_path}: {errors:#?}"
     );
 }
+
+/// Calls `$check::<T>()` once for every stored contract type and yields the
+/// results in an array: the one inventory of the schema, golden-fixture and
+/// version checks. A fixture directory and a schema are named after `T::NAME`.
+#[allow(unused_macros)]
+macro_rules! for_each_contract {
+    ($check:ident) => {
+        [
+            $check::<fyrr_core::connector::ConnectorBatch>(),
+            $check::<fyrr_core::connector::CursorState>(),
+            $check::<fyrr_core::envelope::PreparedEnvelope>(),
+            $check::<fyrr_core::envelope::RejectionMarker>(),
+            $check::<fyrr_core::publication::ContentManifest>(),
+            $check::<fyrr_core::publication::ServingHead>(),
+            $check::<fyrr_core::publication::PolicyArtifact>(),
+            $check::<fyrr_core::publication::EnvelopeCheckpoint>(),
+            $check::<fyrr_core::publication::HistoryCut>(),
+            $check::<fyrr_core::identity::IdentityArtifact>(),
+            $check::<fyrr_core::identity::ApiKeysArtifact>(),
+            $check::<fyrr_core::directory::DirectorySnapshot>(),
+            $check::<fyrr_core::secret::EncryptedSecret>(),
+            $check::<fyrr_core::provider::ProviderInfo>(),
+        ]
+    };
+}
+#[allow(unused_imports)]
+pub(crate) use for_each_contract;

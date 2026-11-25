@@ -60,7 +60,7 @@ fn contract_fixture<T: fyrr_core::Contract>(path: &'static str, bytes: &[u8]) ->
     let typed: T = fyrr_core::parse_contract(&serde_json::to_vec(&value).expect("fixture JSON"))
         .expect("contract fixture");
     GeneratedFile {
-        path,
+        path: path.into(),
         contents: String::from_utf8(fyrr_core::write_contract(&typed)).expect("fixture UTF-8"),
     }
 }
@@ -134,7 +134,7 @@ fn mcp_examples() -> Vec<GeneratedFile> {
             value["metadata"]["schema_version"] = MCP_CONTRACT_VERSION.to_string().into();
             let typed: $type = serde_json::from_value(value).expect("MCP example contract");
             GeneratedFile {
-                path: $path,
+                path: $path.into(),
                 contents: format!(
                     "{}\n",
                     serde_json::to_string_pretty(&typed).expect("MCP example JSON")
@@ -162,7 +162,7 @@ fn generated_files_match_committed_copies() {
         .chain(contract_fixtures())
         .chain(mcp_examples())
     {
-        let path = root.join(file.path);
+        let path = root.join(&file.path);
         if update {
             std::fs::create_dir_all(path.parent().expect("parent")).expect("create directory");
             std::fs::write(&path, &file.contents).expect("write generated file");
