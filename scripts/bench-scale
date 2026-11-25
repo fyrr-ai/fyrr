@@ -166,6 +166,7 @@ def summary(seconds):
     return {
         "n": len(ordered),
         "p50_ms": round(percentile(ordered, 0.50) * 1000, 1),
+        "p90_ms": round(percentile(ordered, 0.90) * 1000, 1),
         "p95_ms": round(percentile(ordered, 0.95) * 1000, 1),
         "p99_ms": round(percentile(ordered, 0.99) * 1000, 1),
         "max_ms": round(ordered[-1] * 1000, 1),

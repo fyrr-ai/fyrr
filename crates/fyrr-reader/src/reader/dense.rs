@@ -240,16 +240,32 @@ impl PreparedReader {
             return Err(InvalidArgument);
         }
         self.authorization()?;
-        let wanted = k.min(
-            usize::try_from(self.selected_rows().max_len().unwrap_or(0))
-                .map_err(|_| StorageUnavailable)?,
-        );
+        let eligible = usize::try_from(self.selected_rows().max_len().unwrap_or(0))
+            .map_err(|_| StorageUnavailable)?;
+        let wanted = k.min(eligible);
         let query_array = Float32Array::from(vector.to_vec());
         if wanted == 0 {
             return Ok((Vec::new(), false));
         }
         let depth = &self.config.namespace.retrieval.rescore_depth;
         let mut shortlist = depth.initial(k);
+        if matches!(depth, fyrr_core::config::RescoreDepth::Legacy)
+            && self.config.namespace.dense_rq_bits == 1
+        {
+            // One-bit distances rank a growing pool less precisely. Grow the exact
+            // rescore pool sublinearly with the rows the probes inspect, within the
+            // request's existing reservation. An index whose partitions follow its
+            // rows inspects a small share of them; one with few partitions inspects
+            // them all.
+            let inspected = self.admission.maps.as_deref().map_or(eligible, |maps| {
+                let probed: u64 = maps
+                    .iter()
+                    .map(|map| map.inspected_rows(self.config.reader.nprobes))
+                    .sum();
+                eligible.min(usize::try_from(probed).unwrap_or(usize::MAX))
+            });
+            shortlist = inspected.isqrt().clamp(shortlist, depth.maximum(k));
+        }
         // An unfiltered request and the authorization mask always use the
         // index. A filter does so when probing reads fewer bytes than the
         // exact scan of its selection, and then probes further.
@@ -258,7 +274,7 @@ impl PreparedReader {
             (Some(_), None) => FilterPlan::EXACT,
             (Some(_), Some(maps)) => FilterPlan::new(
                 maps,
-                self.selected_rows().max_len().unwrap_or(0),
+                eligible as u64,
                 self.config.reader.nprobes,
                 shortlist,
                 self.config.embedding.dimensions,
@@ -386,8 +402,7 @@ impl PreparedReader {
         let batch = match self.config.reader.sparse_read {
             fyrr_core::config::SparseRead::MaskedScan => {
                 let mut scan = self.dataset.scan();
-                scan.project(&["source_id", "root_id", "record_id", "vector"])
-                    .map_err(|_| PublicationInvalid)?;
+                scan.project(&["vector"]).map_err(|_| PublicationInvalid)?;
                 scan.with_row_id()
                     .with_row_id_prefilter(RowAddrMask::from_allowed(RowAddrTreeMap::from_iter(
                         admitted,
@@ -396,17 +411,10 @@ impl PreparedReader {
                     .await
                     .map_err(|_| StorageUnavailable)?
             }
-            fyrr_core::config::SparseRead::TakeRows => self
-                .dataset
-                .take_rows(
-                    &admitted,
-                    lance::dataset::ProjectionRequest::from_columns(
-                        ["source_id", "root_id", "record_id", "vector", "_rowid"],
-                        self.dataset.schema(),
-                    ),
-                )
-                .await
-                .map_err(|_| StorageUnavailable)?,
+            fyrr_core::config::SparseRead::TakeRows => {
+                self.rows_by_id(&admitted, &["vector"], PublicationInvalid)
+                    .await?
+            }
         };
         self.stage(
             telemetry,
@@ -432,19 +440,8 @@ impl PreparedReader {
             rescore_counters,
         );
         let distances = column::<Float32Array>(&batch, "_distance", SearchResultInvalid)?;
-        let sources = strings(&batch, "source_id")?;
-        let roots = strings(&batch, "root_id")?;
-        let records = strings(&batch, "record_id")?;
         let mut ranked: Vec<_> = (0..batch.num_rows()).collect();
-        ranked.sort_by(|a, b| {
-            distances.value(*a).total_cmp(&distances.value(*b)).then(
-                (sources.value(*a), roots.value(*a), records.value(*a)).cmp(&(
-                    sources.value(*b),
-                    roots.value(*b),
-                    records.value(*b),
-                )),
-            )
-        });
+        ranked.sort_unstable_by(|a, b| distances.value(*a).total_cmp(&distances.value(*b)));
         telemetry.dense_candidates_fetched += batch.num_rows() as u64;
         if ranked.len() > wanted
             && let Some(next) = depth.expand(
@@ -466,28 +463,30 @@ impl PreparedReader {
             return Ok(DenseRefinement::Expand((shortlist * 2).min(tie_bound)));
         }
         telemetry.dense_tie_bound_hits += u64::from(unresolved);
-        ranked.truncate(wanted);
-        let batch = arrow_select::take::take_record_batch(
-            &batch,
-            &UInt32Array::from(
-                ranked
-                    .into_iter()
-                    .map(|row| {
-                        let Ok(row) = u32::try_from(row) else {
-                            unreachable!("bounded candidate batch index fits u32");
-                        };
-                        row
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-        )
-        .map_err(|_| SearchResultInvalid)?;
-        Ok(DenseRefinement::Rows(Self::lane_rows(
-            &batch,
-            "_distance",
-            true,
-            self.selected_rows(),
-        )?))
+        // Only rows at or above the cutoff need document keys. Include every
+        // boundary tie so lane_rows can apply the same lexical tie-break.
+        if ranked.len() > wanted {
+            let cutoff = distances.value(ranked[wanted - 1]);
+            let keep = ranked.partition_point(|i| distances.value(*i).total_cmp(&cutoff).is_le());
+            ranked.truncate(keep);
+        }
+        let row_ids = ids(&batch)?;
+        ranked.sort_unstable_by_key(|i| row_ids.value(*i));
+        let selected: Vec<_> = ranked.iter().map(|i| row_ids.value(*i)).collect();
+        let keys = self
+            .rows_by_id(
+                &selected,
+                &["source_id", "root_id", "record_id"],
+                PublicationInvalid,
+            )
+            .await?;
+        if ids(&keys)?.values().as_ref() != selected.as_slice() {
+            return Err(SearchResultInvalid);
+        }
+        let scores = Float32Array::from_iter_values(ranked.into_iter().map(|i| distances.value(i)));
+        let mut rows = Self::scored_lane_rows(&keys, &scores, true, self.selected_rows())?;
+        rows.truncate(wanted);
+        Ok(DenseRefinement::Rows(rows))
     }
 
     /// The nearest rows by Lance's own search, and whether the vector index
@@ -609,23 +608,25 @@ impl PreparedReader {
         if roots.len() != maps.len() {
             return Err(PartitionMapUnavailable);
         }
-        for (map_no, (map, index)) in maps.iter().zip(roots).enumerate() {
+        let key = embedding::query_array(vector, self.config.namespace.dense_element);
+        // Cosine partitions are those of the normalized query; the other
+        // metrics keep the length that they measure.
+        let key = if metric == fyrr_core::config::DenseMetric::Cosine {
+            lance_linalg::kernels::normalize_arrow(key.as_ref())
+                .map_err(|_| EmbeddingInvalid)?
+                .0
+        } else {
+            key
+        };
+        let searches = (0..maps.len()).map(|map_no| {
+            let map = &maps[map_no];
+            let index = &roots[map_no];
             if map.admitted.len() != index.total_partitions() {
                 return Err(PartitionMapUnavailable);
             }
-            let key = embedding::query_array(vector, self.config.namespace.dense_element);
-            // Cosine partitions are those of the normalized query; the other
-            // metrics keep the length that they measure.
-            let key = if metric == fyrr_core::config::DenseMetric::Cosine {
-                lance_linalg::kernels::normalize_arrow(key.as_ref())
-                    .map_err(|_| EmbeddingInvalid)?
-                    .0
-            } else {
-                key
-            };
             let query = Query {
                 column: "vector".into(),
-                key,
+                key: key.clone(),
                 k: shortlist,
                 lower_bound: None,
                 upper_bound: None,
@@ -683,33 +684,43 @@ impl PreparedReader {
                 (selected, selected_distances)
             };
             let count = selected.len();
-            let mut stream = index
-                .clone()
-                .search_partitions(
-                    query,
-                    Arc::new(UInt32Array::from(selected)),
-                    Arc::new(Float32Array::from(selected_distances)),
-                    0,
-                    count,
-                    prefilter.clone(),
-                    None,
-                    Arc::new(NoOpMetricsCollector),
-                )
-                .await
-                .map_err(|_| StorageUnavailable)?;
-            while let Some(batch) = stream.try_next().await.map_err(|_| StorageUnavailable)? {
-                let row_ids = ids(&batch)?;
-                let distance = column::<Float32Array>(&batch, "_distance", IndexRowsInvalid)?;
-                for row in 0..batch.num_rows() {
-                    let id = row_ids.value(row);
-                    if !self.selected_rows().selected(id) {
-                        return Err(AuthorizationUnavailable);
-                    }
-                    candidates
-                        .entry(id)
-                        .and_modify(|d| *d = d.min(distance.value(row)))
-                        .or_insert(distance.value(row));
+            let index = index.clone();
+            let prefilter = prefilter.clone();
+            Ok(async move {
+                let batches = index
+                    .search_partitions(
+                        query,
+                        Arc::new(UInt32Array::from(selected)),
+                        Arc::new(Float32Array::from(selected_distances)),
+                        0,
+                        count,
+                        prefilter,
+                        None,
+                        Arc::new(NoOpMetricsCollector),
+                    )
+                    .await
+                    .map_err(|_| StorageUnavailable)?;
+                Ok(batches.map_err(|_| StorageUnavailable))
+            })
+        });
+        // Each root owns its search scratch. Bound simultaneous root searches
+        // and consume their results in routing order.
+        let width = lance_core::utils::tokio::get_num_compute_intensive_cpus().clamp(1, 4);
+        let mut batches = futures::stream::iter(searches)
+            .try_buffered(width)
+            .try_flatten();
+        while let Some(batch) = batches.try_next().await? {
+            let row_ids = ids(&batch)?;
+            let distance = column::<Float32Array>(&batch, "_distance", IndexRowsInvalid)?;
+            for row in 0..batch.num_rows() {
+                let id = row_ids.value(row);
+                if !self.selected_rows().selected(id) {
+                    return Err(AuthorizationUnavailable);
                 }
+                candidates
+                    .entry(id)
+                    .and_modify(|d| *d = d.min(distance.value(row)))
+                    .or_insert(distance.value(row));
             }
         }
         let mut ranked: Vec<_> = candidates.into_iter().collect();

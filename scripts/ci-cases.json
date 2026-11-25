@@ -2313,6 +2313,14 @@
         "tier": "full",
         "seconds": 40
       },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_orders_equal_dense_scores_by_document_key_on_storage": {
+        "tier": "full",
+        "seconds": 10
+      },
+      "full:fyrr:test:dense_path/write_api::identity_write_api_sizes_the_rescore_pool_by_the_rows_the_probes_inspect_on_storage": {
+        "tier": "full",
+        "seconds": 10
+      },
       "full:fyrr:test:dense_path/write_api::identity_write_api_without_embedding_settings_takes_only_vectors_on_storage": {
         "tier": "full",
         "seconds": 40
