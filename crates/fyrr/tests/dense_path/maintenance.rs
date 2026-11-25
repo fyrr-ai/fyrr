@@ -1907,7 +1907,7 @@ async fn maintenance_repartitions_the_vector_index_of_a_growing_namespace_on_sto
         })
         .collect();
     assert_eq!(sizes.iter().sum::<usize>(), FINAL_ROWS);
-    // The publication records the count Lance rebalanced to.
+    // The publication records the count of the model maintenance trained.
     assert_eq!(recorded().await, lance_counts(&after), "{after}");
     assert_eq!(recorded().await, [Some(sizes.len() as u32)], "{after}");
     assert!(
