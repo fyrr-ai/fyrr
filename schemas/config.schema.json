@@ -346,7 +346,7 @@
       "properties": {
         "rescore_depth": {
           "$ref": "#/$defs/RescoreDepth",
-          "description": "Float16 candidate refinement; legacy keeps the original fourfold depth."
+          "description": "Float16 candidate refinement; legacy starts at the original fourfold depth\nand, with one-bit codes, grows with the rows the probes inspect."
         },
         "dense_weight": {
           "type": "number",
