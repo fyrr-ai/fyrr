@@ -470,9 +470,10 @@ fn vector_index_params(
             num_partitions: Some(rows.div_ceil(partition_rows as usize).max(1)),
             target_partition_size: Some(partition_rows as usize),
             // Vectors per partition that k-means trains on. Lance records it with the index, and
-            // the maintenance step that trains a larger model reuses it: at 4,096 partitions a
-            // step then trains on 524,288 vectors, about half the time of Lance's 256 (#319).
-            sample_rate: 128,
+            // the maintenance step that trains a larger model reuses it. At 4,096 partitions,
+            // Lance's 256 trained for 229-277 s and 128 for 132-287 s of a 300 s step on a
+            // loaded host (#319); 64 trains on 262,144 vectors.
+            sample_rate: 64,
             ..Default::default()
         },
         RQBuildParams::new(rq_bits),
