@@ -1100,6 +1100,7 @@ async fn leftovers(
 /// differs and nothing is written (`503 busy`; the request is sent again).
 /// Boxed: the future of `execute` is at the compiler's depth limit.
 fn add_inferred<'a>(
+    commits: &'a Commits,
     process: &'a Config,
     config: &'a Config,
     head: &'a fyrr_core::publication::ServingHead,
@@ -1110,7 +1111,7 @@ fn add_inferred<'a>(
     Result<(fyrr_core::publication::ServingHead, PolicyArtifact), ApiError>,
 > {
     Box::pin(async move {
-        change_schema_waiting(process, &head.incarnation, |current| {
+        change_schema_waiting(commits, process, &head.incarnation, |current| {
             let mut next = current.clone();
             for (name, kind) in added {
                 if next.attributes.entry(name.clone()).or_insert(*kind) != kind {
@@ -1161,11 +1162,15 @@ fn columns_unchanged(predicted: &[String], actual: &[String]) -> Result<(), ApiE
 /// is refused.
 /// Boxed: the future of `execute` is at the compiler's depth limit.
 fn change_schema_waiting<'a>(
+    commits: &'a Commits,
     config: &'a Config,
     incarnation: &'a str,
     change: impl Fn(&NamespaceSettings) -> Result<NamespaceSettings> + Send + Sync + 'a,
 ) -> futures::future::BoxFuture<'a, Result<()>> {
     Box::pin(async move {
+        // A run of maintenance that holds the lease ends after its step: the change waits
+        // for it as a write does.
+        let _waiting = commits.wait(&config.namespace.name);
         let mut waited = 0;
         loop {
             let changed = crate::commit::change_schema(config, |held, current| {
@@ -1328,7 +1333,7 @@ async fn execute(
         }
         // The change is made again under the lease, to the settings it finds
         // there.
-        change_schema_waiting(config, &head.incarnation, |current| {
+        change_schema_waiting(commits, config, &head.incarnation, |current| {
             changed_schema(current, requested.as_ref())
         })
         .await?;
@@ -1409,9 +1414,17 @@ async fn execute(
     // that hold them are prepared: the column is there, null for every older
     // row, when the envelope is applied.
     let existing = match existing {
-        Some((head, _)) if !added.is_empty() => {
-            Some(add_inferred(process, &config, &head, &added, predicted.as_deref()).await?)
-        }
+        Some((head, _)) if !added.is_empty() => Some(
+            add_inferred(
+                commits,
+                process,
+                &config,
+                &head,
+                &added,
+                predicted.as_deref(),
+            )
+            .await?,
+        ),
         other => other,
     };
     let (head, served) = match existing {
