@@ -150,6 +150,21 @@ pub(crate) fn due(config: &Config, manifest: &ContentManifest) -> bool {
     })
 }
 
+/// Whether the last complete maintenance is more than two `writer.version_grace` ago, the
+/// interval at which `due` runs it: its purge has waited the one interval a write may defer it.
+async fn purge_overdue(config: &Config, head: &ServingHead) -> Result<bool> {
+    let (store, root) = namespace_store(config)?;
+    let Some(manifest) = commit::previous_manifest(store.as_ref(), &root, head).await? else {
+        return Ok(false);
+    };
+    let limit = config.writer.version_grace.as_duration() * 2;
+    Ok(manifest.maintenance_completed_at.is_none_or(|at| {
+        (fyrr_core::clock::now() - at)
+            .to_std()
+            .is_ok_and(|age| age >= limit)
+    }))
+}
+
 pub(crate) fn lineage(lease: &LeaseGuard, head: &ServingHead) -> CommitLineage {
     CommitLineage {
         holder: lease.holder().holder.clone(),
@@ -175,9 +190,21 @@ async fn boundary(
 /// trains on up to 262,144 vectors in memory and cannot be interrupted, so
 /// only the operator command asks for it; `writer serve` merges segments only.
 pub async fn maintain(config: &Config, rebalance: bool) -> Result<serde_json::Value> {
+    maintain_until(config, rebalance, &|| false).await
+}
+
+/// `maintain` that ends after the step in progress once `yield_now` says a write waits for
+/// the lease, with `"yielded": true` in the result. A run whose last complete predecessor is
+/// more than twice `writer.version_grace` old does not yield: the purge is deferred by one
+/// interval at most.
+pub(crate) async fn maintain_until(
+    config: &Config,
+    rebalance: bool,
+    yield_now: &(dyn Fn() -> bool + Sync),
+) -> Result<serde_json::Value> {
     crate::lease::LeaseGuard::with(config, |lease| async move {
         let mut history = commit::RestoreHistory::new(config)?;
-        let mut result = maintain_held(config, &lease, &mut history, rebalance).await;
+        let mut result = maintain_held(config, &lease, &mut history, rebalance, yield_now).await;
         // Every expired native step yields to authorization, including storage
         // reads during purge/compaction/index planning before cleanup begins.
         if result
@@ -197,6 +224,7 @@ async fn maintain_held(
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
     rebalance: bool,
+    yield_now: &(dyn Fn() -> bool + Sync),
 ) -> Result<serde_json::Value> {
     // Obsolete applied objects must not exhaust history's resident allowance
     // before the cleanup that can remove them becomes reachable.
@@ -205,9 +233,18 @@ async fn maintain_held(
     // once. Quiet native boundaries need only fresh authorization discovery.
     command_start(config, lease, history, false).await?;
     let version = |head: &ServingHead| head.content.as_ref().map_or(0, |p| p.lance_version);
+    let urgent = purge_overdue(config, &lease.head().await?).await?;
+    let yielded = |compacted, merged| {
+        (!urgent && yield_now()).then(|| {
+            serde_json::json!({"compaction_steps":compacted,"index_merge_steps":merged,"yielded":true})
+        })
+    };
     let mut skipped = Vec::new();
     let mut compacted = 0;
     let mut merged = 0;
+    if let Some(done) = yielded(compacted, merged) {
+        return Ok(done);
+    }
     let limit = config.writer.maintenance.step_max_duration.as_duration();
     loop {
         let head = boundary(config, lease, history).await?;
@@ -225,6 +262,9 @@ async fn maintain_held(
             break;
         }
         compacted += 1;
+        if let Some(done) = yielded(compacted, merged) {
+            return Ok(done);
+        }
     }
     // One index name per interruptible step. Merge the segments, never retrain;
     // with `rebalance` Lance also splits and joins partitions toward the index's
@@ -265,6 +305,9 @@ async fn maintain_held(
                     Ok(Some(rows)) => {
                         merged += 1;
                         crate::telemetry::index_merge_done(rows, start.elapsed());
+                        if let Some(done) = yielded(compacted, merged) {
+                            return Ok(done);
+                        }
                     }
                     Ok(None) => break,
                     // The other indexes and the steps after the merges still run.

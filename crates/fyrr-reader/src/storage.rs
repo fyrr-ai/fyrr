@@ -798,24 +798,49 @@ pub fn directory_published(
             .any(|i| i.kind == fyrr_core::identity::IdentityInputKind::Directory)
 }
 
+/// The Lance session of every dataset a writer process opens. A commit opens each
+/// segment of every index, so a session of its own per commit reads them all again
+/// from storage each time. Index files and manifests do not change once written, so
+/// the cache stays valid across commits and namespaces.
+// shortcut: fixed cache sizes; make them a setting if a namespace's index state does not fit.
+pub fn writer_session() -> Arc<lance::session::Session> {
+    static SESSION: std::sync::OnceLock<Arc<lance::session::Session>> = std::sync::OnceLock::new();
+    SESSION
+        .get_or_init(|| {
+            Arc::new(lance::session::Session::new(
+                512 << 20,
+                128 << 20,
+                Arc::default(),
+            ))
+        })
+        .clone()
+}
+
 pub async fn pinned(
     config: &Config,
     head: &fyrr_core::publication::ServingHead,
 ) -> Result<Dataset, StorageError> {
-    open_version(
-        &dataset_uri(config),
-        config
-            .storage
-            .object_store_options(&ProcessEnvironment)
-            .map_err(|_| StorageError::StorageConfigurationInvalid)?,
-        head.content
-            .as_ref()
-            .ok_or(StorageError::PublicationUnavailable)?
-            .lance_version,
-        None,
-    )
-    .await
-    .map_err(|_| StorageError::StorageUnavailable)
+    DatasetBuilder::from_uri(dataset_uri(config))
+        .with_store_params(native_store_params(None))
+        .with_storage_options(
+            config
+                .storage
+                .object_store_options(&ProcessEnvironment)
+                .map_err(|_| StorageError::StorageConfigurationInvalid)?
+                .into_map()
+                .into_iter()
+                .collect(),
+        )
+        .with_version(
+            head.content
+                .as_ref()
+                .ok_or(StorageError::PublicationUnavailable)?
+                .lance_version,
+        )
+        .with_session(writer_session())
+        .load()
+        .await
+        .map_err(|_| StorageError::StorageUnavailable)
 }
 
 pub fn roots_filter(source: &str, roots: &[String]) -> String {

@@ -223,7 +223,7 @@ impl<'a> ContentWork<'a> {
                     Some(before),
                     Some(store_params(config)?),
                     None,
-                    Arc::new(lance::session::Session::default()),
+                    fyrr_reader::storage::writer_session(),
                     false,
                 ),
                 WriterError::StorageUnavailable,

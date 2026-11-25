@@ -82,6 +82,12 @@ impl Commits {
             .map(|waiting| waiting.keys().cloned().collect())
             .unwrap_or_default()
     }
+    /// Whether a request of namespace `name` waits for its publication.
+    pub(crate) fn is_waiting(&self, name: &str) -> bool {
+        self.waiting
+            .lock()
+            .is_ok_and(|waiting| waiting.contains_key(name))
+    }
     fn wait(&self, name: &str) -> Waiting<'_> {
         if let Ok(mut waiting) = self.waiting.lock() {
             *waiting.entry(name.to_owned()).or_default() += 1;

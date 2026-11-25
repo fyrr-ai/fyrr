@@ -6181,3 +6181,108 @@ async fn identity_write_api_refuses_a_phrase_on_a_namespace_without_positions_on
         );
     }
 }
+
+/// More segments of an index than maintenance leaves; the last write makes every index crowded.
+const CROWDED_WRITES: usize = 68;
+
+#[tokio::test]
+#[ignore = "real writer executable on local storage; scripts/ci"]
+async fn identity_write_api_answers_a_write_that_waits_for_maintenance_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(&config, &address, "open = true");
+    let writer = Writer::start(&config, &root, address).await;
+    let namespace = "dense-fixture";
+    let log = root.join("service.stderr");
+    let events = |event: &str| {
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .matches(&format!("writer_service event={event}"))
+            .count()
+    };
+    let row = |n: usize| json!({"upserts": [{"id": format!("r{n}"), "text": format!("row {n}"), "vector": vector(n, 1024)}]});
+    // One commit and one segment per index for each write.
+    for n in 0..CROWDED_WRITES {
+        assert_eq!(writer.post(WRITE_KEY, namespace, &row(n)).await.0, 200);
+    }
+    // Writers that never stop waiting: every maintenance run that starts finds one, and
+    // gives the lease up after at most one step. Each write is answered all the same.
+    let writer = &writer;
+    let writes = (0..3).map(|lane| async move {
+        for n in 0..20 {
+            let (status, answer) = writer
+                .post(WRITE_KEY, namespace, &row(CROWDED_WRITES + lane * 20 + n))
+                .await;
+            assert_eq!(
+                (status, &answer),
+                (200, &json!({"upserted": 1, "deleted": 0}))
+            );
+        }
+    });
+    futures::future::join_all(writes).await;
+    assert!(
+        events("maintenance_yielded") > 0,
+        "no maintenance run yielded"
+    );
+    // With no write waiting, the next run goes through every step.
+    assert_eq!(
+        writer
+            .post(WRITE_KEY, namespace, &row(CROWDED_WRITES + 60))
+            .await
+            .0,
+        200
+    );
+    let deadline = Instant::now() + Duration::from_secs(180);
+    loop {
+        let (_, manifest) = super::coordination::publication(&config).await;
+        let mut segments = std::collections::BTreeMap::<String, usize>::new();
+        for index in &manifest.indexes {
+            *segments.entry(index.name.clone()).or_default() += 1;
+        }
+        if segments.values().all(|count| *count <= 64) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "maintenance did not finish: {segments:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(
+        events("maintenance_failed"),
+        0,
+        "{}",
+        std::fs::read_to_string(&log).unwrap()
+    );
+
+    // A purge that has waited more than twice `writer.version_grace` is not deferred again:
+    // the run that finds it does not yield, though a write waits all the while.
+    fyrr_core::clock::advance(Duration::from_secs(25 * 3600)).unwrap();
+    let before = events("maintained");
+    let writes = (0..3).map(|lane| async move {
+        for n in 0..15 {
+            let (status, _) = writer
+                .post(
+                    WRITE_KEY,
+                    namespace,
+                    &row(CROWDED_WRITES + 100 + lane * 15 + n),
+                )
+                .await;
+            assert_eq!(status, 200);
+        }
+    });
+    futures::future::join_all(writes).await;
+    assert!(
+        events("maintained") > before,
+        "the overdue purge was deferred"
+    );
+    // A run in flight when the clock jumped lost its lease: the one failure expected.
+    let failures = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        failures
+            .lines()
+            .filter(|line| line.contains("event=maintenance_failed"))
+            .all(|line| line.ends_with("code=lease_lost")),
+        "{failures}"
+    );
+}
