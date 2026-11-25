@@ -31,11 +31,7 @@ const MAX_HEADER_BYTES: usize = 32 * 1024;
 const MAX_BEARER_BYTES: usize = 16 * 1024;
 pub(crate) const MAX_CONNECTIONS: usize = 64;
 /// Namespaces opened by request path besides the configured one. The least
-/// recently used one is closed when another needs the place. Each has an
-/// eighth of the mirror budget, so the count also keeps the mirrors of all of
-/// them inside `reader.mirror_max_bytes`.
-// shortcut: a fixed share of the mirror per namespace; share it by size when
-// namespaces too large for an eighth must be served by path.
+/// recently used one is closed when another needs the place.
 const MAX_OPEN_NAMESPACES: usize = 8;
 const MAX_REQUESTS_IN_FLIGHT: usize = 64;
 const MAX_CONTROLS_IN_FLIGHT: usize = 8;
@@ -107,10 +103,11 @@ impl Served {
 
 /// The namespaces a request path can name: the configured one, always, and
 /// others opened on their first request. At most `MAX_OPEN_NAMESPACES` others
-/// are open, each with an eighth of the reader's mirror and subject-cache
-/// budgets, inside the configured reader's memory envelope. A namespace that
-/// the envelope cannot fund in full closes the least recently used idle one
-/// and opens again.
+/// are open, each with an eighth of the reader's subject-cache budget, inside
+/// the configured reader's memory envelope. A namespace that the envelope
+/// cannot fund in full closes the least recently used idle one and opens
+/// again. All of them keep their mirror in the directory of the configured
+/// one, so together they stay inside `reader.mirror_max_bytes`.
 struct Namespaces {
     /// The configuration the file holds, to which a namespace's name is added.
     process: Arc<Config>,
@@ -122,89 +119,37 @@ struct Namespaces {
     slots: Arc<Semaphore>,
     /// Woken when a namespace has ended and returned what it held.
     closed: Arc<tokio::sync::Notify>,
-    /// How many namespaces have been opened: each has a mirror of its own.
-    opened: std::sync::atomic::AtomicU64,
-    /// Where those mirrors are: the directory of this process, made on the
-    /// first request for one, whose lock the process holds until it ends.
-    mirrors: tokio::sync::OnceCell<(std::path::PathBuf, std::fs::File)>,
+    /// Where a namespace asks for room in the mirror.
+    asks: tokio::sync::mpsc::UnboundedSender<(String, Arc<crate::serve::RoomReply>)>,
 }
 /// A place among the live namespaces. It goes with the scheduler of the
-/// namespace, which has stopped by then, and takes the mirror that namespace
-/// filled with it, so the mirrors on disk are those of the live namespaces.
+/// namespace, which has stopped by then.
 struct Slot {
-    mirror: std::path::PathBuf,
     closed: Arc<tokio::sync::Notify>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 impl Drop for Slot {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.mirror);
         // The scheduler's readers, and the memory they held, are gone by now.
         self.closed.notify_waiters();
     }
-}
-/// A directory of this process for the mirrors of namespaces opened by request
-/// path, among those of other processes next to the configured mirror, which
-/// holds files only. A lock on its `owner.lock` shows that the process lives.
-/// The directories of processes that ended are removed, best effort.
-fn own_mirrors(configured: std::path::PathBuf) -> Result<(std::path::PathBuf, std::fs::File)> {
-    use crate::mirror::MirrorStore;
-    let mut root = configured.into_os_string();
-    root.push(".paths");
-    let root = std::path::PathBuf::from(root);
-    MirrorStore::private_directory(&root).map_err(|_| StorageUnavailable)?;
-    // Held while a directory is made and locked, so that no sweep finds it
-    // between the two. It is released when `sweep` goes.
-    let sweep = MirrorStore::private_file(&root.join("sweep.lock"), true)
-        .map_err(|_| StorageUnavailable)?;
-    sweep.lock().map_err(|_| StorageUnavailable)?;
-    let nanos = fyrr_core::clock::now().timestamp_nanos_opt().unwrap_or(0);
-    let own = root.join(format!("{}-{nanos}", std::process::id()));
-    MirrorStore::private_directory(&own).map_err(|_| StorageUnavailable)?;
-    let lock =
-        MirrorStore::private_file(&own.join("owner.lock"), true).map_err(|_| StorageUnavailable)?;
-    lock.try_lock().map_err(|_| StorageUnavailable)?;
-    for entry in std::fs::read_dir(&root)
-        .into_iter()
-        .flatten()
-        .filter_map(std::result::Result::ok)
-    {
-        let name = entry.file_name();
-        let is_owner_directory = name.to_str().is_some_and(|name| {
-            name.split_once('-').is_some_and(|(pid, nanos)| {
-                [pid, nanos]
-                    .iter()
-                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-            })
-        }) && std::fs::symlink_metadata(entry.path())
-            .is_ok_and(|meta| meta.is_dir());
-        if is_owner_directory
-            && let Ok(other) = MirrorStore::private_file(&entry.path().join("owner.lock"), false)
-            && other.try_lock().is_ok()
-        {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
-    drop(sweep);
-    Ok((own, lock))
 }
 /// Open namespaces, least recently used first. Each has one place that
 /// concurrent requests share, so a namespace is opened once.
 type Open<T> = VecDeque<(String, Arc<tokio::sync::OnceCell<Arc<T>>>)>;
 
 /// Closes the least recently used namespace that nothing but `open` holds: not
-/// one that is opening or serving a request. Whether there was one.
-fn close_idle<T>(open: &mut Open<T>) -> bool {
-    let Some(idle) = open.iter().position(|(_, cell)| {
-        Arc::strong_count(cell) == 1
+/// one that is opening or serving a request, and not `except`. Its name, if
+/// there was one.
+fn close_idle<T>(open: &mut Open<T>, except: Option<&str>) -> Option<String> {
+    let idle = open.iter().position(|(name, cell)| {
+        Some(name.as_str()) != except
+            && Arc::strong_count(cell) == 1
             && cell
                 .get()
                 .is_none_or(|served| Arc::strong_count(served) == 1)
-    }) else {
-        return false;
-    };
-    open.remove(idle);
-    true
+    })?;
+    open.remove(idle).map(|(name, _)| name)
 }
 
 /// The place of `name` in `open`, made most recent. A name without one gets it
@@ -224,7 +169,7 @@ fn place<T>(
     let entry = match held {
         Some(entry) => entry,
         None if create => {
-            if open.len() >= capacity && !close_idle(open) {
+            if open.len() >= capacity && close_idle(open, None).is_none() {
                 return Err(Busy);
             }
             (name.to_owned(), Arc::default())
@@ -241,17 +186,17 @@ impl Namespaces {
         budget: crate::generation::MemoryPool,
         api_keys: crate::storage::HeadCache<fyrr_core::identity::ApiKeysArtifact>,
         configured: Arc<Served>,
+        asks: tokio::sync::mpsc::UnboundedSender<(String, Arc<crate::serve::RoomReply>)>,
     ) -> Self {
         Self {
             process,
             budget,
             api_keys,
             configured,
+            asks,
             open: std::sync::Mutex::default(),
             slots: Arc::new(Semaphore::new(MAX_OPEN_NAMESPACES)),
             closed: Arc::default(),
-            opened: std::sync::atomic::AtomicU64::new(0),
-            mirrors: tokio::sync::OnceCell::new(),
         }
     }
     /// The configuration of the namespace `name`.
@@ -275,22 +220,49 @@ impl Namespaces {
         );
         cell
     }
-    /// Closes the namespace used least recently that serves nothing, for the
-    /// memory it holds. Whether there was one.
-    fn close_idle(&self) -> bool {
+    /// Closes the least recently used namespace that serves nothing, except
+    /// `except`, logged with `reason`. Whether there was one.
+    fn close_idle(&self, except: Option<&str>, reason: &str) -> bool {
         let mut open = crate::sync::lock(&self.open);
-        let closed = close_idle(&mut open);
-        if closed {
-            crate::metrics::set(
-                &crate::metrics::OPEN_NAMESPACES,
-                &[],
-                i64::try_from(open.len() + 1).unwrap_or(i64::MAX),
-            );
-            crate::telemetry::emit(format_args!(
-                "telemetry namespace=closed reason=memory_budget"
-            ));
+        let Some(name) = close_idle(&mut open, except) else {
+            return false;
+        };
+        crate::metrics::set(
+            &crate::metrics::OPEN_NAMESPACES,
+            &[],
+            i64::try_from(open.len() + 1).unwrap_or(i64::MAX),
+        );
+        crate::telemetry::emit(format_args!(
+            "telemetry namespace=closed reason={reason} name={name}"
+        ));
+        true
+    }
+    /// Makes the room that `requester` asked for in the mirror: closes the
+    /// least recently used namespace but it that serves nothing and, once a
+    /// namespace has ended, lets the requester warm again. A requester that
+    /// has been closed since it asked gets nothing.
+    async fn make_room(&self, requester: &str, reply: &crate::serve::RoomReply) {
+        let open = requester == self.configured.config.namespace.name
+            || crate::sync::lock(&self.open)
+                .iter()
+                .any(|(name, _)| name == requester);
+        if !open {
+            return;
         }
-        closed
+        let closed = self.closed.notified();
+        tokio::pin!(closed);
+        closed.as_mut().enable();
+        if self.close_idle(Some(requester), "mirror_capacity") {
+            // shortcut: any close or the timeout wakes the requester, which may
+            // warm before the victim's pins are gone and then close one more
+            // namespace than needed; wait for that victim itself if it shows.
+            let _ = tokio::time::timeout(IO_TIMEOUT, closed).await;
+            reply.made.notify_one();
+        } else {
+            reply
+                .denied
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
     /// The namespace `name`, opened if it is not; `None` when it has no head
     /// or no content. A namespace that cannot be served costs one read of its
@@ -320,31 +292,11 @@ impl Namespaces {
                     .await
                     .map_err(|_| Busy)?
                     .map_err(|_| Busy)?;
-                let mut config = this.config(&name);
-                let places = u64::try_from(MAX_OPEN_NAMESPACES).unwrap_or(u64::MAX);
-                config.reader.mirror_max_bytes /= places;
-                let (mirrors, _) = this
-                    .mirrors
-                    .get_or_try_init(|| async {
-                        let configured = this
-                            .configured
-                            .config
-                            .mirror_directory(&ProcessEnvironment)
-                            .ok_or(StorageConfigurationInvalid)?;
-                        // It locks and sweeps: not on the runtime's thread.
-                        tokio::task::spawn_blocking(move || own_mirrors(configured))
-                            .await
-                            .map_err(|_| StorageUnavailable)?
-                    })
-                    .await?;
-                let mirror = mirrors.join(format!(
-                    "path-{}",
-                    this.opened
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                ));
-                config.reader.mirror_path = Some(mirror.to_string_lossy().into_owned());
+                let config = this.config(&name);
+                // The mirror of the configured namespace: one budget for all.
+                let mirror =
+                    crate::search::PreparedReader::mirror_dataset_directory(&this.process)?;
                 let slot = Slot {
-                    mirror,
                     closed: this.closed.clone(),
                     _permit: permit,
                 };
@@ -353,6 +305,7 @@ impl Namespaces {
                         &config,
                         this.budget.clone(),
                         crate::search::AUTHORIZATION_CACHE_MAX_BYTES / MAX_OPEN_NAMESPACES,
+                        Some(mirror.clone()),
                     )
                     .await?;
                     let funded = reader.readiness_state();
@@ -367,7 +320,7 @@ impl Namespaces {
                     let closed = this.closed.notified();
                     tokio::pin!(closed);
                     closed.as_mut().enable();
-                    if !this.close_idle() {
+                    if !this.close_idle(None, "memory_budget") {
                         break reader;
                     }
                     drop(reader);
@@ -375,7 +328,12 @@ impl Namespaces {
                 };
                 let config = reader.config.clone();
                 let admission = Served::admission_of(&reader, this.api_keys.clone());
-                let service = crate::serve::start_guarded(reader, slot, true).await?;
+                let room = crate::serve::Room {
+                    name: name.clone(),
+                    asks: this.asks.clone(),
+                    reply: Arc::default(),
+                };
+                let service = crate::serve::start_guarded(reader, slot, true, Some(room)).await?;
                 Ok(Arc::new(Served {
                     config,
                     admission,
@@ -1253,7 +1211,14 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
             }
         });
     }
-    let service = crate::serve::start(reader).await?;
+    // The namespaces of this reader ask here for room in the mirror.
+    let (asks, mut wants) = tokio::sync::mpsc::unbounded_channel();
+    let room = crate::serve::Room {
+        name: config.namespace.name.clone(),
+        asks: asks.clone(),
+        reply: Arc::default(),
+    };
+    let service = crate::serve::start_guarded(reader, (), false, Some(room)).await?;
     let namespaces = Arc::new(Namespaces::new(
         process,
         budget,
@@ -1263,7 +1228,21 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
             admission: admission.clone(),
             service: service.clone(),
         }),
+        asks,
     ));
+    // A namespace that has no room left in the mirror takes the room of the
+    // least recently used other one that serves nothing, and warms again.
+    // With no such namespace it reads from storage, as before. This ends with
+    // the namespaces that ask.
+    let held = Arc::downgrade(&namespaces);
+    tokio::spawn(async move {
+        while let Some((requester, reply)) = wants.recv().await {
+            let Some(namespaces) = held.upgrade() else {
+                break;
+            };
+            namespaces.make_room(&requester, &reply).await;
+        }
+    });
     let state = HttpState {
         admission,
         service: service.clone(),

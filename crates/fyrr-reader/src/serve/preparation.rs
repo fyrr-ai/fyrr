@@ -189,6 +189,7 @@ pub(super) fn prepare_version(
                     context.head_cache.clone(),
                 )),
                 context.budget.clone(),
+                None,
             )
             .await?;
             // The process-lifetime spend counter, unless the namespace gained a reranker.

@@ -89,11 +89,25 @@ impl IoCounters {
         }
     }
 }
-/// What a mirror last added to the size gauge; it takes that back when the
-/// mirror's last clone ends.
+/// What the mirrors of a directory last added to the size gauge; they take
+/// that back when the last mirror of the directory ends.
 #[derive(Debug, Default)]
 struct ReportedBytes(AtomicU64);
 impl ReportedBytes {
+    /// The reading of `directory`, shared by every mirror kept there: each
+    /// counts the whole directory, which the gauge must add up once.
+    fn of(directory: &std::path::Path) -> Arc<Self> {
+        static BY_DIRECTORY: std::sync::Mutex<BTreeMap<PathBuf, std::sync::Weak<ReportedBytes>>> =
+            std::sync::Mutex::new(BTreeMap::new());
+        let mut known = crate::sync::lock(&BY_DIRECTORY);
+        known.retain(|_, reading| reading.strong_count() > 0);
+        if let Some(reading) = known.get(directory).and_then(std::sync::Weak::upgrade) {
+            return reading;
+        }
+        let reading = Arc::<Self>::default();
+        known.insert(directory.to_path_buf(), Arc::downgrade(&reading));
+        reading
+    }
     fn set(&self, bytes: u64) {
         let before = self.0.swap(bytes, Ordering::Relaxed);
         let signed = |n| i64::try_from(n).unwrap_or(i64::MAX);
@@ -181,6 +195,7 @@ struct DownloadLock {
 impl DownloadLock {
     async fn finish(mut self) -> std::io::Result<()> {
         let _host = self.mirror.host_lock().await?;
+        MirrorStore::remove_partial(&self.path.with_extension("partial"))?;
         MirrorStore::remove_partial(&self.path)?;
         drop(self.file.take());
         Ok(())
@@ -198,6 +213,7 @@ impl Drop for DownloadLock {
             runtime.spawn(async move {
                 let _file = file;
                 if let Ok(_host) = mirror.host_lock().await {
+                    let _ = MirrorStore::remove_partial(&path.with_extension("partial"));
                     let _ = MirrorStore::remove_partial(&path);
                 }
             });
@@ -448,6 +464,7 @@ impl MirrorStore {
             Err(std::fs::TryLockError::WouldBlock) => {} // A live download owns its partial.
             Err(_) => return Err(StorageUnavailable),
         }
+        let reported = ReportedBytes::of(&directory);
         Ok(Self {
             #[cfg(test)]
             sample_read: Arc::default(),
@@ -466,7 +483,7 @@ impl MirrorStore {
             lock: Arc::default(),
             counters: Arc::default(),
             totals: Arc::default(),
-            reported: Arc::default(),
+            reported,
             verified: Arc::default(),
             sizes: Arc::default(),
             dataset_cache_key: Arc::default(),
@@ -573,13 +590,23 @@ impl MirrorStore {
         let mut live = std::collections::BTreeSet::new();
         for entry in std::fs::read_dir(&self.directory)? {
             let entry = entry?;
-            if !Self::owned_private_file(&std::fs::symlink_metadata(entry.path())?) {
+            // A partial that a cancelled download removed may be gone by now.
+            let meta = match std::fs::symlink_metadata(entry.path()) {
+                Ok(meta) => meta,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            if !Self::owned_private_file(&meta) {
                 return Err(std::io::Error::other("storage_unavailable"));
             }
             if !Self::cache_name(&entry.file_name().to_string_lossy(), ".lease") {
                 continue;
             }
-            let file = Self::private_file(&entry.path(), false)?;
+            let file = match Self::private_file(&entry.path(), false) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
             match file.try_lock() {
                 Ok(()) => std::fs::remove_file(entry.path())?,
                 Err(std::fs::TryLockError::WouldBlock) => {
@@ -705,6 +732,8 @@ impl MirrorStore {
         for blob in expired_pages {
             self.remove_pages(&blob)?;
         }
+        // The gauge follows what is left, not what was last measured.
+        let _ = self.used_bytes();
         Ok(())
     }
     fn remove_idle_partial(path: &std::path::Path) -> std::io::Result<()> {

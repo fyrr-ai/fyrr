@@ -7,17 +7,20 @@ fn blocking_thread_limit(worker_count: usize, concurrency: usize) -> usize {
 }
 
 pub(crate) async fn start(reader: PreparedReader) -> Result<McpService> {
-    start_guarded(reader, (), false).await
+    start_guarded(reader, (), false, None).await
 }
 
 /// `start`, with a `guard` that the scheduler's thread holds until it ends.
 /// With `sleeps`, the scheduler makes no storage request while it serves
 /// nothing: after one check interval without a request it stops its version
 /// checks, and the next request waits for a check before it is answered.
+/// With a `room`, a namespace whose files do not fit the mirror asks for the
+/// room of another one.
 pub(crate) async fn start_guarded<G: Send + 'static>(
     reader: PreparedReader,
     guard: G,
     sleeps: bool,
+    room: Option<Room>,
 ) -> Result<McpService> {
     #[cfg(test)]
     let (sample_events, _) = tokio::sync::broadcast::channel(16);
@@ -111,6 +114,8 @@ pub(crate) async fn start_guarded<G: Send + 'static>(
                 warm_cancel,
                 next_warm,
                 warm_loss,
+                room,
+                room_made: false,
                 preparation: None,
                 warming: None,
                 warm_delay: Duration::from_secs(30),
@@ -202,6 +207,10 @@ struct Scheduler {
     next_warm: Instant,
     warm_delay: Duration,
     warm_loss: Option<&'static str>,
+    /// Where to ask for room in the mirror, if the reader holds more than this.
+    room: Option<Room>,
+    /// Room was made for the current loss: no more is asked for it.
+    room_made: bool,
     handover: bool,
     reported_reserved: Option<u64>,
     running: FuturesUnordered<tokio::task::JoinHandle<ExecutionResult>>,
@@ -345,8 +354,19 @@ impl Scheduler {
             {
                 break;
             }
+            let made = self.room.as_ref().map(|room| room.reply.clone());
             tokio::select! {
                 _ = self.tick.tick() => {},
+                () = async {
+                    match &made {
+                        Some(made) => made.made.notified().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    // Warm at once rather than after the delay, if awake.
+                    self.next_warm = Instant::now();
+                    self.room_made = true;
+                },
                 _ = self.hup.recv() => self.on_hup(),
                 request = self.control.recv(), if self.reload_reply.is_none() => {
                     self.on_control(request);
@@ -554,6 +574,7 @@ impl Scheduler {
                 log_refresh("ready", reader.manifest.sequence);
                 self.next_warm = Instant::now() + Duration::from_secs(30);
                 self.warm_delay = Duration::from_secs(30);
+                self.room_made = false;
                 self.warm_loss =
                     if reader.generation_state == crate::generation::GenerationState::Cold {
                         Some("memory_budget")
@@ -630,21 +651,39 @@ impl Scheduler {
                     self.context.adopt(reader);
                     *self.served.write().await = reader.readiness_state();
                     self.warm_loss = None;
+                    self.room_made = false;
                     log_refresh("ready", reader.manifest.sequence);
+                    emit(format_args!(
+                        "telemetry namespace=warmed name={}",
+                        self.config.namespace.name
+                    ));
                 }
                 Ok(Err(reason)) => {
-                    let reason = if reason == MirrorCapacityExhausted {
+                    let capacity = reason == MirrorCapacityExhausted;
+                    let reason = if capacity {
                         "mirror_capacity"
                     } else if reason == PreparationBudgetExhausted {
                         "memory_budget"
                     } else {
                         "warming_failed"
                     };
-                    if self.warm_loss != Some(reason) {
+                    let first = self.warm_loss != Some(reason);
+                    if first {
                         emit(format_args!(
                             "telemetry generation_preparation=degraded reason={reason}"
                         ));
                         self.warm_loss = Some(reason);
+                    }
+                    // For a loss, until room has been made once: later it is the
+                    // fault of the pins, not of idle namespaces. Asked again only
+                    // while none could be made.
+                    let denied = self.room.as_ref().is_some_and(|room| {
+                        room.reply
+                            .denied
+                            .swap(false, std::sync::atomic::Ordering::Relaxed)
+                    });
+                    if capacity && !self.room_made && (first || denied) {
+                        self.ask_for_room();
                     }
                 }
                 _ => {}
@@ -652,6 +691,21 @@ impl Scheduler {
         }
         self.next_warm = Instant::now() + self.warm_delay;
         self.warm_delay = (self.warm_delay * 2).min(Duration::from_secs(300));
+    }
+    /// Asks the reader for the room of an idle namespace, if the files of this
+    /// one would fit the mirror alone: otherwise no room made could help.
+    fn ask_for_room(&self) {
+        let (Some(room), Some(reader)) = (&self.room, &self.template) else {
+            return;
+        };
+        // shortcut: the pins of the configured namespace, which cannot be
+        // closed, are not counted, so a namespace that fits alone but not
+        // beside them closes one other namespace and then reads from storage
+        // until its next generation; count them when that is seen.
+        let files: u64 = reader.manifest.files.iter().map(|f| f.size_bytes).sum();
+        if files <= reader.config.reader.mirror_max_bytes {
+            let _ = room.asks.send((room.name.clone(), room.reply.clone()));
+        }
     }
     fn on_finished(&mut self, result: ExecutionResult, sampling_idle: bool) -> Option<SampleWork> {
         let (mut reader, dense) = result;
