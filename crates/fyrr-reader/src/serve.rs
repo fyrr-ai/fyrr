@@ -336,7 +336,6 @@ pub(crate) struct RoomReply {
 
 /// How a namespace asks the reader that holds it for the room of another one
 /// in the mirror: `asks` carries its `name` and where to `reply`.
-#[derive(Clone)]
 pub(crate) struct Room {
     pub(crate) name: String,
     pub(crate) asks: mpsc::UnboundedSender<(String, Arc<RoomReply>)>,

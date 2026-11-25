@@ -209,7 +209,7 @@ struct Scheduler {
     warm_loss: Option<&'static str>,
     /// Where to ask for room in the mirror, if the reader holds more than this.
     room: Option<Room>,
-    /// Room was made after the last ask: a warming that fails again asks again.
+    /// Room was made for the current loss: no more is asked for it.
     room_made: bool,
     handover: bool,
     reported_reserved: Option<u64>,
@@ -574,6 +574,7 @@ impl Scheduler {
                 log_refresh("ready", reader.manifest.sequence);
                 self.next_warm = Instant::now() + Duration::from_secs(30);
                 self.warm_delay = Duration::from_secs(30);
+                self.room_made = false;
                 self.warm_loss =
                     if reader.generation_state == crate::generation::GenerationState::Cold {
                         Some("memory_budget")
@@ -673,15 +674,15 @@ impl Scheduler {
                         ));
                         self.warm_loss = Some(reason);
                     }
-                    // Once for a loss, and again only when room was made and was
-                    // not enough, or when none could be made.
-                    let made = std::mem::take(&mut self.room_made);
+                    // For a loss, until room has been made once: later it is the
+                    // fault of the pins, not of idle namespaces. Asked again only
+                    // while none could be made.
                     let denied = self.room.as_ref().is_some_and(|room| {
                         room.reply
                             .denied
                             .swap(false, std::sync::atomic::Ordering::Relaxed)
                     });
-                    if capacity && (first || made || denied) {
+                    if capacity && !self.room_made && (first || denied) {
                         self.ask_for_room();
                     }
                 }
@@ -698,8 +699,9 @@ impl Scheduler {
             return;
         };
         // shortcut: the pins of the configured namespace, which cannot be
-        // closed, are not counted, so a namespace can close every other one
-        // and still not warm; count them when that is seen in operation.
+        // closed, are not counted, so a namespace that fits alone but not
+        // beside them closes one other namespace and then reads from storage
+        // until its next generation; count them when that is seen.
         let files: u64 = reader.manifest.files.iter().map(|f| f.size_bytes).sum();
         if files <= reader.config.reader.mirror_max_bytes {
             let _ = room.asks.send((room.name.clone(), room.reply.clone()));
