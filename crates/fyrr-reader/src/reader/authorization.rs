@@ -1,4 +1,5 @@
 use super::*;
+use futures::StreamExt;
 
 impl PreparedReader {
     pub(crate) async fn request_prologue(
@@ -240,35 +241,42 @@ impl PreparedReader {
         {
             let index = index.clone();
             self.fallback_probes = self.fallback_probes.max(index.total_partitions());
-            let mut admitted = Vec::new();
-            let mut indexed_rows = 0u64;
-            for partition in 0..index.total_partitions() {
-                let mut stream = index
-                    .partition_reader(partition, false, &NoOpMetricsCollector)
-                    .await
-                    .map_err(|_| PartitionMapUnavailable)?;
-                let mut rows = 0u32;
-                while let Some(batch) = stream
-                    .try_next()
-                    .await
-                    .map_err(|_| PartitionMapUnavailable)?
-                {
-                    let batch_ids = ids(&batch)?;
-                    for id in batch_ids.values() {
-                        // Index membership is only a routing
-                        // hint. Row admission remains native.
-                        if metadata
-                            .fragment_bitmap
-                            .as_ref()
-                            .is_some_and(|b| b.contains((id >> 32) as u32))
-                        {
-                            indexed_rows += 1;
-                            rows += u32::from(eligible.selected(*id));
+            // A partition is a few local reads, and an index of the size its rows ask for has
+            // thousands of them in every segment: read them INDEX_OPEN_CONCURRENCY at a time.
+            let index = &index;
+            let counts: Vec<(u32, u64)> = futures::stream::iter(0..index.total_partitions())
+                .map(|partition| async move {
+                    let mut stream = index
+                        .partition_reader(partition, false, &NoOpMetricsCollector)
+                        .await
+                        .map_err(|_| PartitionMapUnavailable)?;
+                    let (mut rows, mut indexed) = (0u32, 0u64);
+                    while let Some(batch) = stream
+                        .try_next()
+                        .await
+                        .map_err(|_| PartitionMapUnavailable)?
+                    {
+                        let batch_ids = ids(&batch)?;
+                        for id in batch_ids.values() {
+                            // Index membership is only a routing
+                            // hint. Row admission remains native.
+                            if metadata
+                                .fragment_bitmap
+                                .as_ref()
+                                .is_some_and(|b| b.contains((id >> 32) as u32))
+                            {
+                                indexed += 1;
+                                rows += u32::from(eligible.selected(*id));
+                            }
                         }
                     }
-                }
-                admitted.push(rows);
-            }
+                    Ok::<_, ReaderError>((rows, indexed))
+                })
+                .buffered(INDEX_OPEN_CONCURRENCY)
+                .try_collect()
+                .await?;
+            let admitted = counts.iter().map(|count| count.0).collect();
+            let indexed_rows = counts.iter().map(|count| count.1).sum();
             maps.push(PartitionMap {
                 segment: metadata.uuid.to_string(),
                 admitted,

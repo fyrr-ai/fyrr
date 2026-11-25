@@ -83,6 +83,15 @@ pub(crate) fn index_merge_done(rows: u64, took: std::time::Duration) {
     );
 }
 
+/// A vector index got a new model, trained for the rows it has now.
+#[allow(clippy::print_stderr)]
+pub(crate) fn index_model_trained(index: &str, partitions: usize, took: std::time::Duration) {
+    eprintln!(
+        "telemetry index_model=trained index={index} partitions={partitions} seconds={:.1}",
+        took.as_secs_f64()
+    );
+}
+
 /// An index merge step ran out of time: the index waits for a new publication.
 #[allow(clippy::print_stderr)]
 pub(crate) fn index_merge_skipped(index: &str) {

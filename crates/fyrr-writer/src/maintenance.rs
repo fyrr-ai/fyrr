@@ -8,6 +8,7 @@ use restoration::*;
 use crate::{apply, commit, lease::LeaseGuard, prepare};
 mod restore_fragments;
 mod restore_index;
+use arrow_array::Array;
 use chrono::Utc;
 use futures::TryStreamExt;
 use fyrr_core::Contract;
@@ -23,19 +24,29 @@ use lance::dataset::cleanup::CleanupPolicy;
 use lance::dataset::optimize::{CompactionOptions, plan_compaction};
 use lance::dataset::transaction::{Operation, RewriteGroup};
 use lance::index::DatasetIndexExt;
-use lance::index::optimize::{commit_optimize_indices, plan_optimize_indices};
+use lance::index::optimize::{OptimizeIndexTask, commit_optimize_indices, plan_optimize_indices};
+use lance::index::DatasetIndexInternalExt;
+use lance_index::metrics::NoOpMetricsCollector;
 use lance_index::optimize::OptimizeOptions;
+use lance_index::vector::ivf::builder::recommended_num_partitions;
 use object_store::{ObjectStoreExt, PutMode, path::Path};
 use std::collections::{BTreeMap, BTreeSet};
 
 // Bound catalog-wide index opens, while the indexes stay below `merge_tier_rows` per segment.
 pub(crate) const INDEX_SEGMENT_LIMIT: usize = 64;
-// Merge throughput measured on #317: 3,000,000 rows in 2,147 s on `writer maintain`, cores 0-3,
-// `writer.threads = 2`. Re-measure with `scripts/bench-scale --maintain` when the merge changes.
-const MERGE_ROWS_PER_SECOND: u128 = 1_400;
+// Throughput of a step that encodes rows against a trained model, the slower of the two kinds of
+// step (the other copies partitions). Measured on #319: 200,000 rows of 128 dimensions against
+// 4,096 partitions in 38 s on `writer maintain`, cores 0-3, `writer.threads = 2`. Re-measure with
+// `scripts/bench-scale --reuse DIR --maintain` when the step changes.
+const MERGE_ROWS_PER_SECOND: u128 = 5_200;
+// A vector index gets a new model when its rows ask for this many times the partitions of the
+// model it has. Each model so serves until the rows double, and all the retraining of an index
+// together encodes about twice its rows.
+const MODEL_GROWTH: usize = 2;
 
-/// The rows one merge step may rewrite: half of `step_max_duration` at the measured throughput,
-/// 210,000 rows by default. A step also opens segments and writes the version.
+/// The rows one step of a vector index may rewrite: half of `step_max_duration` at the measured
+/// throughput, 780,000 rows by default. A step also opens segments and writes the version. No
+/// segment grows beyond it, so that one step can always encode a whole segment again.
 fn merge_tier_rows(config: &Config) -> u64 {
     let millis = config
         .writer
@@ -171,13 +182,10 @@ async fn boundary(
     lease.head().await
 }
 
-/// `rebalance` also re-partitions the vector index. Splitting a partition
-/// trains on up to 262,144 vectors in memory and cannot be interrupted, so
-/// only the operator command asks for it; `writer serve` merges segments only.
-pub async fn maintain(config: &Config, rebalance: bool) -> Result<serde_json::Value> {
+pub async fn maintain(config: &Config) -> Result<serde_json::Value> {
     crate::lease::LeaseGuard::with(config, |lease| async move {
         let mut history = commit::RestoreHistory::new(config)?;
-        let mut result = maintain_held(config, &lease, &mut history, rebalance).await;
+        let mut result = maintain_held(config, &lease, &mut history).await;
         // Every expired native step yields to authorization, including storage
         // reads during purge/compaction/index planning before cleanup begins.
         if result
@@ -196,7 +204,6 @@ async fn maintain_held(
     config: &Config,
     lease: &LeaseGuard,
     history: &mut commit::RestoreHistory,
-    rebalance: bool,
 ) -> Result<serde_json::Value> {
     // Obsolete applied objects must not exhaust history's resident allowance
     // before the cleanup that can remove them becomes reachable.
@@ -226,9 +233,8 @@ async fn maintain_held(
         }
         compacted += 1;
     }
-    // One index name per interruptible step. Merge the segments, never retrain;
-    // with `rebalance` Lance also splits and joins partitions toward the index's
-    // target size.
+    // One index name per interruptible step: `vector_step` for a vector index, a merge of all
+    // the segments for any other.
     let head = boundary(config, lease, history).await?;
     if head.content.is_some() {
         let dataset = pinned(config, &head).await?;
@@ -261,7 +267,7 @@ async fn maintain_held(
                 }
                 let start = std::time::Instant::now();
                 let at = version(&head);
-                match merge_index(config, lease, dataset, head, name.clone(), rebalance).await {
+                match merge_index(config, lease, dataset, head, name.clone()).await {
                     Ok(Some(rows)) => {
                         merged += 1;
                         crate::telemetry::index_merge_done(rows, start.elapsed());
@@ -379,17 +385,170 @@ async fn merge_tier(dataset: &mut Dataset, options: &OptimizeOptions) -> lance::
     Ok(0)
 }
 
+/// One step of a vector index, and the rows it rewrote; none if the index is as it should be.
+///
+/// Every segment is encoded against an IVF model, and a write encodes against the model of the
+/// newest segment. The model of the first write has the partitions of that write's rows, so an
+/// index that grew is searched in partitions far above `dense_partition_rows`, and recall falls.
+/// The steps, each within `merge_tier_rows`:
+///
+/// 1. The rows ask for `MODEL_GROWTH` times the partitions of the newest model: Lance trains a
+///    new model on a sample of the whole table, and the step encodes the smallest segment
+///    against it. The new segment is the newest, so the writes follow the new model from here on.
+/// 2. A segment has another model than the newest: the step encodes the oldest such segments
+///    again against the newest model, as one new segment that replaces them.
+/// 3. Every segment has the newest model: the step copies neighbors into one segment.
+///
+/// Each step is one Lance version, so a run that stops continues from the table alone. Segments
+/// of two models are searched each with its own, so every state in between serves.
+async fn vector_step(
+    config: &Config,
+    dataset: &mut Dataset,
+    name: &str,
+    mut options: OptimizeOptions,
+) -> lance::Result<u64> {
+    let budget = merge_tier_rows(config);
+    let fragments: BTreeMap<u32, u64> = dataset
+        .manifest()
+        .fragments
+        .iter()
+        .map(|f| (crate::narrow_u32(f.id), f.num_rows().unwrap_or(0) as u64))
+        .collect();
+    // In the order of the manifest, which is the order they were committed in: the last one is
+    // the one Lance encodes the next write against. With the fragments each still answers for.
+    let segments: Vec<_> = dataset
+        .load_indices()
+        .await?
+        .iter()
+        .filter(|segment| segment.name == name)
+        .map(|segment| {
+            let covered: Vec<u32> = segment
+                .fragment_bitmap
+                .iter()
+                .flat_map(|bitmap| bitmap.iter())
+                .filter(|id| fragments.contains_key(id))
+                .collect();
+            (segment.clone(), covered)
+        })
+        .collect();
+    let Some((newest, _)) = segments.iter().rev().find(|(_, covered)| !covered.is_empty()) else {
+        return Ok(0);
+    };
+    let column = dataset
+        .schema()
+        .field_by_id(newest.fields[0])
+        .map(|field| field.name.clone())
+        .unwrap_or_default();
+    let model = dataset
+        .open_vector_index(&column, &newest.uuid, &NoOpMetricsCollector)
+        .await?;
+    // shortcut: Lance trains at most 4,096 partitions (`recommended_num_partitions`). The model
+    // grows to that ceiling and then stays, so above about 4,500,000 rows a partition holds more
+    // than twice `dense_partition_rows`. Train with an explicit count when a namespace of that
+    // size is measured.
+    let ceiling = recommended_num_partitions(usize::MAX, 1);
+    let wanted = recommended_num_partitions(
+        crate::narrow_usize(fragments.values().sum()),
+        config.namespace.dense_partition_rows as usize,
+    );
+    let current = model.total_partitions();
+    let (reference, mut stale) = if wanted > current
+        && wanted >= (MODEL_GROWTH * current).min(ceiling)
+    {
+        let start = std::time::Instant::now();
+        let mut retrain = options.clone();
+        retrain.retrain = true;
+        retrain.max_rows_per_task = Some(budget);
+        // The planner of a split rebuild trains the model and plans a task per `budget` rows
+        // against it. Only the model is taken: the tasks below follow the segments instead, so
+        // that each step replaces whole segments and commits alone.
+        let plan = plan_optimize_indices(dataset, &retrain).await?;
+        let Some(task) = plan.tasks.into_iter().next() else {
+            return Ok(0);
+        };
+        crate::telemetry::index_model_trained(name, wanted, start.elapsed());
+        (task.reference, segments.iter().collect::<Vec<_>>())
+    } else {
+        let mut stale = Vec::new();
+        for segment in &segments {
+            if segment.0.uuid == newest.uuid || segment.1.is_empty() {
+                continue;
+            }
+            let other = dataset
+                .open_vector_index(&column, &segment.0.uuid, &NoOpMetricsCollector)
+                .await?;
+            if other.ivf_model().centroids_array().map(|c| c.to_data())
+                != model.ivf_model().centroids_array().map(|c| c.to_data())
+            {
+                stale.push(segment);
+            }
+        }
+        (newest.clone(), stale)
+    };
+    stale.retain(|(_, covered)| !covered.is_empty());
+    if stale.is_empty() {
+        options.max_rows_per_segment = Some(budget);
+        return merge_tier(dataset, &options).await;
+    }
+    let rows_of = |covered: &[u32]| covered.iter().map(|id| fragments[id]).sum::<u64>();
+    // The step that trained has spent most of its time: it takes the smallest segment, the
+    // newest of them, which a later step can copy into the run before it.
+    if reference.uuid != newest.uuid {
+        stale = stale
+            .into_iter()
+            .rev()
+            .min_by_key(|(_, covered)| rows_of(covered))
+            .into_iter()
+            .collect();
+    }
+    // Whole segments, oldest first, while they fit the step.
+    let (mut encode, mut replaces, mut rows) = (Vec::new(), Vec::new(), 0u64);
+    for (segment, covered) in stale {
+        let more = rows_of(covered);
+        if !replaces.is_empty() && rows + more > budget {
+            break;
+        }
+        encode.extend(covered.iter().copied());
+        replaces.push(segment.uuid);
+        rows += more;
+    }
+    // A segment none of whose fragments is left answers for nothing: it goes with the step.
+    replaces.extend(
+        segments
+            .iter()
+            .filter(|(_, covered)| covered.is_empty())
+            .map(|(segment, _)| segment.uuid),
+    );
+    encode.sort_unstable();
+    let task = OptimizeIndexTask {
+        plan_id: reference.uuid,
+        read_version: dataset.version().version,
+        group: 0,
+        fragments: encode,
+        reference,
+        old_segments: Vec::new(),
+        num_indices_to_merge: Some(0),
+        enable_partition_rebalancing: false,
+        retrain: false,
+    };
+    let Some(mut result) = task.execute(dataset).await? else {
+        return Ok(0);
+    };
+    result.replaces = replaces;
+    commit_optimize_indices(dataset, vec![result], &options).await?;
+    Ok(rows)
+}
+
 async fn merge_index(
     config: &Config,
     lease: &LeaseGuard,
     dataset: Dataset,
     head: ServingHead,
     name: String,
-    rebalance: bool,
 ) -> Result<Option<u64>> {
     tokio::time::timeout(
         config.writer.maintenance.step_max_duration.as_duration(),
-        merge_step(config, lease, dataset, head, name, rebalance),
+        merge_step(config, lease, dataset, head, name),
     )
     .await
     .map_err(|_| WriterError::MaintenanceStepDeadline)?
@@ -401,37 +560,27 @@ async fn merge_step(
     mut dataset: Dataset,
     head: ServingHead,
     name: String,
-    rebalance: bool,
 ) -> Result<Option<u64>> {
     let before = dataset.version().version;
     let mut work = lineage(lease, &head);
-    let vector = is_vector_index(config, &name);
     let mut options = OptimizeOptions::merge(usize::MAX);
-    options.index_names = Some(vec![name]);
+    options.index_names = Some(vec![name.clone()]);
     options.retrain = false;
-    let target = merge_tier_rows(config);
-    let total = dataset.count_rows(None).await? as u64;
-    let rows = if !vector || total <= target {
-        if rebalance {
-            options = options.with_partition_rebalancing();
-        }
+    let rows = if is_vector_index(config, &name) {
+        commit::native_step(
+            lease,
+            Box::pin(vector_step(config, &mut dataset, &name, options)),
+            WriterError::IndexMergeFailed,
+        )
+        .await?
+    } else {
         commit::native_step(
             lease,
             dataset.optimize_indices(&options),
             WriterError::IndexMergeFailed,
         )
         .await?;
-        total
-    } else {
-        // shortcut: indexes above the step target are merged in tiers without partition
-        // rebalancing; rebalance per segment when needed. The scalar indexes stay one step.
-        options.max_rows_per_segment = Some(target);
-        commit::native_step(
-            lease,
-            Box::pin(merge_tier(&mut dataset, &options)),
-            WriterError::IndexMergeFailed,
-        )
-        .await?
+        dataset.count_rows(None).await? as u64
     };
     commit::record_transaction(&dataset, &mut work, before).await?;
     if dataset.version().version == before {

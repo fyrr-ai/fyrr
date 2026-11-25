@@ -469,7 +469,10 @@ fn vector_index_params(
         IvfBuildParams {
             num_partitions: Some(rows.div_ceil(partition_rows as usize).max(1)),
             target_partition_size: Some(partition_rows as usize),
-            sample_rate: 256,
+            // Vectors per partition that k-means trains on. Lance records it with the index, and
+            // the maintenance step that trains a larger model reuses it: at 4,096 partitions a
+            // step then trains on 524,288 vectors, about half the time of Lance's 256 (#319).
+            sample_rate: 128,
             ..Default::default()
         },
         RQBuildParams::new(rq_bits),
