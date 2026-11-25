@@ -1855,6 +1855,166 @@ async fn identity_write_api_ends_a_first_publication_of_identical_vectors_on_sto
     );
 }
 
+/// A reader that routes by RaBitQ, so that its dense lane takes the
+/// partition-map path, with `settings` added to its `[reader]` table. It
+/// answers once it has mirrored the namespace.
+async fn rabitq_reader(
+    config: &Path,
+    root: &Path,
+    n: usize,
+    settings: &str,
+) -> super::http_mcp::Reader {
+    let text = std::fs::read_to_string(config).unwrap();
+    assert!(text.contains("nprobes = 1\n") && text.contains("[embedding]\n"));
+    let variant = root.join(format!("rabitq-{n}.toml"));
+    std::fs::write(
+        &variant,
+        text.replace("[embedding]\n", "[embedding]\ndimensions = 16\n")
+            .replace(
+                "nprobes = 1\n",
+                &format!("routing = 'rabitq'\n{settings}\n"),
+            ),
+    )
+    .unwrap();
+    let reader = super::http_mcp::Reader::start_appended(&variant, root, |address, base| {
+        format!("\n[reader.http]\nlisten='{address}'\npublic_url='{base}/mcp'\n")
+    })
+    .await;
+    for _ in 0..600 {
+        let ready: Value = reader
+            .client
+            .get(format!("{}/readyz", reader.base))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if ready["warm_ready"] == true {
+            return reader;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the reader never warmed: {}", reader.stderr_text());
+}
+
+/// The document keys and the telemetry of the answer to `vector`.
+async fn indexed_answer(
+    reader: &super::http_mcp::Reader,
+    vector: &[f32],
+    limit: usize,
+) -> (Vec<String>, Value) {
+    let answer = ask(
+        reader,
+        json!({"vector": vector, "limit": limit, "output": "metadata"}),
+    )
+    .await;
+    let telemetry = answer.1["metadata"]["telemetry"].clone();
+    (roots(&answer), telemetry)
+}
+
+/// Rows at one distance rank by document key, whichever rows the subject may
+/// read and however the reader takes the vectors of the candidates: the
+/// deferred key read keeps every row of a tie at the cutoff.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_orders_equal_dense_scores_by_document_key_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    // The dense lane answers with exactly the 10 rows asked for, so a cut
+    // before the key order would keep an arbitrary 10 of the tie.
+    configure(
+        &config,
+        &address,
+        "[namespace.retrieval]\ndense_candidates = 10",
+    );
+    let writer = Writer::start(&config, &root, address).await;
+    // 3,000 rows written in reverse key order; the reader may read every third
+    // of them, more than the first rescore pool. The first 60 share the query's
+    // vector, so 20 readable rows tie at the cutoff of the top 10; the others
+    // lie farther away.
+    let rows: Vec<Value> = (0..3000)
+        .rev()
+        .map(|n| {
+            let reader = if n % 3 == 0 { "usr:x" } else { "usr:other" };
+            let vector = if n < 60 { vec![0.5; 16] } else { vector(n, 16) };
+            json!({"id": format!("r{n:04}"), "text": format!("row {n}"), "vector": vector, "readers": [reader]})
+        })
+        .collect();
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"settings": {"embedding": {"dimensions": 16}}, "upserts": rows}),
+            )
+            .await,
+        (200, json!({"upserted": 3000, "deleted": 0}))
+    );
+    let expected: Vec<String> = (0..10).map(|n| format!("r{:04}", n * 3)).collect();
+    for (n, sparse_read) in ["masked_scan", "take_rows"].into_iter().enumerate() {
+        let reader = rabitq_reader(
+            &config,
+            &root,
+            n,
+            &format!("nprobes = 65536\nsparse_read = '{sparse_read}'"),
+        )
+        .await;
+        let (found, telemetry) = indexed_answer(&reader, &[0.5; 16], 10).await;
+        assert_eq!(found, expected, "{sparse_read}: {telemetry}");
+        // The refinement ranked the first pool, 40 of the 1,000 rows the reader
+        // may read, and the tie of 20 fit in it.
+        assert_eq!(telemetry["dense_candidates_fetched"], 40, "{telemetry}");
+        assert!(
+            telemetry.get("dense_tie_bound_hits").is_none(),
+            "{telemetry}"
+        );
+    }
+}
+
+/// The rescore pool grows with the square root of the rows the probes
+/// inspect: every row when every partition is probed, a share of them when
+/// few are.
+#[tokio::test]
+#[ignore = "real writer and reader executables on local storage; scripts/ci"]
+async fn identity_write_api_sizes_the_rescore_pool_by_the_rows_the_probes_inspect_on_storage() {
+    let (config, root) = setup_on(Backend::Local);
+    let address = free_address();
+    configure(
+        &config,
+        &address,
+        "[namespace.retrieval]\ndense_candidates = 2",
+    );
+    let writer = Writer::start(&config, &root, address).await;
+    let rows: Vec<Value> = (0..4000)
+        .map(|n| json!({"id": format!("d{n}"), "text": format!("row {n}"), "vector": vector(n, 16), "readers": ["usr:x"]}))
+        .collect();
+    assert_eq!(
+        writer
+            .post(
+                WRITE_KEY,
+                "dense-fixture",
+                &json!({"settings": {"embedding": {"dimensions": 16}}, "upserts": rows}),
+            )
+            .await,
+        (200, json!({"upserted": 4000, "deleted": 0}))
+    );
+    // At two candidates the pool starts at 8 and ends at 32: the square root
+    // of 4000 rows is 63, that of one partition's rows is below 32.
+    let mut fetched = Vec::new();
+    for (n, nprobes) in [65536, 1].into_iter().enumerate() {
+        let reader = rabitq_reader(&config, &root, n, &format!("nprobes = {nprobes}")).await;
+        let (found, telemetry) = indexed_answer(&reader, &vector(7, 16), 2).await;
+        assert_eq!(found.len(), 2, "{telemetry}");
+        fetched.push(telemetry["dense_candidates_fetched"].as_u64().unwrap());
+    }
+    assert_eq!(fetched[0], 32, "every partition probed");
+    assert!(
+        (8..32).contains(&fetched[1]),
+        "one partition probed: {fetched:?}"
+    );
+}
+
 #[tokio::test]
 #[ignore = "real writer executable on local storage; scripts/ci"]
 async fn identity_write_api_refuses_whole_and_keeps_connector_namespaces_apart_on_storage() {

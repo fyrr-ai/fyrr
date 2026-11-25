@@ -443,7 +443,7 @@ rescores them with their stored float16 vectors.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `rescore_depth` | `{ mode = "legacy" }` | How many index candidates are rescored. `{ mode = "legacy" }` rescores four times `dense_candidates`; `{ mode = "fixed", candidates = N }` rescores `N` (1 to 1200), but never fewer than `dense_candidates + 1`; `{ mode = "adaptive", min_candidates, max_candidates, min_gap }` starts at `min_candidates` and doubles, up to `max_candidates`, while the score gap at the cut is below `min_gap`. |
+| `rescore_depth` | `{ mode = "legacy" }` | How many index candidates are rescored. Legacy mode starts at four times the dense lane depth. The partition-map path for a one-bit built-in vector uses the square root of the rows the probes inspect (at most the selected rows), bounded between four and sixteen times that depth. `{ mode = "fixed", candidates = N }` rescores `N` (1 to 1200), with a minimum of `dense_candidates + 1`. `{ mode = "adaptive", min_candidates, max_candidates, min_gap }` starts at `min_candidates` and doubles, up to `max_candidates`, while the score gap at the cut is below `min_gap`. |
 
 ### `[namespace]` vector index
 

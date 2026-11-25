@@ -90,6 +90,12 @@ impl PartitionMap {
         u64::try_from(u128::from(self.indexed_rows) * nprobes as u128 / partitions)
             .unwrap_or(u64::MAX)
     }
+
+    /// Indexed rows an unrestricted query inspects: its `nprobes` partitions
+    /// of average size, never more than the segment holds.
+    pub(crate) fn inspected_rows(&self, nprobes: usize) -> u64 {
+        self.probe_target(nprobes).min(self.indexed_rows)
+    }
 }
 
 // Completion order selects the sample. Retain the existing embedding and
