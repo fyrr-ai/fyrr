@@ -675,16 +675,12 @@ export type DenseElement = "f16" | "f32";
 
 /** The persisted copy of [`RetrievalConfig`]. */
 export interface RetrievalSettings {
-  rescore_depth?: RescoreSettings;
+  rescore_depth?: RescoreSettings | null;
   dense_weight: number;
   dense_candidates: number | bigint;
   lexical_candidates: number | bigint;
   source_cap: number | bigint;
   max_documents: number | bigint;
-}
-
-export interface RescoreSettingsLegacy {
-  mode: "legacy";
 }
 
 export interface RescoreSettingsFixed {
@@ -700,7 +696,7 @@ export interface RescoreSettingsAdaptive {
 }
 
 /** The persisted copy of [`RescoreDepth`]. */
-export type RescoreSettings = RescoreSettingsLegacy | RescoreSettingsFixed | RescoreSettingsAdaptive;
+export type RescoreSettings = RescoreSettingsFixed | RescoreSettingsAdaptive;
 
 /** The persisted copy of [`Composition`]. */
 export interface CompositionSettings {

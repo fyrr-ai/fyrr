@@ -2435,7 +2435,14 @@
         "type": "object",
         "properties": {
           "rescore_depth": {
-            "$ref": "#/components/schemas/RescoreSettings"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RescoreSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "dense_weight": {
             "type": "number",
@@ -2473,18 +2480,6 @@
       },
       "RescoreSettings": {
         "oneOf": [
-          {
-            "type": "object",
-            "properties": {
-              "mode": {
-                "type": "string",
-                "const": "legacy"
-              }
-            },
-            "required": [
-              "mode"
-            ]
-          },
           {
             "type": "object",
             "properties": {

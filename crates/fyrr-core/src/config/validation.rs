@@ -391,32 +391,26 @@ fn embedding(config: &Config, error: &mut impl FnMut(&str, String)) {
 
 fn rescore_depth(namespace: &NamespaceConfig, error: &mut impl FnMut(&str, String)) {
     match &namespace.retrieval.rescore_depth {
-        None => {}
-        Some(RescoreDepth::Fixed { candidates }) => {
-            if !(1..=1200).contains(candidates) {
-                error(
-                    "namespace.retrieval.rescore_depth",
-                    "candidates must be in 1–1200".into(),
-                );
-            }
-        }
+        Some(RescoreDepth::Fixed { candidates }) if !(1..=1200).contains(candidates) => error(
+            "namespace.retrieval.rescore_depth",
+            "candidates must be in 1–1200".into(),
+        ),
         Some(RescoreDepth::Adaptive {
             min_candidates,
             max_candidates,
             min_gap,
-        }) => {
-            if !(1..=1200).contains(min_candidates)
-                || !(1..=1200).contains(max_candidates)
-                || min_candidates > max_candidates
-                || !min_gap.is_finite()
-                || *min_gap < 0.0
-            {
-                error(
-                    "namespace.retrieval.rescore_depth",
-                    "invalid adaptive bounds or gap".into(),
-                );
-            }
+        }) if !(1..=1200).contains(min_candidates)
+            || !(1..=1200).contains(max_candidates)
+            || min_candidates > max_candidates
+            || !min_gap.is_finite()
+            || *min_gap < 0.0 =>
+        {
+            error(
+                "namespace.retrieval.rescore_depth",
+                "invalid adaptive bounds or gap".into(),
+            );
         }
+        _ => {}
     }
 }
 
