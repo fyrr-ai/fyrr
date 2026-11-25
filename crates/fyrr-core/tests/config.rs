@@ -1607,7 +1607,14 @@ fn namespace_attributes_are_declared_by_name_and_type() {
 #[test]
 fn rescore_depth_defaults_to_the_pool_rule_and_expands_only_at_small_gaps() {
     use fyrr_core::config::RescoreDepth;
-    let retrieval = parse(MINIMAL).unwrap().config.namespace.retrieval;
+    let namespace = parse(MINIMAL).unwrap().config.namespace;
+    // Computed on main 7c1626c4, before `Legacy` was deleted: a namespace that
+    // sets nothing must keep the identity its publications already carry.
+    assert_eq!(
+        namespace.retrieval_digest(),
+        "sha256:8a1c25581678e85afb0fbad2d57d6ae486df8944d69dc28c98aa771b4bce098c"
+    );
+    let retrieval = namespace.retrieval;
     assert_eq!(retrieval.rescore_depth, None);
     assert_eq!(retrieval.rescore_initial(75), 300);
     assert_eq!(retrieval.rescore_maximum(75), 1200);
