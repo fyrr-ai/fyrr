@@ -649,8 +649,10 @@ async fn superseded_history(
                         .bytes()
                         .await
                         .map_err(|_| WriterError::StorageUnavailable)?;
-                    let cut: HistoryCut = fyrr_core::parse_contract(&bytes)
-                        .map_err(|_| WriterError::PublicationInvalid)?;
+                    let cut: HistoryCut = fyrr_reader::storage::parse_stored(
+                        &bytes,
+                        fyrr_reader::storage::StorageError::PublicationInvalid,
+                    )?;
                     (Some(cut), PutMode::Update(version))
                 }
                 Err(object_store::Error::NotFound { .. }) => (None, PutMode::Create),

@@ -175,7 +175,10 @@ async fn member_input(
             if digest(&bytes) != *hash {
                 return Err(WriterError::RestoreHistoryIdentityChanged);
             }
-            fyrr_core::parse_contract(&bytes).map_err(|_| WriterError::PublicationInvalid)?
+            fyrr_reader::storage::parse_stored(
+                &bytes,
+                fyrr_reader::storage::StorageError::PublicationInvalid,
+            )?
         } else {
             fyrr_reader::storage::read_contract(store, &path).await?
         };

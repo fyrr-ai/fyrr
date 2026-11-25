@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 use fyrr_core::config::Config;
 use fyrr_core::limits::digest;
 use fyrr_core::publication::{Lease, ServingHead};
-use fyrr_core::{Contract, parse_contract, write_contract};
-use fyrr_reader::storage::namespace_store;
+use fyrr_core::{Contract, write_contract};
+use fyrr_reader::storage::{StorageError, namespace_store};
 use object_store::path::Path;
 use object_store::{ObjectMeta, ObjectStore, ObjectStoreExt, PutMode, PutOptions, UpdateVersion};
 use std::sync::Arc;
@@ -117,8 +117,10 @@ async fn free_head(
     let path = root.join("head.json");
     let object = store.get(&path).await?;
     let expected = version_of(&object.meta);
-    let head: ServingHead =
-        parse_contract(&object.bytes().await?).map_err(|_| WriterError::PublicationInvalid)?;
+    let head: ServingHead = fyrr_reader::storage::parse_stored(
+        &object.bytes().await?,
+        StorageError::PublicationInvalid,
+    )?;
     if head.namespace != config.namespace.name {
         return Err(WriterError::PublicationNamespaceInvalid);
     }
@@ -343,8 +345,10 @@ impl LeaseGuard {
         // before release and preserve every pointer it actually published.
         let object = self.store.get(&self.path).await?;
         let expected = version_of(&object.meta);
-        let mut head: ServingHead =
-            parse_contract(&object.bytes().await?).map_err(|_| WriterError::PublicationInvalid)?;
+        let mut head: ServingHead = fyrr_reader::storage::parse_stored(
+            &object.bytes().await?,
+            StorageError::PublicationInvalid,
+        )?;
         if head
             .lease
             .as_ref()

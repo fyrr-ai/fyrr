@@ -1361,6 +1361,7 @@ fn a_namespace_stored_by_an_earlier_fyrr_is_refused_by_name() {
     refused(&[
         &["writer", "namespace", "create"],
         &["writer", "status"],
+        &["writer", "commit"],
         &["reader", "check"],
     ]);
     std::fs::write(&head_path, &current_head).unwrap();
@@ -1384,7 +1385,11 @@ fn a_namespace_stored_by_an_earlier_fyrr_is_refused_by_name() {
         std::fs::write(&policy_path, &bytes).unwrap();
         head["policy"]["digest"] = fyrr_core::limits::digest(&bytes).into();
         std::fs::write(&head_path, serde_json::to_vec_pretty(&head).unwrap()).unwrap();
-        refused(&[&["writer", "namespace", "create"], &["writer", "status"]]);
+        refused(&[
+            &["writer", "namespace", "create"],
+            &["writer", "status"],
+            &["writer", "commit"],
+        ]);
     }
     std::fs::remove_dir_all(root).unwrap();
 }

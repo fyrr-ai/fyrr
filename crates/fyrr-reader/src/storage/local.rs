@@ -370,11 +370,9 @@ impl LocalStore {
     }
 
     fn is_internal(&self, location: &Path) -> bool {
-        location.prefix_match(&self.root).is_some_and(|mut rest| {
-            rest.next().is_some_and(|part| {
-                part.as_ref() == STAGES || OLD_ROOT_FILES.contains(&part.as_ref())
-            })
-        })
+        location
+            .prefix_match(&self.root)
+            .is_some_and(|mut rest| rest.next().is_some_and(|part| part.as_ref() == STAGES))
     }
 
     /// The held root descriptor, after checking that the root path still

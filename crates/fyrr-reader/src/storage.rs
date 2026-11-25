@@ -337,8 +337,8 @@ pub async fn persist_native_files(
     .map_err(|_| StorageError::StorageUnavailable)
 }
 
-const OLD_LAYOUT_HINT: &str = "namespace_layout_old: the namespace was written by v0.1.x or an earlier build, in a stored format v0.2.0 does not read. Recreate it with v0.2.0: create the namespace again (in a new root for a local root) and sync its sources.";
-const OLD_ROOT_HINT: &str = "storage_root_old: the local storage root was written by v0.1.x or an earlier build (it holds .fyrr-storage.lock or .fyrr-storage.stage). Recreate its namespaces in a new root with v0.2.0; remove those files only once no older writer runs.";
+const OLD_LAYOUT_HINT: &str = "the namespace was written by v0.1.x or an earlier build, in a stored format v0.2.0 does not read. Recreate it with v0.2.0: delete its namespaces/<name>/ prefix with the storage tool (or choose a new namespace name), then run writer namespace create and sync its sources.";
+const OLD_ROOT_HINT: &str = "the local storage root was written by v0.1.x or an earlier build (it holds .fyrr-storage.lock or .fyrr-storage.stage). Recreate its namespaces in a new root with v0.2.0; remove those files only once no older writer runs.";
 
 /// What an operator does about an error code that needs more than its name,
 /// for the command line to print under `error: <code>`.
@@ -809,7 +809,7 @@ pub async fn artifact<T: fyrr_core::Contract>(
 /// `NamespaceLayoutOld` whatever it is: a major below the one this build writes
 /// (v0.1.x wrote serving heads 3.0 and policies 2.2), or a connector namespace
 /// without the typed connector columns. Anything else invalid is `other`.
-fn parse_stored<T: Contract>(bytes: &[u8], other: StorageError) -> Result<T, StorageError> {
+pub fn parse_stored<T: Contract>(bytes: &[u8], other: StorageError) -> Result<T, StorageError> {
     use fyrr_core::ContractError::{Invalid, UnsupportedMajor};
     parse_contract(bytes).map_err(|error| match error {
         UnsupportedMajor { found, .. } if found.major < T::VERSION.major => {

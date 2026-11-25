@@ -247,9 +247,10 @@ pub(crate) async fn read_checkpoint(
     if digest(&bytes) != pointer.digest {
         return Err(WriterError::PublicationInvalid);
     }
-    fyrr_core::parse_contract(&bytes)
-        .map(Some)
-        .map_err(|_| WriterError::PublicationInvalid)
+    Ok(Some(fyrr_reader::storage::parse_stored(
+        &bytes,
+        fyrr_reader::storage::StorageError::PublicationInvalid,
+    )?))
 }
 
 pub(crate) async fn rejection_markers(
