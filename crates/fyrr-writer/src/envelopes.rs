@@ -120,6 +120,7 @@ async fn source_reads(
 /// of its chain, and no body.
 #[derive(Clone)]
 struct StatusLink {
+    id: String,
     source_id: String,
     previous: Option<String>,
     lease_generation: u64,
@@ -128,6 +129,7 @@ struct StatusLink {
 impl From<PreparedEnvelope> for StatusLink {
     fn from(envelope: PreparedEnvelope) -> Self {
         Self {
+            id: envelope.envelope_id,
             source_id: envelope.source_id,
             previous: envelope.previous,
             lease_generation: envelope.lease_generation,
@@ -211,6 +213,7 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
                     permissions.insert(
                         envelope.envelope_id.clone(),
                         StatusLink {
+                            id: envelope.envelope_id.clone(),
                             source_id: envelope.source_id.clone(),
                             previous: envelope.previous.clone(),
                             lease_generation: envelope.lease_generation,
@@ -243,16 +246,32 @@ pub async fn status(config: &Config) -> Result<serde_json::Value> {
         .map(|e| e.source_id.clone())
         .chain(held.keys().cloned())
         .collect();
-    let (unresolved, blocked) = crate::commit::chains(
+    // Every link after what the manifest applied, then which of them no
+    // publication resolved: one that is listed and unresolved, or one that the
+    // walk read by ID and no manifest names.
+    let (links, blocked) = crate::commit::chains(
         config,
         &head,
         &policy,
         &sources,
         &permissions,
-        &|id: &str| -> Result<bool> { Ok(!permissions.contains_key(id)) },
+        &|_: &str| -> Result<bool> { Ok(false) },
     )
     .await?;
-    pending += unresolved.len();
+    for link in links {
+        if permissions.contains_key(&link.id)
+            || !applied_page(
+                store.clone(),
+                &root,
+                &head,
+                &BTreeSet::from([link.id.clone()]),
+            )
+            .await?
+            .contains(&link.id)
+        {
+            pending += 1;
+        }
+    }
     // A source whose chain does not reach what the manifest applied publishes
     // nothing of its permissions, content or listings until it is whole again.
     let blocked_sources: Vec<&String> = blocked.iter().collect();

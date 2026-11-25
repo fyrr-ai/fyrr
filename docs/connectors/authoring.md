@@ -107,7 +107,11 @@ root that does not fit a part alone under `writer.envelope_max_bytes` fails
 the read the same way, as it is seen, with `permission_root_oversized`: raise
 the bound, or narrow the root's readers, and the next read publishes. Each part of a read carries the time it was
 written, so a read that takes longer than `writer.max_envelope_age` is
-rejected (`envelope_expired`) and read again, every time: keep a read shorter. A connector keeps no other
+rejected (`envelope_expired`) and read again, every time: keep a read shorter.
+A permission read stores its cursor only when it completes, so a worker that
+`fyrr writer sync --timeout` (default `10m`) stops in the middle of one starts
+it again from the stored cursor every time: give a source whose permission
+read takes longer a larger `--timeout`. A connector keeps no other
 state. The provider metadata lists the kinds the class overrides.
 
 | Method | Yields | Required |

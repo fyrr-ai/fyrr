@@ -69,7 +69,8 @@ fn to_the_microsecond<S: serde::Serializer>(
 /// that the envelope that ends a read is never over the bound.
 pub fn largest_permission_end(namespace: &str) -> PreparedEnvelope {
     use chrono::TimeZone;
-    let source = "a".repeat(crate::limits::MAX_ID_BYTES);
+    // `"` is the longest a character of an ID encodes to: JSON doubles it.
+    let source = "\"".repeat(crate::limits::MAX_ID_BYTES);
     let cursor = "\u{1}".repeat(crate::limits::MAX_CURSOR_BYTES);
     let id = leased_envelope_id(
         namespace,

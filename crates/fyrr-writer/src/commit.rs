@@ -76,10 +76,11 @@ pub async fn pending(config: &Config, head: &ServingHead) -> Result<Vec<Prepared
 /// the cursor holds to the newest one the manifest records as applied. An
 /// envelope that is not on that chain, such as a late put by a worker that lost
 /// its lease, is never applied, and the chain is read by ID, never from a
-/// listing. A source that has content or a listing pending is checked too, so
-/// that they never publish while its tail is missing. The envelopes of a
-/// retired source are left as they are: they are rejected. `resolved` tells an
-/// envelope that was applied or rejected.
+/// listing. A source that syncs its permissions and has content or a listing
+/// pending is checked too, so that they never publish while its tail is
+/// missing; a source without permission reads has no chain, and is not read.
+/// The envelopes of a retired source are left as they are: they are rejected.
+/// `resolved` tells an envelope that was applied or rejected.
 pub(crate) async fn confirmed(
     config: &Config,
     head: &ServingHead,
@@ -89,9 +90,17 @@ pub(crate) async fn confirmed(
     // A permissions envelope without its lease generation, as 0.1 wrote them, has
     // no place in a chain: it is not on one, and so it is never applied. It stays
     // in the log as debris, which cleanup removes.
+    let synced = |source: &str| {
+        config
+            .sources
+            .iter()
+            .any(|s| s.id == source && s.permissions == fyrr_core::config::PermissionsMode::Sync)
+    };
     let sources: BTreeSet<_> = pending
         .iter()
-        .filter(|e| e.kind != SyncKind::Members)
+        .filter(|e| {
+            e.kind == SyncKind::Permissions || (e.kind != SyncKind::Members && synced(&e.source_id))
+        })
         .map(|e| e.source_id.clone())
         .collect();
     if sources.is_empty() {
