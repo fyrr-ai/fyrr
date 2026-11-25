@@ -1,6 +1,7 @@
 // Retry, backoff, key and paging rules, against a transport that answers as scripted.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { inspect } from "node:util";
 import { test, type TestContext } from "node:test";
 
@@ -157,16 +158,34 @@ test("a read is not retried after a certificate error", async (t) => {
   assert.deepEqual(waits, []);
 });
 
-test("a conditional write is never retried", async (t) => {
-  const waits = noSleep(t);
-  const conditional: WriteRequest = { ...WRITE, conditions: { a: { field: "version", op: "lt", value: 2 } } };
-  const busy = script(json({ error: "outcome_unknown" }, 503), ok());
-  await assert.rejects(client(busy).write("ns", conditional), FyrrError);
-  assert.equal(busy.seen.length, 1);
-  const dropped = script(refused, ok());
-  await assert.rejects(client(dropped).write("ns", conditional), Error);
-  assert.equal(dropped.seen.length, 1);
-  assert.deepEqual(waits, []);
+/** The cases that the Python client tests too: `clients/retry-cases.json`. */
+const shared = JSON.parse(readFileSync(new URL("../../retry-cases.json", import.meta.url), "utf8")) as {
+  conditions: Record<string, WriteRequest["conditions"] | null>;
+  cases: { conditions: string; answers: string[]; requests: number; outcome: string }[];
+};
+const sharedAnswers: Record<string, () => Answer> = {
+  refused: () => refused,
+  ok,
+  "429": () => json({ error: "rate_limited" }, 429),
+  "503 outcome_unknown": () => json({ error: "outcome_unknown" }, 503),
+};
+
+test("a write is retried as the shared cases say", async (t) => {
+  noSleep(t);
+  for (const sharedCase of shared.cases) {
+    const request: WriteRequest = { ...WRITE };
+    const conditions = shared.conditions[sharedCase.conditions];
+    if (conditions !== null) request.conditions = conditions;
+    const fake = script(...sharedCase.answers.map((name) => sharedAnswers[name]!()));
+    const outcome = await client(fake)
+      .write("ns", request)
+      .then(() => "ok")
+      .catch((error: unknown) =>
+        error instanceof FyrrError ? `${error.status} ${error.code}` : "connection refused",
+      );
+    assert.equal(fake.seen.length, sharedCase.requests, JSON.stringify(sharedCase));
+    assert.equal(outcome, sharedCase.outcome, JSON.stringify(sharedCase));
+  }
 });
 
 test("an answer that is not JSON is a FyrrError", async () => {

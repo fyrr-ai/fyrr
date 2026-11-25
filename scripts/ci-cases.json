@@ -5551,7 +5551,7 @@
         "tier": "quick",
         "seconds": null
       },
-      "python:clients/python/tests/test_retries.py::test_a_conditional_write_is_never_retried": {
+      "python:clients/python/tests/test_retries.py::test_a_write_is_retried_as_the_shared_cases_say": {
         "tier": "quick",
         "seconds": null
       },

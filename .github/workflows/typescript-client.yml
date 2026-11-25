@@ -10,12 +10,14 @@ on:
     branches: ["main"]
     paths:
       - "clients/typescript/**"
+      - "clients/retry-cases.json"
       - "schemas/openapi.json"
       - "examples/guides/**"
       - ".github/workflows/typescript-client.yml"
   pull_request:
     paths:
       - "clients/typescript/**"
+      - "clients/retry-cases.json"
       - "schemas/openapi.json"
       - "examples/guides/**"
       - ".github/workflows/typescript-client.yml"
@@ -61,7 +63,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           if [[ "$(git rev-parse --verify HEAD^1)" == "$BASE_SHA" ]] &&
-             git diff --quiet "$BASE_SHA" HEAD -- . ':(exclude,glob)clients/typescript/**' \
+             git diff --quiet "$BASE_SHA" HEAD -- . ':(exclude,glob)clients/typescript/**' ':(exclude)clients/retry-cases.json' \
                ':(exclude).github/workflows/typescript-client.yml'; then
             echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
           fi

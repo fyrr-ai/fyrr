@@ -109,7 +109,7 @@ They are retried only when the request provably did not reach the server (the
 connection could not be made: `ECONNREFUSED`, `ENOTFOUND`, `EAI_AGAIN`,
 `EHOSTUNREACH` or `ENETUNREACH` from `connect` or `getaddrinfo`; the same codes
 from `read` come after the request was written and do not count): no answer, not even a `429` from a proxy, proves
-that it was not applied. A write that sets `conditions` is **never** retried.
+that it was not applied. A write that sets a non-empty `conditions` is **never** retried.
 Every other failure, a timeout or `503 outcome_unknown` included, is raised for
 the caller to decide.
 

@@ -209,8 +209,9 @@ export class Client {
       path: `${namespacePath(namespace)}/documents`,
       body: request,
       // A write that sets `conditions` tests the stored documents when it is applied, so a
-      // repeat after a lost answer can decide differently: the caller decides.
-      retry: request.conditions ? "none" : "unsent",
+      // repeat after a lost answer can decide differently: the caller decides. An empty
+      // `conditions` sets none, as the server reads it.
+      retry: Object.keys(request.conditions ?? {}).length > 0 ? "none" : "unsent",
     });
   }
 

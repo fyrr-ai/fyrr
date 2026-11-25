@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -174,19 +176,52 @@ def test_backoff_doubles_and_gives_up(slept: list[float]) -> None:
     assert 0.5 <= slept[0] <= 1.0 and 1.0 <= slept[1] <= 2.0
 
 
-def test_a_conditional_write_is_never_retried(slept: list[float]) -> None:
-    conditional: WriteRequest = {
-        **WRITE,
-        "conditions": {"a": {"field": "version", "op": "lt", "value": 2}},
+Answer = httpx.Response | Callable[[httpx.Request], httpx.Response]
+
+
+def shared_answer(name: str) -> Answer:
+    answers: dict[str, Answer] = {
+        "refused": refused,
+        "ok": ok(),
+        "429": httpx.Response(429, json={"error": "rate_limited"}),
+        "503 outcome_unknown": httpx.Response(503, json={"error": "outcome_unknown"}),
     }
-    busy = Script(httpx.Response(503, json={"error": "outcome_unknown"}), ok())
-    with pytest.raises(FyrrError):
-        client(busy).write("ns", conditional)
-    assert len(busy.requests) == 1
-    dropped = Script(refused, ok())
-    with pytest.raises(httpx.ConnectError):
-        client(dropped).write("ns", conditional)
-    assert len(dropped.requests) == 1 and slept == []
+    return answers[name]
+
+
+async def write_async(script: Script, request: WriteRequest) -> object:
+    transport = httpx.MockTransport(script)
+    async with AsyncClient(READER, WRITER, api_key="k", transport=transport) as asynchronous:
+        return await asynchronous.write("ns", request)
+
+
+def outcome_of(flavour: str, script: Script, request: WriteRequest) -> str:
+    """What a write ends with, in the words of `clients/retry-cases.json`."""
+    try:
+        if flavour == "sync":
+            client(script).write("ns", request)
+        else:
+            asyncio.run(write_async(script, request))
+    except FyrrError as error:
+        return f"{error.status} {error.code}"
+    except httpx.ConnectError:
+        return "connection refused"
+    return "ok"
+
+
+def test_a_write_is_retried_as_the_shared_cases_say(slept: list[float]) -> None:
+    """The cases that the TypeScript client tests too: `clients/retry-cases.json`."""
+    shared = json.loads((Path(__file__).parents[2] / "retry-cases.json").read_text())
+    for case in shared["cases"]:
+        request: WriteRequest = {**WRITE}
+        conditions = shared["conditions"][case["conditions"]]
+        if conditions is not None:
+            request["conditions"] = conditions
+        for flavour in ("sync", "async"):
+            script = Script(*(shared_answer(name) for name in case["answers"]))
+            outcome = outcome_of(flavour, script, request)
+            assert len(script.requests) == case["requests"], (flavour, case)
+            assert outcome == case["outcome"], (flavour, case)
 
 
 def test_the_async_client_retries_alike(slept: list[float]) -> None:
