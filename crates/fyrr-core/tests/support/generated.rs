@@ -4,31 +4,28 @@ use schemars::generate::{Contract as SchemaContract, SchemaGenerator, SchemaSett
 use schemars::{JsonSchema, Schema};
 use serde_json::{Value, json};
 
-use fyrr_core::connector::{ConnectorBatch, CursorState, document_changes_arrow_schema};
+use fyrr_core::connector::document_changes_arrow_schema;
 use fyrr_core::directory::DirectorySnapshot;
-use fyrr_core::envelope::{PreparedEnvelope, RejectionMarker};
+use fyrr_core::envelope::RejectionMarker;
 use fyrr_core::http_api::{
     AggregateRequest, DeleteNamespaceRequest, DeleteNamespaceResponse, ErrorBody, FetchRequest,
     NamespaceList, NamespaceReport, PatchNamespaceRequest, PatchNamespaceResponse, QueryRequest,
     RecallRequest, WriteRequest, WriteResponse,
 };
-use fyrr_core::identity::{ApiKeysArtifact, IdentityArtifact};
 use fyrr_core::limits::mcp::MAX_HIGHLIGHTS;
 use fyrr_core::mcp::{
     AggregateOutput, FetchOutput, MCP_CONTRACT_VERSION, RecallOutput, SearchOutput, ToolError,
     error_codes, tools_list,
 };
-use fyrr_core::provider::{ProviderInfo, SDK_SERIES};
-use fyrr_core::publication::{
-    ContentManifest, EnvelopeCheckpoint, HistoryCut, PolicyArtifact, ServingHead,
-};
+use fyrr_core::provider::SDK_SERIES;
+use fyrr_core::publication::{EnvelopeCheckpoint, HistoryCut, PolicyArtifact};
 use fyrr_core::schemas::config_schema;
 use fyrr_core::version::Contract;
 
 /// One generated file and its path relative to the repository root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GeneratedFile {
-    pub path: &'static str,
+    pub path: String,
     pub contents: String,
 }
 
@@ -312,12 +309,19 @@ fn sort_keys(value: &mut Value) {
 }
 
 /// The provider schema also names the SDK series this build loads.
-fn provider_schema() -> Value {
-    let mut value = contract_schema::<ProviderInfo>();
-    if let Some(object) = value.as_object_mut() {
+/// The schema of a stored contract at `schemas/<name>.schema.json`.
+pub(super) fn schema_file<T: Contract + JsonSchema>() -> GeneratedFile {
+    let mut value = contract_schema::<T>();
+    if let Some(object) = value
+        .as_object_mut()
+        .filter(|_| T::NAME == "connector-provider")
+    {
         object.insert("x-fyrr-sdk-series".into(), SDK_SERIES.to_string().into());
     }
-    value
+    GeneratedFile {
+        path: format!("schemas/{}.schema.json", T::NAME),
+        contents: pretty(&value),
+    }
 }
 
 /// Published schemas the Python SDK ships inside its package (published path,
@@ -344,6 +348,7 @@ pub(super) fn generated_files() -> Vec<GeneratedFile> {
         .unwrap_or_else(|error| unreachable!("Arrow schemas serialize: {error}"));
     sort_keys(&mut arrow);
     let mut files = published_files(&arrow);
+    files.extend(crate::common::for_each_contract!(schema_file));
     for (published, shipped) in SDK_COPIES {
         let contents = files
             .iter()
@@ -353,7 +358,7 @@ pub(super) fn generated_files() -> Vec<GeneratedFile> {
                 |file| file.contents.clone(),
             );
         files.push(GeneratedFile {
-            path: shipped,
+            path: shipped.into(),
             contents,
         });
     }
@@ -363,7 +368,7 @@ pub(super) fn generated_files() -> Vec<GeneratedFile> {
 fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
     vec![
         GeneratedFile {
-            path: "fixtures/contracts/encrypted-secret/envelope.json",
+            path: "fixtures/contracts/encrypted-secret/envelope.json".into(),
             contents: String::from_utf8(fyrr_core::write_contract(
                 &fyrr_core::secret::EncryptedSecret {
                     schema_version: <fyrr_core::secret::EncryptedSecret as Contract>::VERSION,
@@ -376,19 +381,11 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
             .unwrap_or_else(|_| unreachable!("JSON serialization is UTF-8")),
         },
         GeneratedFile {
-            path: "schemas/encrypted-secret.schema.json",
-            contents: pretty(&contract_schema::<fyrr_core::secret::EncryptedSecret>()),
-        },
-        GeneratedFile {
-            path: "schemas/config.schema.json",
+            path: "schemas/config.schema.json".into(),
             contents: pretty(&config_schema()),
         },
         GeneratedFile {
-            path: "schemas/policy-artifact.schema.json",
-            contents: pretty(&contract_schema::<PolicyArtifact>()),
-        },
-        GeneratedFile {
-            path: "fixtures/contracts/policy-artifact/valid.json",
+            path: "fixtures/contracts/policy-artifact/valid.json".into(),
             contents: String::from_utf8(fyrr_core::write_contract(&PolicyArtifact {
                 schema_version: <PolicyArtifact as Contract>::VERSION,
                 namespace: "acme".into(),
@@ -435,11 +432,7 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
             .unwrap_or_else(|_| unreachable!("JSON serialization is UTF-8")),
         },
         GeneratedFile {
-            path: "schemas/envelope-checkpoint.schema.json",
-            contents: pretty(&contract_schema::<EnvelopeCheckpoint>()),
-        },
-        GeneratedFile {
-            path: "fixtures/contracts/envelope-checkpoint/valid.json",
+            path: "fixtures/contracts/envelope-checkpoint/valid.json".into(),
             contents: String::from_utf8(fyrr_core::write_contract(&EnvelopeCheckpoint {
                 schema_version: <EnvelopeCheckpoint as Contract>::VERSION,
                 namespace: "acme".into(),
@@ -449,11 +442,7 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
             .unwrap_or_else(|_| unreachable!("JSON serialization is UTF-8")),
         },
         GeneratedFile {
-            path: "schemas/history-cut.schema.json",
-            contents: pretty(&contract_schema::<HistoryCut>()),
-        },
-        GeneratedFile {
-            path: "fixtures/contracts/history-cut/valid.json",
+            path: "fixtures/contracts/history-cut/valid.json".into(),
             contents: String::from_utf8(fyrr_core::write_contract(&HistoryCut {
                 schema_version: <HistoryCut as Contract>::VERSION,
                 namespace: "acme".into(),
@@ -463,27 +452,11 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
             .unwrap_or_else(|_| unreachable!("JSON serialization is UTF-8")),
         },
         GeneratedFile {
-            path: "schemas/connector-batch.schema.json",
-            contents: pretty(&contract_schema::<ConnectorBatch>()),
-        },
-        GeneratedFile {
-            path: "schemas/connector-cursor.schema.json",
-            contents: pretty(&contract_schema::<CursorState>()),
-        },
-        GeneratedFile {
-            path: "schemas/connector-document-changes.arrow.json",
+            path: "schemas/connector-document-changes.arrow.json".into(),
             contents: pretty(arrow),
         },
         GeneratedFile {
-            path: "schemas/connector-provider.schema.json",
-            contents: pretty(&provider_schema()),
-        },
-        GeneratedFile {
-            path: "schemas/envelope-rejection.schema.json",
-            contents: pretty(&contract_schema::<RejectionMarker>()),
-        },
-        GeneratedFile {
-            path: "fixtures/contracts/envelope-rejection/valid.json",
+            path: "fixtures/contracts/envelope-rejection/valid.json".into(),
             contents: String::from_utf8(fyrr_core::write_contract(&RejectionMarker {
                 schema_version: <RejectionMarker as Contract>::VERSION,
                 envelope_id: "env-c0ffee00c0ffee00c0ffee00c0ffee00".into(),
@@ -498,19 +471,7 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
             .unwrap_or_else(|_| unreachable!("JSON serialization is UTF-8")),
         },
         GeneratedFile {
-            path: "schemas/prepared-envelope.schema.json",
-            contents: pretty(&contract_schema::<PreparedEnvelope>()),
-        },
-        GeneratedFile {
-            path: "schemas/content-manifest.schema.json",
-            contents: pretty(&contract_schema::<ContentManifest>()),
-        },
-        GeneratedFile {
-            path: "schemas/serving-head.schema.json",
-            contents: pretty(&contract_schema::<ServingHead>()),
-        },
-        GeneratedFile {
-            path: "fixtures/contracts/directory-snapshot/snapshot.json",
+            path: "fixtures/contracts/directory-snapshot/snapshot.json".into(),
             contents: String::from_utf8(fyrr_core::write_contract(&DirectorySnapshot {
                 schema_version: <DirectorySnapshot as Contract>::VERSION,
                 namespace: "acme".into(),
@@ -539,31 +500,19 @@ fn published_files(arrow: &Value) -> Vec<GeneratedFile> {
             .unwrap_or_else(|_| unreachable!("JSON serialization is UTF-8")),
         },
         GeneratedFile {
-            path: "schemas/directory-snapshot.schema.json",
-            contents: pretty(&contract_schema::<DirectorySnapshot>()),
-        },
-        GeneratedFile {
-            path: "schemas/api-keys-artifact.schema.json",
-            contents: pretty(&contract_schema::<ApiKeysArtifact>()),
-        },
-        GeneratedFile {
-            path: "schemas/identity-artifact.schema.json",
-            contents: pretty(&contract_schema::<IdentityArtifact>()),
-        },
-        GeneratedFile {
-            path: "schemas/mcp-tool-error.schema.json",
+            path: "schemas/mcp-tool-error.schema.json".into(),
             contents: pretty(&schema::<ToolError>()),
         },
         GeneratedFile {
-            path: "schemas/openapi.json",
+            path: "schemas/openapi.json".into(),
             contents: pretty(&openapi()),
         },
         GeneratedFile {
-            path: "fixtures/mcp/tools-list.json",
+            path: "fixtures/mcp/tools-list.json".into(),
             contents: pretty(&tools_list()),
         },
         GeneratedFile {
-            path: "fixtures/mcp/error-codes.json",
+            path: "fixtures/mcp/error-codes.json".into(),
             contents: pretty(&error_codes()),
         },
     ]

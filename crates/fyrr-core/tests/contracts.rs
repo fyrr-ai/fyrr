@@ -9,16 +9,12 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema};
 use fyrr_core::connector::{
-    ARROW_VERSION_KEY, ConnectorBatch, CursorState, check_document_changes_schema,
-    document_changes_arrow_schema,
+    ARROW_VERSION_KEY, ConnectorBatch, check_document_changes_schema, document_changes_arrow_schema,
 };
-use fyrr_core::directory::DirectorySnapshot;
-use fyrr_core::envelope::{PreparedEnvelope, RejectionMarker};
+use fyrr_core::envelope::PreparedEnvelope;
 use fyrr_core::identity::{ApiKeysArtifact, IdentityArtifact};
 use fyrr_core::provider::ProviderInfo;
-use fyrr_core::publication::{
-    ContentManifest, EnvelopeCheckpoint, HistoryCut, PolicyArtifact, ServingHead,
-};
+use fyrr_core::publication::{ContentManifest, EnvelopeCheckpoint, PolicyArtifact};
 use fyrr_core::{Contract, ContractError, SchemaVersion, parse_contract, write_contract};
 use serde_json::{Value, json};
 
@@ -339,28 +335,6 @@ fn api_keys_artifact_holds_only_distinct_hashed_keys_with_roles() {
     assert!(parse::<ApiKeysArtifact>(&twice).is_err());
 }
 
-/// Runs `check` once per contract type with its fixture directory and schema.
-macro_rules! for_each_contract {
-    ($check:ident) => {{
-        let mut fixtures = 0;
-        fixtures += $check::<ConnectorBatch>("connector-batch");
-        fixtures += $check::<CursorState>("connector-cursor");
-        fixtures += $check::<PreparedEnvelope>("prepared-envelope");
-        fixtures += $check::<RejectionMarker>("envelope-rejection");
-        fixtures += $check::<ContentManifest>("content-manifest");
-        fixtures += $check::<ServingHead>("serving-head");
-        fixtures += $check::<PolicyArtifact>("policy-artifact");
-        fixtures += $check::<EnvelopeCheckpoint>("envelope-checkpoint");
-        fixtures += $check::<HistoryCut>("history-cut");
-        fixtures += $check::<IdentityArtifact>("identity-artifact");
-        fixtures += $check::<ApiKeysArtifact>("api-keys-artifact");
-        fixtures += $check::<DirectorySnapshot>("directory-snapshot");
-        fixtures += $check::<fyrr_core::secret::EncryptedSecret>("encrypted-secret");
-        fixtures += $check::<ProviderInfo>("connector-provider");
-        fixtures
-    }};
-}
-
 fn fixture_files(name: &str) -> Vec<String> {
     let files = common::json_files(&format!("{FIXTURES}/{name}"));
     assert!(!files.is_empty(), "no golden fixtures for {name}");
@@ -371,8 +345,8 @@ fn parse<T: Contract>(value: &Value) -> Result<T, ContractError> {
     parse_contract(&serde_json::to_vec(value).expect("serialize"))
 }
 
-fn round_trip<T: Contract + PartialEq + std::fmt::Debug>(name: &str) -> usize {
-    assert_eq!(T::NAME, name, "fixture directory follows the contract name");
+fn round_trip<T: Contract + PartialEq + std::fmt::Debug>() -> usize {
+    let name = T::NAME;
     let files = fixture_files(name);
     for file in &files {
         let text = common::read(file);
@@ -436,7 +410,8 @@ fn unread_major<T: Contract>() -> String {
     format!("{}.0", T::VERSION.major + 1 + T::ALSO_READS.len() as u16)
 }
 
-fn unknown_major_rejected<T: Contract + std::fmt::Debug>(name: &str) -> usize {
+fn unknown_major_rejected<T: Contract + std::fmt::Debug>() -> usize {
+    let name = T::NAME;
     let files = fixture_files(name);
     for file in &files {
         let fixture = common::read_json(file);
@@ -472,8 +447,8 @@ fn unknown_major_rejected<T: Contract + std::fmt::Debug>(name: &str) -> usize {
     files.len()
 }
 
-fn minor_addition_accepted<T: Contract + PartialEq + std::fmt::Debug>(name: &str) -> usize {
-    let files = fixture_files(name);
+fn minor_addition_accepted<T: Contract + PartialEq + std::fmt::Debug>() -> usize {
+    let files = fixture_files(T::NAME);
     for file in &files {
         let fixture = common::read_json(file);
         let current: T = parse(&fixture).expect(file);
@@ -498,18 +473,26 @@ fn minor_addition_accepted<T: Contract + PartialEq + std::fmt::Debug>(name: &str
 
 #[test]
 fn golden_fixtures_round_trip_and_match_schemas() {
-    let checked = for_each_contract!(round_trip);
+    let checked: usize = common::for_each_contract!(round_trip).iter().sum();
     assert!(checked >= 12, "only {checked} golden fixtures");
 }
 
 #[test]
 fn unknown_major_versions_are_refused_fail_closed() {
-    assert!(for_each_contract!(unknown_major_rejected) > 0);
+    assert!(
+        common::for_each_contract!(unknown_major_rejected)
+            .iter()
+            .all(|&n| n > 0)
+    );
 }
 
 #[test]
 fn minor_version_additions_are_accepted() {
-    assert!(for_each_contract!(minor_addition_accepted) > 0);
+    assert!(
+        common::for_each_contract!(minor_addition_accepted)
+            .iter()
+            .all(|&n| n > 0)
+    );
 }
 
 #[test]
