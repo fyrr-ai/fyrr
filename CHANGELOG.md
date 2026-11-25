@@ -9,16 +9,18 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Changed
 
-- Each stored contract has one major, whatever a document holds: content
-  manifest 5.0, policy artifact 4.0, prepared envelope and envelope rejection
-  6.0. The serving head, the envelope checkpoint and the history cut stay 4.1.
-  This build reads no other major and refuses an older one before it reads the
-  document. A manifest always carries `stats` and `envelope_evidence`, so the
-  namespace report always has `rows`, `logical_bytes` and `first_published_at`,
-  never `null`. The retrieval digest always includes the retrieval settings,
-  and a connector batch must have `sections[].vector` (a contract 1.3 batch
-  without it is refused). A namespace that an unreleased build wrote before this
-  change is refused: recreate it.
+- Each stored contract has one major, whatever a document holds. v0.2.0
+  writes and reads content manifest 5.0, policy artifact 4.0, prepared
+  envelope and envelope rejection 6.0, and serving head, envelope checkpoint
+  and history cut 4.1. The plain and the feature-rich majors that the older
+  entries below name (manifest 4.1 and 5.0, policy 3.1 and 4.0, envelope 5.0 and
+  6.0) are no longer read: this build refuses any other major, an older one
+  before it reads the document. A manifest always carries `stats` and
+  `envelope_evidence`, so the namespace report always has `rows`,
+  `logical_bytes` and `first_published_at`, never `null`. The retrieval digest
+  always includes the retrieval settings, and a connector batch must have
+  `sections[].vector` (a contract 1.3 batch without it is refused). A namespace
+  that an unreleased build wrote before this change is refused: recreate it.
 - `rescore_depth` has no `legacy` mode. Leave it unset for the default: four
   times the dense lane depth, which for one-bit codes grows with the rows the
   probes inspect. A configuration that sets `{ mode = "legacy" }` is refused.
