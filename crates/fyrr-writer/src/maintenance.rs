@@ -34,27 +34,35 @@ use std::collections::{BTreeMap, BTreeSet};
 
 // Bound catalog-wide index opens, while the indexes stay below `merge_tier_rows` per segment.
 pub(crate) const INDEX_SEGMENT_LIMIT: usize = 64;
-// Throughput of a step that encodes rows against a trained model, the slower of the two kinds of
-// step (the other copies partitions). Measured on #319: 200,000 rows of 128 dimensions against
-// 4,096 partitions in 38 s on `writer maintain`, cores 0-3, `writer.threads = 2`. Re-measure with
-// `scripts/bench-scale --reuse DIR --maintain` when the step changes.
-const MERGE_ROWS_PER_SECOND: u128 = 5_200;
+// Throughput of a step that encodes rows against a trained model. Measured on #319: steps of
+// 750,000 rows of 128 dimensions against 4,096 partitions at 4,450 to 4,650 rows/s, one at
+// 2,600 on a loaded host, on `writer maintain`, cores 0-3, `writer.threads = 2`. Re-measure with
+// `scripts/bench-scale` when the step changes.
+const MERGE_ROWS_PER_SECOND: u128 = 4_000;
+// Throughput of a step that copies the partitions of segments of one model into one segment.
+// Measured on #319: 700,000 to 750,000 rows at 225,000 to 830,000 rows/s.
+const COPY_ROWS_PER_SECOND: u128 = 200_000;
 // A vector index gets a new model when its rows ask for this many times the partitions of the
 // model it has. Each model so serves until the rows double, and all the retraining of an index
 // together encodes about twice its rows.
 const MODEL_GROWTH: usize = 2;
 
 /// The rows one step of a vector index may rewrite: half of `step_max_duration` at the measured
-/// throughput, 780,000 rows by default. A step also opens segments and writes the version. No
-/// segment grows beyond it, so that one step can always encode a whole segment again.
+/// throughput, 600,000 rows by default. A step also opens segments and writes the version. No
+/// segment grows beyond it while the model may grow, so that one step can always encode a whole
+/// segment again.
 fn merge_tier_rows(config: &Config) -> u64 {
+    step_rows(config, MERGE_ROWS_PER_SECOND)
+}
+
+fn step_rows(config: &Config, rows_per_second: u128) -> u64 {
     let millis = config
         .writer
         .maintenance
         .step_max_duration
         .as_duration()
         .as_millis();
-    u64::try_from(millis * MERGE_ROWS_PER_SECOND / 2_000)
+    u64::try_from(millis * rows_per_second / 2_000)
         .unwrap_or(u64::MAX)
         .max(1)
 }
@@ -392,12 +400,14 @@ async fn merge_tier(dataset: &mut Dataset, options: &OptimizeOptions) -> lance::
 /// index that grew is searched in partitions far above `dense_partition_rows`, and recall falls.
 /// The steps, each within `merge_tier_rows`:
 ///
-/// 1. The rows ask for `MODEL_GROWTH` times the partitions of the newest model: Lance trains a
-///    new model on a sample of the whole table, and the step encodes the smallest segment
-///    against it. The new segment is the newest, so the writes follow the new model from here on.
+/// 1. The rows ask for `MODEL_GROWTH` times the partitions of the newest model, or for Lance's
+///    ceiling: Lance trains a new model on a sample of the whole table, and the step encodes the
+///    smallest segment against it. The new segment is the newest, so the writes follow the new
+///    model from here on.
 /// 2. A segment has another model than the newest: the step encodes the oldest such segments
 ///    again against the newest model, as one new segment that replaces them.
-/// 3. Every segment has the newest model: the step copies neighbors into one segment.
+/// 3. Every segment has the newest model: the step copies neighbors into one segment, of at most
+///    `merge_tier_rows`, or of what a step copies once the model is of Lance's ceiling.
 ///
 /// Each step is one Lance version, so a run that stops continues from the table alone. Segments
 /// of two models are searched each with its own, so every state in between serves.
@@ -487,7 +497,14 @@ async fn vector_step(
     };
     stale.retain(|(_, covered)| !covered.is_empty());
     if stale.is_empty() {
-        options.max_rows_per_segment = Some(budget);
+        // A model of Lance's ceiling is never trained again, so its segments need not stay small
+        // enough to encode again: a step copies them into segments of what it can copy, 30,000,000
+        // rows by default, and an index of up to that many rows ends as one segment.
+        options.max_rows_per_segment = Some(if current < ceiling {
+            budget
+        } else {
+            step_rows(config, COPY_ROWS_PER_SECOND)
+        });
         return merge_tier(dataset, &options).await;
     }
     let rows_of = |covered: &[u32]| covered.iter().map(|id| fragments[id]).sum::<u64>();

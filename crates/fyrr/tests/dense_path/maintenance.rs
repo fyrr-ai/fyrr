@@ -1987,11 +1987,11 @@ async fn vector_segment_rows(config: &Path, version: Option<u64>) -> Vec<usize> 
 
 /// A namespace of 24 publications of 500 rows has 24 vector segments, each
 /// encoded against the one partition of the first. With `step_max_duration =
-/// 4s` a step may rewrite 10,400 rows (half the step at 5,200 rows/s). `writer
+/// 4s` a step may rewrite 8,000 rows (half the step at 4,000 rows/s). `writer
 /// maintain` trains a model for the 12,000 rows and encodes the newest segment
-/// against it, then the first 20 segments as one of 10,000 rows, then the
-/// other three as one of 1,500, and copies that and the newest into one of
-/// 2,000. The two do not fit one step, so they stay. Every version the steps
+/// against it, then the first 16 segments as one of 8,000 rows, then the
+/// other seven as one of 3,500, and copies that and the newest into one of
+/// 4,000. The two do not fit one step, so they stay. Every version the steps
 /// publish holds segments of at most that many rows, no step runs out of time,
 /// a later write is encoded against the grown model, and the namespace answers
 /// like before.
@@ -2000,7 +2000,7 @@ async fn vector_segment_rows(config: &Path, version: Option<u64>) -> Vec<usize> 
 async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
     const COMMITS: usize = 24;
     const COMMIT_ROWS: usize = 500;
-    const STEP_ROWS: usize = 10_400;
+    const STEP_ROWS: usize = 8_000;
     let (config, root) = setup_on(Backend::Local);
     let text = std::fs::read_to_string(&config)
         .unwrap()
@@ -2044,7 +2044,7 @@ async fn maintenance_merges_the_vector_segments_in_tiers_on_storage() {
     assert!(stderr.contains("index_model=trained"), "{stderr}");
     assert!(!stderr.contains("index_merge=skipped"), "{stderr}");
     let after = vector_segment_rows(&config, None).await;
-    assert_eq!(after, [20 * COMMIT_ROWS, 4 * COMMIT_ROWS], "{maintained}");
+    assert_eq!(after, [16 * COMMIT_ROWS, 8 * COMMIT_ROWS], "{maintained}");
     assert!(maintained["index_merge_steps"].as_u64().unwrap() >= 4);
     // Every segment is of the model trained for the rows the namespace has now.
     let partitions: Vec<_> = publication(&config)
