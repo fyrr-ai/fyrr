@@ -1644,8 +1644,7 @@ async fn metric_recall(metric: &str, element: &str) {
             .await,
         (200, json!({"upserted": ROWS, "deleted": 0}))
     );
-    // The manifest records them, in the version an older build refuses, unless
-    // they are the defaults, which keep the old version and bytes.
+    // The manifest records them unless they are the defaults, which leave no entry.
     let (_, manifest) = super::coordination::publication(&config).await;
     assert_eq!(
         serde_json::to_value(&manifest).unwrap()["dense_metric"]
@@ -1659,8 +1658,7 @@ async fn metric_recall(metric: &str, element: &str) {
             .unwrap_or("f16"),
         element
     );
-    let default = metric == "cosine" && element == "f16";
-    assert_eq!(manifest.schema_version.major, if default { 4 } else { 5 });
+    assert_eq!(manifest.schema_version.major, 5);
     let vectors = stored(&config, "source_id = '_api'").await;
     let column = vectors.column_by_name("vector").unwrap();
     let stored_type = format!("{:?}", column.data_type());
