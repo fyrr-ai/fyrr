@@ -170,7 +170,6 @@ async fn incremental_connector_fields_are_typed_columns_on_storage() {
         !metadata.value(row_of("a")).contains("Alpha"),
         "the title is stored once, in its column"
     );
-    // An older build would read these columns as null: it refuses the namespace.
     let (_, manifest) = publication(&worker).await;
     assert_eq!(manifest.schema_version.to_string(), "5.0");
 

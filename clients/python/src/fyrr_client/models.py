@@ -417,12 +417,12 @@ class NamespaceReport(TypedDict):
     """The element type of the stored vectors, fixed at creation."""
     read_only: bool
     """Whether the namespace is frozen: writes are refused while it stays readable."""
-    rows: int | None
-    """Approximate live rows; `null` for a version published before contract 4.1."""
-    logical_bytes: int | None
-    """Approximate bytes of the data files of those rows, without indexes; `null` as `rows`."""
-    first_published_at: str | None
-    """When the namespace's first content publication was committed; `null` when that is not known."""
+    rows: int
+    """Approximate live rows."""
+    logical_bytes: int
+    """Approximate bytes of the data files of those rows, without indexes."""
+    first_published_at: str
+    """When the namespace's first content publication was committed."""
     unindexed: Unindexed
     """The data that an index of the version does not cover yet."""
     last_write_at: str

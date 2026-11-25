@@ -497,11 +497,7 @@ impl<'a> Columns<'a> {
         )?;
         let index = field("location_index")?.as_primitive::<UInt32Type>();
         let readers = lists(field("readers")?.as_ref(), "sections[].readers")?;
-        // Absent in a batch of contract minor 1.3.
-        let vectors = items
-            .column_by_name("vector")
-            .map(|column| lists(column.as_ref(), "sections[].vector"))
-            .transpose()?;
+        let vectors = lists(field("vector")?.as_ref(), "sections[].vector")?;
         (0..items.len())
             .map(|at| {
                 let location = match optional(kind, at) {
@@ -521,10 +517,7 @@ impl<'a> Columns<'a> {
                     text: required(text, at, "sections[].text")?,
                     location,
                     readers: string_list(readers, at, "sections[].readers", true)?,
-                    vector: vectors
-                        .map(|vectors| float_list(vectors, at, "sections[].vector"))
-                        .transpose()?
-                        .flatten(),
+                    vector: float_list(vectors, at, "sections[].vector")?,
                 })
             })
             .collect()
@@ -733,8 +726,7 @@ mod tests {
         assert!(checker.stats.cursor_advanced);
     }
 
-    /// `batch` as a producer of contract minor `version` without the section
-    /// vector column writes it.
+    /// `batch` without the section vector column, stamped `version`.
     fn without_section_vector(batch: &RecordBatch, version: &str) -> RecordBatch {
         let schema = batch.schema();
         let at = schema.index_of("sections").expect("sections");
@@ -765,11 +757,8 @@ mod tests {
     }
 
     #[test]
-    fn a_contract_1_3_batch_has_no_vector_column() {
+    fn a_batch_without_the_vector_column_is_refused() {
         let rows = build(&[Row::default()]);
-        let changes = document_changes(&without_section_vector(&rows, "1.3")).expect("1.3 batch");
-        assert_eq!(changes[0].sections[0].vector, None);
-        // From 1.4 the column is part of the contract.
         let error = document_changes(&without_section_vector(&rows, "1.4")).expect_err("1.4");
         assert!(error.contains("sections[].vector"), "{error}");
     }

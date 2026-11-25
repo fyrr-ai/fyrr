@@ -115,7 +115,7 @@ async fn create_new(
         return Err(WriterError::PublicationInvalid);
     }
     let identity = configured_identity(config, 1)?;
-    let mut policy = PolicyArtifact {
+    let policy = PolicyArtifact {
         fixed_grants: fixed_grants(config)?,
         row_acl_sequence: None,
         retired_sources: Default::default(),
@@ -125,7 +125,6 @@ async fn create_new(
         generation: 1,
         settings,
     };
-    policy.schema_version = policy.current_version();
     // A deletion that removed the head may still be removing objects, and a new
     // head would be removed with them: run the deletion again first. Any other
     // object under the prefix, the fence included, refuses the creation. The
@@ -234,7 +233,6 @@ pub(crate) async fn publish_policy(
     mut policy: PolicyArtifact,
 ) -> Result<()> {
     let (store, root) = namespace_store(config)?;
-    policy.schema_version = policy.current_version();
     policy.generation = head
         .policy
         .generation

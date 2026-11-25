@@ -109,12 +109,12 @@ pub struct NamespaceReport {
     pub dense_element: crate::config::DenseElement,
     /// Whether the namespace is frozen: writes are refused while it stays readable.
     pub read_only: bool,
-    /// Approximate live rows; `null` for a version published before contract 4.1.
-    pub rows: Option<u64>,
-    /// Approximate bytes of the data files of those rows, without indexes; `null` as `rows`.
-    pub logical_bytes: Option<u64>,
-    /// When the namespace's first content publication was committed; `null` when that is not known.
-    pub first_published_at: Option<DateTime<Utc>>,
+    /// Approximate live rows.
+    pub rows: u64,
+    /// Approximate bytes of the data files of those rows, without indexes.
+    pub logical_bytes: u64,
+    /// When the namespace's first content publication was committed.
+    pub first_published_at: DateTime<Utc>,
     /// The data that an index of the version does not cover yet.
     pub unindexed: Unindexed,
     /// When the version was published.

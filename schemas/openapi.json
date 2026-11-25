@@ -1936,30 +1936,21 @@
             "description": "Whether the namespace is frozen: writes are refused while it stays readable."
           },
           "rows": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": "integer",
             "format": "uint64",
             "minimum": 0,
-            "description": "Approximate live rows; `null` for a version published before contract 4.1."
+            "description": "Approximate live rows."
           },
           "logical_bytes": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": "integer",
             "format": "uint64",
             "minimum": 0,
-            "description": "Approximate bytes of the data files of those rows, without indexes; `null` as `rows`."
+            "description": "Approximate bytes of the data files of those rows, without indexes."
           },
           "first_published_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": "string",
             "format": "date-time",
-            "description": "When the namespace's first content publication was committed; `null` when that is not known."
+            "description": "When the namespace's first content publication was committed."
           },
           "unindexed": {
             "$ref": "#/components/schemas/Unindexed",

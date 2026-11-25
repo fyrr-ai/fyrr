@@ -397,7 +397,6 @@ fn configured_policy(
     }
     let mut policy = current_policy.clone();
     policy.fixed_grants = source_grants;
-    policy.schema_version = policy.current_version();
     Ok(Some(policy))
 }
 

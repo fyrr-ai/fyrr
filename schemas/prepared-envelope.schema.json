@@ -894,5 +894,5 @@
     }
   },
   "x-fyrr-contract": "prepared-envelope",
-  "x-fyrr-schema-version": "5.0"
+  "x-fyrr-schema-version": "6.0"
 }

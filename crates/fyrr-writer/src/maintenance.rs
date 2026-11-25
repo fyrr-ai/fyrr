@@ -601,13 +601,7 @@ async fn superseded_history(
     let limit = config.writer.maintenance.step_max_duration.as_duration();
     let start = std::time::Instant::now();
     tokio::time::timeout(limit, async {
-        // The cut manifest's evidence stands for the manifests deleted before
-        // it; a manifest older than the evidence has none to stand for.
-        if head.content.is_none()
-            || kept
-                .last()
-                .is_none_or(|manifest| manifest.envelope_evidence.is_none())
-        {
+        if head.content.is_none() || kept.is_empty() {
             return Ok(0);
         }
         let mut named: BTreeSet<_> = kept
@@ -615,12 +609,7 @@ async fn superseded_history(
             .flat_map(|manifest| {
                 [format!("publications/{}.json", manifest.publication_id)]
                     .into_iter()
-                    .chain(
-                        manifest
-                            .envelope_evidence
-                            .iter()
-                            .map(|evidence| evidence.checkpoint.object.clone()),
-                    )
+                    .chain([manifest.envelope_evidence.checkpoint.object.clone()])
             })
             .collect();
         // Record the cut before anything goes: a crash leaves older manifests
@@ -632,10 +621,9 @@ async fn superseded_history(
             // The cut manifest's evidence stands for the manifests before it:
             // an earlier pass with a shorter window may have deleted it, and a
             // checkpoint that does not read is no stand-in either.
-            if let Some(evidence) = &oldest.envelope_evidence
-                && commit::read_checkpoint(store.as_ref(), &root, &evidence.checkpoint)
-                    .await?
-                    .is_none()
+            if commit::read_checkpoint(store.as_ref(), &root, &oldest.envelope_evidence.checkpoint)
+                .await?
+                .is_none()
             {
                 return Ok(0);
             }

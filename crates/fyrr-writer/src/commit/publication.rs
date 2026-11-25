@@ -191,16 +191,11 @@ pub(crate) async fn write_manifest(
     let stats = PublicationStats {
         rows,
         logical_bytes,
-        // A chain published before 4.1 has no first publication time to carry.
-        first_published_at: previous_manifest.as_ref().map_or_else(
-            || Some(fyrr_core::clock::now()),
-            |previous| {
-                previous
-                    .stats
-                    .as_ref()
-                    .and_then(|stats| stats.first_published_at)
-            },
-        ),
+        first_published_at: previous_manifest
+            .as_ref()
+            .map_or_else(fyrr_core::clock::now, |previous| {
+                previous.stats.first_published_at
+            }),
     };
     let durable: BTreeSet<_> = previous_manifest
         .iter()
@@ -238,7 +233,6 @@ pub(crate) async fn write_manifest(
     if acl_changed {
         let mut policy: PolicyArtifact =
             fyrr_reader::storage::artifact(store.as_ref(), &root, &head.policy).await?;
-        policy.schema_version = policy.current_version();
         policy.generation = head
             .policy
             .generation
@@ -265,18 +259,7 @@ pub(crate) async fn write_manifest(
     )
     .await?;
     let manifest = ContentManifest {
-        schema_version: if attribute_indexes.is_empty()
-            && !config.namespace.fts_positions
-            && config.namespace.analyzer.is_none()
-            && config.namespace.write_api.is_some()
-            && config.namespace.dense_metric.is_default()
-            && config.namespace.dense_element.is_default()
-            && config.namespace.vectors.is_empty()
-        {
-            PUBLICATION_CONTRACT_VERSION
-        } else {
-            INDEXED_PUBLICATION_CONTRACT_VERSION
-        },
+        schema_version: MANIFEST_CONTRACT_VERSION,
         namespace: config.namespace.name.clone(),
         publication_id: publication_id.clone(),
         sequence,
@@ -316,8 +299,8 @@ pub(crate) async fn write_manifest(
         rejected_envelope_ids: head.rejected_envelope_ids.clone(),
         cursor_rewinds,
         incarnation: head.incarnation.clone(),
-        envelope_evidence: Some(evidence),
-        stats: Some(stats),
+        envelope_evidence: evidence,
+        stats,
     };
     let manifest_path = format!("publications/{publication_id}.json");
     put_immutable(
@@ -486,7 +469,7 @@ pub(super) async fn envelope_evidence(
     receipts: &[String],
     sequence: u64,
 ) -> Result<EnvelopeEvidence> {
-    if let Some(old) = previous.and_then(|manifest| manifest.envelope_evidence.as_ref()) {
+    if let Some(old) = previous.map(|manifest| &manifest.envelope_evidence) {
         let applied_since: BTreeSet<_> =
             old.applied_since.iter().chain(receipts).cloned().collect();
         let rejected_since: BTreeSet<_> = old
@@ -503,8 +486,7 @@ pub(super) async fn envelope_evidence(
             });
         }
     }
-    // The chain up to the previous publication, whose manifest may already
-    // carry evidence, or may be the first that does.
+    // The chain up to the previous publication.
     let chain = published_evidence(config, head).await?;
     let checkpoint = EnvelopeCheckpoint {
         schema_version: <EnvelopeCheckpoint as fyrr_core::Contract>::VERSION,

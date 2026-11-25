@@ -109,24 +109,23 @@ impl RestoreHistory {
             // manifest covers it and the manifests maintenance deleted.
             if cut.as_ref() == Some(&m.publication_id) {
                 next = None;
-                if let Some(evidence) = m.envelope_evidence {
-                    let checkpoint = read_checkpoint(store.as_ref(), &root, &evidence.checkpoint)
-                        .await?
-                        .ok_or(WriterError::PublicationInvalid)?;
-                    for id in checkpoint
-                        .applied_envelope_ids
-                        .into_iter()
-                        .chain(evidence.applied_since)
-                    {
-                        self.index.put(Evidence::Applied, &id, &(), true)?;
-                    }
-                    for id in checkpoint
-                        .rejected_envelope_ids
-                        .into_iter()
-                        .chain(evidence.rejected_since)
-                    {
-                        self.index.put(Evidence::Rejected, &id, &(), true)?;
-                    }
+                let evidence = m.envelope_evidence;
+                let checkpoint = read_checkpoint(store.as_ref(), &root, &evidence.checkpoint)
+                    .await?
+                    .ok_or(WriterError::PublicationInvalid)?;
+                for id in checkpoint
+                    .applied_envelope_ids
+                    .into_iter()
+                    .chain(evidence.applied_since)
+                {
+                    self.index.put(Evidence::Applied, &id, &(), true)?;
+                }
+                for id in checkpoint
+                    .rejected_envelope_ids
+                    .into_iter()
+                    .chain(evidence.rejected_since)
+                {
+                    self.index.put(Evidence::Rejected, &id, &(), true)?;
                 }
             }
         }
@@ -619,8 +618,9 @@ mod sequence_tests {
         .await
         .unwrap();
         assert_eq!(template.sequence, 1);
-        // A summary ends a walk before it can join the cached history.
-        template.envelope_evidence = None;
+        // A checkpoint that maintenance removed does not end a walk before it
+        // can join the cached history.
+        template.envelope_evidence.checkpoint.object = "evidence/removed.json".into();
         let mut cached = template.clone();
         cached.publication_id = "pub-00000000000000000000000000881000".into();
         cached.sequence = 2;

@@ -116,9 +116,9 @@ namespace's published version, with no storage request of its own:
 | `dense_metric`, `dense_element` | The distance (`cosine`, `squared_l2` or `dot`) and the element type (`f16` or `f32`) of the namespace's vectors, fixed when it was created. |
 | `settings.vectors` | The namespace's named [vector attributes](tuning.md#namespacevectors); absent when it has none. |
 | `read_only` | Whether the namespace is [frozen](#freezing-a-namespace). Unlike the rest, it is read from the current head (the one the reader's authorization checks share), because a switch is published without a new version. |
-| `rows` | Approximate live rows (a document is one or more rows). `null` for a version published before contract 4.1. |
-| `logical_bytes` | Approximate bytes of the data files of those rows, without indexes. `null` as `rows`. |
-| `first_published_at` | When the namespace's first content publication was committed. `null` for a namespace published before contract 4.1: that time is not known. |
+| `rows` | Approximate live rows (a document is one or more rows). |
+| `logical_bytes` | Approximate bytes of the data files of those rows, without indexes. |
+| `first_published_at` | When the namespace's first content publication was committed. |
 | `last_write_at` | When the version was published. |
 | `unindexed` | `rows` and `logical_bytes` of the data that an index of the version does not cover yet. A reader serves a version only when every index covers all its data, so both are `0` for now. |
 
@@ -170,11 +170,6 @@ before the switch. So the answer of the switch does not mean that the namespace
 is quiet. To copy a stable namespace, freeze it, wait until `fyrr writer status`
 shows nothing pending and until `writer.commit.lease_ttl` has passed (the
 longest a writer holds its cursor lease without renewing it), then copy.
-
-A policy with the switch set is written as contract `policy-artifact` 4.0, the
-version that a policy with index options has, which a build that does not know
-the switch refuses, instead of writing into the namespace. The same refusal reaches its readers: upgrade every reader before
-freezing a namespace. Thawing writes 3.1 again.
 
 ## Listing namespaces
 
@@ -840,11 +835,6 @@ published: `409 namespace_not_published`.
   is not declared or an option the type cannot have is refused as it is for a
   namespace that is created (`409 namespace_settings_fixed`, `400 settings_invalid`).
   A change of the schema waits about 5 s for the committer to publish, then is `503 busy`: send it again.
-
-A manifest that records index options is [contract](../CONTRIBUTING.md#rules-for-changes)
-version 5.0, and a policy artifact whose settings hold them 4.0. A build that
-does not know them refuses the namespace instead of serving it with the
-default indexes; a namespace that sets none keeps 4.1 and 3.1.
 
 ### Conditions
 

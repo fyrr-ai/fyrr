@@ -26,21 +26,12 @@ use crate::envelope::{ChunkProfileIdentity, EmbeddingIdentity, FileRef};
 use crate::limits::{check_digest, check_id};
 use crate::version::{Contract, SchemaVersion};
 
-/// The publication contract version (manifest and head) written by this build.
+/// The version of the serving head, the envelope checkpoint and the history cut.
 pub const PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 1);
-/// The version of a manifest that records something an older build would
-/// ignore, and of a policy artifact that does: attribute index options, the
-/// typed columns of the metadata fields of connector documents (a build without
-/// them would read nulls), a vector metric or element type other than cosine
-/// and 16-bit floats (a build without them would search and write the wrong
-/// ones), token positions in the full-text index (a build without them would
-/// search a positional index as a positionless one), or, for a policy, the
-/// `read_only` switch (a build without it would write). An older build
-/// refuses them: it reads only its own major, and this build reads both. A
-/// document with none of them keeps its version.
-pub const INDEXED_PUBLICATION_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
-/// The policy artifact's counterpart of [`INDEXED_PUBLICATION_CONTRACT_VERSION`].
-pub const INDEXED_POLICY_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
+/// The version of the content manifest.
+pub const MANIFEST_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(5, 0);
+/// The version of the policy artifact.
+pub const POLICY_CONTRACT_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
 
 /// The index and retrieval settings a namespace is created with and keeps for
 /// its life. The process configuration only supplies them when the namespace is
@@ -85,21 +76,6 @@ pub struct NamespaceSettings {
 }
 
 impl NamespaceSettings {
-    /// Whether an older build would misread a namespace with these settings:
-    /// it ignores index options, reads the connector columns as null,
-    /// searches and writes cosine and 16-bit floats, leaves out the columns
-    /// of the named vector attributes, builds the full-text index without
-    /// positions and cuts the text with the `fts_*` keys, not the analyzer.
-    pub fn needs_newer_build(&self) -> bool {
-        !self.attribute_indexes.is_empty()
-            || self.fts.with_position
-            || self.fts.analyzer.is_some()
-            || self.write_api.is_none()
-            || !self.dense_metric.is_default()
-            || !self.dense_element.is_default()
-            || !self.vectors.is_empty()
-    }
-
     /// The bounds a configuration file is held to, so that no stored settings
     /// can fail a build or a search later.
     pub fn validate(&self) -> Result<(), String> {
@@ -156,9 +132,7 @@ pub struct PolicyArtifact {
     pub retired_sources: BTreeMap<String, RetiredSource>,
     /// The namespace is frozen: API writes and connector syncs are refused
     /// while it stays readable. An envelope that was prepared before the
-    /// switch is still committed. A policy that sets it is written as version
-    /// 4.0, which a build that does not know the switch refuses instead of
-    /// writing.
+    /// switch is still committed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
 }
@@ -179,28 +153,9 @@ pub struct RetiredSource {
 /// build. Readers map it to a named error.
 pub const CONNECTOR_COLUMNS_MISSING: &str = "connector_columns_missing";
 
-impl PolicyArtifact {
-    /// Whether an older build would misread this policy.
-    fn needs_newer_build(&self) -> bool {
-        self.settings.needs_newer_build() || self.read_only
-    }
-
-    /// The version to write: the one an older build refuses when the policy
-    /// holds index options, connector columns or the read-only switch, which it
-    /// would ignore.
-    pub fn current_version(&self) -> SchemaVersion {
-        if !self.needs_newer_build() {
-            <Self as Contract>::VERSION
-        } else {
-            INDEXED_POLICY_CONTRACT_VERSION
-        }
-    }
-}
-
 impl Contract for PolicyArtifact {
     const NAME: &'static str = "policy-artifact";
-    const VERSION: SchemaVersion = SchemaVersion::new(3, 1);
-    const ALSO_READS: &'static [u16] = &[INDEXED_POLICY_CONTRACT_VERSION.major];
+    const VERSION: SchemaVersion = POLICY_CONTRACT_VERSION;
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
         if self.settings.write_api.is_none()
@@ -209,14 +164,6 @@ impl Contract for PolicyArtifact {
                 .any(|(name, kind)| self.settings.attributes.get(*name) != Some(kind))
         {
             return Err(CONNECTOR_COLUMNS_MISSING.into());
-        }
-        if self.needs_newer_build()
-            && self.schema_version.major != INDEXED_POLICY_CONTRACT_VERSION.major
-        {
-            return Err(
-                "attribute index options, connector columns, a vector metric or element type, vector attributes, token positions and read_only need the indexed policy version"
-                    .into(),
-            );
         }
         if self.retired_sources.len() > MAX_RETIRED_SOURCES {
             return Err("retired_sources holds too many sources".into());
@@ -311,13 +258,10 @@ pub struct ContentManifest {
     /// from the serving head.
     pub incarnation: String,
     /// Which envelopes this publication and every older one committed or
-    /// rejected, so that the newest manifest is enough to tell. Absent from
-    /// manifests written before it existed: a reader then walks the chain.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub envelope_evidence: Option<EnvelopeEvidence>,
-    /// What the version holds. Absent from manifests written before 4.1.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stats: Option<PublicationStats>,
+    /// rejected, so that the newest manifest is enough to tell.
+    pub envelope_evidence: EnvelopeEvidence,
+    /// What the version holds.
+    pub stats: PublicationStats,
 }
 
 /// The size of a published version and when its namespace was first published.
@@ -328,10 +272,8 @@ pub struct PublicationStats {
     /// Bytes of the data files of those rows, indexes and deletion files not counted.
     pub logical_bytes: u64,
     /// When the namespace's first content publication was committed, carried
-    /// forward by every later one. Absent when the namespace was published
-    /// before 4.1: that time is not known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_published_at: Option<DateTime<Utc>>,
+    /// forward by every later one.
+    pub first_published_at: DateTime<Utc>,
 }
 
 /// The envelope outcomes of a publication chain up to one manifest: an
@@ -522,8 +464,7 @@ pub struct Lease {
 
 impl Contract for ContentManifest {
     const NAME: &'static str = "content-manifest";
-    const VERSION: SchemaVersion = PUBLICATION_CONTRACT_VERSION;
-    const ALSO_READS: &'static [u16] = &[INDEXED_PUBLICATION_CONTRACT_VERSION.major];
+    const VERSION: SchemaVersion = MANIFEST_CONTRACT_VERSION;
 
     fn validate(&self) -> Result<(), String> {
         check_id("namespace", &self.namespace)?;
@@ -543,19 +484,6 @@ impl Contract for ContentManifest {
             self.dense_metric,
         )
         .map_err(|error| format!("vectors: {error}"))?;
-        if (!self.attribute_indexes.is_empty()
-            || self.fts.with_position
-            || self.fts.analyzer.is_some()
-            || !self.dense_metric.is_default()
-            || !self.dense_element.is_default()
-            || !self.vectors.is_empty())
-            && self.schema_version.major != INDEXED_PUBLICATION_CONTRACT_VERSION.major
-        {
-            return Err(
-                "attribute index options, token positions, an analyzer of the text, a vector metric or element type and vector attributes need the indexed manifest version"
-                    .into(),
-            );
-        }
         if !self.indexes.iter().any(|index| index.column == "readers") {
             // A publication lacking the readers index is refused.
             return Err("the readers index is missing".into());
@@ -564,10 +492,14 @@ impl Contract for ContentManifest {
         if !self.envelope_ids.iter().all(|id| seen.insert(id)) {
             return Err("envelope_ids has duplicates".into());
         }
-        if let Some(evidence) = &self.envelope_evidence {
-            check_unique("envelope_evidence.applied_since", &evidence.applied_since)?;
-            check_unique("envelope_evidence.rejected_since", &evidence.rejected_since)?;
-        }
+        check_unique(
+            "envelope_evidence.applied_since",
+            &self.envelope_evidence.applied_since,
+        )?;
+        check_unique(
+            "envelope_evidence.rejected_since",
+            &self.envelope_evidence.rejected_since,
+        )?;
         let mut rewind_paths = BTreeSet::new();
         for path in &self.cursor_rewinds {
             let hash = path

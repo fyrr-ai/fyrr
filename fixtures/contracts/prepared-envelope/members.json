@@ -1,5 +1,5 @@
 {
-  "schema_version": "5.0",
+  "schema_version": "6.0",
   "envelope_id": "env-680ce56d121f31c0440b3bbdc3bf222d",
   "namespace": "acme",
   "source_id": "slack-acme",
