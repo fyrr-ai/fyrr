@@ -247,11 +247,9 @@ impl PreparedReader {
         if wanted == 0 {
             return Ok((Vec::new(), false));
         }
-        let depth = &self.config.namespace.retrieval.rescore_depth;
-        let mut shortlist = depth.initial(k);
-        if matches!(depth, fyrr_core::config::RescoreDepth::Legacy)
-            && self.config.namespace.dense_rq_bits == 1
-        {
+        let retrieval = &self.config.namespace.retrieval;
+        let mut shortlist = retrieval.rescore_initial(k);
+        if retrieval.rescore_depth.is_none() && self.config.namespace.dense_rq_bits == 1 {
             // One-bit distances rank a growing pool less precisely. Grow the exact
             // rescore pool sublinearly with the rows the probes inspect, up to the
             // depth that the tie expansion could already reach. An index whose partitions follow its
@@ -264,7 +262,9 @@ impl PreparedReader {
                     .sum();
                 eligible.min(usize::try_from(probed).unwrap_or(usize::MAX))
             });
-            shortlist = inspected.isqrt().clamp(shortlist, depth.maximum(k));
+            shortlist = inspected
+                .isqrt()
+                .clamp(shortlist, retrieval.rescore_maximum(k));
         }
         // An unfiltered request and the authorization mask always use the
         // index. A filter does so when probing reads fewer bytes than the
@@ -386,7 +386,7 @@ impl PreparedReader {
         shortlist: usize,
         telemetry: &mut Telemetry,
     ) -> Result<DenseRefinement> {
-        let depth = &self.config.namespace.retrieval.rescore_depth;
+        let retrieval = &self.config.namespace.retrieval;
         let tie_bound = k * 16;
 
         let sparse_start = Instant::now();
@@ -444,7 +444,7 @@ impl PreparedReader {
         ranked.sort_unstable_by(|a, b| distances.value(*a).total_cmp(&distances.value(*b)));
         telemetry.dense_candidates_fetched += batch.num_rows() as u64;
         if ranked.len() > wanted
-            && let Some(next) = depth.expand(
+            && let Some(next) = retrieval.rescore_expand(
                 shortlist,
                 k,
                 (distances.value(ranked[wanted]) - distances.value(ranked[wanted - 1])) as f64,
@@ -503,8 +503,8 @@ impl PreparedReader {
         telemetry: &mut Telemetry,
     ) -> Result<(Vec<Candidate>, bool)> {
         let bound = k * 16;
-        let depth = &self.config.namespace.retrieval.rescore_depth;
-        let mut pool = depth.initial(k);
+        let retrieval = &self.config.namespace.retrieval;
+        let mut pool = retrieval.rescore_initial(k);
         let eligible = usize::try_from(self.selected_rows().max_len().unwrap_or(0))
             .map_err(|_| StorageUnavailable)?;
         // Preserve k*refine for non-tied ANN queries. At k=75 this is
@@ -549,7 +549,7 @@ impl PreparedReader {
             if use_index
                 && rows.len() > wanted
                 && let Some(next) =
-                    depth.expand(pool, k, rows[wanted - 1].score - rows[wanted].score)
+                    retrieval.rescore_expand(pool, k, rows[wanted - 1].score - rows[wanted].score)
             {
                 pool = next;
                 requested = next_divisor(wanted, pool).min(eligible);

@@ -391,8 +391,8 @@ fn embedding(config: &Config, error: &mut impl FnMut(&str, String)) {
 
 fn rescore_depth(namespace: &NamespaceConfig, error: &mut impl FnMut(&str, String)) {
     match &namespace.retrieval.rescore_depth {
-        RescoreDepth::Legacy => {}
-        RescoreDepth::Fixed { candidates } => {
+        None => {}
+        Some(RescoreDepth::Fixed { candidates }) => {
             if !(1..=1200).contains(candidates) {
                 error(
                     "namespace.retrieval.rescore_depth",
@@ -400,11 +400,11 @@ fn rescore_depth(namespace: &NamespaceConfig, error: &mut impl FnMut(&str, Strin
                 );
             }
         }
-        RescoreDepth::Adaptive {
+        Some(RescoreDepth::Adaptive {
             min_candidates,
             max_candidates,
             min_gap,
-        } => {
+        }) => {
             if !(1..=1200).contains(min_candidates)
                 || !(1..=1200).contains(max_candidates)
                 || min_candidates > max_candidates
