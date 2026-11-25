@@ -1218,6 +1218,26 @@ fn mirror_bytes(directory: &Path) -> u64 {
         .sum()
 }
 
+/// How many namespaces the reader has warmed so far, by its log.
+fn warmed(reader: &Reader) -> usize {
+    reader
+        .stderr_text()
+        .matches("reader_refresh status=ready")
+        .count()
+}
+
+/// Waits until `reader` has warmed `count` namespaces.
+async fn warmed_by(reader: &Reader, count: usize, seconds: u64) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
+    while warmed(reader) < count {
+        if std::time::Instant::now() > deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    true
+}
+
 #[tokio::test]
 #[ignore = "real writer, HTTP reader executable and local storage; scripts/ci"]
 async fn namespaces_opened_by_path_stay_inside_the_mirror_budget() {
@@ -1238,18 +1258,21 @@ async fn namespaces_opened_by_path_stay_inside_the_mirror_budget() {
     let configured = fyrr_core::config::load(&deployment.worker).unwrap().config;
     let mirror = PathBuf::from(configured.reader.mirror_path.as_ref().unwrap());
     let mut probe = Reader::start_appended(&deployment.worker, &deployment.root, key_http).await;
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(warmed_by(&probe, 1, 120).await, "{}", probe.stderr_text());
     let own = mirror_bytes(&mirror);
     let (status, body) = path_query(&probe, &key.secret, &names[0]).await;
     assert_eq!(status, 200, "{body}");
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(warmed_by(&probe, 2, 120).await, "{}", probe.stderr_text());
     let each = mirror_bytes(&mirror) - own;
     probe.stop().await;
     assert!(own > 0 && each > 0, "the mirror holds {own} and {each}");
 
+    // The mirror has a parent of its own, so that every directory a reader
+    // makes for mirrors is counted, not only the configured one.
     let budget = own + each * 5 / 2;
     let tight = deployment.root.join("tight-mirror-reader.toml");
-    let kept = deployment.root.join("tight-mirror");
+    let parent = deployment.root.join("tight");
+    let kept = parent.join("mirror");
     std::fs::write(
         &tight,
         text.replace(
@@ -1263,16 +1286,33 @@ async fn namespaces_opened_by_path_stay_inside_the_mirror_budget() {
     )
     .unwrap();
     let mut reader = Reader::start_appended(&tight, &deployment.root, key_http).await;
+    assert!(warmed_by(&reader, 1, 120).await, "{}", reader.stderr_text());
     for name in names.iter().chain(&names[..1]) {
         let (status, body) = path_query(&reader, &key.secret, name).await;
         assert_eq!(status, 200, "{name}: {body}");
         assert_eq!(hits_of(&body), [deployment.doc(1)], "{name}");
-        let held = mirror_bytes(&kept);
+        let held = mirror_bytes(&parent);
         assert!(
             held <= budget,
             "{name}: the mirrors hold {held} of {budget}"
         );
     }
+    // The namespaces that came first hold the room, idle: the later ones close
+    // the one used least recently, and are kept in the mirror after that.
+    // The configured namespace and two others were warmed; one warmed after
+    // a closure is a fourth.
+    assert!(
+        warmed_by(&reader, 4, 240).await,
+        "no namespace was warmed after the mirror ran out of room:\n{}",
+        reader.stderr_text()
+    );
+    let log = reader.stderr_text();
+    assert!(
+        log.contains("telemetry namespace=closed reason=mirror_capacity"),
+        "no namespace was closed for the mirror:\n{log}"
+    );
+    let held = mirror_bytes(&parent);
+    assert!(held <= budget, "the mirrors hold {held} of {budget}");
     // One budget for all of them: no directory of mirrors beside the configured one.
     assert!(!PathBuf::from(format!("{}.paths", kept.display())).exists());
     reader.stop().await;

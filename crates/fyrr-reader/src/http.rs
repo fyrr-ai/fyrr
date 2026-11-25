@@ -218,8 +218,8 @@ impl Namespaces {
         cell
     }
     /// Closes the namespace used least recently that serves nothing, for the
-    /// memory it holds. Whether there was one.
-    fn close_idle(&self) -> bool {
+    /// `reason` it holds. Whether there was one.
+    fn close_idle(&self, reason: &str) -> bool {
         let mut open = crate::sync::lock(&self.open);
         let closed = close_idle(&mut open);
         if closed {
@@ -228,9 +228,7 @@ impl Namespaces {
                 &[],
                 i64::try_from(open.len() + 1).unwrap_or(i64::MAX),
             );
-            crate::telemetry::emit(format_args!(
-                "telemetry namespace=closed reason=memory_budget"
-            ));
+            crate::telemetry::emit(format_args!("telemetry namespace=closed reason={reason}"));
         }
         closed
     }
@@ -290,7 +288,7 @@ impl Namespaces {
                     let closed = this.closed.notified();
                     tokio::pin!(closed);
                     closed.as_mut().enable();
-                    if !this.close_idle() {
+                    if !this.close_idle("memory_budget") {
                         break reader;
                     }
                     drop(reader);
@@ -1187,6 +1185,19 @@ pub(crate) async fn serve(reader: crate::search::PreparedReader) -> Result<()> {
             service: service.clone(),
         }),
     ));
+    // A namespace that has no room left in the mirror takes the room of the
+    // least recently used one that serves nothing; its next warming finds it.
+    // With no such namespace it reads from storage, as before.
+    let room = Arc::downgrade(&namespaces);
+    tokio::spawn(async move {
+        loop {
+            crate::mirror::ROOM_WANTED.notified().await;
+            let Some(namespaces) = room.upgrade() else {
+                break;
+            };
+            namespaces.close_idle("mirror_capacity");
+        }
+    });
     let state = HttpState {
         admission,
         service: service.clone(),

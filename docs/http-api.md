@@ -39,17 +39,20 @@ configured one, and each holds a place until its scheduler has stopped; a
 request that finds none waits up to 5 seconds, then answers `503 busy`. When
 another namespace needs a place, the one used least recently that is serving no
 request is closed, and if every one is serving, the request answers `503 busy`.
-All of them keep their files in the mirror of the configured namespace,
-under `reader.mirror_path`, so the open namespaces together stay inside
-`reader.mirror_max_bytes`. Files that no open namespace serves from are
-evicted first, oldest first; a namespace that finds no more room is read from
-storage without keeping the file, which is slower and as correct. The 8 share
-the reader's `reader.memory_max_bytes` with the configured namespace: a
-namespace that the memory left cannot fund in full closes the least recently
-used one that serves no request, and opens again, so the open ones stay inside
-the budget. Each gets an eighth of the 128 MiB subject cache the configured
-namespace has, so together they add one more cache budget of the configured
-size; a reader with API keys takes the memory of those caches from `reader.memory_max_bytes` too. One that has served no request for
+All of them keep their files in the mirror of the configured namespace, under
+`reader.mirror_path` (`$XDG_CACHE_HOME/fyrr/<namespace.name>` when it is not
+set), so the open namespaces together stay inside `reader.mirror_max_bytes`.
+Only files that no open namespace serves from are evicted, oldest first. A
+namespace that finds no more room closes the least recently used one that serves
+no request, which frees its files, and keeps them on its next warming; with no
+such namespace it is read from storage without keeping the files, which is
+slower and as correct. The 8 share the reader's `reader.memory_max_bytes` with
+the configured namespace: a namespace that the memory left cannot fund in full
+closes the least recently used one that serves no request, and opens again, so
+the open ones stay inside the budget. Each gets an eighth of the 128 MiB
+subject cache the configured namespace has, so together they add one more cache
+budget of the configured size; a reader with API keys takes the memory of those
+caches from `reader.memory_max_bytes` too. One that has served no request for
 `reader.version_check_interval` makes no storage request until the next one,
 which reads the head first and is answered from that read. Embedding and rerank
 spend limits are per process: every namespace charges the same counters.

@@ -18,6 +18,10 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+/// Woken when a namespace could not keep its files in the mirror for want of
+/// room. A reader that holds several namespaces frees the room of an idle one.
+pub(crate) static ROOM_WANTED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
 /// Both the Lance wrapper factory and its read-only wrapped object store.
 #[derive(Debug, Clone)]
 pub struct MirrorStore {
@@ -89,8 +93,8 @@ impl IoCounters {
         }
     }
 }
-/// What a mirror last added to the size gauge; it takes that back when the
-/// mirror's last clone ends.
+/// What the mirrors of a directory last added to the size gauge; they take
+/// that back when the last mirror of the directory ends.
 #[derive(Debug, Default)]
 struct ReportedBytes(AtomicU64);
 impl ReportedBytes {
@@ -195,6 +199,7 @@ struct DownloadLock {
 impl DownloadLock {
     async fn finish(mut self) -> std::io::Result<()> {
         let _host = self.mirror.host_lock().await?;
+        MirrorStore::remove_partial(&self.path.with_extension("partial"))?;
         MirrorStore::remove_partial(&self.path)?;
         drop(self.file.take());
         Ok(())
@@ -212,6 +217,7 @@ impl Drop for DownloadLock {
             runtime.spawn(async move {
                 let _file = file;
                 if let Ok(_host) = mirror.host_lock().await {
+                    let _ = MirrorStore::remove_partial(&path.with_extension("partial"));
                     let _ = MirrorStore::remove_partial(&path);
                 }
             });
@@ -588,13 +594,23 @@ impl MirrorStore {
         let mut live = std::collections::BTreeSet::new();
         for entry in std::fs::read_dir(&self.directory)? {
             let entry = entry?;
-            if !Self::owned_private_file(&std::fs::symlink_metadata(entry.path())?) {
+            // A partial that a cancelled download removed may be gone by now.
+            let meta = match std::fs::symlink_metadata(entry.path()) {
+                Ok(meta) => meta,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            if !Self::owned_private_file(&meta) {
                 return Err(std::io::Error::other("storage_unavailable"));
             }
             if !Self::cache_name(&entry.file_name().to_string_lossy(), ".lease") {
                 continue;
             }
-            let file = Self::private_file(&entry.path(), false)?;
+            let file = match Self::private_file(&entry.path(), false) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
             match file.try_lock() {
                 Ok(()) => std::fs::remove_file(entry.path())?,
                 Err(std::fs::TryLockError::WouldBlock) => {
@@ -720,6 +736,8 @@ impl MirrorStore {
         for blob in expired_pages {
             self.remove_pages(&blob)?;
         }
+        // The gauge follows what is left, not what was last measured.
+        let _ = self.used_bytes();
         Ok(())
     }
     fn remove_idle_partial(path: &std::path::Path) -> std::io::Result<()> {

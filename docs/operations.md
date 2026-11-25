@@ -104,7 +104,10 @@ with `authorization_unavailable` until it has prepared the new namespace's
 first publication, then switches to it without a restart; it never serves the old namespace's rows.
 Memory and disk are bounded by
 `reader.memory_max_bytes` and `reader.mirror_max_bytes`, for all open
-namespaces together.
+namespaces together. A reader of an earlier release kept the mirrors of namespaces opened by
+request path in `<reader.mirror_path>.paths`; after stopping those readers,
+remove that directory (`rm -rf <reader.mirror_path>.paths`), because this
+release neither reads nor sweeps it.
 
 ## Maintenance and retention
 

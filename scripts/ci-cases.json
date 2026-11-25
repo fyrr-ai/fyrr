@@ -1960,7 +1960,7 @@
       },
       "full:fyrr:test:dense_path/api_keys::namespaces_opened_by_path_stay_inside_the_mirror_budget": {
         "tier": "full",
-        "seconds": 90.0
+        "seconds": 200.0
       }
     },
     "backend": "local"

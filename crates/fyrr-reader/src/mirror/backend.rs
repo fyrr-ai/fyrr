@@ -66,17 +66,6 @@ pub(super) struct Fill {
     evict: bool,
 }
 
-/// The partial file that reserves the room of a download, removed again when
-/// the download fails, is cancelled or never completes.
-struct Reservation(Option<PathBuf>);
-impl Drop for Reservation {
-    fn drop(&mut self) {
-        if let Some(path) = self.0.take() {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-}
-
 impl MirrorStore {
     /// A complete copy whose length is not the one the pinned manifest states.
     fn stale_length(&self, file: &std::path::Path, metadata: &std::fs::Metadata) -> bool {
@@ -251,7 +240,9 @@ impl MirrorStore {
                 .open(&temporary)
                 .map_err(|_| Self::failure())?;
             output.set_len(size).map_err(|_| Self::failure())?;
-            reserved = Some((output, Reservation(Some(temporary.clone()))));
+            // A partial that is left by a failed, cancelled or finished download
+            // is removed with its download lock, under the host lock.
+            reserved = Some(output);
         }
         drop(_host);
         drop(_lock);
@@ -266,7 +257,7 @@ impl MirrorStore {
             Self::remember_oversized(&self.oversized, file);
             return self.pass_through(location, options, counters).await;
         }
-        let (mut output, mut reservation) = if let Some(reserved) = reserved {
+        let mut output = if let Some(reserved) = reserved {
             reserved
         } else {
             let _lock = self.lock.lock().await;
@@ -291,7 +282,7 @@ impl MirrorStore {
                 .map_err(|_| Self::failure())?;
             // Sparse length reserves capacity across all processes before downloading.
             output.set_len(metadata.size).map_err(|_| Self::failure())?;
-            (output, Reservation(Some(temporary.clone())))
+            output
         };
         let mut stream = download.into_stream();
         let mut hasher = Sha256::new();
@@ -325,7 +316,6 @@ impl MirrorStore {
         #[cfg(test)]
         tests::pause("proof");
         std::fs::rename(&temporary, &file).map_err(|_| Self::failure())?;
-        reservation.0 = None;
         // Pages a concurrent read kept meanwhile are superseded too.
         self.remove_pages(&file).map_err(|_| Self::failure())?;
         #[cfg(test)]
@@ -432,7 +422,12 @@ impl MirrorStore {
                     Err(_) => return Err(Self::failure()),
                 }
             }
-            let meta = path.symlink_metadata().map_err(|_| Self::failure())?;
+            // A partial that a cancelled download removed is not there to count.
+            let meta = match path.symlink_metadata() {
+                Ok(meta) => meta,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return Err(Self::failure()),
+            };
             if !Self::owned_private_file(&meta) {
                 return Err(Self::failure());
             }
@@ -467,7 +462,11 @@ impl MirrorStore {
                             .map_err(|_| Self::failure())?;
                     }
                     Err(std::fs::TryLockError::WouldBlock) => {
-                        let metadata = path.symlink_metadata().map_err(|_| Self::failure())?;
+                        let metadata = match path.symlink_metadata() {
+                            Ok(metadata) => metadata,
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                            Err(_) => return Err(Self::failure()),
+                        };
                         if !Self::owned_private_file(&metadata) {
                             return Err(Self::failure());
                         }
@@ -480,10 +479,11 @@ impl MirrorStore {
             if !Self::counted(&name) {
                 continue;
             }
-            let meta = entry
-                .path()
-                .symlink_metadata()
-                .map_err(|_| Self::failure())?;
+            let meta = match entry.path().symlink_metadata() {
+                Ok(meta) => meta,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return Err(Self::failure()),
+            };
             if !Self::owned_private_file(&meta) {
                 return Err(Self::failure());
             }

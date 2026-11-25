@@ -633,6 +633,9 @@ impl Scheduler {
                     log_refresh("ready", reader.manifest.sequence);
                 }
                 Ok(Err(reason)) => {
+                    if reason == MirrorCapacityExhausted {
+                        crate::mirror::ROOM_WANTED.notify_one();
+                    }
                     let reason = if reason == MirrorCapacityExhausted {
                         "mirror_capacity"
                     } else if reason == PreparationBudgetExhausted {

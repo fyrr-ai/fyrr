@@ -62,14 +62,6 @@ impl PreparedReader {
             .storage
             .object_store_options(&ProcessEnvironment)
             .map_err(|_| StorageConfigurationInvalid)?;
-        let mirror_path = config
-            .mirror_directory(&ProcessEnvironment)
-            .ok_or(StorageConfigurationInvalid)?;
-        MirrorStore::private_directory(&mirror_path).map_err(|_| StorageUnavailable)?;
-        let mirror_directory = match mirror_directory {
-            Some(directory) => directory,
-            None => Self::mirror_dataset_directory(config)?,
-        };
         let (
             shared_session,
             mirror,
@@ -92,7 +84,18 @@ impl PreparedReader {
             (
                 None,
                 Arc::new(MirrorStore::new(
-                    mirror_directory,
+                    match mirror_directory {
+                        Some(directory) => directory,
+                        // A directory of the namespace, in a private root.
+                        None => {
+                            let directory = Self::mirror_dataset_directory(config)?;
+                            if let Some(root) = directory.parent() {
+                                MirrorStore::private_directory(root)
+                                    .map_err(|_| StorageUnavailable)?;
+                            }
+                            directory
+                        }
+                    },
                     config.reader.mirror_max_bytes,
                 )?),
                 Arc::new(std::sync::Mutex::new(AuthorizationCache::default())),
