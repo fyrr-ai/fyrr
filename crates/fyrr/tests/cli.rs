@@ -1308,13 +1308,17 @@ fn a_local_root_written_before_0_2_0_is_refused_by_name() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// A connector namespace of v0.1.x has no typed connector columns, and its policy is
-/// 3.1: `writer namespace create` and `writer status` refuse it with
-/// `namespace_layout_old`, not with a generic authorization error.
+/// What v0.1.x (and earlier builds of 0.2.0) stored is refused with `namespace_layout_old`
+/// by `writer namespace create`, `writer status` and `reader check`, on local storage with
+/// no root marker: the serving head 3.0 and policy 2.2 that v0.1.1 wrote, and a policy 3.1
+/// of a connector namespace without the typed connector columns.
 #[test]
 #[cfg(feature = "writer")]
-fn a_connector_namespace_without_the_typed_columns_is_refused_by_name() {
+fn a_namespace_stored_by_an_earlier_fyrr_is_refused_by_name() {
     use std::os::unix::fs::PermissionsExt;
+    let compat = common::repo().join("fixtures/contracts/compat");
+    let old_head = std::fs::read(compat.join("v0.1.1-serving-head.json")).unwrap();
+    let old_policy = std::fs::read(compat.join("v0.1.1-policy-artifact.json")).unwrap();
     let root = common::target_tmp().join(format!("old-layout-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1336,35 +1340,51 @@ fn a_connector_namespace_without_the_typed_columns_is_refused_by_name() {
         let (stdout, stderr) = text(&output);
         (output.status.success(), format!("{stdout}{stderr}"))
     };
-    assert!(run(&["writer", "namespace", "create"]).0);
-
-    // Rewrite the policy as v0.1.x wrote it: version 3.1, no connector columns.
+    let refused = |commands: &[&[&str]]| {
+        for args in commands {
+            let (success, output) = run(args);
+            assert!(!success, "{args:?}: {output}");
+            assert!(
+                output.contains("error: namespace_layout_old") && output.contains("v0.2.0"),
+                "{args:?}: {output}"
+            );
+        }
+    };
     let namespace = root.join("namespaces/notes");
     let head_path = namespace.join("head.json");
+    // The files are overwritten in place: the store keeps the version tag they carry.
+    assert!(run(&["writer", "namespace", "create"]).0);
+    let current_head = std::fs::read(&head_path).unwrap();
+
+    // The serving head of v0.1.1.
+    std::fs::write(&head_path, &old_head).unwrap();
+    refused(&[
+        &["writer", "namespace", "create"],
+        &["writer", "status"],
+        &["reader", "check"],
+    ]);
+    std::fs::write(&head_path, &current_head).unwrap();
+
+    // A current head over a policy that v0.1.1 wrote (2.2), then over a policy 3.1
+    // without the connector columns.
     let mut head: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&head_path).unwrap()).unwrap();
     let policy_path = namespace.join(head["policy"]["object"].as_str().unwrap());
-    let mut policy: serde_json::Value =
+    let current: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&policy_path).unwrap()).unwrap();
-    policy["schema_version"] = "3.1".into();
-    let settings = policy["settings"].as_object_mut().unwrap();
+    let mut without_columns = current.clone();
+    without_columns["schema_version"] = "3.1".into();
+    let settings = without_columns["settings"].as_object_mut().unwrap();
     settings.remove("attributes");
     settings.remove("attribute_indexes");
-    let bytes = serde_json::to_vec_pretty(&policy).unwrap();
-    std::fs::write(&policy_path, &bytes).unwrap();
-    head["policy"]["digest"] = fyrr_core::limits::digest(&bytes).into();
-    std::fs::write(&head_path, serde_json::to_vec_pretty(&head).unwrap()).unwrap();
-
-    for args in [
-        &["writer", "namespace", "create"][..],
-        &["writer", "status"],
+    for bytes in [
+        old_policy,
+        serde_json::to_vec_pretty(&without_columns).unwrap(),
     ] {
-        let (success, output) = run(args);
-        assert!(!success, "{args:?}: {output}");
-        assert!(
-            output.contains("error: namespace_layout_old") && output.contains("v0.2.0"),
-            "{args:?}: {output}"
-        );
+        std::fs::write(&policy_path, &bytes).unwrap();
+        head["policy"]["digest"] = fyrr_core::limits::digest(&bytes).into();
+        std::fs::write(&head_path, serde_json::to_vec_pretty(&head).unwrap()).unwrap();
+        refused(&[&["writer", "namespace", "create"], &["writer", "status"]]);
     }
     std::fs::remove_dir_all(root).unwrap();
 }

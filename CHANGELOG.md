@@ -16,10 +16,12 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 - **Breaking (v0.2.0):** every local storage root written by v0.1.x or an
   earlier build (it holds `.fyrr-storage.lock` or `.fyrr-storage.stage`) is
   refused with `storage_root_old`. Recreate its namespaces in a new root with
-  v0.2.0; remove those files only once no older writer runs. A connector
-  namespace of v0.1.x (no typed connector columns) is refused with
-  `namespace_layout_old`: create it again. A local put no longer opens a root
-  lock file. See [operations](docs/operations.md#upgrades).
+  v0.2.0; remove those files only once no older writer runs. A namespace
+  that v0.1.x or an earlier build wrote is refused with `namespace_layout_old`
+  in any root, S3 included: one of its stored contracts is of an older major, or
+  its connector namespace has no typed connector columns. Create it again. A
+  local put no longer opens a root lock file. See
+  [operations](docs/operations.md#upgrades).
 - The excerpt of a hit in a namespace with an `[namespace.analyzer]`, or with
   `fts_stem`, `fts_remove_stop_words` or `fts_ascii_folding`, is chosen with the
   tokens of its full-text index, as the lexical lane and `highlights` already
@@ -31,8 +33,8 @@ own `major.minor` versions (see [CONTRIBUTING.md](CONTRIBUTING.md)).
   documents as typed columns, declared with the namespace like the attributes
   of the file, so a filter or `order_by` can use them. `search`, `fetch` and
   `list_filters` return the same fields as before. A connector namespace
-  created without the columns (v0.1.x, or an earlier build) is refused:
-  recreate it with v0.2.0. A manifest of the new layout is
+  created without the columns is refused with `namespace_layout_old`: recreate
+  it with v0.2.0. A manifest of the new layout is
   content-manifest 5.0 and its policy artifact 4.0, the versions of attribute
   index options and of the read-only switch, so an older build refuses it
   instead of reading nulls. The

@@ -78,9 +78,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const VERSION: &str = "user.fyrr.version";
 
 const STORE: &str = "fyrr local storage";
+
+/// The error of opening a root that holds a marker of an earlier release.
+#[derive(Debug)]
+pub(super) struct OldRoot;
+impl std::fmt::Display for OldRoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("storage root of an earlier release")
+    }
+}
+impl std::error::Error for OldRoot {}
 /// Files that releases before 0.2.0 kept in the root, which they serialized
-/// writes through. A root with one is refused with `ErrorKind::Unsupported`;
-/// a root where they cannot be checked for is refused with the error of the check.
+/// writes through. A root with one is refused with [`OldRoot`]; a root where
+/// they cannot be checked for is refused with the error of the check.
 const OLD_ROOT_FILES: [&str; 2] = [".fyrr-storage.lock", ".fyrr-storage.stage"];
 /// The staging directory, outside all namespaces: one file per write in
 /// progress, named by the write's tag and locked by its writer.
@@ -250,12 +260,12 @@ impl LocalStore {
         let directory = Arc::new(File::open(root)?);
         let metadata = directory.metadata()?;
         // The markers are looked up in the directory this handle holds, so a
-        // root swapped meanwhile cannot pass. A marker found is `Unsupported`;
+        // root swapped meanwhile cannot pass. A marker found is `OldRoot`;
         // a marker that cannot be checked is any other error, and refuses too.
         for name in OLD_ROOT_FILES {
             match rustix::fs::statat(&*directory, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
                 Err(rustix::io::Errno::NOENT) => {}
-                Ok(_) => return Err(std::io::Error::from(ErrorKind::Unsupported)),
+                Ok(_) => return Err(std::io::Error::other(OldRoot)),
                 Err(error) => return Err(error.into()),
             }
         }

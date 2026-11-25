@@ -1660,7 +1660,7 @@
     "title": "cli (full build)",
     "kind": "rust",
     "cases": {
-      "full:fyrr:test:cli/a_connector_namespace_without_the_typed_columns_is_refused_by_name": {
+      "full:fyrr:test:cli/a_namespace_stored_by_an_earlier_fyrr_is_refused_by_name": {
         "tier": "quick",
         "seconds": 0.5
       },

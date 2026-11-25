@@ -879,7 +879,10 @@ fn local_store_refuses_a_root_of_a_release_that_locked_the_root() {
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(root.join(name), b"").unwrap();
         let error = LocalStore::open(&root).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Unsupported, "{error}");
+        assert!(
+            error.get_ref().is_some_and(|source| source.is::<OldRoot>()),
+            "{error}"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

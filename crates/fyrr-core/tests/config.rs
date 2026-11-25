@@ -1588,7 +1588,7 @@ fn namespace_attributes_are_declared_by_name_and_type() {
         errors(&retyped)
             .iter()
             .any(|error| error.contains("namespace.attributes")),
-        "a connector column has no other type"
+        "a connector column keeps its type"
     );
     for name in ["_hidden", "source_id", "Bad-Name"] {
         let rejected = parse(&format!(

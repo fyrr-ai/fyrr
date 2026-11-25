@@ -250,9 +250,12 @@ v0.2.0 refuses every local storage root that v0.1.x or an earlier build wrote,
 with `storage_root_old`: the root holds `.fyrr-storage.lock` or
 `.fyrr-storage.stage`, which this build never creates. Recreate its namespaces
 in a new root with v0.2.0. Remove the two files only once no older writer runs.
-A connector namespace of v0.1.x has no typed connector columns and is refused
-with `namespace_layout_old`, in any root: create it again with v0.2.0 and sync
-its sources. The command line prints what to do under `error: <code>`.
+A namespace that v0.1.x or an earlier build wrote is refused with
+`namespace_layout_old`, in any root, S3 included: one of its stored contracts (the serving
+head, the policy) is of an older major than v0.2.0 writes, or
+its connector namespace has no typed connector columns. Create it again with
+v0.2.0 and sync its sources. The command line prints what to do under
+`error: <code>`.
 
 Configuration schema `4.0` changed the default retrieval policy to
 `dense_weight = 0.5` and `lexical_candidates = 200`. A namespace created from
